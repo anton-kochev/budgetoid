@@ -523,7 +523,7 @@ describe('AccountsService', () => {
     await settle();
 
     // Act
-    service.remove(EXISTING_ID);
+    void service.remove(EXISTING_ID);
     const request = http.expectOne(`${ACCOUNTS_URL}/${EXISTING_ID}`);
 
     request.flush(null, { status: 204, statusText: 'No Content' });
@@ -913,6 +913,89 @@ describe('AccountsService', () => {
 
       // Assert — the one word that permits a form to be cleared.
       expect(await write).toEqual({ state: 'recorded' });
+    });
+
+    it('answers recorded when the delete lands', async () => {
+      // Arrange — the delete used to answer nothing at all, on every outcome:
+      // its pipe ended in a `catchError` returning `EMPTY` and its caller
+      // invoked it as a statement, so the classification it made reached a
+      // console and stopped there.
+      service.load();
+      http.expectOne(ACCOUNTS_URL).flush({
+        items: [sealedAccount(EXISTING_ID, 'Everyday')],
+      });
+      await settle();
+
+      const write = service.remove(EXISTING_ID);
+
+      // Act
+      http
+        .expectOne(`${ACCOUNTS_URL}/${EXISTING_ID}`)
+        .flush(null, { status: 204, statusText: 'No Content' });
+
+      // Assert
+      expect(await write).toEqual({ state: 'recorded' });
+    });
+
+    it('hands a refused delete back as the word the screen renders', async () => {
+      // Arrange — a 500 is the state whose remedy is a minute, and the one a
+      // delete's own sentence is written for. Awaiting the word is also what
+      // catches the pipe being put back the way it was: `firstValueFrom` over
+      // an observable that completes empty rejects, so the case fails on the
+      // rejection rather than on the assertion.
+      const write = service.remove(EXISTING_ID);
+
+      // Act
+      http
+        .expectOne(`${ACCOUNTS_URL}/${EXISTING_ID}`)
+        .flush('nope', { status: 500, statusText: 'Server Error' });
+
+      // Assert
+      expect(await write).toEqual({ state: 'unreachable' });
+    });
+
+    it('leaves the row on the list when the delete is refused', async () => {
+      // Arrange — **the premise the screen's sentence rests on.** *The row is
+      // still here* is a claim about this list, and it holds only because the
+      // filter sits inside the `tap`, which a refusal never reaches. Moved
+      // above the `catchError` the row would vanish under a sentence saying it
+      // had not.
+      service.load();
+      http.expectOne(ACCOUNTS_URL).flush({
+        items: [
+          sealedAccount(EXISTING_ID, 'Everyday'),
+          sealedAccount('0199c3d4-0000-7000-8000-00000000000e', 'Rainy day'),
+        ],
+      });
+      await settle();
+
+      const write = service.remove(EXISTING_ID);
+
+      // Act
+      http
+        .expectOne(`${ACCOUNTS_URL}/${EXISTING_ID}`)
+        .flush('nope', { status: 500, statusText: 'Server Error' });
+      await write;
+
+      // Assert
+      expect(service.accounts()?.map((view) => view.id)).toEqual([
+        EXISTING_ID,
+        '0199c3d4-0000-7000-8000-00000000000e',
+      ]);
+    });
+
+    it('tells a judged delete from an unanswered one', async () => {
+      // Arrange — the pair a reader collapses, on this path too: a 404 is the
+      // server looking and saying no, and a minute changes nothing about it.
+      const write = service.remove(EXISTING_ID);
+
+      // Act
+      http
+        .expectOne(`${ACCOUNTS_URL}/${EXISTING_ID}`)
+        .flush('nope', { status: 404, statusText: 'Not Found' });
+
+      // Assert
+      expect(await write).toEqual({ state: 'unreadable' });
     });
 
     it('answers the server’s own sentences when a name is already taken', async () => {

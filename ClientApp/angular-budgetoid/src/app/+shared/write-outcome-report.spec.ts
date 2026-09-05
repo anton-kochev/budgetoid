@@ -21,6 +21,7 @@ import {
   SILENT_WRITE_REPORT,
   clearFieldMessages,
   markFieldMessages,
+  rowActReportOf,
   writeReportOf,
 } from './write-outcome-report';
 
@@ -223,6 +224,152 @@ describe('writeReportOf', () => {
 
     // Assert
     expect(report.fields.get('name')).toEqual(['Too long.', 'Malformed.']);
+  });
+});
+
+// The five writes that hold no typed text: a row's delete, and a row's move.
+//
+// **The copy is written out here too, for the reason the head of this file
+// gives.** These four sentences are the whole of what closes the gap
+// `docs/design/components.md` left open, so a case reading them back out of the
+// module would assert that a string equals itself.
+describe('rowActReportOf', () => {
+  it('says the server was not reached, and that nothing has been deleted', () => {
+    // Arrange — the reassurance clause is this act's own. The form's sentence
+    // says *nothing you typed has been lost*, and a delete holds nothing
+    // anybody typed; what a person needs to know is that the row they pressed
+    // Delete on is still theirs.
+
+    // Act
+    const report = rowActReportOf({ state: 'unreachable' }, 'removal');
+
+    // Assert
+    expect(report.lines).toEqual([
+      'Budgetoid couldn’t reach the server. Nothing has been deleted — try ' +
+        'again in a minute.',
+    ]);
+    expect(report.fields.size).toBe(0);
+  });
+
+  it('offers neither a retry nor a reload when a delete was judged', () => {
+    // Arrange — the asymmetry against the form's unreadable sentence, and it
+    // is the point rather than an oversight. No retry, because the server
+    // judged and the same press collects the same judgement; and no *copy it,
+    // then reload*, because nothing was typed and the screen is already
+    // telling the truth — the row is still on it.
+
+    // Act
+    const report = rowActReportOf({ state: 'unreadable' }, 'removal');
+
+    // Assert
+    expect(report.lines).toEqual([
+      'Budgetoid couldn’t delete this, and didn’t say why. The row is still ' +
+        'here.',
+    ]);
+    expect(report.lines.join('')).not.toContain('try again');
+    expect(report.lines.join('')).not.toContain('copy it');
+  });
+
+  it('says the server was not reached, and that nothing has moved', () => {
+    // Arrange — a placement's own reassurance: the row is where the drag
+    // started, because the list is mutated on success and on nothing else.
+
+    // Act
+    const report = rowActReportOf({ state: 'unreachable' }, 'placement');
+
+    // Assert
+    expect(report.lines).toEqual([
+      'Budgetoid couldn’t reach the server. Nothing has moved — try again in ' +
+        'a minute.',
+    ]);
+  });
+
+  it('offers no retry when a move was judged', () => {
+    // Arrange — the same asymmetry, in the sentence a move gets.
+
+    // Act
+    const report = rowActReportOf({ state: 'unreadable' }, 'placement');
+
+    // Assert
+    expect(report.lines).toEqual([
+      'Budgetoid couldn’t move this, and didn’t say why. Everything is where ' +
+        'it was.',
+    ]);
+    expect(report.lines.join('')).not.toContain('try again');
+  });
+
+  it('reads a conflict answering a delete as an answer it cannot read', () => {
+    // Arrange — not a fudge, and this is where the reason is asserted rather
+    // than only written down. `duplicate-identifier` is a *create's* answer:
+    // a 409 arriving over a delete is an answer this client genuinely has no
+    // reading for, so it lands on the unreadable sentence by meaning and not
+    // by falling through.
+
+    // Act
+    const report = rowActReportOf({ state: 'duplicate-identifier' }, 'removal');
+
+    // Assert — the delete's own sentence, and never the form's *this entry is
+    // already saved*, which would tell somebody their deletion was recorded.
+    expect(report.lines).toEqual([
+      'Budgetoid couldn’t delete this, and didn’t say why. The row is still ' +
+        'here.',
+    ]);
+    expect(report.lines.join('')).not.toContain('already saved');
+  });
+
+  it('reads a duplicate name answering a move as an answer it cannot read', () => {
+    // Arrange — `duplicate-name` is the payee create's word and reaches a
+    // placement never. The same reading, on the other act.
+
+    // Act
+    const report = rowActReportOf({ state: 'duplicate-name' }, 'placement');
+
+    // Assert
+    expect(report.lines).toEqual([
+      'Budgetoid couldn’t move this, and didn’t say why. Everything is where ' +
+        'it was.',
+    ]);
+  });
+
+  it('sends every keyed sentence to the region, because there is no form', () => {
+    // Arrange — `Name` is a key a *form* on either screen would place under a
+    // control. There is no form here: the press was a Delete on a row, so the
+    // only place a sentence can land is the region.
+
+    // Act
+    const report = rowActReportOf(
+      invalid(['Name', ['Taken.']], ['Id', ['Malformed.']]),
+      'removal',
+    );
+
+    // Assert
+    expect(report.fields.size).toBe(0);
+    expect(report.lines).toEqual(['Taken.', 'Malformed.']);
+  });
+
+  it('says nothing at all about a delete that landed', () => {
+    // Arrange — the positive control the four sentences need: a mapping that
+    // spoke on every word would pass all of them.
+
+    // Act
+    const report = rowActReportOf({ state: 'recorded' }, 'removal');
+
+    // Assert
+    expect(report.lines).toEqual([]);
+    expect(report.fields.size).toBe(0);
+  });
+
+  it('says nothing about a word these paths cannot reach', () => {
+    // Arrange — `locked` is unreachable here in practice: neither a delete nor
+    // a placement seals anything, so no request is ever refused before it is
+    // sent. It is answered rather than handled twice, because the table has to
+    // be total over the type.
+
+    // Act
+    const report = rowActReportOf({ state: 'locked' }, 'placement');
+
+    // Assert
+    expect(report.lines).toEqual([]);
   });
 });
 

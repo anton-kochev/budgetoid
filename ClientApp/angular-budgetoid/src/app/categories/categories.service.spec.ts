@@ -1182,7 +1182,8 @@ describe('CategoriesService', () => {
       await loadWith([essentials, lifestyle], [groceries, utilities]);
 
       // Act
-      service.placeCategory(CATEGORY_ID, OTHER_GROUP_ID, 0);
+      const write = service.placeCategory(CATEGORY_ID, OTHER_GROUP_ID, 0);
+
       http
         .expectOne(`${CATEGORIES_URL}/${CATEGORY_ID}/placement`)
         .flush(null, { status: 204, statusText: 'No Content' });
@@ -1211,6 +1212,7 @@ describe('CategoriesService', () => {
           position: 0,
         },
       ]);
+      expect(await write).toEqual({ state: 'recorded' });
     });
 
     it('reorders within one group without duplicating categories', async () => {
@@ -1226,7 +1228,7 @@ describe('CategoriesService', () => {
       await loadWith([essentials], [groceries, utilities]);
 
       // Act
-      service.placeCategory(OTHER_CATEGORY_ID, GROUP_ID, 0);
+      void service.placeCategory(OTHER_CATEGORY_ID, GROUP_ID, 0);
       http
         .expectOne(`${CATEGORIES_URL}/${OTHER_CATEGORY_ID}/placement`)
         .flush(null, { status: 204, statusText: 'No Content' });
@@ -1246,7 +1248,8 @@ describe('CategoriesService', () => {
       await loadWith([essentials, lifestyle], []);
 
       // Act
-      service.moveGroup(OTHER_GROUP_ID, 0);
+      const write = service.moveGroup(OTHER_GROUP_ID, 0);
+
       http
         .expectOne(`${GROUPS_URL}/${OTHER_GROUP_ID}/position`)
         .flush(null, { status: 204, statusText: 'No Content' });
@@ -1259,6 +1262,7 @@ describe('CategoriesService', () => {
           [GROUP_ID, 1],
         ],
       );
+      expect(await write).toEqual({ state: 'recorded' });
     });
 
     it('removes a group from the list once the delete is accepted', async () => {
@@ -1266,7 +1270,7 @@ describe('CategoriesService', () => {
       await loadWith([essentials, lifestyle], []);
 
       // Act
-      service.removeGroup(GROUP_ID);
+      const write = service.removeGroup(GROUP_ID);
       const request = http.expectOne(`${GROUPS_URL}/${GROUP_ID}`);
 
       request.flush(null, { status: 204, statusText: 'No Content' });
@@ -1280,6 +1284,7 @@ describe('CategoriesService', () => {
       expect(
         service.groups()?.map((view) => [view.name, view.position]),
       ).toEqual([[{ state: 'text', value: 'Lifestyle' }, 0]]);
+      expect(await write).toEqual({ state: 'recorded' });
     });
 
     it('removes a category from the list once the delete is accepted', async () => {
@@ -1295,7 +1300,8 @@ describe('CategoriesService', () => {
       await loadWith([essentials], [groceries, utilities]);
 
       // Act
-      service.removeCategory(CATEGORY_ID);
+      const write = service.removeCategory(CATEGORY_ID);
+
       http
         .expectOne(`${CATEGORIES_URL}/${CATEGORY_ID}`)
         .flush(null, { status: 204, statusText: 'No Content' });
@@ -1305,6 +1311,7 @@ describe('CategoriesService', () => {
       expect(
         service.categories()?.map((view) => [view.id, view.position]),
       ).toEqual([[OTHER_CATEGORY_ID, 0]]);
+      expect(await write).toEqual({ state: 'recorded' });
     });
 
     it('answers no categories for a group while the list has no answer', () => {
@@ -1365,7 +1372,7 @@ describe('CategoriesService', () => {
       const before = service.categoriesForGroup(GROUP_ID);
 
       // Act
-      service.removeCategory(CATEGORY_ID);
+      void service.removeCategory(CATEGORY_ID);
       http
         .expectOne(`${CATEGORIES_URL}/${CATEGORY_ID}`)
         .flush(null, { status: 204, statusText: 'No Content' });
@@ -1513,6 +1520,100 @@ describe('CategoriesService', () => {
       expect(outcome.state === 'invalid' ? [...outcome.errors] : null).toEqual([
         ['Name', ['Category name must be unique.']],
       ]);
+    });
+
+    // The four writes that used to end in a console line.
+    //
+    // **One case per pipe, for the reason the paragraph above gives twice
+    // over.** Each of these four carries its own `catchError`, and a shared
+    // argument in a comment pins none of them: three arms handing the word back
+    // and one still swallowing is a difference nothing else in this file can
+    // see.
+    it('hands a refused group move back as the word the screen renders', async () => {
+      // Arrange
+      await loadWith([essentials, lifestyle], []);
+
+      const write = service.moveGroup(OTHER_GROUP_ID, 0);
+
+      // Act
+      http
+        .expectOne(`${GROUPS_URL}/${OTHER_GROUP_ID}/position`)
+        .flush('nope', { status: 500, statusText: 'Server Error' });
+
+      // Assert — awaiting the word is also what catches a pipe put back the way
+      // it was: `firstValueFrom` over an observable that completes empty
+      // rejects, so such a case fails on the rejection rather than the
+      // assertion.
+      expect(await write).toEqual({ state: 'unreachable' });
+    });
+
+    it('leaves the groups in their old order when a move is refused', async () => {
+      // Arrange — **the premise the screen's sentence rests on.** *Nothing has
+      // moved* is a claim about this list, and it holds only because the
+      // reorder sits inside the `tap`, which a refusal never reaches.
+      await loadWith([essentials, lifestyle], []);
+
+      const write = service.moveGroup(OTHER_GROUP_ID, 0);
+
+      // Act
+      http
+        .expectOne(`${GROUPS_URL}/${OTHER_GROUP_ID}/position`)
+        .flush('nope', { status: 500, statusText: 'Server Error' });
+      await write;
+
+      // Assert
+      expect(service.groups()?.map((view) => [view.id, view.position])).toEqual(
+        [
+          [GROUP_ID, 0],
+          [OTHER_GROUP_ID, 1],
+        ],
+      );
+    });
+
+    it('hands a refused group delete back as the word the screen renders', async () => {
+      // Arrange — a 404 is a judgement rather than silence, and the two have
+      // different sentences on the screen.
+      await loadWith([essentials, lifestyle], []);
+
+      const write = service.removeGroup(GROUP_ID);
+
+      // Act
+      http
+        .expectOne(`${GROUPS_URL}/${GROUP_ID}`)
+        .flush('nope', { status: 404, statusText: 'Not Found' });
+
+      // Assert
+      expect(await write).toEqual({ state: 'unreadable' });
+    });
+
+    it('hands a refused category placement back as the word the screen renders', async () => {
+      // Arrange
+      await loadWith([essentials, lifestyle], [groceries]);
+
+      const write = service.placeCategory(CATEGORY_ID, OTHER_GROUP_ID, 0);
+
+      // Act
+      http
+        .expectOne(`${CATEGORIES_URL}/${CATEGORY_ID}/placement`)
+        .flush('nope', { status: 500, statusText: 'Server Error' });
+
+      // Assert
+      expect(await write).toEqual({ state: 'unreachable' });
+    });
+
+    it('hands a refused category delete back as the word the screen renders', async () => {
+      // Arrange
+      await loadWith([essentials], [groceries]);
+
+      const write = service.removeCategory(CATEGORY_ID);
+
+      // Act
+      http
+        .expectOne(`${CATEGORIES_URL}/${CATEGORY_ID}`)
+        .flush('nope', { status: 404, statusText: 'Not Found' });
+
+      // Assert
+      expect(await write).toEqual({ state: 'unreadable' });
     });
 
     it('answers locked without sending anything when sealing refuses', async () => {

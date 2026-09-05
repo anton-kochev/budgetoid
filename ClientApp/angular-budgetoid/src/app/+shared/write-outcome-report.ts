@@ -1,5 +1,14 @@
 // What a screen puts on the page after a write, and the one place this client
-// spells the four sentences the design book writes for a refusal.
+// spells the sentences the design book writes for a refusal.
+//
+// **There are two report functions and the split is over what the write held.**
+// `writeReportOf` answers a **form** write: every sentence it reaches for says
+// *what you typed*, and half of what it decides is which of a server's keyed
+// messages a form can place under a control. `rowActReportOf` answers a delete
+// or a move — writes holding no typed text and offering no field to correct —
+// which is why its four sentences are their own and why it takes no lookup at
+// all. The design book named that gap and left it open, in as many words,
+// because closing it was a copy decision before it was a wiring one.
 //
 // **`docs/design/components.md`, "A write that does not happen", is the
 // authority.** That chapter's state table is the specification and says so of
@@ -107,6 +116,44 @@ export const UNREACHABLE_SENTENCE =
 export const UNREADABLE_SENTENCE =
   'Budgetoid couldn’t save this, and didn’t say why. What you typed is still ' +
   'here — copy it, then reload the page.';
+
+/**
+ * The sentence for a delete that got no answer.
+ *
+ * The form's unreachable sentence with its reassurance clause replaced, and the
+ * clause is the whole difference: *nothing you typed has been lost* is a
+ * sentence about a form, and a delete holds nothing anybody typed. What a
+ * person needs instead is that the row they pressed Delete on is still theirs —
+ * which is true, because every one of these five writes mutates its list inside
+ * `tap` and reaches it on success alone.
+ */
+export const REMOVAL_UNREACHABLE_SENTENCE =
+  'Budgetoid couldn’t reach the server. Nothing has been deleted — try ' +
+  'again in a minute.';
+
+/**
+ * The sentence for a delete this client cannot read the answer to.
+ *
+ * **It offers neither of the things {@link UNREADABLE_SENTENCE} offers, and
+ * that asymmetry is the copy decision rather than an omission.** No retry,
+ * because the server judged and the same press collects the same judgement —
+ * the half both unreadable sentences share. And no *copy it, then reload*: that
+ * clause exists to let somebody rescue text a reload would discard, and there
+ * is no text here. The screen is already showing the row, so the truest thing
+ * to say is that it is still there.
+ */
+export const REMOVAL_UNREADABLE_SENTENCE =
+  'Budgetoid couldn’t delete this, and didn’t say why. The row is still here.';
+
+/** The same as {@link REMOVAL_UNREACHABLE_SENTENCE}, for a row that moved. */
+export const PLACEMENT_UNREACHABLE_SENTENCE =
+  'Budgetoid couldn’t reach the server. Nothing has moved — try again in ' +
+  'a minute.';
+
+/** The same as {@link REMOVAL_UNREADABLE_SENTENCE}, for a row that moved. */
+export const PLACEMENT_UNREADABLE_SENTENCE =
+  'Budgetoid couldn’t move this, and didn’t say why. Everything is where ' +
+  'it was.';
 
 /**
  * The line a write of more than one request carries while it runs.
@@ -225,6 +272,90 @@ export function writeReportOf(
     default:
       // A word added to `WriteOutcome` and not to the table above is a compile
       // error here rather than a screen that silently says nothing about it.
+      return assertNever(outcome);
+  }
+}
+
+/**
+ * Which of the two acts holding no typed text a write was.
+ *
+ * `removal` is a row's delete, `placement` a row's move — a group dragged among
+ * groups, or a category dragged into one. Two words and not five, because the
+ * five writes have two sentences between them: what a person is told is what
+ * did not happen to their row, and a group's delete and an account's delete are
+ * the same event from that side.
+ */
+export type RowAct = 'removal' | 'placement';
+
+/**
+ * Decides where the answer to a delete or a move renders.
+ *
+ * **The second report function, and it exists because the first one's copy is
+ * written for a form.** Every sentence {@link writeReportOf} reaches for says
+ * *what you typed* — and these five writes hold nothing anybody typed, which is
+ * the reason `docs/design/components.md` gave for leaving them with a
+ * classification and no channel. The four sentences above are what closed it.
+ *
+ * **Nothing renders on a field, on any word.** There is no form to place a key
+ * on: the press was a Delete on a row or a drag of one, so a server's keyed
+ * sentence goes to the region with every other line. That is why this takes no
+ * lookup, rather than taking an empty one.
+ *
+ * **A refusal changes nothing on screen, which is what makes the copy honest.**
+ * All five services mutate their list inside `tap` — reached on success and
+ * never on a refusal — so the row is still where the press found it and the
+ * sentences may say so.
+ *
+ * @param outcome How the write ended, as `+core/api/write-outcome.ts` read it.
+ * @param act Which of the two acts it was.
+ */
+export function rowActReportOf(
+  outcome: WriteOutcome,
+  act: RowAct,
+): WriteReport {
+  const unreachable =
+    act === 'removal'
+      ? REMOVAL_UNREACHABLE_SENTENCE
+      : PLACEMENT_UNREACHABLE_SENTENCE;
+  const unreadable =
+    act === 'removal'
+      ? REMOVAL_UNREADABLE_SENTENCE
+      : PLACEMENT_UNREADABLE_SENTENCE;
+
+  switch (outcome.state) {
+    case 'recorded':
+      return SILENT_WRITE_REPORT;
+    case 'locked':
+      // **Unreachable here in practice, and answered rather than guarded
+      // against twice.** Neither act seals anything, so neither can be refused
+      // before it is sent — the word arrives from `writeOutcomeOf`, which
+      // never produces it. It shares `recorded`'s row because a screen with
+      // nothing to say is what both mean, and because a second `if` above this
+      // switch would be a second place stating the same thing.
+      return SILENT_WRITE_REPORT;
+    case 'invalid':
+      // Every entry to the region, in the order the map sent them. An empty
+      // lookup rather than a special case: the split is the same one a form
+      // makes, and this caller can place none of it.
+      return splitValidation(outcome.errors, new Map());
+    case 'duplicate-name':
+    case 'duplicate-identifier':
+      // **Not a fallback, and the difference matters to the next reader.**
+      // Both words are a *create's* answers — one says adopt the row that
+      // exists, the other says the row you meant is already saved — and
+      // neither is a thing a delete or a move can be told. A 409 arriving over
+      // one of these is therefore an answer this client genuinely cannot read,
+      // which is what the unreadable sentence says. Rendering the form's
+      // `duplicate-identifier` copy here would tell somebody their deletion
+      // was recorded.
+      return { fields: SILENT_WRITE_REPORT.fields, lines: [unreadable] };
+    case 'unreachable':
+      return { fields: SILENT_WRITE_REPORT.fields, lines: [unreachable] };
+    case 'unreadable':
+      return { fields: SILENT_WRITE_REPORT.fields, lines: [unreadable] };
+    default:
+      // A word added to `WriteOutcome` and not to the table above is a compile
+      // error here too, for the reason it is one in `writeReportOf`.
       return assertNever(outcome);
   }
 }

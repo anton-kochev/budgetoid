@@ -104,6 +104,16 @@
 // what keeps the region's exclusivity — a second write replaces the first
 // whichever form it came from, so the screen never shows two accounts of what
 // happened.
+//
+// **Four of this screen's writes belong to no form at all**, and they take the
+// same three steps with two differences. A group's move, a group's delete, a
+// category's placement and a category's delete each clear the last report,
+// await their word and render it — through `rowActReportOf`, whose sentences
+// are written for an act holding no typed text, and filed under a `null`
+// surface, so neither form can show a `mat-error` for a press made on a row.
+// Nothing focuses, because there is no control the sentence is about. The
+// design book left these four with a classification and nowhere to put it; the
+// copy that closed the gap lives in `+shared/write-outcome-report.ts`.
 import {
   CdkDrag,
   CdkDragDrop,
@@ -142,7 +152,9 @@ import {
 import {
   clearFieldMessages,
   markFieldMessages,
+  rowActReportOf,
   writeReportOf,
+  type RowAct,
   type WriteReport,
 } from '@app-shared/write-outcome-report';
 import type { WriteOutcome } from '@app-core/api/write-outcome';
@@ -171,7 +183,17 @@ type WritingSurface = 'group' | 'category';
 
 /** The last write on this screen: which form it was, and what it answered. */
 interface SurfaceWrite {
-  readonly surface: WritingSurface;
+  /**
+   * The form that wrote, or `null` for a write **no form made** — a row's
+   * delete, or a row's move.
+   *
+   * **`null` is what keeps a `mat-error` off both forms structurally**, rather
+   * than by the coincidence that a delete's report carries no fields today:
+   * {@link CategoriesComponent.groupMessages} and its neighbour compare this
+   * against their own name, and `null` is neither of them. A delete filed under
+   * one of the two words would read as a claim about a form nobody submitted.
+   */
+  readonly surface: WritingSurface | null;
   readonly report: WriteReport;
 }
 
@@ -925,8 +947,9 @@ export class CategoriesComponent implements OnInit {
     this.groupForm.reset({ name: '', description: '' });
   }
 
-  protected removeGroup(group: CategoryGroupView): void {
-    this.categories.removeGroup(group.id);
+  protected async removeGroup(group: CategoryGroupView): Promise<void> {
+    this.#beginWrite();
+    this.#renderRowAct(await this.categories.removeGroup(group.id), 'removal');
   }
 
   protected async saveCategory(): Promise<void> {
@@ -981,32 +1004,49 @@ export class CategoriesComponent implements OnInit {
     });
   }
 
-  protected removeCategory(category: CategoryView): void {
-    this.categories.removeCategory(category.id);
+  protected async removeCategory(category: CategoryView): Promise<void> {
+    this.#beginWrite();
+    this.#renderRowAct(
+      await this.categories.removeCategory(category.id),
+      'removal',
+    );
   }
 
-  protected dropGroup(
+  // **The two drag handlers are `async`, which is the one thing a reader will
+  // find surprising here.** A CDK drop handler answering a promise is
+  // ordinary — the event is dispatched and nothing waits on the result — and
+  // the alternative is the shape this whole change exists to remove: a write
+  // whose refusal reaches nowhere.
+  protected async dropGroup(
     event: CdkDragDrop<
       readonly CategoryGroupView[],
       readonly CategoryGroupView[],
       CategoryGroupView
     >,
-  ): void {
-    this.categories.moveGroup(event.item.data.id, event.currentIndex);
+  ): Promise<void> {
+    this.#beginWrite();
+    this.#renderRowAct(
+      await this.categories.moveGroup(event.item.data.id, event.currentIndex),
+      'placement',
+    );
   }
 
-  protected dropCategory(
+  protected async dropCategory(
     event: CdkDragDrop<
       readonly CategoryView[],
       readonly CategoryView[],
       CategoryView
     >,
     categoryGroupId: string,
-  ): void {
-    this.categories.placeCategory(
-      event.item.data.id,
-      categoryGroupId,
-      event.currentIndex,
+  ): Promise<void> {
+    this.#beginWrite();
+    this.#renderRowAct(
+      await this.categories.placeCategory(
+        event.item.data.id,
+        categoryGroupId,
+        event.currentIndex,
+      ),
+      'placement',
     );
   }
 
@@ -1044,6 +1084,18 @@ export class CategoriesComponent implements OnInit {
     this.#write.set(null);
     clearFieldMessages(this.groupForm);
     clearFieldMessages(this.categoryForm);
+  }
+
+  // Publishes the answer to a write no form made.
+  //
+  // **Filed under no surface, and nothing is marked on a control.** The report
+  // carries no fields on any word — `rowActReportOf` has no lookup to place one
+  // with — and the `null` surface is what says so about the *press* rather than
+  // about this particular answer. No focus moves either: there is no control
+  // carrying a message to move it to, and taking a keyboard user off the row
+  // they are working on would be the opposite of what the chapter asks.
+  #renderRowAct(outcome: WriteOutcome, act: RowAct): void {
+    this.#write.set({ report: rowActReportOf(outcome, act), surface: null });
   }
 
   // Publishes one write's answer, and moves focus where the chapter puts it:

@@ -115,16 +115,21 @@
 // lock does not clear a draft, and why the cost of a service holding one is
 // smaller than the cost of a row written twice.
 //
-// **The four placements and deletes have no channel, and that is a named gap.**
-// `moveGroup`, `removeGroup`, `placeCategory` and `removeCategory` are called
-// as bare statements from the component, so answering a promise would make four
-// call sites floating ones, and a signal beside the lists would be a public
-// member the component spec's `Pick<CategoriesService, keyof CategoriesService>`
-// census has to declare with nothing reading it. The chapter's state table is
-// written for a form holding typed text — every sentence in it says *what you
-// typed* — and none of these four has any. So what replaced the swallow is
-// narrower rather than wider: each failure is **classified** into the same word
-// the form writes answer with, and the word is what reaches the console.
+// **The four placements and deletes answer the same word, and each of them
+// answers it separately.** `moveGroup`, `removeGroup`, `placeCategory` and
+// `removeCategory` had the classification and nowhere to put it, because the
+// chapter's state table is written for a form holding typed text — every
+// sentence in it says *what you typed* — and none of these four has any. The
+// sentences that closed that gap live in `+shared/write-outcome-report.ts`
+// beside the form's, and `rowActReportOf` is what a screen calls with the word.
+// Nothing here chooses one: a service writes no copy and renders nothing.
+//
+// **Each list is patched inside its own `tap`, which is what makes those
+// sentences true.** *The row is still here* and *everything is where it was*
+// are claims about the lists, and they hold because a refusal reaches
+// `catchError` without ever reaching the update. Four pipes and four
+// `catchError`s, so this is four claims rather than one — which is why each has
+// its own case.
 import { Injectable, computed, effect, inject, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { CategoriesApiService } from '@app-core/api/categories-api.service';
@@ -142,7 +147,6 @@ import type {
   NarrativeText,
 } from '@app-core/security/narrative-text';
 import {
-  EMPTY,
   Observable,
   Subject,
   catchError,
@@ -594,11 +598,18 @@ export class CategoriesService {
     );
   }
 
-  public moveGroup(id: string, position: number): void {
+  /**
+   * Moves one group among the groups, and answers how the write ended.
+   *
+   * **The reorder happens inside the `tap`, so a refusal leaves the list where
+   * the drag found it** — which is what the screen's sentence for this act is
+   * allowed to say. `+shared/write-outcome-report.ts` holds that copy.
+   */
+  public async moveGroup(id: string, position: number): Promise<WriteOutcome> {
     this.#loading.set(true);
-    this.#groupsApi
-      .moveCategoryGroup(id, { position })
-      .pipe(
+
+    return firstValueFrom(
+      this.#groupsApi.moveCategoryGroup(id, { position }).pipe(
         tap(() => {
           const groups = this.#groups();
 
@@ -615,25 +626,19 @@ export class CategoriesService {
               : sortCategories(categories, reordered),
           );
         }),
-        // Classified rather than swallowed, and the head of this file argues
-        // why the word stops here: this method answers `void` because its one
-        // caller invokes it as a statement, and there is nowhere on this
-        // service a word could live that anything would read.
-        catchError((error: unknown) => {
-          this.#unrendered('a group move', error);
-
-          return EMPTY;
-        }),
+        map((): WriteOutcome => ({ state: 'recorded' })),
+        catchError((error: unknown) => of(writeOutcomeOf(error))),
         finalize(() => this.#loading.set(false)),
-      )
-      .subscribe();
+      ),
+    );
   }
 
-  public removeGroup(id: string): void {
+  /** Deletes one category group, and answers how the write ended. */
+  public async removeGroup(id: string): Promise<WriteOutcome> {
     this.#loading.set(true);
-    this.#groupsApi
-      .deleteCategoryGroup(id)
-      .pipe(
+
+    return firstValueFrom(
+      this.#groupsApi.deleteCategoryGroup(id).pipe(
         tap(() =>
           this.#groups.update((groups) =>
             groups === null
@@ -643,14 +648,11 @@ export class CategoriesService {
                   .map((group, position) => ({ ...group, position })),
           ),
         ),
-        catchError((error: unknown) => {
-          this.#unrendered('a group delete', error);
-
-          return EMPTY;
-        }),
+        map((): WriteOutcome => ({ state: 'recorded' })),
+        catchError((error: unknown) => of(writeOutcomeOf(error))),
         finalize(() => this.#loading.set(false)),
-      )
-      .subscribe();
+      ),
+    );
   }
 
   /** Creates one category, and answers how the write ended. */
@@ -751,31 +753,30 @@ export class CategoriesService {
     );
   }
 
-  public placeCategory(
+  /** Files one category under a group at a position, and answers how it ended. */
+  public async placeCategory(
     id: string,
     categoryGroupId: string,
     position: number,
-  ): void {
+  ): Promise<WriteOutcome> {
     this.#loading.set(true);
-    this.#categoriesApi
-      .placeCategory(id, { categoryGroupId, position })
-      .pipe(
-        tap(() => this.#place(id, categoryGroupId, position)),
-        catchError((error: unknown) => {
-          this.#unrendered('a category placement', error);
 
-          return EMPTY;
-        }),
+    return firstValueFrom(
+      this.#categoriesApi.placeCategory(id, { categoryGroupId, position }).pipe(
+        tap(() => this.#place(id, categoryGroupId, position)),
+        map((): WriteOutcome => ({ state: 'recorded' })),
+        catchError((error: unknown) => of(writeOutcomeOf(error))),
         finalize(() => this.#loading.set(false)),
-      )
-      .subscribe();
+      ),
+    );
   }
 
-  public removeCategory(id: string): void {
+  /** Deletes one category, and answers how the write ended. */
+  public async removeCategory(id: string): Promise<WriteOutcome> {
     this.#loading.set(true);
-    this.#categoriesApi
-      .deleteCategory(id)
-      .pipe(
+
+    return firstValueFrom(
+      this.#categoriesApi.deleteCategory(id).pipe(
         tap(() => {
           const removed = this.#categories()?.find(
             (category) => category.id === id,
@@ -803,14 +804,11 @@ export class CategoriesService {
             );
           });
         }),
-        catchError((error: unknown) => {
-          this.#unrendered('a category delete', error);
-
-          return EMPTY;
-        }),
+        map((): WriteOutcome => ({ state: 'recorded' })),
+        catchError((error: unknown) => of(writeOutcomeOf(error))),
         finalize(() => this.#loading.set(false)),
-      )
-      .subscribe();
+      ),
+    );
   }
 
   /**
@@ -980,20 +978,6 @@ export class CategoriesService {
       name: sealedName.wire,
       nameKey: indexed.value,
     };
-  }
-
-  // A write whose word has nowhere to go, named as that rather than logged as a
-  // failure. The head of this file argues why these four are the ones and why a
-  // snackbar is not the answer — `docs/design/components.md` refuses one for
-  // this in as many words, which is what the deleted TODO here was waiting for.
-  //
-  // The **word** is printed and not the error: a raw `HttpErrorResponse` in a
-  // console is the problem document on screen, which the same chapter refuses
-  // one section over, and the classification is the part a reader needs. Which
-  // of the four it was is named too, because these are the only four and a
-  // console line reading only `unreachable` says nothing about what to look at.
-  #unrendered(act: string, error: unknown): void {
-    console.error(`Categories: ${act} ended ${writeOutcomeOf(error).state}`);
   }
 
   #report(error: unknown): void {

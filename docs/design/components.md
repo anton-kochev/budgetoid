@@ -560,19 +560,69 @@ with every test green. **`locked` has no sentence, and the table's silence about
 specification**: the screen's locked notice is already the account of that state, and a second line
 is the duplicate the region refuses.
 
-**What no screen renders is a refused delete or a refused placement.** Five writes end with a word
-and nowhere to put it — a row's delete on `/app/accounts`, and a group's move, a group's delete, a
-category's placement and a category's delete on `/app/categories`. Each is called as a bare
-statement from its component, so answering a promise would leave five floating calls; each
-classifies its failure into the same word a form's write answers with, and that word reaches the
-developer console and stops there. It is the shape *The service has to have an outcome to report*
-refuses, and what holds it open is this chapter rather than the code: **the state table is written
-for a form holding text somebody typed** — *what you typed is still here*, *nothing you typed has
-been lost* — and a delete holds none, so the book gives those five writes no copy to render.
-Closing the gap is a copy decision before it is a wiring one: what a refused delete says, what a
-refused placement says, and what either offers as a next step to somebody whose row is still on
-screen in front of them. The classification is in place at all five; the sentences and the channel
-that carries them are what is missing.
+### A write that holds no typed text
+
+**Five writes end in a word and none of them holds a keystroke** — a row's delete on
+`/app/accounts`, and a group's move, a group's delete, a category's placement and a category's
+delete on `/app/categories`. Each is awaited rather than dispatched, which is *The service has to
+have an outcome to report* applied to a press with no form behind it, and each renders one line in
+the screen's existing single `role="status"` region — the same region and the same treatment a
+form's refusal takes. What they may not take is the copy: **the state table above is written for a
+form holding text somebody typed** — *what you typed is still here*, *nothing you typed has been
+lost* — and a delete holds none. So `+shared/write-outcome-report.ts` carries two report functions,
+split on what the write held: `writeReportOf` for a form, `rowActReportOf` for an act. The copy is
+the specification, not an example of it.
+
+| State | Copy | Where it renders |
+| --- | --- | --- |
+| A delete: nothing answered, or the server failed rather than judged | "Budgetoid couldn’t reach the server. Nothing has been deleted — try again in a minute." | Inside the region, `--bud-over` |
+| A delete: an answer this screen cannot read | "Budgetoid couldn’t delete this, and didn’t say why. The row is still here." | Inside the region, `--bud-over` |
+| A move: nothing answered, or the server failed rather than judged | "Budgetoid couldn’t reach the server. Nothing has moved — try again in a minute." | Inside the region, `--bud-over` |
+| A move: an answer this screen cannot read | "Budgetoid couldn’t move this, and didn’t say why. Everything is where it was." | Inside the region, `--bud-over` |
+
+**Four sentences spelled out, and not two parameterised by a noun.** The two acts differ by one word
+in each pair, and a template holding that word is the shape this book refuses everywhere copy is
+decided: a sentence assembled from parts is not a sentence anybody reviewed. Colour is never the
+message here either — all four read the same with `--bud-over` removed.
+
+**The unreadable pair offers neither a retry nor a reload, and the asymmetry against the form's
+sentence is the decision rather than an omission.** No retry, for the reason *Advising a retry on a
+judgement* gives above: the server judged, and the same press collects the same judgement. And no
+*copy it, then reload* — that clause exists so somebody can rescue text a reload would discard, and
+there is nothing typed here to spend a reload on. What is left is the truest thing available: the
+row the press was made on is still in the list.
+
+**`duplicate-name` and `duplicate-identifier` take the act's unreadable sentence by meaning, not as
+a fallback.** Both words are a *create's* answers — one says adopt the row that already exists, the
+other says the row you meant is already saved — and neither is something a delete or a move can be
+told. A 409 arriving over one of them is an answer this screen genuinely cannot read, which is
+exactly what that sentence says. Rendering the form's *This entry is already saved.* here would tell
+somebody their deletion was recorded.
+
+**`invalid` sends every keyed sentence to the region.** There is no form, so there is no control a
+key could be placed on: every entry takes the miss path the *field the form does not have* section
+specifies, one line per entry, in the order the map sends them. On `/app/categories` the write is
+filed under a **`null` surface** for the same reason, so neither of that screen's two forms shows a
+`mat-error` for a press made on a row. Nothing takes focus either — there is no control the sentence
+is about, and moving a keyboard user off the row they are working on is what the focus rule already
+refuses.
+
+**`locked` is silent, and on these five it is unreachable.** Nothing here seals, so no key is ever
+asked for and the word never arrives. It shares `recorded`'s silence rather than earning a guard of
+its own: a screen with nothing to say is what both mean.
+
+**The copy's honesty rests on a property of the code, and the chapter states it rather than assuming
+it.** All five services mutate their list inside `tap`, which runs on success alone, so a refusal
+reaches its `catchError` with the list untouched. That is what makes *the row is still here* and
+*everything is where it was* true rather than reassuring — the difference this chapter faults copy
+for elsewhere. Two specs assert that premise directly.
+
+**Three things nothing here holds, recorded because a rule with no gate is how an unenforced rule
+survives review.** Nothing pairs *which service call a drag handler makes* with *which act word it
+renders* in one assertion, so a handler that calls the right method under the wrong word — a move
+reported as a delete — reddens nothing. The report being cleared as one of these writes starts is
+asserted on the accounts delete and the category-group delete; the other three carry no such case.
+And nothing asserts the loading flag comes back to false after a refused delete or move.
 
 ## Settings section and label/value row
 

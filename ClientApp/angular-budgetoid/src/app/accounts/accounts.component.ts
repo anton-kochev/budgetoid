@@ -83,6 +83,15 @@
 // the controls it keyed them to, everything else as a line in the region this
 // screen already has.
 //
+// **A row's delete is a write too, and it renders through the same region.** It
+// clears the last report as it starts, awaits its word and renders it — but
+// through `rowActReportOf`, because every sentence the form's copy reaches for
+// says *what you typed* and a delete holds none. Nothing lands on a control and
+// nothing takes focus: there is no field a person could correct. The design
+// book left this write with a classification and nowhere to put it, and
+// `+shared/write-outcome-report.ts` is where the sentences that closed the gap
+// live.
+//
 // **The region is the one that was already here.** Shared with the read's two
 // lines and counted once per state, because a second `role="status"` is
 // announced twice and is invisible to whichever branch did not create it. It
@@ -127,6 +136,7 @@ import { NARRATIVE_NAME_CHARACTERS } from '@app-shared/narrative-field-caps';
 import {
   clearFieldMessages,
   markFieldMessages,
+  rowActReportOf,
   writeReportOf,
   type WriteReport,
 } from '@app-shared/write-outcome-report';
@@ -616,12 +626,7 @@ export class AccountsComponent implements OnInit {
       return;
     }
 
-    // The one thing that clears the last write's account of itself. Before the
-    // request rather than after the answer, so that the region is silent for as
-    // long as this write is unanswered instead of carrying a sentence about the
-    // press before it.
-    this.#write.set(null);
-    clearFieldMessages(this.form);
+    this.#beginWrite();
 
     const value = this.form.getRawValue();
     const request = {
@@ -684,8 +689,38 @@ export class AccountsComponent implements OnInit {
     });
   }
 
-  protected remove(account: AccountView): void {
-    this.accounts.remove(account.id);
+  /**
+   * Deletes one row, and renders whatever the delete answered.
+   *
+   * **A delete is a write and takes the same three steps a save does**: the
+   * previous report comes down as this one starts, the outcome is awaited, and
+   * the word is rendered. What it does not share is the copy —
+   * {@link rowActReportOf} holds the sentences for an act that has no typed
+   * text in it — and it moves no focus, because no control can carry a message
+   * for a press made on a row.
+   */
+  protected async remove(account: AccountView): Promise<void> {
+    this.#beginWrite();
+
+    const outcome = await this.accounts.remove(account.id);
+
+    // No `markFieldMessages`: the report's `fields` is empty on every word,
+    // because a delete has no form to place a key on. Nothing navigates and
+    // nothing is taken off the list either — the service filters the row inside
+    // its `tap`, so a refusal leaves the row exactly where the press found it,
+    // which is what the sentence beside it says.
+    this.#write.set(rowActReportOf(outcome, 'removal'));
+  }
+
+  // The one thing that clears the last write's account of itself. Before the
+  // request rather than after the answer, so that the region is silent for as
+  // long as a write is unanswered instead of carrying a sentence about the
+  // press before it. Every write on this screen begins here, a delete
+  // included: two accounts of two presses on screen at once is what the one
+  // region refuses.
+  #beginWrite(): void {
+    this.#write.set(null);
+    clearFieldMessages(this.form);
   }
 
   // Publishes one write's answer, and moves focus where the chapter puts it.

@@ -93,16 +93,24 @@ class CategoriesServiceStub
   public updateGroup = vi.fn(
     (): Promise<WriteOutcome> => Promise.resolve({ state: 'recorded' }),
   );
-  public moveGroup = vi.fn();
-  public removeGroup = vi.fn();
+  public moveGroup = vi.fn(
+    (): Promise<WriteOutcome> => Promise.resolve({ state: 'recorded' }),
+  );
+  public removeGroup = vi.fn(
+    (): Promise<WriteOutcome> => Promise.resolve({ state: 'recorded' }),
+  );
   public addCategory = vi.fn(
     (): Promise<WriteOutcome> => Promise.resolve({ state: 'recorded' }),
   );
   public updateCategory = vi.fn(
     (): Promise<WriteOutcome> => Promise.resolve({ state: 'recorded' }),
   );
-  public placeCategory = vi.fn();
-  public removeCategory = vi.fn();
+  public placeCategory = vi.fn(
+    (): Promise<WriteOutcome> => Promise.resolve({ state: 'recorded' }),
+  );
+  public removeCategory = vi.fn(
+    (): Promise<WriteOutcome> => Promise.resolve({ state: 'recorded' }),
+  );
   public categoriesForGroup = vi.fn(
     (categoryGroupId: string): readonly CategoryView[] =>
       (this.categoriesSignal() ?? []).filter(
@@ -155,6 +163,12 @@ class CustodyStub
 interface Exposed {
   groupForm: FormGroup;
   categoryForm: FormGroup;
+  // The two per-form message lookups. Reached for by one case, and only
+  // because the claim it makes — that a delete is filed under **neither**
+  // form — renders identically to the wrong answer: a delete's report carries
+  // no fields, so both spellings put nothing on screen.
+  groupMessages: () => ReadonlyMap<string, readonly string[]> | null;
+  categoryMessages: () => ReadonlyMap<string, readonly string[]> | null;
   saveGroup: () => void;
   saveCategory: () => void;
   editGroup: (group: CategoryGroupView) => void;
@@ -1248,6 +1262,208 @@ describe('CategoriesComponent', () => {
       // Assert
       expect(regionText().trim()).toBe('');
       expect(errorsUnder('group')).toEqual([]);
+    });
+
+    // The four writes the design book left with a classification and nowhere to
+    // put it: a group's move, a group's delete, a category's placement and a
+    // category's delete.
+    //
+    // **Four separate handlers over two sentences, and each is silent when
+    // broken.** A refusal used to reach a console: the row stayed where it was,
+    // nothing said why, and the reading available to the person at the keyboard
+    // was that the press did not register — so they drag it again. One case per
+    // handler, because this screen has already shipped a difference between two
+    // arms of one shape that nothing else could see.
+    //
+    // The copy is written out rather than read back off the module, for the
+    // reason `write-outcome-report.spec.ts` gives at its own copies.
+    describe('a delete or a move that does not happen', () => {
+      // A macrotask boundary, for the presses this spec makes through the DOM
+      // and cannot hold a promise for.
+      function settle(): Promise<void> {
+        return new Promise((resolve) => {
+          setTimeout(resolve, 0);
+        });
+      }
+
+      async function pressDelete(selector: string): Promise<void> {
+        buttonsLabelled(selector, 'Delete').at(0)?.click();
+        await settle();
+        fixture.detectChanges();
+      }
+
+      // The two drag handlers, as the promises they now are. The `Exposed`
+      // interface declares them `void` so that the cases which only assert the
+      // call stay free of a floating promise; these two have an answer to wait
+      // for.
+      function dropGroupTo(position: number): Promise<void> {
+        return (
+          fixture.componentInstance as unknown as {
+            dropGroup: (
+              event: CdkDragDrop<readonly CategoryGroupView[]>,
+            ) => Promise<void>;
+          }
+        ).dropGroup({
+          item: { data: lifestyle },
+          previousIndex: 0,
+          currentIndex: position,
+        } as unknown as CdkDragDrop<readonly CategoryGroupView[]>);
+      }
+
+      function dropCategoryInto(categoryGroupId: string): Promise<void> {
+        return (
+          fixture.componentInstance as unknown as {
+            dropCategory: (
+              event: CdkDragDrop<readonly CategoryView[]>,
+              categoryGroupId: string,
+            ) => Promise<void>;
+          }
+        ).dropCategory(
+          {
+            item: { data: groceries },
+            previousIndex: 0,
+            currentIndex: 1,
+          } as unknown as CdkDragDrop<readonly CategoryView[]>,
+          categoryGroupId,
+        );
+      }
+
+      it('says the server was not reached, and that nothing was deleted', async () => {
+        // Arrange — the form's reassurance clause replaced: *nothing you typed
+        // has been lost* is about a form, and a delete holds nothing anybody
+        // typed. What is true and useful is that the row is still theirs.
+        categories.removeGroup.mockResolvedValue({ state: 'unreachable' });
+
+        // Act
+        await pressDelete('.group-heading button');
+
+        // Assert
+        expect(regionText()).toContain('couldn’t reach the server');
+        expect(regionText()).toContain('Nothing has been deleted');
+        expect(regionText()).toContain('try again in a minute');
+      });
+
+      it('says the row is still here when a category delete was judged', async () => {
+        // Arrange — the second delete handler, and the asymmetry against the
+        // form's unreadable sentence: no retry, because the server judged, and
+        // no *copy it, then reload*, because nothing was typed.
+        categories.removeCategory.mockResolvedValue({ state: 'unreadable' });
+
+        // Act
+        await pressDelete('.category-row button');
+
+        // Assert
+        expect(regionText()).toContain('The row is still here');
+        expect(regionText()).not.toContain('try again');
+        expect(regionText()).not.toContain('copy it');
+      });
+
+      it('says nothing has moved when a group move is refused', async () => {
+        // Arrange — a move's own sentence, and it is true because the service
+        // reorders the list inside its `tap`: the group is where the drag
+        // started.
+        const node = region();
+
+        categories.moveGroup.mockResolvedValue({ state: 'unreachable' });
+
+        // Act
+        await dropGroupTo(1);
+        fixture.detectChanges();
+
+        // Assert — announced from the region that was already there, taken
+        // above while it was still empty.
+        expect(region()).toBe(node);
+        expect(regionText()).toContain('Nothing has moved');
+        expect(host().querySelectorAll('[role="status"]')).toHaveLength(1);
+      });
+
+      it('says everything is where it was when a placement was judged', async () => {
+        // Arrange — the fourth handler. A category dragged into a group it
+        // cannot join is a judgement, and a minute changes nothing about one.
+        categories.placeCategory.mockResolvedValue({ state: 'unreadable' });
+
+        // Act
+        await dropCategoryInto(OTHER_GROUP_ID);
+        fixture.detectChanges();
+
+        // Assert
+        expect(regionText()).toContain('Everything is where it was');
+        expect(regionText()).not.toContain('try again');
+      });
+
+      it('puts a keyed sentence in the region rather than under either form', async () => {
+        // Arrange — `Name` is a key **both** forms place under a control. This
+        // press was a Delete on a row, so there is no field anybody could
+        // correct: a `mat-error` here would redden a name nobody submitted, on
+        // one form or on both.
+        categories.removeGroup.mockResolvedValue({
+          errors: new Map([['Name', ['Something about this row.']]]),
+          state: 'invalid',
+        });
+
+        // Act
+        await pressDelete('.group-heading button');
+
+        // Assert
+        expect(errorsUnder('group')).toEqual([]);
+        expect(errorsUnder('category')).toEqual([]);
+        expect(regionText()).toContain('Something about this row.');
+      });
+
+      it('files a delete under neither form', async () => {
+        // Arrange — **the one claim on this screen that the DOM cannot show**,
+        // and it is asserted on the component's own state for that reason. A
+        // delete's report carries no fields on any word, so filing it under
+        // `group` renders exactly as filing it under nothing: both forms show
+        // no `mat-error` either way, and the case above would pass with the
+        // surface set to a form nobody submitted. What the `null` says is about
+        // the **press** rather than about this particular answer — the day a
+        // report for a formless act does carry a field, the wrong spelling
+        // paints it under a form.
+        categories.removeGroup.mockResolvedValue({ state: 'unreadable' });
+
+        // Act
+        await pressDelete('.group-heading button');
+
+        // Assert
+        expect(screen().groupMessages()).toBeNull();
+        expect(screen().categoryMessages()).toBeNull();
+        expect(regionText()).toContain('The row is still here');
+      });
+
+      it('says nothing at all when the delete lands', async () => {
+        // Arrange — the positive control the cases above need. A screen that
+        // spoke on every word would pass all of them and leave a refusal
+        // sentence up after every successful delete.
+
+        // Act
+        await pressDelete('.group-heading button');
+
+        // Assert
+        expect(regionText().trim()).toBe('');
+        expect(errorsUnder('group')).toEqual([]);
+      });
+
+      it('clears a form’s refusal when a delete starts', async () => {
+        // Arrange — the start of the next write is the one thing that takes a
+        // write's account of itself down, and a delete is a write. Left
+        // standing, a form's sentence sits beside a delete's own answer and the
+        // one region carries two accounts of two presses.
+        categories.addGroup.mockResolvedValue({ state: 'unreachable' });
+        fillGroup();
+        await pressGroup();
+        fixture.detectChanges();
+        expect(regionText()).toContain('couldn’t reach the server');
+
+        // Act — a delete that has not answered yet.
+        categories.removeGroup.mockImplementation(
+          () => new Promise(() => undefined),
+        );
+        await pressDelete('.group-heading button');
+
+        // Assert
+        expect(regionText().trim()).toBe('');
+      });
     });
   });
 });

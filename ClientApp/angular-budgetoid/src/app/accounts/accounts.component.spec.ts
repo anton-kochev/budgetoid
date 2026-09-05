@@ -93,7 +93,9 @@ class AccountsServiceStub
   public update = vi.fn(
     (): Promise<WriteOutcome> => Promise.resolve({ state: 'recorded' }),
   );
-  public remove = vi.fn();
+  public remove = vi.fn(
+    (): Promise<WriteOutcome> => Promise.resolve({ state: 'recorded' }),
+  );
 }
 
 class CustodyStub
@@ -965,6 +967,145 @@ describe('AccountsComponent', () => {
       // Assert — silent while this write is unanswered, rather than carrying
       // the press before it.
       expect(regionText().trim()).toBe('');
+    });
+
+    // A delete that does not happen.
+    //
+    // **This is the write the design book left with a classification and
+    // nowhere to put it, and every case here is silent when broken.** A refused
+    // delete used to reach a console: the row stayed on screen, nothing said
+    // why, and the only reading available to the person at the keyboard was
+    // that the press did not register. Pressing Delete again is exactly what
+    // they do next.
+    //
+    // **The copy is written out rather than read back off the module**, for the
+    // reason `write-outcome-report.spec.ts` gives at its own copies: a case
+    // reading the constant asserts that a string equals itself.
+    describe('a delete that does not happen', () => {
+      // A macrotask boundary. The press hands back a promise this spec cannot
+      // hold — the click is the DOM's, which is the point of pressing it rather
+      // than calling the handler — so the queue is drained instead of awaited.
+      function settle(): Promise<void> {
+        return new Promise((resolve) => {
+          setTimeout(resolve, 0);
+        });
+      }
+
+      function deleteButton(): HTMLButtonElement | null {
+        return (
+          Array.from(
+            host().querySelectorAll<HTMLButtonElement>('mat-list-item button'),
+          ).find((button) => (button.textContent ?? '').trim() === 'Delete') ??
+          null
+        );
+      }
+
+      async function pressDelete(): Promise<void> {
+        deleteButton()?.click();
+        await settle();
+        fixture.detectChanges();
+      }
+
+      it('says the server was not reached, and that nothing was deleted', async () => {
+        // Arrange — the sentence is the form's with its reassurance clause
+        // replaced: *nothing you typed has been lost* is about a form, and a
+        // delete holds nothing anybody typed. What is true and useful here is
+        // that the row is still theirs.
+        accounts.remove.mockResolvedValue({ state: 'unreachable' });
+
+        // Act
+        await pressDelete();
+
+        // Assert
+        expect(regionText()).toContain('couldn’t reach the server');
+        expect(regionText()).toContain('Nothing has been deleted');
+        expect(regionText()).toContain('try again in a minute');
+      });
+
+      it('offers neither a retry nor a reload when the delete was judged', async () => {
+        // Arrange — the asymmetry against the form's unreadable sentence. No
+        // retry, because the server judged; and no *copy it, then reload*,
+        // because there is nothing typed to rescue and the screen is already
+        // showing the row.
+        accounts.remove.mockResolvedValue({ state: 'unreadable' });
+
+        // Act
+        await pressDelete();
+
+        // Assert
+        expect(regionText()).toContain('The row is still here');
+        expect(regionText()).not.toContain('try again');
+        expect(regionText()).not.toContain('copy it');
+      });
+
+      it('announces it from the region that was already there', async () => {
+        // Arrange — taken while it is still empty: a live region created
+        // together with its text is announced by nothing.
+        const region = statusRegion();
+
+        accounts.remove.mockResolvedValue({ state: 'unreachable' });
+
+        // Act
+        await pressDelete();
+
+        // Assert — the same node, and still the screen's only one.
+        expect(statusRegion()).toBe(region);
+        expect(region?.textContent ?? '').toContain('Nothing has been deleted');
+        expect(host().querySelectorAll('[role="status"]')).toHaveLength(1);
+        expect(
+          host().querySelector('[role="alert"], [aria-live="assertive"]'),
+        ).toBeNull();
+      });
+
+      it('says nothing at all when the delete lands', async () => {
+        // Arrange — the positive control the three cases above need. A screen
+        // that spoke on every word would pass all of them and put a refusal
+        // sentence up after every successful delete.
+
+        // Act
+        await pressDelete();
+
+        // Assert
+        expect(regionText().trim()).toBe('');
+        expect(fieldErrors()).toEqual([]);
+      });
+
+      it('puts a keyed sentence in the region, because a delete has no form', async () => {
+        // Arrange — `Name` is a key the *form* on this screen places under a
+        // control. This press was a Delete on a row, so there is no field
+        // anybody could correct and the sentence goes to the region — a
+        // `mat-error` here would redden a name nobody submitted.
+        accounts.remove.mockResolvedValue(
+          invalid(['Name', ['Something about this row.']]),
+        );
+
+        // Act
+        await pressDelete();
+
+        // Assert
+        expect(fieldErrors()).toEqual([]);
+        expect(regionText()).toContain('Something about this row.');
+      });
+
+      it('clears the last refusal when a delete starts', async () => {
+        // Arrange — the start of the next write is the one thing that takes a
+        // write's account of itself down, and a delete is a write. A form
+        // refusal left standing beneath a delete's own answer would put two
+        // accounts of two presses on screen at once.
+        accounts.add.mockResolvedValue({ state: 'unreachable' });
+        fill();
+        await pressSave(fixture.componentInstance);
+        fixture.detectChanges();
+        expect(regionText()).toContain('couldn’t reach the server');
+
+        // Act — a delete that has not answered yet.
+        accounts.remove.mockImplementation(() => new Promise(() => undefined));
+        await pressDelete();
+
+        // Assert — silent while this write is unanswered, rather than carrying
+        // the press before it.
+        expect(regionText().trim()).toBe('');
+      });
     });
 
     it('leaves a field message on screen until the field is corrected', async () => {

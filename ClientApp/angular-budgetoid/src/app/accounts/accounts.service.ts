@@ -160,18 +160,20 @@
 // redrawing over a ceremony would put the two-row defect back on the far side
 // of every unlock.
 //
-// **`remove` is the write this trip could not give a channel to, and the reason
-// is written here rather than left to be rediscovered.** It is called as a bare
-// statement from the component, so answering a promise would make that call
-// site a floating one; and a signal beside the list would be a public member
-// the component spec's `Pick<AccountsService, keyof AccountsService>` census
-// has to declare, read by nothing. The design book's state table is written for
-// a form holding typed text — every sentence in it says *what you typed* — and
-// a delete has none, so the copy for this one is not written either. What
-// replaced the swallow is therefore narrower rather than wider: the failure is
-// **classified** into the same word the form writes answer with, and the word
-// is what reaches the console. The day the region renders a delete's refusal,
-// the classification is already here and only the channel is missing.
+// **`remove` answers the same word, and the channel it was missing is a return
+// value like its neighbours'.** It had the classification and nowhere to put
+// it: the copy for a refused delete was not written, because the design book's
+// state table is written for a form holding typed text — every sentence in it
+// says *what you typed* — and a delete holds none. `+shared/write-outcome-report.ts`
+// is where the four sentences that closed that gap live, and `rowActReportOf`
+// is what a screen calls with the word this method now hands back. Nothing here
+// chooses one: a service writes no copy and renders nothing.
+//
+// **The list is filtered inside the `tap`, which is what makes the screen's
+// sentence true.** *The row is still here* is a claim about the list, and it
+// holds because a refusal reaches `catchError` without ever reaching the
+// update. Moving the filter above it would leave the screen saying one thing
+// and showing another.
 import { Injectable, effect, inject, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import {
@@ -187,7 +189,6 @@ import { mintNarrativeRowId } from '@app-core/security/narrative-row-id';
 import type { NarrativeOpener } from '@app-core/security/narrative-text';
 import { compareNarrative } from '@app-shared/compare-narrative';
 import {
-  EMPTY,
   Observable,
   Subject,
   catchError,
@@ -501,11 +502,20 @@ export class AccountsService {
     );
   }
 
-  public remove(id: string): void {
+  /**
+   * Deletes one account, and answers how the write ended.
+   *
+   * **The row is taken off the list inside the `tap`, so a refusal changes
+   * nothing on screen** — which is what the screen's sentence for this act is
+   * allowed to say. Reordered above the `catchError` it would empty a row out
+   * of the list over a delete the server never accepted, and the sentence
+   * beside it would then be false.
+   */
+  public async remove(id: string): Promise<WriteOutcome> {
     this.#loading.set(true);
-    this.#api
-      .deleteAccount(id)
-      .pipe(
+
+    return firstValueFrom(
+      this.#api.deleteAccount(id).pipe(
         tap(() =>
           this.#accounts.update((accounts) =>
             accounts === null
@@ -513,20 +523,11 @@ export class AccountsService {
               : accounts.filter((view) => view.id !== id),
           ),
         ),
-        // Classified rather than swallowed, and the head of this file argues
-        // why the word stops here: the two form writes hand theirs back on a
-        // return value the screen awaits, and this method has none to hand one
-        // back on — its one caller invokes it as a statement. A signal holding
-        // it instead would be a public member nothing reads, because the copy
-        // for a delete's refusal is not written.
-        catchError((error: unknown) => {
-          this.#unrendered(error);
-
-          return EMPTY;
-        }),
+        map((): WriteOutcome => ({ state: 'recorded' })),
+        catchError((error: unknown) => of(writeOutcomeOf(error))),
         finalize(() => this.#loading.set(false)),
-      )
-      .subscribe();
+      ),
+    );
   }
 
   // Both halves or neither. The order is seal then index, and a locked seal
@@ -558,18 +559,5 @@ export class AccountsService {
     }
 
     return { key: indexed.value, wire: sealed.wire };
-  }
-
-  // A write whose word has nowhere to go, named as that rather than logged as a
-  // failure. The head of this file argues why `remove` is the one such write
-  // and why a snackbar is not the answer — `docs/design/components.md` refuses
-  // one for this in as many words, which is what the deleted TODO here was
-  // waiting for.
-  //
-  // The **word** is printed and not the error: a raw `HttpErrorResponse` in a
-  // console is the problem document on screen, which the same chapter refuses
-  // one section over, and the classification is the part a reader needs.
-  #unrendered(error: unknown): void {
-    console.error(`Accounts: a delete ended ${writeOutcomeOf(error).state}`);
   }
 }
