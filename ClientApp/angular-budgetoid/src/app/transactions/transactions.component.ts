@@ -60,6 +60,41 @@
 // disable on a row whose values did not open; that rule arrives with the edit
 // screen rather than being anticipated by a control nobody can press.
 //
+// **The row is `docs/design/components.md`, "Transaction row", and it is two
+// lines and five things.** Line 1 is the counterparty with the figure set
+// right; line 2 is category · account with the date set right. What that
+// replaced drew one muted run of six members with the note as a title, so
+// three things left the row and one arrived: the **category group** is gone —
+// a fifth sealed name the book names nowhere — the **amount** and the **date**
+// left that run for the figures column, and the counterparty stopped being one
+// of six and became the row's lead.
+//
+// **The lead falls back to the note on an *absent* counterparty and never on
+// an unreadable one.** `payeeName` is `null` where the column held nothing,
+// which this browser can see with no key at all; a row whose payee name failed
+// to open still *has* a payee, and falling through there would put a different
+// value under the same heading depending on whether a key happened to be held,
+// with nothing on screen saying which one arrived. It is the same split the
+// "No category" branch makes one line down, which turns on `categoryId` being
+// null and never on the name.
+//
+// **The figure goes through `Intl.NumberFormat`, and the locale is a token
+// rather than a constant.** `docs/design/patterns.md` forbids the hand-assembly
+// this row shipped — `currencySymbol` printed in front of a raw number, which
+// showed `$-20.5` where the rule is an unsigned figure with the currency's own
+// minor units. Nothing in this application configures `LOCALE_ID`, so
+// production passes `undefined` and gets the reader's own locale, exactly as
+// `credential-registration-date.ts` argues for dates; the token exists so a
+// spec can name a locale and assert a string instead of asserting whatever the
+// machine running it renders.
+//
+// **Constructing a formatter is inside change detection, so it may not
+// throw.** `Intl.NumberFormat` answers a `RangeError` for a currency code that
+// is not three letters, and a throw during a template binding abandons the
+// whole pass — every section after the list stops rendering, and no `try`
+// around a signal read can contain it. The fallback drops the currency style
+// and keeps the sign rule.
+//
 // **Two non-blank validators, and the payee's is the load-bearing one.** The
 // service decides "no note" and "no payee" on `=== ''` exactly, because the
 // client may not alter what it seals — a trimmed seal beside an untrimmed index
@@ -116,6 +151,7 @@ import {
   ChangeDetectionStrategy,
   Component,
   ElementRef,
+  InjectionToken,
   OnInit,
   computed,
   effect,
@@ -136,9 +172,9 @@ import { provideNativeDateAdapter } from '@angular/material/core';
 import { MatDatepickerModule } from '@angular/material/datepicker';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
-import { MatListModule } from '@angular/material/list';
 import { MatSelectModule } from '@angular/material/select';
 import { AccountKeyCustodyService } from '@app-core/security/account-key-custody.service';
+import type { NarrativeText } from '@app-core/security/narrative-text';
 import { LockedAccountNoticeComponent } from '@app-shared/components/locked-account-notice/locked-account-notice.component';
 import { NarrativeValueComponent } from '@app-shared/components/narrative-value/narrative-value.component';
 import {
@@ -154,7 +190,26 @@ import {
 } from '@app-shared/write-outcome-report';
 import type { WriteOutcome } from '@app-core/api/write-outcome';
 import { AccountsService } from '../accounts/accounts.service';
+import type { TransactionView } from './transaction-view';
 import { TransactionsService } from './transactions.service';
+
+/**
+ * The locale the figures on this screen are formatted in.
+ *
+ * **`undefined` in production, which is what asks the runtime for the reader's
+ * own.** Nothing in this application configures `LOCALE_ID`, so there is no
+ * other honest source — `credential-registration-date.ts` makes the same
+ * argument for dates and takes the same shape.
+ *
+ * It is a token rather than a constant so that a spec can state a locale and
+ * assert a formatted string. Without that seam every expectation about a figure
+ * is true on the machine it was written on and unproven anywhere else, because
+ * the test runner pins the time zone and not the locale.
+ */
+export const TRANSACTION_ROW_LOCALE = new InjectionToken<string | undefined>(
+  'the locale a transaction row formats its figure in',
+  { factory: () => undefined, providedIn: 'root' },
+);
 
 /** One payee offered for completion: a row whose name this browser could read. */
 interface PayeeSuggestion {
@@ -218,7 +273,6 @@ const PLACEABLE_KEYS: ReadonlyMap<string, string> = new Map([
     MatDatepickerModule,
     MatFormFieldModule,
     MatInputModule,
-    MatListModule,
     MatSelectModule,
     LockedAccountNoticeComponent,
     NarrativeValueComponent,
@@ -258,6 +312,98 @@ const PLACEABLE_KEYS: ReadonlyMap<string, string> = new Map([
     .recording {
       margin: 0;
       color: var(--bud-text);
+    }
+
+    .transactions {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    /*
+      The anatomy docs/design/components.md opens "Transaction row" with: two
+      lines, [content 1fr] [figures auto], and four cells falling into it in
+      DOM order — which is also the order they are read out in. The whole row
+      is one target well past the 48px floor.
+    */
+    .transaction-row {
+      position: relative;
+      display: grid;
+      grid-template-columns: [content] 1fr [figures] auto;
+      align-content: center;
+      align-items: baseline;
+      column-gap: var(--bud-space-4);
+      row-gap: var(--bud-space-1);
+      min-height: 64px;
+      padding: var(--bud-gutter);
+    }
+
+    /*
+      The hairline, inset to the gutter. A border on the row itself would run
+      the full width of it; this is the same rule stopped where the padding
+      starts, which is what "inset to the gutter" asks for.
+    */
+    .transaction-row:not(:last-child)::after {
+      content: '';
+      position: absolute;
+      inset-inline: var(--bud-gutter);
+      bottom: 0;
+      border-bottom: 1px solid var(--bud-hairline);
+    }
+
+    /*
+      The press layer the chapter names. There are no swipe actions — a
+      transaction is immutable — and there is no edit screen for a press to
+      open yet, so this is feedback and nothing more.
+    */
+    .transaction-row:active {
+      background: var(--bud-state-pressed);
+    }
+
+    /* Line 1, content column: Inter 500 14 in --bud-text. */
+    .lead {
+      font-size: 0.875rem;
+      font-weight: 500;
+      color: var(--bud-text);
+    }
+
+    /*
+      Line 1, figures column: the figure role, 15 and 500. Tabular comes from
+      the global .bud-figures in the theming tokens rather than from a
+      declaration here, so every column of digits in the product is aligned by
+      one rule.
+    */
+    .amount {
+      font-size: 0.9375rem;
+      font-weight: 500;
+      text-align: right;
+    }
+
+    /*
+      Income is the marked case. Colour is not the message — the plus sign says
+      it too — so a reader who cannot tell these two apart still reads the row
+      correctly.
+    */
+    .amount.income {
+      color: var(--bud-positive-text);
+    }
+
+    /* Line 2, content column: body-sm, muted. */
+    .meta {
+      font-size: 0.8125rem;
+      color: var(--bud-text-muted);
+    }
+
+    /* Line 2, figures column: caption, muted. */
+    .date {
+      font-size: 0.75rem;
+      color: var(--bud-text-muted);
+      text-align: right;
+    }
+
+    .no-rows {
+      padding: var(--bud-gutter);
+      color: var(--bud-text-muted);
     }
   `,
   template: `
@@ -476,31 +622,40 @@ const PLACEABLE_KEYS: ReadonlyMap<string, string> = new Map([
       -->
       <app-locked-account-notice />
     } @else if (transactions.transactions(); as list) {
-      <mat-list>
+      <!--
+        A plain semantic list, which is the base docs/design/components.md
+        gives this row: "M3 base: none". role="list" is written out because
+        list-style: none takes the list semantics away from some screen
+        readers, and the whole point of the element is that it has them.
+      -->
+      <ul class="transactions" role="list">
         @for (transaction of list; track transaction.id) {
-          <mat-list-item>
-            <span matListItemTitle>
-              <app-narrative-value [value]="transaction.description" />
+          <li class="transaction-row">
+            <!--
+              Every narrative member is rendered by the component that knows
+              the four shapes a narrative value comes in. A member interpolated
+              straight into this row prints an object, and a member collapsed
+              to '' or a dash on the way here makes the screen claim something
+              about the account when the truth is about this tab.
+            -->
+            <span class="lead">
+              <app-narrative-value [value]="leadOf(transaction)" />
             </span>
-            <span matListItemLine>
+            <span
+              class="amount bud-figures"
+              [class.income]="isIncome(transaction)"
+              >{{ amountText(transaction) }}</span
+            >
+            <span class="meta">
               <!--
-                Each member is rendered by the component that knows the four
-                shapes a narrative value comes in. A member interpolated
-                straight into this row prints an object, and a member collapsed
-                to '' or a dash on the way here makes the screen claim
-                something about the account when the truth is about this tab.
+                "No category" turns on the category being **absent** — a null
+                this browser can see with no key at all — and never on a name
+                that failed to open, which is a fact about this tab and gets
+                the marker in the other arm.
               -->
-              <app-narrative-value [value]="transaction.accountName" />
-              @if (transaction.payeeName) {
-                <span>&nbsp;·&nbsp;</span>
-                <app-narrative-value [value]="transaction.payeeName" />
-              }
-              @if (transaction.categoryGroupName) {
-                <span>&nbsp;·&nbsp;</span>
-                <app-narrative-value [value]="transaction.categoryGroupName" />
-              }
-              @if (transaction.categoryName) {
-                <span>&nbsp;·&nbsp;</span>
+              @if (transaction.categoryId === null) {
+                <span>No category</span>
+              } @else {
                 <app-narrative-value [value]="transaction.categoryName" />
               }
               <!--
@@ -508,22 +663,21 @@ const PLACEABLE_KEYS: ReadonlyMap<string, string> = new Map([
                 formatting quirk: whitespace inside this span is **rendered**.
                 Angular collapses a run of whitespace to one space rather than
                 dropping it, so an opening tag followed by a newline puts a
-                space in front of the &amp;nbsp; and this separator arrives
-                twice as wide as its three neighbours — on every row, with a
-                category and without. Prettier owns the wrapping here and will
-                re-break a long line; this is the form it settles on, so the
-                fix survives npm run format rather than being undone by it.
+                space in front of the &amp;nbsp; and the separator arrives
+                twice as wide as it should — on every row, with a category and
+                without. Prettier owns the wrapping here and will re-break a
+                long line; this is the form it settles on, so the fix survives
+                npm run format rather than being undone by it.
               -->
-              <span
-                >&nbsp;· {{ transaction.date }} · {{ transaction.currencySymbol
-                }}{{ transaction.amount }}</span
-              >
+              <span>&nbsp;·&nbsp;</span>
+              <app-narrative-value [value]="transaction.accountName" />
             </span>
-          </mat-list-item>
+            <span class="date bud-figures">{{ transaction.date }}</span>
+          </li>
         } @empty {
-          <mat-list-item>No transactions yet.</mat-list-item>
+          <li class="no-rows">No transactions yet.</li>
         }
-      </mat-list>
+      </ul>
     }
 
     <!--
@@ -566,6 +720,13 @@ export class TransactionsComponent implements OnInit {
   private readonly formBuilder = inject(FormBuilder);
   private readonly custody = inject(AccountKeyCustodyService);
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+  readonly #locale = inject(TRANSACTION_ROW_LOCALE);
+
+  // One formatter per currency **and per sign rule**, built once and kept.
+  // `Intl.NumberFormat` is not cheap to construct and a row's figure is read on
+  // every change-detection pass, so a formatter built at the call site is one
+  // construction per row per tick.
+  readonly #figures = new Map<string, Intl.NumberFormat>();
 
   // Where the last write's answer renders, or `null` where there is no answer
   // to render. Cleared when the **next write starts**, and by nothing else.
@@ -803,6 +964,94 @@ export class TransactionsComponent implements OnInit {
     this.form.controls.payee.valueChanges
       .pipe(takeUntilDestroyed())
       .subscribe((typed) => this.#payeeFilter.set(typed));
+  }
+
+  /**
+   * What line 1 says: the counterparty, or the note where the row names no
+   * counterparty.
+   *
+   * **`?? ` over the *absent* payee and never over the unreadable one.**
+   * `payeeName` is `null` exactly where the column held nothing, which this
+   * browser knows without any key; a row whose payee name failed to open still
+   * has a payee, and falling through to the note there would put a different
+   * value under the same heading depending on whether a key happened to be
+   * held, with nothing on screen saying which arrived. `NarrativeText | null`
+   * out, never a string — the marker component is what decides how a word that
+   * is not text renders.
+   */
+  protected leadOf(transaction: TransactionView): NarrativeText | null {
+    return transaction.payeeName ?? transaction.description;
+  }
+
+  /**
+   * Whether this row is the marked case.
+   *
+   * `> 0` and not `>= 0`: zero is a legal amount and neither income nor
+   * spending — a purchase a voucher covered in full is a record worth keeping —
+   * so it takes no sign and no colour.
+   */
+  protected isIncome(transaction: TransactionView): boolean {
+    return transaction.amount > 0;
+  }
+
+  /**
+   * The row's figure, per `docs/design/patterns.md`.
+   *
+   * The sign rule is the formatter's rather than this method's: an expense is
+   * formatted with `signDisplay: 'never'`, which drops the stored minus without
+   * anything here touching the number, and everything else with `exceptZero`,
+   * which marks income with a `+` **where the locale puts one**. A `'+'`
+   * concatenated on in front would be right for English and wrong wherever the
+   * sign trails.
+   */
+  protected amountText(transaction: TransactionView): string {
+    return this.#figure(
+      transaction.currencyCode,
+      transaction.amount < 0,
+    ).format(transaction.amount);
+  }
+
+  #figure(currencyCode: string, unsigned: boolean): Intl.NumberFormat {
+    const signDisplay = unsigned ? 'never' : 'exceptZero';
+    // A separator no currency code contains, so two keys cannot collide.
+    const key = `${currencyCode} ${signDisplay}`;
+    const held = this.#figures.get(key);
+
+    if (held !== undefined) {
+      return held;
+    }
+
+    const built = this.#buildFigure(currencyCode, signDisplay);
+
+    this.#figures.set(key, built);
+
+    return built;
+  }
+
+  // **Total, and that is the load-bearing part.** `Intl.NumberFormat` answers a
+  // `RangeError` for a currency code that is not three letters, and this runs
+  // inside change detection: the throw escapes a template binding, Angular
+  // abandons the pass, and every section declared after the list stops
+  // rendering — no `try` around a signal read can contain it. The fallback
+  // drops the currency style, keeps the sign rule and keeps the two decimals,
+  // so a row with a damaged code still reads as money.
+  #buildFigure(
+    currencyCode: string,
+    signDisplay: 'exceptZero' | 'never',
+  ): Intl.NumberFormat {
+    try {
+      return new Intl.NumberFormat(this.#locale, {
+        currency: currencyCode,
+        signDisplay,
+        style: 'currency',
+      });
+    } catch {
+      return new Intl.NumberFormat(this.#locale, {
+        maximumFractionDigits: 2,
+        minimumFractionDigits: 2,
+        signDisplay,
+      });
+    }
   }
 
   public ngOnInit(): void {

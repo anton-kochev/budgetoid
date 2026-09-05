@@ -2478,14 +2478,23 @@ The product's most repeated unit. M3 base: none — a plain semantic list.
 - Uncategorized shows "No category" muted — a plain fact, not a warning.
 - Press: `--bud-state-pressed` layer. No swipe actions (transactions are immutable).
 
-**Every word on this row arrives as ciphertext and the screen opens it.** `payees.name`,
-`accounts.name`, `categories.name` and `transactions.description` are all sealed columns, so
-`payeeName`, `accountName`, `categoryName` and `description` on a transaction response are AEAD
-envelopes in base64url. `/app/transactions` opens each under the binding for its own table, column
-and **row id** — which is why the response carries `payeeId`, `accountId` and `categoryId` beside
-the names it joined, and why the transaction's own description is the single envelope on the row
-bound to the transaction's **own** id. Opening a foreign name under this row's id authenticates
+**Every word on this row arrives as ciphertext, and what opens it is the mapper rather than the
+row.** `payees.name`, `accounts.name`, `categories.name`, `category_groups.name` and
+`transactions.description` are all sealed columns, so `payeeName`, `accountName`, `categoryName`,
+`categoryGroupName` and `description` on a transaction response are AEAD envelopes in base64url.
+`toTransactionView` opens **all five**, each under the binding for its own table, column and **row
+id** — which is why the response carries `payeeId`, `accountId`, `categoryId` and `categoryGroupId`
+beside the names it joined, and why the transaction's own description is the single envelope on the
+row bound to the transaction's **own** id. Opening a foreign name under this row's id authenticates
 against nothing, permanently, with no error naming the cause.
+
+**Three of the five reach the page, and that is a fact about the row and not about the mapper.**
+The row draws the account's name and the category's name on line 2 and the counterparty's on line
+1; it draws the **description only where there is no counterparty**, and it draws the **category
+group never**. So a member can be opened, correct, and invisible — the sentence above is about what
+is decrypted, and the bullets are about what is rendered. Do not read one as a description of the
+other: a reader who takes "the screen opens each" for a list of what is on the row will go looking
+for a note that is drawn nowhere.
 
 Anything that does not open renders through [`narrative-value`](#the-locked-account) rather than as
 empty text, so a value that failed and a value nobody typed stay distinguishable on the row.
@@ -2497,21 +2506,73 @@ whose ciphertext the browser cannot open is the credential list's problem restat
 composed from has to be **total** over what a 200 can carry — so whatever the wiring does with a
 value that fails to authenticate, it may not throw while composing the row.
 
-**The row that ships is not the row above, and the row above is what stays.** Measured in a browser
-against live data, the shipped row draws **one** muted metadata line carrying six members inline —
-account · payee · category group · category · date · amount — where this chapter specifies two
-lines and five things across them: payee and amount on the first, category and account on the
-second with the date set right. What departs, said rather than counted: the **category group** is
-on the row — a fifth sealed name beside the four named above — and this book names it nowhere; the
-**amount** and the **date** sit in that muted line instead of in the figures column and at its
-right, so the `[content 1fr] [figures auto]` grid the anatomy opens with is not what renders; the
-**payee** is one of the six rather than the row's lead in `--bud-text`; and the figure carries its
-stored sign (`-42.75`), where [money display](patterns.md) drops the sign on an expense and sets it
-in plain ink. The specification is not being edited down to what shipped — bringing the row onto it
-is outstanding work.
+**The row that ships is the row above.** Two lines in a `[content 1fr] [figures auto]` grid, 64px
+minimum height, `--bud-gutter` padding and the hairline inset to it; the counterparty leads line 1
+in `--bud-text` with the figure in the figures column; line 2 is category · account with the date
+in its own figures slot. The figure goes through `Intl.NumberFormat` with `style: 'currency'` — an
+expense unsigned in plain ink, income `+` and `--bud-positive-text`, a zero neither — so
+[money display](patterns.md) is kept by the formatter rather than by a string this row assembles.
+Nothing in this application provides `LOCALE_ID`, so the locale is the reader's own, read from an
+injection token whose only other caller is a spec naming one: an expectation on a formatted figure
+written without that seam is a claim about the machine the suite ran on. A currency code the
+platform refuses raises a `RangeError` **inside change detection**, which abandons the render pass
+and takes every section below the list with it, so the formatter falls back to a plain two-decimal
+figure and keeps the sign rule.
 
-**The other departure this chapter carried is closed, and what closed it is worth keeping.** Nothing
-could be recorded from this screen at all: the entry form posted `payeeName`, which both transaction
+**The lead falls through to the note on an *absent* counterparty and never on an unreadable one,
+and those are two different facts the row keeps apart.** `payeeName` is `null` exactly where the
+column held nothing, which this browser knows with no key at all. A row whose counterparty name
+failed to open still *has* a counterparty, so it leads with the unreadable marker and not with the
+note — falling through there would put a different value under one heading depending on whether a
+key happened to be held, with nothing on screen saying which arrived. It is the same split the
+uncategorized rule makes one line down, which turns on `categoryId` and never on the name, and a
+spec case holds each half.
+
+**Line 2 reads "No category · account", in that order.** The uncategorized fact takes the
+category's place in the line rather than displacing it, and the separator keeps its no-break spaces
+on both kinds of row alike.
+
+**The date is the stored value, rendered as it arrives** — the row's `date` member, an ISO calendar
+day. The bullets above give that cell a slot and a type scale and name no format; neither does the
+row, which applies no formatter, no relative word and no locale to it. The credential-list chapter
+above says relative words belong to transaction lists, and this list has none of them. Specifying
+the format is work this chapter owes, so the stored day is a gap with a chapter behind it rather
+than an oversight nobody noticed.
+
+**Three things the row gives up, said plainly, because each of them is content leaving the screen.**
+
+- **The note, wherever there is a counterparty.** The description is drawn in the payee's absence
+  and nowhere else, so a transaction carrying both shows the payee and the note appears nowhere on
+  the row.
+- **The category group, entirely.** It is a fifth sealed name this book names in no bullet, and a
+  row drawing it was putting a value on screen no chapter had specified.
+- **The stored sign.** An expense reads `$20.50` where the number behind it is `-20.5`. The expense
+  is the unmarked case and income is told apart by `+` **and** colour together, which is what
+  [money display](patterns.md) asks for and what keeps the colour from being the message.
+
+**The press layer draws on a row with nothing behind it, and this chapter owns that rather than
+leaving a reader to find it.** The anatomy gives the row a `--bud-state-pressed` layer and one 48px+
+target, and the row takes both — but there is no row action on this screen: no edit, no detail, no
+menu. A press darkens the row and nothing happens, which is an affordance promising an act that
+does not exist. Which way it closes — the act arriving, or the layer going until it does — is work
+rather than a rule being stated here. The rename rule under
+[the locked account](#the-locked-account) has no surface here for the same reason: a row offering
+no Edit and no Delete has no control to disable on a value that did not open.
+
+**None of this row's presentation is held by a test, and the gap is wide enough to name.** Delete
+the component's whole `styles` block and all 63 cases in `transactions.component.spec.ts` stay
+green: jsdom computes no layout, so the grid, the 64px floor, the gutter padding, the inset
+hairline, the press layer, the right alignment, the type weights and the tabular figures are held
+by review and by a browser. Four stacked `<div>`s pass everything. Two narrower ones sit under it:
+nothing pins **which cell lands in which column** — each is read by its own class, so a template
+putting the figure in the content column and the date under the counterparty reddens nothing — and
+nothing pins the **list semantics**, so a set of rows built from plain `<div>`s with no `role="list"`
+passes as well. What the suite does hold is the text: which member leads, which member does not
+appear at all, the separator's exact spelling, the whole of the date cell, and every string the
+formatter renders under two named locales.
+
+**The write half of this screen is closed, and what closed it is worth keeping.** Nothing
+could be recorded from it at all: the entry form posted `payeeName`, which both transaction
 wire shapes refuse by name, so every create and every edit answered 400 — and it sent no
 client-minted `id` and a plaintext `description` where an envelope is required, so **removing the
 retired member alone would not have made a write succeed**. The refusal was the API's choice rather

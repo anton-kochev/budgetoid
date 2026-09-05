@@ -21,6 +21,44 @@
 // is a fact about this screen rather than an omission in this file: a
 // transaction row offers no Edit and no Delete, so there is no control to
 // disable on a row whose values did not open. It arrives with the edit screen.
+//
+// **The row is read by class and no longer by Material's element names.** It is
+// a plain semantic list now — `docs/design/components.md` gives "Transaction
+// row" the M3 base "none" — so the list is `.transactions`, a row is
+// `.transaction-row`, and its four cells are `.lead`, `.amount`, `.meta` and
+// `.date`. The empty state is `.no-rows` deliberately and not a row, or every
+// count of `.transaction-row` would answer one over an empty list — and there
+// is a case standing on that now, where for a while there was only the reason.
+//
+// **Nothing here holds the row's *presentation*, and that is measured rather
+// than assumed.** Deleting the component's whole `styles` block —
+// `TestBed.overrideComponent(TransactionsComponent, { set: { styles: [] } })`,
+// applied at both places this file builds the component — leaves **all
+// sixty-three cases green**. So the grid, the 64px floor, the gutter, the
+// hairline inset to it, the press layer, the right alignment and the tabular
+// figures are held by `docs/design/components.md` and by a browser, not by
+// anything below. Every selector this file reads is a hook, and a class that
+// stopped carrying its declarations would go unnoticed here. Do not read a
+// green run as evidence the row looks right.
+//
+// **`listText()` and never `host().textContent`, on anything the row must not
+// show.** The form above the list holds a category picker, so a group's name is
+// on this screen twice over and only one of the two is a defect.
+//
+// **The figures block provides `TRANSACTION_ROW_LOCALE`, and that is the only
+// place a locale is named.** Nothing in this application configures
+// `LOCALE_ID`, and `Intl` with no locale falls back to the host's, so an
+// expectation on a formatted figure written without that provider is true on
+// the machine it was written on and unproven anywhere else — the runner pins
+// the time zone and not the locale. The one figure read outside that block
+// asserts only that it is **not empty**, for the same reason: a row's currency
+// renders differently on every machine, and "the composition did not throw" is
+// all that case is entitled to claim.
+//
+// **No expectation reads a date with `toContain`.** `createdAtUtc` is on the
+// row's model and *begins* with the ten characters `date` holds, so a substring
+// match against either passes over the other. Both date expectations are the
+// whole cell.
 import { signal, type Signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { FormGroup } from '@angular/forms';
@@ -41,7 +79,10 @@ import type { AccountView } from '../accounts/account-view';
 import { AccountsService } from '../accounts/accounts.service';
 import type { PayeeView } from './payee-view';
 import type { TransactionView } from './transaction-view';
-import { TransactionsComponent } from './transactions.component';
+import {
+  TRANSACTION_ROW_LOCALE,
+  TransactionsComponent,
+} from './transactions.component';
 import { TransactionsService } from './transactions.service';
 
 const TRANSACTION_ID = '0199c3d4-5f6a-7b8c-9d0e-000000000001';
@@ -270,16 +311,15 @@ function spell(whitespace: string): string {
     .join('');
 }
 
-// The two spellings a metadata line can contain, named so that an expectation
-// reads as a sentence instead of as four hex digits.
+// The one spelling line 2 may hold beside its separator, named so that an
+// expectation reads as a sentence instead of as four hex digits.
 //
-// Built from character codes rather than from literals, and that is the same
-// argument as `spell`'s one line up: a no-break space written out here is an
-// invisible character in a source file, so the day somebody "tidies" it into an
-// ordinary one these two constants become equal, the no-break rule below stops
-// being a rule, and nothing goes red.
+// **Built from a character code rather than from a literal**, and that is the
+// same argument as `spell`'s one line up: a no-break space written out here is
+// an invisible character in a source file, so the day somebody "tidies" it into
+// an ordinary one this constant quietly becomes ` `, the no-break rule
+// below stops being a rule, and a template that lost its `&nbsp;` goes green.
 const NO_BREAK_SPACE = spell(String.fromCharCode(0xa0));
-const ORDINARY_SPACE = spell(String.fromCharCode(0x20));
 
 // Every `·` in the line with the whitespace run on each side of it, each run
 // spelled out.
@@ -325,19 +365,64 @@ describe('TransactionsComponent', () => {
     return fixture.nativeElement as HTMLElement;
   }
 
-  // The first row's metadata line, as the browser renders it — text taken off
+  // The first row's second line, as the browser renders it — text taken off
   // the one element, never off `host()`, whose text carries the form above it.
   // It throws rather than answering `''` when the line is missing, so a
   // selector that stopped matching reddens as a selector rather than passing as
   // a string with no whitespace in it.
   function metadataLine(): string {
-    const line = host().querySelector('mat-list-item [matListItemLine]');
+    const line = host().querySelector('.transaction-row .meta');
 
     if (line === null) {
       throw new Error('no metadata line to read on the first transaction row');
     }
 
     return line.textContent ?? '';
+  }
+
+  // The first row's figure, and the first row's date, each read off its own
+  // cell. Both throw for the reason above.
+  function amountCell(): HTMLElement {
+    const amount = host().querySelector<HTMLElement>(
+      '.transaction-row .amount',
+    );
+
+    if (amount === null) {
+      throw new Error('no amount to read on the first transaction row');
+    }
+
+    return amount;
+  }
+
+  function dateCell(): string {
+    const date = host().querySelector('.transaction-row .date');
+
+    if (date === null) {
+      throw new Error('no date to read on the first transaction row');
+    }
+
+    return date.textContent ?? '';
+  }
+
+  // The rows, and nothing above them. Read off the list rather than off
+  // `host()`, whose text carries the form — a name this screen must keep off
+  // the row is on screen twice over, once in a picker where it belongs.
+  function listText(): string {
+    return host().querySelector('.transactions')?.textContent ?? '';
+  }
+
+  // The first row's lead — line 1 of the two-line grid, in the content column.
+  // It throws rather than answering `''` when the cell is missing, so a
+  // selector that stopped matching reddens as a selector rather than passing
+  // as an empty string.
+  function leadLine(): string {
+    const lead = host().querySelector('.transaction-row .lead');
+
+    if (lead === null) {
+      throw new Error('no lead to read on the first transaction row');
+    }
+
+    return lead.textContent ?? '';
   }
 
   function fill(values: {
@@ -358,7 +443,7 @@ describe('TransactionsComponent', () => {
   beforeEach(async () => {
     transactions = new TransactionsServiceStub();
     custody = new CustodyStub();
-    await TestBed.configureTestingModule({
+    TestBed.configureTestingModule({
       imports: [TransactionsComponent],
       providers: [
         provideNoopAnimations(),
@@ -367,7 +452,8 @@ describe('TransactionsComponent', () => {
         { provide: AccountsService, useClass: AccountsServiceStub },
         { provide: AccountKeyCustodyService, useValue: custody },
       ],
-    }).compileComponents();
+    });
+    await TestBed.compileComponents();
     fixture = TestBed.createComponent(TransactionsComponent);
     fixture.detectChanges();
   });
@@ -447,9 +533,30 @@ describe('TransactionsComponent', () => {
     ).toBe('Locked');
   });
 
-  it('loads categories for the grouped picker', () => {
-    // Assert
+  it('starts every read the screen draws from, on init', () => {
+    // Arrange — the widest gap this file had. Every other case feeds the
+    // stub's signals directly, so a component that dropped a call in
+    // `ngOnInit` renders **nothing** in a browser and left the other
+    // sixty-two of them green — measured, by replacing `ngOnInit` with a
+    // no-op: one case red, sixty-two green. The accounts read is named here
+    // for the same reason and is
+    // not the same read: it fills the form's picker, so losing it takes the
+    // Add control down while the list above it stays perfect.
+    //
+    // `loadCategories` is the one with an argument of its own — the grouped
+    // picker printed base64url until the categories screen owned a view model,
+    // and this is the call that fills it.
+    const accounts = TestBed.inject(
+      AccountsService,
+    ) as unknown as AccountsServiceStub;
+
+    // Assert — the fixture's own `beforeEach` is the act: `ngOnInit` has
+    // already run by the time a case body starts. Four assertions and one
+    // concept, so a failure names the call that went missing.
+    expect(transactions.load).toHaveBeenCalledOnce();
+    expect(transactions.loadPayees).toHaveBeenCalledOnce();
     expect(transactions.loadCategories).toHaveBeenCalledOnce();
+    expect(accounts.load).toHaveBeenCalledOnce();
   });
 
   it('hands over the typed text untouched and no payee when none was typed', () => {
@@ -598,7 +705,7 @@ describe('TransactionsComponent', () => {
 
     // Assert
     expect(host().querySelector('app-locked-account-notice')).not.toBeNull();
-    expect(host().querySelector('mat-list')).toBeNull();
+    expect(host().querySelector('.transactions')).toBeNull();
   });
 
   it('renders the list and no notice while the account is unlocked', () => {
@@ -609,7 +716,25 @@ describe('TransactionsComponent', () => {
 
     // Assert
     expect(host().querySelector('app-locked-account-notice')).toBeNull();
-    expect(host().querySelector('mat-list')).not.toBeNull();
+    expect(host().querySelector('.transactions')).not.toBeNull();
+  });
+
+  it('says the list is empty rather than drawing an empty list', () => {
+    // Arrange — an answered read of zero rows, which is neither the failure
+    // nor the read in flight. The empty state is a `.no-rows` item and
+    // deliberately **not** a `.transaction-row`: every count of rows in this
+    // file would otherwise answer one over an empty list. That argument is in
+    // the header and nothing exercised it, so the `@empty` branch could have
+    // been deleted with the suite green.
+    transactions.transactionsSignal.set([]);
+
+    // Act
+    fixture.detectChanges();
+
+    // Assert
+    expect(host().querySelectorAll('.transaction-row')).toHaveLength(0);
+    expect(host().querySelector('.no-rows')).not.toBeNull();
+    expect(listText()).toContain('No transactions yet.');
   });
 
   it('disables the form while the account is unlocking', () => {
@@ -643,45 +768,145 @@ describe('TransactionsComponent', () => {
 
     // Assert
     expect(host().querySelector('app-locked-account-notice')).toBeNull();
-    expect(host().querySelector('mat-list')).not.toBeNull();
+    expect(host().querySelector('.transactions')).not.toBeNull();
   });
 
-  it('renders every sealed member of a row through the narrative marker', () => {
-    // Arrange — five values, five renders, and none of them a string this
-    // template built. A member interpolated straight into the row prints
-    // `[object Object]` at best and a collapsed dash at worst.
+  it('renders every sealed member the row still carries through the narrative marker', () => {
+    // Arrange — the row is two lines and five things: the payee leads with the
+    // amount right of it, and the second line is category · account with the
+    // date set right. Three of the five are narrative values, and none of them
+    // is a string this template built — a member interpolated straight into
+    // the row prints `[object Object]` at best and a collapsed dash at worst.
 
     // Act
     fixture.detectChanges();
 
     // Assert
     const rendered = host().querySelectorAll(
-      'mat-list-item app-narrative-value',
+      '.transaction-row app-narrative-value',
     );
 
-    expect(rendered).toHaveLength(5);
-    expect(host().textContent ?? '').toContain('Weekly shop');
-    expect(host().textContent ?? '').toContain('Corner Shop');
-    expect(host().textContent ?? '').toContain('Essentials');
+    expect(rendered).toHaveLength(3);
+    expect(listText()).toContain('Corner Shop');
+    expect(listText()).toContain('Groceries');
+    expect(listText()).toContain('Everyday');
   });
 
-  it('renders a marker rather than a blank for a value that did not open', () => {
-    // Arrange — a row whose note did not open is a fact about that value, and
-    // the rest of the row is fine. A mapper or a template that collapsed it to
-    // `''` would make the screen claim nobody wrote a note.
+  it('leads the row with the counterparty', () => {
+    // Arrange — line 1 is the payee, in `--bud-text`, and the note is not on
+    // the row at all where there is one.
+
+    // Act
+    fixture.detectChanges();
+
+    // Assert
+    expect(leadLine()).toContain('Corner Shop');
+    expect(listText()).not.toContain('Weekly shop');
+  });
+
+  it('leads the row with the note when the row names no counterparty', () => {
+    // Arrange — the parenthesis in the chapter's line 1. `null` is a payee
+    // column holding nothing, which the client can see without any key.
     transactions.transactionsSignal.set([
-      { ...weeklyShop, description: { state: 'unreadable' } },
+      { ...weeklyShop, payeeId: null, payeeName: null },
     ]);
 
     // Act
     fixture.detectChanges();
 
-    // Assert — the accessible name is what tells the two dashes apart.
+    // Assert
+    expect(leadLine()).toContain('Weekly shop');
+  });
+
+  it('leads with a counterparty whose name did not open, rather than falling back to the note', () => {
+    // Arrange — the two facts this row must keep apart. A row *has* a payee
+    // whose name this tab could not read; falling through to the note there
+    // would put a different value under the same heading depending on whether
+    // a key happened to be held, and nothing on screen would say so.
+    transactions.transactionsSignal.set([
+      { ...weeklyShop, payeeName: { state: 'unreadable' } },
+    ]);
+
+    // Act
+    fixture.detectChanges();
+
+    // Assert
+    expect(leadLine()).not.toContain('Weekly shop');
+    expect(
+      host()
+        .querySelector('.transaction-row .lead [role="img"]')
+        ?.getAttribute('aria-label'),
+    ).toBe('Couldn’t be read');
+  });
+
+  it('keeps the category group off the row', () => {
+    // Arrange — the group is a fifth sealed name the chapter names nowhere,
+    // and it shipped on the row. `weeklyShop` carries one, so a template that
+    // still drew it would put `Essentials` in the list.
+
+    // Act
+    fixture.detectChanges();
+
+    // Assert
+    expect(listText()).not.toContain('Essentials');
+  });
+
+  it('renders a marker rather than a blank for a value that did not open', () => {
+    // Arrange — a row whose account name did not open is a fact about that
+    // value, and the rest of the row is fine. A mapper or a template that
+    // collapsed it to `''` would make the screen claim the account has no name.
+    transactions.transactionsSignal.set([
+      { ...weeklyShop, accountName: { state: 'unreadable' } },
+    ]);
+
+    // Act
+    fixture.detectChanges();
+
+    // Assert — the accessible name is what tells the two dashes apart, and the
+    // **whole list** rather than a membership test: `toContain` here passes
+    // over a template that drew a second marker somewhere else on the row, and
+    // its neighbour one case down already reads the same way.
     const markers = Array.from(
-      host().querySelectorAll('mat-list-item [role="img"]'),
+      host().querySelectorAll('.transaction-row [role="img"]'),
     ).map((marker) => marker.getAttribute('aria-label'));
 
-    expect(markers).toContain('Couldn’t be read');
+    expect(markers).toEqual(['Couldn’t be read']);
+  });
+
+  it('composes a row whose every narrative value failed to authenticate', () => {
+    // Arrange — the chapter's totality rule: whatever the wiring does with a
+    // value that fails to authenticate, it may not throw while composing the
+    // row. Every word on this one is a marker and the note is absent besides.
+    transactions.transactionsSignal.set([
+      {
+        ...weeklyShop,
+        accountName: { state: 'unreadable' },
+        categoryName: { state: 'unreadable' },
+        description: null,
+        payeeName: { state: 'unreadable' },
+      },
+    ]);
+
+    // Act
+    fixture.detectChanges();
+
+    // Assert — the row is on screen with its figure and its date intact. The
+    // date is the **whole cell** and not a substring of it, for the reason its
+    // own case gives: `createdAtUtc` begins with the same ten characters, so a
+    // `toContain` here would pass over the wrong member. The figure is asserted
+    // only to be non-empty, because no locale is named in this block and the
+    // rendered currency is the host machine's answer.
+    //
+    // **The markers are counted**, and that is the half "the row is on screen"
+    // cannot see: all three of this row's narrative members failed, so a
+    // template that drew two markers and swallowed the third composes a row
+    // that renders, reads as complete, and is missing a value.
+    expect(host().querySelectorAll('.transaction-row')).toHaveLength(1);
+    expect(
+      host().querySelectorAll('.transaction-row [role="img"]'),
+    ).toHaveLength(3);
+    expect(amountCell().textContent ?? '').not.toBe('');
+    expect(dateCell().trim()).toBe('2026-07-14');
   });
 
   it('leaves out a member the row does not carry', () => {
@@ -703,33 +928,81 @@ describe('TransactionsComponent', () => {
     // Act
     fixture.detectChanges();
 
-    // Assert — the note and the account name, and nothing standing in for the
-    // three that are absent.
+    // Assert — the note leading and the account name, and nothing standing in
+    // for the three that are absent.
     expect(
-      host().querySelectorAll('mat-list-item app-narrative-value'),
+      host().querySelectorAll('.transaction-row app-narrative-value'),
     ).toHaveLength(2);
   });
 
-  it('puts exactly one space either side of every separator on a full row and none at its ends', () => {
-    // Arrange — `weeklyShop` carries a payee, a group and a category, so every
-    // separator this row can draw renders: three spans between the opened
-    // names, and the last span's two, one in front of the date and one between
-    // the date and the amount. The defect was on the fourth: its span opened
-    // and then broke the line, and the leading newline collapses to a rendered
-    // space that the `&nbsp;` after it then doubles.
+  it('says “No category” when the row carries none', () => {
+    // Arrange — the branch turns on the category being **absent**, which is a
+    // null the client can still see. A plain fact, muted, not a warning.
+    transactions.transactionsSignal.set([
+      {
+        ...weeklyShop,
+        categoryGroupId: null,
+        categoryGroupName: null,
+        categoryId: null,
+        categoryName: null,
+      },
+    ]);
+
+    // Act
+    fixture.detectChanges();
+
+    // Assert
+    expect(metadataLine()).toContain('No category');
+  });
+
+  it('draws a marker, never “No category”, for a category name that did not open', () => {
+    // Arrange — the other half of the same rule, and the one a reader folds
+    // into the first. This row **has** a category; what failed is reading its
+    // name. Saying "No category" here is the screen claiming something about
+    // the budget when the truth is about this tab.
+    transactions.transactionsSignal.set([
+      { ...weeklyShop, categoryName: { state: 'unreadable' } },
+    ]);
+
+    // Act
+    fixture.detectChanges();
+
+    // Assert
+    expect(metadataLine()).not.toContain('No category');
+    expect(
+      Array.from(
+        host().querySelectorAll('.transaction-row .meta [role="img"]'),
+      ).map((marker) => marker.getAttribute('aria-label')),
+    ).toEqual(['Couldn’t be read']);
+  });
+
+  it('puts the date in the second line’s figures slot and nowhere else', () => {
+    // Arrange — the date left the metadata run and took the right of line 2,
+    // which is the half of the grid the shipped row did not have.
+
+    // Act
+    fixture.detectChanges();
+
+    // Assert — the whole cell and not a substring of it: `createdAtUtc` is on
+    // this row too and it *begins* with the same ten characters, so a
+    // `toContain` here passes over the wrong member.
+    expect(dateCell().trim()).toBe('2026-07-14');
+    expect(metadataLine()).not.toContain('2026-07-14');
+    expect(leadLine()).not.toContain('2026-07-14');
+  });
+
+  it('puts exactly one space either side of the separator on line 2 and none at its ends', () => {
+    // Arrange — `weeklyShop` carries a category and an account, so the one
+    // separator line 2 can draw renders. The defect this pins is a span that
+    // opened and then broke the line: the leading newline collapses to a
+    // rendered space that the `&nbsp;` after it then doubles.
     //
-    // **The expectation is each separator's *spelling*, not a count of the
+    // **The expectation is the separator's *spelling*, not a count of the
     // characters around it**, and the difference is the reason it is written
     // this way. A count cannot tell U+00A0 from U+0020, so an `&nbsp;` demoted
     // to an ordinary space passes a counting rule while the separator it was
     // holding becomes free to wrap onto a line of its own — which is the whole
     // job of that entity and not a detail of it.
-    //
-    // **The list is deliberately not uniform.** The last span spells its two
-    // inner separators with ordinary spaces, because the date and the amount
-    // may break apart; flattening the expectation to one value would be
-    // asserting a rule this template does not follow, and would have to be
-    // "fixed" by changing the screen.
 
     // Act
     fixture.detectChanges();
@@ -737,26 +1010,19 @@ describe('TransactionsComponent', () => {
 
     // Assert — the anchor first, so a case that read the wrong node says so
     // instead of passing on an empty string.
-    expect(line).toContain('2026-07-14');
+    expect(line).toContain('Groceries');
     expect(separatorSpacing(line)).toEqual([
       `${NO_BREAK_SPACE}·${NO_BREAK_SPACE}`,
-      `${NO_BREAK_SPACE}·${NO_BREAK_SPACE}`,
-      `${NO_BREAK_SPACE}·${NO_BREAK_SPACE}`,
-      `${NO_BREAK_SPACE}·${ORDINARY_SPACE}`,
-      `${ORDINARY_SPACE}·${ORDINARY_SPACE}`,
     ]);
-    // A tail no separator rule can reach: one space left inside the last span
-    // is a run of one, sits beside no `·`, and shows up nowhere on screen.
+    // A tail no separator rule can reach: one space left inside a span is a
+    // run of one, sits beside no `·`, and shows up nowhere on screen.
     expect(edgeWhitespace(line)).toEqual([]);
   });
 
-  it('puts exactly one space either side of every separator on a row with no category and none at its ends', () => {
+  it('puts exactly one space either side of the separator on a row with no category and none at its ends', () => {
     // Arrange — the doubling is not a consequence of the category branch, and
-    // this is the case that says so: with the group and the category gone the
-    // last span follows the payee and doubles there instead. Three separators
-    // now, and the two the last span draws are the same two as above — this
-    // shape re-checks them against a different neighbour rather than repeating
-    // the case.
+    // this is the case that says so: the "No category" arm is a different node
+    // with its own whitespace, and it sits beside the same separator.
     transactions.transactionsSignal.set([
       {
         ...weeklyShop,
@@ -772,13 +1038,140 @@ describe('TransactionsComponent', () => {
     const line = metadataLine();
 
     // Assert
-    expect(line).toContain('2026-07-14');
+    expect(line).toContain('No category');
     expect(separatorSpacing(line)).toEqual([
       `${NO_BREAK_SPACE}·${NO_BREAK_SPACE}`,
-      `${NO_BREAK_SPACE}·${ORDINARY_SPACE}`,
-      `${ORDINARY_SPACE}·${ORDINARY_SPACE}`,
     ]);
     expect(edgeWhitespace(line)).toEqual([]);
+  });
+
+  // Money display — `docs/design/patterns.md`.
+  //
+  // **The locale is pinned here and in no other place**, which is the shape
+  // `credential-registration-date.ts` already argued: production passes
+  // `undefined` and gets the reader's own, and the token is the seam a spec
+  // provides so that an expectation is a string rather than a claim about the
+  // machine the suite happens to run on. Nothing configures `LOCALE_ID` in this
+  // application, and `Intl` with no locale falls back to the host's — so an
+  // assertion on a formatted figure written without this token is true for
+  // whoever wrote it and false for the next person.
+  //
+  // **Two locales, not one**, and that is the whole guard against hand-assembly:
+  // a symbol concatenated onto digits can be made to equal `$20.50`, and there
+  // is no way to make it equal `20,50 $`.
+  describe('the figure', () => {
+    // A fresh injector per case, because the locale is read when the component
+    // is built.
+    async function figureIn(
+      locale: string,
+      row: TransactionView,
+    ): Promise<HTMLElement> {
+      TestBed.resetTestingModule();
+      transactions = new TransactionsServiceStub();
+      transactions.transactionsSignal.set([row]);
+      custody = new CustodyStub();
+      TestBed.configureTestingModule({
+        imports: [TransactionsComponent],
+        providers: [
+          provideNoopAnimations(),
+          provideRouter([]),
+          { provide: TransactionsService, useValue: transactions },
+          { provide: AccountsService, useClass: AccountsServiceStub },
+          { provide: AccountKeyCustodyService, useValue: custody },
+          { provide: TRANSACTION_ROW_LOCALE, useValue: locale },
+        ],
+      });
+      await TestBed.compileComponents();
+      fixture = TestBed.createComponent(TransactionsComponent);
+      fixture.detectChanges();
+
+      return amountCell();
+    }
+
+    it('drops the sign on an expense and keeps the ink neutral', async () => {
+      // Arrange — the domain stores a negative; spending is the normal case,
+      // and a list of expenses in ink reads as a record rather than a rebuke.
+
+      // Act
+      const figure = await figureIn('en-US', weeklyShop);
+
+      // Assert — the two minus glyphs a formatter can emit, neither of them
+      // welcome. `−` (U+2212) is what several locales use for a negative.
+      expect(figure.textContent ?? '').toBe('$20.50');
+      expect(figure.textContent ?? '').not.toMatch(/[-−]/u);
+      expect(figure.classList.contains('income')).toBe(false);
+    });
+
+    it('marks income with a plus and the positive ink', async () => {
+      // Arrange — income is the marked case.
+
+      // Act
+      const figure = await figureIn('en-US', { ...weeklyShop, amount: 20.5 });
+
+      // Assert
+      expect(figure.textContent ?? '').toBe('+$20.50');
+      expect(figure.classList.contains('income')).toBe(true);
+    });
+
+    it('leaves a zero unsigned and unmarked', async () => {
+      // Arrange — zero is a legal amount and neither of the two marked cases:
+      // a purchase a voucher covered in full is a record worth keeping.
+
+      // Act
+      const figure = await figureIn('en-US', { ...weeklyShop, amount: 0 });
+
+      // Assert
+      expect(figure.textContent ?? '').toBe('$0.00');
+      expect(figure.classList.contains('income')).toBe(false);
+    });
+
+    it('formats in the reader’s locale rather than assembling a symbol and digits', async () => {
+      // Arrange — `currencySymbol` is on the row and printing it in front of
+      // the number is what shipped. It cannot produce this.
+
+      // Act
+      const figure = await figureIn('de-DE', weeklyShop);
+
+      // Assert — comma for the decimal, and the symbol trailing.
+      expect(figure.textContent ?? '').toMatch(/^20,50\s/u);
+    });
+
+    it('follows the currency for minor units', async () => {
+      // Arrange — cents are always shown, and how many there are is the
+      // currency's answer, not two.
+
+      // Act
+      const figure = await figureIn('ja-JP', {
+        ...weeklyShop,
+        amount: -20,
+        currencyCode: 'JPY',
+        currencySymbol: '￥',
+      });
+
+      // Assert
+      expect(figure.textContent ?? '').toBe('￥20');
+    });
+
+    it('draws a figure rather than taking the screen down when the currency code is one the platform refuses', async () => {
+      // Arrange — `Intl.NumberFormat` throws a `RangeError` on a code that is
+      // not three letters, and this construction happens inside change
+      // detection: the throw would abandon the pass, so every section declared
+      // after the list stops rendering and no `try` around a template binding
+      // can contain it. The same argument `credential-registration-date.ts`
+      // makes for a malformed instant.
+
+      // Act
+      const figure = await figureIn('en-US', {
+        ...weeklyShop,
+        currencyCode: 'XX',
+      });
+
+      // Assert — the row is there, the figure is a number, and the sign is
+      // still gone.
+      expect(host().querySelectorAll('.transaction-row')).toHaveLength(1);
+      expect(figure.textContent ?? '').toContain('20.50');
+      expect(figure.textContent ?? '').not.toMatch(/[-−]/u);
+    });
   });
 
   it('keeps what was typed while the write is still in flight', () => {
@@ -855,7 +1248,7 @@ describe('TransactionsComponent', () => {
 
     // Assert
     expect(host().textContent ?? '').toContain('couldn’t read your');
-    expect(host().querySelector('mat-list')).toBeNull();
+    expect(host().querySelector('.transactions')).toBeNull();
   });
 
   it('draws neither the list nor a failure while the read is running', () => {
@@ -1038,7 +1431,7 @@ describe('TransactionsComponent', () => {
     fixture.detectChanges();
 
     // Assert — the value is on screen, so the region has nothing to add.
-    expect(host().querySelector('mat-list')).not.toBeNull();
+    expect(host().querySelector('.transactions')).not.toBeNull();
     expect((statusRegion()?.textContent ?? '').trim()).toBe('');
   });
 
