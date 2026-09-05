@@ -715,8 +715,9 @@ is a key, not a session, and no sentence in it may suggest otherwise.
 
 **This chapter specifies the act and not the state.** What a locked account *looks* like — which
 screens may draw budget content before the keys are held, and what stands in its place — belongs to
-the surfaces that draw that content and is specified nowhere yet. This section is what those
-surfaces will point at.
+the surfaces that draw that content, and it is specified in
+[the locked account](#the-locked-account) below. This section is what those surfaces point at: each
+of them renders a notice naming **Unlock in Settings**, and this control is the one it means.
 
 ### Why it is a section, and not a route or a banner
 
@@ -727,25 +728,41 @@ nobody navigates to on purpose, ending in a screen about nothing. A section insi
 such problem: it renders what is true where the person already is, and its control is simply not
 drawn when there is nothing for it to do.
 
-**A permanent shell banner was rejected for the opposite reason.** Nothing in this product is
-encrypted, so a banner announcing a locked account would appear on every cold load in the product,
-above every screen, for a condition with no consequence behind it. A standing warning nobody can
-act on and nobody needs to is how a reader is taught to stop reading them — and the day it means
-something, it is furniture.
+**A permanent shell banner is rejected too, and the consequence behind a locked account is what
+refuses it rather than what argues for it.** Every narrative screen seals what it writes, so a
+locked tab reads no name back — and **the three screens that draw budget content say so
+themselves**, in place of the list the person came for, per
+[the locked account](#the-locked-account). A bar above them would repeat that sentence on every
+cold load, over screens already carrying it and over the ones with nothing to be locked out of.
+Where the notice replaces the content it is about, a banner sits above content it is not about —
+and a standing warning is how a reader is taught to stop reading them.
 
-### Honesty about today
+### What unlocking is for
 
-Nothing a person records is encrypted, so unlocking changes nothing they can see. The section says
-so plainly, in the register the **What we can read** section already uses on this screen — as a
-fact about the system, with no apology around it:
+A person's records are encrypted, and unlocking is the difference between a screen they can read and
+one they cannot. The section says so plainly, in the register the **What we can read** section
+already uses on this screen — as a fact about the system, with no apology around it:
 
-> Your passkey holds the keys your records will be encrypted with. Budgetoid never sees them, and
-> this browser forgets them every time the page reloads.
+> Your passkey holds the keys your records are encrypted with. Budgetoid never sees them, and this
+> browser forgets them every time the page reloads.
 >
-> Nothing you record is encrypted yet, so unlocking changes nothing you can see today.
+> Unlocking is what lets this tab read the names and notes on your accounts, categories and
+> transactions.
 
-A section implying budget content is hidden until you unlock would be describing a product that
-does not exist, and the reader would go looking for whatever unlocking had revealed.
+**Both sentences are standing prose, so both have to be true in all three states** — and that is
+what keeps the second from becoming the line the Anatomy below forbids. *Until you unlock, this tab
+can't read…* is the sentence a writer reaches for, and it is a statement that the account is
+locked: said in prose, beside a control that says it already, and left standing on an account whose
+keys are held. Written as what unlocking *does*, the same fact reads true while the account is open,
+while a ceremony is running, and before one has been asked for.
+
+**Neither sentence may promise more than the account's keys open.** What they open is the narrative
+— the names and notes on accounts, payees, categories and transactions — and every amount, date and
+figure on those screens is readable whatever this tab is holding. Copy saying that unlocking reveals
+*the record* would send the reader looking for whatever it had revealed. **The rule runs in both
+directions**, and the second is the easier one to write by accident: copy saying unlocking changes
+nothing anybody can see is false the moment a screen seals a name. A sentence about unlocking is
+measured against exactly what the two keys open — no wider and no narrower.
 
 ### Anatomy
 
@@ -771,11 +788,15 @@ does not exist, and the reader would go looking for whatever unlocking had revea
 
 - **Outline** (`mat-stroked-button`), 48px target, visible label **Unlock**. Not Primary, and the
   near miss is worth stating because a reader will propose it: a Primary *while locked* reads as
-  the obvious move. It is refused twice over. Export is this screen's one main action, and a screen
-  with two is a screen with none; and to anybody not tracking lock state — which is everybody,
-  since nothing on the page changes when it flips — a Primary that comes and goes is just two
-  Primary buttons on one screen. Under both sits the honesty rule: nothing is encrypted, so a
-  Primary here promises a consequence that does not exist.
+  the obvious move, and the state has a real consequence behind it, which makes the proposal a
+  serious one. It is refused twice, and each reason stands on its own. Export is this screen's
+  one main action, and a screen with two is a screen with none; and to anybody not tracking lock
+  state — which is everybody, since **nothing on this screen but this section** is drawn differently
+  when it flips, everything that changes being on three other screens — a Primary that comes and
+  goes is just two Primary buttons on one screen. **The consequence is not a third reason, and it is
+  not an argument for the Primary either** — a locked tab reads no name back, which makes a Primary
+  here *honest* rather than right, and the two reasons above refuse an honest promise exactly as
+  they refuse any other.
 - **Not Destructive.** Nothing is lost either way, and the Destructive fill is a promise that a
   confirmation follows.
 - **No composed accessible name.** It is the only Unlock on the screen, so there is nothing to tell
@@ -1065,12 +1086,206 @@ nothing an earlier check could save, and the ceremony already answers `unsupport
 A copy would be a second enforcement with no observable difference, which
 [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) refuses.
 
-**Being locked now costs something anybody can see**, because every narrative screen seals what it
+**Being locked costs something anybody can see**, because every narrative screen seals what it
 writes: a reload leaves the account's names unreadable until this control is pressed. It stays a
-section rather than a screen standing in front of the app for a different reason than it used to —
-the app is navigable while locked, and the [locked account](#the-locked-account) chapter is what each
-content screen renders in the meantime. This control is the only way out of that state, which is why
-nothing may put it behind one.
+section rather than a screen standing in front of the app because the app is navigable while
+locked, and the [locked account](#the-locked-account) chapter is what each content screen renders in
+the meantime. This control is the only way out of that state, which is why nothing may put it behind
+one.
+
+## What we can read
+
+The product's transparency statement: what the people running Budgetoid can see of an account, and
+what they cannot. M3 base: **none** — three paragraphs of prose, no control and no region, for the
+reason the two sections above it have none: one thing to say is a paragraph, and every component
+that would wrap it exists to group things there is more than one of.
+
+It sits on `/app/settings` **between Account keys and Export**, on the placement rule the
+recovery-codes chapter argues and which is not restated here: Export and Erase are a pair, so
+nothing goes between them and everything else arrives above them. Being the last thing above that
+pair is right for this section rather than merely permitted by the rule — the two controls beneath
+it are what somebody reaches for when this section tells them something they are not willing to
+live with, so the statement comes first and the acts follow it.
+
+### The copy is the specification
+
+> We can read the numbers and the structure of what you record: amounts, dates, currency codes,
+> account types, the order you arrange things in, the timestamps on every row, and the identifiers
+> behind them. We can see how many accounts, payees, categories and transactions you have and which
+> of them point at each other, and we can read your email address.
+>
+> We can't read the names and notes you type. Your browser encrypts those before they're sent,
+> under keys it takes from your passkey or one of your recovery codes, and we never receive one of
+> those keys. What we can see about a name or a note is how long it is.
+>
+> Names on accounts, payees, categories and category groups are stored beside a short code your
+> browser works out from the name, under a key of its own that we never receive. The code is what
+> lets your browser spot a name it has already used without sending us the name. The same name
+> always gives the same code, so we can tell when one of these names changes and when one comes
+> back. The code can't be turned back into a name, and we can't check a guess against one.
+
+**Three paragraphs, three questions, and the order is the argument.** *What can you see?* — the
+plainest and longest answer, and it goes first, because a statement that leads with what it cannot
+read is selling something. *What can you not see?* — second, where it is worth something, having
+been said after the first paragraph rather than instead of it. *What is left over?* — third,
+because the short code beside each name is the one part of this design that is neither readable nor
+invisible, and a reader who works it out later on their own will read its absence here as the
+section's one omission, and grade every other sentence by it.
+
+**The first list is long on purpose and may not be summarised.** *Everything except the words* is
+shorter, reads better and is the sentence to refuse: a transparency statement that summarises has
+chosen what to leave out, and the reader cannot see what was dropped. Every item in it is a column
+this server reads in the clear.
+
+**Three phrasings may never appear anywhere under `src/`**: *nothing is encrypted*, *not encrypted
+yet*, and *nothing you record is encrypted*. They are refused by a rule over the source text — the
+shape `no-external-origins.spec.ts` and `key-import-single-source.spec.ts` already use — rather
+than by a reader's care, because each is a sentence somebody writes in good faith while editing the
+paragraph around it, and the screen carrying one renders perfectly, ships green and is wrong about
+the single thing this section exists to state.
+
+### Why it says "we"
+
+**The heading and every sentence under it are first person, and this is the one section on the
+screen where that is true.** Everywhere else the subject of a sentence is the software — *Budgetoid
+couldn't reach the server* — which is [voice](voice.md)'s rule and is right everywhere it applies,
+because everywhere else the thing that succeeded or failed is a program. Here the subject is the
+people who run the service and hold its database. That is not a program, and written as one it
+becomes somebody else: *Budgetoid's operators can read…* is the same fact in the third person and
+reads as a description of a party the reader is being introduced to, rather than as an admission by
+the party they are talking to.
+
+**The precedent is already in the book** — the recovery-code hand-off's *to you, and to us*, in
+[voice](voice.md), where the clause doing the work is the one that puts the operator in the same
+position as the reader. This section is that clause at the length of a screen.
+
+**No apology around it, and no reassurance either.** Not *we know this matters to you*, not *your
+privacy is important*, not a heading that softens the subject into a topic — *Privacy*, *Your
+data*, *Data visibility* all describe an area, where **What we can read** makes a claim and puts a
+name to who is making it. This is the register the Account keys section above names as the one this
+screen speaks in, and it is the whole of it: a fact about the system, with nothing around it.
+
+### The third paragraph, and exactly what the code gives away
+
+**The code is a keyed digest of the name under the account's own index key, and this section names
+neither the algorithm nor the route.** What it is, what it is computed over and what it is for
+belong in [account-keys.md](../business-logic/account-keys.md) and
+[ciphertext-envelope.md](../business-logic/ciphertext-envelope.md). Four columns carry one —
+`accounts.name_key`, `payees.name_key`, `category_groups.name_key` and `categories.name_key` — and
+the three description columns and `budgets.name` carry none, because an index answers *which row
+holds this name* and a note is never looked up.
+
+**What it does not give away rests on the key, not on the algorithm, and the copy's last sentence
+is the one that needs this.** The digest is keyed on 32 random bytes drawn in a browser and never
+sent, so there is no guessing attack available: nobody holding the database can compute the code
+for a name they suspect and look for it. That is the whole difference between this and a plain hash
+of the name, and it is what lets the copy say we can't check a guess. Every code is the same width
+as every other, so the name's length does not leak through it — the length leaks through the
+**envelope**, which is what the second paragraph's last sentence is for, and the two facts are
+deliberately attached to the two different things that disclose them.
+
+**What it does give away is narrower than "equal names are visible", and the difference is worth
+the paragraph.** Equal names do produce equal codes; that is the point of it, and it is what both
+the duplicate check and the uniqueness rule are built on. But comparison has fewer axes than it
+first appears:
+
+- **Not across rows.** Within one of these columns the database refuses a second row carrying the
+  same code — `IX_accounts_budget_id_name_key` and its three twins are unique over
+  `(budget_id, name_key)` — so two rows of one column in one budget cannot share one.
+- **Not across columns.** The message the code is taken over names the table and the column, so one
+  name under `payees` and the same name under `categories` are unrelated values. An operator cannot
+  learn that a payee and a category are called the same thing.
+- **Not across accounts.** The index key is per account, so nothing learned about one transfers to
+  another. Two people who both record the same shop key it to two different codes.
+- **Across time, and that is the one that is left.** A ciphertext changes on every save, because a
+  fresh nonce is drawn for each one; the code changes only when the name does. So a rename is
+  visible as a rename, a save that left the name alone is visible as one, and a name coming back —
+  a row removed and a later one taking its name — is visible as a repeat.
+
+That last bullet is what the copy claims, in the reader's words, and it is the whole of what the
+copy may claim. **The sentence to keep out is *we can see which of your rows share a name*.** It is
+the reading a writer arrives at from the mechanism alone, it sounds more candid than the true one,
+and it describes something the schema forbids.
+
+### The asymmetry, and why the safe error is the one that survives
+
+**A transparency statement that overclaims privacy is worse than one that overclaims exposure, and
+putting those two in order is not permission to commit the second.** The first hurts a person: they
+read that a note is unreadable, write something down on the strength of it, and the sentence was
+wrong. The second harms no data at all — and it spends the only asset this section has. Its job is
+to be believed. A reader who catches one false sentence here has no way to grade the rest, so the
+page reverts to something they have to take on trust, which is the thing it was written to replace.
+
+**The direction that costs nothing is the direction that survives, and that is the practical
+warning.** A sentence saying the operator reads more than it can is refuted by nothing: no test
+fails, no constraint fires, and nobody writes in to complain that a product undersold its own
+privacy. It is found by somebody rereading the screen against the schema, and it is found late. So
+the rule is not *err toward exposure*. It is that **every sentence here is measured against what
+the columns hold on the day it is written**, and that this section is re-read every time a
+capability lands — [voice](voice.md)'s re-check rule, which two other sentences on this screen have
+already been narrowed by.
+
+### What a writer will get wrong
+
+- **Turning the second paragraph into a feature claim.** *End-to-end encrypted*, *zero knowledge*,
+  *military-grade* — each is a term with a definition the reader cannot check, which is the
+  opposite of what this section is for, and each reads as a badge rather than a fact.
+- **Naming the algorithm, the route or the column.** A person reading this is deciding whether to
+  trust the product, not implementing it. The mechanism is in the business-logic chapters linked
+  above, where a second implementer can read it.
+- **Dropping the length clause or the third paragraph** because they complicate the good news. Each
+  is a small true fact whose absence, once somebody finds it, costs the section everything the rest
+  of its sentences were worth.
+- **Making any of it conditional on this tab.** The section is standing prose and is true whether
+  the account's keys are held or not: what the operator can read does not change when somebody
+  presses Unlock. *Until you unlock, we can't…* is a sentence about the browser wearing a sentence
+  about the operator.
+- **Introducing an attacker.** The subject here is the people running the service and what they
+  hold. A clause about somebody stealing the database changes the subject, and it is alarm this
+  section has not measured — the reader can draw that conclusion from what is written, and drawing
+  it for them is the same overreach in the other direction.
+- **Adding a control, a link or a live region.** Nothing in this section is read from the network
+  and nothing in it can be acted on here; the two acts it might prompt are the two controls
+  immediately below it.
+
+### Anatomy
+
+- A settings section per the spec above: `<section aria-labelledby>`, `eyebrow` heading **What we
+  can read**, `--bud-space-4` between heading and content, `--bud-space-7` to the next section,
+  prose capped at 65ch.
+- Three `body` `--bud-text` paragraphs, `--bud-space-4` between them, in reading order. No list, no
+  card, no table: the first paragraph's inventory is a sentence a person reads through, and set as
+  bullets it becomes a specification they are expected to audit.
+- **No `role="status"` region.** Every other section on this screen has one because it renders a
+  value that arrives from the network; this one renders nothing that can arrive, change or fail.
+- **No control.** The rule that a disabled control gets a sentence beside it does not reach here,
+  because there is no control to explain.
+
+### Accessibility
+
+Heading level `h2` under the screen's one `h1`; no level skipped. Ordinary content in reading
+order, hung on nothing by a `title`, a tooltip or an `aria-describedby`. Nothing is communicated by
+colour — the section carries no accent and reads identically without one. No target rule applies:
+there is nothing to press.
+
+### What ships today
+
+**The section is on `/app/settings` under its specified heading, and neither its copy nor its
+position is the one above.** Both are departures this chapter names as work rather than describes
+as the design.
+
+**The copy.** What renders is one paragraph, and its first sentence's inventory is correct —
+amounts, dates, currency codes, account types, positions, row timestamps, identifiers and the email
+address are all read in the clear. Its last two sentences are not: they state that the names and
+notes a person types are readable to the operator and that no key is held by that person alone,
+and the eight sealed narrative columns make both false. That is an overclaim of **exposure**, which
+is the safe direction and therefore the one that can stand unremarked, exactly as the asymmetry
+above predicts. The paragraph also says nothing about the four blind-indexed columns or about
+envelope lengths, which the block above owes the reader. Rendering the three paragraphs is a
+later trip; nobody invents copy in the template.
+
+**The position.** It renders below Erase, where the placement rule puts it above Export. Moving it
+is one section's worth of work and changes nothing else on the screen.
 
 ## The locked account
 
@@ -1288,11 +1503,12 @@ Ghost button — is work this book owes.
 
 ### What ships today
 
-**Every narrative screen now seals what it writes and opens what it reads** — `/app/accounts`, the
-transaction form and both halves of `/app/categories` — so both components below are reached in
-earnest and a reload really does leave names unreadable until Unlock. The sentence closing the
-Account keys section above, that being locked costs nothing anybody can see, is retired with this
-change.
+**Every narrative screen seals what it writes and opens what it reads** — `/app/accounts`, the
+transaction form and both halves of `/app/categories` — so both components in this chapter are
+reached in earnest and a reload leaves names unreadable until Unlock. The Account keys
+section above says the same thing from the other end: being locked costs something anybody can see,
+and its control is the only way out of the state, which is why nothing may put that control behind
+one.
 
 One consequence worth knowing before trusting a green bar: `tsconfig.app.json` is `files:
 ["src/main.ts"]`, so `npm run build` compiles only what `main.ts` reaches and says **nothing** about
@@ -1846,18 +2062,31 @@ whose ciphertext the browser cannot open is the credential list's problem restat
 composed from has to be **total** over what a 200 can carry — so whatever the wiring does with a
 value that fails to authenticate, it may not throw while composing the row.
 
-**The second departure is larger and points the same way: nothing can be recorded from this screen
-at all, and it now takes three fixes rather than one.** The entry form still posts `payeeName`, which
-both transaction wire shapes refuse by
-name, so every create and every edit answers 400. It also sends no client-minted `id` and a plaintext
-`description` where an envelope is required, so **removing the retired member alone would not make a
-write succeed**. The refusal is the API's choice rather than an accident,
-and it is the better of two failures: the alternative — an unmappable member dropped in silence —
-accepts the body and files the transaction with no counterparty on it, which is a ledger quietly
-losing who the money went to. The row above and the entry flow in [patterns](patterns.md) stay the
-target; what closes both departures is one piece of wiring — mint the row id, create the payee
-through its own route, send `payeeId`, seal the memo, and open the four joined envelopes under their
-own row ids. See [payees.md](../business-logic/payees.md) and
+**The row that ships is not the row above, and the row above is what stays.** Measured in a browser
+against live data, the shipped row draws **one** muted metadata line carrying six members inline —
+account · payee · category group · category · date · amount — where this chapter specifies two
+lines and five things across them: payee and amount on the first, category and account on the
+second with the date set right. What departs, said rather than counted: the **category group** is
+on the row — a fifth sealed name beside the four named above — and this book names it nowhere; the
+**amount** and the **date** sit in that muted line instead of in the figures column and at its
+right, so the `[content 1fr] [figures auto]` grid the anatomy opens with is not what renders; the
+**payee** is one of the six rather than the row's lead in `--bud-text`; and the figure carries its
+stored sign (`-42.75`), where [money display](patterns.md) drops the sign on an expense and sets it
+in plain ink. The specification is not being edited down to what shipped — bringing the row onto it
+is outstanding work.
+
+**The other departure this chapter carried is closed, and what closed it is worth keeping.** Nothing
+could be recorded from this screen at all: the entry form posted `payeeName`, which both transaction
+wire shapes refuse by name, so every create and every edit answered 400 — and it sent no
+client-minted `id` and a plaintext `description` where an envelope is required, so **removing the
+retired member alone would not have made a write succeed**. The refusal was the API's choice rather
+than an accident, and it is the better of two failures: the alternative — an unmappable member
+dropped in silence — accepts the body and files the transaction with no counterparty on it, which is
+a record quietly losing who the money went to. The form now mints its own row id, resolves the typed
+payee **on the blind index** and creates one through `POST /api/payees` when nothing matches, sends
+`payeeId`, and seals the note before either request leaves; the list opens every joined envelope
+under its own row id. The entry flow in [patterns](patterns.md) stays the target. See
+[payees.md](../business-logic/payees.md) and
 [transactions.md](../business-logic/transactions.md).
 
 ## Cards

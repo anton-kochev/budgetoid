@@ -76,25 +76,30 @@ See [transactions.md](transactions.md).
 **With those three the set is closed.** There is no ninth column and no later slice: the eight
 `table.column` pairs the grammar names are the eight the schema now carries, so a reader who finds
 a sentence here promising the next one is reading a sentence this slice should have taken out.
-The two functions do have a production caller — `AccountKeyCustodyService.sealField` and
-`openField` delegate to them, because the account's content key never leaves that class — and
-nothing but a spec calls *that*: no Angular screen has been moved onto the sealed
-contract, so no browser in this product seals a name yet — the three that ought to are listed under
-[Edge Cases](#edge-cases--known-gotchas). See
+The codec's two functions — `sealNarrativeField` and `openNarrativeField` — are reached through
+`AccountKeyCustodyService.sealField` and `openField`, because the account's content key never
+leaves that class, and every screen that writes a narrative value calls those —
+`/app/accounts`, the transaction form and both halves of
+`/app/categories`, each minting its own row id and computing a blind index where the column
+carries one. See
 [account-keys.md](account-keys.md#the-operations-that-delegate-and-the-shape-that-was-forced),
-which argues why the operations sit there and not beside the codec. That is a deliberate order
-rather than a module left behind: the format is a cross-client contract, so it can be pinned
-against an answer computed outside this codebase before a single row holds an envelope, and a
-format is far cheaper to agree on before it has data written under it than after. The same is said
+which argues why the operations sit there and not beside the codec. **The format was agreed a
+slice ahead of those callers on purpose, and that is what every clause of it rests on**: a
+cross-client contract can be pinned against answers computed outside this codebase while no row
+holds an envelope, and a format is far cheaper to agree on before it has data written under it
+than after. The window that made it cheap is shut — columns hold envelopes and indexes, and an
+edited grammar byte, cap or version orphans them with no error naming the cause. The same is said
 again under
 [Edge Cases](#edge-cases--known-gotchas), because whoever lands in one place and not the other
-reads the module as dead code and deletes it.
+reads a settled contract as an adjustable one and relaxes a clause to make the next screen
+easier.
 
-**The other consumer is in a different position, and the difference is worth holding on to.**
-Wrapped account keys are sealed on every registration and **opened on every passkey sign-in**, so
-this framing has a live reader as well as a live writer. What that buys the narrative side is
-nothing at all — a format exercised by one consumer is not a format checked for the other, since
-the two grammars differ and only the frozen vectors speak to both.
+**Each consumer has a live writer and a live reader, and neither one's traffic says anything about
+the other.** Wrapped account keys are sealed on every registration and **opened on every passkey
+sign-in**; narrative fields are sealed on every write those screens make and opened on every read
+they answer. What either buys the other is nothing at all — a format exercised by one consumer is
+not a format checked for the other, since the two grammars differ and only the frozen vectors
+speak to both.
 
 **The server's format edge now has a column behind it.** Four types stand between a client's bytes
 and storage: `Domain/Security/NarrativeFieldLimits` (the two byte caps),
@@ -559,12 +564,13 @@ any row will ever rebuild, because there is no column to read it back out of. Bo
 to come off the **same** entry, which is what the single predicate in `refuseInvalidBinding`
 does; splitting it into two `some` calls is the same mistake wearing a different shape.
 
-**The caller that produces such a binding is a mapper, and no slice has produced one yet.**
-Nothing assembles one today: the table and the column are closed unions derived from
-`NARRATIVE_FIELDS`, so a binding the compiler built has already been through them. **The wait is no
-longer on the schema.** All eight columns are sealed and seven of them are reached by routes that
-accept the sealed shape, so what is missing is entirely on the client — a screen that opens a value
-and a mapper that hands the codec a binding. The runtime
+**The caller that produces such a binding is a mapper, and five of them exist.**
+`account-view.ts`, `payee-view.ts`, `category-view.ts`, `category-group-view.ts` and
+`transaction-view.ts` each take the opener as a function and hand it a binding, and `payee-view.ts`
+takes the indexer beside it — so the hazard this lookup is written for is **live** rather than
+anticipated. Most bindings are still the compiler's: the table and the column are closed unions
+derived from `NARRATIVE_FIELDS`, so a binding written out as a literal has already been through
+them. The runtime
 lookup is for the binding the compiler never saw — a table name arriving as data, out of a
 configuration, off a response, through one `as NarrativeFieldBinding` in a view-model mapper
 that took its table from one place and its column from another. That shape is also what the
@@ -1194,9 +1200,8 @@ reaches it, and `budgetoid/blind-index/v1` is not a third associated-data gramma
 *seals* a value, and this seals nothing. The file is indexed here because the registry is one
 registry, not because the format is shared.
 
-**The answers were frozen, then the client computed one, and only then did a column start storing
-one** — which is the order that argument asked for and got, and the window it asked to be settled
-inside has now closed on `accounts.name_key` and on `payees.name_key`. Every spec that pins
+**The answers were frozen first, the client computes against them, and four columns store what it
+computes** — the order that argument asked for and got. Every spec that pins
 them **reads this file** rather than a transcribed copy — the fold, the normalisation, the index
 itself, and the custody operation that delegates to it, which reads the same answers precisely to
 tell "it delegated" from "it reimplemented the grammar inline and got my one case right". The
@@ -1205,14 +1210,15 @@ reason is a sharper version of what
 client holds the only key that can recompute one, so a grammar or a normalisation settled after
 a column holds values orphans every row in it, and there is no way back that does not run
 through every account's own recovery factors. Agreement is free until the first value is
-written and unbuyable afterwards. **It is no longer free, and the window is now shut on all four**:
+written and unbuyable afterwards. **The window is shut on all four**:
 `accounts.name_key`, `payees.name_key`, `category_groups.name_key` and `categories.name_key` all
-exist, each width is a `CHECK`, and a unique index enforces one
-name per budget over each. There is no fifth coming — the indexed set is closed — so this file will
-never again be edited under the protection of a column that does not exist yet. Nothing in production
-has written a value into any of them — no browser in
-this product computes one for a route yet — but the file's status changed the day the first column
-did: from a contract being agreed to a contract in force.
+exist, each width is a `CHECK`, a unique index enforces one
+name per budget over each, and the browser computes a value into every one of them on every name
+it seals. The transaction form goes one step further and **matches** a typed payee name against
+the rows it already holds **on the index**, never on decrypted text, so the local match and the
+database's uniqueness are decided by the same bytes. There is no fifth coming — the indexed set
+is closed — so no edit to this file can be made under the protection of a column holding
+nothing. It is a contract in force.
 
 **The table is in the message for a disclosure, not for tidiness.** Without it, one name
 produces one value wherever it lives — so a payee and a category called the same thing collide,
@@ -1292,7 +1298,7 @@ flipped bit anywhere, and bytes that authenticate but are not UTF-8. That last d
 `U+FFFD`, which reads as damaged text a person typed, is indistinguishable from it, and gets
 written straight back on the next save.
 
-**The server's step**, on the one consumer that is wired end to end today: decode base64url within
+**The server's step on a wrapped key**: decode base64url within
 a ceiling — which the decoder applies to the encoded text and then to the buffer it produced — and
 then the floor and the version. `WrappedKeyEnvelope` reaches `CiphertextEnvelopeText` and adds its
 exact width on top.
@@ -1303,8 +1309,9 @@ takes the same three steps and two more: `CiphertextEnvelopeText.TryDecode` with
 `NarrativeField.Sealed` with the same cap, `NarrativeField.SealedOrAbsent` where the column is
 nullable, or `IndexedName.Of` where a blind index rides beside it,
 in which case `BlindIndexText.TryDecode` runs on the index through the *shared* decoder rather than
-through the envelope one. **Every table but `budgets` is where those steps now run on a real
-request.** `CreateAccountHandler` and `CreatePayeeHandler` each decode three
+through the envelope one. **Every table but `budgets` runs those steps on requests a screen
+sends**, so all seven of those columns carry values a person typed into this product rather than
+values a suite made up. `CreateAccountHandler` and `CreatePayeeHandler` each decode three
 opaque members —
 the identifier through `CanonicalIdentifier`, the envelope through `CiphertextEnvelopeText`, the
 index through `BlindIndexText` — attempting **every** one and reporting **every** failure, because
@@ -1421,37 +1428,38 @@ caller wrapping an open in a `catch` has to answer "is this column damaged?", an
 - **[recovery-codes.md](recovery-codes.md)** and **[passkeys.md](passkeys.md)** — where the
   key-encryption keys that seal the wrapped copies come from. Neither reaches this format
   directly.
-- **[registration.md](registration.md)** — the only envelope-writing path a screen reaches:
-  eleven factors, twenty-two wrapped keys, in one save. It is one of **three** production
-  handlers that write envelopes — `RegisterAccountHandler`, `CompleteRegistrationHandler` and
-  `GenerateRecoveryCodesHandler` — and the other two are still reached only by the integration
-  suite. [account-keys.md](account-keys.md) is where the three are counted.
+- **[registration.md](registration.md)** — the one path a screen reaches that writes a
+  **wrapped-key** envelope: eleven factors, twenty-two wrapped keys, in one save. The other two
+  producers of one — registering a further passkey, and replacing a set of recovery codes — sit
+  behind controls that are inert on `/app/settings`, so their handlers are reached only by the
+  integration suite. Narrative envelopes come from a different set of handlers entirely — the
+  create and update legs of the seven columns a route accepts, listed where the server's steps are
+  walked through under
+  [Workflows](#workflows--state-transitions).
+  [account-keys.md](account-keys.md) is where the wrapped-key writers are counted.
 
 ## Edge Cases & Known Gotchas
 
-- **Every browser screen seals now, and the gap this section used to describe is closed.**
+- **Every browser screen seals, and one column has no screen behind it.**
   `sealNarrativeField` and `openNarrativeField` are reached through
   `AccountKeyCustodyService.sealField` and `openField`, which hold the content key they need, and
   `/app/accounts`, the transaction form and both halves of `/app/categories` all call those. Each
   mints its own row id, seals what it writes, computes the blind index where the column carries one,
   and opens what it reads.
 
-  **One column is still NULL in every row and it is not an oversight**: `budgets.name` has no route
+  **The column that holds NULL in every row is not an oversight**: `budgets.name` has no route
   at all, so nothing can write it. Of the eight, that is the only one no screen reaches.
 
-  **What the refusals bought while the gap lasted is worth keeping, because it is the argument for
-  the next one.** Both transaction wire shapes refuse the retired `payeeName` **by name** with a
-  400; without that, a body carrying it would have been accepted with the counterparty silently
-  dropped, which is the one way that gap could have lost data rather than rendered it wrongly. A
-  screen that fails visibly is the cheaper failure, and it is why the wiring could not be done half
-  way. **The
-  wrapped-key side reached this state first, and the two are now companions rather than a
-  counter-example**: `unwrapAccountKeys` is called on every passkey sign-in, because what it needed
-  was a route to hand it an envelope and a class to hold what came out. The narrative path had the
-  class and waited on the other half — a ciphertext existing anywhere in the product — and now has
-  it. **Do not delete any of it for want of a caller, and do not relax anything here to make a
-  later screen easier to write.** The format is a contract with every client that will ever seal an
-  envelope; it is being agreed while agreement is still cheap.
+  **A screen that disagrees with its routes has to fail visibly, and the refusals are what buy
+  that.** Both transaction wire shapes refuse the retired `payeeName` **by name** with a 400; under
+  a binder that skips an unknown member the same body is accepted with the payee silently dropped,
+  which is the one way a wire disagreement loses data rather than rendering it wrongly. Failing
+  visibly is the cheaper failure, and it is why a screen cannot be wired half way — the half-wired
+  state is loud by construction. **The wrapped-key side is a companion here rather than a
+  counter-example**: `unwrapAccountKeys` is called on every passkey sign-in, and what each consumer
+  needs is the same pair — a route to hand it an envelope, and a class to hold what came out.
+  **Nothing here may be relaxed to make a later screen easier to write.** The format is a contract
+  with every client that will ever seal an envelope, and rows are written under it.
 - **An empty plaintext is legal and seals to exactly 29 bytes.** A reader tempted to treat
   "too short" as "empty is not allowed" would refuse a value the format produces. The spec
   seals an empty string and opens it back, which is the half that stops the misreading.

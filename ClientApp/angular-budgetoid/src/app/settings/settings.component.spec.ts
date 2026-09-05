@@ -157,8 +157,36 @@ const EXPORT_SESSION_FAILURE =
 const EXPORT_RUNNING = 'Preparing your file…';
 const EXPORT_CONFIRMED = 'Exported.';
 const EMAIL_FAILURE = 'Couldn’t load your email address. Reload the page.';
-const OPERATOR_READABLE =
-  'Budgetoid’s operators can read everything you record: amounts, dates, currency codes, account types, the order you arrange things in, the timestamps on every row, the identifiers behind them, and your email address. Today that also includes the names and notes you type. Nothing is encrypted with a key only you hold — not yet.';
+// The transparency statement, in the three paragraphs `components.md` specifies
+// under *What we can read*, named for the three questions that chapter says the
+// order of the section is an argument about: what can you see, what can you not
+// see, what is left over. Three constants and not one literal, because a
+// paragraph is the unit somebody edits — a wording change lands in one of these
+// rather than in the middle of a 900-character line — and because the name is
+// what a reader of a failure sees first.
+//
+// **The pin below is the join, not the three severally**, and that is the half
+// the split would otherwise cost. Asserted one at a time they are satisfied by a
+// screen that reorders them or puts something between them, and the order is the
+// argument the chapter makes: a statement leading with what it cannot read is
+// selling something. `normalize` collapses the whitespace between two sibling
+// paragraphs to a single space, so the join is exactly what the section reads
+// as, and any sentence dropped from any of the three takes the whole pin red.
+//
+// The first paragraph's list is long on purpose and may not be summarised here
+// either. Every item in it is a column this server reads in the clear, and a
+// pin that abbreviated one would go green over copy that had dropped it.
+const READABLE_PARAGRAPH =
+  'We can read the numbers and the structure of what you record: amounts, dates, currency codes, account types, the order you arrange things in, the timestamps on every row, and the identifiers behind them. We can see how many accounts, payees, categories and transactions you have and which of them point at each other, and we can read your email address.';
+const UNREADABLE_PARAGRAPH =
+  'We can’t read the names and notes you type. Your browser encrypts those before they’re sent, under keys it takes from your passkey or one of your recovery codes, and we never receive one of those keys. What we can see about a name or a note is how long it is.';
+const NAME_CODE_PARAGRAPH =
+  'Names on accounts, payees, categories and category groups are stored beside a short code your browser works out from the name, under a key of its own that we never receive. The code is what lets your browser spot a name it has already used without sending us the name. The same name always gives the same code, so we can tell when one of these names changes and when one comes back. The code can’t be turned back into a name, and we can’t check a guess against one.';
+const OPERATOR_READABLE = [
+  READABLE_PARAGRAPH,
+  UNREADABLE_PARAGRAPH,
+  NAME_CODE_PARAGRAPH,
+].join(' ');
 const CREDENTIALS_HEADING = 'Ways to sign in';
 const REGISTER_BUTTON = 'Register a passkey';
 const REVOKE_BUTTON = 'Revoke';
@@ -255,22 +283,34 @@ const CUSTODY_UNREACHABLE =
   'Budgetoid couldn’t reach the server. Try again in a minute.';
 const CUSTODY_UNAUTHENTICATED =
   'Budgetoid wouldn’t hand your keys back to this browser. Sign out and sign in again.';
-// The section's two standing paragraphs, from the chapter's *Honesty about
-// today*. They are not decoration and they are not a preamble: nothing a person
-// records is encrypted, so unlocking changes nothing they can see, and a section
-// that stopped saying so would leave a reader who has just watched their
-// authenticator answer looking for whatever it revealed. The register is the
-// **What we can read** section's — a fact about the system, with no apology
-// around it — which is why the second sentence names the gap outright instead of
-// promising it will close.
-const HONESTY_KEYS_HELD =
-  'Your passkey holds the keys your records will be encrypted with. Budgetoid never sees them, and this browser forgets them every time the page reloads.';
-const HONESTY_NOTHING_ENCRYPTED =
-  'Nothing you record is encrypted yet, so unlocking changes nothing you can see today.';
-const ACCOUNT_KEYS_HONESTY = [
-  HONESTY_KEYS_HELD,
-  HONESTY_NOTHING_ENCRYPTED,
-] as const;
+// The section's two standing paragraphs, from the chapter's *What unlocking is
+// for*. They are not decoration and they are not a preamble: a person's records
+// are encrypted, and unlocking is the difference between a screen they can read
+// and one they cannot — so a section that stopped saying so would leave a reader
+// who has just watched their authenticator answer with no account of what it
+// bought them. The register is the **What we can read** section's, a fact about
+// the system with no apology around it.
+//
+// **Both sentences are standing prose, so both have to be true in all three
+// states**, and that is why the second is written as what unlocking *does*
+// rather than as what this tab cannot do. *Until you unlock, this tab can't
+// read…* is the sentence a writer reaches for, and it is a statement that the
+// account is locked: said in prose, beside a control that says it already, and
+// left standing on an account whose keys are held.
+//
+// **Neither may promise more than the two keys open**, and the rule runs in both
+// directions. What they open is the narrative — the names and notes on accounts,
+// payees, categories and transactions — while every amount, date and figure on
+// those screens is readable whatever this tab is holding, so copy saying
+// unlocking reveals *the record* sends the reader looking for what it revealed.
+// The other direction is the one that shipped: copy saying unlocking changes
+// nothing anybody can see was false from the moment a screen sealed a name, and
+// it stood here while eight columns already held ciphertext.
+const PROSE_KEYS_HELD =
+  'Your passkey holds the keys your records are encrypted with. Budgetoid never sees them, and this browser forgets them every time the page reloads.';
+const PROSE_UNLOCK_READS =
+  'Unlocking is what lets this tab read the names and notes on your accounts, categories and transactions.';
+const ACCOUNT_KEYS_PROSE = [PROSE_KEYS_HELD, PROSE_UNLOCK_READS] as const;
 // The class the screen's own stylesheet hangs `min-height: 1lh` on, so the
 // region's last line holds one line box open whether or not it has anything to
 // say. Pinned as a class for the reason `TOUCH_TARGET_CLASS` is: jsdom applies
@@ -1103,12 +1143,24 @@ describe('SettingsComponent', () => {
     const section = sectionFor(host, 'readable-heading');
 
     // Assert
-    // Same reasoning as the FR-023 pin: the paragraph is asserted whole
-    // because a fragment — `toContain('encrypted')` — survives the softening
-    // edit this requirement exists to prevent, and the scope is the section
-    // because the admission belongs under its own heading rather than
-    // scattered through the page.
-    expect(normalize(section)).toContain(OPERATOR_READABLE);
+    // Same reasoning as the FR-023 pin: the statement is asserted whole because
+    // a fragment survives the softening edit this requirement exists to
+    // prevent, and the scope is the section because the admission belongs under
+    // its own heading rather than scattered through the page. `encrypted` is
+    // the fragment somebody reaches for and it is now the worst one available —
+    // the true second paragraph contains the word and so does every sentence
+    // that denies the whole thing, so a `toContain('encrypted')` here cannot
+    // tell the two apart. A transparency statement pinned by fragments can lose
+    // a clause with nothing going red, and the clauses are the disclosure.
+    //
+    // What this pin cannot do is judge whether the sentences are *true*: it was
+    // exactly this green over the copy it replaced. That half is
+    // `no-encryption-denials.spec.ts`, which reads the source text, and the two
+    // are answers to different questions — do not fold either into the other.
+    expect(
+      normalize(section),
+      sentenceMismatch(normalize(section), OPERATOR_READABLE),
+    ).toContain(OPERATOR_READABLE);
   });
 
   // The section renders the reader's own calendar day, computed from the stored
@@ -1868,13 +1920,18 @@ describe('SettingsComponent', () => {
       // no confirmation behind this control.
       [GENERATE_BUTTON, buttonNamed(host, GENERATE_BUTTON)],
       // **Outline, and the near miss is worth stating because a reader will
-      // propose it**: a Primary *while locked* reads as the obvious move. It is
-      // refused twice over. Export is this screen's one main action, and a
-      // screen with two is a screen with none; and to anybody not tracking lock
-      // state — which is everybody, since nothing on the page changes when it
-      // flips — a Primary that comes and goes is just two Primary buttons on one
-      // screen. Under both sits the honesty rule: nothing is encrypted, so a
-      // Primary here promises a consequence that does not exist.
+      // propose it**: a Primary *while locked* reads as the obvious move, and
+      // the state has a real consequence behind it, which makes the proposal a
+      // serious one. It is refused twice over. Export is this screen's one main
+      // action, and a screen with two is a screen with none; and to anybody not
+      // tracking lock state — which is everybody, since nothing on *this* screen
+      // but this section is drawn differently when it flips, everything that
+      // changes being on three other screens — a Primary that comes and goes is
+      // just two Primary buttons on one screen. **The consequence is not a third
+      // reason, and it is not an argument for the Primary either**: a locked tab
+      // reads no name back, which makes a Primary here *honest* rather than
+      // right, and the two reasons above refuse an honest promise exactly as
+      // they refuse any other.
       [UNLOCK_BUTTON, buttonNamed(host, UNLOCK_BUTTON)],
       ...revokeButtons().map(
         (button, index) => [`${REVOKE_BUTTON} ${index + 1}`, button] as const,
@@ -3128,19 +3185,21 @@ describe('SettingsComponent', () => {
     expect(unlockButton?.getAttribute('tabindex')).not.toBe('-1');
   });
 
-  it('says plainly that nothing is encrypted yet', () => {
+  it('says plainly what unlocking is for', () => {
     // Act
     const section = sectionFor(host, ACCOUNT_KEYS_HEADING_ID);
     const said = normalize(section);
 
     // Assert
     // Both paragraphs, each as one element's own text. Without them the section
-    // stops saying that unlocking changes nothing anybody can see, and a reader
-    // who has just presented a passkey is left to work out what it did for them —
-    // which, on a product where nothing is encrypted, means going to look for a
-    // change that is not there. `elementSaying` is the half `toContain` cannot
-    // do: a sentence reassembled out of two paragraphs reads as two claims.
-    for (const sentence of ACCOUNT_KEYS_HONESTY) {
+    // stops saying what unlocking is for, and a reader who has just presented a
+    // passkey is left to work out what it did for them — which, on a product
+    // where the names and notes are sealed, means going to look for a change
+    // this screen never shows: every surface that reads differently once the
+    // keys are held is one of the three somewhere else. `elementSaying` is the
+    // half `toContain` cannot do: a sentence reassembled out of two paragraphs
+    // reads as two claims.
+    for (const sentence of ACCOUNT_KEYS_PROSE) {
       expect(said, sentenceMismatch(said, sentence)).toContain(sentence);
       expect(
         elementSaying(section, sentence),
@@ -3149,11 +3208,11 @@ describe('SettingsComponent', () => {
     }
   });
 
-  it('reads as the honesty, then the outcome, then the control', () => {
+  it('reads as the prose, then the outcome, then the control', () => {
     // Act
     const section = sectionFor(host, ACCOUNT_KEYS_HEADING_ID);
-    const keysHeld = elementSaying(section, HONESTY_KEYS_HELD);
-    const nothingEncrypted = elementSaying(section, HONESTY_NOTHING_ENCRYPTED);
+    const keysHeld = elementSaying(section, PROSE_KEYS_HELD);
+    const unlockReads = elementSaying(section, PROSE_UNLOCK_READS);
     const region = accountKeysRegion();
     const unlockButton = buttonNamed(host, UNLOCK_BUTTON);
 
@@ -3162,7 +3221,7 @@ describe('SettingsComponent', () => {
     // that is not there and would fail this as `expected false to be true`,
     // naming neither the element nor the reason.
     expect(keysHeld).not.toBeNull();
-    expect(nothingEncrypted).not.toBeNull();
+    expect(unlockReads).not.toBeNull();
     expect(region).not.toBeNull();
     expect(
       unlockButton,
@@ -3183,11 +3242,11 @@ describe('SettingsComponent', () => {
     // outcome before the reader has met the act, or explains the act after they
     // have already performed it.
     expect(
-      precedes(keysHeld, nothingEncrypted),
-      'the account keys section states the gap before it states what the passkey holds.',
+      precedes(keysHeld, unlockReads),
+      'the account keys section says what unlocking is for before it says what the passkey holds.',
     ).toBe(true);
     expect(
-      precedes(nothingEncrypted, region),
+      precedes(unlockReads, region),
       'the account keys section puts its outcome region above the prose that explains the act.',
     ).toBe(true);
     expect(

@@ -709,8 +709,10 @@ Load-bearing rules, each explained there or in the linked decision:
   docs, or the next reader who learns `CryptoKey` is cloneable reads the absence as an oversight.
   **A page reload therefore locks the *account*** — a browser holding no content key, which is
   FR-065's word and **not** a locked session (that is a federated credential's row, what
-  `sessions.md` means by "locked" throughout); vacuously satisfied today because nothing is
-  encrypted, and the locked screen and the unlock control are a later story. **`unlock` returns
+  `sessions.md` means by "locked" throughout). All eight narrative columns hold ciphertext, so
+  a reload leaves every name and note unreadable, the three content screens draw the locked
+  notice in place of their lists, and the way back is the Account keys section's **Unlock** on
+  `/app/settings`. **`unlock` returns
   `void` as enforcement** — awaitable, it lands a round trip between a verified assertion and the app
   and one refactor later grows a `catch`, at which point a key that did not open has become an
   authentication that failed. Custody calls nothing on `SessionService`, and **`'unopened'`,

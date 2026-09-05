@@ -367,18 +367,28 @@
 <section class="s-section" aria-labelledby="account-keys-heading">
   <h2 class="s-eyebrow" id="account-keys-heading">Account keys</h2>
 
-  <!-- Honesty about today, in the register the "What we can read" section below
-       uses: a fact about the system, with no apology around it. A section
-       implying budget content is hidden until you unlock would be describing a
-       product that does not exist, and the reader would go looking for whatever
-       unlocking had revealed. -->
+  <!-- What unlocking is for, in the register the "What we can read" section
+       below uses: a fact about the system, with no apology around it.
+
+       Both sentences are standing prose, so both have to be true in all three
+       states — keys held, ceremony running, and nothing asked for yet. *Until
+       you unlock, this tab can't read…* is the sentence a writer reaches for,
+       and it is a statement that the account is locked, said in prose beside a
+       control that says it already. Written as what unlocking *does*, the same
+       fact reads true in every state.
+
+       Neither sentence may promise more than the account's keys open — the
+       narrative, and every amount, date and figure is readable whatever this
+       tab is holding. The rule runs in both directions, and the second is the
+       one that shipped: copy saying unlocking changes nothing anybody can see
+       was false from the moment a screen sealed a name. -->
   <p class="s-prose">
-    Your passkey holds the keys your records will be encrypted with. Budgetoid
-    never sees them, and this browser forgets them every time the page reloads.
+    Your passkey holds the keys your records are encrypted with. Budgetoid never
+    sees them, and this browser forgets them every time the page reloads.
   </p>
   <p class="s-prose">
-    Nothing you record is encrypted yet, so unlocking changes nothing you can
-    see today.
+    Unlocking is what lets this tab read the names and notes on your accounts,
+    categories and transactions.
   </p>
 
   <!-- Read once into a local, for the reason the two lists above give: every
@@ -724,11 +734,43 @@
 <section class="s-section" aria-labelledby="readable-heading">
   <h2 class="s-eyebrow" id="readable-heading">What we can read</h2>
 
+  <!-- Three paragraphs, three questions, and the order is the argument. *What
+       can you see?* goes first, because a statement that leads with what it
+       cannot read is selling something. *What can you not see?* second, where
+       it is worth something, having been said after the first paragraph rather
+       than instead of it. *What is left over?* third, because the short code
+       beside each name is the one part of this design that is neither readable
+       nor invisible, and a reader who works it out later reads its absence as
+       this section's one omission.
+
+       The first list is long on purpose and may not be summarised: *everything
+       except the words* is shorter, reads better, and has chosen what to leave
+       out where the reader cannot see what was dropped. Every item in it is a
+       column this server reads in the clear.
+
+       First person throughout, and this is the one section on the screen where
+       that is true. Everywhere else the subject is the software; here it is the
+       people who run the service and hold its database. -->
   <p class="s-prose">
-    Budgetoid&rsquo;s operators can read everything you record: amounts, dates,
-    currency codes, account types, the order you arrange things in, the
-    timestamps on every row, the identifiers behind them, and your email
-    address. Today that also includes the names and notes you type. Nothing is
-    encrypted with a key only you hold &mdash; not yet.
+    We can read the numbers and the structure of what you record: amounts,
+    dates, currency codes, account types, the order you arrange things in, the
+    timestamps on every row, and the identifiers behind them. We can see how
+    many accounts, payees, categories and transactions you have and which of
+    them point at each other, and we can read your email address.
+  </p>
+  <p class="s-prose">
+    We can&rsquo;t read the names and notes you type. Your browser encrypts
+    those before they&rsquo;re sent, under keys it takes from your passkey or
+    one of your recovery codes, and we never receive one of those keys. What we
+    can see about a name or a note is how long it is.
+  </p>
+  <p class="s-prose">
+    Names on accounts, payees, categories and category groups are stored beside
+    a short code your browser works out from the name, under a key of its own
+    that we never receive. The code is what lets your browser spot a name it has
+    already used without sending us the name. The same name always gives the
+    same code, so we can tell when one of these names changes and when one comes
+    back. The code can&rsquo;t be turned back into a name, and we can&rsquo;t
+    check a guess against one.
   </p>
 </section>

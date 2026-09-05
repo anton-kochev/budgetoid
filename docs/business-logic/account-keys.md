@@ -15,10 +15,10 @@
 
 ## Purpose
 
-An account owns **one content key** and **one index key**. The content key is what the narrative
-will be encrypted under; the index key is what a blind index over a name **is** computed under — the
-browser computes one today, and `accounts.name_key` is the first column to store one, under a
-uniqueness constraint. Neither is derived from a credential.
+An account owns **one content key** and **one index key**. The content key is what the narrative is
+encrypted under; the index key is what a blind index over a name **is** computed under — the browser
+computes them today, and four columns store them, each under a uniqueness constraint. Neither is
+derived from a credential.
 Every **recovery factor** — a registered passkey, or one
 recovery code — derives its own **key-encryption key** and stores its own **wrapped copy of both**.
 
@@ -49,20 +49,19 @@ the third and is the only one reachable **inside** the app — see
 [The third way into custody](#the-third-way-into-custody). The other two write paths are still
 reached only by the integration suite.
 
-**What is *not* built is a browser that produces either, and the places for them are now complete
-rather than accumulating.** All **eight** narrative columns are envelope columns — `budgets.name`,
+**The browser produces both an envelope and an index, and the places for them are complete rather
+than accumulating.** All **eight** narrative columns are envelope columns — `budgets.name`,
 `accounts.name`, `payees.name`, `category_groups.name`, `categories.name` and the three
-descriptions on `category_groups`, `categories` and `transactions`. All **four** blind indexes
-exist — `accounts.name_key`, `payees.name_key`, `category_groups.name_key` and
-`categories.name_key` — each under a unique index; no description column has one or ever will. And
-every route but the budget's accepts the sealed shape. **So the schema has stopped being the thing
-this section is waiting on**: what no
-screen does is seal a field, open one, or look a name up. `/app/accounts`, `/app/transactions` and
-**both** halves of `/app/categories` still send plaintext, so
-those columns are reached only from the test suite. What
-exists is the **custody** — [The one class that holds them](#the-one-class-that-holds-them) — and
-the operations that delegate to what it holds: `sealField`, `openField` and `blindIndex`, whose only
-caller today is their spec. The index arrived last and closed the one gap left in this class:
+descriptions on `category_groups`, `categories` and `transactions`. All **four** blind indexes exist — `accounts.name_key`,
+`payees.name_key`, `category_groups.name_key` and `categories.name_key` — each under a unique index;
+no description column has one or ever will. And every route but the budget's accepts the sealed
+shape. **What reaches those columns is the product rather than the test suite**: `/app/accounts`,
+the transaction form and **both** halves of `/app/categories` seal what they write, compute the
+index where the column carries one, and open what they read, so no plaintext narrative value leaves
+this browser. What holds the keys they spend is the **custody** —
+[The one class that holds them](#the-one-class-that-holds-them) — and what they reach it through are
+the operations that delegate to what it holds: `sealField`, `openField` and `blindIndex`, each with
+callers of its own. The index arrived last and closed the one gap left in this class:
 `#indexKey` has a reader, so the `no-unused-private-class-members` suppression that stood over it is
 gone — the field's own declaration says so, and `reportUnusedDisableDirectives` is what makes a
 directive kept past its reason an error in its own right. See
@@ -945,8 +944,10 @@ column, its width check and its unique index are in the schema, and there is no 
 is left that could still choose a grammar rather than inherit it. The plaintext is
 encrypted and the only key that could recompute a value lives in a browser, so the migration runs
 through every account's own recovery factors or it does not run at all. **Which means the cheapness
-this paragraph rests on has been spent**: the argument for agreeing early was that agreement is free
-until a value is written, and what is left is only that no value has been written yet.
+this paragraph rests on is spent**: the argument for agreeing early was that agreement is free
+until a value is written, and values are written — every screen that seals also writes an index
+wherever its column carries one, so a grammar or a normalisation changed from here on orphans rows
+that already exist.
 
 **The rejected shape is an accessor, and it wears three costumes.** A `get contentKey()`, a
 `Signal<CryptoKey | null>`, and a scoped
@@ -1144,9 +1145,13 @@ Four more decisions in and around those unions, each of which a reader will coll
 - **There is deliberately no `NarrativeSealer`.** Nothing seals in a mapper — sealing happens on
   the way out of a screen, in a service that has already injected custody to save with. A third
   function type here would be precisely what the two above have just stopped being: named nowhere,
-  assignable from nothing, symmetry standing in for a caller. What is still **not** enforced is
-  that a mapper takes the narrow type rather than the service — no mapper exists, no compiler can
-  say it, and it stays held by review.
+  assignable from nothing, symmetry standing in for a caller. `AccountsService`,
+  `CategoriesService` and `TransactionsService` are where sealing happens, and no mapper in the
+  client seals anything. What is still **not** enforced is that a mapper takes the narrow type
+  rather than the service — every mapper in the client does: `account-view.ts`, `payee-view.ts`,
+  `category-view.ts`, `category-group-view.ts` and `transaction-view.ts` each take an opener, and
+  `payee-view.ts` an indexer beside it, none of them the class. No compiler can say so, and it
+  stays held by review.
 
 **What stays a rejection is as much of the rule as what becomes a result.** Two refusals keep
 throwing: a binding this grammar cannot be built over — a table and column that are not one of the
@@ -1294,6 +1299,13 @@ there, with nothing on either side of the wire able to see that it happened. Tha
 mode this whole chapter is arranged around, and it is the one an instrument chosen by symmetry would
 have introduced.
 
+**The write paths carry the other half of that, and it is theirs rather than this chapter's.**
+`sealed` beside `locked` is a reachable pair — the seal keeps its answer through a plain `lock()`
+and the index does not — so a caller that posted what it had would store a name whose column and
+whose index disagree, through the one door the server cannot watch, since it holds no index key and
+can never recompute one. `AccountsService`, `CategoriesService` and `TransactionsService` each post
+both halves or neither.
+
 **Two words on the result and no third**, for the reason the sealed side has two: computing an index
 has no ciphertext to fail against, so there is no `unreadable` to have. The word is `computed`
 rather than `sealed` because a keyed digest is not an envelope — no version byte, no nonce, no
@@ -1395,7 +1407,9 @@ hundreds of runs.
 **Two smaller rules the module states and a reader will undo.** There is **no length rule and no
 refusal of an empty result**: a name that trims away to nothing yields zero bytes and a perfectly
 well-defined index, and whether an empty name should be indexed at all is a product rule about that
-field, belonging to the screen that knows which field it is. And one loss is inherited rather than
+field, belonging to the screen that knows which field it is — which is where it is answered, by a
+form that refuses an empty or blank name before anything is sealed or keyed, never by a client-side
+trim of what is about to be sealed. And one loss is inherited rather than
 chosen — `TextEncoder` substitutes U+FFFD for an unpaired surrogate, so two names differing only in
 a lone surrogate index alike. Nothing at this layer can do better: the substitution is the
 platform's, and the alternative is a refusal no caller could act on.
@@ -1509,8 +1523,10 @@ gets back out.
 7. **Holding them, and spending them.** Both keys are imported through their own door and kept as
    `CryptoKey` objects for the life of the document, on `AccountKeyCustodyService`, which spends
    them through operations that delegate — `sealField` and `openField` under the content key,
-   `blindIndex` under the index key — and never through a member that returns one. Nothing in the
-   product calls any of the three. **Three paths arrive here.** A
+   `blindIndex` under the index key — and never through a member that returns one. All three have
+   callers: `/app/accounts`, the transaction form and both halves of `/app/categories` reach them
+   through their view models and services, each of which is handed a capability and never a key.
+   **Three paths arrive here.** A
    sign-in reaches it through step 4. Registration reaches it directly, by handing over the pair it
    drew. And the Settings screen's Unlock reaches it through step 4 as well, from a passkey ceremony
    the browser mints and discards — the only one of the three that runs on a session that already
@@ -1642,11 +1658,14 @@ about why.
   the local `deriveKeyFromLocalAssertion` an unlock runs, none of which lets the PRF output out of
   the module; and `unwrapAccountKeys` is called by `AccountKeyCustodyService` on every passkey
   sign-in and on every unlock, which is the same call from two screens and not two
-  implementations of it. What is uncalled is not "anything that uses an opened key": `sealField`
+  implementations of it. **Nothing here is left standing on a spec alone**: `sealField`
   and `openField` use the content key and reach the codec one file over, `blindIndex` uses the index
-  key and reaches the codec beside it, and what all three lack is a caller of their own — no column
-  holds an envelope or an index for a screen to seal, open or look up, so their only caller is their
-  spec. **Both key fields now have readers, so neither carries a
+  key and reaches the codec beside it, and all three are called by `/app/accounts`, the transaction
+  form and both halves of `/app/categories`. **What that costs is the cheapness of changing any of
+  them.** Every one of the three runs over columns that hold values, so an edit to a grammar, to the
+  normalization, or to the Unicode version the fold is read at orphans rows that exist — and a
+  blind index cannot be recomputed without the plaintext it was taken over, which only a browser
+  holding that account's own factors can supply. **Both key fields have readers, so neither carries a
   `no-unused-private-class-members` suppression** — see
   [The operations that delegate](#the-operations-that-delegate-and-the-shape-that-was-forced), which
   also records the answer for the next field that arrives read by nothing. Do not answer that
@@ -1668,7 +1687,8 @@ about why.
   `InvalidAccessError` — so an index key sent through the AES door reports `unlocked` exactly as the
   right one does, and goes on doing so until something computes an index. That is the shape of the
   whole hazard rather than a gap to close: the wrong door is invisible for as long as nothing uses
-  the key. What watches both doors directly is the spy at `crypto.subtle.importKey`, censusing the
+  the key. How long that is has an answer: the transactions screen indexes every payee it loads, so
+  the window closes the first time somebody opens it. What watches both doors directly is the spy at `crypto.subtle.importKey`, censusing the
   algorithms an unlock imports under; the registration side is different only because `adopt` is a
   seam, where a spec can stand in for custody and read the two objects it is handed. That asymmetry
   is the cost of the rule under
