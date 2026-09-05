@@ -207,9 +207,9 @@ public sealed class CategoryRepository(BudgetoidDbContext dbContext) : ICategory
         } postgresException && postgresException.ConstraintName == constraintName;
 
     // The 409 this table can raise beside the 400 below. ConflictExceptionHandler renders this message as
-    // ProblemDetails.Detail beside a Title fixed for every conflict in the product, and adds no extension
-    // member, so this sentence is the whole of what the caller is told and has to say what they do next
-    // by itself.
+    // ProblemDetails.Detail beside a Title fixed for every conflict in the product, so this sentence is
+    // the whole of what a PERSON is told and has to say what they do next by itself. What a CLIENT
+    // branches on is the kind, which this site shares with the four other client-minted tables.
     //
     // It deliberately does not say "re-read your categories", which would be the duplicate-name
     // instruction and is the wrong one here: the row already wearing this id may carry a different name -
@@ -225,7 +225,8 @@ public sealed class CategoryRepository(BudgetoidDbContext dbContext) : ICategory
     private static ConflictException DuplicateCategoryIdConflictException() => new(
         "A category already exists with this identifier. If this request is a retry, read that category "
         + "back by its identifier instead of posting it again; otherwise mint a fresh identifier and "
-        + "post again.");
+        + "post again.",
+        ConflictKind.DuplicateIdentifier);
 
     // Keyed on Name because the remedy IS a correction to that member - see AddAsync for why this table
     // answers 400 where payees answers 409 to the collision on the equivalent index.

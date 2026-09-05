@@ -5,12 +5,22 @@ namespace Application.Registration;
 /// say them.
 /// </summary>
 /// <remarks>
+/// <para>
 /// A refusal reached from two routes for one cause has to read identically on both, or a person who meets
 /// the options leg on one visit and the finish leg on the next is told two stories about a single fact.
-/// Every conflict in this product answers 409 under one title with no machine-readable code, so the
-/// detail sentence <em>is</em> the whole of what a caller is told — which makes "byte-for-byte the same"
-/// a requirement rather than tidiness. Only the sentences with more than one speaker live here; the
-/// refusals <c>RegisterAccountHandler</c> alone says stay private to it.
+/// Every conflict in this product answers 409 under one title, so the detail sentence <em>is</em> the
+/// whole of what a <em>person</em> is told — which makes "byte-for-byte the same" a requirement rather
+/// than tidiness. Only the sentences with more than one speaker live here; the refusals
+/// <c>RegisterAccountHandler</c> alone says stay private to it.
+/// </para>
+/// <para>
+/// <b>The machine-readable half is not held here and that is deliberate.</b> A conflict also carries a
+/// <see cref="Domain.Common.ConflictKind"/>, and the same "identical on both legs" requirement applies to
+/// it — but it is an enum member rather than a string, so the two legs naming
+/// <see cref="Domain.Common.ConflictKind.SubjectAlreadyRegistered"/> are already spelling one thing and
+/// there is no second copy to keep in step. A constant here would be a second name for a value that
+/// cannot drift.
+/// </para>
 /// </remarks>
 internal static class RegistrationConflicts
 {

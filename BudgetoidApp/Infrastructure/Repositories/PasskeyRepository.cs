@@ -159,7 +159,9 @@ public sealed class PasskeyRepository(BudgetoidDbContext dbContext) : IPasskeyRe
             ConstraintName: WrappedAccountKeysConfiguration.PrimaryKeyName,
         })
         {
-            throw new ConflictException(FactorAlreadyRegisteredMessage);
+            // The kind is shared with the other two routes that write this table, for the reason the
+            // sentence is: one fact about one table, and one thing the caller does about it.
+            throw new ConflictException(FactorAlreadyRegisteredMessage, ConflictKind.FactorAlreadyRegistered);
         }
     }
 

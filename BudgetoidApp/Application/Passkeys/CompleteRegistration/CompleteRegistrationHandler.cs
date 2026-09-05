@@ -211,7 +211,12 @@ public sealed class CompleteRegistrationHandler(
                 wrappedAccountKeys,
                 cancellationToken))
         {
-            throw new ConflictException("This authenticator is already registered.");
+            // RegisterAccountHandler's sentence and kind for the same refusal, reached from the other
+            // route: the account exists here and is being created there, but the caller does the same
+            // thing about it either way.
+            throw new ConflictException(
+                "This authenticator is already registered.",
+                ConflictKind.AuthenticatorAlreadyRegistered);
         }
     }
 

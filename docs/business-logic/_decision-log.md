@@ -8,6 +8,103 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-09-05 — A conflict carries a kind, and the kind names what the caller does next
+
+**Context:** a 409 in this product is a fixed title, a `Detail` sentence and nothing else.
+Two of those sentences sit on one route pulling in opposite directions: a duplicate payee
+**name** says *adopt the row that already exists*, and a duplicate client-minted
+**identifier** says *read that row back, or mint a fresh one*. The entries below settled
+both statuses and wrote both sentences with care, and each left the discriminant as prose —
+which a person reads and a client cannot. So the client keys on the status, and the status
+is the same number for both: a `POST /api/payees` retried after a network timeout collides
+on `PK_payees`, is read as a stale payee list, spends the single re-read that path allows,
+matches nothing, and abandons the transaction. That outcome is the right one, reached by
+reasoning about a conflict the request never met.
+
+**Decision:** **every `ConflictException` names a `ConflictKind`, and
+`ConflictExceptionHandler` writes it as a `conflictKind` extension member on the problem
+document.** The status stays 409, the title stays fixed, and every `Detail` sentence is
+byte-identical to the one argued for it. The member is addressed to a client and the
+sentence to a person, which is the whole of what the split buys.
+
+**A kind names the remedy, so sites sharing one share a word.** Eight words cover eighteen
+throw sites: `duplicate_identifier` (5, one per client-minted table), `duplicate_name` (1),
+`subject_already_registered` (3), `email_already_linked` (1),
+`authenticator_already_registered` (2), `factor_already_registered` (3), `last_passkey` (1)
+and `recovery_codes_replaced` (2). The counts are not the rule. A word per site would be
+the throw site's own name spelled a second time, and a caller made to learn eighteen of
+them has learned nothing the sentence was not already telling it; what earns a word is a
+different next step, and nothing else does.
+
+**Required at every site, never defaulted.** The constructor demands a kind, and
+`ConflictKind` numbers from 1, so `default(ConflictKind)` is no member at all and a site
+supplying nothing throws where it stands instead of putting a generic word on the wire. A
+default is this entry's own defect one level up: it lets the next conflict added to the
+product inherit a word chosen for somebody else's remedy, quietly, on the one member whose
+entire value is that it is specific. The instinct is `CredentialType`'s and `SessionKind`'s
+— order the members so the zero value is refused — arrived at by a different mechanism,
+because the refusal here is a throw rather than a schema.
+
+**One throw site answered two facts through a ternary, and it is exactly where a default
+would have been silently wrong.** `RegisterAccountHandler` raised a single
+`ConflictException` whose sentence was picked by a condition: an account already held by
+this provider subject, or an email address already linked to a different one. Naming a kind
+forced the question, and the two are split, because the remedies are opposites — one says
+sign in with your passkey, the other says the account belongs to a provider identity that
+is not this caller's, so no factor they hold opens it. Under one word the second person is
+sent to a sign-in that cannot work for them.
+
+**The two entries below are narrowed rather than reversed, and it is recorded here because
+entries are not edited.** Each closes by calling its `Detail` sentence the whole of what
+distinguishes its 409 from any other in the product. That is true of what a **person** is
+told, and a person is the reader each of those entries had in mind. It is not true of a
+**client**, which reads the member beside the sentence. Both statuses stand and both
+sentences stand word for word; the only claim that moves is which reader the sentence is
+the whole story for.
+
+**Alternatives rejected, and they fail differently.** **`errors: { "Name": [...] }` on the
+create, so a conflict looks like every other refusal a form already handles** — a create's
+remedy is to adopt the row that already exists, which is not a field correction, so the
+document would file a message against a control the person must not retype; it is the
+collapse `PayeeRepository` argues against at both of its arms, in as many words. **A
+distinct `type` URI per conflict** — the standards-shaped answer, and it moves the meaning
+into a table the client keeps, which is the part that goes stale: a URI is worth exactly
+what the reader recognising it is worth, and a reader that does not falls back to the
+status it already had. **A kind with a default value**, so eighteen sites need no edit — it
+buys one small diff and hands the next conflict a word describing somebody else's next
+step. **Leaving the sentence as the discriminant and asking clients to match on it** — it
+makes `Detail` a wire contract, so rewriting a sentence for the person it was written for
+breaks every client reading it.
+
+**What holds it is two censuses, and the second exists because a mutation survived.** One
+reads `ConflictKind` against its spelling table, so a member and its wire word cannot drift
+apart. The other reads every throw site against the kind it raises, and it was written
+after swapping `duplicate_identifier` for `duplicate_name` on four of the five
+client-minted tables left the whole suite green — which is the ordinary shape of a defect
+on this member: the status is untouched, the sentence is untouched, and the only thing
+wrong is the word a client branches on. That census scans **references to the enum member**
+and not constructor calls, and the difference decides whether it works at all: five
+repositories build the exception through a target-typed `new()` inside a factory method, so
+a constructor-shaped scan reaches 8 of the 18 sites and none of the four the mutation
+touched.
+
+**Consequences.** The wire carries a member every conflict in the product has to choose a
+word for, so the next one added is a decision about what its caller does next rather than a
+sentence written in passing — and the eight words are a published vocabulary, cheap to
+extend and breaking to respell. The `Detail` sentences keep the whole of their job for a
+person and none of them changed, because none of them was wrong; they were asked to serve
+two readers through one channel. And **the client still keys on `status === 409`**, on the
+payee path this entry opens with and everywhere else. The member makes that branch
+writable; it does not write it, and reading this entry as the fix for the abandoned
+transaction is reading it one step further along than it goes.
+
+**Affected areas:** [payees.md](payees.md), [accounts.md](accounts.md),
+[categories.md](categories.md), [transactions.md](transactions.md),
+[registration.md](registration.md), [passkeys.md](passkeys.md),
+[recovery-codes.md](recovery-codes.md), [_overview.md](_overview.md).
+
+---
+
 ## 2026-09-04 — Every screen seals, and four rules the browser had to settle for itself
 
 **Context:** the columns had been ciphertext for a slice and no screen could write. Wiring four

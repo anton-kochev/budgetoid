@@ -262,9 +262,13 @@ public sealed class PayeeIntegrationTests
     /// </para>
     /// <para>
     /// <b>The detail sentence is asserted in full and that is not over-specification.</b> The handler
-    /// is shared by every conflict in the product: it writes one fixed title, adds no extension member
-    /// and carries no field errors, so this sentence is the WHOLE of what distinguishes this 409 from
-    /// any other and the whole of what a client is told. A create's remedy is to adopt the row that
+    /// is shared by every conflict in the product: it writes one fixed title and carries no field
+    /// errors, so this sentence is the whole of what a <em>person</em> is told and, beside the
+    /// <c>conflictKind</c> member the handler now also writes, one of the two things distinguishing
+    /// this 409 from any other. The kind is pinned by
+    /// <see cref="PostPayee_CollidingOnTheName_AnswersTheAdoptTheExistingRowKind" />, and neither case
+    /// covers the other: this one would stay green on a handler that had emptied the detail into the
+    /// kind. A create's remedy is to adopt the row that
     /// already exists, which is not a correction to a field — which is why it is a 409 here and a 400
     /// keyed on <c>Name</c> on the rename leg, on the very same index.
     /// </para>
@@ -323,8 +327,10 @@ public sealed class PayeeIntegrationTests
     /// implementation that translates the primary-key violation into the neighbouring <i>duplicate
     /// name</i> conflict — same status, and a remedy that sends the client to re-read a list looking
     /// for a name that may not be on it. <c>ConflictExceptionHandler</c> writes one fixed title for
-    /// every conflict in the product and adds no extension member, so this sentence is the whole of
-    /// what distinguishes the two and the whole of what the caller is told.
+    /// every conflict in the product, so this sentence is the whole of what a <em>person</em> is told;
+    /// the <c>conflictKind</c> member the handler writes beside it is what a client reads, and
+    /// <see cref="PostPayee_CollidingOnTheIdentifier_AnswersADifferentKindFromTheNameCollision" /> is
+    /// where that half of the same distinction is pinned.
     /// </para>
     /// </remarks>
     [Test]
@@ -493,6 +499,125 @@ public sealed class PayeeIntegrationTests
         await Assert.That(nameDetail).IsEqualTo(
             "A payee with this name already exists in this budget. "
             + "Re-read the payee list and use the payee it already holds.");
+    }
+
+    /// <summary>
+    /// A collision on the blind index answers 409 carrying <c>conflictKind</c> <c>duplicate_name</c> —
+    /// the word for "adopt the row that already exists".
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Its neighbour below is the control, and this case is worth nothing without it.</b> Every
+    /// conflict in the product answers under one status and one title, so an implementation that stamped
+    /// a single word on every 409 would satisfy this case exactly. What proves the member discriminates
+    /// is that the identifier collision — same route, same table, same status — answers a
+    /// <em>different</em> word.
+    /// </para>
+    /// <para>
+    /// <b>The token is written out and never read off <c>ConflictKindSpelling</c>.</b> Reading it would
+    /// make this case assert that the code agrees with itself, and it would stay green through a rename
+    /// that reissues the contract under a new word — which is the exact failure the spelling table
+    /// exists to prevent, so a test may not be the one place it is allowed to happen.
+    /// </para>
+    /// <para>
+    /// <b>The detail sentence is asserted beside it and neither half replaces the other.</b> They answer
+    /// two readers: a person reads the sentence, a client branches on the word. The member is an
+    /// addition, so a case that stopped asserting the sentence would go green on a handler that had
+    /// quietly emptied it.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task PostPayee_CollidingOnTheName_AnswersTheAdoptTheExistingRowKind()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartApiHostAsync();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
+        await CreatePayeeAsync(client, "Starbucks");
+
+        // Act — a fresh identifier under a name this budget already indexes: the name index alone.
+        HttpResponseMessage conflict = await client.PostAsJsonAsync("/api/payees", new
+        {
+            id = Guid.CreateVersion7().ToString("D"),
+            name = SealedNarrative.EncodedName("Starbucks"),
+            nameKey = SealedNarrative.EncodedIndex("Starbucks"),
+        });
+        JsonNode problem = (await JsonNode.ParseAsync(await conflict.Content.ReadAsStreamAsync()))!;
+
+        // Assert — presence separately from value, so a handler that stopped writing the member is
+        // reported as a missing member rather than as an anonymous null dereference.
+        await Assert.That(conflict.StatusCode).IsEqualTo(HttpStatusCode.Conflict);
+        await Assert.That(problem["conflictKind"]).IsNotNull();
+        await Assert.That(problem["conflictKind"]!.GetValue<string>()).IsEqualTo("duplicate_name");
+
+        // The sentence still travels, unchanged: the member is an addition and not a replacement.
+        await Assert.That(problem["detail"]!.GetValue<string>()).IsEqualTo(
+            "A payee with this name already exists in this budget. "
+            + "Re-read the payee list and use the payee it already holds.");
+
+        // And no field errors arrived with it — a conflict's remedy is still not a field correction.
+        await Assert.That(problem["errors"]).IsNull();
+    }
+
+    /// <summary>
+    /// A collision on the primary key answers 409 carrying a <b>different</b> <c>conflictKind</c> from
+    /// the name collision: <c>duplicate_identifier</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This is the negative control for the case above, and the reason the pair is one concept.</b>
+    /// Two 409s with opposite remedies — adopt the row that already exists, and mint a fresh identifier
+    /// — were indistinguishable to a client for as long as a sentence written for a person was the only
+    /// thing separating them. Asserting one word in isolation cannot show that the member carries the
+    /// difference: a handler stamping one word on every conflict passes the neighbour and fails here.
+    /// </para>
+    /// <para>
+    /// <b>The inequality is asserted as well as the literal,</b> for the reason
+    /// <see cref="PostPayee_CollidingOnTheIdentifierOrOnTheName_AnswersTwoDifferentSentences" /> asserts
+    /// both: the literal catches a token edited into something wrong, and the inequality catches an
+    /// implementation where the two throw sites have been collapsed onto whichever kind survived.
+    /// </para>
+    /// <para>
+    /// <b>Only the key is broken by the first act.</b> The name is one nothing in the budget holds, so
+    /// the name index is untouched and there is no second constraint whose answer could be borrowed.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task PostPayee_CollidingOnTheIdentifier_AnswersADifferentKindFromTheNameCollision()
+    {
+        // Arrange — one payee, then one collision on each rule, so both words are observable at once.
+        await using PostgresTestHost host = await StartApiHostAsync();
+        HttpClient client = (await host.Factory.CreateSignedInClientAsync()).Client;
+        var takenId = Guid.CreateVersion7();
+        HttpResponseMessage seeded = await client.PostAsJsonAsync("/api/payees", new
+        {
+            id = takenId.ToString("D"),
+            name = SealedNarrative.EncodedName("Starbucks"),
+            nameKey = SealedNarrative.EncodedIndex("Starbucks"),
+        });
+
+        // Act
+        HttpResponseMessage identifierCollision = await client.PostAsJsonAsync("/api/payees", new
+        {
+            id = takenId.ToString("D"),
+            name = SealedNarrative.EncodedName("Corner Shop"),
+            nameKey = SealedNarrative.EncodedIndex("Corner Shop"),
+        });
+        HttpResponseMessage nameCollision = await client.PostAsJsonAsync("/api/payees", new
+        {
+            id = Guid.CreateVersion7().ToString("D"),
+            name = SealedNarrative.EncodedName("Starbucks"),
+            nameKey = SealedNarrative.EncodedIndex("Starbucks"),
+        });
+        string identifierKind = await ConflictKindOfAsync(identifierCollision);
+        string nameKind = await ConflictKindOfAsync(nameCollision);
+
+        // Assert — the same status from both, which is why the status proves nothing on its own.
+        await Assert.That(seeded.StatusCode).IsEqualTo(HttpStatusCode.Created);
+        await Assert.That(identifierCollision.StatusCode).IsEqualTo(HttpStatusCode.Conflict);
+        await Assert.That(nameCollision.StatusCode).IsEqualTo(HttpStatusCode.Conflict);
+
+        await Assert.That(identifierKind).IsEqualTo("duplicate_identifier");
+        await Assert.That(identifierKind).IsNotEqualTo(nameKind);
     }
 
     /// <summary>
@@ -1657,6 +1782,30 @@ public sealed class PayeeIntegrationTests
     {
         JsonNode problem = (await JsonNode.ParseAsync(await response.Content.ReadAsStreamAsync()))!;
         return problem["detail"]!.GetValue<string>();
+    }
+
+    /// <summary>
+    /// The problem document's <c>conflictKind</c> — the half of a 409 a client branches on.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The member name is written out here, exactly as the tokens are at the call sites and for the same
+    /// reason: reading it off <c>ConflictExceptionHandler</c> would let a rename of the wire contract
+    /// pass unnoticed.
+    /// </para>
+    /// <para>
+    /// <b>Presence is asserted here rather than left to a dereference,</b> because the two failures read
+    /// very differently: a handler that stopped writing the member at all produces a bare
+    /// <c>NullReferenceException</c> naming no member, and every caller of this helper would report the
+    /// same anonymous fault. Measured, on the mutation that removes the extension.
+    /// </para>
+    /// </remarks>
+    private static async Task<string> ConflictKindOfAsync(HttpResponseMessage response)
+    {
+        JsonNode problem = (await JsonNode.ParseAsync(await response.Content.ReadAsStreamAsync()))!;
+        JsonNode? kind = problem["conflictKind"];
+        await Assert.That(kind).IsNotNull();
+        return kind!.GetValue<string>();
     }
 
     /// <summary>

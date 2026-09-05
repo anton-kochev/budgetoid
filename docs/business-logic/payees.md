@@ -359,9 +359,11 @@ erDiagram
   `PayeeRepository.UpdateAsync` catches the same violation on the same index and raises
   `Domain.Common.ValidationException` naming `Name` ("Payee name must be unique."), which
   `ValidationExceptionHandler` renders as a 400. The conflict handler is shared by every conflict in
-  the product and adds no extension member, so its `Detail` sentence is the whole of what
-  distinguishes this 409 and has to say what the caller does next by itself — it names no payee id,
-  no SQLSTATE and no constraint.
+  the product and writes one title for all of them, so its `Detail` sentence is the whole of what a
+  **person** is told and has to say what they do next by itself — it names no payee id, no SQLSTATE
+  and no constraint. What a **client** branches on is the `conflictKind` member beside it, which on
+  this create is `duplicate_name`; the two answer different readers and neither may be shortened
+  into the other.
   `PayeeIntegrationTests.PostPayee_WithABlindIndexAnotherPayeeHolds_AnswersConflict` asserts that
   sentence **in full** and asserts the problem document carries **no** `errors` member, which is what
   keeps the two answers from being quietly harmonised;
@@ -417,8 +419,9 @@ erDiagram
     nothing about names at all — the row wearing that id may hold a different one, or a name in a
     budget the caller cannot read — so sending that caller off to re-read its payee list would send
     it looking for a name that is not on it. The shared conflict handler writes one title for every
-    409 in the product and adds no extension member, so the sentence is the only place the
-    difference can live.
+    409 in the product, so the sentence is the only place the difference can live **for a person** —
+    and `conflictKind` is the only place it can live for a client: `duplicate_identifier` here
+    against `duplicate_name` on the neighbour. These two conflicts are why that member exists.
   - **"Read it back" is an instruction and not a promise, and the second clause is why.** The
     primary key spans the whole table while `GET /api/payees/{id}` is scoped to the ambient budget,
     so an identifier held by *another* budget answers 409 here and 404 on the read-back — at which
@@ -456,6 +459,60 @@ erDiagram
   would still have to choose an answer for the case where the id matches and the index does not.
   That is a decision with its own failure modes and it is not this one; a 409 that says what
   happened costs the client one `GET /api/payees/{id}`.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: Every 409 in the product carries a `conflictKind` extension member naming **what the
+  caller does next**, and the payee create is where the vocabulary is decided: a duplicate blind
+  index answers `duplicate_name`, a duplicate identifier answers `duplicate_identifier`. Sites whose
+  remedy is identical **share** a word — `duplicate_identifier` is the one answer all five
+  client-minted tables give.
+- **Why**: **the two conflicts on this one route had opposite remedies and were, to a client, the
+  same response.** Status, title and the absence of an `errors` map are identical on both; the only
+  thing separating them was prose written for a person to read, so `transactions.service.ts` keyed
+  on `status === 409` and nothing else — and a payee POST retried after a network timeout was
+  therefore read as a duplicate name, spent its one re-read, found no match, and abandoned the
+  transaction. The pair is not an unlucky coincidence: a name collision and an identifier collision
+  are raised by two `catch` arms of one method, over one SQLSTATE, four lines apart.
+  - **Why a kind and not an `errors` map, which is the shape a reader will reach for.** A validation
+    problem document keys a message to a **field the person can correct**, and neither of these has
+    one: the create's remedy is to adopt the row that already exists, and the identifier's is to read
+    a row back or mint a fresh id. Filing either under `errors.Name` would ask somebody to retype a
+    name they typed correctly — which is precisely the argument that made this a 409 rather than the
+    400 the *rename* leg answers on the very same index. A discriminant that is not about a field
+    cannot live in a member map that is.
+  - **Why not the sentence.** Matching on `Detail` is a second copy of the server's copy held across
+    the wire, with nothing to redden when the two drift; `docs/design/voice.md` owns those sentences
+    and revises them for readability, which would silently reissue the contract.
+  - **Why the token is written out and never derived from the enum member name.**
+    `Domain.Common.ConflictKindSpelling` follows `CredentialTypeSpelling`, for the reason that type
+    states: a member name and a wire value that drift apart is a defect nothing reddens, because the
+    rename that causes it reads as tidying up. No `ConflictKind` member takes the value zero, so
+    `default` is a value the spelling table refuses rather than a token no client has a branch for.
+  - **Why sharing a word is the point.** One kind per throw site would be a second spelling of the
+    stack trace and would tell a client nothing the status did not. The member names the remedy, so
+    the five client-minted tables collapse onto one word and the three routes that write
+    `wrapped_account_keys` collapse onto another.
+- **Enforced in**: `Domain.Common.ConflictException` **requires** a `ConflictKind` beside its message
+  — there is no default and no message-only overload, so a conflict raised without a kind does not
+  compile, which is the whole enforcement. `ConflictExceptionHandler` writes
+  `ConflictKindSpelling.Of(...)` into the extension member named `conflictKind`; nothing else about
+  the response moves, so the status stays 409, the title stays fixed and every `Detail` stays as
+  written. `PayeeIntegrationTests.PostPayee_CollidingOnTheName_AnswersTheAdoptTheExistingRowKind`
+  asserts `duplicate_name` beside the unchanged sentence, and
+  `…PostPayee_CollidingOnTheIdentifier_AnswersADifferentKindFromTheNameCollision` is its **control**:
+  it asserts `duplicate_identifier` *and* that the two are not equal, which is the property no case
+  asserting one word in isolation can hold — a handler stamping a single word on every 409 passes
+  the first and fails the second. `CredentialRevocationTests.Revocation_OfTheOnlyRemainingPasskey_`
+  `CarriesItsOwnConflictKind` is the second control, from another route and another ring, and is
+  what says the vocabulary is not two-valued by accident.
+- **Example**: a browser posts a payee, the answer is lost, it retries the identical body, reads
+  `conflictKind: "duplicate_identifier"`, and reads the payee back by its id instead of re-reading
+  its whole list looking for a name.
+- **Counterexample**: **the client still keys on `status === 409` alone.** This entry records the
+  server half; the browser has not been taught the member yet, so the abandoned-transaction defect
+  above is still reachable today.
 - **Source**: `[SOURCE: discussion]`
 
 ---

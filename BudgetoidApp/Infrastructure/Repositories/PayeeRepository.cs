@@ -74,7 +74,10 @@ public sealed class PayeeRepository(BudgetoidDbContext dbContext) : IPayeeReposi
     /// cannot read, no name it will ever see. Sending that caller to re-read its payee list would send it
     /// looking for a name that is not there. <c>ConflictExceptionHandler</c> renders the message as the
     /// whole of <c>ProblemDetails.Detail</c> beside a title fixed for every conflict in the product, so
-    /// the sentence is the only place the difference can live.
+    /// the sentence is the only place the difference can live <em>for a person</em> — and the kind beside
+    /// it, <see cref="ConflictKind.DuplicateName"/> against
+    /// <see cref="ConflictKind.DuplicateIdentifier"/>, is the only place it can live for a client. These
+    /// two sites are why that member exists: they are the pair a client could not tell apart.
     /// </para>
     /// <para>
     /// <b>The route stays non-idempotent, deliberately.</b> Answering 200 with the row that already
@@ -168,8 +171,12 @@ public sealed class PayeeRepository(BudgetoidDbContext dbContext) : IPayeeReposi
 
     // ConflictExceptionHandler renders this message as ProblemDetails.Detail beside a Title fixed for
     // every conflict in the product ("The request conflicts with the current state of the resource."),
-    // and adds no extension member, so this sentence is the whole of what distinguishes this 409 from
-    // any other and has to say what the caller does next by itself.
+    // so this sentence is the whole of what a PERSON is told and has to say what they do next by itself.
+    //
+    // It is no longer the whole of what distinguishes this 409: the handler also writes the kind, which
+    // is what a client branches on. That member exists BECAUSE OF THIS PAIR — this conflict and its
+    // neighbour below carry opposite remedies and were, to a client, one indistinguishable 409. The
+    // sentence and the kind answer two different readers and neither may be shortened into the other.
     //
     // It deliberately does NOT name the existing payee's id: the handler is shared, so there is nowhere
     // to put one, and a client must decrypt the list to confirm the row is the one it meant regardless.
@@ -177,11 +184,13 @@ public sealed class PayeeRepository(BudgetoidDbContext dbContext) : IPayeeReposi
     // nothing about the schema that refused it.
     private static ConflictException DuplicatePayeeConflictException() => new(
         "A payee with this name already exists in this budget. "
-        + "Re-read the payee list and use the payee it already holds.");
+        + "Re-read the payee list and use the payee it already holds.",
+        ConflictKind.DuplicateName);
 
     // The OTHER conflict this table can raise, and everything the sentence above says about the shared
-    // handler applies here: one Title for every 409 in the product, no extension member, so this string
-    // is the whole of what the caller is told.
+    // handler applies here: one Title for every 409 in the product, so this string is the whole of what a
+    // person is told, and the kind is the whole of what a client reads. The kind here is the one the four
+    // other client-minted tables raise, because the remedy is theirs and not this table's.
     //
     // It deliberately does not say "re-read your payee list", which is the neighbouring sentence and the
     // wrong instruction: the row already wearing this id may carry a different name, so a client sent to
@@ -199,7 +208,8 @@ public sealed class PayeeRepository(BudgetoidDbContext dbContext) : IPayeeReposi
     // to do and nothing about the schema that refused it.
     private static ConflictException DuplicatePayeeIdConflictException() => new(
         "A payee already exists with this identifier. If this request is a retry, read that payee back by "
-        + "its identifier instead of posting it again; otherwise mint a fresh identifier and post again.");
+        + "its identifier instead of posting it again; otherwise mint a fresh identifier and post again.",
+        ConflictKind.DuplicateIdentifier);
 
     private static ValidationException DuplicateNameValidationException() => new(new Dictionary<string, string[]>
     {

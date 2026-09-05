@@ -192,8 +192,9 @@ public sealed class TransactionRepository(BudgetoidDbContext dbContext) : ITrans
     }
 
     // The 409 this table can raise. ConflictExceptionHandler renders this message as
-    // ProblemDetails.Detail beside a Title fixed for every conflict in the product, and adds no extension
-    // member, so this sentence is the whole of what the caller is told.
+    // ProblemDetails.Detail beside a Title fixed for every conflict in the product, so this sentence is
+    // the whole of what a PERSON is told. What a CLIENT branches on is the kind, which this site shares
+    // with the four other client-minted tables because the remedy does not vary with the table.
     //
     // It deliberately does not say "re-read your transactions": the row already wearing this id may carry
     // a different amount, date and note - or sit in a budget the caller cannot read, in which case
@@ -204,7 +205,8 @@ public sealed class TransactionRepository(BudgetoidDbContext dbContext) : ITrans
     private static ConflictException DuplicateTransactionIdConflictException() => new(
         "A transaction already exists with this identifier. If this request is a retry, read that "
         + "transaction back by its identifier instead of posting it again; otherwise mint a fresh "
-        + "identifier and post again.");
+        + "identifier and post again.",
+        ConflictKind.DuplicateIdentifier);
 
     // Worded and keyed the same as the up-front checks in the create and update handlers, so a row
     // that vanished under a race is reported to the caller exactly as one that was never there.

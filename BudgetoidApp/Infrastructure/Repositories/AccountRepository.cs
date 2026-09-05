@@ -136,8 +136,9 @@ public sealed class AccountRepository(BudgetoidDbContext dbContext) : IAccountRe
     });
 
     // ConflictExceptionHandler renders this as the whole of ProblemDetails.Detail, beside a Title fixed
-    // for every conflict in the product and with no extension member, so this string is the whole of what
-    // the caller is told and has to say what to do next by itself.
+    // for every conflict in the product, so this string is the whole of what a PERSON is told and has to
+    // say what to do next by itself. What a CLIENT branches on is the kind beside it, which this site
+    // shares with the four other client-minted tables because the next step does not vary with the table.
     //
     // It names the two readings the server genuinely cannot tell apart — a retry that already succeeded,
     // and an identifier reused by mistake — and gives each its own next step, because the client CAN tell
@@ -155,7 +156,8 @@ public sealed class AccountRepository(BudgetoidDbContext dbContext) : IAccountRe
     private static ConflictException DuplicateAccountIdConflictException() => new(
         "An account already exists with this identifier. If this request is a retry, read that account "
         + "back by its identifier instead of posting it again; otherwise mint a fresh identifier and post "
-        + "again.");
+        + "again.",
+        ConflictKind.DuplicateIdentifier);
 
     private static ValidationException ReferencedAccountValidationException() => new(new Dictionary<string, string[]>
     {

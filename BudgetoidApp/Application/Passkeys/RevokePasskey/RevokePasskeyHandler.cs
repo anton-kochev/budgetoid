@@ -132,9 +132,13 @@ public sealed class RevokePasskeyHandler(
                     // so there is nobody left to enumerate about — the same argument
                     // CompleteRegistrationHandler makes for its own real sentences. It still names no
                     // count and no id, because neither would tell the person anything to act on.
+                    // A kind of its own, and the only conflict in the product whose remedy is an act on
+                    // a DIFFERENT resource: every other one asks the caller to change or re-send what
+                    // they sent, and this one asks them to go and register a passkey first.
                     throw new ConflictException(
                         "This is the account's only passkey and removing it would leave no way to "
-                        + "sign in. Register another passkey first, then revoke this one.");
+                        + "sign in. Register another passkey first, then revoke this one.",
+                        ConflictKind.LastPasskey);
                 }
 
                 // Explicit, and the delete below would take these rows anyway by the cascade from

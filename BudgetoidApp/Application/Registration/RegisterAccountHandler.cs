@@ -421,7 +421,9 @@ public sealed class RegisterAccountHandler(
         switch (outcome)
         {
             case RegistrationOutcome.SubjectTaken:
-                return new ConflictException(RegistrationConflicts.SubjectAlreadyRegisteredMessage);
+                return new ConflictException(
+                    RegistrationConflicts.SubjectAlreadyRegisteredMessage,
+                    ConflictKind.SubjectAlreadyRegistered);
 
             case RegistrationOutcome.EmailTaken:
                 Guid? winnerId = await userRepository.FindUserIdByFederatedCredentialAsync(
@@ -429,14 +431,30 @@ public sealed class RegisterAccountHandler(
                     googleSubject,
                     cancellationToken);
 
-                return new ConflictException(
-                    winnerId is null ? EmailAlreadyLinkedMessage : RegistrationConflicts.SubjectAlreadyRegisteredMessage);
+                // THE KIND BRANCHES WITH THE SENTENCE, and this is the one site in the product where a
+                // single construction answered two different facts. The read above is what separates
+                // them, so the ternary that chose the message has to choose the kind too — pairing one
+                // kind with both sentences would tell somebody who CANNOT get in (the address belongs to
+                // another Google identity, so no passkey or code of theirs opens it) to go and sign in.
+                return winnerId is null
+                    ? new ConflictException(EmailAlreadyLinkedMessage, ConflictKind.EmailAlreadyLinked)
+                    : new ConflictException(
+                        RegistrationConflicts.SubjectAlreadyRegisteredMessage,
+                        ConflictKind.SubjectAlreadyRegistered);
 
             case RegistrationOutcome.AuthenticatorTaken:
-                return new ConflictException(AuthenticatorAlreadyRegisteredMessage);
+                return new ConflictException(
+                    AuthenticatorAlreadyRegisteredMessage,
+                    ConflictKind.AuthenticatorAlreadyRegistered);
 
+            // A DIFFERENT KIND FROM ITS NEIGHBOUR, though both are refusals of one ceremony. An
+            // authenticator already enrolled means use another one — or stop, it already works. A factor
+            // identifier already standing means re-wrap the account keys under a fresh one and run the
+            // ceremony again, which is work the caller has to do before it can retry anything.
             case RegistrationOutcome.FactorTaken:
-                return new ConflictException(FactorAlreadyRegisteredMessage);
+                return new ConflictException(
+                    FactorAlreadyRegisteredMessage,
+                    ConflictKind.FactorAlreadyRegistered);
 
             // Registered never reaches here — the caller returns on it — and every other member is a
             // refusal somebody added without deciding what it says. Written out rather than folded into a

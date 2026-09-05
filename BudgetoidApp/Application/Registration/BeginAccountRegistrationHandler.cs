@@ -93,7 +93,13 @@ public sealed class BeginAccountRegistrationHandler(
             // The finish leg's sentence, byte for byte, because it is one fact reached from two routes —
             // see RegistrationConflicts for why sharing it is a requirement and not tidiness. The id just
             // read is deliberately not mentioned in it and goes no further than this scope.
-            throw new ConflictException(RegistrationConflicts.SubjectAlreadyRegisteredMessage);
+            //
+            // The kind is shared for the same reason and is subject to the same requirement: a client
+            // meeting this leg on one visit and the finish leg on the next must branch identically, so
+            // the pair travels together and neither may be changed alone.
+            throw new ConflictException(
+                RegistrationConflicts.SubjectAlreadyRegisteredMessage,
+                ConflictKind.SubjectAlreadyRegistered);
         }
 
         IssuedChallenge issued = await challengeStore.IssueAsync(

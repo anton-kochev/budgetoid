@@ -477,6 +477,84 @@ public sealed class CredentialRevocationTests
         await AssertPasskeyIsWholeAsync(admin, onlyCredentialId);
     }
 
+    /// <summary>
+    /// The last-passkey refusal carries a <c>conflictKind</c> of its own — <c>last_passkey</c> — and not
+    /// one of the words the write routes use.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This is the second control on the conflict vocabulary, and it is in this file rather than
+    /// beside the payee pair on purpose.</b> Those two are one route and one table; a vocabulary that
+    /// happened to be two-valued would satisfy both of them and would still tell every client in the
+    /// product that a revocation it cannot perform is a duplicate identifier. A third family, reached
+    /// over a different route from a different ring — this refusal is raised in the Application layer,
+    /// where the payee pair is raised in Infrastructure — is what says the member names the remedy and
+    /// not the throw site.
+    /// </para>
+    /// <para>
+    /// <b>Its remedy is the only one in the vocabulary that is an act on a different resource:</b>
+    /// register another passkey, then come back. Every other kind asks the caller to change or re-send
+    /// what they sent, which is why collapsing this one into any of them would send somebody to edit a
+    /// request that is already correct.
+    /// </para>
+    /// <para>
+    /// The arrangement is
+    /// <see cref="Revocation_OfTheOnlyRemainingPasskey_IsRefusedWithConflictAndRemovesNothing" />'s,
+    /// including the bystander account, and the reasons are written there. What is <b>not</b> repeated
+    /// here is that case's second half — nothing is counted after the refusal, because this case is
+    /// about the wire and that one already owns "nothing moved".
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Revocation_OfTheOnlyRemainingPasskey_CarriesItsOwnConflictKind()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(
+            Subject, opensWith: CredentialType.RecoveryCodes);
+        SyntheticAuthenticator onlyDevice = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await RegisterPasskeyAsync(client, onlyDevice);
+
+        // The bystander, for the reason the neighbouring case states: without it an unscoped count reads
+        // one and the floor fires for the wrong reason, so this case would pin a word onto a refusal
+        // that is not the one it names.
+        await RegisterPasskeyAsync(
+            (await host.Factory.CreateSignedInClientAsync(
+                OtherSubject, opensWith: CredentialType.RecoveryCodes)).Client,
+            SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId));
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        Guid onlyCredentialId = await ResolveCredentialIdAsync(admin, onlyDevice);
+
+        // Act
+        HttpResponseMessage response = await RevokeAsync(client, onlyDevice, userId, onlyCredentialId);
+        JsonNode problem = (await JsonNode.ParseAsync(await response.Content.ReadAsStreamAsync()))!;
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Conflict);
+
+        // Presence separately from value, for the reason the neighbouring member does it on the
+        // sessions-ended count: the two failures read very differently, and a handler that stopped
+        // writing the extension at all otherwise reports a bare null dereference naming nothing.
+        await Assert.That(problem["conflictKind"]).IsNotNull();
+
+        // Written out rather than read off ConflictKindSpelling: a test that reads the token from the
+        // code under test asserts only that the code agrees with itself, and would stay green through a
+        // rename that reissues the contract under a new word.
+        await Assert.That(problem["conflictKind"]!.GetValue<string>()).IsEqualTo("last_passkey");
+
+        // Not either word the write routes use. This is what makes the vocabulary more than two-valued
+        // rather than leaving it a coincidence of which case ran.
+        await Assert.That(problem["conflictKind"]!.GetValue<string>()).IsNotEqualTo("duplicate_identifier");
+        await Assert.That(problem["conflictKind"]!.GetValue<string>()).IsNotEqualTo("duplicate_name");
+
+        // The sentence is unchanged beside it — the member was added and nothing was traded for it.
+        await Assert.That(problem["detail"]!.GetValue<string>()).IsEqualTo(
+            "This is the account's only passkey and removing it would leave no way to sign in. "
+            + "Register another passkey first, then revoke this one.");
+    }
+
     // ==================================================================================
     // THE TEST THAT IS DELIBERATELY NOT IN THIS FILE, because a reader will look for it:
     //

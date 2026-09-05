@@ -229,7 +229,9 @@ public sealed class RecoveryCodeRepository(BudgetoidDbContext dbContext) : IReco
             ConstraintName: CredentialConfiguration.RecoveryCodesPerUserIndexName,
         })
         {
-            throw new ConflictException(LostTheRaceMessage);
+            // The kind pairs with the sentence and travels with it to the delete's catch below: one
+            // remedy — prove presence again and retry — reached from the two halves of one race.
+            throw new ConflictException(LostTheRaceMessage, ConflictKind.RecoveryCodesReplaced);
         }
         // A DIFFERENT COLLISION WITH A DIFFERENT ANSWER, and it is not the race above wearing another
         // name. That one is two requests contending for the account's one set — a fact about timing,
@@ -258,7 +260,9 @@ public sealed class RecoveryCodeRepository(BudgetoidDbContext dbContext) : IReco
             ConstraintName: WrappedAccountKeysConfiguration.PrimaryKeyName,
         })
         {
-            throw new ConflictException(FactorAlreadyRegisteredMessage);
+            // The kind travels with the sentence, for the same reason: the same table reached from the
+            // other route, and the same thing to do about it.
+            throw new ConflictException(FactorAlreadyRegisteredMessage, ConflictKind.FactorAlreadyRegistered);
         }
     }
 
@@ -330,7 +334,9 @@ public sealed class RecoveryCodeRepository(BudgetoidDbContext dbContext) : IReco
         // No detach on the way out, for the reason the insert's catch gives.
         catch (DbUpdateConcurrencyException exception) when (IsAlreadyDeleted(exception))
         {
-            throw new ConflictException(LostTheRaceMessage);
+            // The insert's kind, for the reason it is the insert's sentence: which half of the race this
+            // request lost is not a fact the caller can act on differently.
+            throw new ConflictException(LostTheRaceMessage, ConflictKind.RecoveryCodesReplaced);
         }
     }
 

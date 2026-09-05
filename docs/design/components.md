@@ -1793,8 +1793,10 @@ the screen in all four.
   the defect.
 - **The two conflicts are the same status code and opposite facts**, and the screen tells them apart
   by **what the previous registration request ended as** — never by whether a button was pressed. The
-  server sends four distinct sentences under one identical title with no machine-readable code, so
-  the copy above must never be chosen by matching the server's text either. What the client does know
+  server sends four distinct sentences under one identical title, so the copy above must never be
+  chosen by matching the server's text. It also sends a `conflictKind` member naming which of the
+  four it is, and **this screen does not read it yet** — that is a gap and named as one here, not a
+  reason to reach for the prose. What the client does know
   is how its own earlier POST ended, and only one of those endings leaves the question open: a lost
   answer. A `400` and a `409` are judgements — the server looked and said no, and every one of those
   paths leaves the handler before a row is written — so neither of them ever opens it. With no

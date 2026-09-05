@@ -501,12 +501,17 @@ rows, 1 session and 1 session token.
   two states it does render are told apart by what the previous POST ended as — never by anything
   the person pressed.** The first half is a gap with a named cause; the second is a rule.
 - **Why**: `ConflictExceptionHandler` writes an identical `Title` for every conflict in the product
-  and puts the distinguishing sentence in `Detail` as free text. There is no machine-readable
-  discriminant, so the only way for a client to tell *the subject is taken* from *this authenticator
-  is already registered* is to match on `Detail`, which is a second copy of the server's copy held
-  across the wire with nothing to redden when the two drift. One wrong sentence is worse than a
-  general one: it would send somebody to sign in with a passkey the account does not hold. Closing
-  that gap means giving the server a discriminant, not teaching the client to read prose.
+  and puts the distinguishing sentence in `Detail` as free text. The client has never been able to
+  match on `Detail` — that is a second copy of the server's copy held across the wire, with nothing
+  to redden when the two drift — and one wrong sentence is worse than a general one: it would send
+  somebody to sign in with a passkey the account does not hold.
+  - **The server now carries the discriminant this entry asked for, and the client has not been
+    taught it.** Every 409 carries a `conflictKind` extension member naming the caller's next step,
+    and all four of these sentences have their own word: `subject_already_registered`,
+    `email_already_linked`, `authenticator_already_registered`, `factor_already_registered`. The
+    vocabulary and its argument are in [payees.md](payees.md), where the pair that forced it lives.
+    So the remaining half is client work: rendering four states from one member instead of two from
+    an inference. **Do not close it by reading prose.**
   - **What the client *can* know is how its own earlier request ended, and that is the fork that
     matters.** A lost answer is the only ending that leaves the question open, so a `409` after one
     is very likely that browser's own committed registration answering, while a `409` with no such
