@@ -9,6 +9,17 @@ All interactive components share: focus ring `2px solid var(--bud-focus-ring)` w
 `outline-offset: 2px`; state layers from [color](color.md); 48px minimum touch targets;
 `--bud-motion-micro` for state transitions.
 
+**A quoted sentence is transcribed, not typeset.** Several chapters below say of their copy
+tables that *the copy is the specification, not an example of it*, and the characters are part
+of what that sentence promises. The product's apostrophe is typographic — `’`, U+2019, the rule
+[voice](voice.md) states — so a table spelling it `'` specifies a string no screen renders, and
+nothing catches it: the two look alike in a diff, in a review, and on the page. It runs one way
+only. This book's own prose keeps the plain apostrophe, so a mismatch is fixed by reading the
+string out of the source and matching it character for character, never by replacing one
+character throughout the file — a substitution that happens to produce the right glyph proves
+nothing about the sentence, and quietly "corrects" every quotation that has no implementation
+to be checked against.
+
 ## Iconography
 
 **Material Symbols Rounded**, weight 400, grade 0, optical size 24, outlined
@@ -256,9 +267,11 @@ clears nothing until an answer says the row exists, because what is on screen is
 text and it answers no request at all. Copy the wrong half and the screen empties a field in order
 to describe it.
 
-Every screen that writes answers by this rule — four writing surfaces on three screens:
-`/app/accounts`, both halves of `/app/categories`, and the transaction form. The chapters below
-apply it; none of them owns it.
+Every write in the product answers by this rule, and there are two kinds of them — **four writing
+surfaces and five row acts, across three screens**. The surfaces are `/app/accounts`, both halves
+of `/app/categories` and the transaction form; the acts are the deletes and moves specified in
+*A write that holds no typed text* below, which hold no keystroke and take their own copy. The
+chapters below apply it; none of them owns it.
 
 **A refused write is never silent, and it never costs a keystroke.** Two rules, and neither implies
 the other: a screen can say exactly what happened and still have emptied the field the sentence is
@@ -322,9 +335,9 @@ The copy is the specification, not an example of it.
 | The `errors` map names a control this form has | The server's sentence for that key, verbatim | Beneath that control, `caption` `--bud-over`, per text fields; focus moves to the first such control |
 | The `errors` map names anything else | The server's sentence, verbatim, one line per entry | Inside the region, `--bud-over` |
 | `conflictKind: duplicate_identifier` | "This entry is already saved. Reload the page to see it." | Inside the region, `--bud-over` |
-| `conflictKind: duplicate_name` on the payee create — its one source — and the one re-read still finds nothing | "This payee already exists under a name this tab can't read. Choose it from the list, or use a different name." | Inside the region, `--bud-over` |
-| Nothing answered, or the server failed rather than judged | "Budgetoid couldn't reach the server. Nothing you typed has been lost — try again in a minute." | Inside the region, `--bud-over` |
-| An answer this screen cannot read | "Budgetoid couldn't save this, and didn't say why. What you typed is still here — copy it, then reload the page." | Inside the region, `--bud-over` |
+| `conflictKind: duplicate_name` on the payee create — its one source — and the one re-read still finds nothing | "This payee already exists under a name this tab can’t read. Choose it from the list, or use a different name." | Inside the region, `--bud-over` |
+| Nothing answered, or the server failed rather than judged | "Budgetoid couldn’t reach the server. Nothing you typed has been lost — try again in a minute." | Inside the region, `--bud-over` |
+| An answer this screen cannot read | "Budgetoid couldn’t save this, and didn’t say why. What you typed is still here — copy it, then reload the page." | Inside the region, `--bud-over` |
 
 **The unreachable sentence is the Account keys section's, with one clause added, and the clause is
 the whole difference.** That section answers a read it started on its own, where nothing of the
@@ -514,8 +527,11 @@ of the sentence. Taking the carve-out therefore means a second region — the du
 above refuses. The carve-out keeps its case and this is not it; a save that completes in the
 background, out of sight of the press that started it, is the shape it was written for.
 
-**Colour is never the message.** Every sentence in the table reads the same with `--bud-over`
-removed, and every field message reads the same without its border.
+**Colour is never the message, and this is where the chapter says so — once, for both of its
+tables.** Every sentence in the states table above and every sentence in *A write that holds no
+typed text* below reads the same with `--bud-over` removed, and every field message reads the same
+without its border. The rule is stated here rather than beside each table because a rule written
+twice is a rule that can be narrowed in one place and left standing in the other.
 
 ### What a writer will get wrong
 
@@ -554,11 +570,13 @@ that binds the sentence to the input with `aria-describedby`; and every other ou
 in the screen's existing single `role="status"` region. A write answers one of seven words —
 `recorded`, `invalid`, `duplicate-name`, `duplicate-identifier`, `unreachable`, `unreadable`,
 `locked` — read out of the problem document and never off the status. The sentences live in one
-module rather than one copy per screen: four copies drift, nothing anywhere compares two screens'
-wording, and the day one of them is edited the product says two different things about one outcome
-with every test green. **`locked` has no sentence, and the table's silence about it is the
-specification**: the screen's locked notice is already the account of that state, and a second line
-is the duplicate the region refuses.
+module rather than one copy per writing site, and there are **nine** of those now — these four
+forms and the five row acts below, every one of them calling `+shared/write-outcome-report.ts`.
+Nine copies drift, nothing anywhere compares two screens' wording, and the day one of them is
+edited the product says two different things about one outcome with every test green.
+**`locked` has no sentence, and the table's silence about it is the specification**: the screen's
+locked notice is already the account of that state, and a second line is the duplicate the region
+refuses.
 
 ### A write that holds no typed text
 
@@ -582,8 +600,9 @@ the specification, not an example of it.
 
 **Four sentences spelled out, and not two parameterised by a noun.** The two acts differ by one word
 in each pair, and a template holding that word is the shape this book refuses everywhere copy is
-decided: a sentence assembled from parts is not a sentence anybody reviewed. Colour is never the
-message here either — all four read the same with `--bud-over` removed.
+decided: a sentence assembled from parts is not a sentence anybody reviewed. *The region stays
+polite* above states the colour rule for these four along with the other table's, and it is not
+restated here.
 
 **The unreadable pair offers neither a retry nor a reload, and the asymmetry against the form's
 sentence is the decision rather than an omission.** No retry, for the reason *Advising a retry on a
@@ -803,7 +822,7 @@ the four will be earned by a capability in exactly the same way.
   is a *factor*, every factor stores its own wrapped copy of the account's content key and index
   key, and wrapping them takes the keys themselves rather than the ability to use them:
 
-  > A new passkey needs its own copy of your account's keys, and unlocking lets this browser use
+  > A new passkey needs its own copy of your account’s keys, and unlocking lets this browser use
   > those keys without ever getting hold of them. The button stays off until that copy can be made.
 
   **The clause naming what is missing has been narrowed twice, each time by a capability that
@@ -842,7 +861,7 @@ the four will be earned by a capability in exactly the same way.
   the erasure one names erasing and speaks of a single button. Two strings for one reason, which is
   how three reasons come to be said in four sentences:
 
-  > Revoking has to be confirmed with a passkey Budgetoid checks itself, and this screen doesn't
+  > Revoking has to be confirmed with a passkey Budgetoid checks itself, and this screen doesn’t
   > ask for one yet. Those buttons stay off until it does.
 
   **The qualifier is new and it is not decoration.** Without it the sentence says this screen asks
@@ -900,7 +919,7 @@ of it.
 | --- | --- | --- |
 | At rest | *nothing* | The `role="status"` region carries no sentence; the count line inside it is blank and holds its box |
 | Loading | "Loading your recovery codes…" | Inside the region, `body` `--bud-text` |
-| Failed | "Couldn't load your recovery codes. Reload the page." | Inside the region, `--bud-over` |
+| Failed | "Couldn’t load your recovery codes. Reload the page." | Inside the region, `--bud-over` |
 | `0` remaining | "You have no recovery codes." | Inside the region, as its last child |
 | `1` remaining | "You have 1 recovery code left." | Inside the region, as its last child |
 | `n` remaining | "You have 5 recovery codes left." | Inside the region, as its last child |
@@ -997,7 +1016,7 @@ the credential registration and revocation controls already use on this screen.
   `aria-describedby` on the disabled element, all of which are read to nobody once the control has
   left the tab order. It is **this section's own**, and no longer the credential list's:
 
-  > Ten new codes each need their own copy of your account's keys, and replacing a set also has to
+  > Ten new codes each need their own copy of your account’s keys, and replacing a set also has to
   > be confirmed with a passkey Budgetoid checks itself — not the one unlocking asks for, which
   > never leaves this device. The button stays off until this screen asks for both.
 
@@ -1129,7 +1148,7 @@ already uses on this screen — as a fact about the system, with no apology arou
 
 **Both sentences are standing prose, so both have to be true in all three states** — and that is
 what keeps the second from becoming the line the Anatomy below forbids. *Until you unlock, this tab
-can't read…* is the sentence a writer reaches for, and it is a statement that the account is
+can’t read…* is the sentence a writer reaches for, and it is a statement that the account is
 locked: said in prose, beside a control that says it already, and left standing on an account whose
 keys are held. Written as what unlocking *does*, the same fact reads true while the account is open,
 while a ceremony is running, and before one has been asked for.
@@ -1275,14 +1294,14 @@ reading it is the drift the gate rule names.
 | Waiting for the device | "Waiting for your passkey." | Inside the region, `body` `--bud-text` |
 | Opening | "Opening your account…" | Inside the region, `body` `--bud-text` |
 | Keys held | "Your account is unlocked in this tab." | Inside the region, as its last child; no control is drawn |
-| `unsupported` | "This browser can't check a passkey. Open Budgetoid in a different browser, or on a phone or laptop that can." | Inside the region, `--bud-over` |
-| `cancelled` | "The passkey check was cancelled. Nothing has changed — try again whenever you're ready." | Inside the region, `--bud-over` |
-| `no-prf` | "This device can't open your account's keys. Try the device that holds the passkey you made this account with." | Inside the region, `--bud-over` |
-| `ceremony-failed` | "Your device didn't finish the passkey check. Nothing has changed." | Inside the region, `--bud-over` |
-| `unknown` | "Budgetoid couldn't finish unlocking. Nothing has changed — try again." | Inside the region, `--bud-over` |
-| `unopened` | "Budgetoid couldn't open your account's keys with that passkey. If this account has another passkey, try again and choose that one." | Inside the region, `--bud-over` |
-| `unreachable` | "Budgetoid couldn't reach the server. Try again in a minute." | Inside the region, `--bud-over` |
-| `unauthenticated` | "Budgetoid wouldn't hand your keys back to this browser. Sign out and sign in again." | Inside the region, `--bud-over` |
+| `unsupported` | "This browser can’t check a passkey. Open Budgetoid in a different browser, or on a phone or laptop that can." | Inside the region, `--bud-over` |
+| `cancelled` | "The passkey check was cancelled. Nothing has changed — try again whenever you’re ready." | Inside the region, `--bud-over` |
+| `no-prf` | "This device can’t open your account’s keys. Try the device that holds the passkey you made this account with." | Inside the region, `--bud-over` |
+| `ceremony-failed` | "Your device didn’t finish the passkey check. Nothing has changed." | Inside the region, `--bud-over` |
+| `unknown` | "Budgetoid couldn’t finish unlocking. Nothing has changed — try again." | Inside the region, `--bud-over` |
+| `unopened` | "Budgetoid couldn’t open your account’s keys with that passkey. If this account has another passkey, try again and choose that one." | Inside the region, `--bud-over` |
+| `unreachable` | "Budgetoid couldn’t reach the server. Try again in a minute." | Inside the region, `--bud-over` |
+| `unauthenticated` | "Budgetoid wouldn’t hand your keys back to this browser. Sign out and sign in again." | Inside the region, `--bud-over` |
 
 The copy is the specification, not an example of it. **Eleven lines in twelve states**: the table's
 first row is the resting one and says nothing, because the control standing there is what says the
@@ -1492,7 +1511,7 @@ live with, so the statement comes first and the acts follow it.
 > behind them. We can see how many accounts, payees, categories and transactions you have and which
 > of them point at each other, and we can read your email address.
 >
-> We can't read the names and notes you type. Your browser encrypts those before they're sent,
+> We can’t read the names and notes you type. Your browser encrypts those before they’re sent,
 > under keys it takes from your passkey or one of your recovery codes, and we never receive one of
 > those keys. What we can see about a name or a note is how long it is.
 >
@@ -1500,7 +1519,7 @@ live with, so the statement comes first and the acts follow it.
 > browser works out from the name, under a key of its own that we never receive. The code is what
 > lets your browser spot a name it has already used without sending us the name. The same name
 > always gives the same code, so we can tell when one of these names changes and when one comes
-> back. The code can't be turned back into a name, and we can't check a guess against one.
+> back. The code can’t be turned back into a name, and we can’t check a guess against one.
 
 **Three paragraphs, three questions, and the order is the argument.** *What can you see?* — the
 plainest and longest answer, and it goes first, because a statement that leads with what it cannot
@@ -1557,7 +1576,7 @@ holds this name* and a note is never looked up.
 is the one that needs this.** The digest is keyed on 32 random bytes drawn in a browser and never
 sent, so there is no guessing attack available: nobody holding the database can compute the code
 for a name they suspect and look for it. That is the whole difference between this and a plain hash
-of the name, and it is what lets the copy say we can't check a guess. Every code is the same width
+of the name, and it is what lets the copy say we can’t check a guess. Every code is the same width
 as every other, so the name's length does not leak through it — the length leaks through the
 **envelope**, which is what the second paragraph's last sentence is for, and the two facts are
 deliberately attached to the two different things that disclose them.
@@ -1616,7 +1635,7 @@ already been narrowed by.
   of its sentences were worth.
 - **Making any of it conditional on this tab.** The section is standing prose and is true whether
   the account's keys are held or not: what the operator can read does not change when somebody
-  presses Unlock. *Until you unlock, we can't…* is a sentence about the browser wearing a sentence
+  presses Unlock. *Until you unlock, we can’t…* is a sentence about the browser wearing a sentence
   about the operator.
 - **Introducing an attacker.** The subject here is the people running the service and what they
   hold. A clause about somebody stealing the database changes the subject, and it is alarm this
@@ -1735,7 +1754,7 @@ than about the tab, and nothing downstream can tell the two apart again.
 
 Rendered by each content screen **in place of its list**, and by nothing else. The copy is the
 blocked-action pattern from [voice](voice.md): the fact, then the way forward, and the way forward
-is the smallest act that clears the block — *This tab can't read your account yet. Unlock it in
+is the smallest act that clears the block — *This tab can’t read your account yet. Unlock it in
 Settings.* — with **Settings** a `routerLink` to `/app/settings`.
 
 **It links and does not navigate.** Three shapes were considered and two refused:
@@ -2040,8 +2059,8 @@ screen a moment ago and says nothing at all here, where no passkey was ever goin
 | Refusal | Copy | Offers another press |
 | --- | --- | --- |
 | The Google address already has an account | "An account already exists for this Google address. Nothing has been created — sign in from the Budgetoid home page instead." | No — **Go to sign in** instead |
-| The server never answered | "Budgetoid couldn't reach the server. Nothing has been created." | Yes — **Try again**, which is another **Continue** under a name that admits to being one |
-| The provider token the request carried was rejected | "Your Google sign-in has expired. Nothing has been created — continue with Google and you'll come straight back to this page." | No — **Continue with Google** instead |
+| The server never answered | "Budgetoid couldn’t reach the server. Nothing has been created." | Yes — **Try again**, which is another **Continue** under a name that admits to being one |
+| The provider token the request carried was rejected | "Your Google sign-in has expired. Nothing has been created — continue with Google and you’ll come straight back to this page." | No — **Continue with Google** instead |
 
 **The third keeps the promise above it, and the second reason is why.** The server said nothing
 about the address — it never read the request — so "your account will be created under this one" is
@@ -2098,15 +2117,15 @@ somebody who simply closed the system sheet that their device is unsupported.
 
 | Refusal | Copy | Offers another press |
 | --- | --- | --- |
-| The browser cannot run a ceremony | "This browser can't create a passkey. Open Budgetoid in a different browser, or on a phone or laptop that can." | No |
-| The system sheet was closed, or timed out | "The passkey wasn't created. Nothing has been saved, and nothing was sent — try again whenever you're ready." | Yes |
-| The authenticator already holds a credential it was asked to decline | "This device already holds a passkey Budgetoid can't reuse. Try again with a different device or security key." | Yes |
-| The device cannot hold the account's keys | "This device can't hold your account's keys, and Budgetoid won't create an account it can't lock. Try a different phone, laptop or security key." | No |
-| The ceremony did not finish | "Your device didn't finish creating the passkey. Nothing has been saved." | Yes |
-| The server never issued a challenge | "Budgetoid couldn't reach the server to start. Nothing has been saved." | Yes |
+| The browser cannot run a ceremony | "This browser can’t create a passkey. Open Budgetoid in a different browser, or on a phone or laptop that can." | No |
+| The system sheet was closed, or timed out | "The passkey wasn’t created. Nothing has been saved, and nothing was sent — try again whenever you’re ready." | Yes |
+| The authenticator already holds a credential it was asked to decline | "This device already holds a passkey Budgetoid can’t reuse. Try again with a different device or security key." | Yes |
+| The device cannot hold the account's keys | "This device can’t hold your account’s keys, and Budgetoid won’t create an account it can’t lock. Try a different phone, laptop or security key." | No |
+| The ceremony did not finish | "Your device didn’t finish creating the passkey. Nothing has been saved." | Yes |
+| The server never issued a challenge | "Budgetoid couldn’t reach the server to start. Nothing has been saved." | Yes |
 | The Google address already has an account | "An account already exists for this Google address. Nothing was created and no passkey was made — sign in from the Budgetoid home page instead." | No — **Go to sign in** instead |
-| Something nobody predicted, between the challenge arriving and the codes being ready | "Budgetoid didn't finish, and nothing has been saved. Try again." | Yes |
-| The provider token the request carried was rejected | "Your Google sign-in has expired. Nothing has been saved — continue with Google and you'll come back to the first step." | No — **Continue with Google** instead |
+| Something nobody predicted, between the challenge arriving and the codes being ready | "Budgetoid didn’t finish, and nothing has been saved. Try again." | Yes |
+| The provider token the request carried was rejected | "Your Google sign-in has expired. Nothing has been saved — continue with Google and you’ll come back to the first step." | No — **Continue with Google** instead |
 
 Five of them are worth reading twice. **Named rather than numbered**, because the ordinals this list
 used to carry had already come apart from the table's order and each new refusal breaks them again.
@@ -2154,10 +2173,10 @@ the screen in all four.
 
 | State | Copy | Control |
 | --- | --- | --- |
-| Refused | **Registration was refused** — "Your account wasn't created and nothing was saved. The ten codes you were just shown open nothing — start again to get a new set." | Primary **Start again** |
+| Refused | **Registration was refused** — "Your account wasn’t created and nothing was saved. The ten codes you were just shown open nothing — start again to get a new set." | Primary **Start again** |
 | An account already exists, and no earlier request went unanswered | **You already have an account** — "An account already exists for this Google address. Nothing was created here, and the ten codes you were just shown open nothing — sign in from the Budgetoid home page instead." | Primary **Go to sign in** |
-| An account already exists, after an earlier request went unanswered | **Your first attempt worked** — "Your first attempt did create your account — its answer just didn't reach this browser. Sign in with the passkey you made on that attempt. The ten codes you were shown a moment ago open nothing; the ten from the first attempt are the ones that work." | Primary **Go to sign in** |
-| No answer came back | **Budgetoid didn't hear back** — "Budgetoid didn't get an answer, so we can't tell you whether your account was created. Keep the ten codes you saved: if it was, they're part of the only way back into it." | Primary **Start again** |
+| An account already exists, after an earlier request went unanswered | **Your first attempt worked** — "Your first attempt did create your account — its answer just didn’t reach this browser. Sign in with the passkey you made on that attempt. The ten codes you were shown a moment ago open nothing; the ten from the first attempt are the ones that work." | Primary **Go to sign in** |
+| No answer came back | **Budgetoid didn’t hear back** — "Budgetoid didn’t get an answer, so we can’t tell you whether your account was created. Keep the ten codes you saved: if it was, they’re part of the only way back into it." | Primary **Start again** |
 
 - **The first three say the ten codes on screen are dead; the last must never.** A judged request
   was read and left the server before a row was written, so saying those ten open nothing is a
@@ -2344,7 +2363,7 @@ a request is outstanding, which is the layer that owns the question.
 > **Save your recovery codes**
 >
 > Your browser made these ten codes. Budgetoid never receives one, and this is the only time
-> they're shown.
+> they’re shown.
 >
 > *(the ten codes)*
 >
@@ -2352,9 +2371,9 @@ a request is outstanding, which is the layer that owns the question.
 >
 > Your passkey and these ten codes are the only ways into this account. Budgetoid keeps no copy of
 > either, so if you lose the passkey and every code, everything you record here stays locked — to
-> you, and to us. There's no way back, and no one to ask.
+> you, and to us. There’s no way back, and no one to ask.
 >
-> ☐ I've saved these codes somewhere I can get to them.
+> ☐ I’ve saved these codes somewhere I can get to them.
 >
 > Nothing is saved until the last step.
 
