@@ -358,12 +358,32 @@ instead, the reload changes nothing and the person still has what they typed.
 browser, so a POST retried after a lost answer carries the same one and collides on the primary key
 — which is what makes a lost `201` legible instead of duplicating a row. The sentence therefore says
 the entry is saved rather than offering another press, because a second press sends the same id and
-collects the same 409. **That legibility rests on the form keeping its id across a refusal**: an id
+collects the same 409. **That legibility rests on the write keeping its id across a refusal**: an id
 minted per press turns a lost answer into two rows wearing two legitimate identifiers, and this
-outcome becomes unreachable. The id is drawn once, where the form is opened, and is redrawn only by
-a write that landed. **Its one wrong reading is accepted and named**: an identifier held by a
-budget this caller cannot read answers the same 409 and reloading shows nothing, which takes a
-guessed 128-bit value to reach. See [payees.md](../business-logic/payees.md).
+outcome becomes unreachable.
+
+**The id belongs to the service and is drawn lazily** — on the first press that needs one, kept
+through every refusal, cleared by the write that landed. Not at the moment a form is opened, which
+would make a service know a component's lifecycle; drawn on the press, it gives the property this
+outcome rests on — two presses of the same unsaved content carry one id — and takes no such
+knowledge to do it. **No component may hold it under any arrangement**: the id is the associated
+data the value was sealed against, so the one place it can be dropped is the one place it must not
+be. A lock does not clear it either, deliberately — a locked write sent nothing, and redrawing
+across a ceremony puts the two-row defect back on the far side of every unlock. **The payee's draft
+is keyed on the blind index rather than on the typed text**, because the index is what the local
+match and the server's unique constraint both decide on: a change of case is the same counterparty
+and keeps the draft, a different name draws a new one. That is the draft this product guards
+hardest, and `payees` is why — the app role holds no `DELETE` there, so a row written twice is
+written for good.
+
+**Two wrong readings are accepted and named.** An identifier held by a budget this caller cannot
+read answers the same 409 and reloading shows nothing, which takes a guessed 128-bit value to reach.
+And a draft outlives the screen that drew it, because the services are root-provided: type a name,
+lose the answer, leave, come back to add a *different* row, and that create carries the first
+attempt's id — so where the first attempt did in fact land, somebody is told an entry is already
+saved, which is true of the id and false of what is in the form in front of them. It is accepted
+because the alternative fails in the commoner direction, writing the row twice where nothing on
+either side can see it afterwards. See [payees.md](../business-logic/payees.md).
 
 **`duplicate_name` has exactly one source, and the key reads wider than the state is.** The payee
 create is the only write in the product that answers a repeated name with a 409. A payee *rename*
@@ -383,6 +403,16 @@ back with nothing to adopt — which is why that path abandons rather than loopi
 reachable only on an unlocked account, so the cause is a value that failed to authenticate rather
 than a missing key, and **Unlock is not the remedy** — the row is in the list, wearing
 `narrative-value`'s unreadable marker, and choosing it is.
+
+**On the payee create both conflict kinds buy that one re-read, and an identifier collision
+surviving it renders the payee sentence and not the saved one.** A held id is drawn against the name
+it was drawn for, so the only way this browser's own draft is taken is that its own earlier create
+landed and lost its answer — the row wearing that id holds this name and this index, and is exactly
+what the re-read finds. Where the re-read finds nothing, the row is one this browser cannot read,
+which is the payee state's own case. *This entry is already saved* would be false twice over there:
+the transaction was not saved, and the payee is not one anybody can adopt. The identifier row above
+is keyed on what a screen renders, and a create nested inside another write answers with the outcome
+of the write it belongs to.
 
 ### Whose sentence goes beneath the field
 
@@ -517,12 +547,32 @@ removed, and every field message reads the same without its border.
 - **Advising a retry on a judgement.** *Try again in a minute* is true of silence and false of a
   refusal, and it is the sentence a writer reaches for because it fits everywhere.
 
-**No screen renders a refusal today, and the gap has two halves that have to close together.**
-Each of the four writing surfaces clears its form on the line after the write is dispatched, so the
-typed value is gone before an answer exists; and every write pipeline ends by logging and completing
-with no value, so no component could render a refusal even if it kept the text. Fixing the first
-alone leaves a form that holds its contents and says nothing. The convention the code's own note
-waits on is this chapter, and it is not a snackbar.
+**Every writing surface answers by this chapter, and the two halves closed together.** Each of the
+four awaits its outcome and clears the form on `recorded` and on nothing else; each renders a
+field-keyed refusal beneath the control the server named, as a `mat-error`, which is the machinery
+that binds the sentence to the input with `aria-describedby`; and every other outcome takes one line
+in the screen's existing single `role="status"` region. A write answers one of seven words —
+`recorded`, `invalid`, `duplicate-name`, `duplicate-identifier`, `unreachable`, `unreadable`,
+`locked` — read out of the problem document and never off the status. The sentences live in one
+module rather than one copy per screen: four copies drift, nothing anywhere compares two screens'
+wording, and the day one of them is edited the product says two different things about one outcome
+with every test green. **`locked` has no sentence, and the table's silence about it is the
+specification**: the screen's locked notice is already the account of that state, and a second line
+is the duplicate the region refuses.
+
+**What no screen renders is a refused delete or a refused placement.** Five writes end with a word
+and nowhere to put it — a row's delete on `/app/accounts`, and a group's move, a group's delete, a
+category's placement and a category's delete on `/app/categories`. Each is called as a bare
+statement from its component, so answering a promise would leave five floating calls; each
+classifies its failure into the same word a form's write answers with, and that word reaches the
+developer console and stops there. It is the shape *The service has to have an outcome to report*
+refuses, and what holds it open is this chapter rather than the code: **the state table is written
+for a form holding text somebody typed** — *what you typed is still here*, *nothing you typed has
+been lost* — and a delete holds none, so the book gives those five writes no copy to render.
+Closing the gap is a copy decision before it is a wiring one: what a refused delete says, what a
+refused placement says, and what either offers as a next step to somebody whose row is still on
+screen in front of them. The classification is in place at all five; the sentences and the channel
+that carries them are what is missing.
 
 ## Settings section and label/value row
 
@@ -2296,6 +2346,29 @@ M3 base: `MatFormField` (outlined appearance), `MatInput`, `MatSelect`,
   `--bud-shadow-overlay`, `--bud-radius-sm`, options 48px tall with state layers,
   selected option tinted `--bud-state-selected`.
 - Forms cap at 560px and stack in a single grid column, `--bud-space-4` gaps.
+
+**The error bullet is true of a field at rest and false under a pointer.** The book's error colour
+reaches a field through one declaration on the theme — `--mat-sys-error` aliased to `--bud-over`,
+argued in [color](color.md) — and Material reads that token for thirteen of the eighteen error
+tokens its form field carries: the message, the caret, the active indicator, the outline, the label
+and their focus states. The other five are the hover states.
+`--mat-form-field-error-hover-*`, `--mat-form-field-filled-error-hover-*` and
+`--mat-form-field-outlined-error-hover-*` fall back to `var(--mat-sys-on-error-container)`, a role
+this application maps to nothing, so a pointer resting on a refused field moves its indicator and
+its label off `--bud-over` and onto Material's own red. Measured in `@angular/material` 21.2's own
+stylesheet.
+
+**Closing it is a decision this chapter cannot take, and inventing a token is not it.** `--bud-*`
+carries no container role to alias: the semantic families in [color](color.md) are single hues with
+a `-text` variant, not the background-and-on-colour pairs Material's container roles are. So the
+way to close it is to add one there — an error container and its on-colour, both themes, contrast
+measured against the pairs the UI uses — and only then a second alias on the theme beside the
+first. A theme file minting a value to satisfy a hover state would be taking that decision by
+accident.
+
+**Nothing in the suite sees the gap.** `src/material-error-colour.spec.ts` walks the token chain
+for the message's resting colour, which is the half that is mapped, and jsdom neither paints nor
+hovers.
 
 ## The amount field
 

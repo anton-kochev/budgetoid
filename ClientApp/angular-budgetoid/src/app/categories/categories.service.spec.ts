@@ -30,6 +30,7 @@ import { provideHttpClient } from '@angular/common/http';
 import {
   HttpTestingController,
   provideHttpClientTesting,
+  type TestRequest,
 } from '@angular/common/http/testing';
 import { signal, type Signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
@@ -257,6 +258,16 @@ class CustodyStub
   public lock(): void {
     throw new Error('the categories service may not lock the account');
   }
+}
+
+// A validation problem document, built from pairs rather than written as a
+// literal. The API's keys are the C# member names, and this project's lint rule
+// reaches into object literals and demands camelCase of them — so a literal
+// cannot spell what the wire actually sends.
+function withErrors(
+  ...entries: readonly (readonly [string, readonly string[]])[]
+): Record<string, unknown> {
+  return { errors: Object.fromEntries(entries) };
 }
 
 // Drains the microtask queue the AEAD opens run in. A macrotask boundary is
@@ -1384,6 +1395,267 @@ describe('CategoriesService', () => {
 
       // Assert
       expect(categories.map((view) => view.id)).toEqual([OTHER_CATEGORY_ID]);
+    });
+  });
+
+  // How a write ends, as a value the screen receives.
+  //
+  // **Both halves of this screen are asserted, and that is not padding.** A
+  // group and a category are four separate pipes with four separate
+  // `catchError`s, and this service shipped once with a difference between two
+  // of its arms that nothing could see. A word answered by the group create and
+  // swallowed by the category update is exactly that shape again.
+  describe('the word a write ends on', () => {
+    it('answers recorded when a group create lands', async () => {
+      // Arrange
+      const write = service.addGroup({ name: 'Essentials', description: '' });
+
+      await settle();
+
+      // Act
+      const request = http.expectOne(GROUPS_URL);
+      const body = request.request.body as { id: string };
+
+      request.flush(sealedGroup(body.id, 'Essentials', null, 0));
+
+      // Assert — the one word that permits a form to be cleared.
+      expect(await write).toEqual({ state: 'recorded' });
+    });
+
+    it('answers the server’s own sentences when a group name is already taken', async () => {
+      // Arrange — a duplicate group name is a **400 keyed on `Name`** here,
+      // where the payee create answers a 409. A screen keyed on the status
+      // would pass on this half and fail two files away.
+      const write = service.addGroup({ name: 'Essentials', description: '' });
+
+      await settle();
+
+      // Act
+      http
+        .expectOne(GROUPS_URL)
+        .flush(withErrors(['Name', ['Category group name must be unique.']]), {
+          status: 400,
+          statusText: 'Bad Request',
+        });
+
+      // Assert
+      const outcome = await write;
+
+      expect(outcome.state).toBe('invalid');
+      expect(outcome.state === 'invalid' ? [...outcome.errors] : null).toEqual([
+        ['Name', ['Category group name must be unique.']],
+      ]);
+    });
+
+    it('answers duplicate-identifier on a retried group create', async () => {
+      // Arrange — the same status as a duplicate name and the opposite remedy.
+      const write = service.addGroup({ name: 'Essentials', description: '' });
+
+      await settle();
+
+      // Act
+      http
+        .expectOne(GROUPS_URL)
+        .flush(
+          { conflictKind: 'duplicate_identifier' },
+          { status: 409, statusText: 'Conflict' },
+        );
+
+      // Assert
+      expect(await write).toEqual({ state: 'duplicate-identifier' });
+    });
+
+    it('answers unreachable when a category create gets no answer', async () => {
+      // Arrange
+      await loadWith([essentials], []);
+
+      const write = service.addCategory({
+        categoryGroupId: GROUP_ID,
+        name: 'Groceries',
+        description: '',
+      });
+
+      await settle();
+
+      // Act
+      http
+        .expectOne(CATEGORIES_URL)
+        .flush('nope', { status: 500, statusText: 'Server Error' });
+
+      // Assert
+      expect(await write).toEqual({ state: 'unreachable' });
+    });
+
+    it('answers a category rename’s refusal on the same terms', async () => {
+      // Arrange — the fourth pipe, and the one a shared argument would leave
+      // uncovered.
+      await loadWith([essentials], [groceries]);
+
+      const write = service.updateCategory(CATEGORY_ID, {
+        name: 'Groceries',
+        description: '',
+      });
+
+      await settle();
+
+      // Act
+      http
+        .expectOne(`${CATEGORIES_URL}/${CATEGORY_ID}`)
+        .flush(withErrors(['Name', ['Category name must be unique.']]), {
+          status: 400,
+          statusText: 'Bad Request',
+        });
+
+      // Assert
+      const outcome = await write;
+
+      expect(outcome.state).toBe('invalid');
+      expect(outcome.state === 'invalid' ? [...outcome.errors] : null).toEqual([
+        ['Name', ['Category name must be unique.']],
+      ]);
+    });
+
+    it('answers locked without sending anything when sealing refuses', async () => {
+      // Arrange — nothing was sent, so there is no answer to classify.
+      custody.sealAnswer = { state: 'locked' };
+
+      // Act
+      const outcome = await service.addGroup({
+        name: 'Essentials',
+        description: '',
+      });
+
+      // Assert
+      http.expectNone(GROUPS_URL);
+      expect(outcome).toEqual({ state: 'locked' });
+    });
+  });
+
+  // The identifiers the two creates carry, across presses.
+  //
+  // **`accounts.service.spec.ts` argues why a create's id has to survive a
+  // refusal** — an id minted per press turns a lost answer into two rows and
+  // makes `duplicate-identifier` unreachable. What is this screen's own is that
+  // there are **two** writing surfaces, on screen together, so one shared draft
+  // would hand a refused group's id to the next category create and collide on
+  // a table it was never drawn for.
+  describe('the identifiers the two creates carry', () => {
+    // One press on each form, answered by the caller: `expectOne` consumes the
+    // request it matches, so the request itself is what comes back.
+    async function pressGroup(): Promise<TestRequest> {
+      void service.addGroup({ name: 'Essentials', description: '' });
+      await settle();
+
+      return http.expectOne(GROUPS_URL);
+    }
+
+    async function pressCategory(): Promise<TestRequest> {
+      void service.addCategory({
+        categoryGroupId: GROUP_ID,
+        description: '',
+        name: 'Groceries',
+      });
+      await settle();
+
+      return http.expectOne(CATEGORIES_URL);
+    }
+
+    function postedId(request: TestRequest): string {
+      return (request.request.body as { id: string }).id;
+    }
+
+    it('keeps a group’s identifier across a refusal and redraws it once one lands', async () => {
+      // Arrange
+      const refused = await pressGroup();
+      const drafted = postedId(refused);
+
+      refused.flush('', { status: 500, statusText: 'Server Error' });
+      await settle();
+
+      // Act
+      const retried = await pressGroup();
+
+      // Assert — the same id, so a lost answer collides instead of writing a
+      // second group.
+      expect(postedId(retried)).toBe(drafted);
+      retried.flush(sealedGroup(drafted, 'Essentials', null, 0));
+      await settle();
+
+      const next = await pressGroup();
+
+      expect(postedId(next)).not.toBe(drafted);
+      expect(postedId(next)).toMatch(MINTED_ROW_ID);
+      next.flush(sealedGroup(postedId(next), 'Essentials', null, 1));
+      await settle();
+    });
+
+    it('keeps a category’s identifier across a refusal and redraws it once one lands', async () => {
+      // Arrange — the same rule on the other form, written out rather than
+      // inferred: the two handlers are separate code and a screen that got one
+      // right and the other wrong is what shipped last time somebody copied a
+      // form.
+      const refused = await pressCategory();
+      const drafted = postedId(refused);
+
+      refused.flush('', { status: 500, statusText: 'Server Error' });
+      await settle();
+
+      // Act
+      const retried = await pressCategory();
+
+      // Assert
+      expect(postedId(retried)).toBe(drafted);
+      retried.flush(
+        sealedCategory(
+          drafted,
+          'Groceries',
+          null,
+          sealedGroup(GROUP_ID, 'Essentials', null, 0),
+          0,
+        ),
+      );
+      await settle();
+
+      const next = await pressCategory();
+
+      expect(postedId(next)).not.toBe(drafted);
+      next.flush(
+        sealedCategory(
+          postedId(next),
+          'Groceries',
+          null,
+          sealedGroup(GROUP_ID, 'Essentials', null, 0),
+          1,
+        ),
+      );
+      await settle();
+    });
+
+    it('keeps the two drafts apart', async () => {
+      // Arrange — the case that reddens on one shared field. Both forms are
+      // refused, and a single draft would send the group's id to the
+      // categories table on the next press — a conflict on a row that has
+      // nothing to do with it, and a sentence about an entry somebody never
+      // made.
+      const group = await pressGroup();
+      const groupDraft = postedId(group);
+
+      group.flush('', { status: 500, statusText: 'Server Error' });
+      await settle();
+
+      // Act
+      const category = await pressCategory();
+
+      // Assert
+      expect(postedId(category)).not.toBe(groupDraft);
+      category.flush('', { status: 500, statusText: 'Server Error' });
+      await settle();
+
+      const retriedGroup = await pressGroup();
+
+      expect(postedId(retriedGroup)).toBe(groupDraft);
+      retriedGroup.flush('', { status: 500, statusText: 'Server Error' });
+      await settle();
     });
   });
 });

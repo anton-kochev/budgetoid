@@ -90,9 +90,32 @@
 // on the way in is the thing "The locked account" forbids. `MatOptgroup`
 // projects its default slot inside the label element, so the value goes in as
 // content.
+//
+// **A refused write is never silent, and this screen had the keeping half
+// without the saying half.** `docs/design/components.md`, "A write that does
+// not happen", is the authority and `accounts.component.ts` argues the shared
+// shape: the server's sentences render beneath the controls they were keyed to,
+// everything else takes a line in the region this screen already has, and the
+// region stays `status` because politeness belongs to the node rather than to
+// the sentence.
+//
+// **This is the one screen whose write is more than one request, so it is the
+// one screen that narrates a write in progress.** The chapter's table gives
+// "Recording…" to the payee-then-transaction pair and to nothing else today, in
+// `body` `--bud-text` rather than `--bud-over`, because nothing has gone wrong.
+// It is read off {@link TransactionsComponent.recording} — the component's own
+// flag, raised across the `await` — and never off `TransactionsService.loading`,
+// which is also true of every read this screen starts.
+//
+// **`duplicate-name` reaches a person here and nowhere else in the product.**
+// The payee create is the one write that answers a repeated name with a 409,
+// and the form's own re-read resolves the ordinary case silently — so the
+// sentence is for the payee whose own name did not open, which can never match
+// and can never be adopted.
 import {
   ChangeDetectionStrategy,
   Component,
+  ElementRef,
   OnInit,
   computed,
   effect,
@@ -122,6 +145,14 @@ import {
   NARRATIVE_DESCRIPTION_CHARACTERS,
   NARRATIVE_NAME_CHARACTERS,
 } from '@app-shared/narrative-field-caps';
+import {
+  RECORDING_SENTENCE,
+  clearFieldMessages,
+  markFieldMessages,
+  writeReportOf,
+  type WriteReport,
+} from '@app-shared/write-outcome-report';
+import type { WriteOutcome } from '@app-core/api/write-outcome';
 import { AccountsService } from '../accounts/accounts.service';
 import { TransactionsService } from './transactions.service';
 
@@ -153,6 +184,29 @@ function nonBlankWhenPresent(
     ? { blank: true }
     : null;
 }
+
+/**
+ * The wire keys this form can place a server's sentence on, and the control
+ * each goes beneath.
+ *
+ * **A `Map` and never an object literal**, per the chapter: `constructor`,
+ * `toString` and `valueOf` hit on a literal and place a message under a control
+ * that does not exist.
+ *
+ * **`PayeeId` goes under the payee *name* field**, which is the only control
+ * its value ever came from — the id is resolved from what was typed there, so
+ * that is where a correction is made. `Id` is deliberately absent: the row
+ * identifier is minted in the browser and there is no control for it, so a
+ * sentence keyed on it is one for the region.
+ */
+const PLACEABLE_KEYS: ReadonlyMap<string, string> = new Map([
+  ['Amount', 'amount'],
+  ['Date', 'date'],
+  ['AccountId', 'accountId'],
+  ['Description', 'description'],
+  ['PayeeId', 'payee'],
+  ['CategoryId', 'categoryId'],
+]);
 
 @Component({
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -186,6 +240,25 @@ function nonBlankWhenPresent(
       margin: 0;
       color: var(--bud-text-muted);
     }
+
+    /*
+      A refused write's line in the shared region. --bud-over, and colour is
+      never the message: every sentence in the chapter's table reads the same
+      with this declaration removed.
+    */
+    .refusal {
+      margin: 0;
+      color: var(--bud-over);
+    }
+
+    /*
+      The line a write in progress carries, and the one region line that is not
+      a refusal: body --bud-text, because nothing has gone wrong.
+    */
+    .recording {
+      margin: 0;
+      color: var(--bud-text);
+    }
   `,
   template: `
     <h1>Transactions</h1>
@@ -208,6 +281,19 @@ function nonBlankWhenPresent(
       <mat-form-field>
         <mat-label>Amount</mat-label>
         <input matInput type="number" step="0.01" formControlName="amount" />
+        <!--
+          The server's sentence, rendered verbatim beneath the control it was
+          keyed to. The client writes no copy for a field-keyed refusal and
+          holds no table of its own — a client-authored lookup would have to be
+          total over every string the API can send, and its fallback would be a
+          generic sentence standing exactly where somebody is making a
+          correction. mat-error rather than a paragraph of this screen's own,
+          because the form field is what binds the message to the input with
+          aria-describedby and colours the border with it.
+        -->
+        @for (message of fieldMessages()?.get('amount') ?? []; track $index) {
+          <mat-error>{{ message }}</mat-error>
+        }
       </mat-form-field>
 
       <mat-form-field>
@@ -215,6 +301,9 @@ function nonBlankWhenPresent(
         <input matInput [matDatepicker]="picker" formControlName="date" />
         <mat-datepicker-toggle matIconSuffix [for]="picker" />
         <mat-datepicker #picker />
+        @for (message of fieldMessages()?.get('date') ?? []; track $index) {
+          <mat-error>{{ message }}</mat-error>
+        }
       </mat-form-field>
 
       <!--
@@ -240,6 +329,12 @@ function nonBlankWhenPresent(
               </mat-option>
             }
           </mat-select>
+          @for (
+            message of fieldMessages()?.get('accountId') ?? [];
+            track $index
+          ) {
+            <mat-error>{{ message }}</mat-error>
+          }
         </mat-form-field>
       }
 
@@ -273,6 +368,12 @@ function nonBlankWhenPresent(
           formControlName="description"
           [attr.maxlength]="descriptionCharacters"
         />
+        @for (
+          message of fieldMessages()?.get('description') ?? [];
+          track $index
+        ) {
+          <mat-error>{{ message }}</mat-error>
+        }
       </mat-form-field>
 
       @if (!locked()) {
@@ -289,6 +390,13 @@ function nonBlankWhenPresent(
               <mat-option [value]="payee.name">{{ payee.name }}</mat-option>
             }
           </mat-autocomplete>
+          <!--
+            PayeeId's sentences land here, on the name field, because that is
+            the only control the id was ever resolved from.
+          -->
+          @for (message of fieldMessages()?.get('payee') ?? []; track $index) {
+            <mat-error>{{ message }}</mat-error>
+          }
         </mat-form-field>
       }
 
@@ -324,6 +432,12 @@ function nonBlankWhenPresent(
               </mat-optgroup>
             }
           </mat-select>
+          @for (
+            message of fieldMessages()?.get('categoryId') ?? [];
+            track $index
+          ) {
+            <mat-error>{{ message }}</mat-error>
+          }
         </mat-form-field>
       }
 
@@ -423,15 +537,21 @@ function nonBlankWhenPresent(
       this screen started on its own, and assertive is reserved for a failure
       to save something a person typed.
 
-      Which of the two lines it carries is one word off readState(), never two
-      conditions compared here, so loading and failure are exclusive by
-      structure rather than by the order somebody happened to write the
-      branches in.
+      Which line it carries is one word off regionState(), never several
+      conditions compared here, so the read's account of itself, the write in
+      progress and the write that answered are exclusive by structure rather
+      than by the order somebody happened to write the branches in.
     -->
     <div role="status">
-      @if (readState() === 'loading') {
+      @if (regionState() === 'loading') {
         <p class="reason">Reading your transactions…</p>
-      } @else if (readState() === 'failed') {
+      } @else if (regionState() === 'recording') {
+        <p class="recording">{{ recordingSentence }}</p>
+      } @else if (regionState() === 'refused') {
+        @for (sentence of refusals(); track $index) {
+          <p class="refusal">{{ sentence }}</p>
+        }
+      } @else if (regionState() === 'failed') {
         <p class="reason">
           We couldn’t read your transactions. Check your connection and reload
           the page.
@@ -445,6 +565,23 @@ export class TransactionsComponent implements OnInit {
   protected readonly accounts = inject(AccountsService);
   private readonly formBuilder = inject(FormBuilder);
   private readonly custody = inject(AccountKeyCustodyService);
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+
+  // Where the last write's answer renders, or `null` where there is no answer
+  // to render. Cleared when the **next write starts**, and by nothing else.
+  //
+  // `null` rather than an empty report held as a constant, for the reason the
+  // getter below is a getter: a class field initialised from another module's
+  // constant is a shape that has already been measured evaluating too early
+  // here.
+  readonly #write = signal<WriteReport | null>(null);
+
+  // Whether this screen's own write is in flight. **Not
+  // `TransactionsService.loading`**, which is raised by the three reads this
+  // screen starts as well — narrating "Recording…" over a list refresh would
+  // tell somebody their entry is being saved when nothing of theirs is in
+  // flight.
+  readonly #recording = signal(false);
 
   /**
    * Whether this screen may write.
@@ -502,6 +639,73 @@ export class TransactionsComponent implements OnInit {
 
     return this.transactions.failed() ? 'failed' : null;
   });
+
+  /**
+   * The server's sentences for this write, keyed by the control each goes
+   * beneath.
+   *
+   * Empty for every outcome but `invalid`, and empty for an `invalid` all of
+   * whose keys this form had nowhere to put — those are in {@link refusals}
+   * instead, which is the same answer rendered in the other place rather than a
+   * second one.
+   */
+  protected readonly fieldMessages = computed(
+    () => this.#write()?.fields ?? null,
+  );
+
+  /**
+   * The lines the region carries for the last write, in the order they were
+   * decided.
+   */
+  protected readonly refusals = computed(() => this.#write()?.lines ?? []);
+
+  /**
+   * The one line the shared region carries, as a single word.
+   *
+   * **A read in flight outranks everything**, because that request is running
+   * now and the write has already answered. `recording` and `refused` cannot
+   * meet — the next write clears the last one's account of itself before it
+   * starts — but the order is written out all the same, so that adding a state
+   * later is a decision somebody makes rather than one the branch order makes
+   * for them. **A refused write outranks a finished read's failure**: the form
+   * is still holding the text that was refused, and the chapter gives that
+   * sentence's removal to the next write alone.
+   */
+  protected readonly regionState = computed<
+    'loading' | 'recording' | 'refused' | 'failed' | null
+  >(() => {
+    if (this.readState() === 'loading') {
+      return 'loading';
+    }
+
+    if (this.#recording()) {
+      return 'recording';
+    }
+
+    if (this.refusals().length > 0) {
+      return 'refused';
+    }
+
+    return this.readState();
+  });
+
+  /**
+   * The copy for a write in progress, read from the one module that holds this
+   * chapter's sentences rather than written out in the template beside it.
+   *
+   * **A getter and not a field, and that is measured rather than stylistic.**
+   * A class field initialised from a constant in another module is evaluated
+   * when the component is constructed, and under the unit-test builder's
+   * chunking that ran **before** the owning module's body: the field held
+   * `undefined`, the template interpolated an empty string, and the region drew
+   * an empty paragraph. It reproduced only once a second spec file shared a
+   * chunk with this one, so a single-file run was green. Read at render time
+   * the binding is live and the value is there. Do not "simplify" this back
+   * into a field.
+   */
+  protected get recordingSentence(): string {
+    return RECORDING_SENTENCE;
+  }
 
   // What has been typed into the payee field, as a signal. Fed from
   // `valueChanges` rather than read off the control, because a control is not
@@ -620,6 +824,13 @@ export class TransactionsComponent implements OnInit {
       return;
     }
 
+    // The one thing that clears the last write's account of itself. Before the
+    // request rather than after the answer, so that the region carries this
+    // write's progress instead of the previous press's refusal.
+    this.#write.set(null);
+    clearFieldMessages(this.form);
+    this.#recording.set(true);
+
     const value = this.form.getRawValue();
 
     // Handed over exactly as typed. The service seals this text and indexes the
@@ -634,6 +845,9 @@ export class TransactionsComponent implements OnInit {
       description: value.description,
       payee: value.payee,
     });
+
+    this.#recording.set(false);
+    this.#render(outcome);
 
     // **Only a write that landed empties the form.** Five of the service's
     // paths end with nothing on the server, four of them without any request
@@ -653,6 +867,28 @@ export class TransactionsComponent implements OnInit {
       payee: '',
       categoryId: '',
     });
+  }
+
+  // Publishes one write's answer, and moves focus where the chapter puts it:
+  // to the first control carrying a message, and nowhere at all when none
+  // does. `accounts.component.ts` argues both halves at its own copy.
+  #render(outcome: WriteOutcome): void {
+    const report = writeReportOf(outcome, PLACEABLE_KEYS);
+
+    this.#write.set(report);
+
+    const first = markFieldMessages(this.form, report);
+
+    if (first === null) {
+      return;
+    }
+
+    // Found by the control name the form itself uses, so this cannot name a
+    // control the report did not. A `mat-select` is the host element rather
+    // than an input and is focusable in the same way.
+    this.host.nativeElement
+      .querySelector<HTMLElement>(`[formcontrolname="${first}"]`)
+      ?.focus();
   }
 
   private toDateOnlyString(date: Date): string {

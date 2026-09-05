@@ -71,9 +71,40 @@
 // untrimmed index keys a row to a value nothing looks up — so the rule moved
 // here, where refusing is all it does. `Validators.required` admits `'   '` on
 // its own, so it needs the neighbour below.
+//
+// **A refused write is never silent and it never costs a keystroke**, which is
+// `docs/design/components.md`, "A write that does not happen", and it is two
+// rules rather than one. {@link AccountsComponent.save} **awaits** the outcome
+// and clears the form on `recorded` and on nothing else: a clear written on the
+// line after the call runs before any answer exists, so it emptied the field on
+// every outcome the chapter is about — including a refusal whose sentence is
+// then a message about a value no longer on screen, which is worse than
+// silence. And every other outcome renders: the server's own sentences beneath
+// the controls it keyed them to, everything else as a line in the region this
+// screen already has.
+//
+// **The region is the one that was already here.** Shared with the read's two
+// lines and counted once per state, because a second `role="status"` is
+// announced twice and is invisible to whichever branch did not create it. It
+// stays `status` and is never raised to `alert`: politeness is a property of
+// the node rather than of the sentence, so taking `accessibility.md`'s
+// assertive carve-out here would take the loading line and the locked notice
+// with it — and the carve-out is for a save that fails out of sight of the
+// press, which this is not.
+//
+// **Which of the region's lines shows is one word off
+// {@link AccountsComponent.regionState}**, so the read's account of itself and
+// the write's are exclusive by structure. The order inside it is the chapter's
+// with one addition it does not spell out: a read *in flight* wins, because
+// that request is running now and this one has answered; a write's refusal then
+// outranks a **finished** read's failure, because the form is still holding the
+// text that was refused and only the next write may clear that sentence — so a
+// refusal made before a slow read reappears when the read answers, which the
+// chapter names as intent rather than as a leak.
 import {
   ChangeDetectionStrategy,
   Component,
+  ElementRef,
   OnInit,
   computed,
   effect,
@@ -88,10 +119,17 @@ import {
   type ValidationErrors,
 } from '@angular/forms';
 import { AccountType } from '@app-core/api/account-api.service';
+import type { WriteOutcome } from '@app-core/api/write-outcome';
 import { AccountKeyCustodyService } from '@app-core/security/account-key-custody.service';
 import { LockedAccountNoticeComponent } from '@app-shared/components/locked-account-notice/locked-account-notice.component';
 import { NarrativeValueComponent } from '@app-shared/components/narrative-value/narrative-value.component';
 import { NARRATIVE_NAME_CHARACTERS } from '@app-shared/narrative-field-caps';
+import {
+  clearFieldMessages,
+  markFieldMessages,
+  writeReportOf,
+  type WriteReport,
+} from '@app-shared/write-outcome-report';
 import type { AccountView } from './account-view';
 import {
   CurrencyApiService,
@@ -115,6 +153,34 @@ function nonBlank(control: AbstractControl): ValidationErrors | null {
   return typeof control.value === 'string' && control.value.trim().length === 0
     ? { blank: true }
     : null;
+}
+
+/**
+ * The wire keys this form can place a server's sentence on, and the control
+ * each goes beneath.
+ *
+ * **A `Map` and never an object literal**, per the chapter: `constructor`,
+ * `toString` and `valueOf` hit on a literal and place a message under a control
+ * that does not exist.
+ *
+ * **Built per press rather than declared once, because the answer changes.**
+ * `currencyCode` is immutable, so the control leaves the DOM for the whole of
+ * an edit — and a key the form has but is not currently rendering is a **miss**
+ * by this chapter's rule, since the question is whether a message can be seen
+ * rather than whether the name is one the form recognises.
+ */
+function placeableKeys(editing: boolean): ReadonlyMap<string, string> {
+  const keys = new Map<string, string>([
+    ['Name', 'name'],
+    ['Type', 'type'],
+    ['OpeningBalance', 'openingBalance'],
+  ]);
+
+  if (!editing) {
+    keys.set('CurrencyCode', 'currencyCode');
+  }
+
+  return keys;
 }
 
 @Component({
@@ -151,6 +217,16 @@ function nonBlank(control: AbstractControl): ValidationErrors | null {
       margin: 0;
       color: var(--bud-text-muted);
     }
+
+    /*
+      A refused write's line in the shared region. --bud-over, and colour is
+      never the message: every sentence in the chapter's table reads the same
+      with this declaration removed.
+    */
+    .refusal {
+      margin: 0;
+      color: var(--bud-over);
+    }
   `,
   template: `
     <h1>Accounts</h1>
@@ -183,6 +259,22 @@ function nonBlank(control: AbstractControl): ValidationErrors | null {
           formControlName="name"
           [attr.maxlength]="nameCharacters"
         />
+        <!--
+          The server's sentence, rendered verbatim beneath the control it was
+          keyed to. The client writes no copy for a field-keyed refusal and
+          holds no table of its own: a client-authored lookup would have to be
+          total over every string the API can send, and its fallback would be a
+          generic sentence standing exactly where somebody is trying to make a
+          correction. Rendering what arrived is total by construction.
+
+          mat-error rather than a paragraph of this screen's own, because the
+          form field is what binds the message to the input with
+          aria-describedby and colours the border with it — one node, one
+          relationship, both of them the book's.
+        -->
+        @for (message of fieldMessages()?.get('name') ?? []; track $index) {
+          <mat-error>{{ message }}</mat-error>
+        }
       </mat-form-field>
 
       <mat-form-field>
@@ -192,6 +284,9 @@ function nonBlank(control: AbstractControl): ValidationErrors | null {
             <mat-option [value]="type">{{ type }}</mat-option>
           }
         </mat-select>
+        @for (message of fieldMessages()?.get('type') ?? []; track $index) {
+          <mat-error>{{ message }}</mat-error>
+        }
       </mat-form-field>
 
       <mat-form-field>
@@ -202,6 +297,12 @@ function nonBlank(control: AbstractControl): ValidationErrors | null {
           step="0.01"
           formControlName="openingBalance"
         />
+        @for (
+          message of fieldMessages()?.get('openingBalance') ?? [];
+          track $index
+        ) {
+          <mat-error>{{ message }}</mat-error>
+        }
       </mat-form-field>
 
       @if (!editingId()) {
@@ -216,6 +317,12 @@ function nonBlank(control: AbstractControl): ValidationErrors | null {
               </mat-option>
             }
           </mat-select>
+          @for (
+            message of fieldMessages()?.get('currencyCode') ?? [];
+            track $index
+          ) {
+            <mat-error>{{ message }}</mat-error>
+          }
         </mat-form-field>
       }
 
@@ -306,15 +413,21 @@ function nonBlank(control: AbstractControl): ValidationErrors | null {
       this screen started on its own, and assertive is reserved for a failure
       to save something a person typed.
 
-      Which of the two lines it carries is one word off readState(), never two
-      conditions compared here, so loading and failure are exclusive by
-      structure rather than by the order somebody happened to write the
-      branches in.
+      Which line it carries is one word off regionState(), never several
+      conditions compared here, so the read's account of itself and the write's
+      are exclusive by structure rather than by the order somebody happened to
+      write the branches in. One outcome may take more than one line — an
+      errors map keyed to members this form cannot place sends one line per
+      entry — and that is still one answer to one write.
     -->
     <div role="status">
-      @if (readState() === 'loading') {
+      @if (regionState() === 'loading') {
         <p class="reason">Reading your accounts…</p>
-      } @else if (readState() === 'failed') {
+      } @else if (regionState() === 'refused') {
+        @for (sentence of refusals(); track $index) {
+          <p class="refusal">{{ sentence }}</p>
+        }
+      } @else if (regionState() === 'failed') {
         <p class="reason">
           We couldn’t read your accounts. Check your connection and reload the
           page.
@@ -328,6 +441,18 @@ export class AccountsComponent implements OnInit {
   private readonly formBuilder = inject(FormBuilder);
   private readonly currencyApi = inject(CurrencyApiService);
   private readonly custody = inject(AccountKeyCustodyService);
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+
+  // Where the last write's answer renders, or `null` where there is no answer
+  // to render. Cleared when the **next write starts**, and by nothing else —
+  // not by a read, not by a keystroke, not by a cancel — which is what makes a
+  // refusal survive a slow read that displaced it.
+  //
+  // `null` rather than an empty report held as a module constant:
+  // `transactions.component.ts` measured a class field initialised from
+  // another module's constant evaluating before that module's body under the
+  // unit-test builder's chunking, and this is the same shape.
+  readonly #write = signal<WriteReport | null>(null);
 
   /**
    * Whether this screen may write.
@@ -377,6 +502,52 @@ export class AccountsComponent implements OnInit {
     }
 
     return this.accounts.failed() ? 'failed' : null;
+  });
+
+  /**
+   * The server's sentences for this write, keyed by the control each goes
+   * beneath.
+   *
+   * Empty for every outcome but `invalid`, and empty for an `invalid` all of
+   * whose keys this form had nowhere to put — those are in {@link refusals}
+   * instead, which is the same answer rendered in the other place rather than a
+   * second one.
+   */
+  protected readonly fieldMessages = computed(
+    () => this.#write()?.fields ?? null,
+  );
+
+  /**
+   * The lines the region carries for the last write, in the order they were
+   * decided.
+   *
+   * One sentence for a conflict or an unanswered request; one per `errors`
+   * entry this form could not place, in the order the map sent them.
+   */
+  protected readonly refusals = computed(() => this.#write()?.lines ?? []);
+
+  /**
+   * The one line the shared region carries, as a single word.
+   *
+   * **A read in flight outranks everything**, because that request is running
+   * now and the write has already answered. **A refused write then outranks a
+   * finished read's failure**: the form is still holding the text that was
+   * refused, the sentence is as true as when it was written, and the chapter
+   * gives its removal to the next write alone — so clearing it here would leave
+   * a form full of unsaved text with nothing on screen saying why.
+   */
+  protected readonly regionState = computed<
+    'loading' | 'refused' | 'failed' | null
+  >(() => {
+    if (this.readState() === 'loading') {
+      return 'loading';
+    }
+
+    if (this.refusals().length > 0) {
+      return 'refused';
+    }
+
+    return this.readState();
   });
 
   protected readonly accountTypes: AccountType[] = [
@@ -435,7 +606,7 @@ export class AccountsComponent implements OnInit {
       .subscribe((response) => this.currencies.set(response.items));
   }
 
-  protected save(): void {
+  protected async save(): Promise<void> {
     // The gate is in the handler as well as in the attribute. A disabled form's
     // status is `DISABLED` and its `invalid` is therefore `false`, so the check
     // below would wave a locked submit through on its own — and Material's
@@ -445,6 +616,13 @@ export class AccountsComponent implements OnInit {
       return;
     }
 
+    // The one thing that clears the last write's account of itself. Before the
+    // request rather than after the answer, so that the region is silent for as
+    // long as this write is unanswered instead of carrying a sentence about the
+    // press before it.
+    this.#write.set(null);
+    clearFieldMessages(this.form);
+
     const value = this.form.getRawValue();
     const request = {
       name: value.name,
@@ -452,11 +630,24 @@ export class AccountsComponent implements OnInit {
       openingBalance: value.openingBalance,
     };
     const editingId = this.editingId();
+    // **Awaited, and this is the whole of the chapter's first rule.** The clear
+    // below belongs to a `201` or a `204`, never to a press: written on the
+    // line after the dispatch it ran before any answer existed and emptied the
+    // form on every outcome — including the ones the region is here to render,
+    // where the sentence would then be about a value no longer on screen.
+    const outcome = editingId
+      ? await this.accounts.update(editingId, request)
+      : await this.accounts.add({
+          ...request,
+          currencyCode: value.currencyCode,
+        });
 
-    if (editingId) {
-      void this.accounts.update(editingId, request);
-    } else {
-      void this.accounts.add({ ...request, currencyCode: value.currencyCode });
+    this.#render(outcome, editingId !== null);
+
+    if (outcome.state !== 'recorded') {
+      // Nothing navigates and nothing collapses either: a refused write leaves
+      // the form exactly as the press found it, still in edit mode if it was.
+      return;
     }
 
     this.cancelEdit();
@@ -495,5 +686,32 @@ export class AccountsComponent implements OnInit {
 
   protected remove(account: AccountView): void {
     this.accounts.remove(account.id);
+  }
+
+  // Publishes one write's answer, and moves focus where the chapter puts it.
+  //
+  // **Focus moves to the first control carrying a message, and only then.** A
+  // message bound by `aria-describedby` is announced when its control takes
+  // focus rather than when it appears, and the field may be off screen
+  // besides. Where no control carries one, focus stays where the press left it:
+  // moving a keyboard user into a region takes them away from the control they
+  // are about to press again.
+  #render(outcome: WriteOutcome, editing: boolean): void {
+    const report = writeReportOf(outcome, placeableKeys(editing));
+
+    this.#write.set(report);
+
+    const first = markFieldMessages(this.form, report);
+
+    if (first === null) {
+      return;
+    }
+
+    // Found by the control name the form itself uses, so this cannot name a
+    // control the report did not. A `mat-select` is the host element rather
+    // than an input and is focusable in the same way.
+    this.host.nativeElement
+      .querySelector<HTMLElement>(`[formcontrolname="${first}"]`)
+      ?.focus();
   }
 }

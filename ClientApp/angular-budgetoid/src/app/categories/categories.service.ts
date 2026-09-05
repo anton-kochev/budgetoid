@@ -90,10 +90,46 @@
 // type-checks perfectly and answers every call with a `TypeError` on the wrong
 // receiver. `account-view.ts` argues it at greater length; this is a third call
 // site the argument is about.
+//
+// **A write says how it ended, and the four form writes hand the word back.**
+// `docs/design/components.md`, "A write that does not happen", is the
+// authority, and `accounts.service.ts` argues the shape at its own copy: the
+// word comes from `writeOutcomeOf` over the **problem document** and never over
+// the status, because a duplicate group *or category* name is a 400 keyed on
+// `Name` here while the payee create answers a 409 — one screen keying on the
+// status would pass on both of this screen's halves and fail on the one a
+// person hits most, two files away.
+//
+// **Each create's row id is drawn once per form and redrawn only by a write
+// that landed, so this service holds two fields it did not.**
+// `docs/design/components.md` states it under "A write that does not happen":
+// an id minted per press turns a lost answer into two rows wearing two
+// legitimate identifiers, and `duplicate-identifier` — the outcome whose whole
+// job is to make a lost `201` legible — becomes unreachable from this client.
+//
+// **Two fields and not one, because this screen has two writing surfaces.** A
+// group and a category are typed into separate forms that are on screen at the
+// same time, so one shared draft would hand a group's refused id to the next
+// category create and collide on a table it was never drawn for.
+// `accounts.service.ts` argues the rest of the lifetime at its own copy — why a
+// lock does not clear a draft, and why the cost of a service holding one is
+// smaller than the cost of a row written twice.
+//
+// **The four placements and deletes have no channel, and that is a named gap.**
+// `moveGroup`, `removeGroup`, `placeCategory` and `removeCategory` are called
+// as bare statements from the component, so answering a promise would make four
+// call sites floating ones, and a signal beside the lists would be a public
+// member the component spec's `Pick<CategoriesService, keyof CategoriesService>`
+// census has to declare with nothing reading it. The chapter's state table is
+// written for a form holding typed text — every sentence in it says *what you
+// typed* — and none of these four has any. So what replaced the swallow is
+// narrower rather than wider: each failure is **classified** into the same word
+// the form writes answer with, and the word is what reaches the console.
 import { Injectable, computed, effect, inject, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { CategoriesApiService } from '@app-core/api/categories-api.service';
 import { CategoryGroupsApiService } from '@app-core/api/category-groups-api.service';
+import { writeOutcomeOf, type WriteOutcome } from '@app-core/api/write-outcome';
 import {
   AccountKeyCustodyService,
   type AccountKeyStatus,
@@ -111,6 +147,7 @@ import {
   Subject,
   catchError,
   finalize,
+  firstValueFrom,
   forkJoin,
   from,
   map,
@@ -258,6 +295,13 @@ export class CategoriesService {
   readonly #loading = signal(false);
   readonly #failed = signal(false);
   readonly #loads = new Subject<void>();
+
+  // The identifiers the *next* create on each form will carry, or `null` where
+  // none has been drawn. Two, because the two forms are on screen together and
+  // one draft shared between them would hand a group's refused id to a
+  // category. The head of this file argues the lifetime.
+  #draftGroupId: string | null = null;
+  #draftCategoryId: string | null = null;
 
   // The arrow the head of this file argues for. Never `this.#custody.openField`.
   readonly #open: NarrativeOpener = (binding, wire) =>
@@ -417,11 +461,22 @@ export class CategoriesService {
     this.#loads.next();
   }
 
-  public async addGroup(group: CategoryText): Promise<void> {
-    // Minted here and used three times — as the binding each of the two
+  /**
+   * Creates one category group, and answers how the write ended.
+   *
+   * **A word rather than `void`, because the caller has a decision to make on
+   * it**: `docs/design/components.md` gives the clear to the *answer* and never
+   * to the press, so a screen that empties its form on the line after this call
+   * destroys somebody's text on every outcome the chapter exists to render.
+   * `recorded` is the one word that permits a clear.
+   */
+  public async addGroup(group: CategoryText): Promise<WriteOutcome> {
+    // Drawn once and used three times — as the binding each of the two
     // envelopes is sealed against, and as the `id` on the wire. All three must
-    // be the same value, which is why there is one `const`.
-    const id = mintNarrativeRowId();
+    // be the same value, which is why there is one `const`; and it is `??=`
+    // rather than a fresh mint, because a press that follows a refusal has to
+    // carry the id the refused press did.
+    const id = (this.#draftGroupId ??= mintNarrativeRowId());
     const sealed = await this.#sealRow(
       categoryGroupNameBinding(id),
       CATEGORY_GROUP_NAME_FIELD,
@@ -430,34 +485,55 @@ export class CategoriesService {
     );
 
     if (sealed === null) {
-      return;
+      // Nothing was sent, so there is no answer to classify. The screen's own
+      // locked notice is its account of this, which is why the chapter's table
+      // gives the state no sentence.
+      return { state: 'locked' };
     }
 
     this.#loading.set(true);
-    this.#groupsApi
-      .createCategoryGroup({
-        description: sealed.description,
-        id,
-        name: sealed.name,
-        nameKey: sealed.nameKey,
-      })
-      .pipe(
-        switchMap((created) => from(toCategoryGroupView(created, this.#open))),
-        catchError((error: unknown) => this.#swallow(error)),
-        finalize(() => this.#loading.set(false)),
-      )
-      .subscribe((view) => {
-        this.#groups.update((groups) =>
-          // A `null` list is "no answer yet", and appending to it would
-          // fabricate a list of one over a read that never landed. Appended
-          // rather than sorted: the server computed the position and appended
-          // too.
-          groups === null ? groups : [...groups, view],
-        );
-      });
+
+    return firstValueFrom(
+      this.#groupsApi
+        .createCategoryGroup({
+          description: sealed.description,
+          id,
+          name: sealed.name,
+          nameKey: sealed.nameKey,
+        })
+        .pipe(
+          switchMap((created) =>
+            from(toCategoryGroupView(created, this.#open)),
+          ),
+          tap((view) => {
+            // Spent: the row exists under this id, so the next create draws a
+            // new one. A consequence of the server's answer and of nothing
+            // else, which is the same rule the chapter states about the form.
+            this.#draftGroupId = null;
+            this.#groups.update((groups) =>
+              // A `null` list is "no answer yet", and appending to it would
+              // fabricate a list of one over a read that never landed.
+              // Appended rather than sorted: the server computed the position
+              // and appended too.
+              groups === null ? groups : [...groups, view],
+            );
+          }),
+          map((): WriteOutcome => ({ state: 'recorded' })),
+          // **Inside the pipe rather than around the promise**, so the opening
+          // of the 201's own name and note is covered too: a body this client
+          // cannot read is a write that landed and an answer nobody here can
+          // use, and `writeOutcomeOf` has a word for exactly that.
+          catchError((error: unknown) => of(writeOutcomeOf(error))),
+          finalize(() => this.#loading.set(false)),
+        ),
+    );
   }
 
-  public async updateGroup(id: string, group: CategoryText): Promise<void> {
+  /** Renames or re-notes one category group, and answers how it ended. */
+  public async updateGroup(
+    id: string,
+    group: CategoryText,
+  ): Promise<WriteOutcome> {
     // The row's **existing** identifier. Nothing is minted on this path.
     const sealed = await this.#sealRow(
       categoryGroupNameBinding(id),
@@ -467,52 +543,55 @@ export class CategoriesService {
     );
 
     if (sealed === null) {
-      return;
+      return { state: 'locked' };
     }
 
     this.#loading.set(true);
-    this.#groupsApi
-      .updateCategoryGroup(id, {
-        description: sealed.description,
-        name: sealed.name,
-        nameKey: sealed.nameKey,
-      })
-      .pipe(
-        // The route answers 204, so the rows are patched from what was just
-        // sealed. That is honest rather than optimistic: this browser sealed
-        // the text under a key it holds, so the value it would read back is the
-        // text it sent. The group's name is denormalized onto every category
-        // filed under it, so both lists move together.
-        tap(() => {
-          const name: NarrativeText = { state: 'text', value: group.name };
 
-          this.#groups.update((groups) =>
-            groups === null
-              ? groups
-              : groups.map((view) =>
-                  view.id === id
-                    ? {
-                        ...view,
-                        description: typedNote(group.description),
-                        name,
-                      }
-                    : view,
-                ),
-          );
-          this.#categories.update((categories) =>
-            categories === null
-              ? categories
-              : categories.map((view) =>
-                  view.categoryGroupId === id
-                    ? { ...view, categoryGroupName: name }
-                    : view,
-                ),
-          );
-        }),
-        catchError((error: unknown) => this.#swallow(error)),
-        finalize(() => this.#loading.set(false)),
-      )
-      .subscribe();
+    return firstValueFrom(
+      this.#groupsApi
+        .updateCategoryGroup(id, {
+          description: sealed.description,
+          name: sealed.name,
+          nameKey: sealed.nameKey,
+        })
+        .pipe(
+          // The route answers 204, so the rows are patched from what was just
+          // sealed. That is honest rather than optimistic: this browser sealed
+          // the text under a key it holds, so the value it would read back is
+          // the text it sent. The group's name is denormalized onto every
+          // category filed under it, so both lists move together.
+          tap(() => {
+            const name: NarrativeText = { state: 'text', value: group.name };
+
+            this.#groups.update((groups) =>
+              groups === null
+                ? groups
+                : groups.map((view) =>
+                    view.id === id
+                      ? {
+                          ...view,
+                          description: typedNote(group.description),
+                          name,
+                        }
+                      : view,
+                  ),
+            );
+            this.#categories.update((categories) =>
+              categories === null
+                ? categories
+                : categories.map((view) =>
+                    view.categoryGroupId === id
+                      ? { ...view, categoryGroupName: name }
+                      : view,
+                  ),
+            );
+          }),
+          map((): WriteOutcome => ({ state: 'recorded' })),
+          catchError((error: unknown) => of(writeOutcomeOf(error))),
+          finalize(() => this.#loading.set(false)),
+        ),
+    );
   }
 
   public moveGroup(id: string, position: number): void {
@@ -536,7 +615,15 @@ export class CategoriesService {
               : sortCategories(categories, reordered),
           );
         }),
-        catchError((error: unknown) => this.#swallow(error)),
+        // Classified rather than swallowed, and the head of this file argues
+        // why the word stops here: this method answers `void` because its one
+        // caller invokes it as a statement, and there is nowhere on this
+        // service a word could live that anything would read.
+        catchError((error: unknown) => {
+          this.#unrendered('a group move', error);
+
+          return EMPTY;
+        }),
         finalize(() => this.#loading.set(false)),
       )
       .subscribe();
@@ -556,14 +643,21 @@ export class CategoriesService {
                   .map((group, position) => ({ ...group, position })),
           ),
         ),
-        catchError((error: unknown) => this.#swallow(error)),
+        catchError((error: unknown) => {
+          this.#unrendered('a group delete', error);
+
+          return EMPTY;
+        }),
         finalize(() => this.#loading.set(false)),
       )
       .subscribe();
   }
 
-  public async addCategory(category: NewCategory): Promise<void> {
-    const id = mintNarrativeRowId();
+  /** Creates one category, and answers how the write ended. */
+  public async addCategory(category: NewCategory): Promise<WriteOutcome> {
+    // The category form's own draft, never the group form's. The head of this
+    // file argues why there are two.
+    const id = (this.#draftCategoryId ??= mintNarrativeRowId());
     const sealed = await this.#sealRow(
       categoryNameBinding(id),
       CATEGORY_NAME_FIELD,
@@ -572,40 +666,47 @@ export class CategoriesService {
     );
 
     if (sealed === null) {
-      return;
+      return { state: 'locked' };
     }
 
     this.#loading.set(true);
-    this.#categoriesApi
-      .createCategory({
-        categoryGroupId: category.categoryGroupId,
-        description: sealed.description,
-        id,
-        name: sealed.name,
-        nameKey: sealed.nameKey,
-      })
-      .pipe(
-        // The 201 carries the group's sealed name, so the row that lands in the
-        // list has been through the mapper rather than assembled here from what
-        // was typed — which is the only way it can carry a group name this
-        // screen has not been told.
-        switchMap((created) => from(toCategoryView(created, this.#open))),
-        catchError((error: unknown) => this.#swallow(error)),
-        finalize(() => this.#loading.set(false)),
-      )
-      .subscribe((view) => {
-        this.#categories.update((categories) =>
-          categories === null
-            ? categories
-            : sortCategories([...categories, view], this.#groups() ?? []),
-        );
-      });
+
+    return firstValueFrom(
+      this.#categoriesApi
+        .createCategory({
+          categoryGroupId: category.categoryGroupId,
+          description: sealed.description,
+          id,
+          name: sealed.name,
+          nameKey: sealed.nameKey,
+        })
+        .pipe(
+          // The 201 carries the group's sealed name, so the row that lands in
+          // the list has been through the mapper rather than assembled here
+          // from what was typed — which is the only way it can carry a group
+          // name this screen has not been told.
+          switchMap((created) => from(toCategoryView(created, this.#open))),
+          tap((view) => {
+            // Spent, on the same terms as the group create's above.
+            this.#draftCategoryId = null;
+            this.#categories.update((categories) =>
+              categories === null
+                ? categories
+                : sortCategories([...categories, view], this.#groups() ?? []),
+            );
+          }),
+          map((): WriteOutcome => ({ state: 'recorded' })),
+          catchError((error: unknown) => of(writeOutcomeOf(error))),
+          finalize(() => this.#loading.set(false)),
+        ),
+    );
   }
 
+  /** Renames or re-notes one category, and answers how the write ended. */
   public async updateCategory(
     id: string,
     category: CategoryText,
-  ): Promise<void> {
+  ): Promise<WriteOutcome> {
     // The row's **existing** identifier. Nothing is minted on this path.
     const sealed = await this.#sealRow(
       categoryNameBinding(id),
@@ -615,36 +716,39 @@ export class CategoriesService {
     );
 
     if (sealed === null) {
-      return;
+      return { state: 'locked' };
     }
 
     this.#loading.set(true);
-    this.#categoriesApi
-      .updateCategory(id, {
-        description: sealed.description,
-        name: sealed.name,
-        nameKey: sealed.nameKey,
-      })
-      .pipe(
-        tap(() =>
-          this.#categories.update((categories) =>
-            categories === null
-              ? categories
-              : categories.map((view) =>
-                  view.id === id
-                    ? {
-                        ...view,
-                        description: typedNote(category.description),
-                        name: { state: 'text', value: category.name },
-                      }
-                    : view,
-                ),
+
+    return firstValueFrom(
+      this.#categoriesApi
+        .updateCategory(id, {
+          description: sealed.description,
+          name: sealed.name,
+          nameKey: sealed.nameKey,
+        })
+        .pipe(
+          tap(() =>
+            this.#categories.update((categories) =>
+              categories === null
+                ? categories
+                : categories.map((view) =>
+                    view.id === id
+                      ? {
+                          ...view,
+                          description: typedNote(category.description),
+                          name: { state: 'text', value: category.name },
+                        }
+                      : view,
+                  ),
+            ),
           ),
+          map((): WriteOutcome => ({ state: 'recorded' })),
+          catchError((error: unknown) => of(writeOutcomeOf(error))),
+          finalize(() => this.#loading.set(false)),
         ),
-        catchError((error: unknown) => this.#swallow(error)),
-        finalize(() => this.#loading.set(false)),
-      )
-      .subscribe();
+    );
   }
 
   public placeCategory(
@@ -657,7 +761,11 @@ export class CategoriesService {
       .placeCategory(id, { categoryGroupId, position })
       .pipe(
         tap(() => this.#place(id, categoryGroupId, position)),
-        catchError((error: unknown) => this.#swallow(error)),
+        catchError((error: unknown) => {
+          this.#unrendered('a category placement', error);
+
+          return EMPTY;
+        }),
         finalize(() => this.#loading.set(false)),
       )
       .subscribe();
@@ -695,7 +803,11 @@ export class CategoriesService {
             );
           });
         }),
-        catchError((error: unknown) => this.#swallow(error)),
+        catchError((error: unknown) => {
+          this.#unrendered('a category delete', error);
+
+          return EMPTY;
+        }),
         finalize(() => this.#loading.set(false)),
       )
       .subscribe();
@@ -870,14 +982,18 @@ export class CategoriesService {
     };
   }
 
-  // TODO: surface API errors to the user (e.g. a snackbar) once the app has an
-  // error-notification convention. For now the error is swallowed so it does
-  // not become an unhandled rejection; `loading` is reset by each pipe's
-  // finalize.
-  #swallow(error: unknown): typeof EMPTY {
-    this.#report(error);
-
-    return EMPTY;
+  // A write whose word has nowhere to go, named as that rather than logged as a
+  // failure. The head of this file argues why these four are the ones and why a
+  // snackbar is not the answer — `docs/design/components.md` refuses one for
+  // this in as many words, which is what the deleted TODO here was waiting for.
+  //
+  // The **word** is printed and not the error: a raw `HttpErrorResponse` in a
+  // console is the problem document on screen, which the same chapter refuses
+  // one section over, and the classification is the part a reader needs. Which
+  // of the four it was is named too, because these are the only four and a
+  // console line reading only `unreachable` says nothing about what to look at.
+  #unrendered(act: string, error: unknown): void {
+    console.error(`Categories: ${act} ended ${writeOutcomeOf(error).state}`);
   }
 
   #report(error: unknown): void {

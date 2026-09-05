@@ -29,28 +29,72 @@
 // recomputed after the fact because the plaintext behind it is encrypted.
 //
 // **Every exit that writes nothing says so, and `add` answers a word rather
-// than `void`.** Five paths end this write with no row on the server and four
-// of them used to return in silence, which from outside is indistinguishable
-// from a write that landed — and the screen, reading nothing, cleared the form
-// on the line after the call. The severe case is not exotic: a payee whose own
+// than `void`.** Five paths end this write with no row on the server, and an
+// exit that returns in silence is from outside indistinguishable from a write
+// that landed — so a screen with nothing to read has no way to keep the form
+// it is about to clear. The severe case is not exotic: a payee whose own
 // name does not open carries no index, can never match, 409s, re-reads to the
 // same answer and abandons, so the person dealing with that counterparty can
-// never record a transaction against it again. So the outcome is a value the
-// caller branches on, and the reason goes through `#report`, the one channel
-// this service has. It is
-// `console` and nothing else: this app has no notification convention yet, and
-// inventing one here would put a second one in the product the day it gets its
-// first.
+// never record a transaction against it again.
 //
-// **A 409 buys exactly one re-read, and then the write is abandoned.** The
-// conflict says this budget already holds the counterparty and the list this
-// browser had was stale, so re-reading and matching again is the resolution the
-// server is asking for. What must not follow is a loop: a payee whose name did
-// not open can *never* match, so a second attempt posts the same name and 409s
+// **The word is now the product's word, and the abandon is no longer one
+// state.** `docs/design/components.md`, "A write that does not happen", is the
+// authority: a screen receives a {@link WriteOutcome} and never reads a status
+// code to find out which. So the five exits above are classified rather than
+// counted — a browser holding no keys is `locked`, a duplicate counterparty
+// nothing can adopt is `duplicate-name`, a server that failed to answer is
+// `unreachable`, and an answer nobody here can read is `unreadable` — and each
+// of those is a different next step for a person. `#report` stays beside them
+// as the console line it always was: it is what a developer reads, not what a
+// screen renders, and the two were only ever one thing because there was no
+// second channel.
+//
+// **Both of this write's row ids are drawn once and redrawn only by a write
+// that landed, so this service holds two fields it did not.**
+// `docs/design/components.md` states the rule under "A write that does not
+// happen": an id minted per press turns a lost answer into two rows wearing two
+// legitimate identifiers, and `duplicate-identifier` — the outcome whose whole
+// job is to make a lost `201` legible — becomes unreachable from this client.
+// `accounts.service.ts` argues the shared half of the lifetime; what is this
+// file's own is that **the payee is the more urgent of the two**. The
+// transaction's twin is a duplicate row somebody can delete; the payee's is a
+// row on a table the app role holds **no `DELETE`** on, so it is permanent, it
+// stays in every autocomplete, and the only thing that would have prevented it
+// is the id.
+//
+// **The payee's draft is keyed on the name it was drawn for, and that is not
+// tidiness.** A draft id reused under a *different* name is an id the server
+// already holds against other text: the create 409s on the identifier, the
+// re-read cannot match the new name, and the write would abandon on that pair
+// forever. So the draft carries the blind index it was drawn against and is
+// redrawn the moment the typed counterparty keys to anything else.
+//
+// **A conflict buys exactly one re-read, and it is now both conflicts rather
+// than one.** `conflictKind: duplicate_name` says this budget already holds the
+// counterparty and the list this browser had was stale, so re-reading and
+// matching again is the resolution the server is asking for.
+// `conflictKind: duplicate_identifier` is the *same status* and used to be the
+// opposite remedy — and under a per-press id it was: the id was a fresh draw,
+// so a collision said nothing about the name and the one re-read was spent on
+// it for nothing. Under a **held** id the meaning inverts. The only way this
+// browser's own draft is taken is that its own earlier create landed and lost
+// its answer, so the row wearing it holds this name, this index, and is exactly
+// what the re-read finds. Reading the two kinds alike is therefore not a
+// widening but the same rule under the new id lifetime — and it is what stops a
+// lost answer stranding a payee nobody can delete. Every other status still
+// says something a second look at the list cannot answer.
+//
+// A no-match after either conflict abandons, and **drops the draft**: whichever
+// kind it was, the id is provably taken by a row this browser cannot adopt, so
+// reusing it collects the same answer for the life of the tab.
+//
+// What must not follow the re-read is a loop: a payee whose name did not open
+// can *never* match, so a second attempt posts the same name and conflicts
 // again, forever. Retrying with a fresh id is worse than pointless — it fixes
 // an astronomically unlikely id collision and loses to the duplicate name in
-// the case that actually happens. And reading the 409 as success is worse still:
-// it would file the transaction against a payee this client never confirmed.
+// the case that actually happens. And reading the conflict as success is worse
+// still: it would file the transaction against a payee this client never
+// confirmed.
 //
 // **An empty note posts `null` and seals nothing.** `''` is not a legal
 // envelope and answers 400. The consequence is worth stating at the element
@@ -135,13 +179,13 @@
 // method references.** Each reads a `#` field, so `this.#custody.openField` on
 // its own type-checks perfectly and answers every call with a `TypeError` on
 // the wrong receiver.
-import { HttpErrorResponse } from '@angular/common/http';
 import { Injectable, effect, inject, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { CategoryGroupsApiService } from '@app-core/api/category-groups-api.service';
 import { CategoriesApiService } from '@app-core/api/categories-api.service';
 import { PayeesApiService } from '@app-core/api/payees-api.service';
 import { TransactionsApiService } from '@app-core/api/transactions-api.service';
+import { writeOutcomeOf, type WriteOutcome } from '@app-core/api/write-outcome';
 import {
   AccountKeyCustodyService,
   type AccountKeyStatus,
@@ -194,20 +238,6 @@ export interface NewTransaction {
   readonly categoryId: string | null;
 }
 
-/**
- * How a write ended: a row on the server, or nothing at all.
- *
- * A word rather than `void`, because the caller has a decision to make on it —
- * the screen may not destroy what somebody typed over a write that did not
- * land. `abandoned` covers every exit that wrote nothing, including the ones
- * that refused before any request: what differs between them is the sentence
- * `#report` carries, and there is no screen today that could act on the
- * difference.
- */
-export type TransactionWrite =
-  | { readonly state: 'recorded' }
-  | { readonly state: 'abandoned' };
-
 // How a load ended, as a word rather than as the absence of a value. A failure
 // that emitted nothing would leave the outer subscription unable to clear the
 // loading line.
@@ -227,16 +257,30 @@ type SealedNote =
 // is an answer; `abandoned` is the whole write called off, and the two may
 // never be folded — folding them files a transaction with no counterparty on
 // behalf of somebody who typed one.
+//
+// An abandon **carries the word the whole write ends on**, because the step
+// that refused is the only one that knows which refusal it was: a locked key
+// and a counterparty nothing can adopt are two different next steps for a
+// person, and `add` has no way to tell them apart after the fact.
 type ResolvedPayee =
   | { readonly state: 'none' }
   | { readonly state: 'resolved'; readonly id: string }
-  | { readonly state: 'abandoned' };
+  | { readonly state: 'abandoned'; readonly outcome: WriteOutcome };
 
-// A conflict is the only failure a re-read can resolve: it says the row already
-// exists. Every other status says something a second look at the list cannot
-// answer.
-function isConflict(error: unknown): boolean {
-  return error instanceof HttpErrorResponse && error.status === 409;
+// How the payee read the conflict branch depends on ended. A word rather than
+// `null`, for the reason every union in this file is one: the caller has to
+// carry the failure outward as the write's own outcome, and `null` would make
+// it invent one.
+type PayeeRead =
+  | { readonly state: 'read'; readonly views: readonly PayeeView[] }
+  | { readonly state: 'failed'; readonly outcome: WriteOutcome };
+
+// The identifier the next payee create will carry, and the blind index it was
+// drawn against. The pair travels together because the id is only reusable for
+// the name it was drawn for — the head of this file argues why.
+interface DraftPayee {
+  readonly id: string;
+  readonly nameKey: string;
 }
 
 @Injectable({ providedIn: 'root' })
@@ -259,6 +303,11 @@ export class TransactionsService {
   // branch has to match against the list **it** read, and a later read's
   // answer is not a substitute for it.
   #payeeReads = 0;
+  // The two drafts the head of this file argues for: drawn on the first press
+  // that needs one, kept through every refusal, cleared by the write that
+  // landed.
+  #draftTransactionId: string | null = null;
+  #draftPayee: DraftPayee | null = null;
 
   // The two arrows the head of this file argues for. Never
   // `this.#custody.openField` and never `this.#custody.blindIndex`.
@@ -460,19 +509,23 @@ export class TransactionsService {
   }
 
   /**
-   * Records one transaction, and answers whether anything was written.
+   * Records one transaction, and answers how the write ended.
    *
-   * **Every `abandoned` has already been reported**, here or in the step that
-   * refused, so a caller neither has to nor may report it again. What the
-   * caller does with the word is keep what somebody typed: five paths end this
-   * write with nothing on the server, and a screen that clears its form on the
-   * way past destroys the text before the outcome exists.
+   * **Every outcome but `recorded` has already been reported to the console**,
+   * here or in the step that refused, so a caller neither has to nor may report
+   * it again. What the caller does with the word is two things: keep what
+   * somebody typed — five paths end this write with nothing on the server, and
+   * a screen that clears its form on the way past destroys the text before the
+   * outcome exists — and say which of them happened: the server's field-keyed
+   * sentences go beneath the controls they name, and every other refusal takes
+   * a line in the screen's one `role="status"` region.
    */
-  public async add(transaction: NewTransaction): Promise<TransactionWrite> {
-    // Minted here and used twice — as the binding the note is sealed against,
+  public async add(transaction: NewTransaction): Promise<WriteOutcome> {
+    // Drawn once and used twice — as the binding the note is sealed against,
     // and as the `id` on the wire. The two must be the same value, which is why
-    // there is one `const`.
-    const id = mintNarrativeRowId();
+    // there is one `const`; and it is `??=` rather than a fresh mint, because a
+    // press that follows a refusal has to carry the id the refused press did.
+    const id = (this.#draftTransactionId ??= mintNarrativeRowId());
 
     this.#loading.set(true);
 
@@ -494,15 +547,16 @@ export class TransactionsService {
       if (note.state === 'locked') {
         this.#report('the note could not be sealed');
 
-        return { state: 'abandoned' };
+        return { state: 'locked' };
       }
 
       const payee = await this.#resolvePayee(transaction.payee);
 
       if (payee.state === 'abandoned') {
         // Already reported, by the step that decided it: only that step knows
-        // which of its four refusals happened.
-        return { state: 'abandoned' };
+        // which of its four refusals happened — which is also why the word
+        // travels back on the value rather than being decided here.
+        return payee.outcome;
       }
 
       await firstValueFrom(
@@ -519,10 +573,15 @@ export class TransactionsService {
     } catch (error: unknown) {
       this.#report('the transaction could not be recorded', error);
 
-      return { state: 'abandoned' };
+      return writeOutcomeOf(error);
     } finally {
       this.#loading.set(false);
     }
+
+    // Spent: the row exists under this id, so the next entry draws a new one.
+    // After the `await` and never before it — a clear on the way past is the
+    // press deciding what only the answer may.
+    this.#draftTransactionId = null;
 
     // The create's own answer is dropped rather than spliced in: this screen
     // has no ordering of its own, so the server's is the only one there is.
@@ -565,7 +624,7 @@ export class TransactionsService {
     if (indexed.state === 'locked') {
       this.#report('the counterparty could not be keyed');
 
-      return { state: 'abandoned' };
+      return { state: 'abandoned', outcome: { state: 'locked' } };
     }
 
     const held = this.#payees() ?? [];
@@ -582,7 +641,7 @@ export class TransactionsService {
     plaintext: string,
     matchKey: string,
   ): Promise<ResolvedPayee> {
-    const id = mintNarrativeRowId();
+    const id = this.#drawPayeeId(matchKey);
     const sealed = await this.#custody.sealField(
       payeeNameBinding(id),
       plaintext,
@@ -591,7 +650,7 @@ export class TransactionsService {
     if (sealed.state === 'locked') {
       this.#report('the counterparty’s name could not be sealed');
 
-      return { state: 'abandoned' };
+      return { state: 'abandoned', outcome: { state: 'locked' } };
     }
 
     // The key again, on the far side of the seal, and the pair is posted only
@@ -604,11 +663,19 @@ export class TransactionsService {
     const nameKey = await this.#index(PAYEE_NAME_FIELD, plaintext);
 
     if (nameKey.state === 'locked' || nameKey.value !== matchKey) {
+      // `locked` for both arms, and the two are not the same event: one is a
+      // browser that lost its keys and one is a browser whose keys were
+      // *replaced* mid-write. They share the only thing a person can act on —
+      // nothing was sent and the account's key state moved underneath — and the
+      // second arm is unreachable from any route table this product has, since
+      // `adopt()`'s one caller is registration and `/register` is behind
+      // `guestGuard` while this screen is behind `authGuard`. Splitting them
+      // would add a word no screen can produce and none could render.
       this.#report(
         'the account’s keys changed while the counterparty was being sealed',
       );
 
-      return { state: 'abandoned' };
+      return { state: 'abandoned', outcome: { state: 'locked' } };
     }
 
     try {
@@ -619,6 +686,13 @@ export class TransactionsService {
           nameKey: nameKey.value,
         }),
       );
+
+      // Spent: the row exists under this id. Cleared here rather than when the
+      // transaction lands, because the two are separate requests — a create
+      // that succeeded beside a transaction that failed leaves a payee this
+      // browser now holds locally, so the next press matches it and never
+      // reaches a create at all.
+      this.#draftPayee = null;
 
       // Held locally rather than re-read: this browser sealed that text under a
       // key it holds and computed that index itself, so what it would read back
@@ -643,10 +717,25 @@ export class TransactionsService {
 
       return { state: 'resolved', id: created.id };
     } catch (error: unknown) {
-      if (!isConflict(error)) {
+      const refusal = writeOutcomeOf(error);
+
+      // **Keyed on the conflict's *kind*, never on its status**, and both kinds
+      // reach the one re-read. `duplicate_name` is this budget holding the
+      // counterparty under a list this browser had stale. `duplicate_identifier`
+      // is this browser's own earlier create landing and losing its answer —
+      // the id is a **held** draft now, drawn against this very name, so the row
+      // wearing it is the one the re-read is about to find. The head of this
+      // file argues why the second reading inverted with the id's lifetime and
+      // why reading them alike is not a widening;
+      // `docs/business-logic/payees.md` is where the vocabulary lives. Every
+      // other refusal says something a second look at the list cannot answer.
+      if (
+        refusal.state !== 'duplicate-name' &&
+        refusal.state !== 'duplicate-identifier'
+      ) {
         this.#report('the counterparty could not be created', error);
 
-        return { state: 'abandoned' };
+        return { state: 'abandoned', outcome: refusal };
       }
 
       // Reported in the branches below and never here: a conflict is the
@@ -658,32 +747,70 @@ export class TransactionsService {
       // would not help.
       const refreshed = await this.#readPayees();
 
-      if (refreshed === null) {
-        // `#readPayees` reported the read that failed.
-        return { state: 'abandoned' };
+      if (refreshed.state === 'failed') {
+        // `#readPayees` reported the read that failed, and its word is what
+        // this write ends on: the conflict is not what a person can act on
+        // here — the read that would have resolved it is.
+        return { state: 'abandoned', outcome: refreshed.outcome };
       }
 
-      const match = matchPayeeByIndex(refreshed, nameKey.value);
+      const match = matchPayeeByIndex(refreshed.views, nameKey.value);
 
       if (match === null) {
+        // Nothing to adopt. The draft goes with it: whichever kind the conflict
+        // was, the id is provably held by a row this browser cannot match, so
+        // reusing it collects the same answer for the life of the tab.
+        this.#draftPayee = null;
+
         // The severe one, and the reason `add` answers a word: the row holding
         // that name is one this browser cannot read, so every write naming
-        // this counterparty ends here, for as long as the row exists.
+        // this counterparty ends here, for as long as the row exists. It is
+        // the one place in the product that ends on `duplicate-name` — the
+        // ordinary conflict resolves one line down and says nothing anywhere.
+        // The **`duplicate-name`** word rather than `refusal`, on both kinds:
+        // an identifier collision that survives the re-read is a row this
+        // browser cannot read wearing the id it drew, which is the same next
+        // step for a person and never *this entry is already saved* — the
+        // transaction was not.
         this.#report(
           'a counterparty of that name exists and this browser cannot read it',
         );
 
-        return { state: 'abandoned' };
+        return { state: 'abandoned', outcome: { state: 'duplicate-name' } };
       }
+
+      // Adopted, so the draft is spent on a row that exists.
+      this.#draftPayee = null;
 
       return { state: 'resolved', id: match.id };
     }
   }
 
+  // The id the next payee create carries, kept across a refusal and redrawn
+  // when the counterparty being created is a different one.
+  //
+  // **Keyed on the blind index and never on the typed text**, because that is
+  // what "a different counterparty" means everywhere else on this path: the
+  // index is what the local match and the server's unique constraint both
+  // decide on, so `Trader Joe's` retyped as `trader joe's` is the same draft
+  // and a genuinely different name is not. Comparing the text would redraw the
+  // id over a change of case and hand the server two rows for one name.
+  #drawPayeeId(nameKey: string): string {
+    if (this.#draftPayee?.nameKey === nameKey) {
+      return this.#draftPayee.id;
+    }
+
+    const id = mintNarrativeRowId();
+
+    this.#draftPayee = { id, nameKey };
+
+    return id;
+  }
+
   // Answers the list as well as publishing it, because the conflict path needs
   // the value and the screen needs the signal, and re-reading twice for one
   // question would be two answers that can disagree.
-  async #readPayees(): Promise<readonly PayeeView[] | null> {
+  async #readPayees(): Promise<PayeeRead> {
     const generation = ++this.#payeeReads;
 
     try {
@@ -701,23 +828,25 @@ export class TransactionsService {
 
       // Answered whether it published or not: the caller asked *this* read a
       // question, and the newer read's answer is not a reply to it.
-      return views;
+      return { state: 'read', views };
     } catch (error: unknown) {
       this.#report('the counterparties could not be read', error);
 
-      return null;
+      return { state: 'failed', outcome: writeOutcomeOf(error) };
     }
   }
 
-  // The one channel this service has, and the only place it names itself.
+  // The developer's channel, and the only place this service names itself.
   //
-  // TODO: surface these to the user (a snackbar or the like) once the app has
-  // an error-notification convention; `docs/design/` owes a chapter for it.
-  // Until then this is what an abandoned write leaves behind, which is why
-  // every path that abandons one comes through here — a write that wrote
-  // nothing and said nothing cannot be told from one that landed. `cause` is
-  // absent on the refusals that never reached a request: there is no error
-  // object behind a locked key, and passing `undefined` would print one.
+  // **It is not the screen's channel and must not become one.** `add` answers a
+  // {@link WriteOutcome} now, and `docs/design/components.md` says where that
+  // word renders — beneath a field, or in the screen's one `role="status"`
+  // region, and never in a snackbar, which is what the TODO that stood here
+  // proposed. What survives is a console line per abandoned write, because a
+  // write that wrote nothing and said nothing in the log cannot be told from
+  // one that landed while somebody is debugging it. `cause` is absent on the
+  // refusals that never reached a request: there is no error object behind a
+  // locked key, and passing `undefined` would print one.
   #report(reason: string, cause?: unknown): void {
     if (cause === undefined) {
       console.error(`Transactions: ${reason}`);

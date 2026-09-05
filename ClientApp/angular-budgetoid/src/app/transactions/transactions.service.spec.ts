@@ -31,6 +31,7 @@ import { provideHttpClient } from '@angular/common/http';
 import {
   HttpTestingController,
   provideHttpClientTesting,
+  type TestRequest,
 } from '@angular/common/http/testing';
 import { signal, type Signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
@@ -262,6 +263,16 @@ class CustodyStub
   public lock(): void {
     throw new Error('the transactions service may not lock the account');
   }
+}
+
+// A validation problem document, built from pairs rather than written as a
+// literal. The API's keys are the C# member names, and this project's lint rule
+// reaches into object literals and demands camelCase of them — so a literal
+// cannot spell what the wire actually sends.
+function withErrors(
+  ...entries: readonly (readonly [string, readonly string[]])[]
+): Record<string, unknown> {
+  return { errors: Object.fromEntries(entries) };
 }
 
 // Drains the microtask queue the AEAD opens run in. A macrotask boundary is
@@ -1182,10 +1193,10 @@ describe('TransactionsService', () => {
       const create = http.expectOne(PAYEES_URL);
 
       expect((create.request.body as { id: string }).id).not.toBe(PAYEE_ID);
-      create.flush(sealedPayee(PAYEE_ID, 'Corner Shop'), {
-        status: 409,
-        statusText: 'Conflict',
-      });
+      create.flush(
+        { conflictKind: 'duplicate_name' },
+        { status: 409, statusText: 'Conflict' },
+      );
       await settle();
       http.expectOne(PAYEES_URL).flush({ items: [] });
       await settle();
@@ -1202,7 +1213,10 @@ describe('TransactionsService', () => {
       await settle();
       http
         .expectOne(PAYEES_URL)
-        .flush('conflict', { status: 409, statusText: 'Conflict' });
+        .flush(
+          { conflictKind: 'duplicate_name' },
+          { status: 409, statusText: 'Conflict' },
+        );
       await settle();
 
       // Assert — one re-read, and the row it finds is the one the transaction
@@ -1242,7 +1256,10 @@ describe('TransactionsService', () => {
       await settle();
       http
         .expectOne(PAYEES_URL)
-        .flush('conflict', { status: 409, statusText: 'Conflict' });
+        .flush(
+          { conflictKind: 'duplicate_name' },
+          { status: 409, statusText: 'Conflict' },
+        );
       await settle();
       http.expectOne(PAYEES_URL).flush({ items: [] });
       await settle();
@@ -1426,7 +1443,10 @@ describe('TransactionsService', () => {
       await settle();
       http
         .expectOne(PAYEES_URL)
-        .flush('conflict', { status: 409, statusText: 'Conflict' });
+        .flush(
+          { conflictKind: 'duplicate_name' },
+          { status: 409, statusText: 'Conflict' },
+        );
       await settle();
       http.expectOne(PAYEES_URL).flush({ items: [] });
       await settle();
@@ -1454,7 +1474,10 @@ describe('TransactionsService', () => {
       await settle();
       http
         .expectOne(PAYEES_URL)
-        .flush('conflict', { status: 409, statusText: 'Conflict' });
+        .flush(
+          { conflictKind: 'duplicate_name' },
+          { status: 409, statusText: 'Conflict' },
+        );
       await settle();
       http
         .expectOne(PAYEES_URL)
@@ -1691,6 +1714,426 @@ describe('TransactionsService', () => {
       expect(service.categoryGroups()).toEqual([
         expect.objectContaining({ name: { state: 'text', value: 'Fresh' } }),
       ]);
+    });
+  });
+
+  // How a write ends, as a value the screen receives.
+  //
+  // **The pair that matters is the two conflicts.** They are the same status
+  // and the same title with opposite remedies, and the service used to read
+  // both as "the list was stale": a payee POST retried after a lost answer
+  // spent the one re-read looking for a name that was never the problem, found
+  // nothing, and abandoned a transaction. Every case below that flushes a 409
+  // therefore names its kind, because a 409 with no kind is a third answer
+  // again.
+  describe('the word a write ends on', () => {
+    async function heldPayees(...payees: PayeeDto[]): Promise<void> {
+      service.loadPayees();
+      http.expectOne(PAYEES_URL).flush({ items: payees });
+      await settle();
+    }
+
+    it('answers recorded when the transaction lands', async () => {
+      // Arrange
+      const write = service.add(typed());
+
+      await settle();
+
+      // Act
+      http
+        .expectOne(TRANSACTIONS_URL)
+        .flush(sealedTransaction(), { status: 201, statusText: 'Created' });
+      await settle();
+
+      // Assert — the one word that permits a form to be cleared.
+      expect(await write).toEqual({ state: 'recorded' });
+      http.expectOne(TRANSACTIONS_URL).flush({ items: [] });
+      await settle();
+    });
+
+    // **This case used to assert the opposite, and the rule under it moved.**
+    // It was written when a payee id was minted per press: a conflict over a
+    // freshly drawn id said nothing about any name, so spending the one re-read
+    // on it abandoned a transaction over a counterparty that was not in the
+    // way. The id is a **held draft** now — drawn against this very name and
+    // kept across a refusal — so the only way the server holds it is that this
+    // browser's own earlier create landed and lost its answer, and the row
+    // wearing it is exactly what the re-read finds. Same one re-read, same
+    // no-loop rule; the meaning of the kind inverted with the id's lifetime.
+    it('adopts the payee its own retried create collided with', async () => {
+      // Arrange
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      await heldPayees();
+
+      const write = service.add(typed({ payee: 'Corner Shop' }));
+
+      await settle();
+
+      // Act
+      http
+        .expectOne(PAYEES_URL)
+        .flush(
+          { conflictKind: 'duplicate_identifier' },
+          { status: 409, statusText: 'Conflict' },
+        );
+      await settle();
+      http
+        .expectOne(PAYEES_URL)
+        .flush({ items: [sealedPayee(PAYEE_ID, 'Corner Shop')] });
+      await settle();
+
+      // Assert — the transaction is filed against the row that was already
+      // there, rather than abandoned over it.
+      const transaction = http.expectOne(TRANSACTIONS_URL);
+
+      expect(
+        (transaction.request.body as { payeeId: string | null }).payeeId,
+      ).toBe(PAYEE_ID);
+      transaction.flush(sealedTransaction(), {
+        status: 201,
+        statusText: 'Created',
+      });
+      await settle();
+      expect(await write).toEqual({ state: 'recorded' });
+      http.expectOne(TRANSACTIONS_URL).flush({ items: [] });
+      await settle();
+    });
+
+    it('abandons when the re-read after an identifier conflict finds nothing', async () => {
+      // Arrange — the far side of the case above, and the reason the abandon
+      // carries `duplicate-name` rather than the kind the server sent: nothing
+      // was recorded, so *this entry is already saved* would be a false
+      // sentence about the transaction. What is true is that a counterparty
+      // wearing that id exists and this browser cannot match it, which is the
+      // same next step — go to the list — as the name conflict's.
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      await heldPayees();
+
+      const write = service.add(typed({ payee: 'Corner Shop' }));
+
+      await settle();
+
+      // Act
+      http
+        .expectOne(PAYEES_URL)
+        .flush(
+          { conflictKind: 'duplicate_identifier' },
+          { status: 409, statusText: 'Conflict' },
+        );
+      await settle();
+      http.expectOne(PAYEES_URL).flush({ items: [] });
+      await settle();
+
+      // Assert — one re-read and no second create, whatever it found.
+      http.expectNone(PAYEES_URL);
+      http.expectNone(TRANSACTIONS_URL);
+      expect(await write).toEqual({ state: 'duplicate-name' });
+    });
+
+    it('spends no re-read on a payee conflict carrying no kind at all', async () => {
+      // Arrange — the third answer on that status: a browser running an older
+      // bundle than the API, or a shape nobody anticipated. It is an answer
+      // this screen cannot read rather than a guess, and guessing here is what
+      // the case above costs.
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      await heldPayees();
+
+      const write = service.add(typed({ payee: 'Corner Shop' }));
+
+      await settle();
+
+      // Act
+      http
+        .expectOne(PAYEES_URL)
+        .flush({ title: 'Conflict' }, { status: 409, statusText: 'Conflict' });
+      await settle();
+
+      // Assert
+      http.expectNone(PAYEES_URL);
+      http.expectNone(TRANSACTIONS_URL);
+      expect(await write).toEqual({ state: 'unreadable' });
+    });
+
+    it('answers duplicate-name when the one re-read finds nothing to adopt', async () => {
+      // Arrange — the severe exit, and the only place in the product that ends
+      // on this word: the row holding that name is one this browser cannot
+      // read, so it carries no index, can never match, and every write naming
+      // that counterparty ends here.
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      await heldPayees();
+
+      const write = service.add(typed({ payee: 'Corner Shop' }));
+
+      await settle();
+
+      // Act
+      http
+        .expectOne(PAYEES_URL)
+        .flush(
+          { conflictKind: 'duplicate_name' },
+          { status: 409, statusText: 'Conflict' },
+        );
+      await settle();
+      http.expectOne(PAYEES_URL).flush({ items: [] });
+      await settle();
+
+      // Assert
+      http.expectNone(TRANSACTIONS_URL);
+      expect(await write).toEqual({ state: 'duplicate-name' });
+    });
+
+    it('says nothing on a conflict the re-read resolves', async () => {
+      // Arrange — the other polarity, and the reason `duplicate-name` is not
+      // simply "the payee create conflicted": the ordinary path adopts the row
+      // and ends in a recorded transaction with no sentence anywhere.
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      await heldPayees();
+
+      const write = service.add(typed({ payee: 'Corner Shop' }));
+
+      await settle();
+
+      // Act
+      http
+        .expectOne(PAYEES_URL)
+        .flush(
+          { conflictKind: 'duplicate_name' },
+          { status: 409, statusText: 'Conflict' },
+        );
+      await settle();
+      http
+        .expectOne(PAYEES_URL)
+        .flush({ items: [sealedPayee(PAYEE_ID, 'Corner Shop')] });
+      await settle();
+      http
+        .expectOne(TRANSACTIONS_URL)
+        .flush(sealedTransaction(), { status: 201, statusText: 'Created' });
+      await settle();
+
+      // Assert
+      expect(await write).toEqual({ state: 'recorded' });
+      http.expectOne(TRANSACTIONS_URL).flush({ items: [] });
+      await settle();
+    });
+
+    it('answers the server’s own sentences when the transaction is refused', async () => {
+      // Arrange
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+      const write = service.add(typed());
+
+      await settle();
+
+      // Act
+      http
+        .expectOne(TRANSACTIONS_URL)
+        .flush(withErrors(['Amount', ['Enter an amount.']]), {
+          status: 400,
+          statusText: 'Bad Request',
+        });
+      await settle();
+
+      // Assert
+      const outcome = await write;
+
+      expect(outcome.state).toBe('invalid');
+      expect(outcome.state === 'invalid' ? [...outcome.errors] : null).toEqual([
+        ['Amount', ['Enter an amount.']],
+      ]);
+    });
+
+    it('tells a server that failed from one that judged', async () => {
+      // Arrange — a 500 is a minute's wait; a 403 is a judgement, and the same
+      // press collects the same judgement.
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+      const first = service.add(typed());
+
+      await settle();
+      http
+        .expectOne(TRANSACTIONS_URL)
+        .flush('nope', { status: 500, statusText: 'Server Error' });
+      await settle();
+
+      const second = service.add(typed());
+
+      await settle();
+
+      // Act
+      http
+        .expectOne(TRANSACTIONS_URL)
+        .flush('nope', { status: 403, statusText: 'Forbidden' });
+      await settle();
+
+      // Assert
+      expect(await first).toEqual({ state: 'unreachable' });
+      expect(await second).toEqual({ state: 'unreadable' });
+    });
+
+    it('answers locked when the note cannot be sealed', async () => {
+      // Arrange — nothing was sent, so there is no answer to classify, and the
+      // next step is a factor rather than a retry or a reload.
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      custody.sealAnswer = { state: 'locked' };
+
+      // Act
+      const outcome = await service.add(typed());
+
+      await settle();
+
+      // Assert
+      http.expectNone(TRANSACTIONS_URL);
+      expect(outcome).toEqual({ state: 'locked' });
+    });
+
+    it('answers locked when the counterparty cannot be keyed', async () => {
+      // Arrange — the second of the exits that never reach a request, and it
+      // travels out through the payee step rather than being decided by `add`.
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      custody.indexAnswer = { state: 'locked' };
+
+      // Act
+      const outcome = await service.add(typed({ payee: 'Corner Shop' }));
+
+      await settle();
+
+      // Assert
+      http.expectNone(PAYEES_URL);
+      http.expectNone(TRANSACTIONS_URL);
+      expect(outcome).toEqual({ state: 'locked' });
+    });
+  });
+
+  // The two identifiers this write carries, across presses.
+  //
+  // **`accounts.service.spec.ts` argues why a create's id has to survive a
+  // refusal.** What is this write's own is that it mints **two**, and that the
+  // payee's is the more urgent of the pair: a duplicate transaction is a row
+  // somebody can delete, and a duplicate payee is a row on a table the app role
+  // holds no `DELETE` on — permanent, and in every autocomplete from then on.
+  describe('the identifiers this write carries', () => {
+    function postedId(request: TestRequest): string {
+      return (request.request.body as { id: string }).id;
+    }
+
+    it('keeps the transaction’s identifier across a refusal and redraws it once one lands', async () => {
+      // Arrange
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      void service.add(typed());
+      await settle();
+
+      const refused = http.expectOne(TRANSACTIONS_URL);
+      const drafted = postedId(refused);
+
+      refused.flush('', { status: 500, statusText: 'Server Error' });
+      await settle();
+
+      // Act
+      void service.add(typed());
+      await settle();
+
+      const retried = http.expectOne(TRANSACTIONS_URL);
+
+      // Assert — the same id, so a lost answer collides instead of recording
+      // the entry twice.
+      expect(postedId(retried)).toBe(drafted);
+      retried.flush(sealedTransaction(), {
+        status: 201,
+        statusText: 'Created',
+      });
+      await settle();
+      http.expectOne(TRANSACTIONS_URL).flush({ items: [] });
+      await settle();
+
+      void service.add(typed());
+      await settle();
+
+      const next = http.expectOne(TRANSACTIONS_URL);
+
+      expect(postedId(next)).not.toBe(drafted);
+      expect(postedId(next)).toMatch(MINTED_ROW_ID);
+      next.flush(sealedTransaction(), { status: 201, statusText: 'Created' });
+      await settle();
+      http.expectOne(TRANSACTIONS_URL).flush({ items: [] });
+      await settle();
+    });
+
+    it('keeps the counterparty’s identifier across a refusal', async () => {
+      // Arrange — the payee create is a request of its own, so it has a lost
+      // answer of its own. Per press, a retry writes a second row for one
+      // counterparty on a table nothing can delete from.
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      service.loadPayees();
+      http.expectOne(PAYEES_URL).flush({ items: [] });
+      await settle();
+
+      void service.add(typed({ payee: 'Corner Shop' }));
+      await settle();
+
+      const refused = http.expectOne(PAYEES_URL);
+      const drafted = postedId(refused);
+
+      refused.flush('', { status: 500, statusText: 'Server Error' });
+      await settle();
+
+      // Act
+      void service.add(typed({ payee: 'Corner Shop' }));
+      await settle();
+
+      // Assert
+      const retried = http.expectOne(PAYEES_URL);
+
+      expect(postedId(retried)).toBe(drafted);
+      retried.flush(sealedPayee(drafted, 'Corner Shop'));
+      await settle();
+      http
+        .expectOne(TRANSACTIONS_URL)
+        .flush(sealedTransaction(), { status: 201, statusText: 'Created' });
+      await settle();
+      http.expectOne(TRANSACTIONS_URL).flush({ items: [] });
+      await settle();
+    });
+
+    it('redraws the counterparty’s identifier when the name keys to something else', async () => {
+      // Arrange — the half that keeps a held id from deadlocking. Reused under
+      // a *different* counterparty, the draft names a row the server already
+      // holds against other text: the create 409s on the identifier, the
+      // re-read cannot match the new name, and every press after that ends the
+      // same way. Keyed on the **blind index** rather than on the typed string,
+      // so a change of case is the same counterparty and a different name is
+      // not.
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      service.loadPayees();
+      http.expectOne(PAYEES_URL).flush({ items: [] });
+      await settle();
+
+      void service.add(typed({ payee: 'Corner Shop' }));
+      await settle();
+
+      const refused = http.expectOne(PAYEES_URL);
+      const drafted = postedId(refused);
+
+      refused.flush('', { status: 500, statusText: 'Server Error' });
+      await settle();
+
+      // Act — the same counterparty in a different case, then a different one.
+      void service.add(typed({ payee: 'CORNER SHOP' }));
+      await settle();
+
+      const folded = http.expectOne(PAYEES_URL);
+
+      expect(postedId(folded)).toBe(drafted);
+      folded.flush('', { status: 500, statusText: 'Server Error' });
+      await settle();
+      void service.add(typed({ payee: 'Bakery' }));
+      await settle();
+
+      // Assert
+      const other = http.expectOne(PAYEES_URL);
+
+      expect(postedId(other)).not.toBe(drafted);
+      other.flush('', { status: 500, statusText: 'Server Error' });
+      await settle();
     });
   });
 });

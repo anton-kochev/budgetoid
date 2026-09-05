@@ -118,12 +118,67 @@
 // type-checks perfectly and answers every call with a `TypeError` on the wrong
 // receiver. `account-view.ts` argues it at greater length; this is the call
 // site the argument is about.
+//
+// **A write says how it ended, and the two form writes hand the word back.**
+// `docs/design/components.md`, "A write that does not happen", is the
+// authority: a pipeline that logs a refusal and completes with no value does
+// not make that chapter hard to implement, it makes it unreachable — there is
+// nothing for a template to branch on. So `add` and `update` answer a
+// {@link WriteOutcome}, classified by `writeOutcomeOf` out of the **problem
+// document** rather than out of the status, and the screen decides what to do
+// with the word: `accounts.component.ts` puts the server's field-keyed
+// sentences beneath the controls they name, gives every other refusal a line in
+// the one `role="status"` region it already had, and clears the form on
+// `recorded` and on no other word. None of that is this service's to do — it
+// writes no copy and renders nothing — because a sentence chosen here could not
+// be placed under the control the server keyed it to, which is a fact only a
+// form knows about itself.
+//
+// **The create's row id is drawn once per form and redrawn only by a write that
+// landed, which is why this service now holds a field it did not.**
+// `docs/design/components.md` states it under "A write that does not happen":
+// an id minted per press turns a lost answer into two rows wearing two
+// legitimate identifiers, and `duplicate-identifier` — the outcome whose whole
+// job is to make a lost `201` legible — becomes unreachable from this client.
+// So `add` draws `#draftId` on the first press that needs one and keeps it
+// through every refusal; the create's success is the one thing that clears it.
+//
+// **What that costs, said rather than mitigated away.** A service with a field
+// is a service with state, and this one is `providedIn: 'root'`, so the draft
+// outlives the screen: type a name, lose the answer, walk away, come back and
+// add a *different* account, and that second create carries the first attempt's
+// id. If the first attempt had in fact landed, the person is told their entry is
+// already saved — true of the id and false of what is now in the form. It is
+// accepted because the alternative is worse in the commoner direction: a
+// per-press id silently writes the row twice, and nothing on either side can
+// see it afterwards. **The component may still not hold it** — the id is the
+// associated data the name was sealed against, so the one place it can be
+// dropped is the one place it must not be, and a screen that reset it on a
+// cancel would be exactly that place.
+//
+// **A lock does not clear it**, deliberately: a locked write sent nothing, and
+// redrawing over a ceremony would put the two-row defect back on the far side
+// of every unlock.
+//
+// **`remove` is the write this trip could not give a channel to, and the reason
+// is written here rather than left to be rediscovered.** It is called as a bare
+// statement from the component, so answering a promise would make that call
+// site a floating one; and a signal beside the list would be a public member
+// the component spec's `Pick<AccountsService, keyof AccountsService>` census
+// has to declare, read by nothing. The design book's state table is written for
+// a form holding typed text — every sentence in it says *what you typed* — and
+// a delete has none, so the copy for this one is not written either. What
+// replaced the swallow is therefore narrower rather than wider: the failure is
+// **classified** into the same word the form writes answer with, and the word
+// is what reaches the console. The day the region renders a delete's refusal,
+// the classification is already here and only the channel is missing.
 import { Injectable, effect, inject, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import {
   AccountApiService,
   type AccountType,
 } from '@app-core/api/account-api.service';
+import { writeOutcomeOf, type WriteOutcome } from '@app-core/api/write-outcome';
 import {
   AccountKeyCustodyService,
   type AccountKeyStatus,
@@ -137,6 +192,7 @@ import {
   Subject,
   catchError,
   finalize,
+  firstValueFrom,
   from,
   map,
   of,
@@ -198,6 +254,12 @@ export class AccountsService {
   readonly #loading = signal(false);
   readonly #failed = signal(false);
   readonly #loads = new Subject<void>();
+
+  // The identifier the *next* create will carry, or `null` when none has been
+  // drawn. The head of this file argues the lifetime: drawn on the first press
+  // that needs one, kept through every refusal, cleared by a create that
+  // landed.
+  #draftId: string | null = null;
 
   // The arrow the head of this file argues for. Never `this.#custody.openField`.
   readonly #open: NarrativeOpener = (binding, wire) =>
@@ -325,84 +387,118 @@ export class AccountsService {
     this.#loads.next();
   }
 
-  public async add(account: NewAccount): Promise<void> {
-    // Minted here and used twice — as the binding the name is sealed against,
+  /**
+   * Creates one account, and answers how the write ended.
+   *
+   * **A word rather than `void`, because the caller has a decision to make on
+   * it**: `docs/design/components.md` gives the clear to the *answer* and never
+   * to the press, so a screen that empties its form on the line after this call
+   * destroys somebody's text on every outcome the chapter exists to render.
+   * `recorded` is the one word that permits a clear.
+   */
+  public async add(account: NewAccount): Promise<WriteOutcome> {
+    // Drawn once and used twice — as the binding the name is sealed against,
     // and as the `id` on the wire. The two must be the same value, which is why
-    // there is one `const`.
-    const id = mintNarrativeRowId();
+    // there is one `const`; and it is `??=` rather than a fresh mint, because a
+    // press that follows a refusal has to carry the id the refused press did.
+    const id = (this.#draftId ??= mintNarrativeRowId());
     const name = await this.#sealName(id, account.name);
 
     if (name === null) {
-      return;
+      // Nothing was sent, so there is no answer to classify. The account's own
+      // locked notice is the screen's account of this, which is why the
+      // chapter's table gives the state no sentence of its own.
+      return { state: 'locked' };
     }
 
     this.#loading.set(true);
-    this.#api
-      .createAccount({
-        currencyCode: account.currencyCode,
-        id,
-        name: name.wire,
-        nameKey: name.key,
-        openingBalance: account.openingBalance,
-        type: account.type,
-      })
-      .pipe(
-        switchMap((created) => from(toAccountView(created, this.#open))),
-        catchError((error: unknown) => this.#swallow(error)),
-        finalize(() => this.#loading.set(false)),
-      )
-      .subscribe((view) => {
-        this.#accounts.update((accounts) =>
-          // A `null` list is "no answer yet", and appending to it would
-          // fabricate a list of one over a read that never landed.
-          accounts === null ? accounts : byName([...accounts, view]),
-        );
-      });
+
+    return firstValueFrom(
+      this.#api
+        .createAccount({
+          currencyCode: account.currencyCode,
+          id,
+          name: name.wire,
+          nameKey: name.key,
+          openingBalance: account.openingBalance,
+          type: account.type,
+        })
+        .pipe(
+          switchMap((created) => from(toAccountView(created, this.#open))),
+          tap((view) => {
+            // Spent: the row exists under this id, so the next create draws a
+            // new one. Inside the `tap` rather than beside the `recorded`
+            // below, so that the clear is a consequence of the server's answer
+            // and of nothing else — which is the same rule the chapter states
+            // about the form.
+            this.#draftId = null;
+            this.#accounts.update((accounts) =>
+              // A `null` list is "no answer yet", and appending to it would
+              // fabricate a list of one over a read that never landed.
+              accounts === null ? accounts : byName([...accounts, view]),
+            );
+          }),
+          map((): WriteOutcome => ({ state: 'recorded' })),
+          // **Inside the pipe rather than around the promise**, so the opening
+          // of the 201's own name is covered too: a body this client cannot
+          // read is a write that landed and an answer nobody here can use, and
+          // `writeOutcomeOf` has a word for exactly that.
+          catchError((error: unknown) => of(writeOutcomeOf(error))),
+          finalize(() => this.#loading.set(false)),
+        ),
+    );
   }
 
-  public async update(id: string, account: EditedAccount): Promise<void> {
+  /** Renames or retypes one account, and answers how the write ended. */
+  public async update(
+    id: string,
+    account: EditedAccount,
+  ): Promise<WriteOutcome> {
     // The row's **existing** identifier. Nothing is minted on this path.
     const name = await this.#sealName(id, account.name);
 
     if (name === null) {
-      return;
+      return { state: 'locked' };
     }
 
     this.#loading.set(true);
-    this.#api
-      .updateAccount(id, {
-        name: name.wire,
-        nameKey: name.key,
-        openingBalance: account.openingBalance,
-        type: account.type,
-      })
-      .pipe(
-        // The route answers 204, so the row is patched from what was just
-        // sealed. That is honest rather than optimistic: this browser sealed
-        // the text under a key it holds, so the value it would read back is the
-        // text it sent. Currency is immutable and is carried through.
-        tap(() =>
-          this.#accounts.update((accounts) =>
-            accounts === null
-              ? accounts
-              : byName(
-                  accounts.map((view) =>
-                    view.id === id
-                      ? {
-                          ...view,
-                          name: { state: 'text', value: account.name },
-                          openingBalance: account.openingBalance,
-                          type: account.type,
-                        }
-                      : view,
+
+    return firstValueFrom(
+      this.#api
+        .updateAccount(id, {
+          name: name.wire,
+          nameKey: name.key,
+          openingBalance: account.openingBalance,
+          type: account.type,
+        })
+        .pipe(
+          // The route answers 204, so the row is patched from what was just
+          // sealed. That is honest rather than optimistic: this browser sealed
+          // the text under a key it holds, so the value it would read back is
+          // the text it sent. Currency is immutable and is carried through.
+          tap(() =>
+            this.#accounts.update((accounts) =>
+              accounts === null
+                ? accounts
+                : byName(
+                    accounts.map((view) =>
+                      view.id === id
+                        ? {
+                            ...view,
+                            name: { state: 'text', value: account.name },
+                            openingBalance: account.openingBalance,
+                            type: account.type,
+                          }
+                        : view,
+                    ),
                   ),
-                ),
+            ),
           ),
+          map((): WriteOutcome => ({ state: 'recorded' })),
+          catchError((error: unknown) => of(writeOutcomeOf(error))),
+          finalize(() => this.#loading.set(false)),
         ),
-        catchError((error: unknown) => this.#swallow(error)),
-        finalize(() => this.#loading.set(false)),
-      )
-      .subscribe();
+    );
   }
 
   public remove(id: string): void {
@@ -417,7 +513,17 @@ export class AccountsService {
               : accounts.filter((view) => view.id !== id),
           ),
         ),
-        catchError((error: unknown) => this.#swallow(error)),
+        // Classified rather than swallowed, and the head of this file argues
+        // why the word stops here: the two form writes hand theirs back on a
+        // return value the screen awaits, and this method has none to hand one
+        // back on — its one caller invokes it as a statement. A signal holding
+        // it instead would be a public member nothing reads, because the copy
+        // for a delete's refusal is not written.
+        catchError((error: unknown) => {
+          this.#unrendered(error);
+
+          return EMPTY;
+        }),
         finalize(() => this.#loading.set(false)),
       )
       .subscribe();
@@ -454,12 +560,16 @@ export class AccountsService {
     return { key: indexed.value, wire: sealed.wire };
   }
 
-  // TODO: surface API errors to the user (e.g. a snackbar) once the app has an
-  // error-notification convention. For now the error is swallowed so it does not
-  // become an unhandled rejection; `loading` is reset by each pipe's finalize.
-  #swallow(error: unknown): typeof EMPTY {
-    console.error('Accounts API request failed', error);
-
-    return EMPTY;
+  // A write whose word has nowhere to go, named as that rather than logged as a
+  // failure. The head of this file argues why `remove` is the one such write
+  // and why a snackbar is not the answer — `docs/design/components.md` refuses
+  // one for this in as many words, which is what the deleted TODO here was
+  // waiting for.
+  //
+  // The **word** is printed and not the error: a raw `HttpErrorResponse` in a
+  // console is the problem document on screen, which the same chapter refuses
+  // one section over, and the classification is the part a reader needs.
+  #unrendered(error: unknown): void {
+    console.error(`Accounts: a delete ended ${writeOutcomeOf(error).state}`);
   }
 }

@@ -37,6 +37,47 @@ html {
       on-surface-variant: light-dark(#68706a, #909a92),
     )
   );
+
+  // The book's error colour, put where Material looks for one.
+  // `docs/design/components.md` gives a refused field "the border and the
+  // message in --bud-over", which is a rule about every form in the product.
+  // Three screens render a refusal today; that number is what has shipped, not
+  // what the rule covers.
+  //
+  // **Here rather than in a component's `:host`, and that is the whole point of
+  // the line.** One mapping written once: copies of it drift silently — nothing
+  // compares two screens' idea of the error colour — and a screen that arrives
+  // later has to remember a declaration whose absence nothing would notice. A
+  // `:host` copy also stops at that component's own subtree, so a
+  // `mat-select`'s panel, rendered into a CDK overlay on `<body>`, sits outside
+  // it. Declared on the theme, neither is possible.
+  //
+  // **One alias rather than a list, measured in @angular/material 21.2's own
+  // form-field stylesheet**: eighteen error tokens, and nothing in this
+  // application sets any of them. Thirteen fall back to `var(--mat-sys-error)`
+  // — the message, the caret, the active indicator, the outline, the label and
+  // their focus states — so this one declaration reaches all thirteen, where
+  // naming them would be thirteen guesses about an appearance no screen here
+  // pins. `--mat-select-invalid-arrow-color` is a fourteenth outside the
+  // form-field sheet; `--mat-badge-background-color` and the two stepper error
+  // tokens are three more, on components this application does not use.
+  //
+  // **The other five are the hover states and they stay Material's own colour.**
+  // `--mat-form-field-{,filled-,outlined-}error-hover-*` fall back to
+  // `var(--mat-sys-on-error-container)`, so hovering an invalid field moves its
+  // indicator and label off the book's red. Said here because an absence cannot
+  // be found by grep. Left rather than mapped: `--bud-*` has no container role
+  // to alias, and inventing one is a decision for the design book rather than
+  // for a theme file.
+  //
+  // `src/material-error-colour.spec.ts` renders a `mat-error` under Material's
+  // real stylesheet and walks the token chain this declaration sits in, so
+  // removing the line reddens rather than quietly restoring Material's red.
+  @include mat.theme-overrides(
+    (
+      error: var(--bud-over),
+    )
+  );
 }
 
 html,

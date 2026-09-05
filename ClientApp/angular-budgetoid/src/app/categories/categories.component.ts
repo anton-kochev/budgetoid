@@ -86,6 +86,24 @@
 // and is a note somebody typed: the service seals it as typed, and the
 // `normalizeDescription` that used to fold it onto `null` is gone, because the
 // client may not alter what it seals.
+//
+// **A refused write is never silent and it never costs a keystroke**, which is
+// `docs/design/components.md`, "A write that does not happen".
+// `accounts.component.ts` argues the shared half at its own copy: both handlers
+// **await** the outcome and clear on `recorded` alone, the server's sentences
+// render beneath the controls they were keyed to, everything else takes a line
+// in the region this screen already has, and the region stays `status`.
+//
+// **What is this screen's own is that it has two writing surfaces and one
+// region.** So the last write is held as a *pair* — which form it was, and what
+// it answered — and the field messages of a refused group write render under
+// the group form and nowhere else. The alternative is the defect this shape
+// exists to refuse: both forms carry a control called `name`, so a report keyed
+// on the control alone paints one server sentence under two fields, one of them
+// about text nobody submitted. Holding the surface beside the report is also
+// what keeps the region's exclusivity — a second write replaces the first
+// whichever form it came from, so the screen never shows two accounts of what
+// happened.
 import {
   CdkDrag,
   CdkDragDrop,
@@ -95,6 +113,7 @@ import {
 import {
   ChangeDetectionStrategy,
   Component,
+  ElementRef,
   OnInit,
   computed,
   effect,
@@ -103,6 +122,7 @@ import {
 } from '@angular/core';
 import {
   FormBuilder,
+  FormGroup,
   ReactiveFormsModule,
   Validators,
   type AbstractControl,
@@ -119,6 +139,13 @@ import {
   NARRATIVE_DESCRIPTION_CHARACTERS,
   NARRATIVE_NAME_CHARACTERS,
 } from '@app-shared/narrative-field-caps';
+import {
+  clearFieldMessages,
+  markFieldMessages,
+  writeReportOf,
+  type WriteReport,
+} from '@app-shared/write-outcome-report';
+import type { WriteOutcome } from '@app-core/api/write-outcome';
 import {
   categoryGroupIsReadable,
   type CategoryGroupView,
@@ -137,6 +164,41 @@ function nonBlank(control: AbstractControl): ValidationErrors | null {
   return typeof control.value === 'string' && control.value.trim().length === 0
     ? { blank: true }
     : null;
+}
+
+/** Which of this screen's two forms a write came from. */
+type WritingSurface = 'group' | 'category';
+
+/** The last write on this screen: which form it was, and what it answered. */
+interface SurfaceWrite {
+  readonly surface: WritingSurface;
+  readonly report: WriteReport;
+}
+
+/**
+ * The wire keys each form can place a server's sentence on, and the control it
+ * goes beneath.
+ *
+ * **A `Map` and never an object literal**, per the chapter: `constructor`,
+ * `toString` and `valueOf` hit on a literal and place a message under a control
+ * that does not exist.
+ *
+ * The category form's group picker is included unconditionally, and that is a
+ * statement rather than an oversight: it leaves the DOM only while the account
+ * is locked, which is a state in which this form cannot write at all — so at
+ * every moment a message could arrive, the control is on screen to take it.
+ */
+function placeableKeys(surface: WritingSurface): ReadonlyMap<string, string> {
+  const keys = new Map<string, string>([
+    ['Name', 'name'],
+    ['Description', 'description'],
+  ]);
+
+  if (surface === 'category') {
+    keys.set('CategoryGroupId', 'categoryGroupId');
+  }
+
+  return keys;
 }
 
 @Component({
@@ -189,6 +251,16 @@ function nonBlank(control: AbstractControl): ValidationErrors | null {
       color: var(--bud-text-muted);
     }
 
+    /*
+      A refused write's line in the shared region. --bud-over, and colour is
+      never the message: every sentence in the chapter's table reads the same
+      with this declaration removed.
+    */
+    .refusal {
+      margin: 0;
+      color: var(--bud-over);
+    }
+
     .category-groups {
       display: grid;
       gap: 1rem;
@@ -239,7 +311,17 @@ function nonBlank(control: AbstractControl): ValidationErrors | null {
     <h1>Categories</h1>
 
     <div class="editors">
-      <form [formGroup]="groupForm" (ngSubmit)="saveGroup()">
+      <!--
+        data-surface names which of the two forms this is. It is read by the
+        component when a refusal has to move focus to a control, because both
+        forms carry one called **name** and a host-wide lookup would land on
+        the group's every time.
+      -->
+      <form
+        [formGroup]="groupForm"
+        data-surface="group"
+        (ngSubmit)="saveGroup()"
+      >
         <h2>
           {{ editingGroupId() ? 'Edit category group' : 'Add category group' }}
         </h2>
@@ -271,6 +353,15 @@ function nonBlank(control: AbstractControl): ValidationErrors | null {
             formControlName="name"
             [attr.maxlength]="nameCharacters"
           />
+          <!--
+            The server's sentence, rendered verbatim beneath the control it was
+            keyed to, and only where the *group* form is the one that was
+            refused — both forms carry a control called name, so a lookup on
+            the control alone would paint one sentence under two fields.
+          -->
+          @for (message of groupMessages()?.get('name') ?? []; track $index) {
+            <mat-error>{{ message }}</mat-error>
+          }
         </mat-form-field>
         <mat-form-field>
           <mat-label>Description</mat-label>
@@ -279,6 +370,12 @@ function nonBlank(control: AbstractControl): ValidationErrors | null {
             formControlName="description"
             [attr.maxlength]="descriptionCharacters"
           ></textarea>
+          @for (
+            message of groupMessages()?.get('description') ?? [];
+            track $index
+          ) {
+            <mat-error>{{ message }}</mat-error>
+          }
         </mat-form-field>
         <div class="actions">
           <!--
@@ -305,7 +402,11 @@ function nonBlank(control: AbstractControl): ValidationErrors | null {
         </div>
       </form>
 
-      <form [formGroup]="categoryForm" (ngSubmit)="saveCategory()">
+      <form
+        [formGroup]="categoryForm"
+        data-surface="category"
+        (ngSubmit)="saveCategory()"
+      >
         <h2>{{ editingCategoryId() ? 'Edit category' : 'Add category' }}</h2>
         @if (!writable()) {
           <p class="reason">
@@ -320,6 +421,12 @@ function nonBlank(control: AbstractControl): ValidationErrors | null {
             formControlName="name"
             [attr.maxlength]="nameCharacters"
           />
+          @for (
+            message of categoryMessages()?.get('name') ?? [];
+            track $index
+          ) {
+            <mat-error>{{ message }}</mat-error>
+          }
         </mat-form-field>
         <mat-form-field>
           <mat-label>Description</mat-label>
@@ -328,6 +435,12 @@ function nonBlank(control: AbstractControl): ValidationErrors | null {
             formControlName="description"
             [attr.maxlength]="descriptionCharacters"
           ></textarea>
+          @for (
+            message of categoryMessages()?.get('description') ?? [];
+            track $index
+          ) {
+            <mat-error>{{ message }}</mat-error>
+          }
         </mat-form-field>
         <!--
           The one control on this screen that renders a value somebody had to
@@ -365,6 +478,12 @@ function nonBlank(control: AbstractControl): ValidationErrors | null {
               <mat-hint>
                 Move an existing category by dragging it below.
               </mat-hint>
+            }
+            @for (
+              message of categoryMessages()?.get('categoryGroupId') ?? [];
+              track $index
+            ) {
+              <mat-error>{{ message }}</mat-error>
             }
           </mat-form-field>
         }
@@ -515,15 +634,19 @@ function nonBlank(control: AbstractControl): ValidationErrors | null {
       this screen started on its own, and assertive is reserved for a failure
       to save something a person typed.
 
-      Which of the two lines it carries is one word off readState(), never two
-      conditions compared here, so loading and failure are exclusive by
-      structure rather than by the order somebody happened to write the
-      branches in.
+      Which line it carries is one word off regionState(), never several
+      conditions compared here, so the read's account of itself and the write's
+      are exclusive by structure — and so are the two forms', because one
+      report replaces the other whichever of them wrote.
     -->
     <div role="status">
-      @if (readState() === 'loading') {
+      @if (regionState() === 'loading') {
         <p class="reason">Reading your categories…</p>
-      } @else if (readState() === 'failed') {
+      } @else if (regionState() === 'refused') {
+        @for (sentence of refusals(); track $index) {
+          <p class="refusal">{{ sentence }}</p>
+        }
+      } @else if (regionState() === 'failed') {
         <p class="reason">
           We couldn’t read your categories. Check your connection and reload the
           page.
@@ -536,6 +659,13 @@ export class CategoriesComponent implements OnInit {
   protected readonly categories = inject(CategoriesService);
   private readonly formBuilder = inject(FormBuilder);
   private readonly custody = inject(AccountKeyCustodyService);
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+
+  // The last write on this screen, as the pair the head of this file argues
+  // for. Cleared when the **next write starts** — on either form — and by
+  // nothing else, which is what makes a refusal survive a slow read that
+  // displaced it and what keeps one report on screen at a time.
+  readonly #write = signal<SurfaceWrite | null>(null);
 
   /**
    * Whether this screen may write.
@@ -589,6 +719,48 @@ export class CategoriesComponent implements OnInit {
     }
 
     return this.categories.failed() ? 'failed' : null;
+  });
+
+  /**
+   * The server's sentences for the group form, keyed by the control each goes
+   * beneath — and empty whenever the last write was the *other* form's.
+   */
+  protected readonly groupMessages = computed(() => this.#messagesFor('group'));
+
+  /** The same, for the category form. */
+  protected readonly categoryMessages = computed(() =>
+    this.#messagesFor('category'),
+  );
+
+  /**
+   * The lines the region carries for the last write, in the order they were
+   * decided. Whichever form it came from: there is one region.
+   */
+  protected readonly refusals = computed(
+    () => this.#write()?.report.lines ?? [],
+  );
+
+  /**
+   * The one line the shared region carries, as a single word.
+   *
+   * **A read in flight outranks everything**, because that request is running
+   * now and the write has already answered. **A refused write then outranks a
+   * finished read's failure**: the form is still holding the text that was
+   * refused, and the chapter gives that sentence's removal to the next write
+   * alone. `accounts.component.ts` argues it at greater length.
+   */
+  protected readonly regionState = computed<
+    'loading' | 'refused' | 'failed' | null
+  >(() => {
+    if (this.readState() === 'loading') {
+      return 'loading';
+    }
+
+    if (this.refusals().length > 0) {
+      return 'refused';
+    }
+
+    return this.readState();
   });
 
   /**
@@ -690,7 +862,7 @@ export class CategoriesComponent implements OnInit {
     this.categories.load();
   }
 
-  protected saveGroup(): void {
+  protected async saveGroup(): Promise<void> {
     // The gate is in the handler as well as in the attribute. A disabled form's
     // status is `DISABLED` and its `invalid` is therefore `false`, so the check
     // below would wave a locked submit through on its own — and Material's
@@ -700,17 +872,29 @@ export class CategoriesComponent implements OnInit {
       return;
     }
 
+    this.#beginWrite();
+
     // Handed over exactly as typed. The service seals this text and indexes the
     // same string; a `.trim()` on this line would make the two disagree, and
     // the `normalizeDescription` that used to fold a whitespace-only note onto
     // `null` is gone rather than moved one layer up.
     const value = this.groupForm.getRawValue();
     const id = this.editingGroupId();
+    // **Awaited, and this is the whole of the chapter's first rule.** The clear
+    // below belongs to a `201` or a `204`, never to a press: written on the
+    // line after the dispatch it ran before any answer existed and emptied the
+    // form on every outcome, including the ones the region is here to render.
+    const outcome =
+      id === null
+        ? await this.categories.addGroup(value)
+        : await this.categories.updateGroup(id, value);
 
-    if (id === null) {
-      void this.categories.addGroup(value);
-    } else {
-      void this.categories.updateGroup(id, value);
+    this.#render('group', this.groupForm, outcome);
+
+    if (outcome.state !== 'recorded') {
+      // Nothing navigates and nothing collapses: a refused write leaves the
+      // form exactly as the press found it, still in edit mode if it was.
+      return;
     }
 
     this.cancelGroupEdit();
@@ -745,21 +929,27 @@ export class CategoriesComponent implements OnInit {
     this.categories.removeGroup(group.id);
   }
 
-  protected saveCategory(): void {
+  protected async saveCategory(): Promise<void> {
     if (!this.writable() || this.categoryForm.invalid) {
       return;
     }
 
+    this.#beginWrite();
+
     const value = this.categoryForm.getRawValue();
     const id = this.editingCategoryId();
+    const outcome =
+      id === null
+        ? await this.categories.addCategory(value)
+        : await this.categories.updateCategory(id, {
+            description: value.description,
+            name: value.name,
+          });
 
-    if (id === null) {
-      void this.categories.addCategory(value);
-    } else {
-      void this.categories.updateCategory(id, {
-        description: value.description,
-        name: value.name,
-      });
+    this.#render('category', this.categoryForm, outcome);
+
+    if (outcome.state !== 'recorded') {
+      return;
     }
 
     this.cancelCategoryEdit();
@@ -834,5 +1024,56 @@ export class CategoriesComponent implements OnInit {
 
   protected categoryIsReadable(category: CategoryView): boolean {
     return categoryIsReadable(category);
+  }
+
+  // The last write's field messages, but only for the form that made it. Empty
+  // for the other, which is what stops one server sentence appearing under both
+  // `name` controls at once.
+  #messagesFor(
+    surface: WritingSurface,
+  ): ReadonlyMap<string, readonly string[]> | null {
+    const write = this.#write();
+
+    return write?.surface === surface ? write.report.fields : null;
+  }
+
+  // The one thing that clears the last write's account of itself, and it clears
+  // **both** forms: the region and the two mat-error sets are one report, so a
+  // group write starting has to take a category write's messages down with it.
+  #beginWrite(): void {
+    this.#write.set(null);
+    clearFieldMessages(this.groupForm);
+    clearFieldMessages(this.categoryForm);
+  }
+
+  // Publishes one write's answer, and moves focus where the chapter puts it:
+  // to the first control carrying a message, and nowhere at all when none
+  // does. `accounts.component.ts` argues both halves at its own copy.
+  #render(
+    surface: WritingSurface,
+    form: FormGroup,
+    outcome: WriteOutcome,
+  ): void {
+    const report = writeReportOf(outcome, placeableKeys(surface));
+
+    this.#write.set({ report, surface });
+
+    const first = markFieldMessages(form, report);
+
+    if (first === null) {
+      return;
+    }
+
+    // **Scoped to the form that was written, through the surface name the two
+    // `<form>` elements carry.** Both forms hold a control called `name`, so a
+    // host-wide lookup focuses whichever comes first in the document — which is
+    // the group's, on every refusal of the category form. The attribute is what
+    // makes the two tellable apart without a positional selector that the next
+    // layout change would silently invert.
+    this.host.nativeElement
+      .querySelector<HTMLElement>(
+        `[data-surface="${surface}"] [formcontrolname="${first}"]`,
+      )
+      ?.focus();
   }
 }

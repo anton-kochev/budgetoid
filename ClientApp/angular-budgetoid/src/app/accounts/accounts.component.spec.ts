@@ -41,6 +41,7 @@ import {
   CurrencyApiService,
   type CurrencyListResponse,
 } from '@app-core/api/currency-api.service';
+import type { WriteOutcome } from '@app-core/api/write-outcome';
 import {
   AccountKeyCustodyService,
   type AccountKeyStatus,
@@ -84,8 +85,14 @@ class AccountsServiceStub
   public readonly failed = this.failedSignal.asReadonly();
 
   public load = vi.fn();
-  public add = vi.fn((): Promise<void> => Promise.resolve());
-  public update = vi.fn((): Promise<void> => Promise.resolve());
+  // Answers `recorded` by default, because that is the path a case saying
+  // nothing about the outcome means.
+  public add = vi.fn(
+    (): Promise<WriteOutcome> => Promise.resolve({ state: 'recorded' }),
+  );
+  public update = vi.fn(
+    (): Promise<WriteOutcome> => Promise.resolve({ state: 'recorded' }),
+  );
   public remove = vi.fn();
 }
 
@@ -154,6 +161,23 @@ interface Exposed {
 
 function exposed(component: AccountsComponent): Exposed {
   return component as unknown as Exposed;
+}
+
+// The submit, as the promise it now is. Kept apart from {@link exposed} so that
+// the cases which only press the control go on ignoring the result and stay
+// free of a floating promise — the same split `transactions.component.spec.ts`
+// makes for the same reason.
+function pressSave(component: AccountsComponent): Promise<void> {
+  return (component as unknown as { save: () => Promise<void> }).save();
+}
+
+// A validation refusal, built from pairs. The API's keys are C# member names
+// and this project's lint rule demands camelCase of an object literal's
+// properties, so a literal cannot spell what the wire actually sends.
+function invalid(
+  ...entries: readonly (readonly [string, readonly string[]])[]
+): WriteOutcome {
+  return { errors: new Map(entries), state: 'invalid' };
 }
 
 describe('AccountsComponent', () => {
@@ -611,6 +635,366 @@ describe('AccountsComponent', () => {
       // Assert — the value is on screen, so the region has nothing to add.
       expect(host().querySelector('mat-list')).not.toBeNull();
       expect((statusRegion()?.textContent ?? '').trim()).toBe('');
+    });
+  });
+
+  // A write that does not happen — `docs/design/components.md`.
+  //
+  // **Every case here is silent when broken.** A form cleared on the press
+  // destroys what somebody typed before the outcome exists, and the screen then
+  // has nothing to say and nothing to say it about. A refusal rendered nowhere
+  // is a screen that looks correct while a person presses the same button until
+  // they give up. And the *placement* is half the rule rather than a detail: a
+  // sentence about a field belongs beneath that field, and a sentence about the
+  // attempt belongs in the region, because the second kind has no field
+  // anybody could correct.
+  describe('a write that does not happen', () => {
+    function statusRegion(): HTMLElement | null {
+      return host().querySelector<HTMLElement>('[role="status"]');
+    }
+
+    function regionText(): string {
+      return statusRegion()?.textContent ?? '';
+    }
+
+    function fieldErrors(): string[] {
+      return Array.from(host().querySelectorAll('mat-error')).map((error) =>
+        (error.textContent ?? '').trim(),
+      );
+    }
+
+    function fill(name = 'Everyday'): void {
+      exposed(fixture.componentInstance).form.setValue({
+        name,
+        type: 'Checking',
+        openingBalance: 0,
+        currencyCode: 'USD',
+      });
+    }
+
+    it('keeps what was typed when the write is refused', async () => {
+      // Arrange — the clear used to run on the line after the call, so the
+      // text was gone before the outcome existed. A message beneath an empty
+      // field is worse than silence: it names a problem with a value that is no
+      // longer on screen.
+      accounts.add.mockResolvedValue({ state: 'unreachable' });
+      fill();
+
+      // Act
+      await pressSave(fixture.componentInstance);
+      fixture.detectChanges();
+
+      // Assert
+      expect(
+        exposed(fixture.componentInstance).form.getRawValue(),
+      ).toMatchObject({ name: 'Everyday' });
+    });
+
+    it('empties the form once the write has landed', async () => {
+      // Arrange — the positive control. A form that never cleared would pass
+      // the case above and make every second entry a duplicate of the first.
+      fill();
+
+      // Act
+      await pressSave(fixture.componentInstance);
+      fixture.detectChanges();
+
+      // Assert
+      expect(
+        exposed(fixture.componentInstance).form.getRawValue(),
+      ).toMatchObject({ name: '' });
+    });
+
+    it('stays in edit mode when a rename is refused', async () => {
+      // Arrange — nothing navigates either: a refused write does not close a
+      // dialog, collapse the form or reset the control it was submitted from.
+      // The form's Cancel is the DOM's own statement about the mode, so a
+      // handler that fell out of the edit would redden here as well as on the
+      // signal.
+      accounts.update.mockResolvedValue({ state: 'unreachable' });
+      exposed(fixture.componentInstance).edit(everyday);
+      fixture.detectChanges();
+
+      // Act
+      await pressSave(fixture.componentInstance);
+      fixture.detectChanges();
+
+      // Assert
+      expect(exposed(fixture.componentInstance).editingId()).toBe(everyday.id);
+      expect(cancelButton()).not.toBeNull();
+    });
+
+    it('says the server was not reached, and does not claim nothing was written', async () => {
+      // Arrange — the sentence is the Account keys section's with one clause
+      // added, and the clause is the whole difference: somebody is looking at a
+      // form holding text they typed. It may not claim the row was not
+      // written, because the request may have arrived and lost its response.
+      accounts.add.mockResolvedValue({ state: 'unreachable' });
+      fill();
+
+      // Act
+      await pressSave(fixture.componentInstance);
+      fixture.detectChanges();
+
+      // Assert
+      expect(regionText()).toContain('couldn’t reach the server');
+      expect(regionText()).toContain('Nothing you typed has been lost');
+      expect(regionText()).toContain('try again in a minute');
+    });
+
+    it('offers a reload and no retry when the server judged', async () => {
+      // Arrange — the pair a reader collapses. A minute is a real remedy for
+      // silence and false of a refusal, and *try again in a minute* is the
+      // sentence a writer reaches for because it fits everywhere.
+      accounts.add.mockResolvedValue({ state: 'unreadable' });
+      fill();
+
+      // Act
+      await pressSave(fixture.componentInstance);
+      fixture.detectChanges();
+
+      // Assert
+      expect(regionText()).toContain('copy it, then reload the page');
+      expect(regionText()).not.toContain('try again');
+    });
+
+    it('announces a refusal from the region that was already there', async () => {
+      // Arrange — taken while it is still empty, which is the whole point of
+      // taking it here rather than after the act: a live region created
+      // together with its text is announced by nothing.
+      const region = statusRegion();
+
+      accounts.add.mockResolvedValue({ state: 'duplicate-identifier' });
+      fill();
+
+      // Act
+      await pressSave(fixture.componentInstance);
+      fixture.detectChanges();
+
+      // Assert — the same element, still `status` and never raised to
+      // `alert`: politeness belongs to the node, so the carve-out would take
+      // the loading line and the locked notice with it.
+      expect(statusRegion()).toBe(region);
+      expect(region?.textContent ?? '').toContain('already saved');
+      expect(host().querySelectorAll('[role="status"]')).toHaveLength(1);
+      expect(
+        host().querySelector('[role="alert"], [aria-live="assertive"]'),
+      ).toBeNull();
+    });
+
+    it('says nothing at all when the write never left the browser', async () => {
+      // Arrange — `locked` has no row in the chapter's table, and the omission
+      // is the rule: the screen's locked notice is already the account of it,
+      // and a second sentence is the duplicate the region refuses.
+      accounts.add.mockResolvedValue({ state: 'locked' });
+      fill();
+
+      // Act
+      await pressSave(fixture.componentInstance);
+      fixture.detectChanges();
+
+      // Assert
+      expect(regionText().trim()).toBe('');
+      expect(fieldErrors()).toEqual([]);
+    });
+
+    it('puts the server’s sentence beneath the control it names', async () => {
+      // Arrange — verbatim, and beneath the field: this is the only outcome
+      // that touches one at all. A `mat-error` rather than a paragraph of this
+      // screen's own, because the form field is what binds the message to the
+      // input and colours the border with it.
+      accounts.add.mockResolvedValue(
+        invalid(['Name', ['Account name must be unique.']]),
+      );
+      fill();
+
+      // Act
+      await pressSave(fixture.componentInstance);
+      fixture.detectChanges();
+
+      // Assert
+      expect(fieldErrors()).toEqual(['Account name must be unique.']);
+      expect(regionText().trim()).toBe('');
+    });
+
+    it('moves focus to the first control carrying a message', async () => {
+      // Arrange — a message bound by `aria-describedby` is announced when its
+      // control takes focus rather than when it appears, and the field may be
+      // off screen besides.
+      accounts.add.mockResolvedValue(invalid(['Name', ['Too long.']]));
+      fill();
+
+      // Act
+      await pressSave(fixture.componentInstance);
+      fixture.detectChanges();
+
+      // Assert
+      expect(document.activeElement).toBe(
+        host().querySelector('input[formcontrolname="name"]'),
+      );
+    });
+
+    it('leaves focus where the press left it when no control carries one', async () => {
+      // Arrange — the control for the case above. Moving a keyboard user into
+      // a region takes them away from the control they are about to press
+      // again.
+      accounts.add.mockResolvedValue({ state: 'unreachable' });
+      fill();
+      // Rendered before the control is focused: the submit is disabled over an
+      // empty form, and `focus()` on a disabled button does nothing at all.
+      fixture.detectChanges();
+
+      const submit = host().querySelector<HTMLButtonElement>(
+        'button[type="submit"]',
+      );
+
+      submit?.focus();
+
+      // Act
+      await pressSave(fixture.componentInstance);
+      fixture.detectChanges();
+
+      // Assert
+      expect(document.activeElement).toBe(submit);
+    });
+
+    it('puts a key this form cannot place into the region instead', async () => {
+      // Arrange — `Id` is minted in the browser and no control carries it, so
+      // there is no field to hang a message on. A dropped entry would be this
+      // chapter's own defect with a better excuse.
+      accounts.add.mockResolvedValue(
+        invalid(['Id', ['Malformed identifier.']]),
+      );
+      fill();
+
+      // Act
+      await pressSave(fixture.componentInstance);
+      fixture.detectChanges();
+
+      // Assert — and the wire key itself is **not** printed: `Id` is a member
+      // name rather than a label anybody recognises.
+      expect(regionText()).toContain('Malformed identifier.');
+      expect(regionText()).not.toContain('Id');
+      expect(fieldErrors()).toEqual([]);
+    });
+
+    it('renders one answer in two places rather than choosing between them', async () => {
+      // Arrange — exclusivity is over **outcomes**, not sentences. A map with
+      // keys on both sides puts a message under each control it names *and* a
+      // line in the region for every key it does not, which is one answer to
+      // one write.
+      accounts.add.mockResolvedValue(
+        invalid(['Name', ['Taken.']], ['Id', ['Malformed identifier.']]),
+      );
+      fill();
+
+      // Act
+      await pressSave(fixture.componentInstance);
+      fixture.detectChanges();
+
+      // Assert
+      expect(fieldErrors()).toEqual(['Taken.']);
+      expect(regionText()).toContain('Malformed identifier.');
+    });
+
+    it('treats a control it is not currently rendering as a miss', async () => {
+      // Arrange — the currency picker leaves the DOM for the whole of an edit,
+      // because currency is immutable. The question the chapter asks is
+      // whether a message can be **placed**, not whether the name is one the
+      // form recognises, so during an edit `CurrencyCode` takes the region
+      // path.
+      accounts.update.mockResolvedValue(
+        invalid(['CurrencyCode', ['Unknown currency.']]),
+      );
+      exposed(fixture.componentInstance).edit(everyday);
+      fixture.detectChanges();
+
+      // Act
+      await pressSave(fixture.componentInstance);
+      fixture.detectChanges();
+
+      // Assert
+      expect(regionText()).toContain('Unknown currency.');
+      expect(fieldErrors()).toEqual([]);
+    });
+
+    it('gives a read in flight the region and hands it back when the read answers', async () => {
+      // Arrange — the rule a reader will "fix". The read's line wins for as
+      // long as the read runs, and only the **next write** clears the write's
+      // sentence — so a refusal made before a slow read reappears the moment
+      // the read answers. It is not a string somebody forgot to clear: the
+      // form is still holding the text that was refused.
+      accounts.add.mockResolvedValue({ state: 'unreachable' });
+      fill();
+      await pressSave(fixture.componentInstance);
+      fixture.detectChanges();
+      expect(regionText()).toContain('couldn’t reach the server');
+
+      // Act — a read starts, then fails.
+      accounts.accountsSignal.set(null);
+      accounts.loadingSignal.set(true);
+      fixture.detectChanges();
+      const duringRead = regionText();
+
+      accounts.loadingSignal.set(false);
+      accounts.failedSignal.set(true);
+      fixture.detectChanges();
+
+      // Assert — one account at a time, and the write's comes back.
+      expect(duringRead).toContain('Reading your accounts');
+      expect(duringRead).not.toContain('couldn’t reach the server');
+      expect(regionText()).toContain('couldn’t reach the server');
+      expect(regionText()).not.toContain('Check your connection');
+    });
+
+    it('clears the last refusal when the next write starts', async () => {
+      // Arrange — the one thing that takes a write's sentence down. A screen
+      // that cleared on a keystroke or on a cancel would take the sentence
+      // away while the text it is about is still in the box.
+      accounts.add.mockResolvedValue({ state: 'unreachable' });
+      fill();
+      await pressSave(fixture.componentInstance);
+      fixture.detectChanges();
+
+      // Act
+      accounts.add.mockImplementation(() => new Promise(() => undefined));
+      fill('Rainy day');
+      void pressSave(fixture.componentInstance);
+      fixture.detectChanges();
+
+      // Assert — silent while this write is unanswered, rather than carrying
+      // the press before it.
+      expect(regionText().trim()).toBe('');
+    });
+
+    it('leaves a field message on screen until the field is corrected', async () => {
+      // Arrange — the shape of a one-form screen, said as the case it is
+      // rather than as the one it is not.
+      //
+      // **There is no "the next write takes this field's message down" case
+      // here, and that is deliberate.** A refused field makes the form invalid,
+      // and the handler refuses an invalid form, so the next write on *this*
+      // screen cannot start until somebody edits the field — and the edit
+      // re-runs the control's validators, which takes the marker off by
+      // itself. Written as a case it would pass with `clearFieldMessages`
+      // deleted; measured. The screen that can start a second write over a
+      // still-refused field is `/app/categories`, which has two forms, and
+      // that is where the clear is held.
+      accounts.add.mockResolvedValue(invalid(['Name', ['Taken.']]));
+      fill();
+      await pressSave(fixture.componentInstance);
+      fixture.detectChanges();
+      expect(fieldErrors()).toEqual(['Taken.']);
+
+      // Act — a second press with nothing corrected.
+      accounts.add.mockClear();
+      await pressSave(fixture.componentInstance);
+      fixture.detectChanges();
+
+      // Assert — refused before it began, and the sentence is still under the
+      // field it is about.
+      expect(accounts.add).not.toHaveBeenCalled();
+      expect(fieldErrors()).toEqual(['Taken.']);
     });
   });
 

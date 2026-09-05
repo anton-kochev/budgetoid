@@ -30,6 +30,7 @@ import { provideNoopAnimations } from '@angular/platform-browser/animations';
 import { provideRouter } from '@angular/router';
 import type { CategoryGroupView } from '../categories/category-group-view';
 import type { CategoryView } from '../categories/category-view';
+import type { WriteOutcome } from '@app-core/api/write-outcome';
 import {
   AccountKeyCustodyService,
   type AccountKeyStatus,
@@ -41,10 +42,7 @@ import { AccountsService } from '../accounts/accounts.service';
 import type { PayeeView } from './payee-view';
 import type { TransactionView } from './transaction-view';
 import { TransactionsComponent } from './transactions.component';
-import {
-  TransactionsService,
-  type TransactionWrite,
-} from './transactions.service';
+import { TransactionsService } from './transactions.service';
 
 const TRANSACTION_ID = '0199c3d4-5f6a-7b8c-9d0e-000000000001';
 const ACCOUNT_ID = '0199c3d4-5f6a-7b8c-9d0e-000000000002';
@@ -152,7 +150,7 @@ class TransactionsServiceStub
   // Answers `recorded` by default, because that is the path a case that says
   // nothing about the outcome means.
   public add = vi.fn(
-    (): Promise<TransactionWrite> => Promise.resolve({ state: 'recorded' }),
+    (): Promise<WriteOutcome> => Promise.resolve({ state: 'recorded' }),
   );
 }
 
@@ -171,8 +169,12 @@ class AccountsServiceStub
   public readonly failed = this.failedSignal.asReadonly();
 
   public load = vi.fn();
-  public add = vi.fn((): Promise<void> => Promise.resolve());
-  public update = vi.fn((): Promise<void> => Promise.resolve());
+  public add = vi.fn(
+    (): Promise<WriteOutcome> => Promise.resolve({ state: 'recorded' }),
+  );
+  public update = vi.fn(
+    (): Promise<WriteOutcome> => Promise.resolve({ state: 'recorded' }),
+  );
   public remove = vi.fn();
 }
 
@@ -807,7 +809,7 @@ describe('TransactionsComponent', () => {
     // Arrange — the four silent exits of the service, from the screen's side.
     // Nothing was written and nothing can be said yet, so the least this form
     // can do is still be holding the entry when the person looks back at it.
-    transactions.add.mockResolvedValue({ state: 'abandoned' });
+    transactions.add.mockResolvedValue({ state: 'unreachable' });
     fill({ description: 'Weekly shop', payee: 'Corner Shop' });
 
     // Act
@@ -1194,5 +1196,182 @@ describe('TransactionsComponent', () => {
     expect(
       suggestions(fixture.componentInstance).map((payee) => payee.id),
     ).toEqual([PAYEE_ID]);
+  });
+
+  // A write that does not happen — `docs/design/components.md`.
+  //
+  // **This screen already kept what was typed; what it could not do was say
+  // anything.** `accounts.component.spec.ts` holds the shared rules. Two things
+  // are this screen's own: it is the one surface whose write is more than one
+  // request, so it is the one that narrates a write in progress; and
+  // `duplicate-name` reaches a person here and nowhere else in the product,
+  // because the payee create is the only write that answers a repeated name
+  // with a 409 and the form's own re-read resolves the ordinary case silently.
+  describe('a write that does not happen', () => {
+    function regionText(): string {
+      return statusRegion()?.textContent ?? '';
+    }
+
+    function fieldErrors(): string[] {
+      return Array.from(host().querySelectorAll('mat-error')).map((error) =>
+        (error.textContent ?? '').trim(),
+      );
+    }
+
+    it('narrates a write that is more than one request, and stops when it answers', async () => {
+      // Arrange — the one row of the table with a copy that is not a refusal:
+      // `body` `--bud-text`, because nothing has gone wrong. Read off the
+      // screen's own flag and never off `TransactionsService.loading`, which is
+      // raised by the three reads this screen starts as well.
+      let land = (): void => undefined;
+
+      transactions.add.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            land = () => resolve({ state: 'recorded' });
+          }),
+      );
+      fill({ payee: 'Corner Shop' });
+
+      // Act
+      const write = pressAdd(fixture.componentInstance);
+
+      fixture.detectChanges();
+      const running = regionText();
+
+      land();
+      await write;
+      fixture.detectChanges();
+
+      // Assert
+      expect(running).toContain('Recording');
+      expect(regionText().trim()).toBe('');
+    });
+
+    it('sends somebody to the list when a counterparty of that name cannot be read', async () => {
+      // Arrange — `duplicate-name`'s one source. The row is in the list
+      // wearing the unreadable marker, so choosing it is the remedy and Unlock
+      // is not: this form is reachable only on an unlocked account.
+      transactions.add.mockResolvedValue({ state: 'duplicate-name' });
+      fill({ payee: 'Corner Shop' });
+
+      // Act
+      await pressAdd(fixture.componentInstance);
+      fixture.detectChanges();
+
+      // Assert
+      expect(regionText()).toContain('already exists under a name this tab');
+      expect(regionText()).toContain('Choose it from the list');
+      expect(host().querySelectorAll('[role="status"]')).toHaveLength(1);
+      expect(
+        host().querySelector('[role="alert"], [aria-live="assertive"]'),
+      ).toBeNull();
+    });
+
+    it('tells a server that failed from one that judged', async () => {
+      // Arrange — two next steps, two sentences. Folding them sends somebody
+      // to press the same button until they give up.
+      transactions.add.mockResolvedValue({ state: 'unreachable' });
+      fill({});
+
+      // Act
+      await pressAdd(fixture.componentInstance);
+      fixture.detectChanges();
+      const silence = regionText();
+
+      transactions.add.mockResolvedValue({ state: 'unreadable' });
+      await pressAdd(fixture.componentInstance);
+      fixture.detectChanges();
+
+      // Assert
+      expect(silence).toContain('try again in a minute');
+      expect(regionText()).toContain('copy it, then reload the page');
+      expect(regionText()).not.toContain('try again');
+    });
+
+    it('puts a counterparty’s sentence beneath the field it was typed into', async () => {
+      // Arrange — `PayeeId` is a member no control carries, and the payee name
+      // field is the only control its value was ever resolved from, so that is
+      // where a correction is made.
+      transactions.add.mockResolvedValue({
+        errors: new Map([['PayeeId', ['No such payee.']]]),
+        state: 'invalid',
+      });
+      fill({ payee: 'Corner Shop' });
+
+      // Act
+      await pressAdd(fixture.componentInstance);
+      fixture.detectChanges();
+
+      // Assert
+      expect(fieldErrors()).toEqual(['No such payee.']);
+      expect(regionText().trim()).toBe('');
+      expect(document.activeElement).toBe(
+        host().querySelector('input[formcontrolname="payee"]'),
+      );
+    });
+
+    it('puts a key this form cannot place into the region instead', async () => {
+      // Arrange — the row identifier is minted in the browser and no control
+      // carries it, so there is no field to hang a message on. The wire key
+      // itself is not printed: `Id` is a member name rather than a label
+      // anybody recognises.
+      transactions.add.mockResolvedValue({
+        errors: new Map([['Id', ['Malformed identifier.']]]),
+        state: 'invalid',
+      });
+      fill({});
+
+      // Act
+      await pressAdd(fixture.componentInstance);
+      fixture.detectChanges();
+
+      // Assert
+      expect(regionText()).toContain('Malformed identifier.');
+      expect(fieldErrors()).toEqual([]);
+    });
+
+    it('says nothing at all when the write never left the browser', async () => {
+      // Arrange — `locked` has no row in the chapter's table: the locked
+      // notice is already the account of it, and a second sentence is the
+      // duplicate the region refuses.
+      transactions.add.mockResolvedValue({ state: 'locked' });
+      fill({});
+
+      // Act
+      await pressAdd(fixture.componentInstance);
+      fixture.detectChanges();
+
+      // Assert
+      expect(regionText().trim()).toBe('');
+      expect(fieldErrors()).toEqual([]);
+    });
+
+    it('gives a read in flight the region and hands it back when the read answers', async () => {
+      // Arrange — the rule a reader will "fix". Only the **next write** clears
+      // a write's sentence, so a refusal made before a slow read reappears the
+      // moment the read answers. The form is still holding the text that was
+      // refused, so the sentence is as true as when it was written.
+      transactions.add.mockResolvedValue({ state: 'unreachable' });
+      fill({});
+      await pressAdd(fixture.componentInstance);
+      fixture.detectChanges();
+
+      // Act
+      transactions.transactionsSignal.set(null);
+      transactions.loadingSignal.set(true);
+      fixture.detectChanges();
+      const duringRead = regionText();
+
+      transactions.loadingSignal.set(false);
+      transactions.failedSignal.set(true);
+      fixture.detectChanges();
+
+      // Assert
+      expect(duringRead).toContain('Reading your transactions');
+      expect(duringRead).not.toContain('couldn’t reach the server');
+      expect(regionText()).toContain('couldn’t reach the server');
+      expect(regionText()).not.toContain('Check your connection');
+    });
   });
 });

@@ -35,6 +35,7 @@ import { provideHttpClient } from '@angular/common/http';
 import {
   HttpTestingController,
   provideHttpClientTesting,
+  type TestRequest,
 } from '@angular/common/http/testing';
 import { signal, type Signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
@@ -196,6 +197,16 @@ class CustodyStub
   public lock(): void {
     throw new Error('the accounts service may not lock the account');
   }
+}
+
+// A validation problem document, built from pairs rather than written as a
+// literal. The API's keys are the C# member names, and this project's lint rule
+// reaches into object literals and demands camelCase of them — so a literal
+// cannot spell what the wire actually sends.
+function withErrors(
+  ...entries: readonly (readonly [string, readonly string[]])[]
+): Record<string, unknown> {
+  return { errors: Object.fromEntries(entries) };
 }
 
 // Drains the microtask queue the AEAD opens run in. A macrotask boundary is
@@ -871,5 +882,305 @@ describe('AccountsService', () => {
       { state: 'unreadable' },
       { state: 'locked' },
     ]);
+  });
+
+  // How a write ends, as a value the screen receives.
+  //
+  // **The whole set is asserted through `add` and `update` rather than through
+  // the classifier**, because the classifier being right is not the property
+  // that was missing: every one of these pipes ended in a `catchError` that
+  // returned `EMPTY`, so the promise settled with no value whatever the server
+  // said. A case that awaits a word is therefore also the case that catches a
+  // pipe put back the way it was — `firstValueFrom` over an empty observable
+  // rejects, and the case fails on the rejection rather than on the assertion.
+  describe('the word a write ends on', () => {
+    it('answers recorded when the create lands', async () => {
+      // Arrange
+      const write = service.add({
+        name: 'Everyday',
+        type: 'Checking',
+        openingBalance: 0,
+        currencyCode: 'USD',
+      });
+
+      await settle();
+
+      // Act
+      const request = http.expectOne(ACCOUNTS_URL);
+      const body = request.request.body as { id: string };
+
+      request.flush(sealedAccount(body.id, 'Everyday'));
+
+      // Assert — the one word that permits a form to be cleared.
+      expect(await write).toEqual({ state: 'recorded' });
+    });
+
+    it('answers the server’s own sentences when a name is already taken', async () => {
+      // Arrange — measured in a browser: creating `ГОТІВКА` where `Готівка`
+      // already exists answers 400 `application/problem+json` with an `errors`
+      // map, and the screen said nothing, because this promise completed with
+      // no value. The map arrives whole and the copy is the server's, verbatim
+      // — the client writes none, and could not write a table total over every
+      // key the API can send.
+      const write = service.add({
+        name: 'ГОТІВКА',
+        type: 'Checking',
+        openingBalance: 0,
+        currencyCode: 'USD',
+      });
+
+      await settle();
+
+      // Act
+      http
+        .expectOne(ACCOUNTS_URL)
+        .flush(withErrors(['Name', ['Account name must be unique.']]), {
+          status: 400,
+          statusText: 'Bad Request',
+        });
+
+      // Assert
+      const outcome = await write;
+
+      expect(outcome.state).toBe('invalid');
+      expect(outcome.state === 'invalid' ? [...outcome.errors] : null).toEqual([
+        ['Name', ['Account name must be unique.']],
+      ]);
+    });
+
+    it('answers duplicate-identifier on a retried create, never duplicate-name', async () => {
+      // Arrange — the two conflicts share a status and have opposite remedies.
+      // Read as a duplicate name this would send somebody to rename a row that
+      // is already saved under the name they chose.
+      const write = service.add({
+        name: 'Everyday',
+        type: 'Checking',
+        openingBalance: 0,
+        currencyCode: 'USD',
+      });
+
+      await settle();
+
+      // Act
+      http
+        .expectOne(ACCOUNTS_URL)
+        .flush(
+          { conflictKind: 'duplicate_identifier' },
+          { status: 409, statusText: 'Conflict' },
+        );
+
+      // Assert
+      expect(await write).toEqual({ state: 'duplicate-identifier' });
+    });
+
+    it('tells a server that failed from one that judged', async () => {
+      // Arrange — the pair a reader collapses. A 500 is a minute's wait; a 403
+      // is a judgement, and a minute changes nothing about a judgement.
+      const first = service.add({
+        name: 'Everyday',
+        type: 'Checking',
+        openingBalance: 0,
+        currencyCode: 'USD',
+      });
+
+      await settle();
+      http
+        .expectOne(ACCOUNTS_URL)
+        .flush('nope', { status: 500, statusText: 'Server Error' });
+
+      const second = service.add({
+        name: 'Everyday',
+        type: 'Checking',
+        openingBalance: 0,
+        currencyCode: 'USD',
+      });
+
+      await settle();
+
+      // Act
+      http
+        .expectOne(ACCOUNTS_URL)
+        .flush('nope', { status: 403, statusText: 'Forbidden' });
+
+      // Assert
+      expect(await first).toEqual({ state: 'unreachable' });
+      expect(await second).toEqual({ state: 'unreadable' });
+    });
+
+    it('answers locked without sending anything when sealing refuses', async () => {
+      // Arrange — nothing was sent, so there is no answer to classify, and the
+      // next step is a factor rather than a retry or a reload.
+      custody.sealAnswer = { state: 'locked' };
+
+      // Act
+      const outcome = await service.add({
+        name: 'Everyday',
+        type: 'Checking',
+        openingBalance: 0,
+        currencyCode: 'USD',
+      });
+
+      // Assert
+      http.expectNone(ACCOUNTS_URL);
+      expect(outcome).toEqual({ state: 'locked' });
+    });
+
+    it('answers a rename’s refusal on the same terms as a create’s', async () => {
+      // Arrange — the update path is its own pipe and had its own swallow, so
+      // a create that answers and an update that does not is a state this
+      // service could be in with one case green.
+      const write = service.update(EXISTING_ID, {
+        name: 'Everyday',
+        type: 'Checking',
+        openingBalance: 0,
+      });
+
+      await settle();
+
+      // Act
+      http
+        .expectOne(`${ACCOUNTS_URL}/${EXISTING_ID}`)
+        .flush(withErrors(['Name', ['Account name must be unique.']]), {
+          status: 400,
+          statusText: 'Bad Request',
+        });
+
+      // Assert
+      const outcome = await write;
+
+      expect(outcome.state).toBe('invalid');
+      expect(outcome.state === 'invalid' ? [...outcome.errors] : null).toEqual([
+        ['Name', ['Account name must be unique.']],
+      ]);
+    });
+
+    it('answers unreadable when the created row’s own name will not open', async () => {
+      // Arrange — the row exists and this browser cannot read what came back.
+      // The remedy is a reload, which is the one act that shows the row; a
+      // retry would send the same client-minted id and collect a conflict.
+      custody.openWith = () =>
+        Promise.reject(new NarrativeFieldMisuseError('refused'));
+
+      const write = service.add({
+        name: 'Everyday',
+        type: 'Checking',
+        openingBalance: 0,
+        currencyCode: 'USD',
+      });
+
+      await settle();
+
+      // Act
+      const request = http.expectOne(ACCOUNTS_URL);
+      const body = request.request.body as { id: string };
+
+      request.flush(sealedAccount(body.id, 'Everyday'));
+
+      // Assert
+      expect(await write).toEqual({ state: 'unreadable' });
+      expect(service.loading()).toBe(false);
+    });
+  });
+
+  // The create's identifier, across presses.
+  //
+  // **What these hold is the one thing that makes `duplicate-identifier`
+  // reachable at all.** `docs/design/components.md` puts it plainly: an id
+  // minted per press turns a lost answer into two rows wearing two legitimate
+  // identifiers, so the outcome whose whole job is to make a lost `201` legible
+  // never happens and its sentence describes a state this client cannot
+  // produce. Nothing else in this file can see it — every other create case
+  // reads the id out of the request it is about to flush, so a fresh mint per
+  // press satisfies all of them.
+  describe('the identifier a create carries', () => {
+    // One press, answered by the caller. It hands the request back rather than
+    // the id, because `expectOne` consumes the request it matches — a helper
+    // that read the id and left the case to match again would find nothing.
+    async function press(): Promise<TestRequest> {
+      void service.add({
+        name: 'Everyday',
+        type: 'Checking',
+        openingBalance: 0,
+        currencyCode: 'USD',
+      });
+      await settle();
+
+      return http.expectOne(ACCOUNTS_URL);
+    }
+
+    function postedId(request: TestRequest): string {
+      return (request.request.body as { id: string }).id;
+    }
+
+    it('keeps it across a refusal, so a second press collides rather than duplicating', async () => {
+      // Arrange — the server never answered, which is the state the chapter's
+      // *try again in a minute* invites somebody into. If the request in fact
+      // landed, the second press has to be the one that says so.
+      const first = await press();
+      const drafted = postedId(first);
+
+      first.flush('', { status: 500, statusText: 'Server Error' });
+      await settle();
+
+      // Act
+      const second = await press();
+
+      // Assert
+      expect(postedId(second)).toBe(drafted);
+      second.flush(
+        { conflictKind: 'duplicate_identifier' },
+        { status: 409, statusText: 'Conflict' },
+      );
+      await settle();
+    });
+
+    it('draws a new one once a create has landed', async () => {
+      // Arrange — the positive control, and the half that matters most: a
+      // draft that was never cleared would post the same id for every account
+      // somebody ever adds, so the second entry could never be made at all.
+      const first = await press();
+      const landed = postedId(first);
+
+      first.flush(sealedAccount(landed, 'Everyday'));
+      await settle();
+
+      // Act
+      const second = await press();
+
+      // Assert
+      expect(postedId(second)).not.toBe(landed);
+      expect(postedId(second)).toMatch(MINTED_ROW_ID);
+      second.flush(sealedAccount(postedId(second), 'Everyday'));
+      await settle();
+    });
+
+    it('is untouched by a rename, which mints none of its own', async () => {
+      // Arrange — an update re-seals under the row's **existing** identifier,
+      // so it neither draws from the draft nor spends it. A handler that
+      // cleared the draft on any answer would lose a refused create's id to an
+      // unrelated edit made while the person was still looking at the form.
+      const first = await press();
+      const drafted = postedId(first);
+
+      first.flush('', { status: 500, statusText: 'Server Error' });
+      await settle();
+
+      // Act
+      void service.update(EXISTING_ID, {
+        name: 'Renamed',
+        type: 'Checking',
+        openingBalance: 0,
+      });
+      await settle();
+      http.expectOne(`${ACCOUNTS_URL}/${EXISTING_ID}`).flush(null);
+      await settle();
+
+      // Assert
+      const second = await press();
+
+      expect(postedId(second)).toBe(drafted);
+      second.flush('', { status: 500, statusText: 'Server Error' });
+      await settle();
+    });
   });
 });

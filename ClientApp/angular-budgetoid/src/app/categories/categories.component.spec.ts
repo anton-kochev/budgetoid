@@ -27,6 +27,7 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { FormGroup, type AbstractControl } from '@angular/forms';
 import { provideNoopAnimations } from '@angular/platform-browser/animations';
 import { provideRouter } from '@angular/router';
+import type { WriteOutcome } from '@app-core/api/write-outcome';
 import {
   AccountKeyCustodyService,
   type AccountKeyStatus,
@@ -84,12 +85,22 @@ class CategoriesServiceStub
   public readonly failed = this.failedSignal.asReadonly();
 
   public load = vi.fn();
-  public addGroup = vi.fn((): Promise<void> => Promise.resolve());
-  public updateGroup = vi.fn((): Promise<void> => Promise.resolve());
+  // The four writes answer `recorded` by default, because that is the path a
+  // case saying nothing about the outcome means.
+  public addGroup = vi.fn(
+    (): Promise<WriteOutcome> => Promise.resolve({ state: 'recorded' }),
+  );
+  public updateGroup = vi.fn(
+    (): Promise<WriteOutcome> => Promise.resolve({ state: 'recorded' }),
+  );
   public moveGroup = vi.fn();
   public removeGroup = vi.fn();
-  public addCategory = vi.fn((): Promise<void> => Promise.resolve());
-  public updateCategory = vi.fn((): Promise<void> => Promise.resolve());
+  public addCategory = vi.fn(
+    (): Promise<WriteOutcome> => Promise.resolve({ state: 'recorded' }),
+  );
+  public updateCategory = vi.fn(
+    (): Promise<WriteOutcome> => Promise.resolve({ state: 'recorded' }),
+  );
   public placeCategory = vi.fn();
   public removeCategory = vi.fn();
   public categoriesForGroup = vi.fn(
@@ -964,6 +975,279 @@ describe('CategoriesComponent', () => {
       // Assert — the value is on screen, so the region has nothing to add.
       expect(host().querySelector('.category-groups')).not.toBeNull();
       expect((statusRegion()?.textContent ?? '').trim()).toBe('');
+    });
+  });
+
+  // A write that does not happen — `docs/design/components.md`.
+  //
+  // **`accounts.component.spec.ts` holds the shared rules and this file holds
+  // what two writing surfaces add to them.** Both forms carry a control called
+  // `name`, so the one thing that can only go wrong here is a server sentence
+  // about a group appearing under the category form's field — a message about
+  // text nobody submitted, standing exactly where somebody would try to correct
+  // it. And the region is shared between the two, so a second write replaces
+  // the first whichever form it came from.
+  describe('a write that does not happen', () => {
+    function region(): HTMLElement | null {
+      return host().querySelector<HTMLElement>('[role="status"]');
+    }
+
+    function regionText(): string {
+      return region()?.textContent ?? '';
+    }
+
+    function errorsUnder(surface: 'group' | 'category'): string[] {
+      return Array.from(
+        host().querySelectorAll(`[data-surface="${surface}"] mat-error`),
+      ).map((error) => (error.textContent ?? '').trim());
+    }
+
+    function fillGroup(name = 'Essentials'): void {
+      screen().groupForm.setValue({ name, description: '' });
+    }
+
+    function fillCategory(name = 'Groceries'): void {
+      screen().categoryForm.setValue({
+        name,
+        description: '',
+        categoryGroupId: GROUP_ID,
+      });
+    }
+
+    function pressGroup(): Promise<void> {
+      return (
+        fixture.componentInstance as unknown as {
+          saveGroup: () => Promise<void>;
+        }
+      ).saveGroup();
+    }
+
+    function pressCategory(): Promise<void> {
+      return (
+        fixture.componentInstance as unknown as {
+          saveCategory: () => Promise<void>;
+        }
+      ).saveCategory();
+    }
+
+    it('keeps what was typed on either form when the write is refused', async () => {
+      // Arrange — the clear used to run on the line after each call, so the
+      // text was gone before the outcome existed. Both handlers are separate
+      // code, and a screen that got one right and the other wrong is what
+      // shipped last time somebody copied a form.
+      categories.addGroup.mockResolvedValue({ state: 'unreachable' });
+      categories.addCategory.mockResolvedValue({ state: 'unreadable' });
+      fillGroup();
+      fillCategory();
+
+      // Act
+      await pressGroup();
+      await pressCategory();
+      fixture.detectChanges();
+
+      // Assert
+      expect(screen().groupForm.getRawValue()).toMatchObject({
+        name: 'Essentials',
+      });
+      expect(screen().categoryForm.getRawValue()).toMatchObject({
+        name: 'Groceries',
+      });
+    });
+
+    it('empties each form once its own write has landed', async () => {
+      // Arrange — the positive control for the pair above.
+      fillGroup();
+      fillCategory();
+
+      // Act
+      await pressGroup();
+      await pressCategory();
+      fixture.detectChanges();
+
+      // Assert
+      expect(screen().groupForm.getRawValue()).toMatchObject({ name: '' });
+      expect(screen().categoryForm.getRawValue()).toMatchObject({ name: '' });
+    });
+
+    it('stays in edit mode when a rename is refused', async () => {
+      // Arrange — nothing navigates and nothing collapses: a refused write
+      // leaves the form exactly as the press found it.
+      categories.updateGroup.mockResolvedValue({ state: 'unreachable' });
+      screen().editGroup(essentials);
+      fixture.detectChanges();
+
+      // Act
+      await pressGroup();
+      fixture.detectChanges();
+
+      // Assert
+      expect(screen().groupForm.getRawValue()).toMatchObject({
+        name: 'Essentials',
+      });
+      expect(
+        buttonsLabelled('[data-surface="group"] button', 'Cancel'),
+      ).toHaveLength(1);
+    });
+
+    it('puts a group’s sentence under the group form and nowhere else', async () => {
+      // Arrange — the case this screen exists to carry. Both forms hold a
+      // control called `name`, so a report keyed on the control alone paints
+      // one server sentence under two fields.
+      categories.addGroup.mockResolvedValue({
+        errors: new Map([['Name', ['Category group name must be unique.']]]),
+        state: 'invalid',
+      });
+      fillGroup();
+
+      // Act
+      await pressGroup();
+      fixture.detectChanges();
+
+      // Assert
+      expect(errorsUnder('group')).toEqual([
+        'Category group name must be unique.',
+      ]);
+      expect(errorsUnder('category')).toEqual([]);
+    });
+
+    it('keeps a group’s sentence off a category field that is already red', async () => {
+      // Arrange — **the case that makes the surface check load-bearing, and
+      // without it the two cases either side of this one pass with the check
+      // deleted.** Measured: the messages of a refused *group* write reach the
+      // category form's `mat-error` list either way, and Material simply does
+      // not display it while that control reports no error of its own. Give
+      // the category name an error of its own — empty and touched, which is
+      // what a person leaves behind by tabbing through it — and the list is
+      // displayed, so a report keyed on the control alone prints the group's
+      // sentence under a field about a different row.
+      screen().categoryForm.controls['name']?.setValue('');
+      screen().categoryForm.controls['name']?.markAsTouched();
+      categories.addGroup.mockResolvedValue({
+        errors: new Map([['Name', ['Category group name must be unique.']]]),
+        state: 'invalid',
+      });
+      fillGroup();
+
+      // Act
+      await pressGroup();
+      fixture.detectChanges();
+
+      // Assert
+      expect(errorsUnder('group')).toEqual([
+        'Category group name must be unique.',
+      ]);
+      expect(errorsUnder('category')).toEqual([]);
+    });
+
+    it('puts a category’s sentence under the category form and nowhere else', async () => {
+      // Arrange — the same claim the other way round, because a screen that
+      // hard-coded one surface would pass the case above.
+      categories.addCategory.mockResolvedValue({
+        errors: new Map([['Name', ['Category name must be unique.']]]),
+        state: 'invalid',
+      });
+      fillCategory();
+
+      // Act
+      await pressCategory();
+      fixture.detectChanges();
+
+      // Assert
+      expect(errorsUnder('category')).toEqual([
+        'Category name must be unique.',
+      ]);
+      expect(errorsUnder('group')).toEqual([]);
+    });
+
+    it('shows one account of one write in the one region', async () => {
+      // Arrange — the region is shared between the two forms and counted once
+      // per state. A second write replaces the first whichever form it came
+      // from: a screen never shows two accounts of what happened.
+      categories.addGroup.mockResolvedValue({ state: 'unreachable' });
+      categories.addCategory.mockResolvedValue({ state: 'unreadable' });
+      fillGroup();
+      fillCategory();
+
+      // Act
+      await pressGroup();
+      fixture.detectChanges();
+      const afterGroup = regionText();
+
+      await pressCategory();
+      fixture.detectChanges();
+
+      // Assert
+      expect(afterGroup).toContain('couldn’t reach the server');
+      expect(regionText()).toContain('copy it, then reload the page');
+      expect(regionText()).not.toContain('couldn’t reach the server');
+      expect(host().querySelectorAll('[role="status"]')).toHaveLength(1);
+      expect(
+        host().querySelector('[role="alert"], [aria-live="assertive"]'),
+      ).toBeNull();
+    });
+
+    it('takes the other form’s field message and its error state down together', async () => {
+      // Arrange — one report, so both `mat-error` sets go with it.
+      //
+      // **The message and the control's error *state* are two claims and only
+      // the second is load-bearing here.** The message goes on its own the
+      // moment the report names the other surface — measured: with the clear
+      // deleted, an assertion over the rendered text alone still passes. What
+      // is left behind is a control still reporting an error with nothing to
+      // say, which is a red border and no words: colour as the message, which
+      // the design book refuses in as many words. So `aria-invalid` is what
+      // this case reads, and it is also the half a screen reader hears.
+      //
+      // The pair only meets on **this** screen: on a one-form screen the next
+      // write cannot start until the field is edited, and the edit re-runs the
+      // validators and takes the marker off by itself.
+      function groupNameIsInvalid(): string | null {
+        return (
+          host()
+            .querySelector(
+              '[data-surface="group"] input[formcontrolname="name"]',
+            )
+            ?.getAttribute('aria-invalid') ?? null
+        );
+      }
+
+      categories.addGroup.mockResolvedValue({
+        errors: new Map([['Name', ['Taken.']]]),
+        state: 'invalid',
+      });
+      fillGroup();
+      await pressGroup();
+      fixture.detectChanges();
+      expect(errorsUnder('group')).toEqual(['Taken.']);
+      expect(groupNameIsInvalid()).toBe('true');
+
+      // Act
+      categories.addCategory.mockImplementation(
+        () => new Promise(() => undefined),
+      );
+      fillCategory();
+      void pressCategory();
+      fixture.detectChanges();
+
+      // Assert
+      expect(errorsUnder('group')).toEqual([]);
+      expect(groupNameIsInvalid()).toBe('false');
+      expect(regionText().trim()).toBe('');
+    });
+
+    it('says nothing at all when the write never left the browser', async () => {
+      // Arrange — `locked` has no row in the chapter's table: the locked
+      // notice is already the account of it.
+      categories.addGroup.mockResolvedValue({ state: 'locked' });
+      fillGroup();
+
+      // Act
+      await pressGroup();
+      fixture.detectChanges();
+
+      // Assert
+      expect(regionText().trim()).toBe('');
+      expect(errorsUnder('group')).toEqual([]);
     });
   });
 });

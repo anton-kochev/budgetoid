@@ -53,6 +53,32 @@ Caution is a burnt orange, deliberately off-hue from brand gold so warning never
 as brand. The `-text` variants exist because the graphic hues fail AA as small text on
 light surfaces — use graphic tokens for fills, `-text` tokens for words and figures.
 
+**The error role is mapped into Material, not read out of it.** The advice above runs
+one way — reach for `--mat-sys-*` and let it resolve per theme — and `--bud-over` also
+has to run the other way, because Material ships an error colour of its own and a
+refused field takes it unless the theme says otherwise. `src/styles.scss` says so once,
+beside the block pinning the five brand neutrals:
+`@include mat.theme-overrides((error: var(--bud-over)))`.
+
+**One alias rather than a list.** Measured in `@angular/material` 21.2's own stylesheet:
+eighteen error tokens exist and this application sets none of them. Thirteen fall back
+to `var(--mat-sys-error)` — the message, the caret, the active indicator, the outline,
+the label and their focus states — so the one declaration reaches all thirteen, where
+naming them would be thirteen guesses about an appearance no screen pins.
+
+**On the theme rather than in a component's `:host`.** A `:host` declaration stops at
+that component's own subtree, so a `mat-select`'s panel — rendered into a CDK overlay on
+`<body>` — sits outside it. And copies of one fact drift: nothing compares two screens'
+idea of the error colour, and a screen arriving later has to remember a declaration
+whose absence nothing would notice.
+
+**What holds it.** `src/material-error-colour.spec.ts` renders a real `mat-error` under
+Material's real stylesheet and walks the token chain the cascade delivered, so deleting
+the declaration reddens instead of quietly restoring Material's red.
+
+The remaining five are the hover states and they do not reach `--bud-over`;
+[components](components.md) names that departure in the chapter that owns the field.
+
 ### Interactive
 
 | Role | Token | Light | Dark |
