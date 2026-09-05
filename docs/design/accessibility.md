@@ -92,7 +92,15 @@ Figures are visually compressed; their accessible names are not.
 - Form fields always have programmatic labels; errors bind via `aria-describedby` and
   announce on submit.
 - Snackbar confirmations announce politely (`aria-live="polite"`); nothing uses
-  `assertive` except a failed save of user-entered data.
+  `assertive` except a failed save of user-entered data — and that carve-out is for a
+  save whose failure lands **after attention has moved on**, out of sight of the press
+  that started it. A write refused in front of the person is answered `status`: the
+  press is a second old, the form is still on screen holding what was typed, and the
+  region sits in reading order where they are already pointed, so interrupting buys
+  nothing ([components](components.md), *A write that does not happen*). Spending the
+  carve-out also costs a second live region — politeness is a property of the node, so
+  raising a screen's one region to `alert` raises its loading line and its notices with
+  it.
 - The kinetic sentence on Welcome is `aria-live="off"` — decorative narrative, not an
   announcement stream; its static reduced-motion rendering is the accessible baseline.
 - **Secrets are content, not announcements.** The ten recovery codes are a semantic list

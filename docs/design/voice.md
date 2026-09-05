@@ -95,6 +95,41 @@ figures, not to copy that could just say the number).
   the other one and finds it false. One sentence pasted across several replaces an old
   falsehood with a new one, and reads as an apology nobody wrote for this control.
 
+## A sentence the API sends
+
+Copy is governed by where it lands, not by where it was typed. A string the API sends for a
+person to read is UI copy and answers to this chapter — including the ones authored in C#,
+in a project nobody opens this book to work in.
+
+The case that makes it concrete is a refused write. A message keyed to a field renders **the
+server's sentence, verbatim**, beneath the control it names, per
+[components](components.md): the `errors` map is the server's and the form is the client's,
+so client-authored copy would need a lookup total over every key the server can send, and its
+answer for a key nobody anticipated is a generic sentence standing at the one place a person
+is trying to make a correction. Rendering what arrived is total by construction. What follows
+from that is a sentence somebody reads under a field having been written in a
+`ValidationException`.
+
+- **The shape owed is the shape above.** *What happened plus what to do*, with the system as
+  the subject. "Payee name must be unique." and "Category group name must be unique." carry
+  the first half only: each states a rule and leaves the reader to work out that the way
+  forward is to choose another name.
+- **A sentence missing its second half is fixed where the sentence is.** Writing the better
+  one in the browser is how a second definition of one rule is born — the API narrows the
+  rule or adds one, the response is a 400 either way, and the client goes on rendering copy
+  for the rule that did not fire, telling somebody to do something that will not work with
+  nothing red on either side. The edit belongs in the API.
+- **The rest of this chapter applies unchanged.** Sentence case, no exclamation marks, plain
+  words, the nouns in the terminology table and the banned words with them: a server sentence
+  naming a *merchant* or a *balance remaining* is as wrong as a template doing it.
+- **It reaches the sentence and stops at the wire.** A conflict's `Detail` is copy — it is
+  the whole of what a person is told, and this book revises it for readability. That is the
+  reason nothing branches on it: a client reads the `conflictKind` member beside it and never
+  the prose, so an edit made for a reader cannot reissue a contract. See
+  [payees.md](../business-logic/payees.md). Where the client writes its own sentence for an
+  outcome instead — the conflict copy in [components](components.md) — that sentence is this
+  book's in the ordinary way.
+
 ## A secret shown once
 
 The recovery-code hand-off is the only screen that shows a secret, and it has to do three

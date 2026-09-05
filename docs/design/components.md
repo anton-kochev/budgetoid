@@ -246,6 +246,284 @@ standing as the answer. A section may not keep its last answer through a failed 
 argument that its own value ages harmlessly — the reader cannot tell a kept answer from a fresh one,
 and nothing in the render tells them which they have.
 
+## A write that does not happen
+
+The write-side sibling of the chapter above, and it sits here because it inherits that chapter's
+shape: one region per screen, published states, exclusivity by structure. What it does not inherit
+is the polarity, and the inversion is the first rule. A **read** clears its value when the read
+starts, because what is on screen may only ever answer the request that is running. A **write**
+clears nothing until an answer says the row exists, because what is on screen is the person's own
+text and it answers no request at all. Copy the wrong half and the screen empties a field in order
+to describe it.
+
+Every screen that writes answers by this rule — four writing surfaces on three screens:
+`/app/accounts`, both halves of `/app/categories`, and the transaction form. The chapters below
+apply it; none of them owns it.
+
+**A refused write is never silent, and it never costs a keystroke.** Two rules, and neither implies
+the other: a screen can say exactly what happened and still have emptied the field the sentence is
+about, which is worse than saying nothing, because it is silence plus a false claim about what is
+in the box.
+
+### The service has to have an outcome to report
+
+**A write says how it ended, and "it finished" is not how it ended.** A write pipeline that logs a
+refusal and completes with no value does not make this chapter hard to implement, it makes it
+unreachable: there is nothing for a template to branch on, and a screen that wanted to render a
+refusal could not. So the contract is part of this specification rather than an implementation note
+beneath it — a screen receives one of the outcomes below, and **a screen never reads a status code
+to find out which**.
+
+### Three places, and only one of them is validation
+
+- **A message about a field the person can correct goes beneath that field**, per [text fields and
+  selects](#text-fields-and-selects): the border and the message in `--bud-over`, the message as
+  `caption` under the control, bound by `aria-describedby`. This is the only outcome that touches a
+  field at all.
+- **Everything else goes in the screen's one `role="status"` region** — one sentence, or one line
+  per entry where the outcome carries several — `--bud-over`, the Account keys section's treatment,
+  applied to an act instead of a read. A conflict and an unanswered request are not validation:
+  nothing the person typed is wrong, so there is no field to hang a message on and hanging one on
+  a field would ask somebody to retype a correct value.
+- **Nothing goes in a snackbar.** The [Snackbar](#snackbar) chapter's prohibition takes no exception
+  here and gains no clause. A snackbar lasts four seconds and never stacks, so a sentence naming a
+  field is gone before the person has found the field — and the field is where the correction
+  happens.
+
+**The region is the one the screen already has**, shared with the read outcome and the locked
+notice, counted in every state per the chapter above. A second region for write outcomes is the
+duplicate that rule refuses: announced twice, and invisible to the branch that did not create it.
+Exclusivity extends unchanged, and it is over **outcomes, not sentences**: a screen never shows
+two accounts of what happened. One outcome may take more than one line, and may render in two
+places at once — an `errors` map only some of whose keys the form can place puts a message under
+each of those controls *and* a line in the region for every key it cannot, which is one answer
+to one write rather than two. What may never share the screen is a second outcome. Where a read
+is in flight its line wins, because that request is running now and this one has answered. A
+write's sentence is cleared when the next write starts, and by nothing else.
+
+**So a write's sentence comes back when a read that displaced it finishes, and that is the intent
+rather than a leak.** The read's line wins for as long as the read runs, and only the next write
+clears the write's sentence — so a refusal made before a slow read reappears the moment the read
+answers, possibly minutes later. The next reader will take that for a string somebody forgot to
+clear. It is not: the form is still holding the text that was refused, nothing has been saved, and
+the sentence is as true when it returns as it was when it was written. Clearing it on the read's
+answer would leave a form full of unsaved text with nothing on screen saying why — the silence the
+rule above refuses. The sentence goes when the person acts on it, and the act is the next write.
+
+### The states
+
+The copy is the specification, not an example of it.
+
+| State | Copy | Where it renders |
+| --- | --- | --- |
+| At rest, and after a write that landed | *nothing* | No field carries a message; the region carries no sentence of this chapter's |
+| The write is running | *nothing* | The pressed control is held busy per [Buttons](#buttons); an ordinary one-request write is not narrated |
+| The write is running, where it is more than one request | "Recording…" | Inside the region, `body` `--bud-text` — the transaction form's payee-then-transaction pair, and nothing else today |
+| The `errors` map names a control this form has | The server's sentence for that key, verbatim | Beneath that control, `caption` `--bud-over`, per text fields; focus moves to the first such control |
+| The `errors` map names anything else | The server's sentence, verbatim, one line per entry | Inside the region, `--bud-over` |
+| `conflictKind: duplicate_identifier` | "This entry is already saved. Reload the page to see it." | Inside the region, `--bud-over` |
+| `conflictKind: duplicate_name` on the payee create — its one source — and the one re-read still finds nothing | "This payee already exists under a name this tab can't read. Choose it from the list, or use a different name." | Inside the region, `--bud-over` |
+| Nothing answered, or the server failed rather than judged | "Budgetoid couldn't reach the server. Nothing you typed has been lost — try again in a minute." | Inside the region, `--bud-over` |
+| An answer this screen cannot read | "Budgetoid couldn't save this, and didn't say why. What you typed is still here — copy it, then reload the page." | Inside the region, `--bud-over` |
+
+**The unreachable sentence is the Account keys section's, with one clause added, and the clause is
+the whole difference.** That section answers a read it started on its own, where nothing of the
+person's is at stake and there is nothing to reassure them about. Here somebody is looking at a form
+holding text they typed, and the one thing they need before pressing anything is that it is still
+there. The first sentence stays word for word so the two read as one fact about the network; the
+clause is what makes it true of a write.
+
+**A 5xx shares that sentence and an unreadable judgement does not, which is the distinction a reader
+will collapse.** A 500 and a dead connection are both the server failing to answer the question, and
+a minute is a real remedy for both. A 400 carrying no usable map, or a 409 carrying no kind, is the
+server *judging* — it looked and said no, and a minute changes nothing — so its sentence promises no
+retry. Two next steps, two sentences; folding them sends somebody to press the same button until
+they give up.
+
+**It ends in a step all the same, because copy that stops at reassurance is this chapter's own
+complaint one section later.** [voice](voice.md) asks for what happened plus what to do, and *Whose
+sentence goes beneath the field* below faults two API strings for carrying the first half alone; a
+state whose copy said what happened, added that the text is safe and stopped would be the same
+omission, in the book that names it. What cannot be offered here is a **retry** — the
+server judged, and the same press collects the same judgement. What can is a **reload**: the one
+reading of this state a person can act on is a browser running an older bundle than the API it is
+talking to, which is how a 400 with no usable map or a 409 with an unrecognised kind reaches a
+screen at all. That is not a promise and the sentence makes none — it says what is on screen is
+still there, and what to do with it. **Copy it, then reload** is one instruction in that order for a
+reason: a reload is the one act that discards the typed value, so the screen says so and lets the
+person spend it, rather than clearing the form on their behalf. Where the cause is on the server
+instead, the reload changes nothing and the person still has what they typed.
+
+**`duplicate_identifier` is a create's answer and never a rename's.** The id is minted in the
+browser, so a POST retried after a lost answer carries the same one and collides on the primary key
+— which is what makes a lost `201` legible instead of duplicating a row. The sentence therefore says
+the entry is saved rather than offering another press, because a second press sends the same id and
+collects the same 409. **That legibility rests on the form keeping its id across a refusal**: an id
+minted per press turns a lost answer into two rows wearing two legitimate identifiers, and this
+outcome becomes unreachable. The id is drawn once, where the form is opened, and is redrawn only by
+a write that landed. **Its one wrong reading is accepted and named**: an identifier held by a
+budget this caller cannot read answers the same 409 and reloading shows nothing, which takes a
+guessed 128-bit value to reach. See [payees.md](../business-logic/payees.md).
+
+**`duplicate_name` has exactly one source, and the key reads wider than the state is.** The payee
+create is the only write in the product that answers a repeated name with a 409. A payee *rename*
+answers **400 keyed on `Name`**, and so does an account, a category or a category group on either
+verb — those land beneath the field, on the field-keyed row above, and never reach the region. The
+cell therefore names the source: somebody arriving from `/app/accounts` looks the key up, finds copy
+about payees, and would otherwise read it as a sentence their own screen can render. The split it
+comes from is argued in [payees.md](../business-logic/payees.md) — a create's remedy is to adopt the
+row that already exists, which is not a field anybody can correct, and a rename's is to choose
+another name, which is.
+
+**`duplicate_name` is usually invisible, and the sentence is for when it is not.** The transaction
+form answers that conflict by re-reading its payee list **once** and adopting the row it finds, so
+the ordinary path ends in a recorded transaction with no sentence anywhere. What is left is a payee
+whose own name did not open: it carries no blind index, it can never match, and the re-read comes
+back with nothing to adopt — which is why that path abandons rather than looping. The form is
+reachable only on an unlocked account, so the cause is a value that failed to authenticate rather
+than a missing key, and **Unlock is not the remedy** — the row is in the list, wearing
+`narrative-value`'s unreadable marker, and choosing it is.
+
+### Whose sentence goes beneath the field
+
+**The server's, rendered verbatim.** The client writes no copy for a field-keyed refusal and holds
+no table of its own.
+
+**The decisive argument is that the client cannot enumerate what it would have to write.** The
+`errors` map is the server's and the form is the client's, so a client-authored sentence needs a
+lookup from wire key to copy that is total over every string the server can send — the credential
+list's problem exactly — and the fallback for a key nobody anticipated is a generic sentence
+standing at the one place a person is trying to make a correction. That is this chapter's own defect
+one layer in. Rendering what arrived is total by construction: there is a sentence for every key,
+including the keys nobody has thought of.
+
+**The second argument is drift, and it runs the other way from where a reader expects.** A
+client-side copy of a server rule does not fail loudly when the rule moves. The API narrows a rule
+or adds one, the response is a 400 either way, and the browser goes on rendering the sentence for
+the rule that is not the one that fired — telling somebody to do something that will not work, with
+nothing red anywhere on either side.
+
+**Rendering a sentence is not branching on one, and this is the place that distinction has to be
+made.** The registration chapter forbids choosing its four conflict copies by matching the server's
+text, and [payees.md](../business-logic/payees.md) refuses `Detail` as a discriminant for the same
+reason — that is what `conflictKind` exists for. Both rules are about using prose as a **decision**.
+Here there is no decision: the field key already says where the sentence goes, and the sentence is
+the payload. A reader who knows those rules will over-apply them here, and the two acts are not the
+same act.
+
+**What this costs, said out loud rather than mitigated away.** The `ValidationException` messages
+become UI copy — "Payee name must be unique.", "Category group name must be unique." — and they are
+edited by people who do not read this book. So they come under [voice](voice.md) by this rule, and
+the gap comes with them: voice's error pattern is *what happened plus what to do*, and those two
+sentences carry only the first half. **That is a defect in the API, corrected in the API.** Writing
+the better sentence in the browser is how the second definition gets born.
+
+**What the alternative buys is real**: copy under this book's eye, and one string table to
+translate. Neither is free the other way either — rendering puts the API's strings under voice
+rather than leaving them ungoverned, and a translated client would still have to translate a
+sentence it did not write. The trade is a governance cost against a silent-wrongness cost, and this
+book takes the audible one everywhere else.
+
+### A field the form does not have
+
+**Every entry in the map is rendered somewhere.** The map is the server's and the form is the
+client's, so a key the form cannot place is an ordinary case rather than a corrupt response — a
+control behind a branch, a section not on screen, a rule about a member the person never sees. A
+dropped entry is this chapter's defect with a better excuse.
+
+- **The lookup from key to control is a `Map`, total over every string, and never an object literal
+  indexed by the wire key.** `constructor`, `toString` and `valueOf` are keys that hit on a literal,
+  and the entry gets placed under a control that does not exist. The argument is the credential
+  list's and is not restated.
+- **A miss renders in the region**, one line per entry, in the order the map sends them, `--bud-over`
+  — the same treatment as a conflict, because from the person's side it is the same thing: a fact
+  about the attempt with no field to correct.
+- **A key the form has but is not currently rendering is a miss**, and takes the miss path. The
+  question is whether a message can be *placed*, not whether the name is one the form recognises.
+- **The key is not printed.** `Name` is a wire member, not a label anybody recognises, and printing
+  it puts the shape of the API on screen while explaining nothing. **The cost is real and is the
+  reason it is bearable**: two unplaced sentences arrive with nothing to tell them apart, so each has
+  to name its own subject — which is one more thing the server's sentence does and a client-authored
+  fallback could not.
+- **A key whose message array is empty is not a message.** It places nothing, reddens no field, and
+  falls to the unreadable-answer sentence. An empty `mat-error` is a red border with no words in it,
+  which is colour as the message.
+
+### The typed value survives every refusal
+
+**Nothing clears until an answer says the row exists.** The clear is a consequence of a `201` or a
+`204`, never of a press — and a clear written on the line after the write is dispatched runs before
+any answer arrives, which empties the form on every outcome including the ones this chapter exists
+to render.
+
+- **Nothing navigates either.** A refused write does not close a dialog, collapse the form, reset the
+  control it was submitted from, or route anywhere.
+- **Focus moves to the first control carrying a message, and only then.** A message bound by
+  `aria-describedby` is announced when its control takes focus rather than when it appears, which is
+  what [accessibility](accessibility.md)'s *announce on submit* asks for, and the field may be off
+  screen besides. Where no control carries a message, focus stays where the press left it: moving a
+  keyboard user into a region takes them away from the control they are about to press again.
+- **The no-answer sentence may not claim nothing was written.** The request may have arrived,
+  committed and lost its response — the registration flow's rule, applied to a row instead of an
+  account. The sentence says the server was not reached and says what is safe: the typed value is
+  intact. What makes another press safe is the client-minted id, not a promise.
+
+### The region stays polite, and the carve-out is not spent here
+
+[accessibility](accessibility.md) reserves `assertive` for a failed save of data somebody typed, and
+this chapter is the case that reads closest to it. It is answered `status` all the same, on two
+grounds.
+
+**Assertive is for a failure that arrives after attention has moved on.** Here the press is a second
+or two old, the form is still on screen holding everything in it, and the region sits in reading
+order where the person is already pointed. Interrupting buys nothing and interrupts nothing.
+
+**And the region is shared.** Raising it to `alert` raises the read's loading line and the locked
+notice with it, because there is one region and its politeness is a property of the node rather than
+of the sentence. Taking the carve-out therefore means a second region — the duplicate the chapter
+above refuses. The carve-out keeps its case and this is not it; a save that completes in the
+background, out of sight of the press that started it, is the shape it was written for.
+
+**Colour is never the message.** Every sentence in the table reads the same with `--bud-over`
+removed, and every field message reads the same without its border.
+
+### What a writer will get wrong
+
+- **Reaching for a snackbar.** It is the first idea, it is written into the code as a suggestion, and
+  the Snackbar chapter already refuses it twice over: never for validation, which belongs to the
+  field, and never for an error that needs a decision. Four seconds and no stacking is the mechanism
+  behind both.
+- **Branching on the status code.** It works on three resources and fails on the fourth: `409` means
+  *this was a retry* on an account, a category, a category group and a transaction, and means *adopt
+  the row that already exists* on a payee create — inside the transaction write, the path a person
+  hits most. Read `conflictKind`, which exists because these two answers are otherwise the same
+  response. A 409 whose kind is missing or unrecognised is an answer this screen cannot read, and
+  takes that sentence rather than a guess.
+- **Clearing the form on dispatch.** The clear belongs to the answer, not to the press.
+- **Letting the write pipeline swallow.** A refusal that reaches a console and completes with no
+  value takes every screen above it out of this chapter, and the screen looks correct while it does.
+- **Rendering the problem document.** Not the status, not the `traceId`, not the title — the title
+  is one fixed string across every conflict in the product, so it names nothing — and not `Detail`
+  either. Both conflict states in the table carry the client's own sentence, so a `Detail` rendered
+  beside one puts two accounts of one outcome on screen, breaking the *one outcome* rule the region
+  is built on. `Detail` is copy and answers to [voice](voice.md) wherever it is read; these
+  screens do not read it, and nothing anywhere matches against it — that is what `conflictKind`
+  is for.
+- **Assuming a 400 means the map is usable.** It may carry no `errors` member, an empty one, or an
+  entry with no message in it, and each of those is the unreadable-answer sentence rather than a
+  field turning red with nothing to say.
+- **Making the region assertive for this one sentence.** It is one region, so that decision reaches
+  the loading line and the locked notice too.
+- **Advising a retry on a judgement.** *Try again in a minute* is true of silence and false of a
+  refusal, and it is the sentence a writer reaches for because it fits everywhere.
+
+**No screen renders a refusal today, and the gap has two halves that have to close together.**
+Each of the four writing surfaces clears its form on the line after the write is dispatched, so the
+typed value is gone before an answer exists; and every write pipeline ends by logging and completing
+with no value, so no component could render a refusal even if it kept the text. Fixing the first
+alone leaves a form that holds its contents and says nothing. The convention the code's own note
+waits on is this chapter, and it is not a snackbar.
+
 ## Settings section and label/value row
 
 - A settings section is a `<section aria-labelledby>` with an `eyebrow` heading,
