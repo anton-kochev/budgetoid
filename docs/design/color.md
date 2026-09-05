@@ -48,6 +48,8 @@ per theme; the raw brand hexes are for brand moments (the mark, the lockup).
 | Near-limit (graphics) | `--bud-caution` | `#C25E0F` | `#E88433` |
 | Near-limit (text) | `--bud-caution-text` | `#AD560E` | `#E88433` |
 | Over-budget (graphics and text) | `--bud-over` | `#B23A2E` | `#E06A55` |
+| Over-budget container (a tint) | `--bud-over-container` | `#F4E3E2` | `#3F1E18` |
+| Over-budget on-container (words on that tint; the hover state) | `--bud-over-on-container` | `#923026` | `#E68574` |
 
 Caution is a burnt orange, deliberately off-hue from brand gold so warning never reads
 as brand. The `-text` variants exist because the graphic hues fail AA as small text on
@@ -56,15 +58,18 @@ light surfaces — use graphic tokens for fills, `-text` tokens for words and fi
 **The error role is mapped into Material, not read out of it.** The advice above runs
 one way — reach for `--mat-sys-*` and let it resolve per theme — and `--bud-over` also
 has to run the other way, because Material ships an error colour of its own and a
-refused field takes it unless the theme says otherwise. `src/styles.scss` says so once,
-beside the block pinning the five brand neutrals:
-`@include mat.theme-overrides((error: var(--bud-over)))`.
+refused field takes it unless the theme says otherwise. `src/styles.scss` says so in two
+`mat.theme-overrides` blocks beside the one pinning the five brand neutrals:
+`(error: var(--bud-over))` for a field at rest, and
+`(error-container: …, on-error-container: …)` for a field under a pointer. Two, because
+Material's form field reads two roles and no spelling of the first reaches the second.
 
-**One alias rather than a list.** Measured in `@angular/material` 21.2's own stylesheet:
-eighteen error tokens exist and this application sets none of them. Thirteen fall back
-to `var(--mat-sys-error)` — the message, the caret, the active indicator, the outline,
-the label and their focus states — so the one declaration reaches all thirteen, where
-naming them would be thirteen guesses about an appearance no screen pins.
+**One alias rather than a list.** Measured in `@angular/material` 21.2.14's own
+form-field stylesheet: eighteen error tokens exist and this application sets none of
+them. Thirteen fall back to `var(--mat-sys-error)` — the message, the caret, the active
+indicator, the outline, the label and their focus states — so the one declaration reaches
+all thirteen, where naming them would be thirteen guesses about an appearance no screen
+pins.
 
 **On the theme rather than in a component's `:host`.** A `:host` declaration stops at
 that component's own subtree, so a `mat-select`'s panel — rendered into a CDK overlay on
@@ -72,12 +77,80 @@ that component's own subtree, so a `mat-select`'s panel — rendered into a CDK 
 idea of the error colour, and a screen arriving later has to remember a declaration
 whose absence nothing would notice.
 
-**What holds it.** `src/material-error-colour.spec.ts` renders a real `mat-error` under
-Material's real stylesheet and walks the token chain the cascade delivered, so deleting
-the declaration reddens instead of quietly restoring Material's red.
+**The remaining five are the hover states, and they read the other role.**
+`--mat-form-field-error-hover-*`, `--mat-form-field-filled-error-hover-*` and
+`--mat-form-field-outlined-error-hover-*` fall back to
+`var(--mat-sys-on-error-container)`, which no spelling of the first alias can reach. That
+role is not an unmapped name resolving to nothing: `mat.theme()` **emits** it from
+Material's own palette — measured in `@angular/material` 21.2.14, `light-dark(#93000a,
+#ffdad6)` — so an unaliased hover puts an actively declared **foreign** red on the field.
+An absent mapping and somebody else's mapping look identical on screen and are found by
+opposite investigations, which is why the mechanism is written down and not just the
+outcome.
 
-The remaining five are the hover states and they do not reach `--bud-over`;
-[components](components.md) names that departure in the chapter that owns the field.
+**So the two rows above are minted here rather than borrowed.** `--bud-*` carried no
+container role to alias: the semantic families are single hues with a `-text` variant,
+not the background-and-on-colour pairs Material's container roles are.
+
+**Both values are derived from `--bud-over`, not picked.** The container is the
+over-budget hue taken **86% toward white** on paper and **72% toward black** on ink. The
+on-colour is the same hue taken **18% toward black in light and 18% toward white in
+dark** — so a hover *deepens* the red on paper and *lightens* it on ink, and in both
+themes it reads as the same colour with more of itself rather than as a second red
+arriving under the pointer. The 18% is a ceiling and not a floor: the contrast below
+clears with room in every pair, so what stops the step going further is the red having to
+stay the same red.
+
+**The on-colour does two jobs and the tone answers to both.** Material uses
+`--mat-sys-on-error-container` as a hover **foreground on a field standing on the page**,
+not only as text on the container the role is named for, so a value measured against the
+tint alone would be a hover state nobody can read on paper. Both duties clear 4.5:1:
+
+| Pair | Light | Dark |
+| --- | --- | --- |
+| On-container on paper | 7.40 | 6.84 |
+| On-container on surface | 7.86 | 6.25 |
+| On-container on overlay | 7.86 | 5.47 |
+| On-container on its own container | 6.33 | 5.65 |
+| Container on paper (a tint, not a separation) | 1.17 | 1.21 |
+
+The last row is the container doing its job rather than failing at one: a wash the eye
+reads as the same plane. It is not licence to tint content — the hairline rule below
+stands.
+
+**The container half is read by nothing this application draws, and it is aliased
+anyway.** Measured in 21.2.14: five references to `--mat-sys-error-container` in the whole
+package, four in prebuilt themes and the fifth in an optional `.mat-bg-error-container`
+utility class this application does not emit. No component reads it. It is mapped because
+the two are one semantic pair, and half a pair leaves the book's deepened red standing on
+a tint from another palette the first time something here wants one.
+
+**A misspelled key here is silent, and that is a fact about the tool.**
+`mat.theme-overrides` emits a declaration only for a name it finds in M3's system map —
+`core/tokens/_system.scss`, guarded by `map.has-key` — and drops everything else with no
+warning of any kind. `on-error-container-color`, `errorContainer`, or a role Material
+retires in a later version compiles clean, ships and does nothing. The surprise is
+local: the M2 theming API next door is loud about a bad map, raising `@error` for a hue
+that is not in a palette and again for a colour config missing `primary`, `accent` or
+`warn`. Loudness is not a property of the library, so it may not be assumed here.
+
+**What holds it.** `src/material-error-colour.spec.ts` renders a real `mat-error` under
+Material's real stylesheet and walks the token chain the cascade delivered, in three
+cases: the message's resting colour resolves to `--bud-over`, every one of the five hover
+declarations resolves to `--bud-over-on-container`, and both system roles read at the root
+resolve to the pair. The hover declarations are **discovered** from the stylesheets in the
+page rather than named in the spec, so a Material that renamed or moved them leaves the
+scan empty — which the case refuses. Deleting either override, misspelling a key or
+deleting a token reddens it.
+
+**It proves the chain and not the hue.** jsdom computes no colour, so substituting
+Material's `#93000a`, `#00ff00` or a nonsense string for `--bud-over-on-container` leaves
+the spec green — measured. Every hex on this page and every ratio in the tables is held by
+review alone. Two neighbouring limits, said for the same reason: nothing compares
+`branding/tokens.css` against its runtime copy in `_brand-tokens.scss`, so the two can
+disagree silently; and the hover case asks where a declaration *points*, not which rule
+wins the cascade under a real pointer, so a later stylesheet overriding Material's rule
+would pass.
 
 ### Interactive
 
@@ -128,6 +201,10 @@ Measured WCAG ratios for the pairs the UI actually uses. AA requires 4.5:1 for t
 The last row is the standing caveat: **in light mode, mint fills need a shape to live
 in** — a track, a chip, a filled circle adjacent to text — never a thin line or small
 glyph alone on paper. In dark mode mint is free.
+
+The over-budget container pair has its own measured table in the Semantic block above,
+where the derivation it answers to is. Its numbers stay there rather than being copied
+here, so nothing can drift between two tables.
 
 ## Discipline
 

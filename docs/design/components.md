@@ -2341,34 +2341,52 @@ M3 base: `MatFormField` (outlined appearance), `MatInput`, `MatSelect`,
 - Label and input text: Inter (`body`); floating label per M3 behavior, muted when
   resting.
 - Error state: border and message in `--bud-over`, message text (`caption`) beneath the
-  field — never color alone.
+  field — never color alone. Under a pointer the same parts take
+  `--bud-over-on-container`, the deepened half of the same red ([color](color.md)).
 - Dropdown and autocomplete panels are overlays: `--bud-overlay`,
   `--bud-shadow-overlay`, `--bud-radius-sm`, options 48px tall with state layers,
   selected option tinted `--bud-state-selected`.
 - Forms cap at 560px and stack in a single grid column, `--bud-space-4` gaps.
 
-**The error bullet is true of a field at rest and false under a pointer.** The book's error colour
-reaches a field through one declaration on the theme — `--mat-sys-error` aliased to `--bud-over`,
-argued in [color](color.md) — and Material reads that token for thirteen of the eighteen error
-tokens its form field carries: the message, the caret, the active indicator, the outline, the label
-and their focus states. The other five are the hover states.
-`--mat-form-field-error-hover-*`, `--mat-form-field-filled-error-hover-*` and
-`--mat-form-field-outlined-error-hover-*` fall back to `var(--mat-sys-on-error-container)`, a role
-this application maps to nothing, so a pointer resting on a refused field moves its indicator and
-its label off `--bud-over` and onto Material's own red. Measured in `@angular/material` 21.2's own
-stylesheet.
+**The error bullet is true of a field at rest, and a field under a pointer now takes the book's red
+as well — the deepened on-colour of a pair rather than `--bud-over` itself.** It took two
+declarations on the theme, because Material's form field reads **two** roles. Thirteen of its
+eighteen error tokens fall back to `var(--mat-sys-error)` — the message, the caret, the active
+indicator, the outline, the label and their focus states — all covered by aliasing that one role to
+`--bud-over`. The other five are the hover states: `--mat-form-field-error-hover-*`,
+`--mat-form-field-filled-error-hover-*` and `--mat-form-field-outlined-error-hover-*` fall back to
+`var(--mat-sys-on-error-container)`, which no spelling of the first alias can reach. That role is
+aliased too, to `--bud-over-on-container`. [color](color.md) owns the pair, its derivation and its
+measured contrast; nothing about the values is restated here. Measured in `@angular/material`
+21.2.14.
 
-**Closing it is a decision this chapter cannot take, and inventing a token is not it.** `--bud-*`
-carries no container role to alias: the semantic families in [color](color.md) are single hues with
-a `-text` variant, not the background-and-on-colour pairs Material's container roles are. So the
-way to close it is to add one there — an error container and its on-colour, both themes, contrast
-measured against the pairs the UI uses — and only then a second alias on the theme beside the
-first. A theme file minting a value to satisfy a hover state would be taking that decision by
-accident.
+**The mechanism was never a token resolving to nothing, and a reader who learns the wrong one goes
+looking for the wrong thing next time.** `mat.theme()` **emits**
+`--mat-sys-on-error-container` from Material's own palette — `light-dark(#93000a, #ffdad6)` — so an
+unaliased hover did not fall through to a blank: it moved the indicator and the label off
+`--bud-over` and onto an actively declared **foreign** red. An absent mapping and somebody else's
+mapping look identical on screen, and they are found by opposite investigations.
 
-**Nothing in the suite sees the gap.** `src/material-error-colour.spec.ts` walks the token chain
-for the message's resting colour, which is the half that is mapped, and jsdom neither paints nor
-hovers.
+**Closing it was a decision this chapter could not take, and it was taken where it belongs.**
+`--bud-*` carried no container role to alias — the semantic families in [color](color.md) are
+single hues with a `-text` variant, not the background-and-on-colour pairs Material's container
+roles are — so the way to close it was to mint one there, both themes, contrast measured against
+the pairs the UI uses, and only then a second alias on the theme beside the first. That is what
+happened, and the constraint outlives it: a theme file minting a value to satisfy a hover state
+would still be taking a palette decision by accident.
+
+**The suite sees the chain and not the colour.** `src/material-error-colour.spec.ts` renders a
+refused field under Material's real stylesheet and walks all five hover declarations, asserting
+each resolves through `--bud-over-on-container`; the declarations are **discovered** from the
+stylesheets in the page rather than written into the spec, so a Material that renamed or moved them
+leaves the scan empty and the case fails. Removing either override, misspelling a key or deleting
+the token reddens it. What it cannot see is the hue: jsdom computes no colour, so Material's
+`#93000a`, `#00ff00` or a nonsense string substituted for that token leaves the spec green.
+Measured. The hexes and every ratio behind them are held by review, in [color](color.md). Two more
+limits of the same kind: nothing compares `branding/tokens.css` with its runtime copy in
+`_brand-tokens.scss`, so the two can disagree silently; and the hover case asks where a declaration
+*points*, not which rule wins the cascade under a real pointer, so a later stylesheet overriding
+Material's rule would pass.
 
 ## The amount field
 

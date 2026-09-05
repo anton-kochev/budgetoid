@@ -62,13 +62,11 @@ html {
   // form-field sheet; `--mat-badge-background-color` and the two stepper error
   // tokens are three more, on components this application does not use.
   //
-  // **The other five are the hover states and they stay Material's own colour.**
-  // `--mat-form-field-{,filled-,outlined-}error-hover-*` fall back to
-  // `var(--mat-sys-on-error-container)`, so hovering an invalid field moves its
-  // indicator and label off the book's red. Said here because an absence cannot
-  // be found by grep. Left rather than mapped: `--bud-*` has no container role
-  // to alias, and inventing one is a decision for the design book rather than
-  // for a theme file.
+  // **The other five are the hover states, and they need the second alias
+  // below rather than this one.** `--mat-form-field-{,filled-,outlined-}
+  // error-hover-*` fall back to `var(--mat-sys-on-error-container)`, not to
+  // `var(--mat-sys-error)`, so this declaration cannot reach them however it is
+  // written. Said here because an absence cannot be found by grep.
   //
   // `src/material-error-colour.spec.ts` renders a `mat-error` under Material's
   // real stylesheet and walks the token chain this declaration sits in, so
@@ -76,6 +74,38 @@ html {
   @include mat.theme-overrides(
     (
       error: var(--bud-over),
+    )
+  );
+
+  // The hover half of the same rule. Material's error roles are a
+  // background-and-on-colour pair where `--bud-*`'s semantic families are
+  // single hues, so closing this needed a pair minted in the book — see
+  // `docs/design/color.md` for the derivation and the measured contrast — and
+  // then this alias, which is the only thing that carries it into Material.
+  //
+  // **Both keys, and the container half reaches nothing today.** Measured in
+  // 21.2.14: `--bud-over-on-container` is the half the five hover tokens read
+  // and would close the field on its own, while the only thing in the library
+  // reading `--mat-sys-error-container` is the optional `.mat-bg-error-container`
+  // utility class, which this application does not emit. It is aliased anyway
+  // because the two are one semantic pair — an on-colour is the colour that
+  // goes *on* something, and a container left at Material's pink would pair the
+  // book's deepened red against a tint from another palette the first time a
+  // component here wanted one.
+  //
+  // **A misspelled key here is silent.** `mat.theme-overrides` emits a
+  // declaration only for a name it finds in M3's system map and drops the rest
+  // with no warning, so `on-error-container-color` — or `errorContainer`, or a
+  // role Material retires in a later version — would compile, ship and do
+  // nothing. That is what the second and third cases in
+  // `src/material-error-colour.spec.ts` are for: one walks the chain from the
+  // hover declarations Material's own stylesheet carries, the other reads the
+  // two roles at the root, and neither can pass on a declaration that was
+  // never emitted.
+  @include mat.theme-overrides(
+    (
+      error-container: var(--bud-over-container),
+      on-error-container: var(--bud-over-on-container),
     )
   );
 }
