@@ -50,6 +50,22 @@
 // constant is the number the columns' check constraints are built from: this
 // side of the repository cannot see a migration, and the backend suite pins
 // that half over the same two constants.
+//
+// **One rule about *how* these are consumed, which is not a style question.** A
+// class field whose initialiser is nothing but one of these names reads
+// `undefined` under the test runner and nowhere else — the position is what
+// does it, not the timing. Vitest puts the built bundle through Vite's
+// module-runner transform, which turns every reference to an imported name into
+// a live read off the import namespace except in that one place, where it
+// hoists a module-scope copy taken as the chunk is evaluated: before esbuild's
+// lazy `__esm()` wrapper has run this file's body and assigned anything. A call
+// argument, an object member, a method body and a getter all keep the live
+// import. `TransactionsComponent.recordingSentence` states it in full, and it
+// is why the three screens reading these caps expose them through getters. No
+// guard is written here for it, deliberately: the failure it produces is a
+// missing client-side ceiling on a value the server refuses anyway, and a
+// throw from a component field initialiser would meet a person as a dead
+// screen.
 import { MINIMUM_ENVELOPE_BYTES } from '@app-core/security/key-envelope';
 
 /**

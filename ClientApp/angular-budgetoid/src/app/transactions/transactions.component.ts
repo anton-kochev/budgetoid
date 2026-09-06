@@ -854,15 +854,35 @@ export class TransactionsComponent implements OnInit {
    * The copy for a write in progress, read from the one module that holds this
    * chapter's sentences rather than written out in the template beside it.
    *
-   * **A getter and not a field, and that is measured rather than stylistic.**
-   * A class field initialised from a constant in another module is evaluated
-   * when the component is constructed, and under the unit-test builder's
-   * chunking that ran **before** the owning module's body: the field held
-   * `undefined`, the template interpolated an empty string, and the region drew
-   * an empty paragraph. It reproduced only once a second spec file shared a
-   * chunk with this one, so a single-file run was green. Read at render time
-   * the binding is live and the value is there. Do not "simplify" this back
-   * into a field.
+   * **A getter and not a field, and the reason is a transform rather than a
+   * race.** Vitest runs the built bundle through Vite's module-runner
+   * transform, which turns every reference to an imported name into a live read
+   * off the import namespace object — with one exception, written into
+   * `moduleRunnerTransform` itself: where the name is the **whole** initialiser
+   * of a class field, or an `extends` clause, the reference is left alone and a
+   * module-scope `const` copy of it is hoisted above the statement instead.
+   * That copy is taken when the *chunk* is evaluated, and this builder wraps
+   * every module of the app in esbuild's lazy `__esm()` initialiser, so at that
+   * moment the owning module's body has not run and its export is still an
+   * unassigned `var`. The copy freezes `undefined` and never thaws: the field
+   * held it, the template interpolated an empty string, and the region drew an
+   * empty paragraph.
+   *
+   * **What that rules out is the reading a reader will reach for.** Nothing is
+   * read too early at construction time — a sibling field reading the same
+   * imported name one line down, as an object member or a call argument, gets
+   * the real value in the same instant, because those positions keep the live
+   * namespace read. Measured: the cap below rendered no `maxlength` while the
+   * `Validators.maxLength` built from the same import in the next field refused
+   * at exactly that cap. The two differ by **where in the syntax** the name
+   * sits, not by when they run — which is also why the fix is any wrapping at
+   * all, and a getter is simply the honest form for a value a template reads.
+   *
+   * It bites only once the two files land in different chunks: a single-file
+   * run inlines the owning module into the spec bundle, leaving no import to
+   * snapshot, so `--include` is green either way. The application build applies
+   * no such transform, so nothing here was ever wrong in a browser. Do not
+   * "simplify" this back into a field.
    */
   protected get recordingSentence(): string {
     return RECORDING_SENTENCE;
@@ -923,9 +943,12 @@ export class TransactionsComponent implements OnInit {
    * classes.
    *
    * **Getters and not fields**, the same trap {@link recordingSentence} argues
-   * in full a few members up: a field initialised from another module's
-   * constant is read when the component is constructed, and under the unit-test
-   * builder's chunking that happened before the owning module's body ran.
+   * in full a few members up: a class field whose initialiser is *nothing but*
+   * an imported name is the one position the test runner's module transform
+   * snapshots rather than reads live, and under this builder the snapshot is
+   * taken before the owning module has assigned anything. Every other position
+   * stays live — including the two `Validators.maxLength` arguments below,
+   * which is why those are safe as they stand.
    */
   protected get nameCharacters(): number {
     return NARRATIVE_NAME_CHARACTERS;
@@ -935,6 +958,14 @@ export class TransactionsComponent implements OnInit {
     return NARRATIVE_DESCRIPTION_CHARACTERS;
   }
 
+  // The caps reach the validators as **call arguments** and are deliberately
+  // not lifted into fields of their own: an argument keeps the live import,
+  // which is the half of {@link recordingSentence}'s paragraph that applies
+  // here. It is worth saying rather than assuming, because a cap lost at these
+  // sites is silent — `Validators.maxLength(undefined)` neither throws nor
+  // refuses anything, measured — and the only thing that would notice is the
+  // pairs of cases in this file's spec that push a value one unit past each cap
+  // and exactly to it.
   protected readonly form = this.formBuilder.nonNullable.group({
     amount: [0, [Validators.required]],
     date: [new Date(), [Validators.required]],

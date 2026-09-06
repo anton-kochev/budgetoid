@@ -797,9 +797,12 @@ export class CategoriesComponent implements OnInit {
    *
    * **Getters and not fields**, for the reason
    * `TransactionsComponent.recordingSentence` states in full at its own copy: a
-   * field initialised from another module's constant is read when the component
-   * is constructed, which under the unit-test builder's chunking is before the
-   * owning module's body has run. Read at render time the values are there.
+   * class field whose initialiser is *nothing but* an imported name is the one
+   * position the test runner's module transform snapshots rather than reads
+   * live, and under this builder the snapshot is taken before the owning module
+   * has assigned anything. Every other position stays live — including the four
+   * `Validators.maxLength` arguments below, which is why those are safe as they
+   * stand.
    */
   protected get nameCharacters(): number {
     return NARRATIVE_NAME_CHARACTERS;
@@ -817,6 +820,14 @@ export class CategoriesComponent implements OnInit {
     ),
   );
 
+  // Both forms below take their caps as **call arguments** and deliberately not
+  // through fields of their own: an argument keeps the live import, which is
+  // the half of `nameCharacters`' paragraph that applies here. It is worth
+  // saying rather than assuming, because a cap lost at these sites is silent —
+  // `Validators.maxLength(undefined)` neither throws nor refuses anything,
+  // measured — and the only thing that would notice is the pairs of cases in
+  // this file's spec that push a value one unit past each cap and exactly to
+  // it.
   protected readonly groupForm = this.formBuilder.nonNullable.group({
     // `nonBlank` beside `required`, not instead of it: `required` refuses an
     // empty control and admits `'   '`, and the trim that used to catch the
