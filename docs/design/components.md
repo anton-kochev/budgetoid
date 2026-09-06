@@ -1837,8 +1837,12 @@ unavoidable.
   yet must be inert and visible, never live and silent.
 - **The notice renders on `locked` alone.** Its sentence is *advice* — press Unlock in Settings —
   and that advice is already false for somebody whose unlock is running. So during `unlocking` the
-  list stays where it is and every name in it renders its `locked` marker, which is a **statement**
-  rather than advice and cannot go stale the same way.
+  list stays where it is, **still showing the words it opened before the ceremony began**. The
+  services drop their opened lists on `locked` exactly, for the same reason: an `unlocking` resolves
+  back into keys, and blanking a screen somebody is reading in order to fill it again seconds later
+  buys nothing. A `locked` marker appears in that list only where a read *started* during the
+  ceremony had nothing to open with — a statement about one value rather than advice about the
+  account, which is why it cannot go stale the way the notice would.
 
 That is the whole distinction: **disable when unsure, but do not advise when unsure.** Written
 `!== 'locked'` the form goes live mid-ceremony; written `!== 'unlocked'` the notice tells somebody
