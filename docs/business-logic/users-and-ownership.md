@@ -394,20 +394,30 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
 
 ---
 
-- **Rule**: The signed-in account's own email address is readable at `GET /api/me`, by that account
-  and by nobody else. Nothing else about the account is returned.
+- **Rule**: The signed-in account's own email address and the ambient budget's identifier are
+  readable at `GET /api/me`, by that account and by nobody else. Nothing else about the account is
+  returned.
 - **Why**: a settings surface has to show the address the account can actually be reached at, and
   that is the **stored** one — deliberately never refreshed by the rule above. A client that decoded
   the ID token instead would show whatever Google asserts today, a different value the moment the
   person changes their Google address, while the account is still reachable only at the old one. The
   disagreement between the two is not a defect this endpoint papers over; it is why the endpoint
   exists rather than the claim being read client-side.
-  - **Only the email, because only the email is displayed.** An internal user id handed to a client
-    is an identifier the client will eventually send back, and every tenancy value in this API is
-    resolved server-side from the authenticated subject and never addressed by the caller — the rule
-    `BudgetRouteConstructionTests` holds the route table to. Publishing one for a field nothing
-    renders is the first half of a client-supplied tenancy parameter. Widening the response later is
-    additive; narrowing it is breaking, which is why the narrow shape ships.
+  - **What earns a member is not that a screen displays it.** Nothing renders the budget identifier
+    and nothing is going to; what earns it is that the client **cannot derive it and cannot complete
+    its half of a cryptographic contract without it**. The blind index over a name carries the
+    budget, is computed in a browser under a key this server has never held, and every other field
+    of that message is a constant the client already owns or a word somebody typed — the budget
+    alone is resolved server-side from the session cookie and named in no request and no other
+    response. Withhold it and no name can be written to a blind-indexed column at all.
+  - **A user id fails that test and stays unpublished, which is what makes it a rule.** It is
+    equally underivable and equally undisplayed, and no client-side computation needs it, so the
+    only thing publishing it would buy is a value a later route could be persuaded to accept. The
+    same refusal covers a session id, a credential id and the creation timestamp. The half of the
+    older argument that survives is the half a test holds: no route in this API takes a budget or a
+    user as a path segment or a route parameter — `BudgetRouteConstructionTests` — so a client
+    holding an identifier has nowhere to spend it. Widening the response later is additive;
+    narrowing it is breaking, which is why each member is argued before it ships.
   - **Handing back null is a race, not a 404.** No *stored* state produces it: the account, its
     three credentials and its default budget land in one `SaveChanges`, and `credentials` cascades
     from `users`, so a live session standing over a missing user row is not a shape the schema

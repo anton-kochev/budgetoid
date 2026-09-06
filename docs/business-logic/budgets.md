@@ -276,6 +276,13 @@ erDiagram
     the API's `EndpointDataSource` and asserts that no route pattern segment and no route parameter
     name mentions a budget. A test asserting an absence: if a `/api/budgets/{budgetId}` endpoint is
     ever needed, the rule is being changed, not worked around.
+  - **The identifier is nonetheless published, on `GET /api/me`, and that does not weaken this.**
+    The rule forbids a route from *accepting* a budget; it never rested on the client not knowing
+    which budget it is in. Nothing reads a budget from a request — not a query filter, not the
+    `budget_isolation` policy, not a handler — so a client holding the value has nowhere to spend
+    it, and the test above is what keeps that true. It is published because the blind index over a
+    name carries the budget and is computed in a browser, and the budget is the one field of that
+    message the client cannot derive. See [account-keys.md](account-keys.md).
 
 - **Per-owner budget-name uniqueness MUST NOT be reintroduced, and the unique index MUST NOT be
   deleted.** Both halves of that sentence are load-bearing and they point in opposite directions.

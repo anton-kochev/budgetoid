@@ -91,7 +91,9 @@ public sealed class IndexedName
 
     /// <summary>
     /// The blind index over the normalised name: <c>HMAC-SHA-256</c> under the account's index key,
-    /// equal across every row holding the same name in the same column of the same account.
+    /// equal across every row holding the same name in the same column of the same budget. The key is
+    /// the account's and the scope is the budget's: the message the client folds names the budget, so
+    /// one label under two budgets of one account produces two digests.
     /// </summary>
     /// <remarks>
     /// A copy taken at the factory rather than a view onto the caller's array, the rule

@@ -39,7 +39,9 @@ public sealed class Payee
     /// <summary>
     /// The blind index over the same name: <c>HMAC-SHA-256</c> under the account's index key, computed by
     /// the client over the normalised text and equal across every row holding that name in this column of
-    /// this account. It is what <c>IX_payees_budget_id_name_key</c> enforces uniqueness over.
+    /// this budget — the key is the account's, but the message the client folds names the budget, so two
+    /// budgets of one account key one label differently. It is what
+    /// <c>IX_payees_budget_id_name_key</c> enforces uniqueness over.
     /// </summary>
     /// <remarks>
     /// <para>

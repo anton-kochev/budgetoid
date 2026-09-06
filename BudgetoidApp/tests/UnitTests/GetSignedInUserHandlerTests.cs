@@ -32,6 +32,17 @@ namespace UnitTests;
 /// account a request arrives as, which is a property of the pipeline above the route; these measure
 /// what the handler does with the identity it is handed, which is the only half a stub can speak to.
 /// </para>
+/// <para>
+/// <b>THIS FILE DOES NOT COMPILE AGAINST THE HANDLER AS IT STANDS, ON PURPOSE, AND THAT BLOCKS THE
+/// WHOLE UNIT PROJECT UNTIL THE PRODUCTION CHANGE LANDS.</b> Two symbols are assumed and neither exists
+/// yet: a third constructor parameter, <c>IBudgetContext</c>, written second — beside the other context
+/// and ahead of the read service — and a <c>BudgetId</c> member on <see cref="SignedInUser" /> beside
+/// <c>Email</c>. Every construction in this file is written to that shape, so the handler and the record
+/// are the only two files that have to move. See
+/// <see cref="HandleAsync_ReadsTheAmbientBudgetAndNotTheUser" /> for why the budget must come from the
+/// ambient context and not from a read of <c>budgets</c>, and why that case is worth a red build rather
+/// than a reflective spelling that would compile today and be checked by nothing afterwards.
+/// </para>
 /// </remarks>
 public sealed class GetSignedInUserHandlerTests
 {
@@ -45,6 +56,7 @@ public sealed class GetSignedInUserHandlerTests
         Guid userId = Guid.CreateVersion7();
         GetSignedInUserHandler handler = new(
             new StubUserContext(userId),
+            new StubBudgetContext(Guid.CreateVersion7()),
             new StubUserAccountReadService((userId, StoredAddress)));
 
         // Act
@@ -52,6 +64,69 @@ public sealed class GetSignedInUserHandlerTests
 
         // Assert
         await Assert.That(user.Email).IsEqualTo(StoredAddress);
+    }
+
+    /// <summary>
+    /// That the budget on the answer is the <b>ambient</b> one, and never the signed-in user's id.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>RED UNTIL THE HANDLER TAKES AN <see cref="IBudgetContext" />, AND RED AS A COMPILE ERROR
+    /// RATHER THAN AS AN ASSERTION.</b> The two symbols this case needs are a third constructor
+    /// parameter and a <c>BudgetId</c> member on <see cref="SignedInUser" />; neither exists yet, so
+    /// this file does not build and every case in the unit project is unreachable until it does. That
+    /// is stated here rather than worked around: a reflective spelling would compile today and would
+    /// stop being checked by the compiler forever after, which is a worse trade than a loud build.
+    /// </para>
+    /// <para>
+    /// <b>The two stubs carry DIFFERENT identifiers, and that is the whole case.</b> Nothing in the
+    /// schema stops a budget id and a user id being told apart by eye, but nothing makes them
+    /// distinguishable to a test that seeds one value into both contexts either — and with one value the
+    /// right implementation and every wrong one agree. The wrong implementation this guards against is
+    /// specific and plausible: a read of <c>budgets</c> keyed on <c>user_id</c>, which is how the export
+    /// finds a budget and is exactly the shape somebody reaches for when the ambient one is not to hand.
+    /// It would be right for every account holding one budget and wrong the day one holds two, at which
+    /// point the client keys a name under a budget it is not writing to and the row it just wrote can
+    /// never be found again.
+    /// </para>
+    /// <para>
+    /// <b><see cref="GetSignedInUserQuery" /> keeps no members and must not gain one.</b> The budget is
+    /// ambient — resolved while the request authenticates, off the session cookie — so a parameter for
+    /// it would be a client-supplied tenancy value, the thing <c>SignedInUser</c>'s own remark and
+    /// <c>BudgetRouteConstructionTests</c> refuse throughout this API. This case reaches it through
+    /// <see cref="StubBudgetContext" /> for that reason and not for convenience.
+    /// </para>
+    /// <para>
+    /// <b>Why the endpoint tests cannot hold this.</b> They measure which account a request arrives as,
+    /// and every account the factory seeds owns exactly one budget — so an implementation reading
+    /// <c>budgets</c> by <c>user_id</c> answers all of them correctly. Two budgets under one user is a
+    /// state the seeding does not produce and the product has no route to produce; a stub is the only
+    /// place the two values can be prised apart.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task HandleAsync_ReadsTheAmbientBudgetAndNotTheUser()
+    {
+        // Arrange — two identifiers that cannot be confused for one another, and a read service keyed by
+        // the user id so the address half still resolves and the case fails on its own subject.
+        Guid userId = Guid.CreateVersion7();
+        Guid budgetId = Guid.CreateVersion7();
+        GetSignedInUserHandler handler = new(
+            new StubUserContext(userId),
+            new StubBudgetContext(budgetId),
+            new StubUserAccountReadService((userId, StoredAddress)));
+
+        // Act
+        SignedInUser user = await handler.HandleAsync(new GetSignedInUserQuery());
+
+        // Assert — the ambient budget, positively.
+        await Assert.That(user.BudgetId).IsEqualTo(budgetId);
+
+        // And not the user, stated separately rather than left to the line above. The equality alone
+        // carries the claim only while the two arranged values differ; written out, a later edit that
+        // collapsed them into one seeded identifier goes red here instead of quietly turning the case
+        // into a tautology.
+        await Assert.That(user.BudgetId).IsNotEqualTo(userId);
     }
 
     [Test]
@@ -63,6 +138,7 @@ public sealed class GetSignedInUserHandlerTests
         // about the line under test.
         GetSignedInUserHandler handler = new(
             new StubUserContext(Guid.CreateVersion7()),
+            new StubBudgetContext(Guid.CreateVersion7()),
             new StubUserAccountReadService());
 
         // Act

@@ -8,6 +8,54 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-09-06 — The blind index is scoped to one budget, and the browser is told which
+
+**Context:** NFR-014 requires that a party holding full read access cannot determine whether
+**two budgets** hold a payee, account, category or category group of the same name. The
+index key is drawn once per **account** and the message named the grammar, the table and the
+column — so two budgets of one account produced a byte-identical digest for one name, and an
+operator reading the column saw that equality. Two things made it invisible. The suite wrote
+the leak down as accepted, in the census justification on `KeyMaterialSecrecyTests`, while
+the SRS analysis claimed the opposite in a sentence whose premise refutes its own conclusion
+— *"the index key is derived per account, so identical names in two budgets produce unrelated
+values"*, where per-account is the reason they are **identical**. NFR-014's verification
+method is Analysis, so the requirement was held by that sentence and nothing else. And
+nothing creates a second budget today, so no state the product can reach exhibits it.
+
+**Decision:** **the budget enters the message** —
+`budgetoid/blind-index/v1 ⌷ table ⌷ column ⌷ budgetId ⌷ normalized-name`. Same slot the
+narrative grammar keeps its row identifier in, so the two codecs read alike. The version
+prefix does **not** move: no row was ever deployed under the old grammar.
+
+**Why now, when nothing observable is broken.** The digest is stored in a column and only a
+browser holds the key that could recompute one. Changing the message later means every
+client re-indexing every row under a key no server has, which is not a migration anybody can
+run. There is no production environment, one client, and the only rows are local development
+data — this is the cheapest the change will ever be, and it gets monotonically more expensive.
+
+**Rejected: a per-budget index key.** It is cryptographically equivalent to naming the budget
+in the message and costs a wrapped envelope per budget per factor, a state — a budget with no
+key — the schema cannot forbid, and a contradiction with `wrapped_account_keys` being keyed
+on the factor. The message is where scope belongs.
+
+**The client is told its budget on `GET /api/me`, and the response's old prohibition ends
+there.** That record argued no internal identifier may be published, because a caller holding
+one gives a later route something to accept. The half a test holds — no route takes a budget
+or a user as a segment or a parameter, `BudgetRouteConstructionTests` — survives untouched. The
+half that ends is the premise that nothing may be published at all. What earns a member is
+not that a screen displays it but that **the client cannot derive it and cannot complete its
+half of a cryptographic contract without it**: every other field of the message is a constant
+the client owns or a word somebody typed. A user id fails that test on the second half and
+stays unpublished, as do a session id, a credential id and the creation timestamp.
+
+**Rejected: a separate `budgets.index_scope` column** to keep the old sentence literally true.
+A shadow identifier with the same reach as the one it replaces, costing an additive migration,
+a second wire member and a second value that must never change with nothing holding it to
+that — and every name in the account keyed on it, so one edit re-keys rows nothing can find
+again, silently. The sentence is what moves.
+
+---
+
 ## 2026-09-05 — A conflict carries a kind, and the kind names what the caller does next
 
 **Context:** a 409 in this product is a fixed title, a `Detail` sentence and nothing else.

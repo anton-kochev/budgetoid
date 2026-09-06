@@ -38,7 +38,10 @@ public sealed class Account
     /// <summary>
     /// The blind index over the same name: <c>HMAC-SHA-256</c> under the account's index key, computed
     /// by the client over the normalised text and equal across every row holding that name in this
-    /// column of this account. It is what <c>IX_accounts_budget_id_name_key</c> enforces uniqueness over.
+    /// column of this budget. It is what <c>IX_accounts_budget_id_name_key</c> enforces uniqueness over.
+    /// <b>Of this budget, not of this account</b> — the key is the account's, but the message the client
+    /// folds names the budget, so one label under two budgets of one account produces two digests and an
+    /// operator holding both cannot tell that either budget holds it.
     /// </summary>
     /// <remarks>
     /// <para>

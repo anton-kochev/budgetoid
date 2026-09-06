@@ -52,14 +52,28 @@ namespace IntegrationTests;
 /// where it is asserted.
 /// </para>
 /// <para>
-/// <see cref="Me_ResponseCarriesTheEmailAndNothingElse" /> is a <b>pin</b> and is green the day it is
-/// written, which is the point rather than an apology. Nothing else in either suite goes red when an
-/// <c>id</c> or a <c>createdAtUtc</c> starts arriving in this response: the happy-path test reads the
+/// <see cref="Me_ResponseCarriesTheEmailAndNothingElse" /> is a <b>pin</b>, and it was green the day it
+/// was written, which was the point rather than an apology. Nothing else in either suite goes red when
+/// an <c>id</c> or a <c>createdAtUtc</c> starts arriving in this response: the happy-path test reads the
 /// <c>email</c> member and would keep passing beside a second one, and the two-account test only
 /// refuses a member carrying the <em>other</em> account's address. The defect it exists to catch is one
 /// a later reader adds — a handler widened to return the whole row because the shape was to hand — and
 /// a test that only went red once would have to be written after the id had already shipped to a
 /// client.
+/// </para>
+/// <para>
+/// <b>THREE CASES HERE ARE RED ON PURPOSE UNTIL THE RESPONSE GAINS A <c>budgetId</c> MEMBER</b> —
+/// <see cref="Me_ForAnAuthenticatedOwner_CarriesTheAmbientBudgetId" />,
+/// <see cref="Me_ForASecondAccount_CarriesThatAccountsBudgetAndNotTheFirsts" /> and the widened
+/// expectation in the pin. They are written first because the value is a client-side cryptographic
+/// input rather than something a screen shows: the blind index over a name is computed in a browser from
+/// <c>budgetoid/blind-index/v1 ⌷ table ⌷ column ⌷ budgetId ⌷ normalized-name</c>, and the budget is the
+/// one part of that message the browser cannot derive from anything it holds. Until it arrives, an
+/// operator holding two budgets' rows can see that both hold a payee, account, category or category
+/// group of the same name, because the message carries no budget and the index key is per account — the
+/// correlation NFR-014 refuses. The two new cases keep this file's own rule and name no production type;
+/// they address the route over HTTP and read the wire body, so while the member is missing they fail on
+/// an assertion against a real response rather than failing to compile.
 /// </para>
 /// <para>
 /// <b><see cref="Me_ForASubjectWhoseProviderAddressChanged_RespondsWithTheStoredAddress" /> kept its
@@ -124,6 +138,63 @@ public sealed class SignedInUserEndpointTests
     }
 
     /// <summary>
+    /// That the response carries the ambient budget's identifier, rendered as a hyphenated UUID.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The client cannot compute a blind index without this value, which is the whole reason it is
+    /// published.</b> The index message is
+    /// <c>budgetoid/blind-index/v1 ⌷ table ⌷ column ⌷ budgetId ⌷ normalized-name</c>, and the budget id
+    /// is the only one of those five the browser cannot derive from what it already holds: the grammar
+    /// and the table-and-column pair are the client's own constants, the name is what somebody typed,
+    /// and the index key is in custody — but the budget is resolved server-side from the session cookie
+    /// and named in no request and no other response. Without it the client can seal a name and cannot
+    /// index one, so every write to a blind-indexed column is unreachable.
+    /// </para>
+    /// <para>
+    /// <b>The expected value comes from the seeding and is never read off the response.</b>
+    /// <c>CreateSignedInClientAsync</c> hands back the budget it wrote, so the comparison is against a
+    /// row this test knows exists. A test that re-read the member it is asserting, or that derived the
+    /// expectation the same way the endpoint does, would agree with itself whichever budget answered.
+    /// </para>
+    /// <para>
+    /// <b><c>ToString("D")</c> and not <c>ToString()</c>, though the two agree today.</b> The default
+    /// format IS <c>D</c>, so this spelling changes nothing about the value and everything about what a
+    /// reader is being told: the wire carries the hyphenated form, that is what a browser will parse and
+    /// what it will feed into the index message byte for byte, and a response that started emitting
+    /// <c>N</c> or <c>B</c> would key every name in the account differently while remaining a perfectly
+    /// valid UUID. Naming the format is what makes that a pinned decision rather than a default nobody
+    /// chose.
+    /// </para>
+    /// <para>
+    /// The member is read with <c>?.</c> rather than <c>!</c> deliberately. While the endpoint does not
+    /// publish it, the forgiving spelling fails with a null-reference exception and no reader can tell
+    /// that from a broken arrangement; this way the red says the member is missing and names what was
+    /// expected in its place.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Me_ForAnAuthenticatedOwner_CarriesTheAmbientBudgetId()
+    {
+        // Arrange — the budget id is taken from the seeding, which is the only place in this test that
+        // knows which budget the account owns.
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, _, Guid budgetId) =
+            await host.Factory.CreateSignedInClientAsync("google-owner", OwnerAddress);
+
+        // Act
+        HttpResponseMessage response = await client.GetAsync(MePath);
+
+        // Assert — the status first, so a body missing because the request failed reads as the failure
+        // it is rather than as a member that did not arrive.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+
+        JsonNode document = (await JsonNode.ParseAsync(await response.Content.ReadAsStreamAsync()))
+            ?? throw new InvalidOperationException("The endpoint answered an empty body.");
+        await Assert.That(document["budgetId"]?.GetValue<string>()).IsEqualTo(budgetId.ToString("D"));
+    }
+
+    /// <summary>
     /// That two established accounts each receive their own address, and that neither is shown the
     /// other's.
     /// </summary>
@@ -160,6 +231,69 @@ public sealed class SignedInUserEndpointTests
         // Assert — B first, since it is the caller the ordering above was arranged to trap.
         await AssertAnsweredWithAsync(secondResponse, SecondAddress, FirstAddress);
         await AssertAnsweredWithAsync(firstResponse, FirstAddress, SecondAddress);
+    }
+
+    /// <summary>
+    /// That each account is told its own budget, and never the other account's.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This is the risky one of the pair, and the risk is a read of <c>budgets</c> that forgot its
+    /// filter.</b> The value is meant to come from the ambient budget the authentication handler
+    /// resolved — <c>IBudgetContext.BudgetId</c> — and the obvious wrong implementation is a query over
+    /// <c>budgets</c> scoped by nothing, or by <c>user_id</c> with a <c>First()</c> on the end. Both are
+    /// plausible, both compile, and against a single seeded account both are indistinguishable from the
+    /// right answer, because with one budget in the table every wrong row and the right one are the same
+    /// row.
+    /// </para>
+    /// <para>
+    /// <b>The seeding order is therefore load-bearing rather than incidental.</b> Account A is
+    /// established first and account B second, so an unfiltered read answers B with A's budget and this
+    /// test goes red. Reverse the two and the same broken handler answers B correctly, and the case
+    /// passes for a reason that has nothing to do with the feature. It is the sibling
+    /// <see cref="Me_ForASecondAccount_RespondsWithThatAccountsAddressAndNotTheFirsts" />'s argument,
+    /// applied to a value that has a second table to be read out of and is therefore easier to get
+    /// wrong.
+    /// </para>
+    /// <para>
+    /// <b>The negative half is over the whole payload and not over the member.</b> Asserting that
+    /// <c>budgetId</c> holds B's value refuses the swap and admits the leak: a document carrying a
+    /// second member with A's budget in it — a widened projection, a debug field, a list of the budgets
+    /// this user owns — satisfies the positive half completely. Under this change a leaked budget id is
+    /// not merely an identifier: it is the value another account's blind indexes are keyed on, so it
+    /// hands the holder the ability to recompute a stranger's index for any name they can guess, which
+    /// is the exact correlation NFR-014 exists to refuse.
+    /// </para>
+    /// <para>
+    /// <b>Both callers ask, for the reason the address pair does.</b> B alone cannot tell a resolved
+    /// budget from a constant, and it would not catch a handler that had been made to return the LAST
+    /// budget rather than the first.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Me_ForASecondAccount_CarriesThatAccountsBudgetAndNotTheFirsts()
+    {
+        // Arrange — A first, then B. See the remark: reversing this makes the case green against the
+        // unfiltered read it exists to catch.
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+
+        (HttpClient first, _, Guid firstBudgetId) =
+            await host.Factory.CreateSignedInClientAsync("google-first", FirstAddress);
+        (HttpClient second, _, Guid secondBudgetId) =
+            await host.Factory.CreateSignedInClientAsync("google-second", SecondAddress);
+
+        // The two budgets really are two, which is the arrangement rather than an assertion about the
+        // product. A seeding that handed both accounts one budget would make every claim below pass
+        // while measuring nothing at all.
+        await Assert.That(secondBudgetId).IsNotEqualTo(firstBudgetId);
+
+        // Act
+        HttpResponseMessage secondResponse = await second.GetAsync(MePath);
+        HttpResponseMessage firstResponse = await first.GetAsync(MePath);
+
+        // Assert — B first, since it is the caller the ordering above was arranged to trap.
+        await AssertCarriedBudgetAsync(secondResponse, secondBudgetId, firstBudgetId);
+        await AssertCarriedBudgetAsync(firstResponse, firstBudgetId, secondBudgetId);
     }
 
     /// <summary>
@@ -290,7 +424,8 @@ public sealed class SignedInUserEndpointTests
     }
 
     /// <summary>
-    /// That the response object carries exactly one member, <c>email</c>, and no second one.
+    /// That the response object carries exactly two members, <c>budgetId</c> and <c>email</c>, and no
+    /// third one.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -311,6 +446,35 @@ public sealed class SignedInUserEndpointTests
     /// in this API is resolved server-side from the authenticated subject and none is ever addressed by
     /// the client, and publishing an id that nothing displays is the first half of a client-supplied
     /// tenancy parameter.
+    /// </para>
+    /// <para>
+    /// <b>THIS EXPECTATION WAS WIDENED FROM <c>email</c> TO <c>budgetId, email</c>, AND WIDENING A PIN IS
+    /// THE CHEAPEST WAY TO FAKE ONE.</b> A pin whose expectation is edited every time it goes red is a
+    /// changelog, so the widening carries the rule that admitted the member, and the next one has to
+    /// satisfy the same rule or be refused.
+    /// </para>
+    /// <para>
+    /// <b>The rule is not "the screen displays it".</b> Nothing renders a budget identifier and nothing
+    /// is going to. What earns a member here is that <em>the client cannot derive it and cannot complete
+    /// its half of a cryptographic contract without it</em>. The blind index is
+    /// <c>budgetoid/blind-index/v1 ⌷ table ⌷ column ⌷ budgetId ⌷ normalized-name</c>, computed in a
+    /// browser under a key this server has never held; four of those five parts the browser already has,
+    /// and the budget is resolved from the session cookie and named nowhere else in this API. Withhold
+    /// it and no name can be written to a blind-indexed column at all.
+    /// </para>
+    /// <para>
+    /// <b>A user id fails that test and stays unpublished, which is what makes the rule a rule.</b> It
+    /// is equally underivable and equally undisplayed — and no client-side computation needs it, so the
+    /// only thing publishing it would buy is a value a later route could accept as a tenancy parameter.
+    /// The same refusal covers a session id, a credential id and a <c>createdAtUtc</c>: underivable is
+    /// half the test, and load-bearing for something the browser must compute is the other half.
+    /// </para>
+    /// <para>
+    /// <b>What this pin cannot see, and what therefore is not claimed here.</b> It reads member NAMES,
+    /// so a <c>budgetId</c> carrying the wrong budget satisfies it perfectly — that is
+    /// <see cref="Me_ForASecondAccount_CarriesThatAccountsBudgetAndNotTheFirsts" />'s job — and it says
+    /// nothing about the spelling of the value, which
+    /// <see cref="Me_ForAnAuthenticatedOwner_CarriesTheAmbientBudgetId" /> pins as <c>D</c>.
     /// </para>
     /// </remarks>
     [Test]
@@ -336,7 +500,7 @@ public sealed class SignedInUserEndpointTests
         string members = string.Join(
             ", ",
             document.Select(member => member.Key).Order(StringComparer.Ordinal));
-        await Assert.That(members).IsEqualTo("email");
+        await Assert.That(members).IsEqualTo("budgetId, email");
     }
 
     /// <summary>
@@ -413,6 +577,45 @@ public sealed class SignedInUserEndpointTests
 
         await Assert.That(document["email"]!.GetValue<string>()).IsEqualTo(ownAddress);
         await Assert.That(payload).DoesNotContain(otherAddress);
+    }
+
+    /// <summary>
+    /// Asserts both directions of one caller's budget: that <c>budgetId</c> holds its own, and that the
+    /// other account's appears nowhere in the body it was sent.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <see cref="AssertAnsweredWithAsync" />'s shape and its argument about reading the payload as the
+    /// text that went over the wire, applied to the other value this response carries. It is a separate
+    /// helper rather than a widened one because the two claims have different lifetimes: the address
+    /// pair is settled, and the budget pair is the half a later reader will be tempted to narrow to the
+    /// member.
+    /// </para>
+    /// <para>
+    /// <b>Both spellings of the stranger's budget are refused, and the second is not paranoia.</b> A
+    /// leak through a member the serializer emitted from a <see cref="Guid" /> arrives hyphenated, and
+    /// one that arrived through a hand-built string or a base64url binary member need not. Refusing
+    /// <c>D</c> and <c>N</c> costs one line and closes the spelling a <c>Contains</c> over the
+    /// hyphenated form alone would report as absent.
+    /// </para>
+    /// </remarks>
+    private static async Task AssertCarriedBudgetAsync(
+        HttpResponseMessage response,
+        Guid ownBudgetId,
+        Guid otherBudgetId)
+    {
+        // The status first, so a body that is missing because the request failed reads as the failure it
+        // is rather than as a parse error several lines further down.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+
+        string payload = await response.Content.ReadAsStringAsync();
+        JsonNode document = JsonNode.Parse(payload)
+            ?? throw new InvalidOperationException("The endpoint answered an empty body.");
+
+        await Assert.That(document["budgetId"]?.GetValue<string>())
+            .IsEqualTo(ownBudgetId.ToString("D"));
+        await Assert.That(payload).DoesNotContain(otherBudgetId.ToString("D"));
+        await Assert.That(payload).DoesNotContain(otherBudgetId.ToString("N"));
     }
 
     /// <summary>
