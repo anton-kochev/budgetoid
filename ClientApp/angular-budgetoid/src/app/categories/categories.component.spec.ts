@@ -186,6 +186,11 @@ interface Exposed {
   // no fields, so both spellings put nothing on screen.
   groupMessages: () => ReadonlyMap<string, readonly string[]> | null;
   categoryMessages: () => ReadonlyMap<string, readonly string[]> | null;
+  // The two modes. Reached for because nothing in the DOM says which row an
+  // edit is bound to: a form cleared but still in edit mode renders exactly
+  // like a create until somebody presses Save on it.
+  editingGroupId: Signal<string | null>;
+  editingCategoryId: Signal<string | null>;
   saveGroup: () => void;
   saveCategory: () => void;
   editGroup: (group: CategoryGroupView) => void;
@@ -783,24 +788,34 @@ describe('CategoriesComponent', () => {
       expect(picker()?.disabled).toBe(false);
     });
 
-    it('keeps the picker off through a lock and an unlock during an edit', () => {
+    it('keeps the picker off through an unlocking and an unlock during an edit', () => {
       // Arrange — the first silent symptom. The form-wide effect calls
       // `enable()` on the **group**, which enables every child including this
-      // one, so a lock and an unlock landing mid-edit hand the picker back
+      // one, so a form disabled and re-enabled mid-edit hands the picker back
       // live. Somebody then changes the group, presses Save, and the edit
       // branch sends `{description, name}` — the API answers 204 and the
       // category has not moved.
+      //
+      // **Staged through `unlocking` rather than through `locked`, and that is
+      // the point of it rather than a detail of it.** Both words disable the
+      // forms, and `unlocking` is now the only one an edit survives: a lock
+      // ends the edit, so the same two calls over `locked` leave a *create*
+      // behind, where a live picker is correct and this assertion would be
+      // asking for the wrong answer. The pair of them is the whole hazard —
+      // one form-wide `disable()` and one form-wide `enable()` with an edit
+      // still running across both.
       screen().editCategory(groceries);
       fixture.detectChanges();
       expect(picker()?.disabled).toBe(true);
 
       // Act
-      custody.setStatus('locked');
+      custody.setStatus('unlocking');
       fixture.detectChanges();
       custody.setStatus('unlocked');
       fixture.detectChanges();
 
-      // Assert
+      // Assert — still an edit, and still no picker.
+      expect(screen().editingCategoryId()).toBe(CATEGORY_ID);
       expect(picker()?.disabled).toBe(true);
     });
 
@@ -822,6 +837,154 @@ describe('CategoriesComponent', () => {
       // Assert
       expect(picker()?.disabled).toBe(true);
       expect(screen().categoryForm.disabled).toBe(true);
+    });
+  });
+
+  // **The hierarchy is not the only place this screen renders opened values.**
+  // Both `editGroup` and `editCategory` prefill a form from a row, so a lock
+  // landing mid-edit left a name **and a note** this browser decrypted sitting
+  // on dead controls beside a notice saying this tab cannot read the account.
+  // The picker's own case above is the third value in that form and the only
+  // one that was ever dealt with, because it is the only one a `mat-select`
+  // made visible in the host's text.
+  //
+  // **The clear follows `locked` exactly, like the notice and like the
+  // picker, and the `unlocking` case below is the whole of what holds that.** A
+  // prefill is opened plaintext of the same class as a row in the hierarchy,
+  // and the hierarchy deliberately stays up through a ceremony that resolves
+  // back into keys. `writable`'s "disable when unsure" reasoning does not reach
+  // here: that is about a capability, where leaving it on is silent, and this
+  // is a destructive act, where the fail-safe direction is not to act.
+  //
+  // **What comes down is what an edit put there.** Text typed into a create was
+  // never read out of this account, and `accounts.component.spec.ts` argues
+  // that boundary at its own copy.
+  describe('an edit in flight when the account locks', () => {
+    // Both forms are always rendered, group first, so these two indices are the
+    // template's order rather than a guess. Values and not text: an `<input>`'s
+    // value never reaches `textContent`, and a `<textarea>`'s stops matching it
+    // the moment a value accessor writes one — which is exactly the state a
+    // prefill leaves behind, and why `editorsText()` cannot see this defect.
+    function groupFields(): { name: string; note: string } {
+      return {
+        name: nameInputs().at(0)?.value ?? '',
+        note: noteInputs().at(0)?.value ?? '',
+      };
+    }
+
+    function categoryFields(): { name: string; note: string } {
+      return {
+        name: nameInputs().at(1)?.value ?? '',
+        note: noteInputs().at(1)?.value ?? '',
+      };
+    }
+
+    // Puts both forms into an edit and asserts the four opened values are on
+    // screen, so no case below can pass by clearing nothing.
+    function editBoth(): void {
+      screen().editGroup(essentials);
+      screen().editCategory(groceries);
+      fixture.detectChanges();
+
+      expect(groupFields()).toEqual({ name: 'Essentials', note: 'The bills' });
+      expect(categoryFields()).toEqual({
+        name: 'Groceries',
+        note: 'Food and drink',
+      });
+    }
+
+    it('takes a group’s name and note out of the form', () => {
+      // Arrange
+      editBoth();
+
+      // Act
+      custody.setStatus('locked');
+      fixture.detectChanges();
+
+      // Assert
+      expect(groupFields()).toEqual({ name: '', note: '' });
+      expect(screen().editingGroupId()).toBeNull();
+    });
+
+    it('takes a category’s name and note out of the form', () => {
+      // Arrange — asked twice because the two halves are written separately in
+      // the component, and a screen that got one right and the other wrong is
+      // what shipped the last time somebody copied a form.
+      editBoth();
+
+      // Act
+      custody.setStatus('locked');
+      fixture.detectChanges();
+
+      // Assert
+      expect(categoryFields()).toEqual({ name: '', note: '' });
+      expect(screen().editingCategoryId()).toBeNull();
+    });
+
+    it('ends both edits, so what is left is two creates', () => {
+      // Arrange — clearing the values while staying in edit mode leaves the
+      // screen offering to save rows it is no longer holding: an unlock hands
+      // the forms back live, and Save then writes a blank name over a name
+      // still sitting in the column, which is the shape both rename gates
+      // already refuse one row at a time.
+      editBoth();
+
+      // Act
+      custody.setStatus('locked');
+      fixture.detectChanges();
+
+      // Assert — the DOM's own statement of the mode: both headings and both
+      // submit labels are written off the two editing signals.
+      expect(editorsText()).toContain('Add category group');
+      expect(editorsText()).toContain('Add category');
+      expect(editorsText()).not.toContain('Edit category');
+      expect(buttonsLabelled('form button', 'Cancel')).toHaveLength(0);
+    });
+
+    it('keeps both edits while the account is unlocking', () => {
+      // Arrange — the negative control for the predicate, and the only thing
+      // that stops `locked` being "simplified" into `!== 'unlocked'` later.
+      // The ceremony ends in keys; taking two half-finished edits away while it
+      // runs is a cost paid for a state that is about to resolve.
+      editBoth();
+
+      // Act
+      custody.setStatus('unlocking');
+      fixture.detectChanges();
+
+      // Assert
+      expect(groupFields()).toEqual({ name: 'Essentials', note: 'The bills' });
+      expect(categoryFields()).toEqual({
+        name: 'Groceries',
+        note: 'Food and drink',
+      });
+      expect(screen().editingGroupId()).toBe(GROUP_ID);
+      expect(screen().editingCategoryId()).toBe(CATEGORY_ID);
+    });
+
+    it('leaves text typed into a create alone', () => {
+      // Arrange — the boundary. This text was never read out of the account:
+      // nobody opened it, and a lock is not a refusal of anything somebody
+      // pressed, so the screen's own rule that a write which does not happen
+      // never costs a keystroke is what applies to it.
+      screen().groupForm.setValue({ description: '', name: 'Travel' });
+      screen().categoryForm.setValue({
+        categoryGroupId: GROUP_ID,
+        description: 'Trains and buses',
+        name: 'Fares',
+      });
+      fixture.detectChanges();
+
+      // Act
+      custody.setStatus('locked');
+      fixture.detectChanges();
+
+      // Assert
+      expect(groupFields()).toEqual({ name: 'Travel', note: '' });
+      expect(categoryFields()).toEqual({
+        name: 'Fares',
+        note: 'Trains and buses',
+      });
     });
   });
 

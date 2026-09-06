@@ -2,14 +2,19 @@
 // it had to open and to refuse writing one it cannot seal.
 //
 // **The locked treatment is `docs/design/components.md`, "The locked account",
-// and it is three separate things.** The list is replaced by
+// and it is four separate things.** The list is replaced by
 // `locked-account-notice` — not hidden, and not a route guard, which would be
 // synchronous against a fact with no resolution on the navigation path and
 // would put key state where `AccountUnlockService` is built to keep it out of.
 // The form is **DOM-disabled**, because an enabled form submits, the service
 // refuses because it cannot seal, and nothing happens — which reads as a
-// failure rather than as a limitation. And the reason is a sentence beside the
-// form, because a disabled control with no explanation is a dead end.
+// failure rather than as a limitation. The reason is a sentence beside the
+// form, because a disabled control with no explanation is a dead end. And an
+// **edit in flight ends**, because disabling a control does not empty it: the
+// form is prefilled from a row, so a lock landing mid-edit left an opened name
+// and an opening balance on dead controls beside a notice saying this tab
+// cannot read the account. The constructor's second `effect` argues that one
+// in full, the predicate it follows included.
 //
 // **The predicate is `custody.status()` and never the views.** Derived from the
 // rows, it could not answer before a load landed and would say nothing at all
@@ -625,6 +630,44 @@ export class AccountsComponent implements OnInit {
         this.form.enable({ emitEvent: false });
       } else {
         this.form.disable({ emitEvent: false });
+      }
+    });
+
+    // **A lock ends an edit, and this is the fourth thing the locked treatment
+    // is rather than a repetition of the other three.** Disabling a control
+    // does not stop it displaying what it already held: {@link edit} prefills
+    // this form from a row, so a lock landing mid-edit left a name this browser
+    // decrypted — and an opening balance — on dead controls beside a notice
+    // saying this tab cannot read the account. The notice renders **in place
+    // of** account content, and a disabled field still holding it is the same
+    // claim by another route.
+    //
+    // **`locked()` and never `!writable()`, matching the notice.** A prefill is
+    // opened plaintext of the same class as a row in the list, and the list
+    // deliberately stays up through a ceremony: `unlocking` resolves back into
+    // keys, and there is nothing to advise somebody to do while their own
+    // unlock is running. The "disable when unsure" asymmetry the head of this
+    // file argues for {@link writable} does not reach here, because it is about
+    // a **capability** — one wrongly left on is silent and dangerous, one
+    // wrongly taken away is loud and harmless. This is a destructive act, where
+    // the costs run the other way: an edit thrown away is somebody's work and
+    // no later state can give it back. The fail-safe direction for a
+    // destructive act is not to act.
+    //
+    // **Gated on the mode, and that gate is what says whose text this is.**
+    // Only {@link edit} puts a value here that came out of a ciphertext; text
+    // typed into a create is the person's own and was never read out of this
+    // account, which is why the transactions screen keeps its typed amount and
+    // date on screen through a lock. Both halves are pinned, so neither can be
+    // widened into the other by accident.
+    //
+    // **Honest on its first run**, which is the trap a `custody.status()`
+    // effect sets: it fires on construction, and at that moment `editingId` is
+    // `null`, so a screen built while the account is locked clears nothing that
+    // was ever there.
+    effect(() => {
+      if (this.locked() && this.editingId() !== null) {
+        this.cancelEdit();
       }
     });
   }

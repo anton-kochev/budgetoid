@@ -1803,11 +1803,28 @@ beside it.
 This is the rule the notice already states, applied one level in: the notice renders **in place of**
 anything showing account content, and a form control holding an opened name is account content.
 
-**Four instances and one deliberate zero.** The transaction form's account select, payee autocomplete
-and category picker; the category form's group picker. `/app/accounts` has none — its form holds a
-text input, two selects over string literals, and a number — so the absence there is the rule being
-satisfied rather than the rule being skipped. Said out loud because an absence cannot be found by
-grep, and the next reader will otherwise "fix" the inconsistency.
+**Four controls leave the DOM, and a fifth thing happens instead.** The transaction form's account
+select, payee autocomplete and category picker; the category form's group picker. Those four hold an
+opened name at rest, so the notice replaces them.
+
+**A prefilled form leaves edit mode and its values come down.** `/app/accounts` and both halves of
+`/app/categories` fill a form from a decrypted row when somebody presses Edit — a name, a note, and
+on accounts an opening **balance**, which is the value FR-065 names out loud. Those controls are
+ordinary text and number inputs, so nothing about their *shape* says they are holding account
+content, and they sit outside the guard the list is behind. A lock landing mid-edit therefore used
+to leave a decrypted name and a balance on screen, disabled, beside a notice saying this tab cannot
+read the account. It ends the edit and clears what the edit put there instead.
+
+**What comes down is what the edit put there, not what somebody typed.** Text typed into a *create*
+survives, exactly as the transaction form's amount, date and description survive — they are the
+person's own words rather than the account's, and no key was needed to show them. The two screens
+would otherwise disagree about whose text it is.
+
+**The predicate here is `locked` exactly, and it is the one place that reasoning inverts.** Elsewhere
+a form follows "anything but `unlocked`", because leaving a control live by mistake is silent and
+switching it off by mistake is loud. This action is **destructive**: a discarded edit is somebody's
+work and no later state gives it back, so the fail-safe direction is not to act. An `unlocking`
+ceremony ends in keys; an edit thrown away mid-ceremony is paid for nothing.
 
 ### Two predicates, failing safe in opposite directions
 

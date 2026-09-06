@@ -12,7 +12,7 @@
 // surface only — so a member the screen starts reaching for is an error here
 // rather than an `is not a function` during change detection.
 //
-// Five behaviours, and each of them is silent when broken. A whitespace-only
+// Six behaviours, and each of them is silent when broken. A whitespace-only
 // name now reaches the server because `Validators.required` admits `'   '` and
 // the `.trim()` that used to catch it is gone — the client may not alter what
 // it seals. A form that stays enabled while the account is locked submits,
@@ -23,7 +23,11 @@
 // and seals a blank over a name that is still sitting in the column. And the
 // list is `null` at rest, in flight **and** after a failure, so a screen
 // reading the list and the running flag alone draws a form and silence over a
-// read that never landed — which reads as an account with nothing in it.
+// read that never landed — which reads as an account with nothing in it. And a
+// lock landing during an edit left the row's opened name and its opening
+// balance on the form's own controls, which no assertion over the host's text
+// can see: an `<input>`'s value never reaches `textContent`, and the list those
+// assertions read is gone by then anyway.
 //
 // **`unlocking` gets its own two cases, because it is where the two predicates
 // disagree.** The form follows "anything but `unlocked`" and the notice
@@ -72,6 +76,18 @@ const damaged: AccountView = {
   ...everyday,
   id: '0199c3d4-5f6a-7b8c-9d0e-1f2a3b4c5d6f',
   name: { state: 'unreadable' },
+};
+
+// The row the lock cases edit, and both of its values are chosen so that a
+// cleared field cannot be mistaken for this account's own. The form resets the
+// balance to `0`, which is exactly what `everyday` carries, so a case staged
+// with that row would read the same before and after the clear.
+const rainyDay: AccountView = {
+  ...everyday,
+  id: '0199c3d4-5f6a-7b8c-9d0e-1f2a3b4c5d70',
+  name: { state: 'text', value: 'Rainy day' },
+  openingBalance: 1234.56,
+  type: 'Savings',
 };
 
 // What a missing `maxlength` most likely means, said in the failure rather than
@@ -498,6 +514,132 @@ describe('AccountsComponent', () => {
     expect(screen.form.getRawValue()).toMatchObject({ name: '' });
     expect(screen.editingId()).toBeNull();
     expect(cancelButton()).toBeNull();
+  });
+
+  // **The list is not the only place this screen renders an opened value.**
+  // `edit` prefills the form from a row, so a lock landing mid-edit left a name
+  // this browser decrypted — and a balance — sitting on a dead control beside a
+  // notice saying this tab cannot read the account. The notice renders **in
+  // place of** account content, and a disabled field still holding it is the
+  // same claim by another route.
+  //
+  // **The clear follows `locked` exactly, like the notice, and the two cases
+  // below that stage `unlocking` are the whole of what holds that.** A prefill
+  // is opened plaintext of the same class as a row in the list, and the list
+  // deliberately stays up through a ceremony: `unlocking` resolves back into
+  // keys, and there is nothing to advise somebody to do while their own unlock
+  // is running. `writable`'s "disable when unsure" reasoning does not reach
+  // here, because this is not a capability — a capability wrongly left on is
+  // silent, where an edit wrongly destroyed costs somebody work and cannot be
+  // undone. The fail-safe direction for a destructive act is not to act.
+  //
+  // **What comes down is what an edit put there, and the boundary is pinned
+  // below.** Text somebody typed into a create is theirs and was never read out
+  // of this account; the transactions screen keeps its typed amount and date on
+  // screen through a lock for the same reason, so a clear that emptied a create
+  // here would make two neighbouring screens disagree about whose text it is.
+  describe('an edit in flight when the account locks', () => {
+    function nameField(): HTMLInputElement | null {
+      return host().querySelector<HTMLInputElement>(
+        'input[formcontrolname="name"]',
+      );
+    }
+
+    function balanceField(): HTMLInputElement | null {
+      return host().querySelector<HTMLInputElement>(
+        'input[formcontrolname="openingBalance"]',
+      );
+    }
+
+    // Puts the screen into an edit over a row whose values are unmistakable,
+    // and asserts they are on screen — so no case below can pass by clearing
+    // nothing over a form that never held anything.
+    function editRainyDay(): void {
+      accounts.accountsSignal.set([rainyDay]);
+      fixture.detectChanges();
+      exposed(fixture.componentInstance).edit(rainyDay);
+      fixture.detectChanges();
+
+      expect(nameField()?.value).toBe('Rainy day');
+      expect(balanceField()?.value).toBe('1234.56');
+    }
+
+    it('takes the row’s name and opening balance out of the form', () => {
+      // Arrange
+      editRainyDay();
+
+      // Act
+      custody.setStatus('locked');
+      fixture.detectChanges();
+
+      // Assert — the fields' own values, which is where this defect lives: the
+      // list is replaced by the notice, so a search of the host's text passes
+      // for a screen still holding both values on the form's controls.
+      expect(nameField()?.value).toBe('');
+      expect(balanceField()?.value).not.toBe('1234.56');
+      expect(host().textContent ?? '').not.toContain('Rainy day');
+    });
+
+    it('ends the edit, so what is left is a create', () => {
+      // Arrange — clearing the values while staying in edit mode leaves the
+      // screen offering to save a row it is no longer holding: an unlock hands
+      // the form back live, and Save then writes a blank name over a name still
+      // sitting in the column, which is the deletion-wearing-an-edit's-clothes
+      // shape this screen already refuses one row at a time.
+      editRainyDay();
+
+      // Act
+      custody.setStatus('locked');
+      fixture.detectChanges();
+
+      // Assert — the mode as the component holds it, and as the DOM states it.
+      expect(exposed(fixture.componentInstance).editingId()).toBeNull();
+      expect(cancelButton()).toBeNull();
+      expect(
+        host().querySelector('button[type="submit"]')?.textContent ?? '',
+      ).toContain('Add account');
+    });
+
+    it('keeps the edit while the account is unlocking', () => {
+      // Arrange — the negative control for the predicate, and the only thing
+      // that stops `locked` being "simplified" into `!== 'unlocked'` later.
+      // The ceremony ends in keys; taking somebody's half-finished edit away
+      // while it runs is a cost paid for a state that is about to resolve.
+      editRainyDay();
+
+      // Act
+      custody.setStatus('unlocking');
+      fixture.detectChanges();
+
+      // Assert
+      expect(nameField()?.value).toBe('Rainy day');
+      expect(balanceField()?.value).toBe('1234.56');
+      expect(exposed(fixture.componentInstance).editingId()).toBe(rainyDay.id);
+    });
+
+    it('leaves text typed into a create alone', () => {
+      // Arrange — the boundary. This text was never read out of the account:
+      // nobody opened it, and a lock is not a refusal of anything somebody
+      // pressed, so the screen's own rule that a write which does not happen
+      // never costs a keystroke is what applies to it.
+      const screen = exposed(fixture.componentInstance);
+
+      screen.form.setValue({
+        name: 'Holiday fund',
+        type: 'Savings',
+        openingBalance: 250,
+        currencyCode: 'USD',
+      });
+      fixture.detectChanges();
+
+      // Act
+      custody.setStatus('locked');
+      fixture.detectChanges();
+
+      // Assert
+      expect(nameField()?.value).toBe('Holiday fund');
+      expect(screen.editingId()).toBeNull();
+    });
   });
 
   describe('a list with no answer', () => {

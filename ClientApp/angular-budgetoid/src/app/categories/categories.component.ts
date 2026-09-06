@@ -20,32 +20,39 @@
 // notice's sentence is *advice* and that advice is already wrong for somebody
 // whose unlock is running. Disable when unsure; do not advise when unsure.
 //
-// **The lock is named three times per form and none of them is redundant, and
-// a fourth time on the one control that renders a value somebody opened.** A
-// disabled form's status is `DISABLED`, which excludes it from validation and
-// makes `form.invalid` answer **false** — so `[disabled]="form.invalid"` alone
-// *enables* the submit button the moment the form is switched off. It is named
-// on the form (the `effect`), again on the control, and again in the handler,
-// because Material's click-halt is applied to anchors only and a `<button>`
-// still receives the press. The fourth is the category form's group picker,
-// which **leaves the DOM** rather than being switched off: it sits outside the
-// `@if (locked())` that replaces the hierarchy, and disabling a `mat-select`
-// does not stop it displaying the option it had selected — measured — so a lock
-// landing over a filled form left a group's opened name beside a notice saying
-// this tab cannot read the account.
+// **The lock is named three times per form and none of them is redundant, a
+// fourth time on the one control that renders a value somebody opened, and a
+// fifth on the edit itself.** A disabled form's status is `DISABLED`, which
+// excludes it from validation and makes `form.invalid` answer **false** — so
+// `[disabled]="form.invalid"` alone *enables* the submit button the moment the
+// form is switched off. It is named on the form (the `effect`), again on the
+// control, and again in the handler, because Material's click-halt is applied
+// to anchors only and a `<button>` still receives the press. The fourth is the
+// category form's group picker, which **leaves the DOM** rather than being
+// switched off: it sits outside the `@if (locked())` that replaces the
+// hierarchy, and disabling a `mat-select` does not stop it displaying the
+// option it had selected — measured — so a lock landing over a filled form left
+// a group's opened name beside a notice saying this tab cannot read the
+// account. The fifth is the second `effect`, which **ends an edit** on a lock:
+// the picker was the only one of the five prefilled values whose text a lock
+// could be seen to leave on screen, because an `<input>`'s and a
+// `<textarea>`'s never reach `textContent` at all.
 //
 // **The group picker's enabled state has one owner and it is the `effect`.** It
 // is off for the whole of an edit — a rename binds three members and the group
 // is not one of them, so a category moves group by being dragged — and that was
 // once set by `editCategory` and unset by `cancelCategoryEdit`, which gave one
 // control three writers and two silent failures. `categoryForm.enable()`
-// reaches every child, so a lock and an unlock mid-edit handed the picker back
-// live and a Save then sent `{description, name}`: a 204, and a category that
-// did not move. And Cancel, a plain `<button>` unaffected by the FormGroup's
-// disabled state, enabled it unconditionally — one live control on a locked
-// form, which flips the form's own status out of `DISABLED`, because a group is
-// `DISABLED` only while every child is. Derived from `writable()` and
-// `editingCategoryId()` in one place, neither is reachable.
+// reaches every child, so a form disabled and re-enabled mid-edit handed the
+// picker back live and a Save then sent `{description, name}`: a 204, and a
+// category that did not move. That is reached by an `unlocking` and an unlock
+// rather than by a lock and an unlock, now that a lock ends the edit — the same
+// two calls, over the state in which an edit survives. And Cancel, a plain
+// `<button>` unaffected by the FormGroup's disabled state, enabled it
+// unconditionally — one live control on a locked form, which flips the form's
+// own status out of `DISABLED`, because a group is `DISABLED` only while every
+// child is. Derived from `writable()` and `editingCategoryId()` in one place,
+// neither is reachable.
 //
 // **A failed read has a line of its own.** Both lists are `null` at rest, in
 // flight **and** after a failure, so a screen reading a list and the running
@@ -899,6 +906,54 @@ export class CategoriesComponent implements OnInit {
         picker.enable({ emitEvent: false });
       } else {
         picker.disable({ emitEvent: false });
+      }
+    });
+
+    // **A lock ends both edits, and this is the fifth thing the locked
+    // treatment is rather than a repetition of the four above.** Taking the
+    // picker out of the DOM dealt with the one value in these forms that a
+    // `mat-select` made visible in the host's text; the other four are an
+    // `<input>` and a `<textarea>` per form, and a control's *value* never
+    // reaches `textContent`. So a lock landing mid-edit left a group's or a
+    // category's opened name **and note** on dead controls beside a notice
+    // saying this tab cannot read the account — the same claim the picker was
+    // making, by a route no text search on this screen could see.
+    //
+    // **`locked()` and never `!writable()`, matching the notice and the
+    // picker.** A prefill is opened plaintext of the same class as a row in the
+    // hierarchy, and the hierarchy deliberately stays up through a ceremony
+    // that resolves back into keys. The "disable when unsure" asymmetry the
+    // head of this file argues for `writable` is about a **capability**, where
+    // one wrongly left on is silent; this is a destructive act, where an edit
+    // thrown away is somebody's work and no later state gives it back, so the
+    // fail-safe direction is not to act.
+    //
+    // **Gated on each mode, which is what says whose text a form is holding.**
+    // Only `editGroup` and `editCategory` put a value here that came out of a
+    // ciphertext; text typed into a create is the person's own and was never
+    // read out of this account. `accounts.component.ts` argues both halves at
+    // its own copy, and both are pinned on both screens.
+    //
+    // **Separate from the effect above rather than folded into it**, because
+    // that one is derived from `writable()` and this one may not be: one
+    // predicate serving both questions is exactly the fold the paragraph above
+    // refuses.
+    //
+    // **Honest on its first run**, which is the trap a `custody.status()`
+    // effect sets: it fires on construction, and both editing signals are
+    // `null` at that moment, so a screen built while the account is locked
+    // clears nothing that was ever in it.
+    effect(() => {
+      if (!this.locked()) {
+        return;
+      }
+
+      if (this.editingGroupId() !== null) {
+        this.cancelGroupEdit();
+      }
+
+      if (this.editingCategoryId() !== null) {
+        this.cancelCategoryEdit();
       }
     });
   }
