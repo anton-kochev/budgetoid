@@ -33,6 +33,10 @@ import {
   type AccountKeyStatus,
   type UnlockFailure,
 } from '@app-core/security/account-key-custody.service';
+import {
+  NARRATIVE_DESCRIPTION_CHARACTERS,
+  NARRATIVE_NAME_CHARACTERS,
+} from '@app-shared/narrative-field-caps';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CategoryGroupView } from './category-group-view';
 import type { CategoryView } from './category-view';
@@ -65,6 +69,19 @@ const groceries: CategoryView = {
   name: { state: 'text', value: 'Groceries' },
   position: 0,
 };
+
+// What a missing `maxlength` most likely means, said in the failure rather than
+// left for the next person to rediscover. The caps reach the templates through
+// class fields initialised from another module's constants, and that shape has
+// already been measured in this repository reading `undefined` under the test
+// builder's chunking — `[attr.maxlength]="undefined"` renders no attribute at
+// all, so the typing limit silently is not there.
+// `TransactionsComponent.recordingSentence` is the same hazard, found earlier and
+// fixed by reading the value at render time.
+const CAP_ABSENT =
+  'a field states no maxlength: a cap reaching the template through a class ' +
+  'field initialised from another module’s constant reads undefined under the ' +
+  'test builder’s chunking — read it at render time instead';
 
 class CategoriesServiceStub
   implements Pick<CategoriesService, keyof CategoriesService>
@@ -213,6 +230,19 @@ describe('CategoriesComponent', () => {
     return Array.from(
       host().querySelectorAll<HTMLInputElement>(
         'input[formcontrolname="name"]',
+      ),
+    );
+  }
+
+  // The two note fields, which are `<textarea>` rather than `<input>` on this
+  // screen. Read as their own list so that a cap case can compare the pair
+  // against the description cap while the pair above is compared against the
+  // name one — the crossing is the mistake, and one list holding all four
+  // controls could not see it.
+  function noteInputs(): HTMLTextAreaElement[] {
+    return Array.from(
+      host().querySelectorAll<HTMLTextAreaElement>(
+        'textarea[formcontrolname="description"]',
       ),
     );
   }
@@ -377,6 +407,191 @@ describe('CategoriesComponent', () => {
         name: 'Groceries',
         description: 'Food and drink',
       });
+    });
+
+    // What a value longer than its column can hold does, and the two
+    // mechanisms that stop it.
+    //
+    // **The validator and the attribute are held apart on purpose, because
+    // nothing else holds either.** `+shared/narrative-field-caps.spec.ts`
+    // reads the source tree and reports a `matInput` stating no cap at all —
+    // markup, and it says so about itself: it cannot see
+    // `Validators.maxLength`, which is behaviour. Measured by a reviewer
+    // before these cases existed: delete every `Validators.maxLength(…)` and
+    // every `[attr.maxlength]` from this screen and the whole suite stayed
+    // green. What that costs is not a tidy error message — a name of the cap
+    // in a three-byte script seals past `NameBytes`, so the refusal arrives as
+    // a 400 from a server the form said nothing about, and only for people
+    // writing in some languages.
+    //
+    // **Both caps are asked twice, once per form**, which is this screen's own
+    // rule everywhere else in this file: the two forms are written separately
+    // in the component, and a screen that got one right and the other wrong is
+    // what shipped last time somebody copied a form.
+    //
+    // **The caps are imported and never typed.** A number written here would
+    // say nothing about the byte cap it protects, and the day the Domain's
+    // constant moves this file would go on asserting the old one.
+    it('refuses a name one unit past the cap on both forms', () => {
+      // Arrange — one unit over, which is the only length that tells a cap of
+      // `NARRATIVE_NAME_CHARACTERS` from a cap of anything larger.
+      const tooLong = 'e'.repeat(NARRATIVE_NAME_CHARACTERS + 1);
+
+      screen().groupForm.setValue({ name: tooLong, description: '' });
+      screen().categoryForm.setValue({
+        name: tooLong,
+        description: '',
+        categoryGroupId: GROUP_ID,
+      });
+
+      // Act
+      screen().saveGroup();
+      screen().saveCategory();
+
+      // Assert — the error key as well as the refusal, because `nonBlank` and
+      // `required` also make these forms invalid and a case reading `invalid`
+      // alone would go green with the length rule deleted.
+      expect(screen().groupForm.get('name')?.hasError('maxlength')).toBe(true);
+      expect(screen().categoryForm.get('name')?.hasError('maxlength')).toBe(
+        true,
+      );
+      expect(categories.addGroup).not.toHaveBeenCalled();
+      expect(categories.addCategory).not.toHaveBeenCalled();
+    });
+
+    it('accepts a name of exactly the cap on both forms', () => {
+      // Arrange — the other side of the boundary, and it is not decoration: a
+      // case testing the long value alone passes against `maxLength(0)`,
+      // against a validator that refuses everything, and against a form nobody
+      // can satisfy.
+      const atTheCap = 'e'.repeat(NARRATIVE_NAME_CHARACTERS);
+
+      screen().groupForm.setValue({ name: atTheCap, description: '' });
+      screen().categoryForm.setValue({
+        name: atTheCap,
+        description: '',
+        categoryGroupId: GROUP_ID,
+      });
+
+      // Act
+      screen().saveGroup();
+      screen().saveCategory();
+
+      // Assert
+      expect(screen().groupForm.get('name')?.hasError('maxlength')).toBe(false);
+      expect(screen().categoryForm.get('name')?.hasError('maxlength')).toBe(
+        false,
+      );
+      expect(categories.addGroup).toHaveBeenCalledOnce();
+      expect(categories.addCategory).toHaveBeenCalledOnce();
+    });
+
+    it('refuses a note one unit past the cap on both forms', () => {
+      // Arrange — the description cap and not the name one. These were the
+      // first sealed free-text columns in the product and they are a wider
+      // field *class*, so a note held to the name cap would refuse four fifths
+      // of what `DescriptionBytes` was widened to carry — silently, and only
+      // to the person typing.
+      const tooLong = 'e'.repeat(NARRATIVE_DESCRIPTION_CHARACTERS + 1);
+
+      screen().groupForm.setValue({ name: 'Essentials', description: tooLong });
+      screen().categoryForm.setValue({
+        name: 'Groceries',
+        description: tooLong,
+        categoryGroupId: GROUP_ID,
+      });
+
+      // Act
+      screen().saveGroup();
+      screen().saveCategory();
+
+      // Assert — the note carries no `required` and no `nonBlank`, so the
+      // length rule is the **only** thing that can make either form invalid
+      // here, and its key is named all the same: a form invalid for some other
+      // reason is not this rule working.
+      expect(screen().groupForm.get('description')?.hasError('maxlength')).toBe(
+        true,
+      );
+      expect(
+        screen().categoryForm.get('description')?.hasError('maxlength'),
+      ).toBe(true);
+      expect(categories.addGroup).not.toHaveBeenCalled();
+      expect(categories.addCategory).not.toHaveBeenCalled();
+    });
+
+    it('accepts a note of exactly the cap on both forms', () => {
+      // Arrange — the boundary's other side again, and here it is the case
+      // that catches a note wired to the *name* cap: 500 units is over that
+      // one and under this one, so the crossed constant reddens here rather
+      // than in a browser somebody is typing into.
+      const atTheCap = 'e'.repeat(NARRATIVE_DESCRIPTION_CHARACTERS);
+
+      screen().groupForm.setValue({
+        name: 'Essentials',
+        description: atTheCap,
+      });
+      screen().categoryForm.setValue({
+        name: 'Groceries',
+        description: atTheCap,
+        categoryGroupId: GROUP_ID,
+      });
+
+      // Act
+      screen().saveGroup();
+      screen().saveCategory();
+
+      // Assert
+      expect(screen().groupForm.get('description')?.hasError('maxlength')).toBe(
+        false,
+      );
+      expect(
+        screen().categoryForm.get('description')?.hasError('maxlength'),
+      ).toBe(false);
+      expect(categories.addGroup).toHaveBeenCalledOnce();
+      expect(categories.addCategory).toHaveBeenCalledOnce();
+    });
+
+    it('binds both name fields’ maxlength to the name cap', () => {
+      // Arrange — the second mechanism, and the one a person meets first: the
+      // attribute is what stops the typing before there is anything to refuse.
+
+      // Act
+      fixture.detectChanges();
+
+      // Assert — the **value**, never merely the presence, and both fields
+      // rather than the first one found. The sibling census asks only whether
+      // a cap is stated at all, so a name bound to the description cap passes
+      // it while letting somebody fill a name field with two and a half times
+      // what the column can carry.
+      expect(nameInputs()).toHaveLength(2);
+      expect(
+        nameInputs().map((input) => input.getAttribute('maxlength')),
+        CAP_ABSENT,
+      ).toEqual([
+        String(NARRATIVE_NAME_CHARACTERS),
+        String(NARRATIVE_NAME_CHARACTERS),
+      ]);
+    });
+
+    it('binds both note fields’ maxlength to the description cap', () => {
+      // Arrange — the pair the case above cannot see. The two constants are
+      // declared four lines apart in the component and both are in scope in
+      // both templates, so a note bound to `nameCharacters` renders a cap, is
+      // reported clean by the census, and quietly refuses three fifths of a
+      // legal note.
+
+      // Act
+      fixture.detectChanges();
+
+      // Assert
+      expect(noteInputs()).toHaveLength(2);
+      expect(
+        noteInputs().map((input) => input.getAttribute('maxlength')),
+        CAP_ABSENT,
+      ).toEqual([
+        String(NARRATIVE_DESCRIPTION_CHARACTERS),
+        String(NARRATIVE_DESCRIPTION_CHARACTERS),
+      ]);
     });
   });
 

@@ -794,9 +794,21 @@ export class CategoriesComponent implements OnInit {
    * column's byte cap even when every unit is a three-byte character. Two
    * numbers over field *classes* and not four over fields, which is the shape
    * `NarrativeFieldLimits` already gives the byte caps.
+   *
+   * **Getters and not fields**, for the reason
+   * `TransactionsComponent.recordingSentence` states in full at its own copy: a
+   * field initialised from another module's constant is read when the component
+   * is constructed, which under the unit-test builder's chunking is before the
+   * owning module's body has run. Read at render time the values are there.
    */
-  protected readonly nameCharacters = NARRATIVE_NAME_CHARACTERS;
-  protected readonly descriptionCharacters = NARRATIVE_DESCRIPTION_CHARACTERS;
+  protected get nameCharacters(): number {
+    return NARRATIVE_NAME_CHARACTERS;
+  }
+
+  protected get descriptionCharacters(): number {
+    return NARRATIVE_DESCRIPTION_CHARACTERS;
+  }
+
   protected readonly editingGroupId = signal<string | null>(null);
   protected readonly editingCategoryId = signal<string | null>(null);
   protected readonly categoryListIds = computed(() =>

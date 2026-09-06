@@ -37,21 +37,29 @@
 // what admits a longer name is a larger byte cap, which is a decision in the
 // Domain, and this file follows it rather than leading it.
 //
-// **The byte caps below are a transcription, and there is no mechanism that
-// can hold them.** The server's constants are C# and this is TypeScript; no
-// build reads both. What is held is everything downstream of them — the
-// worst-case arithmetic, the two chosen caps sitting under their ceilings, and
-// the absence of a fourth copy of either number anywhere in `src/`. That a
-// transcription still matches its original is review, and is stated here so
-// nobody reads the spec's green bar as saying more than it does.
+// **The byte caps below are transcriptions, and what holds them is a spec that
+// reads the other language's source text.** The server's constants are C# and
+// this is TypeScript; no build reads both and none will. What closes the gap
+// is a pair of cases in `narrative-field-caps.spec.ts` that open
+// `Domain/Security/NarrativeFieldLimits.cs`, parse the declaration a compiler
+// would see — `public const int`, anchored to the start of a line, so that the
+// constant named in prose or a declaration commented out is not read as a
+// number — and compare it to each constant here. A drifted digit reddens, and
+// so does a rename or a reformat, by name and carrying the path it could not
+// read the constant out of. What that still does not say is whether the C#
+// constant is the number the columns' check constraints are built from: this
+// side of the repository cannot see a migration, and the backend suite pins
+// that half over the same two constants.
 import { MINIMUM_ENVELOPE_BYTES } from '@app-core/security/key-envelope';
 
 /**
  * The cap on a sealed name, in envelope bytes.
  *
  * `payees.name`, `accounts.name`, `categories.name`, `category_groups.name` and
- * `budgets.name`. Transcribed from `Domain.Security.NarrativeFieldLimits.NameBytes`;
- * the head of this file says why nothing can check that.
+ * `budgets.name`. Transcribed from
+ * `Domain.Security.NarrativeFieldLimits.NameBytes`, and the transcription is
+ * checked: `narrative-field-caps.spec.ts` parses that declaration out of the C#
+ * and compares it to this number.
  */
 export const NARRATIVE_NAME_ENVELOPE_BYTES = 1024;
 
@@ -60,7 +68,8 @@ export const NARRATIVE_NAME_ENVELOPE_BYTES = 1024;
  *
  * `transactions.description`, `categories.description` and
  * `category_groups.description`. Transcribed from
- * `Domain.Security.NarrativeFieldLimits.DescriptionBytes`.
+ * `Domain.Security.NarrativeFieldLimits.DescriptionBytes`, and checked against
+ * that declaration the way its neighbour above is.
  */
 export const NARRATIVE_DESCRIPTION_ENVELOPE_BYTES = 2560;
 

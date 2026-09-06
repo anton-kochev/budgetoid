@@ -921,9 +921,19 @@ export class TransactionsComponent implements OnInit {
    * takes the description cap and the counterparty the name one, because
    * `transactions.description` and `payees.name` are fields of those two
    * classes.
+   *
+   * **Getters and not fields**, the same trap {@link recordingSentence} argues
+   * in full a few members up: a field initialised from another module's
+   * constant is read when the component is constructed, and under the unit-test
+   * builder's chunking that happened before the owning module's body ran.
    */
-  protected readonly nameCharacters = NARRATIVE_NAME_CHARACTERS;
-  protected readonly descriptionCharacters = NARRATIVE_DESCRIPTION_CHARACTERS;
+  protected get nameCharacters(): number {
+    return NARRATIVE_NAME_CHARACTERS;
+  }
+
+  protected get descriptionCharacters(): number {
+    return NARRATIVE_DESCRIPTION_CHARACTERS;
+  }
 
   protected readonly form = this.formBuilder.nonNullable.group({
     amount: [0, [Validators.required]],

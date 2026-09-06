@@ -574,8 +574,17 @@ export class AccountsComponent implements OnInit {
    * UTF-16 code units, and what makes it safe is that 200 units cannot seal
    * past `accounts.name`'s byte cap even when every one of them is a
    * three-byte character.
+   *
+   * **A getter and not a field**, for the reason
+   * `TransactionsComponent.recordingSentence` states in full at its own copy: a
+   * field initialised from another module's constant is read when the component
+   * is constructed, which under the unit-test builder's chunking is before the
+   * owning module's body has run. Read at render time the value is there.
    */
-  protected readonly nameCharacters = NARRATIVE_NAME_CHARACTERS;
+  protected get nameCharacters(): number {
+    return NARRATIVE_NAME_CHARACTERS;
+  }
+
   protected readonly editingId = signal<string | null>(null);
   protected readonly currencies = signal<CurrencyDto[]>([]);
 

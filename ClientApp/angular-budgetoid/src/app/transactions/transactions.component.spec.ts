@@ -74,6 +74,10 @@ import {
   type AccountKeyStatus,
   type UnlockFailure,
 } from '@app-core/security/account-key-custody.service';
+import {
+  NARRATIVE_DESCRIPTION_CHARACTERS,
+  NARRATIVE_NAME_CHARACTERS,
+} from '@app-shared/narrative-field-caps';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AccountView } from '../accounts/account-view';
 import { AccountsService } from '../accounts/accounts.service';
@@ -90,6 +94,19 @@ const ACCOUNT_ID = '0199c3d4-5f6a-7b8c-9d0e-000000000002';
 const PAYEE_ID = '0199c3d4-5f6a-7b8c-9d0e-000000000003';
 const CATEGORY_ID = '0199c3d4-5f6a-7b8c-9d0e-000000000004';
 const GROUP_ID = '0199c3d4-5f6a-7b8c-9d0e-000000000005';
+
+// What a missing `maxlength` most likely means, said in the failure rather than
+// left for the next person to rediscover. The caps reach the template through
+// class fields initialised from another module's constants, and that shape has
+// already been measured **in this file's own component** reading `undefined`
+// under the test builder's chunking — `[attr.maxlength]="undefined"` renders no
+// attribute at all, so the typing limit silently is not there.
+// `TransactionsComponent.recordingSentence` is the same hazard, found earlier and
+// fixed by reading the value at render time.
+const CAP_ABSENT =
+  'the field states no maxlength: a cap reaching the template through a class ' +
+  'field initialised from another module’s constant reads undefined under the ' +
+  'test builder’s chunking — read it at render time instead';
 
 const everyday: AccountView = {
   createdAtUtc: '2026-01-02T03:04:05Z',
@@ -637,6 +654,132 @@ describe('TransactionsComponent', () => {
     expect(transactions.add).toHaveBeenCalledWith(
       expect.objectContaining({ description: '', payee: '' }),
     );
+  });
+
+  // What a value longer than its column can hold does, and the two mechanisms
+  // that stop it.
+  //
+  // **The validator and the attribute are held apart on purpose, because
+  // nothing else holds either.** `+shared/narrative-field-caps.spec.ts` reads
+  // the source tree and reports a `matInput` stating no cap at all — markup,
+  // and it says so about itself: it cannot see `Validators.maxLength`, which is
+  // behaviour. Measured by a reviewer before these cases existed: delete every
+  // `Validators.maxLength(…)` and every `[attr.maxlength]` from this screen and
+  // the whole suite stayed green. What that costs is not a tidy error message —
+  // a note of the cap in a three-byte script seals past `DescriptionBytes`, so
+  // the refusal arrives as a 400 from a server the form said nothing about, and
+  // only for people writing in some languages.
+  //
+  // **This is the one screen holding a field of each class, and the split is
+  // the point.** The note is `transactions.description` and the counterparty is
+  // `payees.name`, so the two controls take different caps from constants
+  // declared one line apart. Crossing them refuses three fifths of a legal note
+  // or admits two and a half times a legal name, and nothing on either screen
+  // says so.
+  //
+  // **The caps are imported and never typed.** A number written here would say
+  // nothing about the byte cap it protects, and the day the Domain's constant
+  // moves this file would go on asserting the old one.
+  it('refuses a note one unit past the cap', () => {
+    // Arrange — one unit over, which is the only length that tells a cap of
+    // `NARRATIVE_DESCRIPTION_CHARACTERS` from a cap of anything larger.
+    fill({ description: 'e'.repeat(NARRATIVE_DESCRIPTION_CHARACTERS + 1) });
+
+    // Act
+    exposed(fixture.componentInstance).add();
+
+    // Assert — the error key as well as the refusal. `nonBlankWhenPresent` also
+    // makes this form invalid, so a case reading `invalid` alone would go green
+    // with the length rule deleted.
+    expect(
+      exposed(fixture.componentInstance)
+        .form.get('description')
+        ?.hasError('maxlength'),
+    ).toBe(true);
+    expect(transactions.add).not.toHaveBeenCalled();
+  });
+
+  it('accepts a note of exactly the cap', () => {
+    // Arrange — the other side of the boundary, and it is not decoration: a
+    // case testing the long value alone passes against `maxLength(0)`, against
+    // a validator that refuses everything, and against a form nobody can
+    // satisfy. It is also the case that catches a note wired to the *name*
+    // cap — 500 units is over that one and under this one.
+    fill({ description: 'e'.repeat(NARRATIVE_DESCRIPTION_CHARACTERS) });
+
+    // Act
+    exposed(fixture.componentInstance).add();
+
+    // Assert
+    expect(
+      exposed(fixture.componentInstance)
+        .form.get('description')
+        ?.hasError('maxlength'),
+    ).toBe(false);
+    expect(transactions.add).toHaveBeenCalledOnce();
+  });
+
+  it('refuses a counterparty one unit past the cap', () => {
+    // Arrange — the **name** cap on this one, because a payee is a row in
+    // `payees` and its name column is bounded like every other name in the
+    // product.
+    fill({ payee: 'e'.repeat(NARRATIVE_NAME_CHARACTERS + 1) });
+
+    // Act
+    exposed(fixture.componentInstance).add();
+
+    // Assert
+    expect(
+      exposed(fixture.componentInstance)
+        .form.get('payee')
+        ?.hasError('maxlength'),
+    ).toBe(true);
+    expect(transactions.add).not.toHaveBeenCalled();
+  });
+
+  it('accepts a counterparty of exactly the cap', () => {
+    // Arrange — the boundary's other side, and the case that reddens if the
+    // counterparty is wired to the description cap: 201 units would then be
+    // admitted here and refused by the server that has to store them.
+    fill({ payee: 'e'.repeat(NARRATIVE_NAME_CHARACTERS) });
+
+    // Act
+    exposed(fixture.componentInstance).add();
+
+    // Assert
+    expect(
+      exposed(fixture.componentInstance)
+        .form.get('payee')
+        ?.hasError('maxlength'),
+    ).toBe(false);
+    expect(transactions.add).toHaveBeenCalledOnce();
+  });
+
+  it('binds the note’s maxlength to the description cap and the counterparty’s to the name cap', () => {
+    // Arrange — the second mechanism, and the one a person meets first: the
+    // attribute is what stops the typing before there is anything to refuse.
+    // Both are read in one case because the claim is the *pair* — the two
+    // constants are four lines apart in the component and both are in scope in
+    // the template, so a crossed binding renders a cap, is reported clean by
+    // the sibling census, and is wrong in whichever direction it was crossed.
+
+    // Act
+    fixture.detectChanges();
+
+    // Assert — the **value**, never merely the presence. The census asks only
+    // whether a cap is stated at all, so it passes over both crossings.
+    expect(
+      host()
+        .querySelector<HTMLInputElement>('input[formcontrolname="description"]')
+        ?.getAttribute('maxlength'),
+      CAP_ABSENT,
+    ).toBe(String(NARRATIVE_DESCRIPTION_CHARACTERS));
+    expect(
+      host()
+        .querySelector<HTMLInputElement>('input[formcontrolname="payee"]')
+        ?.getAttribute('maxlength'),
+      CAP_ABSENT,
+    ).toBe(String(NARRATIVE_NAME_CHARACTERS));
   });
 
   it('disables the form with a reason while the account is locked', () => {
