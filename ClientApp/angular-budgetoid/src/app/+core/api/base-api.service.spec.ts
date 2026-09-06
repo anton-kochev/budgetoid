@@ -30,7 +30,10 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { type MeDto } from './me-api.service';
 
 const API_BASE_URL = 'https://api.budgetoid.app';
-const ME: MeDto = { email: 'owner@budgetoid.test' };
+const ME: MeDto = {
+  budgetId: '3f5b0a91-7c24-4a1e-9d3b-6e8f0c2a5471',
+  email: 'owner@budgetoid.test',
+};
 
 interface Boot {
   // Releases the configuration the way the real `load()` releases it: the

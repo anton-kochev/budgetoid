@@ -745,11 +745,15 @@ up.
   unique within that budget — now over the blind index rather than over a case-insensitive
   collation, with the folding done in the browser — and its reference from a transaction is a
   composite `(payee_id, budget_id)` foreign key. The same payee name in two budgets is still two
-  unrelated payees, and the two rows hold **identical** `name_key` bytes: the index message carries
-  the grammar's version, the table and the column, and **no budget**, while the key is one per
-  account. What keeps them apart is `budget_id` being the leading column of
-  `IX_payees_budget_id_name_key`, not anything about the digest — which is why that index must never
-  be narrowed to `name_key` alone. A payee is also one of the four owned tables that cascade when a
+  unrelated payees, and the two rows now hold **different** `name_key` bytes: the index message
+  carries the grammar's version, the table, the column **and the budget**, while the key is one per
+  account. It used to carry no budget, and the two rows were byte-identical — an equality an
+  operator with full read access could see, which is what NFR-014 forbids, and on this table it is
+  the worst of the four to leak, because a payee list is the set of people one person deals with.
+  **Two things keep the budgets apart now and only one of them ever did**: the digest differs, and
+  `budget_id` is still the leading column of `IX_payees_budget_id_name_key`. The index must stay
+  composite — a digest that differs is a property of a conforming client, the column is a property
+  of the schema, and the schema is what a non-conforming client meets. A payee is also one of the four owned tables that cascade when a
   budget with no transactions is deleted.
 - **[Ciphertext Envelope](ciphertext-envelope.md)**: `payees.name` is the third column to store an
   envelope and `payees.name_key` the second blind index. The framing, the byte caps, the value type

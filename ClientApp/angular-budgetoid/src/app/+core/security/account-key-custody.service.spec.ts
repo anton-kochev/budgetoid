@@ -58,6 +58,7 @@ import { AccountKeyCustodyService } from './account-key-custody.service';
 // stable characters of its own*.
 import {
   BLIND_INDEXED_FIELDS,
+  type BlindIndexBinding,
   computeBlindIndex,
   type BlindIndexedField,
 } from './blind-index';
@@ -297,11 +298,14 @@ interface FrozenBlindIndexVector {
   readonly why: string;
   readonly table: string;
   readonly column: string;
+  /** The tenancy this answer was computed inside — the file's, or its own. */
+  readonly budgetId: string;
   readonly inputs: readonly string[];
   readonly blindIndex: string;
 }
 
 interface FrozenBlindIndexFile {
+  readonly budgetId: string;
   readonly indexKeyHex: string;
   readonly vectors: readonly FrozenBlindIndexVector[];
 }
@@ -334,7 +338,14 @@ function parseBlindIndexVectors(text: string): FrozenBlindIndexFile {
     throw new Error('The blind-index vector file lists no vectors.');
   }
 
+  const fileBudgetId = requireVectorString(
+    file,
+    'budgetId',
+    'The blind-index vector file',
+  );
+
   return {
+    budgetId: fileBudgetId,
     indexKeyHex: requireVectorString(
       file,
       'indexKeyHex',
@@ -353,10 +364,20 @@ function parseBlindIndexVectors(text: string): FrozenBlindIndexFile {
         throw new Error(`${why} lists no inputs.`);
       }
 
+      // The one optional member in the file: absent means the file's tenancy,
+      // present means this vector's own. Resolved here so that every case below
+      // reads one member and the default is applied in exactly one place.
+      const own = vector['budgetId'];
+
+      if (own !== undefined && (typeof own !== 'string' || own.length === 0)) {
+        throw new Error(`${why} carries a budgetId that is not a spelling.`);
+      }
+
       return {
         why,
         table: requireVectorString(vector, 'table', why),
         column: requireVectorString(vector, 'column', why),
+        budgetId: own ?? fileBudgetId,
         inputs: inputs.map((input: unknown, at: number) => {
           if (typeof input !== 'string') {
             throw new Error(`${why} carries a non-string input at ${at}.`);
@@ -381,10 +402,16 @@ const FROZEN_BLIND_INDEX_CASES = BLIND_INDEX_VECTORS.vectors.flatMap((vector) =>
     why: vector.why,
     table: vector.table,
     column: vector.column,
+    budgetId: vector.budgetId,
     input,
     blindIndex: vector.blindIndex,
   })),
 );
+
+// The tenancy every case that is not driven by a vector keys inside. Read off
+// the frozen file rather than typed out, so nothing here can key under a
+// spelling no answer was ever computed with.
+const BUDGET_ID = BLIND_INDEX_VECTORS.budgetId;
 
 // The buffer type is spelled out because `BufferSource` excludes a view over a
 // `SharedArrayBuffer`, and a bare `Uint8Array` is a view over either.
@@ -414,6 +441,25 @@ function indexedFieldFor(table: string, column: string): BlindIndexedField {
   }
 
   return found;
+}
+
+// A resolved pair plus the tenancy the value is keyed inside.
+//
+// Written here rather than reached for through one of the four view modules,
+// because this file is about what custody does with the argument it is handed
+// and not about which pair a screen means by it.
+function indexBindingFor(
+  table: string,
+  column: string,
+  budgetId: string = BUDGET_ID,
+): BlindIndexBinding {
+  return { ...indexedFieldFor(table, column), budgetId };
+}
+
+// The first indexed pair, keyed inside the file's tenancy. The cases that do not
+// care which pair they use take this.
+function firstIndexBinding(budgetId: string = BUDGET_ID): BlindIndexBinding {
+  return { ...BLIND_INDEXED_FIELDS[0], budgetId };
 }
 
 // A real table beside a real column of it that is **not** its indexed pair —
@@ -2200,14 +2246,17 @@ describe('AccountKeyCustodyService', () => {
       return computed.value;
     }
 
-    // **The cast is the hazard, not a convenience.** `BlindIndexedField` is a
-    // closed union the compiler assembled out of callers it could see; a table
-    // and a column arriving as data — off a response, out of a configuration,
-    // through one `as` in a mapper — has been through that check not at all.
-    // This line *is* that mapper, written on purpose, and the two cases it
-    // drives are what say the refusal happens at run time rather than only in
-    // the type.
-    const UNINDEXED_FIELD = UNINDEXED_PAIR as BlindIndexedField;
+    // **The cast is the hazard, not a convenience.** `BlindIndexBinding` is a
+    // closed union the compiler assembled out of callers it could see, plus one
+    // member; a table and a column arriving as data — off a response, out of a
+    // configuration, through one `as` in a mapper — has been through that check
+    // not at all. This line *is* that mapper, written on purpose, and the two
+    // cases it drives are what say the refusal happens at run time rather than
+    // only in the type.
+    const UNINDEXED_FIELD = {
+      ...UNINDEXED_PAIR,
+      budgetId: BUDGET_ID,
+    } as BlindIndexBinding;
 
     // **Every frozen answer, and this is the only case that can tell delegation
     // from a reimplementation that happens to agree with itself.** Custody could
@@ -2221,12 +2270,14 @@ describe('AccountKeyCustodyService', () => {
     // which this reports a clean run over nothing.
     it.each(FROZEN_BLIND_INDEX_CASES)(
       'computes the frozen answer for $why, spelled $input',
-      async ({ table, column, input, blindIndex }) => {
+      async ({ table, column, budgetId, input, blindIndex }) => {
         // Arrange
         // The pair is resolved through the codec's own list rather than cast, so
         // a vector naming a table this product does not index fails here loudly
-        // instead of typing as a legal pair it is not.
-        const field = indexedFieldFor(table, column);
+        // instead of typing as a legal pair it is not. The tenancy is the
+        // vector's own, which is what makes the tenth case — one name, one pair,
+        // one key, a second budget — a case this file can see at all.
+        const binding = indexBindingFor(table, column, budgetId);
 
         custody.adopt(await keyEncryptionKey(0xa2), await frozenIndexKey());
 
@@ -2235,7 +2286,7 @@ describe('AccountKeyCustodyService', () => {
         expect(custody.status()).toBe('unlocked');
 
         // Act
-        const computed = await custody.blindIndex(field, input);
+        const computed = await custody.blindIndex(binding, input);
 
         // Assert
         // The whole result and not just the value, so a `state` that came back
@@ -2252,29 +2303,74 @@ describe('AccountKeyCustodyService', () => {
     // meaning anything. An implementation that mixed a row, a nonce or a clock
     // into the message would still be stable, still be the right width, and
     // would answer no query anybody ever writes.
-    it('gives equal names across rows one value, under one field', async () => {
+    it('gives equal names across rows one value, under one binding', async () => {
       // Arrange
-      const field = BLIND_INDEXED_FIELDS[0];
-
       await adoptedIndexKey();
 
       // Act
       // Two calls with nothing between them but the call itself — which is the
-      // whole arrangement, because there is no row to vary: the signature takes
-      // none, so "across rows" is exactly "twice".
-      const first = await custody.blindIndex(field, "Trader Joe's");
-      const second = await custody.blindIndex(field, "Trader Joe's");
+      // whole arrangement, because there is no row to vary: the binding carries
+      // none, so "across rows" is exactly "twice". Two separate binding objects,
+      // so nothing can pass by reference identity.
+      const first = await custody.blindIndex(
+        firstIndexBinding(),
+        "Trader Joe's",
+      );
+      const second = await custody.blindIndex(
+        firstIndexBinding(),
+        "Trader Joe's",
+      );
 
       // Assert
       expect(indexValueOf(first)).toBe(indexValueOf(second));
 
-      // The control equality needs: a different name under the same field is a
+      // The control equality needs: a different name under the same binding is a
       // different value. Without it, a `blindIndex` that answered one constant
       // to everything passes the assertion above and indexes the whole account
       // onto a single row.
-      const other = await custody.blindIndex(field, 'Somewhere else entirely');
+      const other = await custody.blindIndex(
+        firstIndexBinding(),
+        'Somewhere else entirely',
+      );
 
       expect(indexValueOf(other)).not.toBe(indexValueOf(first));
+    });
+
+    // **The tenancy reaches the codec, and this is the case that says so from
+    // custody's side.** The account holds one index key, so a class that
+    // dropped the member on its way past — or that took a pair and ignored the
+    // rest of the argument — computes one value for both tenancies: two rows in
+    // two ledgers an operator can see hold the same word, which is exactly what
+    // NFR-014 refuses. It is the frozen pair rather than two values that merely
+    // differ, so a class that separated them under some grammar of its own is a
+    // failure here too.
+    it('gives one name in two budgets the two frozen values', async () => {
+      // Arrange
+      const elsewhere = BLIND_INDEX_VECTORS.vectors.find(
+        (vector) => vector.budgetId !== BUDGET_ID,
+      );
+
+      if (elsewhere === undefined) {
+        throw new Error(
+          'No frozen vector names a second budget, so this case is driven by nothing.',
+        );
+      }
+
+      custody.adopt(await keyEncryptionKey(0xa4), await frozenIndexKey());
+
+      // Act
+      const here = await custody.blindIndex(
+        indexBindingFor(elsewhere.table, elsewhere.column),
+        elsewhere.inputs[0],
+      );
+      const there = await custody.blindIndex(
+        indexBindingFor(elsewhere.table, elsewhere.column, elsewhere.budgetId),
+        elsewhere.inputs[0],
+      );
+
+      // Assert
+      expect(indexValueOf(there)).toBe(elsewhere.blindIndex);
+      expect(indexValueOf(here)).not.toBe(indexValueOf(there));
     });
 
     // **Every entry of the list, and never entry zero alone.** A `blindIndex`
@@ -2300,7 +2396,7 @@ describe('AccountKeyCustodyService', () => {
       // Act
       const computed = await Promise.all(
         BLIND_INDEXED_FIELDS.map((field) =>
-          custody.blindIndex(field, "Trader Joe's"),
+          custody.blindIndex({ ...field, budgetId: BUDGET_ID }, "Trader Joe's"),
         ),
       );
 
@@ -2324,7 +2420,7 @@ describe('AccountKeyCustodyService', () => {
 
       // Act
       const computed = await custody.blindIndex(
-        BLIND_INDEXED_FIELDS[0],
+        firstIndexBinding(),
         'Never indexed',
       );
 
@@ -2376,7 +2472,7 @@ describe('AccountKeyCustodyService', () => {
       // while custody is holding the keys, so what changes below is the
       // `lock()` and not the field, the name or the fixture.
       const before = await custody.blindIndex(
-        BLIND_INDEXED_FIELDS[0],
+        firstIndexBinding(),
         'Before the sign-out',
       );
 
@@ -2390,7 +2486,7 @@ describe('AccountKeyCustodyService', () => {
 
       // Act
       const computed = await custody.blindIndex(
-        BLIND_INDEXED_FIELDS[0],
+        firstIndexBinding(),
         'After the sign-out',
       );
 
@@ -2443,7 +2539,7 @@ describe('AccountKeyCustodyService', () => {
 
       // Act
       const computed = await custody.blindIndex(
-        BLIND_INDEXED_FIELDS[0],
+        firstIndexBinding(),
         'Indexed, then signed out',
       );
 
@@ -2510,7 +2606,7 @@ describe('AccountKeyCustodyService', () => {
 
       // Act
       const computed = await custody.blindIndex(
-        BLIND_INDEXED_FIELDS[0],
+        firstIndexBinding(),
         'Indexed for whom?',
       );
 
@@ -2565,7 +2661,7 @@ describe('AccountKeyCustodyService', () => {
       // computes. Without it, a `blindIndex` that rejected every field passes the
       // assertion above and indexes nothing ever again.
       const legal = await custody.blindIndex(
-        BLIND_INDEXED_FIELDS[0],
+        firstIndexBinding(),
         "Trader Joe's",
       );
 
@@ -2584,7 +2680,7 @@ describe('AccountKeyCustodyService', () => {
     //
     // The case above adopts a key first, so it passes with the gates the other
     // way round. This one adopts nothing, which is the whole arrangement.
-    it('judges the field before custody, on an account holding no key', async () => {
+    it('judges the binding before custody, on an account holding no key', async () => {
       // Arrange
       // Nothing adopted and nothing unlocked — the state in which a reversed
       // order is invisible.
@@ -2594,16 +2690,24 @@ describe('AccountKeyCustodyService', () => {
       expect(custody.status()).toBe('locked');
 
       // Act, Assert
+      // **Both halves of the refusal, because they are two statements inside
+      // one function and either could be moved without the other.** The pair
+      // check and the tenancy check are asked of one argument; a case over the
+      // pair alone would stay green over a class that reached for the key
+      // before judging the spelling of the budget it was handed.
       await expect(
         custody.blindIndex(UNINDEXED_FIELD, 'Rent, June'),
       ).rejects.toThrow(/pair/);
-
-      // The control the refusal needs: under a pair the codec lists, this same
-      // locked account answers `locked` rather than rejecting. Without it, a
-      // service that rejected everything while holding no key passes the
-      // assertion above.
       await expect(
-        custody.blindIndex(BLIND_INDEXED_FIELDS[0], 'Rent, June'),
+        custody.blindIndex(firstIndexBinding(''), 'Rent, June'),
+      ).rejects.toThrow(/budget/);
+
+      // The control the refusal needs: under a binding the codec accepts, this
+      // same locked account answers `locked` rather than rejecting. Without it,
+      // a service that rejected everything while holding no key passes both
+      // assertions above.
+      await expect(
+        custody.blindIndex(firstIndexBinding(), 'Rent, June'),
       ).resolves.toEqual({ state: 'locked' });
     });
   });
@@ -2710,7 +2814,9 @@ describe('AccountKeyCustodyService', () => {
       // first pair would agree with the codec on `payees.name` and answer the
       // other three under a message nobody asked for.
       const computed = await Promise.all(
-        BLIND_INDEXED_FIELDS.map((indexed) => index(indexed, "Trader Joe's")),
+        BLIND_INDEXED_FIELDS.map((indexed) =>
+          index({ ...indexed, budgetId: BUDGET_ID }, "Trader Joe's"),
+        ),
       );
 
       // Assert
@@ -2729,7 +2835,11 @@ describe('AccountKeyCustodyService', () => {
       const expected = await Promise.all(
         BLIND_INDEXED_FIELDS.map(async (indexed) => ({
           state: 'computed',
-          value: await computeBlindIndex(indexKey, indexed, "Trader Joe's"),
+          value: await computeBlindIndex(
+            indexKey,
+            { ...indexed, budgetId: BUDGET_ID },
+            "Trader Joe's",
+          ),
         })),
       );
 

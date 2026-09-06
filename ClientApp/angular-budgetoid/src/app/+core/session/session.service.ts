@@ -1,6 +1,6 @@
 import { HttpErrorResponse } from '@angular/common/http';
 import { Injectable, Signal, inject, signal } from '@angular/core';
-import { MeApiService } from '@app-core/api/me-api.service';
+import { MeApiService, type MeDto } from '@app-core/api/me-api.service';
 import { AccountKeyCustodyService } from '@app-core/security/account-key-custody.service';
 import { firstValueFrom } from 'rxjs';
 
@@ -41,8 +41,42 @@ export class SessionService {
 
   private readonly statusSignal = signal<SessionStatus>('unknown');
 
+  // The budget this browser is operating inside, or `null` while nothing has
+  // said. The head of {@link budgetId} argues what it is for and why it is a
+  // second signal rather than a member of the status.
+  private readonly budgetSignal = signal<string | null>(null);
+
   public readonly status: Signal<SessionStatus> =
     this.statusSignal.asReadonly();
+
+  /**
+   * The budget the requests this browser makes are scoped by, or `null` while
+   * this browser has not been told.
+   *
+   * **It is here because the blind index needs it and nothing else does.** No
+   * screen renders it. `GET /api/me` is the one route that says it — the value
+   * is resolved from the session cookie on the server and named in no request —
+   * and it is the fourth field of every blind-index message, which is what stops
+   * two budgets of one account keying one value to one digest. `blind-index.ts`
+   * argues the grammar; this is where the value the browser folds into it is
+   * read.
+   *
+   * **A signal beside the status and never a member of it.** The two are learned
+   * from one answer and are not the same fact: a browser can know who it is and
+   * not know which budget it is in — that is exactly the window between an
+   * establishing leg and the read below — and a status union carrying the
+   * identifier would make every screen that reads `'authenticated'` re-derive
+   * that distinction for itself.
+   *
+   * **`null` is never a value a caller may substitute for.** A write that finds
+   * it `null` does not happen and answers `unreachable`: no factor can supply a
+   * budget, so `locked`'s advice — present one — cannot come true of this, and
+   * sending somebody through a ceremony that changes nothing is the collapse
+   * this codebase refuses in five other places. What can come true is a reload,
+   * which is `unreachable`'s.
+   */
+  public readonly budgetId: Signal<string | null> =
+    this.budgetSignal.asReadonly();
 
   // Resolves however the read ends, and never rejects. The `APP_INITIALIZER`
   // awaits this promise, so a rejection is not a failed probe — it is an
@@ -58,9 +92,21 @@ export class SessionService {
       // router has activated anything, which is every anonymous visitor's deep
       // link. The reading of that 401 belongs to the `catch` below, and is made
       // once.
-      await firstValueFrom(this.api.getSessionOwner());
+      //
+      // **The budget rides on the answer this call already makes**, which is
+      // the whole reason nothing was added to the initializer: it is awaited
+      // before the first route activates, so every screen behind `authGuard`
+      // starts with the identifier its writes need, at the cost of no round
+      // trip at all.
+      const me = await firstValueFrom(this.api.getSessionOwner());
+
+      this.budgetSignal.set(SessionService.budgetOf(me));
       this.statusSignal.set('authenticated');
     } catch (error: unknown) {
+      // Dropped beside the status, because it is a claim about a read that did
+      // not land. A stale identifier left standing here would be keyed into
+      // values written by whoever comes back next.
+      this.budgetSignal.set(null);
       this.statusSignal.set(SessionService.readingOf(error));
     }
   }
@@ -72,6 +118,16 @@ export class SessionService {
   // an answer with a guess.
   public ended(): void {
     this.statusSignal.set('anonymous');
+
+    // **Dropped beside the keys, and for the same reason they are.** The
+    // identifier is a fact about the session that just ended, and a browser that
+    // kept it would fold the previous occupant's tenancy into the first value
+    // the next one writes — through the one door the server cannot see, since it
+    // holds no index key and can never recompute a digest to check it against.
+    // It is one line here rather than one line in each of the paths that end a
+    // session, for the reason `custody.lock()` is: a third path will be added by
+    // somebody thinking about sign-out, and put here it costs them nothing.
+    this.budgetSignal.set(null);
 
     // **Custody ends where the session does, and it ends here rather than at
     // each caller.** Two paths end a session today —
@@ -107,8 +163,67 @@ export class SessionService {
   // round trip at the happiest moment of the flow and could come back
   // `unreachable`, which is a third reading of a fact the server has already
   // stated in the same breath as the cookie it set.
+  //
+  // **The budget is the one thing that is asked for, and it is not the same
+  // shape of question.** The status is a fact the answering leg already stated;
+  // the identifier is a fact nothing in that answer carries and nothing in this
+  // browser can derive, so a read is not a guess replacing an answer — it is the
+  // only source there is. It touches the status not at all, and it is not
+  // awaited: `established()` is called from a subscriber with a navigation on
+  // the line after it, and an `await` there would put a round trip between a
+  // verified credential and the app for the sake of a value only a *write*
+  // needs. Until it lands, {@link budgetId} is `null` and a write says so —
+  // `unreachable`, and the remedy is the same press a moment later.
   public established(): void {
     this.statusSignal.set('authenticated');
+
+    void this.readBudget();
+  }
+
+  // Reads the budget alone, publishing nothing else and never rejecting.
+  //
+  // **The same `EXPECTS_UNAUTHENTICATED` method the probe uses**, for the reason
+  // `me-api.service.ts` writes out over `getAccountKeys`: this request is made
+  // by a browser that has just been handed a session, and a 401 to it is a
+  // cookie that had not landed rather than a session ending. Unmarked, it routes
+  // its own refusal into `sessionExpiryInterceptor` — the single owner of "the
+  // session ended" — which navigates to `/welcome` from underneath a screen that
+  // has just succeeded, through an edge no import graph shows.
+  //
+  // A failure publishes nothing: `null` is already what the signal holds when
+  // nothing has said, and setting it here would be a second writer of a value
+  // whose only other writers are the probe and the end of a session.
+  private async readBudget(): Promise<void> {
+    try {
+      const me = await firstValueFrom(this.api.getSessionOwner());
+
+      this.budgetSignal.set(SessionService.budgetOf(me));
+    } catch {
+      // Nothing. See above.
+    }
+  }
+
+  // The identifier the answer carried, or `null` for a body that carried none.
+  //
+  // **A boundary check and deliberately not a refusal.** `me-api.service.ts`
+  // argues why a body of the wrong shape is refused there rather than coerced;
+  // this member is the exception the same argument produces, because refusing it
+  // would take the *status* down with it. A response missing this member still
+  // says there is a session and whose it is, and reading that as `unreachable`
+  // signs somebody out over a version skew. `null` is the honest reading: signed
+  // in, tenancy unknown, writes refused with a word whose remedy is a reload.
+  //
+  // **It folds nothing.** A spelling that is not the canonical one is passed
+  // through as it arrived and refused by the codec that owns the grammar — the
+  // rule `blind-index.ts` keeps at its own door, because a repair made here
+  // would invent a second spelling of a value that has one, at the writing end,
+  // where every row keyed under the invented one is a row no lookup reproduces.
+  // `''` is the one value that becomes `null`, and that is not a fold: it is the
+  // absence of an answer wearing the type of one.
+  private static budgetOf(me: MeDto): string | null {
+    const answered: unknown = me.budgetId;
+
+    return typeof answered === 'string' && answered !== '' ? answered : null;
   }
 
   private static readingOf(error: unknown): SessionStatus {

@@ -525,11 +525,14 @@ ELSE
 - **[Budgets](budgets.md)**: every account is stamped with and filtered by its owning `BudgetId`, and
   its name is unique within that budget — now over the blind index rather than over a
   case-insensitive collation, with the folding done in the browser. The same account name in two
-  budgets is still two unrelated accounts, and the two rows hold **identical** `name_key` bytes: the
-  index message carries the grammar's version, the table and the column, and **no budget**, while the
-  key is one per account. What keeps them apart is `budget_id` being the leading column of
-  `IX_accounts_budget_id_name_key`, not anything about the digest — which is why that index must
-  never be narrowed to `name_key` alone.
+  budgets is still two unrelated accounts, and the two rows now hold **different** `name_key` bytes:
+  the index message carries the grammar's version, the table, the column **and the budget**, while
+  the key is one per account. It used to carry no budget, and the two rows were byte-identical — an
+  equality an operator with full read access could see, which is what NFR-014 forbids. **Two things
+  keep the budgets apart now and only one of them ever did.** The digest differs, and `budget_id` is
+  still the leading column of `IX_accounts_budget_id_name_key`. Neither retires the other: the index
+  must stay composite, because a digest that differs is a property of a conforming client and the
+  column is a property of the schema, and the schema is what a non-conforming client meets.
 
 ## Edge Cases & Known Gotchas
 

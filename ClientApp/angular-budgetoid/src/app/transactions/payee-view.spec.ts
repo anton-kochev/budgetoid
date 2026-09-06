@@ -9,7 +9,7 @@
 // indexed `''` for a locked row — would still hand back a `nameKey`-shaped
 // string and match a payee it has never read.
 import type { PayeeDto } from '@app-core/api/payees-api.service';
-import type { BlindIndexedField } from '@app-core/security/blind-index';
+import type { BlindIndexBinding } from '@app-core/security/blind-index';
 import {
   NarrativeFieldMisuseError,
   type NarrativeFieldBinding,
@@ -26,6 +26,9 @@ import { matchPayeeByIndex, toPayeeView, type PayeeView } from './payee-view';
 // A canonical lower-case hyphenated UUID — the one spelling the codec accepts,
 // and the spelling `System.Text.Json` renders every `Guid` in.
 const ROW_ID = '0199c3d4-5f6a-7b8c-9d0e-1f2a3b4c5d6e';
+
+// The tenancy every index below is keyed inside, in the same one spelling.
+const BUDGET_ID = '3f5b0a91-7c24-4a1e-9d3b-6e8f0c2a5471';
 
 const sealedPayee: PayeeDto = {
   id: ROW_ID,
@@ -50,14 +53,14 @@ function recordingOpener(answer: NarrativeText): {
 
 function recordingIndexer(answer: BlindIndexValue): {
   readonly index: NarrativeIndexer;
-  readonly calls: { field: BlindIndexedField; plaintext: string }[];
+  readonly calls: { binding: BlindIndexBinding; plaintext: string }[];
 } {
-  const calls: { field: BlindIndexedField; plaintext: string }[] = [];
+  const calls: { binding: BlindIndexBinding; plaintext: string }[] = [];
 
   return {
     calls,
-    index: (field, plaintext) => {
-      calls.push({ field, plaintext });
+    index: (binding, plaintext) => {
+      calls.push({ binding, plaintext });
 
       return Promise.resolve(answer);
     },
@@ -71,7 +74,12 @@ describe('toPayeeView', () => {
     const indexer = recordingIndexer({ state: 'computed', value: 'index-1' });
 
     // Act
-    const view = await toPayeeView(sealedPayee, opener.open, indexer.index);
+    const view = await toPayeeView(
+      sealedPayee,
+      BUDGET_ID,
+      opener.open,
+      indexer.index,
+    );
 
     // Assert
     expect(opener.calls).toEqual([
@@ -83,21 +91,78 @@ describe('toPayeeView', () => {
     expect(view.name).toEqual({ state: 'text', value: 'Corner Shop' });
   });
 
-  it('keys the opened text under the payees name field and no row id', async () => {
-    // Arrange — the deliberate inverse of the opener's binding: an index has to
-    // be *equal* for equal names across rows, so a row id in the message would
-    // make every payee's key unique and the lookup would never match anything.
+  it('keys the opened text under the payees name pair, the budget and no row id', async () => {
+    // Arrange — the deliberate inverse of the opener's binding in one half and
+    // its mirror in the other: an index has to be *equal* for equal names across
+    // rows, so a row id in the message would make every payee's key unique and
+    // the lookup would never match anything — and it must **not** be equal
+    // across two budgets of one account, which is the fourth field.
     const opener = recordingOpener({ state: 'text', value: 'Corner Shop' });
     const indexer = recordingIndexer({ state: 'computed', value: 'index-1' });
 
     // Act
-    const view = await toPayeeView(sealedPayee, opener.open, indexer.index);
+    const view = await toPayeeView(
+      sealedPayee,
+      BUDGET_ID,
+      opener.open,
+      indexer.index,
+    );
 
-    // Assert — the *opened* text, never the wire value beside it.
+    // Assert — the *opened* text, never the wire value beside it. Compared as
+    // the whole binding, so a `rowId` smuggled in beside the tenancy is a
+    // finding rather than a member nothing looked at.
     expect(indexer.calls).toEqual([
-      { field: { table: 'payees', column: 'name' }, plaintext: 'Corner Shop' },
+      {
+        binding: { table: 'payees', column: 'name', budgetId: BUDGET_ID },
+        plaintext: 'Corner Shop',
+      },
     ]);
     expect(view.nameKey).toBe('index-1');
+  });
+
+  it('has no key and asks for none when the budget is not known', async () => {
+    // Arrange — the window between an establishing leg and its own read of
+    // `GET /api/me`, and any visit whose probe never landed. There is no key to
+    // compute, so there is no key: keying the wire value, or `''`, would each
+    // produce a real forty-three-character string that matches some other row
+    // this browser cannot read.
+    const opener = recordingOpener({ state: 'text', value: 'Corner Shop' });
+    const indexer = recordingIndexer({ state: 'computed', value: 'index-1' });
+
+    // Act
+    const view = await toPayeeView(
+      sealedPayee,
+      null,
+      opener.open,
+      indexer.index,
+    );
+
+    // Assert
+    // The name still opened, which is the half worth keeping: a row nobody can
+    // match is still a row somebody can read.
+    expect(view.name).toEqual({ state: 'text', value: 'Corner Shop' });
+    expect(view.nameKey).toBeNull();
+    expect(indexer.calls).toEqual([]);
+  });
+
+  it('keys inside the budget it was handed and never a remembered one', async () => {
+    // Arrange — two reads of one list under two tenancies, which is what a
+    // browser that switched accounts does. The mapper holds nothing between
+    // them, so each call keys inside the budget of that call; an implementation
+    // that captured the identifier once would key both inside the first.
+    const other = '7c1e42b8-9a05-4d63-8f77-0b2c5e9a1d34';
+    const opener = recordingOpener({ state: 'text', value: 'Corner Shop' });
+    const indexer = recordingIndexer({ state: 'computed', value: 'index-1' });
+
+    // Act
+    await toPayeeView(sealedPayee, BUDGET_ID, opener.open, indexer.index);
+    await toPayeeView(sealedPayee, other, opener.open, indexer.index);
+
+    // Assert
+    expect(indexer.calls.map((call) => call.binding.budgetId)).toEqual([
+      BUDGET_ID,
+      other,
+    ]);
   });
 
   it('has no key and asks for none when the name did not open', async () => {
@@ -107,7 +172,12 @@ describe('toPayeeView', () => {
     const indexer = recordingIndexer({ state: 'computed', value: 'index-1' });
 
     // Act
-    const view = await toPayeeView(sealedPayee, opener.open, indexer.index);
+    const view = await toPayeeView(
+      sealedPayee,
+      BUDGET_ID,
+      opener.open,
+      indexer.index,
+    );
 
     // Assert — `null` rather than a key over `''`, which would match every
     // other payee whose name did not open and reuse one of them.
@@ -124,7 +194,12 @@ describe('toPayeeView', () => {
     const indexer = recordingIndexer({ state: 'computed', value: 'index-1' });
 
     // Act
-    const view = await toPayeeView(sealedPayee, opener.open, indexer.index);
+    const view = await toPayeeView(
+      sealedPayee,
+      BUDGET_ID,
+      opener.open,
+      indexer.index,
+    );
 
     // Assert
     expect(view.nameKey).toBeNull();
@@ -139,7 +214,12 @@ describe('toPayeeView', () => {
     const indexer = recordingIndexer({ state: 'locked' });
 
     // Act
-    const view = await toPayeeView(sealedPayee, opener.open, indexer.index);
+    const view = await toPayeeView(
+      sealedPayee,
+      BUDGET_ID,
+      opener.open,
+      indexer.index,
+    );
 
     // Assert — the text is still true and still renders; only matching is off.
     expect(view.name).toEqual({ state: 'text', value: 'Corner Shop' });
@@ -153,7 +233,12 @@ describe('toPayeeView', () => {
     const indexer = recordingIndexer({ state: 'computed', value: 'index-1' });
 
     // Act
-    const view = await toPayeeView(sealedPayee, opener.open, indexer.index);
+    const view = await toPayeeView(
+      sealedPayee,
+      BUDGET_ID,
+      opener.open,
+      indexer.index,
+    );
 
     // Assert
     expect(view).toEqual({
@@ -171,7 +256,7 @@ describe('toPayeeView', () => {
     const indexer = recordingIndexer({ state: 'computed', value: 'index-1' });
 
     // Act
-    const mapping = toPayeeView(sealedPayee, refused, indexer.index);
+    const mapping = toPayeeView(sealedPayee, BUDGET_ID, refused, indexer.index);
 
     // Assert
     await expect(mapping).rejects.toBeInstanceOf(NarrativeFieldMisuseError);
@@ -185,7 +270,7 @@ describe('toPayeeView', () => {
       Promise.reject(new NarrativeFieldMisuseError('refused'));
 
     // Act
-    const mapping = toPayeeView(sealedPayee, opener.open, refused);
+    const mapping = toPayeeView(sealedPayee, BUDGET_ID, opener.open, refused);
 
     // Assert
     await expect(mapping).rejects.toBeInstanceOf(NarrativeFieldMisuseError);

@@ -7,6 +7,27 @@ import { BaseApiService } from './base-api.service';
 
 export interface MeDto {
   email: string;
+  /**
+   * The budget this request is operating inside, in the hyphenated `D` form.
+   *
+   * **The one identifier this API publishes, and it is earned rather than
+   * conceded.** No screen renders it and none is going to; what earns it is that
+   * the browser cannot derive it and cannot finish a computation without it. The
+   * blind index over a value is
+   * `budgetoid/blind-index/v1 ⌷ table ⌷ column ⌷ budgetId ⌷ normalized name`,
+   * taken under a key this server has never held — so the grammar and the pair
+   * are this client's own constants, the text is what somebody typed, the index
+   * key is in custody, and the tenancy is resolved server-side from the session
+   * cookie and named in no request. Withheld, nothing can be written to a
+   * blind-indexed column at all. A user id fails the same test and stays
+   * unpublished, which is what makes it a rule rather than an opening;
+   * `SignedInUser` on the other side is where the argument is kept in full.
+   *
+   * It is not a tenancy *parameter*: no route in this API takes a budget as a
+   * path segment or a query member, so a client holding this value has nowhere
+   * to spend it.
+   */
+  budgetId: string;
 }
 
 // One member, and the route will never grow another: no id, no issued instant,
@@ -138,8 +159,10 @@ export class MeApiService extends BaseApiService {
     return this.get<MeDto>('api/me');
   }
 
-  // The same route, asked the opposite question: *is* there a session, and
-  // whose. It is the request `SessionService.probe()` makes on every cold load,
+  // The same route, asked the opposite question: *is* there a session, whose,
+  // and which budget it is scoped by — the third rides along because the answer
+  // already carries it, and because the browser cannot key a blind index without
+  // it. It is the request `SessionService.probe()` makes on every cold load,
   // before the first route activates, from a browser that cannot read the
   // `HttpOnly` cookie and so has no local evidence at all — which makes a 401
   // this call's own answer rather than a session ending. It is the purest

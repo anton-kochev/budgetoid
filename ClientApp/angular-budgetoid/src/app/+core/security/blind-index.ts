@@ -3,31 +3,52 @@
 // one.
 //
 // `HMAC-SHA-256(indexKey, prefix || 0x1F || table || 0x1F || column || 0x1F ||
-// normalized name)`, rendered as unpadded base64url. The key is the account's
-// index key, one per account, wrapped beside the content key in every factor's
-// row — `account-keys.ts` states why it is derived per account and never per
-// credential, and `importHmacSha256Key` is the one door its bytes come through.
+// budget id || 0x1F || normalized name)`, rendered as unpadded base64url. The
+// key is the account's index key, one per account, wrapped beside the content
+// key in every factor's row — `account-keys.ts` states why it is derived per
+// account and never per credential, and `importHmacSha256Key` is the one door
+// its bytes come through.
+//
+// **The budget is in the message because the key cannot be.** The index key is
+// drawn once per *account*, so an account holding two ledgers computes every
+// index under one key; with only the grammar and the pair naming the value, one
+// word typed into both of them produced two byte-identical digests, and an
+// operator with full read access could read that repetition off two rows in two
+// tenancies without holding anything. NFR-014 refuses exactly that correlation.
+// Deriving a second index key per ledger would answer it too and was rejected
+// one layer up: every factor stores its own wrapped copy of the account's keys,
+// so a key per ledger is a wrapped pair per ledger per factor, and the day one
+// is added every envelope already written is missing it. A field in the message
+// costs one string and is a change no stored value has to survive — the
+// hyphenated identifier is served by `GET /api/me`, which is the one place this
+// browser can learn it, since the value is resolved from the session cookie and
+// named in no request.
 //
 // **Deterministic, and that is the whole trade.** The same name under the same
-// account and the same field always produces the same 43 characters, which is
-// what makes a uniqueness constraint and an equality lookup work over data the
-// operator cannot read. What it costs is that the operator learns *which rows
-// share a name* — the shape of the account's payee distribution, and a
-// dictionary attack on any name an attacker can guess, once they hold the index
-// key. Neither is a defect to fix here; both are the reason the index is keyed
-// per account rather than global, so nothing learned about one account transfers
-// to another.
+// account, the same ledger and the same field always produces the same 43
+// characters, which is what makes a uniqueness constraint and an equality lookup
+// work over data the operator cannot read. What it costs is that the operator
+// learns *which rows share a name within one tenancy* — the shape of that
+// ledger's payee distribution, and a dictionary attack on any name an attacker
+// can guess, once they hold the index key. Neither is a defect to fix here; both
+// are the reason the index is keyed per account rather than global, so nothing
+// learned about one account transfers to another, and the reason the message
+// names the tenancy, so nothing learned about one ledger transfers to the next.
 //
 // **Two modules, not one, and the defining rules are exact opposites.** The
 // narrative grammar next door binds a ciphertext to its *row*, precisely so that
 // a value moved between rows fails to authenticate. This one must be **equal
 // across rows** or it indexes nothing. The two grammars therefore read alike,
 // share a separator and a join, and can never share a message — which is why
-// they are neighbours rather than one file with a flag.
+// they are neighbours rather than one file with a flag. The tenancy sits in the
+// **fourth** field on both sides for that reason: it is where the narrative
+// grammar keeps its row identifier, so the two messages line up field for field
+// and the one place they differ is the one place they must.
 //
 // **One caller, and screens behind it now.** `AccountKeyCustodyService` holds
 // the account's index key, and the operation that delegates to it — `blindIndex`
-// — is what calls `computeBlindIndex`, with `refuseUnindexedField` beside it.
+// — is what calls `computeBlindIndex`, with `refuseInvalidIndexBinding` beside
+// it.
 // That operation is still this module's only caller, and it is no longer the end
 // of the chain: `accounts.service.ts` and `categories.service.ts` key the name
 // on every create and rename they send, and `transactions.service.ts` keys a
@@ -50,6 +71,15 @@
 // configuration, no dependency, so a function is the whole of it.
 import { buildAssociatedData } from './associated-data';
 import { encodeBase64Url } from './base64url';
+// The same question the narrative grammar asks of its row id, and the same
+// question the wrapped-key grammar asks of its factor id — "is this *exactly*
+// the canonical spelling", not "does this parse as a UUID" — so it is the same
+// predicate, imported rather than restated. This is its third consumer, and a
+// third regular expression would be a third definition of one spelling: the half
+// that drifted would go on computing indexes that key perfectly and match
+// nothing a second client wrote. The alias is because a tenancy is not a factor;
+// the shape they have to be is.
+import { isCanonicalFactorId as isCanonicalBudgetId } from './factor-id';
 import { normalizeNameForIndex } from './name-normalization';
 import type { NarrativeField } from './narrative-cipher';
 
@@ -116,10 +146,43 @@ export const BLIND_INDEXED_FIELDS = [
 export type BlindIndexedField = (typeof BLIND_INDEXED_FIELDS)[number];
 
 /**
+ * A legal pair together with the tenancy the index is computed inside.
+ *
+ * **The mirror of `NarrativeFieldBinding`, and deliberately so.** Both are a
+ * pair plus one identifier, both put that identifier in the fourth field of
+ * their message, and both refuse it in any spelling but the canonical one. What
+ * differs is which identifier: the narrative grammar names the **row**, so that
+ * a value moved between rows fails to authenticate, and this one names the
+ * **budget**, so that a value shared across two of them cannot be seen to be
+ * shared. Within one budget the index is still equal for equal values across
+ * rows, which is the property a uniqueness constraint and a lookup are both
+ * asking of it.
+ *
+ * **A member, not a closure.** The alternative is an indexer that captured the
+ * identifier once and took a pair thereafter, which reads tidier and hides the
+ * one mistake this whole change is about: a call site that never learned the
+ * tenancy computes a value under whatever the closure was built with, silently
+ * and forever. Required on the argument, it is a compile error at every call
+ * site instead, which is the net the migration was carried out over.
+ *
+ * There is deliberately **no `rowId`**, and no member may be added that behaves
+ * like one. The index has to be equal for equal values across rows; a row in the
+ * message makes every value unique by construction — still stable, still 43
+ * characters, still looking exactly like a working index, and an answer to no
+ * query anybody ever writes. `blind-index.spec.ts` holds that as a type-level
+ * check as well as a runtime one, because under a binding the arity of
+ * {@link blindIndexMessage} no longer moves when a field is added inside it.
+ */
+export type BlindIndexBinding = BlindIndexedField & {
+  /** The canonical lower-case 36-character hyphenated UUID, and nothing else. */
+  readonly budgetId: string;
+};
+
+/**
  * Builds the message a blind index is taken over:
  *
  * ```text
- * {@link BLIND_INDEX_MESSAGE_PREFIX} || 0x1F || <table> || 0x1F || <column> || 0x1F || <normalized name>
+ * {@link BLIND_INDEX_MESSAGE_PREFIX} || 0x1F || <table> || 0x1F || <column> || 0x1F || <budgetId> || 0x1F || <normalized name>
  * ```
  *
  * in UTF-8, joined through `associated-data.ts` — **one separator between
@@ -145,6 +208,18 @@ export type BlindIndexedField = (typeof BLIND_INDEXED_FIELDS)[number];
  * rules being opposites is why the grammars are two modules rather than one with
  * a parameter.
  *
+ * **The tenancy is the field that is *not* an inverse, and it is not a row by
+ * another name.** Equality within a budget is exactly what is wanted and exactly
+ * what is kept: every row of one budget holding one word still lands on one
+ * value. What it separates is two budgets, which no lookup this product writes
+ * ever spans — every query is already scoped by the ambient tenancy on the
+ * server — so nothing is given up, and what is bought is that the digests cannot
+ * be compared across the boundary. The value is **refused, never folded**, for
+ * the reason the row id is next door: it arrives from one route in one spelling,
+ * folding would invent a second spelling of a value that has one, and it would
+ * invent it at the writing end, where every row keyed under the invented one can
+ * never be found again.
+ *
  * **The column separates nothing today, and it is in the message anyway.** All
  * four of {@link BLIND_INDEXED_FIELDS} carry the value in `name`, so the field is
  * a constant and dropping it would change no value this product can currently
@@ -159,14 +234,13 @@ export type BlindIndexedField = (typeof BLIND_INDEXED_FIELDS)[number];
  * `Trader Joe's` under `payees`, `categories` and `accounts` is three unrelated
  * values.
  *
- * The pair is looked up in {@link BLIND_INDEXED_FIELDS} at runtime, through
- * {@link refuseUnindexedField} and never inline, for the reason
- * `refuseInvalidBinding` states: the closed union is a fact about callers the
- * compiler assembled, and a table name arriving as data through one assertion
- * in a mapper has been through nothing. Unlike there, the refusal carries no
- * type of its own — there is no ciphertext in this operation, so a caller can
- * never confuse "you asked for something impossible" with "this stored value
- * did not open".
+ * The binding is judged in {@link refuseInvalidIndexBinding} and never inline,
+ * for the reason `refuseInvalidBinding` states: the closed union is a fact about
+ * callers the compiler assembled, and a table name arriving as data through one
+ * assertion in a mapper has been through nothing. Unlike there, the refusal
+ * carries no type of its own — there is no ciphertext in this operation, so a
+ * caller can never confuse "you asked for something impossible" with "this
+ * stored value did not open".
  */
 // The buffer is spelled out rather than left as a bare `Uint8Array`, which is a
 // view over either kind of buffer: `BufferSource` excludes a view over a
@@ -175,21 +249,28 @@ export type BlindIndexedField = (typeof BLIND_INDEXED_FIELDS)[number];
 // is allocated three lines down, on a buffer nothing outside this call has ever
 // named — which is the shape `key-envelope.ts` argues for at its own crossing.
 export function blindIndexMessage(
-  field: BlindIndexedField,
+  binding: BlindIndexBinding,
   plaintext: string,
 ): Uint8Array<ArrayBuffer> {
-  refuseUnindexedField(field);
+  refuseInvalidIndexBinding(binding);
 
-  // The three leading fields plus a fourth that is deliberately empty, which is
-  // how the join puts a separator *after* the column without this file naming
+  // The four leading fields plus a fifth that is deliberately empty, which is
+  // how the join puts a separator *after* the tenancy without this file naming
   // the byte a second time: `buildAssociatedData` keeps every field, empty ones
   // included, and puts one separator between each pair. What follows the last
   // separator is the name — as bytes, because the module that owns FR-076's four
   // steps hands back bytes and no step of it is repeated here.
+  //
+  // **Read off the binding member by member, never spread.** A spread would put
+  // whatever else a caller had hung on the object into nothing at all — the join
+  // takes the fields it is handed — but it would also stop this line being the
+  // list of what the message is made of, which is the only place that list is
+  // written down.
   const head = buildAssociatedData(
     BLIND_INDEX_MESSAGE_PREFIX,
-    field.table,
-    field.column,
+    binding.table,
+    binding.column,
+    binding.budgetId,
     '',
   );
   const name = normalizeNameForIndex(plaintext);
@@ -202,8 +283,8 @@ export function blindIndexMessage(
 }
 
 /**
- * Computes the blind index of `plaintext` for `field` under the account's index
- * key, and returns it as unpadded base64url — **43 characters, always**, because
+ * Computes the blind index of `plaintext` for `binding` under the account's
+ * index key, and returns it as unpadded base64url — **43 characters, always**, because
  * HMAC-SHA-256 is 32 bytes and unpadded base64url of 32 bytes is 43.
  *
  * The width is worth stating because it is the only shape check anything
@@ -219,45 +300,47 @@ export function blindIndexMessage(
  * the platform refuses `sign` under one with `InvalidAccessError`.
  *
  * Rejects rather than throwing synchronously, on a pair that is not one of
- * {@link BLIND_INDEXED_FIELDS} and on whatever the platform refuses the key or
- * the signature with. A synchronous throw out of a function whose signature
- * promises a `Promise` escapes past every caller's `catch` on the result — the
- * rule `narrative-cipher.ts` keeps at its own doors.
+ * {@link BLIND_INDEXED_FIELDS}, on a tenancy in any spelling but the canonical
+ * one, and on whatever the platform refuses the key or the signature with. A
+ * synchronous throw out of a function whose signature promises a `Promise`
+ * escapes past every caller's `catch` on the result — the rule
+ * `narrative-cipher.ts` keeps at its own doors.
  *
  * There is nothing to zero-fill here and no `finally`. The message is a second
  * copy of a string the caller already holds, and a JavaScript string cannot be
  * wiped; the same argument `sealNarrativeField` makes about its plaintext bytes
  * applies unchanged.
  */
-// `async` is what turns the pair refusal below into a rejection: a `throw` out
-// of an async function is a rejected promise, where the same `throw` out of a
-// function that merely returned one would escape past every caller's `catch` on
-// the result. It is not decoration around a single `await`.
+// `async` is what turns the binding refusal below into a rejection: a `throw`
+// out of an async function is a rejected promise, where the same `throw` out of
+// a function that merely returned one would escape past every caller's `catch`
+// on the result. It is not decoration around a single `await`.
 export async function computeBlindIndex(
   indexKey: CryptoKey,
-  field: BlindIndexedField,
+  binding: BlindIndexBinding,
   plaintext: string,
 ): Promise<string> {
   // **The door, stated at the top of the operation** rather than left to what
   // the builder below happens to do on the way past, which is how the neighbour
-  // writes `sealNarrativeField`. The pair is judged a second time inside
+  // writes `sealNarrativeField`. The binding is judged a second time inside
   // {@link blindIndexMessage}, which is deliberate and free — that function owes
-  // the same refusal to its own callers, and a scan of four short pairs is not a
-  // cost anybody can measure against a `subtle.sign`. What it buys is that
-  // neither refusal can be removed by editing the other, and that the exported
-  // refusal is the one this path applies rather than a copy of it.
+  // the same refusal to its own callers, and a scan of four short pairs beside
+  // one regular expression is not a cost anybody can measure against a
+  // `subtle.sign`. What it buys is that neither refusal can be removed by
+  // editing the other, and that the exported refusal is the one this path
+  // applies rather than a copy of it.
   //
   // **The limit of that, measured rather than reasoned: deleting this line
-  // reddens nothing** — the builder one statement on refuses the same pair, and
-  // every case that can see a refusal sees that one. It was run. So the line is
-  // held by review, which is why the paragraph above is written out instead of
-  // being left as a shape somebody is expected to recognise.
+  // reddens nothing** — the builder one statement on refuses the same binding,
+  // and every case that can see a refusal sees that one. It was run. So the line
+  // is held by review, which is why the paragraph above is written out instead
+  // of being left as a shape somebody is expected to recognise.
   //
-  // Both calls sit inside the async frame, so an illegal pair rejects rather
+  // Both calls sit inside the async frame, so an illegal binding rejects rather
   // than throwing where the caller cannot catch it.
-  refuseUnindexedField(field);
+  refuseInvalidIndexBinding(binding);
 
-  const message = blindIndexMessage(field, plaintext);
+  const message = blindIndexMessage(binding, plaintext);
 
   // `indexKey` crosses as a parameter and is not held: no field, no
   // module-level value, no cache. Custody owns the key and its lifetime, and
@@ -268,8 +351,14 @@ export async function computeBlindIndex(
 }
 
 /**
- * Refuses a table and column this module cannot compute an index over, and
- * returns nothing.
+ * Refuses a binding this module cannot compute an index over, and returns
+ * nothing.
+ *
+ * **Both judgements, in one function, exactly as {@link refuseInvalidBinding}
+ * makes both of its own.** A second exported refusal beside this one — a pair
+ * check here and a tenancy check there — would be two opinions about what a
+ * legal argument is, and the shape a caller copies is whichever it happened to
+ * call. The neighbouring codec keeps one, and this keeps one.
  *
  * The pair is looked up at run time as well as by the closed union, for the
  * reason {@link refuseInvalidBinding} states next door: a table name arriving as
@@ -282,8 +371,8 @@ export async function computeBlindIndex(
  * to it and computes an index over a column nothing encrypts.
  *
  * **Named, exported and returning `void`, rather than left as a discarded call
- * to {@link blindIndexMessage}.** A caller that has to know whether a field is
- * usable before it reaches this module's real work — custody judges its field
+ * to {@link blindIndexMessage}.** A caller that has to know whether a binding is
+ * usable before it reaches this module's real work — custody judges its binding
  * *before* it looks at whether a key is held, so that a caller's defect is
  * reported the same way whether or not a factor has been presented — wants the
  * *refusal* and not the bytes, and building a message in order to throw it away
@@ -296,31 +385,44 @@ export async function computeBlindIndex(
  * rather than pointed at: two modules doing one job in opposite shapes is worse
  * than either shape, and the shape a reader copies is the one in front of them.
  *
- * **One thing differs from the neighbour in what is refused, and it is the
- * whole of that difference** — what is *thrown* differs too, and the paragraph
- * below is about that. {@link refuseInvalidBinding} refuses a *spelling* as
- * well as a membership, because its binding carries a row id — a value that is
- * legal in more than one spelling, chosen by the caller and read off a row, so
- * there is a canonical form to insist on. This one refuses membership and
- * nothing else. A field is chosen from a list this module publishes, so the
- * only question available is whether the pair is one of the four; there is no
- * second spelling of `payees` to fold, and no field here whose value a caller
- * supplies.
+ * **The tenancy is refused, never folded, and the spelling is asked about for
+ * the same reason the neighbour asks about its row id.** Both are values a
+ * caller supplies rather than chooses from a list this module publishes, both
+ * are legal UUIDs in more than one rendering, and both arrive from a server. A
+ * fold would invent a second spelling of a value that has one, at the writing
+ * end, and every row keyed under the invented spelling is a row no later lookup
+ * reproduces — a silence over data that is all still sitting there, with nothing
+ * on either side of the wire able to see that it happened.
+ *
+ * **The empty string is the case this check is really for.** The message used to
+ * carry an empty field in roughly this position — the join's way of putting a
+ * separator after the column — so a half-finished migration that hands `''`
+ * through computes one value for every tenancy and returns the whole defect,
+ * wearing a digest that is stable, 43 characters long and impossible to tell
+ * from a correct one. The predicate is anchored, so `''` fails it like any other
+ * non-canonical spelling and nothing has to name the empty case specially.
  *
  * It throws a plain `Error` and declares no type of its own. There is no
  * ciphertext in this operation, so a caller can never need to tell "you asked
  * for something impossible" from "this stored value did not open" — the
  * distinction `NarrativeFieldMisuseError` exists for next door.
  */
-export function refuseUnindexedField(field: BlindIndexedField): void {
+export function refuseInvalidIndexBinding(binding: BlindIndexBinding): void {
   if (
     !BLIND_INDEXED_FIELDS.some(
       (candidate) =>
-        candidate.table === field.table && candidate.column === field.column,
+        candidate.table === binding.table &&
+        candidate.column === binding.column,
     )
   ) {
     throw new Error(
       'A blind index can only be computed for a table and column this module lists as a pair.',
+    );
+  }
+
+  if (!isCanonicalBudgetId(binding.budgetId)) {
+    throw new Error(
+      'A blind index can only be computed inside a budget named in the canonical spelling.',
     );
   }
 }

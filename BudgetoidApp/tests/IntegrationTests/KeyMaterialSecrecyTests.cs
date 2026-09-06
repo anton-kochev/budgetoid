@@ -562,13 +562,16 @@ public sealed class KeyMaterialSecrecyTests
     /// entry with no column is a red.
     /// </para>
     /// <para>
-    /// The fifteen divide into five kinds, and the kinds are worth seeing. Two are the envelopes
+    /// The entries divide into five kinds, and the kinds are worth seeing. Two are the envelopes
     /// themselves — the only key-shaped thing this design lets cross the wire, and safe because the
     /// server holds nothing that opens them. Two are WebAuthn's own material, a handle that selects a
     /// credential and a <i>public</i> key published by design. Three are one-way values, two hashes and
-    /// a nonce, from which nothing is derived. Five are <i>content</i>. Three are <i>blind indexes</i>.
-    /// No sixth kind exists, and a sixteenth column would have to argue itself into one of the five or
-    /// invent a sixth in writing.
+    /// a nonce, from which nothing is derived. Those three kinds are closed, which is the only reason
+    /// they are counted here. The rest are <i>content</i> and <i>blind indexes</i>, and those two are
+    /// named rather than counted because they are the two that grow: every column a screen seals joins
+    /// the first, and every sealed name that has to stay unique joins the second, so a number written
+    /// against either is a pin no assertion in this file holds. No sixth kind exists, and a new column
+    /// would have to argue itself into one of the five or invent a sixth in writing.
     /// </para>
     /// <para>
     /// <b>The fourth kind arrived exactly as this list said one would</b> — the paragraph above used to
@@ -598,7 +601,7 @@ public sealed class KeyMaterialSecrecyTests
     /// <para>
     /// <b>NEITHER HALF OF THAT MAY BE WRITTEN AS A FIRST, AND <c>budgets.name</c> IS WHY.</b> This
     /// paragraph twice said something the entry five hundred lines down contradicts, so both are
-    /// narrowed here rather than left to be found: it is <b>not</b> true that the four name columns are
+    /// narrowed here rather than left to be found: it is <b>not</b> true that every name column is
     /// <c>NOT NULL</c> — <c>budgets.name</c> is <c>nullable: true</c> in the emitted baseline, which is
     /// what lets a provisioner write a nameless budget — and it is <b>not</b> the first narrative column
     /// with no blind index, because that column has none either and never will. Each claim, written as a
@@ -612,7 +615,7 @@ public sealed class KeyMaterialSecrecyTests
     /// come back — every seal draws a fresh nonce, and what survives is <c>NULLS NOT DISTINCT</c>, which
     /// is a rule about nameless rows rather than about names. On <c>category_groups.description</c>
     /// nothing was surrendered, because nothing was ever wanted: a note is not looked up, is not unique
-    /// and is not a name, so an index over one would publish a deterministic per-account fingerprint of
+    /// and is not a name, so an index over one would publish a deterministic per-budget fingerprint of
     /// free text with nothing on the other side asking for it. A lost capability and a mechanism nobody
     /// asked for read the same in a schema diff and are opposite decisions.
     /// </para>
@@ -624,19 +627,31 @@ public sealed class KeyMaterialSecrecyTests
     /// each looked up by their own bytes, while this one is DESIGNED TO BE COMPARED: it exists so that
     /// equality of names comes back as equality of digests, which is the only way a uniqueness rule can
     /// survive its column being sealed. So it leaks something the other kinds do not — equality within
-    /// one account — and the entry says so in those words rather than borrowing the envelope's
-    /// concession about length. The bound on that leak is the per-account key: across accounts the same
-    /// name is two unrelated digests, so there is no correlation and no frequency analysis over the
-    /// population. Any future blind index is a member of this kind and owes both halves — what equality
-    /// it exposes, and what scopes that exposure. <c>payees.name_key</c> is the second member and pays
-    /// them in its own words, because the equality it exposes is not the same equality: on accounts a
-    /// duplicate name is a nuisance, while on payees the index IS the deduplication of counterparties,
-    /// so what the column announces is a fact about how many distinct parties a person deals with
-    /// rather than about how they organised their money. <c>category_groups.name_key</c> is the third
-    /// and the weakest of them: nothing in the product looks a group up by name, so the index exists
-    /// only to refuse a second row, and what it announces across a person's budgets is which coarse
-    /// labels recur — a filing habit rather than a set of counterparties. Three members, three
-    /// different equalities, three sets of words.
+    /// one budget — and the entry says so in those words rather than borrowing the envelope's
+    /// concession about length. <b>The bound on that leak is the MESSAGE.</b> The client hashes a
+    /// prefix, the table, the column, the BUDGET IDENTIFIER and the normalised name, so one word filed
+    /// in two budgets of one account is two unrelated digests and the equality stops at the edge of the
+    /// ledger that enforced it. That identifier is refused in any spelling but the one the API hands
+    /// out, never normalised into it, because a second spelling accepted at the writing end is a value
+    /// no key on this side can recompute. What the per-account key bounds is the OTHER direction and
+    /// only that one: it is drawn once per account, so the same name under two accounts is unrelated
+    /// however the budget identifiers fall, and no column of this kind supports cross-account
+    /// correlation or frequency analysis over the population. The two bounds are separate mechanisms
+    /// and must not be filed as one — a key drawn once per account is the same key in both of that
+    /// account's budgets, so it can scope accounts and can never scope budgets, and only the message
+    /// can. Any future blind index is a member of this kind and owes every part of that — what equality
+    /// it exposes, and what scopes the exposure in each direction. <c>payees.name_key</c> pays it in its
+    /// own words, because the equality it exposes is not the same equality: on accounts a duplicate name
+    /// is a nuisance, while on payees the index IS the deduplication of counterparties, so what the
+    /// column announces is a fact about how many distinct parties a person deals with rather than about
+    /// how they organised their money. <c>category_groups.name_key</c> announces the coarsest of them:
+    /// nothing in the product looks a group up by name, so the index exists only to refuse a second row,
+    /// and what is left inside one budget is a short list of pairwise-distinct labels — a filing habit
+    /// rather than a set of counterparties, and one that reaches no further than the ledger it was filed
+    /// in. <c>categories.name_key</c> sits between those two: the same refuse-a-second-row job as its
+    /// group's, over labels that are finer and far more numerous, and still nothing like a set of
+    /// counterparties. Each member states its own equality in its own words, and none of them may
+    /// borrow a neighbour's.
     /// </para>
     /// <para>
     /// <c>session_tokens.token_hash</c> is the newest of the one-way three and the one whose argument is
@@ -679,14 +694,19 @@ public sealed class KeyMaterialSecrecyTests
             + "operator can neither invert it nor recompute a candidate to compare against. It "
             + "unwraps nothing in the second sense too: it is an input to no KDF and no wrapping step, "
             + "so even a recovered index key opens no envelope, it only lets somebody search this "
-            + "column. WHAT IT DOES LEAK, stated rather than glossed, is EQUALITY WITHIN ONE ACCOUNT. "
+            + "column. WHAT IT DOES LEAK, stated rather than glossed, is EQUALITY WITHIN ONE BUDGET. "
             + "Two rows in one budget cannot carry the same value, which is the entire point of the "
             + "column, so an operator reading the table learns that a budget's account names are "
-            + "pairwise distinct — which the unique index already announces — and would learn of any "
-            + "repeat across the account's budgets that two names are the same word without learning "
-            + "the word. ACROSS ACCOUNTS IT LEAKS NOTHING, because the index key is per-account: the "
-            + "same name in two accounts is two unrelated digests, so this column supports no "
-            + "cross-account correlation and no frequency analysis over the population"),
+            + "pairwise distinct — which the unique index already announces — and learns it of that "
+            + "one ledger and no further. ACROSS BUDGETS IT LEAKS NOTHING EITHER, and that bound has "
+            + "its own mechanism rather than being the first one widened: the client's message is "
+            + "prefix, table, column, BUDGET IDENTIFIER and normalised name, so one word filed in two "
+            + "budgets of one account is two unrelated digests. The index key cannot carry that "
+            + "separation, being drawn once per account; the message does. ACROSS ACCOUNTS IT LEAKS "
+            + "NOTHING for a third reason, and the three must not be folded: the key IS per-account, "
+            + "so the same name under two accounts is unrelated however the budget identifiers fall, "
+            + "and this column supports no cross-account correlation and no frequency analysis over "
+            + "the population"),
         new(
             "budgets",
             "name",
@@ -759,16 +779,20 @@ public sealed class KeyMaterialSecrecyTests
             + "the browser beside the content key and reaches this server only as the wrapped_index_key "
             + "envelopes. It unwraps nothing in the second sense either: it is an input to no KDF and "
             + "no wrapping step, so even a recovered index key opens no envelope, it only lets somebody "
-            + "search this column. WHAT IT LEAKS IS EQUALITY WITHIN ONE ACCOUNT, and the equality here "
+            + "search this column. WHAT IT LEAKS IS EQUALITY WITHIN ONE BUDGET, and the equality here "
             + "sits between its two neighbours rather than repeating either. Nothing in the product "
             + "looks a category up by name, so like category_groups.name_key this index's whole job is "
             + "to refuse a second row \u2014 but the labels it is refusing duplicates of are FINER and "
-            + "there are far more of them, so what recurs across a person's budgets is a more specific "
-            + "filing habit than the coarse group labels expose, while still being nothing like the set "
-            + "of counterparties payees.name_key gives up. ACROSS ACCOUNTS IT LEAKS NOTHING: the index "
-            + "key is per-account, so the same label in two accounts is two unrelated digests and this "
-            + "column supports no cross-account correlation and no frequency analysis over the "
-            + "population"),
+            + "there are far more of them, so the pairwise distinctness it announces inside one ledger "
+            + "is over a longer and more individuating list than the coarse group labels expose, while "
+            + "still being nothing like the set of counterparties payees.name_key gives up. ACROSS "
+            + "BUDGETS IT LEAKS NOTHING, and the mechanism there is the MESSAGE rather than the key: "
+            + "it carries the BUDGET IDENTIFIER as its fourth field, so one label under two "
+            + "budgets of one account is two unrelated digests and no filing habit is legible across a "
+            + "person's ledgers. ACROSS ACCOUNTS IT LEAKS NOTHING for a third reason, and the bounds "
+            + "must not be folded: the index key is per-account, so the same label in two accounts is "
+            + "unrelated however the budget identifiers fall, and this column supports no "
+            + "cross-account correlation and no frequency analysis over the population"),
         new(
             "transactions",
             "description",
@@ -838,7 +862,7 @@ public sealed class KeyMaterialSecrecyTests
             + "already gives away, and here it is a wider band than a name's because the cap is "
             + "NarrativeFieldLimits.DescriptionBytes. There is NO description_key and there never will "
             + "be: a note is not looked up, is not unique and is not a name, so an index over one would "
-            + "publish a deterministic per-account fingerprint of somebody's free text with nothing on "
+            + "publish a deterministic per-budget fingerprint of somebody's free text with nothing on "
             + "the other side asking for it \u2014 WHICH IS NOT budgets.name's REASON FOR HAVING NONE, and "
             + "the two must not be filed together: there a uniqueness rule was surrendered and FR-077 "
             + "does not restore it, here no mechanism was ever wanted. The tag is the last half \u2014 "
@@ -858,16 +882,22 @@ public sealed class KeyMaterialSecrecyTests
             + "wrapped_index_key envelopes, so the operator can neither invert it nor recompute a "
             + "candidate to compare against. It unwraps nothing in the second sense either: it is an "
             + "input to no KDF and no wrapping step, so even a recovered index key opens no envelope, "
-            + "it only lets somebody search this column. WHAT IT LEAKS IS EQUALITY WITHIN ONE ACCOUNT, "
-            + "and the equality here is the WEAKEST of the three rather than the same fact a third "
-            + "time. Nothing in the product looks a group up by name, so this index's whole job is to "
-            + "refuse a second row: what an operator learns is that a budget's group names are pairwise "
-            + "distinct, which the unique index already announces, plus \u2014 across a person's budgets "
-            + "\u2014 which coarse labels recur. That is a filing habit rather than the set of "
+            + "it only lets somebody search this column. WHAT IT LEAKS IS EQUALITY WITHIN ONE BUDGET, "
+            + "and the equality here is the WEAKEST of them rather than the same fact one table "
+            + "further on. Nothing in the product looks a group up by name, so this index's whole job "
+            + "is to refuse a second row: what an operator learns is that a budget's group names are "
+            + "pairwise distinct, which the unique index already announces, and nothing beyond that "
+            + "one ledger. ACROSS BUDGETS IT LEAKS NOTHING, and this is the table where that bound "
+            + "does the most work \u2014 coarse labels are exactly the values a person repeats from "
+            + "one ledger to the next \u2014 with the separating done by the MESSAGE rather than the "
+            + "key: the message carries the BUDGET IDENTIFIER as its fourth field, so one label under "
+            + "two budgets of one account is two unrelated digests. What is left is a short, coarse "
+            + "list of distinct labels inside one budget, which is nothing like the set of "
             + "counterparties payees.name_key exposes, and saying so is what stops the payees wording "
-            + "being pasted here. ACROSS ACCOUNTS IT LEAKS NOTHING: the index key is per-account, so the "
-            + "same label in two accounts is two unrelated digests and this column supports no "
-            + "cross-account correlation and no frequency analysis over the population"),
+            + "being pasted here. ACROSS ACCOUNTS IT LEAKS NOTHING for a third reason: the index key "
+            + "is per-account, so the same label in two accounts is unrelated however the budget "
+            + "identifiers fall, and this column supports no cross-account correlation and no "
+            + "frequency analysis over the population"),
         new(
             "payees",
             "name",
@@ -880,15 +910,15 @@ public sealed class KeyMaterialSecrecyTests
             + "key derived from a recovery factor the operator never holds, so the row and everything "
             + "that could open it are separated by a step that happens on somebody's device. WHAT THIS "
             + "COLUMN IN PARTICULAR STOPS BEING LEGIBLE IS WORTH NAMING, because it is the strongest "
-            + "case of the three: a payee list is the set of counterparties one person deals with — a "
-            + "landlord, a pharmacy, a clinic, an employer — and it reads as a life without a single "
-            + "amount beside it. It is also the narrative column with the fewest distinct values per "
-            + "budget, which is what would have made it the easiest of the eight to read at a glance. "
-            + "The same concession as its neighbours and no more: AES-GCM without the key yields the "
-            + "plaintext's LENGTH, which the column's own length already gives away. The tag is the "
-            + "other half — associated data is rebuilt from where the ciphertext was found, so an "
-            + "operator who moved one payee's name onto another row would produce a value that "
-            + "refuses to open rather than one that opens as somebody else's"),
+            + "case of any sealed name in the product: a payee list is the set of counterparties one "
+            + "person deals with — a landlord, a pharmacy, a clinic, an employer — and it reads as a "
+            + "life without a single amount beside it. It is also the narrative column with the fewest "
+            + "distinct values per budget, which is what would have made it the easiest of them to "
+            + "read at a glance. The same concession as its neighbours and no more: AES-GCM without "
+            + "the key yields the plaintext's LENGTH, which the column's own length already gives "
+            + "away. The tag is the other half — associated data is rebuilt from where the ciphertext "
+            + "was found, so an operator who moved one payee's name onto another row would produce a "
+            + "value that refuses to open rather than one that opens as somebody else's"),
         new(
             "payees",
             "name_key",
@@ -903,16 +933,21 @@ public sealed class KeyMaterialSecrecyTests
             + "it nor recompute a candidate to compare against. It unwraps nothing in the second sense "
             + "either: it is an input to no KDF and no wrapping step, so even a recovered index key "
             + "opens no envelope, it only lets somebody search this column. WHAT IT LEAKS IS EQUALITY "
-            + "WITHIN ONE ACCOUNT, and the equality is a different fact from the one accounts.name_key "
+            + "WITHIN ONE BUDGET, and the equality is a different fact from the one accounts.name_key "
             + "exposes rather than the same fact on another table. Two rows in one budget cannot carry "
             + "the same value, so an operator reading the table learns that a budget's counterparty "
             + "names are pairwise distinct — which the unique index already announces — and therefore "
-            + "learns HOW MANY DISTINCT PARTIES a person deals with and, across a person's budgets, "
-            + "which of those parties recur, without learning one name. That is a shape of a life "
-            + "rather than a filing habit, which is why this entry states it instead of borrowing the "
-            + "accounts wording. ACROSS ACCOUNTS IT LEAKS NOTHING: the index key is per-account, so the "
-            + "same counterparty in two accounts is two unrelated digests and this column supports no "
-            + "cross-account correlation and no frequency analysis over the population"),
+            + "learns HOW MANY DISTINCT PARTIES a person deals with inside that one ledger, without "
+            + "learning one name. That is a shape of a life rather than a filing habit, which is why "
+            + "this entry states it instead of borrowing the accounts wording. ACROSS BUDGETS IT LEAKS "
+            + "NOTHING, and this is the table where that bound is worth the most: a counterparty "
+            + "recurring in two of a person's ledgers would say something about both, and what keeps "
+            + "it unreadable is the MESSAGE rather than the key — the BUDGET IDENTIFIER is its fourth "
+            + "field, so one counterparty under two budgets of one account is two unrelated digests. "
+            + "ACROSS ACCOUNTS IT LEAKS NOTHING for a third reason, and the bounds must not be folded: "
+            + "the index key is per-account, so the same counterparty in two accounts is unrelated "
+            + "however the budget identifiers fall, and this column supports no cross-account "
+            + "correlation and no frequency analysis over the population"),
         new(
             "wrapped_account_keys",
             "wrapped_content_key",
@@ -1175,9 +1210,9 @@ public sealed class KeyMaterialSecrecyTests
             "base64url over the 32-byte blind index the client computed over the SAME name it sealed "
             + "beside this, under the account's index key. A keyed digest, not an envelope, and not key "
             + "material \u2014 the index key itself crosses this wire only sealed, as "
-            + "AccountKeyEntry.WrappedIndexKey. What it buys on THIS table is the narrowest of the "
-            + "three: nothing in the product looks a group up by name, so it exists only to refuse a "
-            + "second group under a name this budget already holds"),
+            + "AccountKeyEntry.WrappedIndexKey. What it buys on THIS table is the narrowest of any "
+            + "blind index the product carries: nothing looks a group up by name, so it exists only to "
+            + "refuse a second group under a name this budget already holds"),
         new("CreatePayeeCommand", "Id",
             "the row identifier the CLIENT minted, as text rather than as a uuid — the one spelling this "
             + "API accepts and the one it hands back. It carries no secret; it is here because it is the "

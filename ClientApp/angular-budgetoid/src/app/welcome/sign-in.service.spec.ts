@@ -83,6 +83,14 @@ const ASSERTION_URL = `${API_ORIGIN}/api/passkeys/assertion`;
 // leaves, and it is `AccountKeyCustodyService` going to fetch the envelopes the
 // key-encryption key derived a moment ago is the only thing that can open.
 const ACCOUNT_KEYS_URL = `${API_ORIGIN}/api/me/account-keys`;
+// The fourth, and it is nothing to do with authenticating anybody either.
+// `SessionService.established()` reads the budget this browser is operating
+// inside, because it is the fourth field of every blind-index message and
+// nothing in the assertion's answer carries it — without it every write on
+// every content screen answers `unreachable` for the rest of a session that
+// began with a sign-in rather than with a cold load. It is not awaited, so the
+// navigation below does not wait for it.
+const ME_URL = `${API_ORIGIN}/api/me`;
 
 // What `POST /api/passkeys/assertion/options` answers with: four members and
 // deliberately not a fifth. **There is no `allowCredentials` and none may be
@@ -473,16 +481,18 @@ describe('SignInService', () => {
       'the navigation into the app',
     );
 
-    // **The third request, and this census moved to account for it rather
-    // than relaxing to stop seeing it.** Two requests were the whole of a
-    // sign-in until custody was wired, and the line below said so. The 200 now
-    // hands the key-encryption key to `AccountKeyCustodyService`, which goes
-    // and reads this session's wrapped envelopes — one more request, leaving
-    // this browser, and therefore one this file owes an entry for. The
-    // alternative on offer was to stub custody away, which would have made the
-    // old line pass again by making the census blind to a request the flow
-    // makes. Matched, named and put through the same origin check as the other
-    // two; left outstanding on purpose, because whether it is ever answered is
+    // **The third and fourth requests, and this census moved to account for
+    // each of them rather than relaxing to stop seeing them.** Two requests were
+    // the whole of a sign-in until custody was wired, and the line below said
+    // so. The 200 now hands the key-encryption key to
+    // `AccountKeyCustodyService`, which goes and reads this session's wrapped
+    // envelopes; and `SessionService.established()` reads the budget every
+    // blind-index message folds in. Both leave this browser, so both are ones
+    // this file owes an entry for. The alternative on offer each time was to stub
+    // the collaborator away, which would have made the old line pass again by
+    // making the census blind to a request the flow makes. Matched, named and put
+    // through the same origin check as the other two; left outstanding on
+    // purpose, because whether either is ever answered is
     // `does not wait for the keys to sign anybody in`'s business.
     const accountKeys = await eventually(
       () => http.match(ACCOUNT_KEYS_URL)[0] ?? null,
@@ -490,12 +500,25 @@ describe('SignInService', () => {
     );
     seen.push(accountKeys.request.urlWithParams);
 
+    const budget = await eventually(
+      () => http.match(ME_URL)[0] ?? null,
+      'the read of the budget this session is operating inside',
+    );
+    seen.push(budget.request.urlWithParams);
+
     // Assert
-    // Three requests left this browser and all three went to Budgetoid's own
+    // Four requests left this browser and all four went to Budgetoid's own
     // API. Origins, not prefixes: `https://api.test.attacker.example` is a name
     // anybody can register and `startsWith` admits it, which is the rule
     // `apiCredentialsInterceptor` states one layer down.
-    expect(seen).toEqual([OPTIONS_URL, ASSERTION_URL, ACCOUNT_KEYS_URL]);
+    //
+    // Compared as a set rather than in order, because the last two are started
+    // by two collaborators one statement apart and neither waits for the other:
+    // pinning which of them reaches the backend first would be a red bar over a
+    // scheduling detail nothing depends on.
+    expect([...seen].sort()).toEqual(
+      [OPTIONS_URL, ASSERTION_URL, ACCOUNT_KEYS_URL, ME_URL].sort(),
+    );
 
     for (const url of seen) {
       expect(new URL(url).origin, `${url} is not this API's origin.`).toBe(

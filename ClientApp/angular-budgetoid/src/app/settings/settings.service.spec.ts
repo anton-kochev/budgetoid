@@ -21,9 +21,19 @@ const FEDERATED: CredentialSummary = {
   createdAtUtc: '2026-01-12T08:30:00Z',
 };
 
+// `GET /api/me` answers a budget beside the address. This screen renders only
+// the address and no case below reads the identifier — what it is here for is
+// that `MeDto` is the shape the route sends, and a fixture one member short
+// describes a body the server does not write.
+const BUDGET_ID = '3f5b0a91-7c24-4a1e-9d3b-6e8f0c2a5471';
+
+function meDto(email: string): MeDto {
+  return { budgetId: BUDGET_ID, email };
+}
+
 class MeApiStub {
   public getMe = vi.fn(
-    (): Observable<MeDto> => of({ email: 'owner@budgetoid.test' }),
+    (): Observable<MeDto> => of(meDto('owner@budgetoid.test')),
   );
   public getExport = vi.fn(
     (): Observable<Blob> => of(new Blob(['{"schemaVersion":1}'])),
@@ -193,7 +203,7 @@ describe('SettingsService', () => {
 
   it('publishes the account email', () => {
     // Arrange
-    api.getMe.mockReturnValue(of({ email: 'owner@budgetoid.test' }));
+    api.getMe.mockReturnValue(of(meDto('owner@budgetoid.test')));
 
     // Act
     service.loadEmail();
@@ -222,7 +232,7 @@ describe('SettingsService', () => {
 
   it('drops the previous email while a new load is running', () => {
     // Arrange
-    api.getMe.mockReturnValueOnce(of({ email: 'first@budgetoid.test' }));
+    api.getMe.mockReturnValueOnce(of(meDto('first@budgetoid.test')));
     service.loadEmail();
     expect(service.email()).toBe('first@budgetoid.test');
     const gate = new Subject<MeDto>();
@@ -241,14 +251,14 @@ describe('SettingsService', () => {
 
     // And a *different* address comes back, so the clearing is not an address
     // lost — and a service that republished the first one would not pass.
-    gate.next({ email: 'second@budgetoid.test' });
+    gate.next(meDto('second@budgetoid.test'));
     gate.complete();
     expect(service.email()).toBe('second@budgetoid.test');
   });
 
   it('leaves no email behind when a reload fails', () => {
     // Arrange
-    api.getMe.mockReturnValueOnce(of({ email: 'owner@budgetoid.test' }));
+    api.getMe.mockReturnValueOnce(of(meDto('owner@budgetoid.test')));
     service.loadEmail();
     // The first load really did publish an address. Without this the assertion
     // below holds on a service that never publishes one.

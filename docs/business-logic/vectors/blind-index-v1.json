@@ -1,9 +1,11 @@
 {
   "_what": "Frozen known answers for the blind index of FR-071 and its normalization FR-076, computed outside this codebase.",
-  "_message": "\"budgetoid/blind-index/v1\" || 0x1F || table || 0x1F || column || 0x1F || normalized name, UTF-8, one separator between fields and none at either end.",
+  "_message": "\"budgetoid/blind-index/v1\" || 0x1F || table || 0x1F || column || 0x1F || budget id || 0x1F || normalized name, UTF-8, one separator between fields and none at either end.",
   "_normalization": "trim, NFKC, full case fold (Unicode 17.0, statuses C and F only), UTF-8, in that order.",
   "_theColumnIsConstantToday": "FR-070 indexes four tables and the column is `name` in all four, so the column field separates nothing yet. It is in the message so that a second indexed column on one of those tables cannot later collide with the first, and so the grammar reads the same as the narrative one next door.",
+  "_budgetId": "The budget every vector below is computed under unless it names its own. It is the fourth field because the narrative grammar keeps its row identifier in that slot, and the two codecs are read side by side.",
   "_whatThisIsNot": "Not the whole registry. The narrative-field vectors sit beside this file; the envelope, key-encryption-key and wrapped-key vectors live in account-keys.md.",
+  "budgetId": "01a05f2c-7b19-7c3d-8e4f-5a6b7c8d9e0f",
   "indexKeyHex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
   "unicodeVersion": "17.0",
   "caseFoldTableSha256": "9ff612fab7d9b8e95a79f86bd60c8340beb48ef611aac748dac00c0ffe2f7cad",
@@ -18,7 +20,7 @@
         "trader joe's"
       ],
       "normalizedUtf8Hex": "747261646572206a6f652773",
-      "blindIndex": "L7gLp6ndrvVrgp57uRQ0QFmd-y_N19QqFkymmt0Qk54"
+      "blindIndex": "3Q_7CM3paq4753R6FSERv-jMUyobKrjF4E4bwtMJ2Fk"
     },
     {
       "why": "the same name under another table is unrelated — this is what the grammar buys",
@@ -28,7 +30,7 @@
         "Trader Joe's"
       ],
       "normalizedUtf8Hex": "747261646572206a6f652773",
-      "blindIndex": "GYQ5sS-_Tmd8BdkclPSmiY2Ma_iq9evFHQ46qolFgaA"
+      "blindIndex": "EQXmjwo4GmpPRy7PkBd-IZUCzLKIy24GEY0moRJ89H8"
     },
     {
       "why": "and under a third, so the separation is not a two-value coincidence",
@@ -38,7 +40,7 @@
         "Trader Joe's"
       ],
       "normalizedUtf8Hex": "747261646572206a6f652773",
-      "blindIndex": "_qGAUkoy4wL8qCvf6WI_rhMvF7a-2i5g3_Ysp2cx8aM"
+      "blindIndex": "mjLVqW4dQMlykxYNpG0ztT-oIasEoW0hOtJ8_AbOcDA"
     },
     {
       "why": "full folding rather than lowercasing: four spellings of one name",
@@ -51,7 +53,7 @@
         "STRAẞE"
       ],
       "normalizedUtf8Hex": "73747261737365",
-      "blindIndex": "hf0BeYDN5P9VA4tSfiT2M7-znJLSWjpxnzjZx0RhDHw"
+      "blindIndex": "vYxgdFsTiq2sU16Kt6o6VAlA-HHcEGTEw3xz2YCeLCY"
     },
     {
       "why": "final sigma unified, which per-code-point lowercasing would not do",
@@ -63,7 +65,7 @@
         "οδοσ"
       ],
       "normalizedUtf8Hex": "cebfceb4cebfcf83",
-      "blindIndex": "SlQQHXJnh9HU2KloRwruP1a_xK8oqOpuOlaKF7o6p_Q"
+      "blindIndex": "i4wFcDLp_Dv_rlLFrc2gSPd1nUpApvLQTidM9yNW0y8"
     },
     {
       "why": "NFKC runs before the fold, never after",
@@ -75,7 +77,7 @@
         "film"
       ],
       "normalizedUtf8Hex": "66696c6d",
-      "blindIndex": "IYVWLRzw0PRt25XuDMduGhPEDpKthOqin6JF5Q9Onmw"
+      "blindIndex": "mBg5QW1sjicEdrrcJrj2-nHt_FYNkTaJeH-xOuVjAng"
     },
     {
       "why": "Cherokee folds toward uppercase; a toLowerCase shape gives the other value",
@@ -86,7 +88,7 @@
         "ꭰ"
       ],
       "normalizedUtf8Hex": "e18ea0",
-      "blindIndex": "wXQOcxEIjqPHeCXJhytp_dHaH4OLVukNY6ZGakapQjY"
+      "blindIndex": "WptnE8_Bon1gUw3GhEteJRSG3J8jaeAVwgDhc_pfwow"
     },
     {
       "why": "dotted capital I does not reach istanbul, and that is the contract, not a bug",
@@ -96,7 +98,7 @@
         "İstanbul"
       ],
       "normalizedUtf8Hex": "69cc877374616e62756c",
-      "blindIndex": "AyNUhL8pozkYhp4nZCJGYkLL34AmhfdkcRThImylIcc"
+      "blindIndex": "BX9qISGwFn8d5BCYWI3KtjOD4ff2fHcKBqEVmjmDRmI"
     },
     {
       "why": "the neighbour it must differ from",
@@ -106,7 +108,20 @@
         "istanbul"
       ],
       "normalizedUtf8Hex": "697374616e62756c",
-      "blindIndex": "NYO1rk0DGbhtZn-N-ozAaTcD67UQsX_JrelprdDevDs"
+      "blindIndex": "RP5do96I5zyJuSJ07AILiFxUFRweJEI63Aw9aexYnag"
+    },
+    {
+      "why": "the same name, the same table and the same key under a second budget: this pair is the whole of what the message change buys, and it is the only case here that a self-consistent implementation cannot fake",
+      "table": "payees",
+      "column": "name",
+      "budgetId": "01a05f2c-7b19-7c3d-8e4f-5a6b7c8d9e10",
+      "inputs": [
+        "Trader Joe's",
+        "  TRADER JOE'S  ",
+        "trader joe's"
+      ],
+      "normalizedUtf8Hex": "747261646572206a6f652773",
+      "blindIndex": "3Iph6U15cIQAnPEY4uLqOoUKb9InfxZR8GT-iRYzRv4"
     }
   ]
 }

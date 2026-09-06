@@ -1001,7 +1001,7 @@ custody follows the codec and can never lead it — a pair the codec does not ca
 custody will accept.
 
 **The index codec is imported the same way, and the four pairs are covered without widening
-anything.** Custody takes `computeBlindIndex`, `refuseUnindexedField` and the **type**
+anything.** Custody takes `computeBlindIndex`, `refuseInvalidIndexBinding` and the **type**
 `BlindIndexedField` from it, and never `BLIND_INDEXED_FIELDS` — the same distinction, made again
 for the same reason: which pair a value belongs to is the caller's fact, and a class handed one
 already assembled has no business enumerating them. The word rule below reaches those four for
@@ -1218,21 +1218,32 @@ the two platform boundaries so they read as one decision made twice.
 ### The blind index, and what it refuses to be
 
 **The third operation is built.** `computeBlindIndex` in `+core/security/blind-index.ts` takes the
-account's index key, a table-and-column pair and a name, and answers 43 characters of unpadded
-base64url; `AccountKeyCustodyService.blindIndex` is how a caller reaches it without being handed a
-key. The grammar it computes over was settled by a revision of the specification, and the message
-carries a **version prefix, the table and the column** in front of the normalized name. The bytes
-are in [`vectors/blind-index-v1.json`](vectors/blind-index-v1.json) — nine frozen answers over four
-tables, with the index key they were computed under — and this chapter deliberately does not restate
-them, for the reason the vectors exist at all: a byte-level contract written down twice is a
-contract whose second copy drifts, and the copy that drifted still passes its own file.
+account's index key, a binding — a table-and-column pair with the budget it is being computed
+inside — and a name, and answers 43 characters of unpadded base64url;
+`AccountKeyCustodyService.blindIndex` is how a caller reaches it without being handed a key. The
+grammar it computes over was settled by a revision of the specification, and the message carries a
+**version prefix, the table, the column and the budget** in front of the normalized name. The bytes
+are in [`vectors/blind-index-v1.json`](vectors/blind-index-v1.json) — ten frozen answers over four
+tables, with the budget and the index key they were computed under — and this chapter deliberately
+does not restate them, for the reason the vectors exist at all: a byte-level contract written down
+twice is a contract whose second copy drifts, and the copy that drifted still passes its own file.
+
+**The budget is in the message because the key alone could not keep two of them apart.** The key is
+drawn once per **account**, so before this the same name in two budgets of one account produced a
+byte-identical digest, and an operator with full read access saw that equality — which NFR-014
+forbids. It sits in the **fourth** field, where the narrative grammar keeps its row id, so the two
+codecs read alike. The value is **refused, never folded**: it arrives from one route in one
+spelling, and folding would invent a second spelling at the writing end, where the damage cannot be
+undone. `''` is the case worth naming — the old grammar had an empty field near that position, so a
+half-finished refactor passing it computes one value for every budget and hands back the whole
+defect wearing a digest that looks flawless.
 
 **Deterministic, and that is the whole trade.** One name, one account, one field always gives the
 same value, which is what lets a uniqueness constraint and an equality lookup work over data the
 operator cannot read. What it costs is that the operator learns *which rows share a name*, and that
 anybody holding the index key can dictionary-attack a name they can guess. Neither is a defect to
 close here; both are why the key is per **account** and never global, so nothing learned about one
-account transfers to another.
+account transfers to another, and why the budget is in the message rather than in a second key.
 
 **The message takes no row identifier, and that omission is the operation.** A blind index has to be
 **equal** across rows — that is exactly what a uniqueness constraint over payee names and a lookup
@@ -1256,7 +1267,8 @@ as dead weight is choosing the migration that cannot be done.
 **A field is looked up as a *pair*, never as two membership tests.** `payees` is a real table and
 `description` is a real column, and `payees.description` is not one of the four; two independent
 questions both answer yes to it and hand back an index over a column nothing encrypts. The refusal
-is `refuseUnindexedField`, which scans for one entry whose table **and** column both match. It is
+is `refuseInvalidIndexBinding`, which scans for one entry whose table **and** column both match,
+and judges the budget's spelling in the same call. It is
 the same rule `refuseInvalidBinding` keeps next door, and it is stated here because the shape a
 reader copies is the one in front of them. **Nothing running can currently tell the two shapes
 apart**, and the custody spec says so at the fixture it drives the case from: with `name` the column
@@ -1276,7 +1288,8 @@ requirement's list in both directions.
 
 **All three operations judge their argument before they look at whether a key is held, through a
 refusal the owning codec exports.** `refuseInvalidBinding` for the two narrative ones,
-`refuseUnindexedField` for this one; each is called **by name and for itself**, never as a builder
+`refuseInvalidIndexBinding` for this one; each is called **by name and for itself**, never as a
+builder
 whose answer is thrown away — a statement whose only visible effect is a throw is what a reader
 deletes on the next tidy-up, with every round trip in the suite still green. Ordered the other way,
 a caller's defect is *reported* to an unlocked tab and *swallowed* by a locked one, which is to say

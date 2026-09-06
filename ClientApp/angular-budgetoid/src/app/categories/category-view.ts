@@ -49,7 +49,10 @@
 // and would carry a fourth sealed column into a view as though it were text the
 // day this row gains one, with nothing red.
 import type { CategoryDto } from '@app-core/api/categories-api.service';
-import type { BlindIndexedField } from '@app-core/security/blind-index';
+import type {
+  BlindIndexBinding,
+  BlindIndexedField,
+} from '@app-core/security/blind-index';
 import type { NarrativeFieldBinding } from '@app-core/security/narrative-cipher';
 import type {
   NarrativeOpener,
@@ -82,6 +85,21 @@ export const CATEGORY_NAME_FIELD = {
  */
 export function categoryNameBinding(rowId: string): NarrativeFieldBinding {
   return { ...CATEGORY_NAME_FIELD, rowId };
+}
+
+/**
+ * The binding one category's name is keyed under for a lookup or a column.
+ *
+ * A budget and no row, which is the inverse of {@link categoryNameBinding} in
+ * both halves: equal names across rows must key alike or the server's unique
+ * index enforces nothing, and two budgets of one account must not, or an
+ * operator reading both sees which words they share. `blind-index.ts` argues it.
+ *
+ * `budgetId` is what `GET /api/me` said, in the spelling it said it; the codec
+ * refuses any other and nothing here folds one.
+ */
+export function categoryNameIndexBinding(budgetId: string): BlindIndexBinding {
+  return { ...CATEGORY_NAME_FIELD, budgetId };
 }
 
 /**

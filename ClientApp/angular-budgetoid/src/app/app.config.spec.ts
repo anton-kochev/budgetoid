@@ -58,7 +58,11 @@ describe('appConfig', () => {
       initialize: () => Promise.resolve(),
     };
     const me: Pick<MeApiService, 'getSessionOwner'> = {
-      getSessionOwner: () => of({ email: 'visitor@budgetoid.app' }),
+      getSessionOwner: () =>
+        of({
+          budgetId: '3f5b0a91-7c24-4a1e-9d3b-6e8f0c2a5471',
+          email: 'visitor@budgetoid.app',
+        }),
     };
     const oAuth: Pick<OAuthService, 'getIdToken'> = {
       getIdToken: () => '',

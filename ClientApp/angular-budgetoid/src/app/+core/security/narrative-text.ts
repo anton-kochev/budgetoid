@@ -99,7 +99,7 @@
 // write. A third function type here would be exactly the thing the paragraph
 // above says these two stopped being: named nowhere, assignable from nothing,
 // symmetry standing in for a caller.
-import type { BlindIndexedField } from './blind-index';
+import type { BlindIndexBinding } from './blind-index';
 import type { NarrativeFieldBinding } from './narrative-cipher';
 
 /**
@@ -204,19 +204,30 @@ export type NarrativeOpener = (
  * one class holds and no member gives out. A mapper cannot be handed the key,
  * so it is handed this.
  *
- * Takes a field and **no row id**, which is the whole shape of the operation
- * and the deliberate inverse of {@link NarrativeOpener}'s binding: an index has
- * to be *equal* for equal names across rows, where a narrative value must be
- * bound to exactly one. `blind-index.ts` argues it at the message itself.
+ * Takes a binding carrying the **budget** and **no row id**, which is the whole
+ * shape of the operation and the deliberate inverse of
+ * {@link NarrativeOpener}'s binding: an index has to be *equal* for equal names
+ * across rows, where a narrative value must be bound to exactly one. What it is
+ * *not* equal across is two tenancies of one account, which is the fourth field
+ * of the message and the correlation NFR-014 refuses. `blind-index.ts` argues
+ * both at the message itself.
  *
- * Rejects on a pair the codec refuses — a table and a column that are not one
+ * **A binding rather than a pair, and never a closure that captured the
+ * tenancy.** An indexer built once over a budget and handed a pair thereafter
+ * reads tidier and hides the one mistake the fourth field exists to make
+ * impossible: a caller that never learned which tenancy it was in keys under
+ * whatever the closure was built with, silently and forever. Required on the
+ * argument, a forgotten tenancy is a compile error at every call site instead.
+ *
+ * Rejects on a binding the codec refuses — a table and a column that are not one
  * of the four it lists, asked as a pair, so a real table beside a column
- * belonging to another one is refused too. That it stays a rejection is the
- * load-bearing half, for the reason {@link NarrativeOpener} gives: a caller's
- * defect turned into a word a screen renders is a bug wearing a UI, shown to
- * somebody who can do nothing whatever about it.
+ * belonging to another one is refused too, and a budget in any spelling but the
+ * canonical one. That it stays a rejection is the load-bearing half, for the
+ * reason {@link NarrativeOpener} gives: a caller's defect turned into a word a
+ * screen renders is a bug wearing a UI, shown to somebody who can do nothing
+ * whatever about it.
  */
 export type NarrativeIndexer = (
-  field: BlindIndexedField,
+  binding: BlindIndexBinding,
   plaintext: string,
 ) => Promise<BlindIndexValue>;

@@ -63,19 +63,20 @@ import {
   unwrapAccountKeys,
 } from './account-keys';
 // The index grammar: the operation the third member delegates to, the refusal
-// it opens with, and the pair as a **type — and never the list of four**.
-// Which pair a value belongs to is the caller's fact, exactly as the binding
-// below is: this class is handed one already assembled and has no business
-// enumerating them, and a `type` specifier inside the clause crosses nothing
-// into the bundle that a branch here could read.
+// it opens with, and the binding as a **type — and never the list of four**.
+// Which pair a value belongs to, and which tenancy it is keyed inside, are the
+// caller's facts, exactly as the binding below is: this class is handed one
+// already assembled and has no business enumerating them or asking anybody
+// which tenancy this is, and a `type` specifier inside the clause crosses
+// nothing into the bundle that a branch here could read.
 //
-// **`refuseUnindexedField` is called for itself and never for a value**, which
-// is the shape `refuseInvalidBinding` has next door and the shape both of them
-// were given for one reason: a caller that wants the refusal and not the bytes
-// asks the codec for the refusal, rather than calling a builder and dropping
-// what it built. The older form is a statement whose only visible effect is a
-// throw — what a reader deletes on the next tidy-up with every round trip in
-// the suite still green.
+// **`refuseInvalidIndexBinding` is called for itself and never for a value**,
+// which is the shape `refuseInvalidBinding` has next door and the shape both of
+// them were given for one reason: a caller that wants the refusal and not the
+// bytes asks the codec for the refusal, rather than calling a builder and
+// dropping what it built. The older form is a statement whose only visible
+// effect is a throw — what a reader deletes on the next tidy-up with every round
+// trip in the suite still green.
 //
 // So all three operations below judge their argument through a refusal the
 // codec that owns the grammar exports for the purpose, and none of them judges
@@ -87,8 +88,8 @@ import {
 // cannot drift from the check an index is actually computed under.
 import {
   computeBlindIndex,
-  refuseUnindexedField,
-  type BlindIndexedField,
+  refuseInvalidIndexBinding,
+  type BlindIndexBinding,
 } from './blind-index';
 // The two operations, the binding they take, and the two members that let this
 // class judge a caller — and deliberately not `NARRATIVE_FIELDS`. Which table
@@ -484,10 +485,10 @@ export class AccountKeyCustodyService {
   }
 
   /**
-   * Computes the blind index of `plaintext` for `field` under the account's
+   * Computes the blind index of `plaintext` for `binding` under the account's
    * index key, and hands back the value a lookup or a column keys on.
    *
-   * **It takes a field and no row id, and that omission is the whole
+   * **It takes a binding carrying no row id, and that omission is the whole
    * operation.** The index has to be *equal* for equal values across rows — that
    * is what a uniqueness constraint over a column, and a lookup that finds the
    * row somebody has just typed, are both asking of it — so a row inside the
@@ -498,6 +499,16 @@ export class AccountKeyCustodyService {
    * precisely so that two rows can never share a value, and the two rules being
    * opposites is why the codec for this is a module of its own rather than the
    * one beside it with a parameter.
+   *
+   * **What the binding does carry is the tenancy, and this class is told it
+   * rather than asking.** The index key is drawn once per account, so two
+   * tenancies of one account would otherwise key one value to one digest and let
+   * anybody holding both rows see that they hold the same word. The identifier
+   * comes down the argument because the alternative is an injected collaborator
+   * that knows which tenancy this is — an edge into the session module, which
+   * closes a cycle and puts the rule this whole class is built on one call away
+   * from being undone by somebody reusing what was already there. Nothing here
+   * learns it, holds it or has a default for it.
    *
    * Reads the account's **index** key where those two read the content key, and
    * answers `locked` on the same terms: this browser is holding no key, and the
@@ -512,24 +523,24 @@ export class AccountKeyCustodyService {
    * stated there rather than here because it is the one thing about this member
    * a reader is most likely to get backwards.
    *
-   * Rejects on a field the codec refuses — a pair that is not one of the four it
-   * lists — because that is a caller's mistake about which pair it is asking
-   * for, and not a state anybody can be told about. **Only the refusals a
-   * person can act on become a result**, the rule {@link sealField} states and
-   * this one inherits.
+   * Rejects on a binding the codec refuses — a pair that is not one of the four
+   * it lists, a tenancy in any spelling but the canonical one — because that is
+   * a caller's mistake about what it is asking for, and not a state anybody can
+   * be told about. **Only the refusals a person can act on become a result**,
+   * the rule {@link sealField} states and this one inherits.
    */
   public async blindIndex(
-    field: BlindIndexedField,
+    binding: BlindIndexBinding,
     plaintext: string,
   ): Promise<BlindIndexValue> {
-    // **The field is judged before custody is, the way it is on both operations
-    // above and for the reason `sealField` gives there.** Ordered the other way,
-    // a caller's defect is reported to an unlocked tab and swallowed by a locked
-    // one — reported, that is, exactly where nobody is looking for it — and
-    // whether a factor has been presented is not a fact about whether the caller
-    // assembled its field correctly. The judgement is the codec's in all three
-    // cases, and this file holds no second copy of the four pairs to make it
-    // with.
+    // **The binding is judged before custody is, the way it is on both
+    // operations above and for the reason `sealField` gives there.** Ordered the
+    // other way, a caller's defect is reported to an unlocked tab and swallowed
+    // by a locked one — reported, that is, exactly where nobody is looking for
+    // it — and whether a factor has been presented is not a fact about whether
+    // the caller assembled its argument correctly. The judgement is the codec's
+    // in all three cases, and this file holds no second copy of the four pairs,
+    // and no copy of the tenancy spelling, to make it with.
     //
     // Called for itself, so what is wanted is the refusal and there is no value
     // to drop: the module that owns this grammar exports the refusal, so nothing
@@ -537,7 +548,7 @@ export class AccountKeyCustodyService {
     // that refusal into a rejection — the same rule both codecs keep at their
     // own doors, and the reason this word is not decoration around a single
     // `await`.
-    refuseUnindexedField(field);
+    refuseInvalidIndexBinding(binding);
 
     const indexKey = this.#indexKey;
 
@@ -552,7 +563,7 @@ export class AccountKeyCustodyService {
     // Read before the MAC, so that what is compared afterwards is the world this
     // answer was computed in.
     const generation = this.#generation;
-    const value = await computeBlindIndex(indexKey, field, plaintext);
+    const value = await computeBlindIndex(indexKey, binding, plaintext);
 
     // **The generation, and never the key identity `sealField` compares. The two
     // neighbours need opposite instruments, and a reader who assumes the three

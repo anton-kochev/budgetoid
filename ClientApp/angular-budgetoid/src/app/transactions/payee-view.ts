@@ -20,6 +20,13 @@
 // class holds and no member gives out. That is the whole reason
 // {@link NarrativeIndexer} exists, and this is its first caller.
 //
+// **"Per budget" is true of the value as well as of the column now.** The index
+// key is drawn once per account, so until the tenancy entered the message two
+// budgets of one account produced one digest for one name — the correlation
+// NFR-014 refuses. The identifier is therefore an argument of this mapper, and
+// required: the whole migration was carried out over the compile errors a
+// required member produces at every call site.
+//
 // **A payee whose name did not open has `nameKey: null`, and it can never
 // match anything.** Two wrong shapes are available here and both are quiet. The
 // first is keying the *wire* value: it produces a real 43-character string that
@@ -31,6 +38,13 @@
 // against a real key can succeed, and the write falls through to a create that
 // the server's unique index judges — loudly, on bytes, which is the one party
 // left that can judge it.
+//
+// **A browser that has not been told its budget takes the same `null`, and it
+// is the same claim rather than a new one.** There is no key to compute, so
+// there is no key, and the two substitutes above are exactly as wrong here. It
+// costs nothing that a write can act on: a write from that browser does not
+// happen at all — `transactions.service.ts` refuses it with `unreachable` before
+// any of this is consulted — so a list of unmatched rows never reaches a create.
 //
 // **Nothing here collapses a word into a string**, the rule
 // `docs/design/components.md` states under "The locked account": no branch
@@ -45,7 +59,10 @@
 // therefore no `try` in this file, and the read path that drives it uses
 // `Promise.all` and not `allSettled`.
 import type { PayeeDto } from '@app-core/api/payees-api.service';
-import type { BlindIndexedField } from '@app-core/security/blind-index';
+import type {
+  BlindIndexBinding,
+  BlindIndexedField,
+} from '@app-core/security/blind-index';
 import type { NarrativeFieldBinding } from '@app-core/security/narrative-cipher';
 import type {
   NarrativeIndexer,
@@ -78,14 +95,31 @@ export function payeeNameBinding(rowId: string): NarrativeFieldBinding {
   return { ...PAYEE_NAME_FIELD, rowId };
 }
 
+/**
+ * The binding a payee's name is keyed under, for the match and for the column.
+ *
+ * A budget and no row — the inverse of {@link payeeNameBinding} in both halves.
+ * Equal names across rows must key alike, or `matchPayeeByIndex` finds nothing
+ * and the server's unique index enforces nothing a person can observe; two
+ * budgets of one account must not, or an operator reading both sees which
+ * counterparties they share. `blind-index.ts` argues it at the message.
+ *
+ * `budgetId` is what `GET /api/me` said, in the spelling it said it; the codec
+ * refuses any other and nothing here folds one.
+ */
+export function payeeNameIndexBinding(budgetId: string): BlindIndexBinding {
+  return { ...PAYEE_NAME_FIELD, budgetId };
+}
+
 /** One payee as this client may know it. */
 export interface PayeeView {
   readonly id: string;
   /** The opened name, or the reason there is none. Never `''` and never `'—'`. */
   readonly name: NarrativeText;
   /**
-   * The blind index over the opened name, or `null` when there is no name to
-   * key: the row did not open, or this browser is holding no index key.
+   * The blind index over the opened name, or `null` when there is nothing to
+   * key it with: the row did not open, this browser is holding no index key, or
+   * it has not been told which budget it is in.
    *
    * `null` is not a key, so a row carrying it matches nothing — the head of
    * this file argues why the two available substitutes are both silent.
@@ -96,11 +130,19 @@ export interface PayeeView {
 /**
  * Turns one payee the API sent into the row this client matches and renders.
  *
+ * `budgetId` is the tenancy the index is keyed inside, or `null` when this
+ * browser has not been told which one it is in. It is a parameter rather than a
+ * value this file reaches for, so a mapper still takes exactly the capabilities
+ * it needs and a `TestBed` is still not one of them — and it is **required**,
+ * because the compile error a required member produces at every call site is the
+ * whole net the tenancy was added over.
+ *
  * Rejects on whatever `open` or `index` rejects on, because those are facts
  * about the call and not about the row.
  */
 export async function toPayeeView(
   dto: PayeeDto,
+  budgetId: string | null,
   open: NarrativeOpener,
   index: NarrativeIndexer,
 ): Promise<PayeeView> {
@@ -108,12 +150,14 @@ export async function toPayeeView(
 
   // Asked before the index, and the early return is not an optimisation: there
   // is no plaintext to key, and every value that could stand in for one — the
-  // wire bytes, the empty string — produces a key that matches something.
-  if (name.state !== 'text') {
+  // wire bytes, the empty string — produces a key that matches something. An
+  // unknown tenancy joins the same arm for the same reason: there is no key to
+  // compute, and the head of this file argues why that costs a write nothing.
+  if (name.state !== 'text' || budgetId === null) {
     return { id: dto.id, name, nameKey: null };
   }
 
-  const indexed = await index(PAYEE_NAME_FIELD, name.value);
+  const indexed = await index(payeeNameIndexBinding(budgetId), name.value);
 
   return {
     id: dto.id,

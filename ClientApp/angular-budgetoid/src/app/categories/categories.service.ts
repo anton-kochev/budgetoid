@@ -29,6 +29,16 @@
 // column says "nobody wrote one", and the write, the response and every later
 // read would all agree with each other and be wrong.
 //
+// **The index is keyed inside a budget, and a browser that does not know which
+// one writes nothing and says `unreachable`.** `accounts.service.ts` argues the
+// whole of it at its own copy: the identifier comes from `SessionService`, which
+// reads it off the answer the `APP_INITIALIZER` already awaits, and the word is
+// `unreachable` rather than `locked` because no factor can supply a budget — so
+// `locked`'s advice cannot come true of it, while a press a minute later can.
+// The tenancy is asked for **before** the first seal for that reason, which on
+// this screen also spares the note a seal on a write that was never going to
+// happen.
+//
 // **An empty note posts `null` and seals nothing, and a whitespace-only one is
 // a note.** `''` is not a legal envelope and answers 400, so `''` is how this
 // screen says "no note". `'   '` is not `''`: the client may not alter what it
@@ -139,13 +149,14 @@ import {
   AccountKeyCustodyService,
   type AccountKeyStatus,
 } from '@app-core/security/account-key-custody.service';
-import type { BlindIndexedField } from '@app-core/security/blind-index';
+import type { BlindIndexBinding } from '@app-core/security/blind-index';
 import type { NarrativeFieldBinding } from '@app-core/security/narrative-cipher';
 import { mintNarrativeRowId } from '@app-core/security/narrative-row-id';
 import type {
   NarrativeOpener,
   NarrativeText,
 } from '@app-core/security/narrative-text';
+import { SessionService } from '@app-core/session/session.service';
 import {
   Observable,
   Subject,
@@ -160,16 +171,16 @@ import {
   tap,
 } from 'rxjs';
 import {
-  CATEGORY_GROUP_NAME_FIELD,
   categoryGroupDescriptionBinding,
   categoryGroupNameBinding,
+  categoryGroupNameIndexBinding,
   toCategoryGroupView,
   type CategoryGroupView,
 } from './category-group-view';
 import {
-  CATEGORY_NAME_FIELD,
   categoryDescriptionBinding,
   categoryNameBinding,
+  categoryNameIndexBinding,
   toCategoryView,
   type CategoryView,
 } from './category-view';
@@ -211,12 +222,21 @@ type LoadOutcome =
   | { readonly state: 'failed' };
 
 // One narrative row on its way to its columns: the name pair and the note, or
-// nothing at all. There is no half of this value.
-interface SealedRow {
-  readonly name: string;
-  readonly nameKey: string;
-  readonly description: string | null;
-}
+// the word the whole write ends on. There is no half of this value.
+//
+// A union rather than `SealedRow | null`, because there are two ways to have
+// nothing to post and they are two different next steps for a person: a browser
+// holding no keys is `locked` and wants a factor, a browser that has not been
+// told its budget is `unreachable` and wants a moment. `null` for both would
+// make each of the four callers invent one of them.
+type SealedRow =
+  | {
+      readonly state: 'sealed';
+      readonly name: string;
+      readonly nameKey: string;
+      readonly description: string | null;
+    }
+  | { readonly state: 'refused'; readonly outcome: WriteOutcome };
 
 // What a screen just typed, as the word a list holds. `''` becomes `null`
 // because that is what went on the wire — patching it to an empty word would
@@ -294,6 +314,10 @@ export class CategoriesService {
   readonly #groupsApi = inject(CategoryGroupsApiService);
   readonly #categoriesApi = inject(CategoriesApiService);
   readonly #custody = inject(AccountKeyCustodyService);
+  // The one reader of the tenancy in this file, injected here rather than
+  // reached for from custody — which holds no such value on purpose, because
+  // that edge closes a cycle. `accounts.service.ts` states it at its own copy.
+  readonly #session = inject(SessionService);
   readonly #groups = signal<readonly CategoryGroupView[] | null>(null);
   readonly #categories = signal<readonly CategoryView[] | null>(null);
   readonly #loading = signal(false);
@@ -483,16 +507,18 @@ export class CategoriesService {
     const id = (this.#draftGroupId ??= mintNarrativeRowId());
     const sealed = await this.#sealRow(
       categoryGroupNameBinding(id),
-      CATEGORY_GROUP_NAME_FIELD,
+      categoryGroupNameIndexBinding,
       categoryGroupDescriptionBinding(id),
       group,
     );
 
-    if (sealed === null) {
-      // Nothing was sent, so there is no answer to classify. The screen's own
-      // locked notice is its account of this, which is why the chapter's table
-      // gives the state no sentence.
-      return { state: 'locked' };
+    if (sealed.state === 'refused') {
+      // Nothing was sent, so there is no answer to classify — and the word is
+      // the one the step that refused chose, because only it knows which of the
+      // two facts was missing. The screen's own locked notice is its account of
+      // the first, which is why the chapter's table gives that state no
+      // sentence.
+      return sealed.outcome;
     }
 
     this.#loading.set(true);
@@ -541,13 +567,13 @@ export class CategoriesService {
     // The row's **existing** identifier. Nothing is minted on this path.
     const sealed = await this.#sealRow(
       categoryGroupNameBinding(id),
-      CATEGORY_GROUP_NAME_FIELD,
+      categoryGroupNameIndexBinding,
       categoryGroupDescriptionBinding(id),
       group,
     );
 
-    if (sealed === null) {
-      return { state: 'locked' };
+    if (sealed.state === 'refused') {
+      return sealed.outcome;
     }
 
     this.#loading.set(true);
@@ -662,13 +688,13 @@ export class CategoriesService {
     const id = (this.#draftCategoryId ??= mintNarrativeRowId());
     const sealed = await this.#sealRow(
       categoryNameBinding(id),
-      CATEGORY_NAME_FIELD,
+      categoryNameIndexBinding,
       categoryDescriptionBinding(id),
       category,
     );
 
-    if (sealed === null) {
-      return { state: 'locked' };
+    if (sealed.state === 'refused') {
+      return sealed.outcome;
     }
 
     this.#loading.set(true);
@@ -712,13 +738,13 @@ export class CategoriesService {
     // The row's **existing** identifier. Nothing is minted on this path.
     const sealed = await this.#sealRow(
       categoryNameBinding(id),
-      CATEGORY_NAME_FIELD,
+      categoryNameIndexBinding,
       categoryDescriptionBinding(id),
       category,
     );
 
-    if (sealed === null) {
-      return { state: 'locked' };
+    if (sealed.state === 'refused') {
+      return sealed.outcome;
     }
 
     this.#loading.set(true);
@@ -928,29 +954,52 @@ export class CategoriesService {
     );
   }
 
-  // Both halves of the name, and the note beside them, or nothing at all. The
-  // order is seal, index, seal — and a locked answer returns before the next
-  // call, because a browser holding no content key holds no index key either,
-  // so every later call would answer `locked` too and buy nothing but a round
-  // of work.
+  // Both halves of the name, and the note beside them, or the word the write
+  // ends on. The order is budget, seal, index, seal — and a locked answer
+  // returns before the next call, because a browser holding no content key holds
+  // no index key either, so every later call would answer `locked` too and buy
+  // nothing but a round of work.
+  //
+  // **The tenancy is asked for first, and the order decides which advice a
+  // person is given when both facts are missing.** A factor cannot supply a
+  // budget, so on an account that is locked *and* unplaced the `locked` reading
+  // sends somebody through a ceremony and lands them back here, while
+  // `unreachable`'s — try again in a minute — can work. It also spares the note
+  // a seal that was never going to be posted.
+  //
+  // **The index binding arrives as the function that builds it, never as a pair
+  // this file completes.** Which pair a row belongs to is the view module's
+  // fact, exactly as the two narrative bindings above are, and a `{ ...field,
+  // budgetId }` written here would be a second place bindings are assembled —
+  // one that could be given a row id, or the wrong tenancy, with nothing in the
+  // view module able to see it.
   async #sealRow(
     nameBinding: NarrativeFieldBinding,
-    nameField: BlindIndexedField,
+    nameIndexBinding: (budgetId: string) => BlindIndexBinding,
     descriptionBinding: NarrativeFieldBinding,
     text: CategoryText,
-  ): Promise<SealedRow | null> {
+  ): Promise<SealedRow> {
+    const budgetId = this.#session.budgetId();
+
+    if (budgetId === null) {
+      return { state: 'refused', outcome: { state: 'unreachable' } };
+    }
+
     const sealedName = await this.#custody.sealField(nameBinding, text.name);
 
     if (sealedName.state === 'locked') {
-      return null;
+      return { state: 'refused', outcome: { state: 'locked' } };
     }
 
     // The **same text** the seal ran over, never a trimmed or folded copy of
     // it. Folding is the index codec's own job and it does it inside.
-    const indexed = await this.#custody.blindIndex(nameField, text.name);
+    const indexed = await this.#custody.blindIndex(
+      nameIndexBinding(budgetId),
+      text.name,
+    );
 
     if (indexed.state === 'locked') {
-      return null;
+      return { state: 'refused', outcome: { state: 'locked' } };
     }
 
     // `''` exactly, and never `.trim()`: a note of spaces is a note somebody
@@ -958,6 +1007,7 @@ export class CategoriesService {
     // blank one is refused, because refusing is all a validator does.
     if (text.description === '') {
       return {
+        state: 'sealed',
         description: null,
         name: sealedName.wire,
         nameKey: indexed.value,
@@ -970,10 +1020,11 @@ export class CategoriesService {
     );
 
     if (sealedNote.state === 'locked') {
-      return null;
+      return { state: 'refused', outcome: { state: 'locked' } };
     }
 
     return {
+      state: 'sealed',
       description: sealedNote.wire,
       name: sealedName.wire,
       nameKey: indexed.value,

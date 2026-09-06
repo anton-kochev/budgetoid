@@ -28,6 +28,19 @@
 // whose whole purpose is that equal names collide, and a blind index cannot be
 // recomputed after the fact because the plaintext behind it is encrypted.
 //
+// **Every index is keyed inside a budget, and a browser that does not know
+// which one writes nothing and says `unreachable`.** `accounts.service.ts`
+// argues the shared half at its own copy: the identifier comes from
+// `SessionService`, off the answer the `APP_INITIALIZER` already awaits, and the
+// word is `unreachable` rather than `locked` because no factor can supply a
+// budget — so `locked`'s advice cannot come true of it, while a press a minute
+// later can. What is this file's own is that it refuses **at the top of the
+// write** rather than inside the counterparty step: the note is sealed first,
+// and a browser with no tenancy would seal one for a write that cannot be made.
+// The read path takes it as a `null` argument instead of refusing, because
+// opening names is worth doing whatever the tenancy is — `payee-view.ts` argues
+// why a list of unmatched rows can never reach a create.
+//
 // **Every exit that writes nothing says so, and `add` answers a word rather
 // than `void`.** Five paths end this write with no row on the server, and an
 // exit that returns in silence is from outside indistinguishable from a write
@@ -195,6 +208,7 @@ import type {
   NarrativeIndexer,
   NarrativeOpener,
 } from '@app-core/security/narrative-text';
+import { SessionService } from '@app-core/session/session.service';
 import {
   EMPTY,
   Observable,
@@ -213,9 +227,9 @@ import {
 } from '../categories/category-group-view';
 import { toCategoryView, type CategoryView } from '../categories/category-view';
 import {
-  PAYEE_NAME_FIELD,
   matchPayeeByIndex,
   payeeNameBinding,
+  payeeNameIndexBinding,
   toPayeeView,
   type PayeeView,
 } from './payee-view';
@@ -290,6 +304,10 @@ export class TransactionsService {
   readonly #categoryGroupsApi = inject(CategoryGroupsApiService);
   readonly #categoriesApi = inject(CategoriesApiService);
   readonly #custody = inject(AccountKeyCustodyService);
+  // The one reader of the tenancy in this file, injected here rather than
+  // reached for from custody — which holds no such value on purpose, because
+  // that edge closes a cycle. `accounts.service.ts` states it at its own copy.
+  readonly #session = inject(SessionService);
   readonly #transactions = signal<readonly TransactionView[] | null>(null);
   readonly #payees = signal<readonly PayeeView[] | null>(null);
   readonly #categoryGroups = signal<readonly CategoryGroupView[]>([]);
@@ -313,8 +331,8 @@ export class TransactionsService {
   // `this.#custody.openField` and never `this.#custody.blindIndex`.
   readonly #open: NarrativeOpener = (binding, wire) =>
     this.#custody.openField(binding, wire);
-  readonly #index: NarrativeIndexer = (field, plaintext) =>
-    this.#custody.blindIndex(field, plaintext);
+  readonly #index: NarrativeIndexer = (binding, plaintext) =>
+    this.#custody.blindIndex(binding, plaintext);
 
   public readonly transactions = this.#transactions.asReadonly();
   public readonly payees = this.#payees.asReadonly();
@@ -526,6 +544,23 @@ export class TransactionsService {
     // there is one `const`; and it is `??=` rather than a fresh mint, because a
     // press that follows a refusal has to carry the id the refused press did.
     const id = (this.#draftTransactionId ??= mintNarrativeRowId());
+    // **Read once, at the top, and above the seal.** Every index this write
+    // takes is keyed inside it, so a browser that has not been told which budget
+    // it is in cannot resolve a counterparty and must not write a transaction
+    // naming none. Asked here rather than inside the counterparty step, the note
+    // is not sealed for a write that cannot be made; and read once rather than
+    // twice, so the create and the match cannot key under two tenancies.
+    //
+    // `unreachable` and deliberately not `locked`: no factor can supply a
+    // budget, so the advice `locked` carries — present one — cannot come true of
+    // this, while the advice `unreachable` carries can.
+    const budgetId = this.#session.budgetId();
+
+    if (budgetId === null) {
+      this.#report('the budget this entry belongs to is not known');
+
+      return { state: 'unreachable' };
+    }
 
     this.#loading.set(true);
 
@@ -550,7 +585,7 @@ export class TransactionsService {
         return { state: 'locked' };
       }
 
-      const payee = await this.#resolvePayee(transaction.payee);
+      const payee = await this.#resolvePayee(transaction.payee, budgetId);
 
       if (payee.state === 'abandoned') {
         // Already reported, by the step that decided it: only that step knows
@@ -608,7 +643,13 @@ export class TransactionsService {
       : { state: 'sealed', wire: sealed.wire };
   }
 
-  async #resolvePayee(plaintext: string): Promise<ResolvedPayee> {
+  // `budgetId` is `add`'s, handed down rather than read again: one write may not
+  // key two of its own values inside two tenancies, and the only way to promise
+  // that is for there to be one read.
+  async #resolvePayee(
+    plaintext: string,
+    budgetId: string,
+  ): Promise<ResolvedPayee> {
     if (plaintext === '') {
       return { state: 'none' };
     }
@@ -619,7 +660,10 @@ export class TransactionsService {
     // holding no index key cannot tell whether this counterparty is already on
     // the list, and creating one anyway is how a budget grows a second row for
     // a name it already has.
-    const indexed = await this.#index(PAYEE_NAME_FIELD, plaintext);
+    const indexed = await this.#index(
+      payeeNameIndexBinding(budgetId),
+      plaintext,
+    );
 
     if (indexed.state === 'locked') {
       this.#report('the counterparty could not be keyed');
@@ -631,7 +675,7 @@ export class TransactionsService {
     const match = matchPayeeByIndex(held, indexed.value);
 
     return match === null
-      ? await this.#createPayee(plaintext, indexed.value)
+      ? await this.#createPayee(plaintext, indexed.value, budgetId)
       : { state: 'resolved', id: match.id };
   }
 
@@ -640,6 +684,7 @@ export class TransactionsService {
   async #createPayee(
     plaintext: string,
     matchKey: string,
+    budgetId: string,
   ): Promise<ResolvedPayee> {
     const id = this.#drawPayeeId(matchKey);
     const sealed = await this.#custody.sealField(
@@ -660,7 +705,14 @@ export class TransactionsService {
     // values taken either side of it is the only evidence this service can
     // gather that one account owns both halves of the row it is about to
     // write. A `locked` here is the same refusal by a louder route.
-    const nameKey = await this.#index(PAYEE_NAME_FIELD, plaintext);
+    // The **same** tenancy the miss was decided under, handed down rather than
+    // read again: two reads either side of a session change would key one row's
+    // column and one row's match inside two budgets, and the comparison below
+    // would then be a comparison of two different questions.
+    const nameKey = await this.#index(
+      payeeNameIndexBinding(budgetId),
+      plaintext,
+    );
 
     if (nameKey.state === 'locked' || nameKey.value !== matchKey) {
       // `locked` for both arms, and the two are not the same event: one is a
@@ -815,8 +867,16 @@ export class TransactionsService {
 
     try {
       const response = await firstValueFrom(this.#payeesApi.getPayees());
+      // The tenancy is read once for the whole list, so every row of one answer
+      // is keyed inside one budget however long the opens take. `null` is passed
+      // rather than refused: opening the names is worth doing whatever this
+      // browser has been told, and `payee-view.ts` argues why a list of rows
+      // carrying no key can never reach a create.
+      const budgetId = this.#session.budgetId();
       const views = await Promise.all(
-        response.items.map((dto) => toPayeeView(dto, this.#open, this.#index)),
+        response.items.map((dto) =>
+          toPayeeView(dto, budgetId, this.#open, this.#index),
+        ),
       );
 
       // Published only by the newest read. An open plus a MAC per row is

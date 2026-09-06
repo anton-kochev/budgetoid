@@ -1594,6 +1594,11 @@ first appears:
   learn that a payee and a category are called the same thing.
 - **Not across accounts.** The index key is per account, so nothing learned about one transfers to
   another. Two people who both record the same shop key it to two different codes.
+- **Not across budgets.** The message names the budget too, so one name in two budgets of one
+  account is two unrelated codes. It did not always: the key alone is per account, and until the
+  budget was written into the message an operator could see that two of somebody's budgets held a
+  payee of the same name — without ever learning the name. That was the one axis this list used to
+  get wrong, and the copy may not go back to claiming it.
 - **Across time, and that is the one that is left.** A ciphertext changes on every save, because a
   fresh nonce is drawn for each one; the code changes only when the name does. So a rename is
   visible as a rename, a save that left the name alone is visible as one, and a name coming back —

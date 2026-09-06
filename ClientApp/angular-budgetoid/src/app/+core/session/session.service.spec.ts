@@ -10,7 +10,11 @@ import { SessionService } from './session.service';
 // has no local evidence at all about who the visitor is. Asking the server is
 // the only way to find out, which makes every one of these tests a test about
 // how an *answer that did not arrive* is read.
-const ME: MeDto = { email: 'owner@budgetoid.test' };
+const BUDGET_ID = '3f5b0a91-7c24-4a1e-9d3b-6e8f0c2a5471';
+const ME: MeDto = {
+  budgetId: BUDGET_ID,
+  email: 'owner@budgetoid.test',
+};
 
 // What Angular hands a subscriber when the request never reached a server: the
 // backend rejects, and `HttpClient` reports that as status `0` with the
@@ -112,6 +116,87 @@ describe('SessionService', () => {
 
     // Assert
     expect(service.status()).toBe('authenticated');
+  });
+
+  // **The budget rides on the answer the probe already asks for.** It is the
+  // fourth field of every blind-index message, so without it no name can be
+  // written to a blind-indexed column at all — and it is read here rather than
+  // by a request of its own precisely because the initializer awaits this
+  // promise, which is what puts the identifier in place before the first route
+  // activates.
+  it('publishes the budget the read named', async () => {
+    // Arrange
+    api.getSessionOwner.mockReturnValue(of(ME));
+
+    // The guard that keeps the assertion honest: nothing was holding this value
+    // before the read, so what is asserted below came out of the answer.
+    expect(service.budgetId()).toBeNull();
+
+    // Act
+    await service.probe();
+
+    // Assert
+    expect(service.budgetId()).toBe(BUDGET_ID);
+  });
+
+  // **The spelling is passed through and never repaired.** The codec that owns
+  // the grammar refuses anything but the canonical form, and a fold made here
+  // would invent a second spelling of a value that has one — at the writing end,
+  // where every row keyed under the invented spelling is a row no later lookup
+  // reproduces, with nothing on either side of the wire able to see it.
+  it('publishes the budget in the spelling the read used', async () => {
+    // Arrange
+    const shouted = BUDGET_ID.toUpperCase();
+    api.getSessionOwner.mockReturnValue(of({ ...ME, budgetId: shouted }));
+
+    // Act
+    await service.probe();
+
+    // Assert
+    expect(service.budgetId()).toBe(shouted);
+  });
+
+  // **A body carrying no budget is not a failed probe**, and that is the one
+  // place this file departs from `me-api.service.ts`'s "refuse, never coerce"
+  // rule — because a refusal here would take the *status* down with it. The
+  // answer still says there is a session and whose it is; reading it as
+  // `unreachable` signs somebody out over a version skew. `null` is the honest
+  // reading: signed in, tenancy unknown, and every write says so.
+  it.each([
+    { why: 'a body naming no budget', body: {} },
+    { why: 'a budget that is not a spelling at all', body: { budgetId: 42 } },
+    { why: 'an empty budget', body: { budgetId: '' } },
+  ])('stays authenticated and holds no budget for $why', async ({ body }) => {
+    // Arrange
+    api.getSessionOwner.mockReturnValue(
+      of({ email: ME.email, ...body } as MeDto),
+    );
+
+    // Act
+    await service.probe();
+
+    // Assert
+    expect(service.status()).toBe('authenticated');
+    expect(service.budgetId()).toBeNull();
+  });
+
+  // A read that did not land is not a claim about which budget anybody is in,
+  // and a stale identifier left standing would be keyed into the values written
+  // by whoever comes back next.
+  it('holds no budget when the read fails', async () => {
+    // Arrange
+    api.getSessionOwner.mockReturnValueOnce(of(ME));
+    await service.probe();
+    // The first probe really did publish one. Without this the assertion below
+    // holds on a service that never publishes a budget at all.
+    expect(service.budgetId()).toBe(BUDGET_ID);
+    api.getSessionOwner.mockReturnValue(throwError(() => NETWORK_FAILURE));
+
+    // Act
+    await service.probe();
+
+    // Assert
+    expect(service.budgetId()).toBeNull();
   });
 
   // 401 is the server saying it knows who is asking and the answer is nobody.
@@ -237,29 +322,95 @@ describe('SessionService', () => {
     expect(touchedMembersOf(custody)).toEqual(['lock']);
   });
 
+  // **The budget is dropped beside the keys, and for the same reason.** It is a
+  // fact about the session that just ended, and a browser that kept it would
+  // fold the previous occupant's tenancy into the first value the next one
+  // writes — through the one door the server cannot see, since it holds no index
+  // key and can never recompute a digest to check against.
+  it('drops the budget when the session ends', async () => {
+    // Arrange
+    api.getSessionOwner.mockReturnValue(of(ME));
+    await service.probe();
+    // The identifier really was there. Without this the assertion below holds
+    // on a service that never publishes one.
+    expect(service.budgetId()).toBe(BUDGET_ID);
+
+    // Act
+    service.ended();
+
+    // Assert
+    expect(service.budgetId()).toBeNull();
+  });
+
   // The mirror of the transition above, and the half a reader will implement as
   // a re-probe. Arranged from `'anonymous'` reached by a real refusal, because
   // an implementation that only ever sets `'authenticated'` from `'unknown'`
   // would pass a test that started at rest.
-  it('publishes an established session without asking again', async () => {
+  it('publishes an established session without waiting to be told again', async () => {
     // Arrange
     api.getSessionOwner.mockReturnValue(throwError(() => refusal(401)));
     await service.probe();
     expect(service.status()).toBe('anonymous');
-    api.getSessionOwner.mockClear();
+    // A read that never answers, so anything this method does with one cannot
+    // be what publishes the status below.
+    api.getSessionOwner.mockReturnValue(new Subject<MeDto>());
 
     // Act
     service.established();
 
     // Assert
+    // **Synchronously, and that is the point rather than an incidental.** The
+    // 201 that established the session set the cookie in the same breath, so
+    // asking the server to restate the fact costs a round trip at the happiest
+    // moment of the flow and has `'unreachable'` among its answers — a person
+    // who just created an account shown a client that is not sure they exist.
+    // The caller navigates on the line after this one, so the status has to be
+    // true before any answer can arrive.
     expect(service.status()).toBe('authenticated');
-    // The no-request half is the point rather than an incidental. The 201 that
-    // established the session set the cookie in the same breath, so a re-probe
-    // asks the server to restate a fact it has just stated — at a round trip's
-    // cost, at the happiest moment of the flow, and with `'unreachable'` among
-    // its answers. A person who just created an account would then be shown a
-    // client that is not sure they exist.
-    expect(api.getSessionOwner).not.toHaveBeenCalled();
+  });
+
+  // **The one thing that *is* asked for, and it is not the same shape of
+  // question.** The status is a fact the establishing leg already stated; the
+  // budget is a fact nothing in that answer carries and nothing in this browser
+  // can derive, so reading it is not a guess replacing an answer — it is the
+  // only source there is. Without it, every write on every content screen
+  // answers `unreachable` for the rest of a session that began with a sign-in
+  // rather than with a cold load, and nothing anywhere says why.
+  it('reads the budget when a session is established', async () => {
+    // Arrange
+    api.getSessionOwner.mockReturnValue(throwError(() => refusal(401)));
+    await service.probe();
+    expect(service.budgetId()).toBeNull();
+    api.getSessionOwner.mockClear();
+    api.getSessionOwner.mockReturnValue(of(ME));
+
+    // Act
+    service.established();
+    // The read is not awaited by the method — the caller navigates on the next
+    // line — so the microtask queue is what this case waits on instead.
+    await Promise.resolve();
+
+    // Assert
+    expect(api.getSessionOwner).toHaveBeenCalledTimes(1);
+    expect(service.budgetId()).toBe(BUDGET_ID);
+  });
+
+  // **The read may not move the status, in either direction.** It carries
+  // `EXPECTS_UNAUTHENTICATED` for the reason `me-api.service.ts` writes out over
+  // `getAccountKeys`: a 401 to it is a cookie that had not landed rather than a
+  // session ending, and a failure that published `anonymous` or `unreachable`
+  // here would navigate somebody off a screen that has just succeeded.
+  it('keeps an established session when the budget read fails', async () => {
+    // Arrange
+    api.getSessionOwner.mockReturnValue(throwError(() => refusal(401)));
+
+    // Act
+    service.established();
+    await Promise.resolve();
+
+    // Assert
+    expect(service.status()).toBe('authenticated');
+    expect(service.budgetId()).toBeNull();
   });
 
   // **The asymmetry is the point, and it is the half a reader will "finish".**

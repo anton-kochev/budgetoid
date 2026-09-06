@@ -387,10 +387,22 @@ Load-bearing rules, each explained there or in the linked decision:
   callerless: `AccountKeyCustodyService` reaches both halves
   of the narrative one and the whole of the blind index, which is the only way either key can be
   applied without leaving the class that holds it. **The blind index is built**, over its own
-  grammar: `budgetoid/blind-index/v1 ⌷ table ⌷ column ⌷ normalized name`, looked up **as a pair**
-  like its neighbour, and deliberately carrying **no row id** — an index must be equal for equal
-  names across rows, which is the exact inverse of what the narrative binding requires, and why the
-  two are separate modules rather than one with a parameter. Normalization is trim → NFKC → **full
+  grammar: `budgetoid/blind-index/v1 ⌷ table ⌷ column ⌷ budgetId ⌷ normalized name`, looked up **as a
+  pair** like its neighbour, and deliberately carrying **no row id** — an index must be equal for
+  equal names across rows, which is the exact inverse of what the narrative binding requires, and
+  why the two are separate modules rather than one with a parameter. **The budget is in the message
+  and the index key is still one per account**, which is NFR-014: the key alone made one name in two
+  budgets of one account a byte-identical digest, and an operator reading the column saw that
+  equality. It sits in the **fourth** slot, where the narrative grammar keeps its row id, so the two
+  codecs read alike; the version prefix did **not** move, because no row was ever deployed under the
+  older grammar. The value is **refused, never folded** — it arrives from one route in one spelling,
+  and `''` is the case that matters, because a half-finished refactor passing it computes one value
+  for every budget and returns the whole defect wearing a flawless digest. `refuseInvalidIndexBinding`
+  makes both judgements, the pair and the spelling, the way `refuseInvalidBinding` does next door;
+  a second refusal beside it would be a second opinion about what is legal. The browser learns which
+  budget it is in from `GET /api/me` and from nowhere else — the one field of that message it cannot
+  derive — and a write whose budget is not yet known **does not happen and answers `unreachable`,
+  never `locked`**: no factor can produce a budget, so `locked`'s advice cannot come true. Normalization is trim → NFKC → **full
   case fold** → UTF-8, and the fold is a **table this repository ships** at Unicode 17.0, statuses C
   and F: `toLowerCase` is not a fold and differs on 239 code points, and the platform this builds on
   reports Unicode 16.0 and leaves 52 of the table's code points unfolded, so two clients calling

@@ -62,7 +62,10 @@ import type {
   AccountDto,
   AccountType,
 } from '@app-core/api/account-api.service';
-import type { BlindIndexedField } from '@app-core/security/blind-index';
+import type {
+  BlindIndexBinding,
+  BlindIndexedField,
+} from '@app-core/security/blind-index';
 import type { NarrativeFieldBinding } from '@app-core/security/narrative-cipher';
 import type {
   NarrativeOpener,
@@ -92,6 +95,24 @@ export const ACCOUNT_NAME_FIELD = {
  */
 export function accountNameBinding(rowId: string): NarrativeFieldBinding {
   return { ...ACCOUNT_NAME_FIELD, rowId };
+}
+
+/**
+ * The binding one account's name is keyed under for a lookup or a column.
+ *
+ * **The deliberate inverse of {@link accountNameBinding}: a budget and no row.**
+ * The index has to be equal for equal names across rows, or the unique index the
+ * server keeps over `(budget_id, name_key)` enforces nothing a person can
+ * observe. What it may *not* be equal across is two budgets of one account —
+ * every index in the account is taken under one key, so without the tenancy in
+ * the message an operator reading two rows in two budgets could see that they
+ * hold the same word without holding anything. `blind-index.ts` argues both.
+ *
+ * `budgetId` is the value `GET /api/me` said, in the spelling it said it. The
+ * codec refuses any other, and nothing here folds one.
+ */
+export function accountNameIndexBinding(budgetId: string): BlindIndexBinding {
+  return { ...ACCOUNT_NAME_FIELD, budgetId };
 }
 
 /** One account as a template may render it: the name is a word, not a string. */

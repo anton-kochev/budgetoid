@@ -41,7 +41,8 @@ import {
   type AccountKeyStatus,
   type UnlockFailure,
 } from '@app-core/security/account-key-custody.service';
-import type { BlindIndexedField } from '@app-core/security/blind-index';
+import type { WriteOutcome } from '@app-core/api/write-outcome';
+import type { BlindIndexBinding } from '@app-core/security/blind-index';
 import {
   NarrativeFieldMisuseError,
   type NarrativeFieldBinding,
@@ -52,6 +53,7 @@ import type {
   SealedField,
 } from '@app-core/security/narrative-text';
 import { ConfigurationService } from '@app-core/services/configuration.service';
+import { SessionService } from '@app-core/session/session.service';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CategoriesService } from './categories.service';
 
@@ -87,8 +89,19 @@ function sealedWire(
 // shipped fold table — this is a spec double — but enough that an index taken
 // over one spelling and an index taken over another agree where the real one
 // would.
-function indexValue(table: string, column: string, plaintext: string): string {
-  return `index(${table}.${column}|${plaintext.trim().toLowerCase()})`;
+// The tenancy every index below is keyed inside. `GET /api/me` is where the real
+// one comes from; here it is a constant, and it is folded into the value the
+// stub answers with so that a service dropping the member from the binding
+// computes a different string rather than the same one.
+const BUDGET_ID = '3f5b0a91-7c24-4a1e-9d3b-6e8f0c2a5471';
+
+function indexValue(
+  table: string,
+  column: string,
+  budgetId: string,
+  plaintext: string,
+): string {
+  return `index(${table}.${column}|${budgetId}|${plaintext.trim().toLowerCase()})`;
 }
 
 function sealedGroup(
@@ -137,7 +150,8 @@ class CustodyStub
 {
   readonly #sealCalls: { binding: NarrativeFieldBinding; plaintext: string }[] =
     [];
-  readonly #indexCalls: { field: BlindIndexedField; plaintext: string }[] = [];
+  readonly #indexCalls: { binding: BlindIndexBinding; plaintext: string }[] =
+    [];
   readonly #openCalls: { binding: NarrativeFieldBinding; wire: string }[] = [];
   readonly #status = signal<AccountKeyStatus>('unlocked');
 
@@ -185,7 +199,7 @@ class CustodyStub
   }
 
   public get indexCalls(): readonly {
-    field: BlindIndexedField;
+    binding: BlindIndexBinding;
     plaintext: string;
   }[] {
     return this.#indexCalls;
@@ -234,15 +248,20 @@ class CustodyStub
   }
 
   public blindIndex(
-    field: BlindIndexedField,
+    binding: BlindIndexBinding,
     plaintext: string,
   ): Promise<BlindIndexValue> {
-    this.#indexCalls.push({ field, plaintext });
+    this.#indexCalls.push({ binding, plaintext });
 
     return Promise.resolve(
       this.indexAnswer ?? {
         state: 'computed',
-        value: indexValue(field.table, field.column, plaintext),
+        value: indexValue(
+          binding.table,
+          binding.column,
+          binding.budgetId,
+          plaintext,
+        ),
       },
     );
   }
@@ -257,6 +276,24 @@ class CustodyStub
 
   public lock(): void {
     throw new Error('the categories service may not lock the account');
+  }
+}
+
+// The session, replaced by the one member this service reads. Stubbed rather
+// than real, because the real class reads `GET /api/me` from the
+// `APP_INITIALIZER` and `http.verify()` would then have to account for that
+// request on every case here.
+//
+// **Only `budgetId`, deliberately.** A wider stub would let a service that
+// reached for `status()`, `ended()` or `established()` go unnoticed, and this
+// service has no business asking the session anything else.
+class SessionStub implements Pick<SessionService, 'budgetId'> {
+  readonly #budgetId = signal<string | null>(BUDGET_ID);
+
+  public readonly budgetId: Signal<string | null> = this.#budgetId.asReadonly();
+
+  public setBudgetId(budgetId: string | null): void {
+    this.#budgetId.set(budgetId);
   }
 }
 
@@ -282,6 +319,7 @@ function settle(): Promise<void> {
 describe('CategoriesService', () => {
   let service: CategoriesService;
   let custody: CustodyStub;
+  let session: SessionStub;
   let http: HttpTestingController;
 
   const essentials = sealedGroup(GROUP_ID, 'Essentials', 'The bills', 0);
@@ -308,6 +346,7 @@ describe('CategoriesService', () => {
 
   beforeEach(() => {
     custody = new CustodyStub();
+    session = new SessionStub();
     TestBed.configureTestingModule({
       providers: [
         provideHttpClient(),
@@ -317,6 +356,7 @@ describe('CategoriesService', () => {
           useValue: { getConfig: () => ({ apiBaseUrl: API_ORIGIN }) },
         },
         { provide: AccountKeyCustodyService, useValue: custody },
+        { provide: SessionService, useValue: session },
         CategoriesService,
       ],
     });
@@ -671,14 +711,20 @@ describe('CategoriesService', () => {
       const request = http.expectOne(GROUPS_URL);
       const body = request.request.body as { id: string; nameKey: string };
 
+      // The whole binding, so the tenancy is asserted beside the pair and a
+      // `rowId` smuggled in is a finding rather than a member nothing looked at.
       expect(custody.indexCalls).toEqual([
         {
-          field: { table: 'category_groups', column: 'name' },
+          binding: {
+            table: 'category_groups',
+            column: 'name',
+            budgetId: BUDGET_ID,
+          },
           plaintext: 'Essentials',
         },
       ]);
       expect(body.nameKey).toBe(
-        indexValue('category_groups', 'name', 'Essentials'),
+        indexValue('category_groups', 'name', BUDGET_ID, 'Essentials'),
       );
       request.flush(sealedGroup(body.id, 'Essentials', null, 0));
       await settle();
@@ -706,7 +752,7 @@ describe('CategoriesService', () => {
         ),
         id: body.id,
         name: sealedWire('category_groups', 'name', body.id, 'Essentials'),
-        nameKey: indexValue('category_groups', 'name', 'Essentials'),
+        nameKey: indexValue('category_groups', 'name', BUDGET_ID, 'Essentials'),
       });
       request.flush(sealedGroup(body.id, 'Essentials', 'The bills', 0));
       await settle();
@@ -911,7 +957,7 @@ describe('CategoriesService', () => {
           'New note',
         ),
         name: sealedWire('category_groups', 'name', GROUP_ID, 'Renamed'),
-        nameKey: indexValue('category_groups', 'name', 'Renamed'),
+        nameKey: indexValue('category_groups', 'name', BUDGET_ID, 'Renamed'),
       });
       request.flush(null, { status: 204, statusText: 'No Content' });
       await settle();
@@ -994,7 +1040,7 @@ describe('CategoriesService', () => {
         ),
         id: body.id,
         name: sealedWire('categories', 'name', body.id, 'Groceries'),
-        nameKey: indexValue('categories', 'name', 'Groceries'),
+        nameKey: indexValue('categories', 'name', BUDGET_ID, 'Groceries'),
       });
       expect(body.id).toMatch(MINTED_ROW_ID);
       request.flush(
@@ -1024,7 +1070,11 @@ describe('CategoriesService', () => {
 
       expect(custody.indexCalls).toEqual([
         {
-          field: { table: 'categories', column: 'name' },
+          binding: {
+            table: 'categories',
+            column: 'name',
+            budgetId: BUDGET_ID,
+          },
           plaintext: 'Groceries',
         },
       ]);
@@ -1136,7 +1186,7 @@ describe('CategoriesService', () => {
           'New note',
         ),
         name: sealedWire('categories', 'name', CATEGORY_ID, 'Renamed'),
-        nameKey: indexValue('categories', 'name', 'Renamed'),
+        nameKey: indexValue('categories', 'name', BUDGET_ID, 'Renamed'),
       });
       request.flush(null, { status: 204, statusText: 'No Content' });
       await settle();
@@ -1630,6 +1680,75 @@ describe('CategoriesService', () => {
       http.expectNone(GROUPS_URL);
       expect(outcome).toEqual({ state: 'locked' });
     });
+
+    // **`unreachable` and deliberately not `locked`, on all four writes that
+    // carry a name.** Every index this screen writes is keyed inside a budget,
+    // and a browser that has not been told which one cannot compute one. No
+    // factor supplies a budget, so `locked`'s advice — present one — cannot come
+    // true of this and would send somebody through a ceremony that lands them
+    // back here; `unreachable`'s can.
+    //
+    // All four, because each of them calls the sealing helper for itself and a
+    // fifth write added later would too: a case over the group create alone
+    // would pass over a category rename that had grown its own reading.
+    it.each([
+      {
+        verb: 'a group create',
+        write: (subject: CategoriesService): Promise<WriteOutcome> =>
+          subject.addGroup({ name: 'Essentials', description: '' }),
+      },
+      {
+        verb: 'a group rename',
+        write: (subject: CategoriesService): Promise<WriteOutcome> =>
+          subject.updateGroup(GROUP_ID, {
+            name: 'Essentials',
+            description: '',
+          }),
+      },
+      {
+        verb: 'a category create',
+        write: (subject: CategoriesService): Promise<WriteOutcome> =>
+          subject.addCategory({
+            categoryGroupId: GROUP_ID,
+            name: 'Groceries',
+            description: '',
+          }),
+      },
+      {
+        verb: 'a category rename',
+        write: (subject: CategoriesService): Promise<WriteOutcome> =>
+          subject.updateCategory(CATEGORY_ID, {
+            name: 'Groceries',
+            description: '',
+          }),
+      },
+    ])(
+      'answers unreachable and sends nothing on $verb when the budget is not known',
+      async ({ write }) => {
+        // Arrange
+        session.setBudgetId(null);
+
+        // Act
+        const outcome = await write(service);
+
+        // Assert
+        expect(outcome).toEqual({ state: 'unreachable' });
+
+        // Nothing left the browser, on any of the four routes.
+        http.expectNone(GROUPS_URL);
+        http.expectNone(`${GROUPS_URL}/${GROUP_ID}`);
+        http.expectNone(CATEGORIES_URL);
+        http.expectNone(`${CATEGORIES_URL}/${CATEGORY_ID}`);
+
+        // And nothing was sealed either — neither the name nor the note. Without
+        // this the case passes over a service that sealed both, discovered it
+        // could not key the name, and threw the envelopes away, which is work
+        // done under the account's content key for a write that was never going
+        // to be made.
+        expect(custody.sealCalls).toEqual([]);
+        expect(custody.indexCalls).toEqual([]);
+      },
+    );
   });
 
   // The identifiers the two creates carry, across presses.

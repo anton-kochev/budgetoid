@@ -42,7 +42,7 @@ import {
   type AccountKeyStatus,
   type UnlockFailure,
 } from '@app-core/security/account-key-custody.service';
-import type { BlindIndexedField } from '@app-core/security/blind-index';
+import type { BlindIndexBinding } from '@app-core/security/blind-index';
 import {
   NarrativeFieldMisuseError,
   type NarrativeFieldBinding,
@@ -53,6 +53,7 @@ import type {
   SealedField,
 } from '@app-core/security/narrative-text';
 import { ConfigurationService } from '@app-core/services/configuration.service';
+import { SessionService } from '@app-core/session/session.service';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TransactionsService } from './transactions.service';
 
@@ -88,8 +89,19 @@ function sealedWire(
 // The stub's model of the real normalization: trim, then fold case. Not the
 // shipped fold table — this is a spec double — but enough that a match decided
 // on the index and a match decided on the typed text answer differently.
-function indexValue(table: string, column: string, plaintext: string): string {
-  return `index(${table}.${column}|${plaintext.trim().toLowerCase()})`;
+// The tenancy every index below is keyed inside. `GET /api/me` is where the real
+// one comes from; here it is a constant, and it is folded into the value the
+// stub answers with so that a service dropping the member from the binding
+// computes a different string rather than the same one.
+const BUDGET_ID = '3f5b0a91-7c24-4a1e-9d3b-6e8f0c2a5471';
+
+function indexValue(
+  table: string,
+  column: string,
+  budgetId: string,
+  plaintext: string,
+): string {
+  return `index(${table}.${column}|${budgetId}|${plaintext.trim().toLowerCase()})`;
 }
 
 function sealedPayee(id: string, name: string): PayeeDto {
@@ -134,7 +146,8 @@ class CustodyStub
 {
   readonly #sealCalls: { binding: NarrativeFieldBinding; plaintext: string }[] =
     [];
-  readonly #indexCalls: { field: BlindIndexedField; plaintext: string }[] = [];
+  readonly #indexCalls: { binding: BlindIndexBinding; plaintext: string }[] =
+    [];
   readonly #openCalls: { binding: NarrativeFieldBinding; wire: string }[] = [];
   readonly #status = signal<AccountKeyStatus>('unlocked');
 
@@ -189,7 +202,7 @@ class CustodyStub
   }
 
   public get indexCalls(): readonly {
-    field: BlindIndexedField;
+    binding: BlindIndexBinding;
     plaintext: string;
   }[] {
     return this.#indexCalls;
@@ -239,15 +252,20 @@ class CustodyStub
   }
 
   public blindIndex(
-    field: BlindIndexedField,
+    binding: BlindIndexBinding,
     plaintext: string,
   ): Promise<BlindIndexValue> {
-    this.#indexCalls.push({ field, plaintext });
+    this.#indexCalls.push({ binding, plaintext });
 
     return Promise.resolve(
       this.indexAnswer ?? {
         state: 'computed',
-        value: indexValue(field.table, field.column, plaintext),
+        value: indexValue(
+          binding.table,
+          binding.column,
+          binding.budgetId,
+          plaintext,
+        ),
       },
     );
   }
@@ -262,6 +280,24 @@ class CustodyStub
 
   public lock(): void {
     throw new Error('the transactions service may not lock the account');
+  }
+}
+
+// The session, replaced by the one member this service reads. Stubbed rather
+// than real, because the real class reads `GET /api/me` from the
+// `APP_INITIALIZER` and `http.verify()` would then have to account for that
+// request on every case here.
+//
+// **Only `budgetId`, deliberately.** A wider stub would let a service that
+// reached for `status()`, `ended()` or `established()` go unnoticed, and this
+// service has no business asking the session anything else.
+class SessionStub implements Pick<SessionService, 'budgetId'> {
+  readonly #budgetId = signal<string | null>(BUDGET_ID);
+
+  public readonly budgetId: Signal<string | null> = this.#budgetId.asReadonly();
+
+  public setBudgetId(budgetId: string | null): void {
+    this.#budgetId.set(budgetId);
   }
 }
 
@@ -287,6 +323,7 @@ function settle(): Promise<void> {
 describe('TransactionsService', () => {
   let service: TransactionsService;
   let custody: CustodyStub;
+  let session: SessionStub;
   let http: HttpTestingController;
 
   // What the form hands over: typed text and identifiers, nothing sealed.
@@ -306,6 +343,7 @@ describe('TransactionsService', () => {
 
   beforeEach(() => {
     custody = new CustodyStub();
+    session = new SessionStub();
     TestBed.configureTestingModule({
       providers: [
         provideHttpClient(),
@@ -315,6 +353,7 @@ describe('TransactionsService', () => {
           useValue: { getConfig: () => ({ apiBaseUrl: API_ORIGIN }) },
         },
         { provide: AccountKeyCustodyService, useValue: custody },
+        { provide: SessionService, useValue: session },
         TransactionsService,
       ],
     });
@@ -685,7 +724,7 @@ describe('TransactionsService', () => {
         {
           id: PAYEE_ID,
           name: { state: 'text', value: 'Corner Shop' },
-          nameKey: indexValue('payees', 'name', 'Corner Shop'),
+          nameKey: indexValue('payees', 'name', BUDGET_ID, 'Corner Shop'),
         },
       ]);
     });
@@ -1051,9 +1090,11 @@ describe('TransactionsService', () => {
         (request.request.body as { payeeId: string | null }).payeeId,
       ).toBeNull();
       expect(custody.indexCalls).toEqual([
-        // The payee list's own key, and nothing for the empty field.
+        // The payee list's own key, and nothing for the empty field. The whole
+        // binding, so the tenancy is asserted beside the pair and a `rowId`
+        // smuggled in is a finding rather than a member nothing looked at.
         {
-          field: { table: 'payees', column: 'name' },
+          binding: { table: 'payees', column: 'name', budgetId: BUDGET_ID },
           plaintext: 'Corner Shop',
         },
       ]);
@@ -1096,6 +1137,53 @@ describe('TransactionsService', () => {
       await settle();
     });
 
+    // **The counterparty of one budget does not answer for another's, and this
+    // is where a person would see it.** The account holds one index key, so
+    // before the tenancy entered the message a payee read under one budget keyed
+    // to exactly the value a write under the next one computed — and the write
+    // would file its transaction against a row belonging to somewhere else. The
+    // list is read while the browser is in one budget and the write happens while
+    // it is in another, which is what a switch between two of them looks like
+    // from here.
+    it('never reuses a payee keyed inside another budget', async () => {
+      // Arrange
+      const other = '7c1e42b8-9a05-4d63-8f77-0b2c5e9a1d34';
+
+      await loadPayees(sealedPayee(PAYEE_ID, 'Corner Shop'));
+
+      // The guard that keeps the arrangement honest: under the *same* tenancy
+      // this very list and this very name do match — the case above is that —
+      // so what changes below is the budget and nothing else.
+      expect(service.payees()).toHaveLength(1);
+      session.setBudgetId(other);
+
+      // Act
+      void service.add(typed({ payee: 'Corner Shop' }));
+      await settle();
+
+      // Assert — a create rather than a reuse, and the row it posts is a new
+      // one.
+      const create = http.expectOne(PAYEES_URL);
+      const body = create.request.body as { id: string; nameKey: string };
+
+      expect(body.id).not.toBe(PAYEE_ID);
+      expect(body.nameKey).toBe(
+        indexValue('payees', 'name', other, 'Corner Shop'),
+      );
+
+      create.flush(sealedPayee(body.id, 'Corner Shop'), {
+        status: 201,
+        statusText: 'Created',
+      });
+      await settle();
+      http
+        .expectOne(TRANSACTIONS_URL)
+        .flush(sealedTransaction(), { status: 201, statusText: 'Created' });
+      await settle();
+      http.expectOne(TRANSACTIONS_URL).flush({ items: [] });
+      await settle();
+    });
+
     it('mints, seals and creates a payee when nothing matches', async () => {
       // Arrange
       await loadPayees(sealedPayee(PAYEE_ID, 'Corner Shop'));
@@ -1114,7 +1202,7 @@ describe('TransactionsService', () => {
       expect(create.request.body).toEqual({
         id: body.id,
         name: sealedWire('payees', 'name', body.id, 'Bakery'),
-        nameKey: indexValue('payees', 'name', 'Bakery'),
+        nameKey: indexValue('payees', 'name', BUDGET_ID, 'Bakery'),
       });
       create.flush(sealedPayee(body.id, 'Bakery'), {
         status: 201,
@@ -1158,9 +1246,19 @@ describe('TransactionsService', () => {
       // `adopt()` landing between the two operations is invisible to both. The
       // pair, not the count, is what this expectation is about — a single call
       // here would mean the comparison had gone.
+      // Both inside the **same** tenancy, which is the half the pair would not
+      // have without it: two reads of the session either side of the seal would
+      // key the row's column and the row's match inside two budgets, and the
+      // comparison the create makes would then be over two different questions.
       expect(custody.indexCalls).toEqual([
-        { field: { table: 'payees', column: 'name' }, plaintext: '  Bakery  ' },
-        { field: { table: 'payees', column: 'name' }, plaintext: '  Bakery  ' },
+        {
+          binding: { table: 'payees', column: 'name', budgetId: BUDGET_ID },
+          plaintext: '  Bakery  ',
+        },
+        {
+          binding: { table: 'payees', column: 'name', budgetId: BUDGET_ID },
+          plaintext: '  Bakery  ',
+        },
       ]);
       create.flush(sealedPayee(body.id, '  Bakery  '), {
         status: 201,
@@ -1357,7 +1455,7 @@ describe('TransactionsService', () => {
         {
           id: created.id,
           name: { state: 'text', value: 'Bakery' },
-          nameKey: indexValue('payees', 'name', 'Bakery'),
+          nameKey: indexValue('payees', 'name', BUDGET_ID, 'Bakery'),
         },
       ]);
     });
@@ -1408,7 +1506,7 @@ describe('TransactionsService', () => {
         if (binding.table === 'payees') {
           custody.indexAnswer = {
             state: 'computed',
-            value: indexValue('payees', 'name', 'another account'),
+            value: indexValue('payees', 'name', BUDGET_ID, 'another account'),
           };
         }
       };
@@ -2001,6 +2099,36 @@ describe('TransactionsService', () => {
       http.expectNone(PAYEES_URL);
       http.expectNone(TRANSACTIONS_URL);
       expect(outcome).toEqual({ state: 'locked' });
+    });
+
+    // **`unreachable` and deliberately not `locked`.** Every index this write
+    // takes is keyed inside a budget, and a browser that has not been told which
+    // one cannot resolve a counterparty — so it must not write a transaction
+    // naming none either. No factor supplies a budget, so `locked`'s advice
+    // cannot come true of this and would send somebody through a ceremony that
+    // lands them back here; `unreachable`'s — the same press in a minute — can.
+    it('answers unreachable and sends nothing when the budget is not known', async () => {
+      // Arrange
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      session.setBudgetId(null);
+
+      // Act
+      const outcome = await service.add(typed({ payee: 'Corner Shop' }));
+
+      await settle();
+
+      // Assert
+      expect(outcome).toEqual({ state: 'unreachable' });
+      http.expectNone(PAYEES_URL);
+      http.expectNone(TRANSACTIONS_URL);
+
+      // And the note was not sealed on the way past. It is refused at the top of
+      // the write rather than inside the counterparty step, so nothing is sealed
+      // for a write that cannot be made — and the loading flag is put down
+      // again, or the screen waits forever on a request nobody sent.
+      expect(custody.sealCalls).toEqual([]);
+      expect(custody.indexCalls).toEqual([]);
+      expect(service.loading()).toBe(false);
     });
   });
 

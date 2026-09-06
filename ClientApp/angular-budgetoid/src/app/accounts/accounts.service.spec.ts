@@ -40,7 +40,8 @@ import {
 import { signal, type Signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import type { AccountDto } from '@app-core/api/account-api.service';
-import type { BlindIndexedField } from '@app-core/security/blind-index';
+import type { WriteOutcome } from '@app-core/api/write-outcome';
+import type { BlindIndexBinding } from '@app-core/security/blind-index';
 import {
   AccountKeyCustodyService,
   type AccountKeyStatus,
@@ -56,6 +57,7 @@ import type {
   SealedField,
 } from '@app-core/security/narrative-text';
 import { ConfigurationService } from '@app-core/services/configuration.service';
+import { SessionService } from '@app-core/session/session.service';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AccountsService } from './accounts.service';
 
@@ -78,8 +80,14 @@ function sealedWire(rowId: string, plaintext: string): string {
   return `sealed(${rowId}|${plaintext})`;
 }
 
-function indexValue(plaintext: string): string {
-  return `index(accounts.name|${plaintext})`;
+// The tenancy every index below is keyed inside. `GET /api/me` is where the real
+// one comes from; here it is a constant, and the stub folds it into the value it
+// answers with so that a service dropping the member from the binding computes a
+// different string rather than the same one.
+const BUDGET_ID = '3f5b0a91-7c24-4a1e-9d3b-6e8f0c2a5471';
+
+function indexValue(budgetId: string, plaintext: string): string {
+  return `index(accounts.name|${budgetId}|${plaintext})`;
 }
 
 function sealedAccount(id: string, name: string): AccountDto {
@@ -101,7 +109,8 @@ class CustodyStub
 {
   readonly #sealCalls: { binding: NarrativeFieldBinding; plaintext: string }[] =
     [];
-  readonly #indexCalls: { field: BlindIndexedField; plaintext: string }[] = [];
+  readonly #indexCalls: { binding: BlindIndexBinding; plaintext: string }[] =
+    [];
   readonly #openCalls: { binding: NarrativeFieldBinding; wire: string }[] = [];
   readonly #status = signal<AccountKeyStatus>('unlocked');
 
@@ -133,7 +142,7 @@ class CustodyStub
   }
 
   public get indexCalls(): readonly {
-    field: BlindIndexedField;
+    binding: BlindIndexBinding;
     plaintext: string;
   }[] {
     return this.#indexCalls;
@@ -176,13 +185,16 @@ class CustodyStub
   }
 
   public blindIndex(
-    field: BlindIndexedField,
+    binding: BlindIndexBinding,
     plaintext: string,
   ): Promise<BlindIndexValue> {
-    this.#indexCalls.push({ field, plaintext });
+    this.#indexCalls.push({ binding, plaintext });
 
     return Promise.resolve(
-      this.indexAnswer ?? { state: 'computed', value: indexValue(plaintext) },
+      this.indexAnswer ?? {
+        state: 'computed',
+        value: indexValue(binding.budgetId, plaintext),
+      },
     );
   }
 
@@ -196,6 +208,24 @@ class CustodyStub
 
   public lock(): void {
     throw new Error('the accounts service may not lock the account');
+  }
+}
+
+// The session, replaced by the one member this service reads. It is a stub
+// rather than the real class because the real one reads `GET /api/me` from the
+// `APP_INITIALIZER`, which is a request this file's `http.verify()` would then
+// have to account for on every case.
+//
+// **Only `budgetId`, deliberately.** A wider stub would let a service that
+// reached for `status()`, `ended()` or `established()` go unnoticed, and this
+// service has no business asking the session anything else.
+class SessionStub implements Pick<SessionService, 'budgetId'> {
+  readonly #budgetId = signal<string | null>(BUDGET_ID);
+
+  public readonly budgetId: Signal<string | null> = this.#budgetId.asReadonly();
+
+  public setBudgetId(budgetId: string | null): void {
+    this.#budgetId.set(budgetId);
   }
 }
 
@@ -221,10 +251,12 @@ function settle(): Promise<void> {
 describe('AccountsService', () => {
   let service: AccountsService;
   let custody: CustodyStub;
+  let session: SessionStub;
   let http: HttpTestingController;
 
   beforeEach(() => {
     custody = new CustodyStub();
+    session = new SessionStub();
     TestBed.configureTestingModule({
       providers: [
         provideHttpClient(),
@@ -234,6 +266,7 @@ describe('AccountsService', () => {
           useValue: { getConfig: () => ({ apiBaseUrl: API_ORIGIN }) },
         },
         { provide: AccountKeyCustodyService, useValue: custody },
+        { provide: SessionService, useValue: session },
         AccountsService,
       ],
     });
@@ -284,10 +317,15 @@ describe('AccountsService', () => {
     const request = http.expectOne(ACCOUNTS_URL);
     const body = request.request.body as { nameKey: string };
 
+    // The whole binding, so the tenancy is asserted beside the pair and a
+    // `rowId` smuggled in is a finding rather than a member nothing looked at.
     expect(custody.indexCalls).toEqual([
-      { field: { table: 'accounts', column: 'name' }, plaintext: 'Everyday' },
+      {
+        binding: { table: 'accounts', column: 'name', budgetId: BUDGET_ID },
+        plaintext: 'Everyday',
+      },
     ]);
-    expect(body.nameKey).toBe(indexValue('Everyday'));
+    expect(body.nameKey).toBe(indexValue(BUDGET_ID, 'Everyday'));
     request.flush(sealedAccount(EXISTING_ID, 'Everyday'));
     await settle();
   });
@@ -313,7 +351,7 @@ describe('AccountsService', () => {
       currencyCode: 'EUR',
       id: body.id,
       name: sealedWire(body.id, 'Everyday'),
-      nameKey: indexValue('Everyday'),
+      nameKey: indexValue(BUDGET_ID, 'Everyday'),
       openingBalance: 12.5,
       type: 'Savings',
     });
@@ -469,7 +507,7 @@ describe('AccountsService', () => {
 
     expect(request.request.body).toEqual({
       name: sealedWire(EXISTING_ID, 'Renamed'),
-      nameKey: indexValue('Renamed'),
+      nameKey: indexValue(BUDGET_ID, 'Renamed'),
       openingBalance: 10,
       type: 'Savings',
     });
@@ -1107,6 +1145,59 @@ describe('AccountsService', () => {
       http.expectNone(ACCOUNTS_URL);
       expect(outcome).toEqual({ state: 'locked' });
     });
+
+    // **`unreachable` and deliberately not `locked`, on both verbs.** Every
+    // index this screen writes is keyed inside a budget, and a browser that has
+    // not been told which one — a probe that never landed, or the window between
+    // an establishing leg and its own read — cannot compute one. No factor
+    // supplies a budget, so `locked`'s advice cannot come true of this and would
+    // send somebody through a ceremony that lands them back here;
+    // `unreachable`'s — the same press in a minute — can.
+    it.each([
+      {
+        verb: 'a create',
+        write: (subject: AccountsService): Promise<WriteOutcome> =>
+          subject.add({
+            name: 'Everyday',
+            type: 'Checking',
+            openingBalance: 0,
+            currencyCode: 'USD',
+          }),
+      },
+      {
+        verb: 'a rename',
+        write: (subject: AccountsService): Promise<WriteOutcome> =>
+          subject.update(EXISTING_ID, {
+            name: 'Everyday',
+            type: 'Checking',
+            openingBalance: 0,
+          }),
+      },
+    ])(
+      'answers unreachable and sends nothing on $verb when the budget is not known',
+      async ({ write }) => {
+        // Arrange
+        session.setBudgetId(null);
+
+        // Act
+        const outcome = await write(service);
+
+        // Assert
+        expect(outcome).toEqual({ state: 'unreachable' });
+
+        // Nothing left the browser, on either route.
+        http.expectNone(ACCOUNTS_URL);
+        http.expectNone(`${ACCOUNTS_URL}/${EXISTING_ID}`);
+
+        // And nothing was sealed either. Without this the case passes over a
+        // service that sealed a name, discovered it could not key it, and threw
+        // the envelope away — which is work done under the account's content key
+        // for a write that was never going to be made, and the ordering the
+        // service states.
+        expect(custody.sealCalls).toEqual([]);
+        expect(custody.indexCalls).toEqual([]);
+      },
+    );
 
     it('answers a rename’s refusal on the same terms as a create’s', async () => {
       // Arrange — the update path is its own pipe and had its own swallow, so

@@ -24,6 +24,19 @@
 // cannot see, because it holds no index key and can never recompute one. If
 // either half is `locked`, nothing is posted.
 //
+// **The index is keyed inside a budget, and a browser that does not know which
+// one writes nothing and says `unreachable`.** The identifier comes from
+// `SessionService`, which reads it off the answer the `APP_INITIALIZER` already
+// awaits, so on every ordinary visit it is there before this screen exists. When
+// it is not — a probe that never landed, the moment between an establishing leg
+// and its own read — the refusal is `unreachable` and deliberately not `locked`:
+// no factor can supply a budget, so `locked`'s advice cannot come true of it and
+// would send somebody through a ceremony that changes nothing, while
+// `unreachable`'s — try again in a minute — is exactly right. It is asked
+// **before** the seal for that reason too: reporting the recoverable fact first
+// is what keeps the advice honest on an account that is both locked and
+// unplaced.
+//
 // **Nothing is trimmed.** The client is forbidden from altering what it seals:
 // a `.trim()` here would seal one text while some later caller indexed another,
 // and the row would key perfectly to a value nothing looks up. The non-blank
@@ -187,6 +200,7 @@ import {
 } from '@app-core/security/account-key-custody.service';
 import { mintNarrativeRowId } from '@app-core/security/narrative-row-id';
 import type { NarrativeOpener } from '@app-core/security/narrative-text';
+import { SessionService } from '@app-core/session/session.service';
 import { compareNarrative } from '@app-shared/compare-narrative';
 import {
   Observable,
@@ -201,8 +215,8 @@ import {
   tap,
 } from 'rxjs';
 import {
-  ACCOUNT_NAME_FIELD,
   accountNameBinding,
+  accountNameIndexBinding,
   toAccountView,
   type AccountView,
 } from './account-view';
@@ -230,11 +244,17 @@ type LoadOutcome =
   | { readonly state: 'loaded'; readonly views: readonly AccountView[] }
   | { readonly state: 'failed' };
 
-// The name pair on its way to a column: both halves, or nothing at all.
-interface SealedName {
-  readonly wire: string;
-  readonly key: string;
-}
+// The name pair on its way to a column: both halves, or the word the whole write
+// ends on.
+//
+// A union rather than `SealedName | null`, because there are now two ways to
+// have nothing to post and they are two different next steps for a person: a
+// browser holding no keys is `locked` and wants a factor, a browser that does
+// not know its budget is `unreachable` and wants a moment. `null` for both would
+// make the caller invent one of them.
+type NameForColumn =
+  | { readonly state: 'sealed'; readonly wire: string; readonly key: string }
+  | { readonly state: 'refused'; readonly outcome: WriteOutcome };
 
 function byName(views: readonly AccountView[]): AccountView[] {
   // A copy, because `sort` mutates and the array it is handed may be the one a
@@ -251,6 +271,11 @@ function byName(views: readonly AccountView[]): AccountView[] {
 export class AccountsService {
   readonly #api = inject(AccountApiService);
   readonly #custody = inject(AccountKeyCustodyService);
+  // The one reader of the tenancy in this file. It is injected here rather than
+  // reached for from custody, which holds no such value on purpose: the edge
+  // from custody into the session module closes a cycle and puts the rule that
+  // class is built on one call from being undone.
+  readonly #session = inject(SessionService);
   readonly #accounts = signal<AccountView[] | null>(null);
   readonly #loading = signal(false);
   readonly #failed = signal(false);
@@ -405,11 +430,14 @@ export class AccountsService {
     const id = (this.#draftId ??= mintNarrativeRowId());
     const name = await this.#sealName(id, account.name);
 
-    if (name === null) {
-      // Nothing was sent, so there is no answer to classify. The account's own
-      // locked notice is the screen's account of this, which is why the
-      // chapter's table gives the state no sentence of its own.
-      return { state: 'locked' };
+    if (name.state === 'refused') {
+      // Nothing was sent, so there is no answer to classify — and the word is
+      // the one the step that refused chose, because only it knows whether the
+      // browser was holding no keys or had not been told which budget it is in.
+      // The account's own locked notice is the screen's account of the first,
+      // which is why the chapter's table gives that state no sentence of its
+      // own.
+      return name.outcome;
     }
 
     this.#loading.set(true);
@@ -458,8 +486,8 @@ export class AccountsService {
     // The row's **existing** identifier. Nothing is minted on this path.
     const name = await this.#sealName(id, account.name);
 
-    if (name === null) {
-      return { state: 'locked' };
+    if (name.state === 'refused') {
+      return name.outcome;
     }
 
     this.#loading.set(true);
@@ -530,34 +558,43 @@ export class AccountsService {
     );
   }
 
-  // Both halves or neither. The order is seal then index, and a locked seal
-  // returns before an index is asked for — a browser holding no content key
-  // holds no index key either, so the second call would answer `locked` too and
-  // buys nothing but a round of work.
-  async #sealName(
-    rowId: string,
-    plaintext: string,
-  ): Promise<SealedName | null> {
+  // Both halves or neither. The order is budget, then seal, then index — a
+  // locked seal returns before an index is asked for, because a browser holding
+  // no content key holds no index key either, so the second call would answer
+  // `locked` too and buys nothing but a round of work.
+  //
+  // **The tenancy is asked for first, and that order decides which advice a
+  // person is given when both are missing.** A factor cannot supply a budget, so
+  // on an account that is locked *and* unplaced the `locked` reading sends
+  // somebody through a ceremony and lands them back here; the `unreachable` one
+  // asks for the press again in a minute, which is the remedy that can work.
+  async #sealName(rowId: string, plaintext: string): Promise<NameForColumn> {
+    const budgetId = this.#session.budgetId();
+
+    if (budgetId === null) {
+      return { state: 'refused', outcome: { state: 'unreachable' } };
+    }
+
     const sealed = await this.#custody.sealField(
       accountNameBinding(rowId),
       plaintext,
     );
 
     if (sealed.state === 'locked') {
-      return null;
+      return { state: 'refused', outcome: { state: 'locked' } };
     }
 
     // The **same text** the seal ran over, never a trimmed or folded copy of
     // it. Folding is the index codec's own job and it does it inside.
     const indexed = await this.#custody.blindIndex(
-      ACCOUNT_NAME_FIELD,
+      accountNameIndexBinding(budgetId),
       plaintext,
     );
 
     if (indexed.state === 'locked') {
-      return null;
+      return { state: 'refused', outcome: { state: 'locked' } };
     }
 
-    return { key: indexed.value, wire: sealed.wire };
+    return { state: 'sealed', key: indexed.value, wire: sealed.wire };
   }
 }

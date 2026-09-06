@@ -1191,8 +1191,11 @@ Narrative-field vectors live in [`vectors/narrative-field-v1.json`](vectors/narr
 one binding-only vector, one ASCII vector and the mixed-width vector.
 
 Blind-index vectors live beside them in
-[`vectors/blind-index-v1.json`](vectors/blind-index-v1.json): nine frozen answers over four
-tables, with the message grammar, the normalisation and the index key they were computed under.
+[`vectors/blind-index-v1.json`](vectors/blind-index-v1.json): ten frozen answers over four
+tables, with the message grammar, the normalisation, the budget and the index key they were computed
+under. The tenth repeats the first under a **second** budget and answers differently, which is the
+one thing in the file a self-consistent implementation cannot fake: every other vector would still
+reproduce if the budget were dropped from the message, because they all share one.
 **Nothing in that file is an envelope.** A blind index is a keyed digest over a normalised name
 — no version byte, no nonce, no tag, nothing to open — so none of this chapter's framing
 reaches it, and `budgetoid/blind-index/v1` is not a third associated-data grammar. The

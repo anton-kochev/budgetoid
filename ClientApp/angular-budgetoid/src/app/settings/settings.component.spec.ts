@@ -40,6 +40,16 @@ import { SettingsService, type ExportFailure } from './settings.service';
 // exist to protect.
 const EMAIL_LABEL = 'Email address';
 const OWNER_EMAIL = 'owner@budgetoid.test';
+
+// `GET /api/me` answers a budget beside the address. This screen renders only
+// the address and no case below reads the identifier — what it is here for is
+// that `MeDto` is the shape the route sends, and a fixture one member short
+// describes a body the server does not write.
+const BUDGET_ID = '3f5b0a91-7c24-4a1e-9d3b-6e8f0c2a5471';
+
+function meDto(email: string): MeDto {
+  return { budgetId: BUDGET_ID, email };
+}
 const ERASE_BUTTON = 'Erase everything';
 const EXPORT_BUTTON = 'Export';
 const BACKUP_WINDOW =
@@ -3622,7 +3632,7 @@ describe('SettingsComponent signing out', () => {
     // The three reads the screen starts on its own, answered so that the only
     // request outstanding below is the one each test is about.
     for (const request of http.match(`${API_ORIGIN}/api/me`)) {
-      request.flush({ email: OWNER_EMAIL } satisfies MeDto);
+      request.flush(meDto(OWNER_EMAIL) satisfies MeDto);
     }
     for (const request of http.match(`${API_ORIGIN}/api/me/credentials`)) {
       request.flush([PASSKEY]);
@@ -3772,7 +3782,7 @@ describe('SettingsComponent on a second visit', () => {
       MeApiService,
       'getMe' | 'getExport' | 'getCredentials' | 'getRecoveryCodes'
     > = {
-      getMe: () => of({ email: 'owner@budgetoid.test' }),
+      getMe: () => of(meDto(OWNER_EMAIL)),
       getExport,
       getCredentials: () => of([FEDERATED, PASSKEY]),
       getRecoveryCodes: () => of(3),
@@ -3886,7 +3896,7 @@ describe('SettingsComponent unlocking on a second visit', () => {
     const api: MeApiEdges = {
       getCredentials: () => of([PASSKEY]),
       getExport: () => of(new Blob()),
-      getMe: () => of({ email: OWNER_EMAIL }),
+      getMe: () => of(meDto(OWNER_EMAIL)),
       getRecoveryCodes: () => of(3),
     };
     const downloads: Pick<FileDownloadService, 'save'> = { save: vi.fn() };
@@ -4015,7 +4025,7 @@ describe('SettingsComponent when the email is loaded twice', () => {
         (): Observable<MeDto> =>
           throwError(() => new HttpErrorResponse({ status: 500 })),
       )
-      .mockReturnValueOnce(of({ email: OWNER_EMAIL }));
+      .mockReturnValueOnce(of(meDto(OWNER_EMAIL)));
     const fixture = await visitWithApi({ getMe });
     const host = fixture.nativeElement as HTMLElement;
     // The first load really did put an address on the screen. Without this the
@@ -4105,7 +4115,7 @@ async function visitWithApi(
   overrides: Partial<MeApiEdges>,
 ): Promise<ComponentFixture<SettingsComponent>> {
   const api: MeApiEdges = {
-    getMe: () => of({ email: OWNER_EMAIL }),
+    getMe: () => of(meDto(OWNER_EMAIL)),
     getExport: () => of(new Blob()),
     getCredentials: () => of([PASSKEY]),
     getRecoveryCodes: () => of(3),
