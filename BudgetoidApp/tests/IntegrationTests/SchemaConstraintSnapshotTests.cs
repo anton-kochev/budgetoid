@@ -443,10 +443,17 @@ public sealed class SchemaConstraintSnapshotTests
             // fires and to what SQLSTATE a zero-length name produces. But so is every other test:
             // measured on postgres:17.10 over a table carrying a length band beside a get_byte-spelled
             // version check, the band answers 23514 first and no probe reaches the raise, so a narrative
-            // column going back to get_byte reddens THIS LITERAL AND NOTHING ELSE IN THE REPOSITORY —
-            // not because the snapshot is weak, but because the wrong predicate is unreachable through
-            // the schema as declared. A literal moving is a paste unless somebody reads why, and this
-            // paragraph is the whole of what stands between the red line and the paste.
+            // column going back to get_byte is caught ON SPELLING ALONE AND NOWHERE ON BEHAVIOUR — not
+            // because the snapshot is weak, but because the wrong predicate is unreachable through the
+            // schema as declared. It is caught TWICE, at two stages, and this literal is the LATER of
+            // them: NarrativeEncryptionCoverage matches each narrative column's version predicate as a
+            // whole string rendered from CiphertextEnvelope.Version, so get_byte(name, 0) = 1 is a
+            // different string and NarrativeEncryptionCoverageTests reports it as a missing version
+            // check — off the EF MODEL, with no container, on the configuration edit itself and BEFORE
+            // ANY MIGRATION EXISTS. This line reads the APPLIED CATALOG through pg_get_constraintdef, so
+            // it moves only once a migration carrying the change exists and has run. Neither reaches the
+            // other's stage. A literal moving is a paste unless somebody reads why, and this paragraph
+            // is what stands behind THIS literal.
             //
             // SUBSTRING comes back upper-cased and in the SQL-standard FROM/FOR spelling because
             // PostgreSQL 14 and later print substring as SQL syntax rather than as a function call.

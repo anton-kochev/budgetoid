@@ -201,7 +201,30 @@ Load-bearing rules, each explained there or in the linked decision:
   compared, so a pair that swapped tables would attribute a leak to the wrong write path, and
   whether the seeding lands a value in each column is a claim about rows only the container scan can
   make. The inventory replaces none of the ten censuses beside it: a new column on `users` reddens twice
-  now, and both verdicts are wanted. See [data inventory](docs/engineering/data-inventory.md) and
+  now, and both verdicts are wanted. **Two gates stand on its narrative half beside the marker
+  census.** `NarrativeEncryptionCoverage` demands four facts of every narrative column — `byte[]`
+  to the provider, `bytea` in the store, a version check, a length band — and matches a constraint
+  to a column by **whole predicate**, never by SQL substring or name prefix, both of which hand
+  `CK_accounts_name_key_length` to the column `name` and leave a deleted length band green. The two
+  type checks are a **floor** — 19 of the 93 columns are already `byte[]` and 11 of those are not
+  narrative — so the constraints carry the weight; a provider type that is not `byte[]` is a
+  **substituted** converter, a removed one refusing the model build outright. It reads **neither** a
+  column's cap nor a constraint's *name*: on an **existing** column the drift guard catches the
+  configuration edit and the catalog snapshot the applied one, while on a **new** column no tier
+  judges the cap at all — the snapshot compares a set, so a ninth constraint arrives as an unexpected
+  item somebody pastes in. **Its version predicate renders one accepted version**, so the day a
+  version 2 exists, bumping the constant re-renders gate and configurations together, green, while
+  the schema refuses every version-1 row and the correct both-versions constraint is what the gate
+  reddens: change the shape before widening the matcher.
+  `EnvelopeBudgetingIsolationTests` (CON-005) walks IL under `Application.Budgeting.*` and
+  `Domain.Budgeting.*` for a narrative read — body tokens **and** each referenced member's decoded
+  signature, because a signature census misses it entirely and dropping the signature half loses
+  exactly the property-read shape. Delegation is **not** followed, and a helper escapes only while
+  its own signature stays silent about the type. A namespace convention rather than a marker,
+  because a forgotten marker is silent; the subject is **empty today** and a case pins that, carrying
+  the sentence that retires it. **Nothing holds that a later envelope-budgeting layer is filed under
+  those namespaces** — that placement is held by review, like the second account-creating path. See
+  [data inventory](docs/engineering/data-inventory.md) and
   [ADR 0024](docs/decisions/0024-key-the-data-inventory-on-the-model-and-reconcile-it-against-the-catalog.md).
 - A new tenant-owned table needs a grant **and** a policy — `budget_isolation` if it carries
   `budget_id`, `user_isolation` if it carries `user_id`. Grants fail closed (`42501`),
@@ -349,10 +372,12 @@ Load-bearing rules, each explained there or in the linked decision:
   suite already asserts several of them. What no `INSERT` can reach is the difference between
   `substring` and `get_byte`: the one value that would make `get_byte` raise `2202E` instead of
   answering false is a *present, zero-length* one, and the length band sorts first and takes it. So
-  the wrong spelling is **behaviourally** invisible — but it is not invisible: `pg_get_constraintdef`
-  renders the two differently and `SchemaConstraintSnapshotTests` pins that text, so a `get_byte`
-  spelling reddens there. Do not read any of this as licence to retire a version check as dead
-  weight. **Both** halves of `/app/categories` are wired, and each carries a **nullable** narrative
+  the wrong spelling is **behaviourally** invisible — but it is not invisible, and it is now held
+  **twice at two stages**: `NarrativeEncryptionCoverage` matches the whole predicate against the
+  **model**, so a `get_byte` spelling reddens in the unit tier on the configuration edit itself, and
+  `SchemaConstraintSnapshotTests` pins what `pg_get_constraintdef` renders once a migration carrying
+  it has run. Neither reaches the other's stage and neither supplies the argument. Do not read any of
+  this as licence to retire a version check as dead weight. **Both** halves of `/app/categories` are wired, and each carries a **nullable** narrative
   column, which is where their rules differ from the name-only screens: an **empty** note posts
   `null` — which on a `PUT` is how a note is cleared — while a **whitespace-only** one is a note and
   is sealed as typed, because the deleted `NormalizeDescription` may not come back one layer up in

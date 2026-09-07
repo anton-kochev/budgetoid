@@ -328,6 +328,28 @@ erDiagram
   - **Enforced in**: the absence of such a member on `NarrativeField`, and by nothing else. See
     [what no test can hold](#the-strongest-claim-here-is-held-by-an-absence).
 
+- **Every column classified narrative MUST be stored as opaque, version-pinned, length-bounded
+  ciphertext, and a unit-tier gate MUST fail on one that is not.**
+  - **Why**: the type above closes the *call site* — plaintext cannot be assigned into a narrative
+    property. It says nothing about the **column**. A converter dropped from a configuration, a
+    `HasColumnType` naming `text`, a `HasCheckConstraint` line removed during a tidy-up: each leaves
+    a column the server can read, or one the database is free to collate and fold, or one that no
+    longer refuses a foreign framing — and none of them reads back wrong, fires a constraint or
+    disagrees with a round trip. A ninth narrative column added without any of the four is the same
+    defect arriving by omission rather than by edit.
+  - **Enforced in**: `NarrativeEncryptionCoverage.Compare`, over the model as the store sees it and
+    the narrative half of the data inventory. Four facts per column — `byte[]` to the provider,
+    `bytea` in the store, that column's version check, that column's length band — with a constraint
+    matched to a column by its **whole predicate**, never by SQL substring or by constraint-name
+    prefix, both of which hand `length(name_key) = 32` to the column `name`. It checks **neither**
+    which of the two caps a column earns nor any constraint's name, and naming one neighbour for
+    those would not be honest: it takes **two**, covering different stages of one edit — the
+    migration drift guard while the change lives in a configuration alone, and
+    `SchemaConstraintSnapshotTests` once a migration carrying it has run. On a **new** column even
+    that pair does not judge the cap, because the snapshot compares a set and a ninth constraint
+    arrives as an unexpected item somebody pastes in. See
+    [data inventory](../engineering/data-inventory.md#every-narrative-column-is-checked-for-ciphertext-and-the-check-is-four-facts).
+
 - **A sealed narrative value MUST be at most its field class's cap, in envelope bytes.** 1024
   for the five name columns, 2560 for the three description columns.
   - **Why**: a cap is a product rule about how much a person may type into two different kinds
@@ -431,6 +453,24 @@ erDiagram
     or a recovery code would put the whole account's plaintext within reach of the operator —
     and would do so **without failing a single test**, because there is no test that can notice
     a value the design says never arrives.
+
+- **A computation that decides what a person may spend MUST NOT read a narrative field.**
+  Assignments, activity, available and "to allocate" are arithmetic over amounts, dates and
+  identifiers.
+  - **Why**: every narrative value is an envelope only a browser can open, so a computation that
+    depended on one could not run on this side at all — either it moves, or the value stops being
+    sealed. Nothing computes an envelope balance here yet, which is exactly when that is free to
+    say: the guard is placed before its subject exists, so the layer that arrives finds the rule
+    already standing rather than being asked to give a capability back.
+  - **Enforced in**: `EnvelopeBudgetingIsolationTests`, which walks IL under `Application.Budgeting.*`
+    and `Domain.Budgeting.*` for a touch of `NarrativeField` — body tokens **and** each referenced
+    member's decoded signature, because a computation that reads a narrative property declares none,
+    and a scan reading declaring types alone loses exactly the property-read shape while still
+    reporting the touches whose token owner is the narrative type itself. The subject is a
+    **namespace convention** rather than an opt-in marker, and it is empty today; both facts, and
+    what they cost, are in
+    [data inventory](../engineering/data-inventory.md#a-second-gate-stands-over-a-layer-that-does-not-exist-yet).
+    Nothing mechanical files a later computation under those namespaces — that is held by review.
 
 ## Business Rules & Invariants
 
@@ -869,6 +909,16 @@ for `get_byte` moves text the snapshot holds and the suite goes red by name. Wha
 cannot supply is the *reason*: a moved literal reads as a paste, and the natural repair is to update
 the expectation. So the test holds the spelling and the argument at the element holds why it must
 not be updated away — two different jobs, and neither does the other's.
+
+**The spelling now has a second holder, and the pair covers two different stages.**
+`NarrativeEncryptionCoverage` renders the version predicate it expects from
+`CiphertextEnvelope.Version` and compares it against the constraints the **model** declares, whole
+and after collapsing runs of whitespace — so `get_byte(name, 0) = 1` is a different string and is
+reported as a missing version check, in the unit tier, on the configuration edit itself and with no
+container involved. The snapshot answers from `pg_constraint`, so it answers only once a migration
+carrying the change exists and has run. Neither reaches the other's stage, and neither of them is
+the argument: both report a string that moved, and why it may not be moved back is what the element
+and this chapter carry.
 
 One more obstacle sits in front of measuring the behaviour from inside the suite at all: changing a
 `CHECK` in a configuration desynchronises the frozen migration baseline, so
@@ -1428,6 +1478,11 @@ caller wrapping an open in a `catch` has to answer "is this column damaged?", an
   and an `IndexedName` somewhere in its write path. This one has none of the three, and nothing in
   the pattern broke when it turned out that way — which is a fact about the types rather than a
   lucky escape, since `IndexedName` and its ceiling are reachable only through a name.
+- **[data inventory](../engineering/data-inventory.md)** — which columns are *narrative* at all, and
+  the two gates built on that half: the one demanding that each of them is stored as ciphertext, and
+  the one refusing a narrative read from a computation that decides an amount. Read it for what
+  neither gate checks — a column's cap, in either direction, and any constraint's name — and for
+  which neighbour picks each of those up, a stage later, so that neither absence is read as a hole.
 - **[recovery-codes.md](recovery-codes.md)** and **[passkeys.md](passkeys.md)** — where the
   key-encryption keys that seal the wrapped copies come from. Neither reaches this format
   directly.
@@ -1558,9 +1613,18 @@ caller wrapping an open in a `catch` has to answer "is this column damaged?", an
   with them spelled `get_byte`: nothing produced `2202E`, and every refusal was a `23514` under a
   length constraint. **The version checks themselves are not hidden**: a legal-length value carrying
   the wrong leading byte is reported under the version constraint's own name, which is why those
-  cases are worth writing. And the **spelling** is held by
-  `SchemaConstraintSnapshotTests`, which pins each rendered definition, so a swap reddens by name —
-  what is held by review is the argument for not answering that red bar by updating the expectation.
+  cases are worth writing. **A version 2 walks into a trap here**, and it is the encryption gate
+  rather than the schema that sets it: that gate renders the **one** accepted version from
+  `CiphertextEnvelope.Version`, so bumping the constant re-renders its expectation and all eight
+  configurations together and the suite stays green while the schema starts refusing every row
+  written under version 1 — and the constraint that would actually be correct, the one accepting both
+  versions, is reported by that gate as a missing version check. Measured over three spellings of
+  it. Change the shape before widening anything: a matcher loosened to let a version-2 constraint
+  pass buys a green suite by retiring the check. And the **spelling** is held twice, at two stages:
+  `NarrativeEncryptionCoverage` matches the whole predicate against the model, so a swap reddens in
+  the unit tier before any migration exists, and `SchemaConstraintSnapshotTests` pins each rendered
+  definition once one has run. What is held by review is the argument for not answering either red
+  bar by updating the expectation.
   Measuring the behaviour needs a container probe over a table carrying the version check alone,
   which the suite cannot stage either, because editing a `CHECK` in a configuration desynchronises
   the frozen baseline and `PendingModelChangesWarning` kills the run first. The nullable columns do
