@@ -2,6 +2,7 @@ using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json.Nodes;
 using Domain.Security;
+using Infrastructure.Persistence.Inventory;
 using Infrastructure.Persistence.Provisioning;
 using Npgsql;
 using TestSupport;
@@ -87,11 +88,16 @@ public sealed class NarrativeSecrecyTests
     /// write path.
     /// </para>
     /// <para>
-    /// <b>The list is a claim about the schema and is checked against it.</b> A ninth narrative column
-    /// arriving with no entry here would still be scanned — the scan reads the catalog and knows
-    /// nothing about this list — but nothing would be written into it, so the presence assertion that
-    /// makes the run non-vacuous would not cover it. That is the honest limit: the scan is derived, the
-    /// <em>seeding</em> is authored, and only the seeding can be behind.
+    /// <b>The list is a claim about the schema, and one half of that claim is held by a test rather
+    /// than by review.</b>
+    /// <see cref="Markers_NameExactlyTheColumnsTheInventoryClassifiesNarrative" /> compares it against
+    /// <see cref="DataInventory" />'s narrative classification in both directions, and that
+    /// classification is itself derived from the columns the model types for
+    /// <see cref="NarrativeField" /> — so a ninth narrative column reddens there instead of arriving
+    /// with no entry here. The half still open is the one no comparison of two lists can reach:
+    /// whether the seeding below actually lands a value in each of those columns, which only
+    /// <see cref="NarrativeColumnsWithNoEnvelopeAsync" /> reading the database back can see. The scan
+    /// is derived from the catalog and knows nothing about this list at all.
     /// </para>
     /// </remarks>
     private static readonly NarrativeMarker[] Markers =
@@ -189,6 +195,100 @@ public sealed class NarrativeSecrecyTests
         // tables and reporting NFR-013 met over a database with nothing in it.
         IReadOnlyList<string> absent = await NarrativeColumnsWithNoEnvelopeAsync(app);
         await Assert.That(string.Join(", ", absent)).IsEqualTo(string.Empty);
+    }
+
+    /// <summary>
+    /// <see cref="Markers" /> names exactly the columns <see cref="DataInventory" /> classifies as
+    /// narrative, in both directions.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>It exists because the seeding is the one authored half of this file.</b> The scan reads the
+    /// catalog, so a ninth narrative column is searched the day it appears; but nothing would write a
+    /// marker into it, so <see cref="NarrativeColumnsWithNoEnvelopeAsync" /> — the assertion that makes
+    /// the census non-vacuous — would pass over it in silence and the run would report NFR-013 met over
+    /// a column it had nothing to find in.
+    /// </para>
+    /// <para>
+    /// <b>Three-way agreement, not two lists agreeing by coincidence.</b> The inventory's narrative set
+    /// is not itself authored: <c>DataInventoryCoverageTests.Narrative_IsExactlyTheColumnsTypedForASealedValue</c>
+    /// holds it equal, in both directions, to the columns the model types for
+    /// <see cref="NarrativeField" />. So this comparison reaches the model through the inventory, and a
+    /// column typed for a sealed value cannot be quiet in all three places at once.
+    /// </para>
+    /// <para>
+    /// <b>What it does not claim, said plainly because the file it sits in is about ciphertext.</b> It
+    /// asserts nothing about any column being encrypted, nothing about anything being written, and
+    /// nothing about what the database holds — it opens no connection and needs none. Two lists naming
+    /// the same columns is the whole of it. The census above is what turns that into a statement about
+    /// rows, and this case cannot be read as a weaker version of it.
+    /// </para>
+    /// <para>
+    /// <b>The two directions are reported apart, because they are different defects with different
+    /// fixes.</b> A marker naming a column the inventory does not call narrative is a marker to delete
+    /// or a classification to correct; a narrative column carrying no marker is a seeding path to
+    /// write. One equivalence assertion collapses them into a single message — and TUnit's
+    /// <c>IsEquivalentTo</c> ignores order by default, so it does not even read as the set claim it
+    /// resembles. The differences are asserted as collections and printed joined, because a joined
+    /// string asserted against <see cref="string.Empty" /> is truncated in the failure output and names
+    /// only the first offender.
+    /// </para>
+    /// <para>
+    /// <b>Non-vacuity comes before either difference</b>, which is the argument
+    /// <c>DataInventoryReconciliationTests</c> makes at length: two empty sets differ in neither
+    /// direction, so an emptied marker array and an inventory classifying nothing narrative would agree
+    /// completely and this case would be green having examined nothing.
+    /// </para>
+    /// <para>
+    /// The comparison is over <c>table.column</c> ordinally. <c>accounts.name</c> and
+    /// <c>payees.name</c> are different columns, and a bare column name cannot tell them apart — a pair
+    /// of markers that swapped tables would agree on every column name in the schema.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Markers_NameExactlyTheColumnsTheInventoryClassifiesNarrative()
+    {
+        // Arrange — both sides as qualified names, so the comparison is over the pair rather than over
+        // a column name that several tables share.
+        string[] seeded = [.. Markers.Select(marker => marker.Qualified).Order(StringComparer.Ordinal)];
+        string[] classified =
+        [
+            .. DataInventory.Of(ColumnClassification.Narrative)
+                .Select(entry => entry.Qualified)
+                .Order(StringComparer.Ordinal),
+        ];
+
+        // Act — both directions of the set difference, each kept whole.
+        HashSet<string> seededSet = new(seeded, StringComparer.Ordinal);
+        HashSet<string> classifiedSet = new(classified, StringComparer.Ordinal);
+        string[] seededButNotClassifiedNarrative =
+        [
+            .. seededSet.Except(classifiedSet, StringComparer.Ordinal).Order(StringComparer.Ordinal),
+        ];
+        string[] classifiedNarrativeButNotSeeded =
+        [
+            .. classifiedSet.Except(seededSet, StringComparer.Ordinal).Order(StringComparer.Ordinal),
+        ];
+
+        Console.WriteLine($"Seeded markers: {string.Join(", ", seeded)}");
+        Console.WriteLine($"Classified narrative: {string.Join(", ", classified)}");
+        Console.WriteLine(
+            "Seeded, not classified narrative: "
+            + string.Join(", ", seededButNotClassifiedNarrative));
+        Console.WriteLine(
+            "Classified narrative, not seeded: " + string.Join(", ", classifiedNarrativeButNotSeeded));
+
+        // Assert — non-vacuity first, or the two differences below agree about nothing.
+        await Assert.That(seeded).IsNotEmpty();
+        await Assert.That(classified).IsNotEmpty();
+
+        // A marker on a column nobody classified narrative: this file claiming a field the inventory
+        // does not, which sends a reader of a red census to a column that owes no envelope.
+        await Assert.That(seededButNotClassifiedNarrative).IsEmpty();
+
+        // And the direction Story 6.2 is about — a narrative column with no marker, which is a column
+        // the census scans, finds nothing in, and reports clean because nothing was ever put there.
+        await Assert.That(classifiedNarrativeButNotSeeded).IsEmpty();
     }
 
     /// <summary>

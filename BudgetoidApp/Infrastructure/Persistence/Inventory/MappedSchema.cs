@@ -7,10 +7,10 @@ namespace Infrastructure.Persistence.Inventory;
 /// <summary>One column the EF model maps, named by the table it sits on as well as by itself.</summary>
 /// <remarks>
 /// <para>
-/// The table is the member that earns this type. Two walks over the same model already exist in the
-/// suite — the prohibited-column vocabulary and the erasure-remnant vocabulary — and both throw the
-/// table away, because both ask a question about a <i>name</i>: an identifier spelling that would be
-/// a refusal wherever it appeared. An inventory asks about a <i>column</i>, and a column is not
+/// The table is the member that earns this type. Two readers of this enumerator flatten it straight
+/// back out — the prohibited-column vocabulary's schema scan and the erasure-remnant vocabulary's —
+/// because each asks a question about a <i>name</i>: an identifier spelling that would be a refusal
+/// wherever it appeared. An inventory asks about a <i>column</i>, and a column is not
 /// identified by its name. Two tables in this schema carry <c>name</c> and four carry
 /// <c>created_at_utc</c>, so a list keyed on the bare column name is a list on which one written
 /// argument silently covers several columns that were never argued about together.

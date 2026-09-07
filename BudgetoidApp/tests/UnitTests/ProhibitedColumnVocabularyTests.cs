@@ -1,7 +1,5 @@
-using Infrastructure.Persistence;
+using Infrastructure.Persistence.Inventory;
 using Infrastructure.Persistence.Provisioning;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
 
 namespace UnitTests;
@@ -334,10 +332,10 @@ public sealed class ProhibitedColumnVocabularyTests
     [Test]
     public async Task Vocabulary_AndTheShippedSchemaShareNoName()
     {
-        // Arrange — every table the shipped schema maps today and every column on it, read out of
-        // the design-time model rather than out of a database. No container is started: this is a
-        // unit test, and the model knows the names because every one is spelled out in a
-        // configuration.
+        // Arrange — every table the shipped schema maps today and every column on it, through the
+        // enumerator the data inventory reads, which walks the design-time model rather than a
+        // database. No container is started: this is a unit test, and the model knows the names
+        // because every one is spelled out in a configuration.
         IReadOnlyList<MappedIdentifier> identifiers = MappedIdentifiers();
 
         // Act
@@ -484,21 +482,35 @@ public sealed class ProhibitedColumnVocabularyTests
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The design-time model rather than a literal list: a literal would agree with itself forever,
-    /// staying green on the one day it matters — the day a name arrives. The model is regenerated
-    /// from the configurations on every build, so a new table or column reaches this test without
-    /// anyone remembering to add it here.
+    /// <b>The enumeration is <see cref="MappedSchema" />'s, not this file's.</b> One walk over the
+    /// design-time model answers "what does the schema contain", and the data inventory is already
+    /// built on it; a second walk written out here would be a second answer to the same question, and
+    /// the copy nobody reads is the copy that rots. What the model maps is regenerated from the
+    /// configurations on every build, so a new table or column reaches this test with nobody editing
+    /// this test — which is the property that makes the check worth having at all. A literal list
+    /// would agree with itself forever and stay green on the one day it matters.
     /// </para>
     /// <para>
-    /// The design-time model rather than <c>db.Model</c> for the reason the neighbouring model tests
-    /// give: the runtime read-optimized model drops what only migrations consume. Nothing here opens
-    /// the connection the options carry.
+    /// <b>What is still this file's own decision is the flattening.</b>
+    /// <see cref="MappedSchema" /> keeps the table beside every column because a column is not
+    /// identified by its name — two tables here carry <c>name</c> — and this scan throws that table
+    /// away because its subject <i>is</i> a name: an identifier spelling that would be a refusal
+    /// wherever it appeared. <see cref="MappedColumn.Qualified" /> is the wrong member to reach for,
+    /// and <b>not in the direction a reader expects</b>: measured, <c>accounts.name</c> tokenizes as
+    /// <c>accounts</c> and <c>name</c>, because <see cref="IdentifierTokens.Tokenize" /> treats the
+    /// dot as a separator like any other, so every refusal the bare column name earns survives
+    /// qualification and the scan loses nothing. What it <i>gains</i> is refusals that span the dot —
+    /// a table <c>user</c> beside a column <c>agent</c> reads as <c>user_agent</c> and is refused for
+    /// a name nothing in the schema carries. That is the false positive this whole design is arranged
+    /// against, because the remedy it hands a reviewer — narrow the pattern — is the wrong remedy for
+    /// two ordinary names sitting next to each other.
     /// </para>
     /// <para>
     /// Both axes, because the vocabulary is read against relation names as well as columns and says
-    /// so: a table named for what it holds is the identical refusal. The table name comes off the
-    /// entity the column lookup already needs, so the relation axis costs one line and closes the
-    /// axis this scan would otherwise leave entirely to the container-backed catalog test.
+    /// so: a table named for what it holds is the identical refusal.
+    /// <see cref="MappedSchema.TablesOf" /> derives its list from the same walk the columns come out
+    /// of, so no table can be present on one axis and absent from the other — a disagreement between
+    /// two lists would surface here as an unexplained gap.
     /// </para>
     /// <para>
     /// This reaches only what EF maps. The integration-level catalog scan is what covers the rest of
@@ -507,42 +519,13 @@ public sealed class ProhibitedColumnVocabularyTests
     /// </remarks>
     private static IReadOnlyList<MappedIdentifier> MappedIdentifiers()
     {
-        DbContextOptions<BudgetoidDbContext> options =
-            new DbContextOptionsBuilder<BudgetoidDbContext>()
-                .UseNpgsql("Host=localhost;Port=5432;Database=budgetoid;Username=postgres;Password=postgres")
-                .Options;
+        IModel model = MappedSchema.DesignTimeModel();
 
-        using BudgetoidDbContext db = new(options);
-        IModel model = db.GetService<IDesignTimeModel>().Model;
-        List<MappedIdentifier> identifiers = [];
-
-        foreach (IEntityType entity in model.GetEntityTypes())
-        {
-            StoreObjectIdentifier? table = StoreObjectIdentifier.Create(entity, StoreObjectType.Table);
-
-            if (table is null)
-            {
-                continue;
-            }
-
-            string? tableName = entity.GetTableName();
-
-            if (tableName is not null)
-            {
-                identifiers.Add(new MappedIdentifier("table", tableName));
-            }
-
-            foreach (IProperty property in entity.GetProperties())
-            {
-                string? column = property.GetColumnName(table.Value);
-
-                if (column is not null)
-                {
-                    identifiers.Add(new MappedIdentifier("column", column));
-                }
-            }
-        }
-
-        return identifiers;
+        return
+        [
+            .. MappedSchema.TablesOf(model).Select(table => new MappedIdentifier("table", table)),
+            .. MappedSchema.ColumnsOf(model)
+                .Select(column => new MappedIdentifier("column", column.Column)),
+        ];
     }
 }

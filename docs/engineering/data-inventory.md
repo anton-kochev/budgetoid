@@ -102,6 +102,33 @@ The inventory is one axis. Several censuses ask different questions of the same 
 **One gap, stated rather than closed:** the client's `NARRATIVE_FIELDS` is a second executed list, in
 another language, and nothing reconciles it with the inventory at build time.
 
+## Adding a column edits the inventory and nothing else
+
+That property is held by there being one enumerator and one classification, not by anybody
+remembering. Two coverage tests used to carry their own walk over the design-time model, and a third
+carried its own list of the narrative columns.
+
+- `ProhibitedColumnVocabularyTests` and `ErasureRemnantVocabularyTests` read `MappedSchema.TablesOf`
+  and `MappedSchema.ColumnsOf`. Each still flattens the table straight back out, because its subject
+  **is** a name — an identifier spelling that would be a refusal wherever it appeared — which is the
+  live demonstration that a name and a column are different questions, and the reason `MappedColumn`
+  carries a table at all.
+- `NarrativeSecrecyTests.Markers` is held equal to `DataInventory.Of(Narrative)` in both directions.
+  Its seeding is the one authored half of that census: the scan reads the catalog, so a ninth
+  narrative column is searched the day it appears — but nothing would write a marker into it, and
+  the presence assertion that makes the run non-vacuous would pass over it in silence, reporting the
+  requirement met over a column it had nothing to find in.
+
+Reaching the model through the inventory is what makes the second of those a **three-way** agreement
+rather than two lists agreeing by coincidence: the narrative classification is derived from the
+model, so a column typed for a sealed value cannot stay quiet in all three places at once.
+
+**Two limits that binding does not reach**, both held by review. The marker *text* is not compared,
+only the columns — two markers that swapped tables agree on every qualified name, and a red census
+would then attribute a leak to the wrong write path. And whether the seeding actually lands a value
+in each column is a claim about rows that no comparison of two authored lists can make; only the
+container scan reading the database back can see it.
+
 ## Tests that lock it
 
 - `DataInventoryCoverageTests` — the FR-005 gate, the empty-inventory and stale-entry controls, the
@@ -109,7 +136,12 @@ another language, and nothing reconciles it with the inventory at build time.
 - `DataInventoryReconciliationTests` — the model against the live catalog, with its two controls.
 - `MappedSchemaTests` — the enumerator, including that it keeps the table with the column. Two
   columns named `name` on different tables is what proves it; an enumerator that flattens the table
-  away collapses them into one, and the copies that existed before this all did.
+  away collapses them into one, which is what its two name-scanning readers do deliberately and
+  what an inventory may never do.
+- `NarrativeSecrecyTests.Markers_NameExactlyTheColumnsTheInventoryClassifiesNarrative` — the seeding
+  list against the narrative classification, both directions reported apart because they are
+  different defects, and non-vacuity asserted before either. It opens no connection and claims
+  nothing about any column being encrypted.
 
 There is deliberately **no** case asserting each column has exactly one classification. With one
 non-nullable enum member per entry and a duplicate check beside it, that is a fact about the types,

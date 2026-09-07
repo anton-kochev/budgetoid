@@ -191,7 +191,16 @@ Load-bearing rules, each explained there or in the linked decision:
   before comparing them, because two empty sets differ in neither direction. An excluded column's
   reason is a **compile-time obligation** — no public constructor, and only the `Excluded` factory
   takes one — while its *quality* is held by review alone, which the length floor says of itself.
-  The inventory replaces none of the ten censuses beside it: a new column on `users` reddens twice
+  **The schema is enumerated in exactly one place and the narrative markers are bound to the
+  inventory**, which is what makes "adding a column edits the inventory and nothing else" a fact
+  rather than a habit: `ProhibitedColumnVocabularyTests` and `ErasureRemnantVocabularyTests` read
+  `MappedSchema` and each still flattens the table away, because a *name* and a *column* are
+  different questions — and `NarrativeSecrecyTests.Markers` is held equal to `Of(Narrative)` in both
+  directions, reaching the model **through** the inventory, so the agreement is three-way rather
+  than two lists agreeing by coincidence. Two limits stay with review: the marker **text** is not
+  compared, so a pair that swapped tables would attribute a leak to the wrong write path, and
+  whether the seeding lands a value in each column is a claim about rows only the container scan can
+  make. The inventory replaces none of the ten censuses beside it: a new column on `users` reddens twice
   now, and both verdicts are wanted. See [data inventory](docs/engineering/data-inventory.md) and
   [ADR 0024](docs/decisions/0024-key-the-data-inventory-on-the-model-and-reconcile-it-against-the-catalog.md).
 - A new tenant-owned table needs a grant **and** a policy — `budget_isolation` if it carries
