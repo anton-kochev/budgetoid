@@ -8,6 +8,53 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-09-07 — Every column is classified, and the three words are about what is owed
+
+**Context:** five coverage rules each need to enumerate columns by what they are, and ten separate
+surfaces already classified columns or tables while disagreeing on six axes — source of truth, grain,
+polarity, whether a reason is a value or a comment, where the list lives, and the spelling of an
+identifier. Most of the 93 mapped columns were classified by nobody. This repository already carries
+the rule that makes that a defect: two executed lists that disagree have no adjudicator, and the one
+that loses fails open.
+
+**Decision:** `DataInventory` classifies every column as **narrative**, **arithmetic** or
+**excluded**, and a gate fails on one nobody classified.
+
+**The three words are about what the product owes the person, not about what the column holds**, and
+that sentence is the whole of what a reader gets wrong. Read as a type taxonomy it misclassifies a
+third of the schema while passing every test. `credentials.created_at_utc` is an ordinary timestamp
+beside a dozen exported ones and is **excluded**, because a credential is not content a person owns
+and the instant one was created is a fact about sign-in history. `users.email` is **arithmetic** and
+*is* exported, though a separate rule keeps it out of a log — a reader who looks for it among the
+narrative columns and does not find it has found the inventory working.
+
+**Narrative is derived, the rest is authored.** `Of(Narrative)` must equal the properties typed
+`NarrativeField`, held in both directions, so a column cannot be quietly re-classified to green a
+coverage test and a ninth sealed column arrives classified whether or not anybody remembered.
+Arithmetic against excluded is a judgement about ownership that no derivation can make — and
+deriving it from the export would leave the export's completeness gate comparing the export against
+itself.
+
+**Keyed on the model, reconciled against the catalog.** The requirement names the model and a model
+walk needs no container, but every dependent makes a claim about the database, so keying on the model
+alone fails open in the worst way: an unmapped column is classified by nobody, nothing reddens, and
+that is indistinguishable from a complete inventory. Measured when written: 93 columns over 16 tables
+against 95 over 17, the difference being `__EFMigrationsHistory`, both directions empty. See
+[ADR 0024](../decisions/0024-key-the-data-inventory-on-the-model-and-reconcile-it-against-the-catalog.md).
+
+**An excluded column's reason is a compile-time obligation and a review-time judgement.** No public
+constructor; only the `Excluded` factory takes a reason, with no default. The length floor asserted
+over it makes writing nothing impossible and claims nothing more — no assertion can tell a real
+argument from a fluent one, and the 52 reasons are this story's review surface. One reason per
+column, never one per table: a reason argued at table grain is inherited by columns it was never
+written about.
+
+**It replaces nothing.** A new column on `users` now reddens in the inventory and in the exact-set
+pin beside it, which ask different questions — *classify this* against *this must not exist* — and
+both verdicts are wanted.
+
+---
+
 ## 2026-09-06 — The blind index is scoped to one budget, and the browser is told which
 
 **Context:** NFR-014 requires that a party holding full read access cannot determine whether

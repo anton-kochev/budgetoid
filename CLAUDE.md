@@ -176,6 +176,24 @@ Load-bearing rules, each explained there or in the linked decision:
   controls, so none can pass by having nothing to find. Read
   [dependency direction](docs/engineering/dependency-direction.md) before adding a project or a
   reference of any kind.
+- **Every column carries exactly one classification, and the three words are about what the product
+  owes the person rather than about what the column holds.** `DataInventory` names all 93 as
+  *narrative*, *arithmetic* or *excluded*, and a unit-tier gate fails on one nobody classified.
+  Getting the rule wrong misclassifies a third of the schema while passing every test:
+  `credentials.created_at_utc` is an ordinary timestamp and is **excluded**, because a credential is
+  not content a person owns; `users.email` is **arithmetic** and *is* exported, though another rule
+  keeps it out of a log. **Narrative is derived** from the properties typed `NarrativeField` — so a
+  column cannot be re-classified to green a coverage test — while arithmetic against excluded is a
+  judgement no derivation can make, and deriving it from the export would make the export's own
+  completeness gate compare the export against itself. The inventory keys on the **EF model**, and a
+  container-backed reconciliation against the live catalog is what makes that a claim about the
+  database; it ships two negative controls on separate hosts and asserts both sets are non-empty
+  before comparing them, because two empty sets differ in neither direction. An excluded column's
+  reason is a **compile-time obligation** — no public constructor, and only the `Excluded` factory
+  takes one — while its *quality* is held by review alone, which the length floor says of itself.
+  The inventory replaces none of the ten censuses beside it: a new column on `users` reddens twice
+  now, and both verdicts are wanted. See [data inventory](docs/engineering/data-inventory.md) and
+  [ADR 0024](docs/decisions/0024-key-the-data-inventory-on-the-model-and-reconcile-it-against-the-catalog.md).
 - A new tenant-owned table needs a grant **and** a policy — `budget_isolation` if it carries
   `budget_id`, `user_isolation` if it carries `user_id`. Grants fail closed (`42501`),
   RLS fails open. `RlsCoverageTests` and the deploy-time verifier read one shared classifier
@@ -832,6 +850,7 @@ Load-bearing rules, each explained there or in the linked decision:
   before modifying business rules; if none exists for the domain area, create one following
   the structure of the others.
 - **Engineering invariants** — [data isolation](docs/engineering/data-isolation.md),
+  [data inventory](docs/engineering/data-inventory.md),
   [migrations](docs/engineering/migrations.md),
   [no third-party origins](docs/engineering/no-third-party-origins.md), and
   [security headers](docs/engineering/security-headers.md). Each names the tests that lock it:
