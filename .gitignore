@@ -84,3 +84,14 @@ TECH_DEBT.md
 /package-lock.json
 /.pithos
 /.pi/
+
+# The same grimoire assets again, mirrored for a second agent runtime: skills under
+# .agents/, subagents and hooks under .codex/. The rules above already exclude every
+# one of them under .claude/, and this pair was simply missed — so they sat untracked
+# and unignored, which is how three separate sessions each ended up investigating
+# them from scratch. AGENTS.md joins them because it is a copy of CLAUDE.md, and two
+# copies of the context file means one of them is wrong; the mirror regenerates it,
+# so deleting it does not lose anything.
+/.agents/
+/.codex/
+/AGENTS.md
