@@ -991,8 +991,11 @@ one, and the member that does is the accessor under a service name. It collapses
 rejected shape with an injector in front of it, and showing the collapse is what stops it coming
 back, because proposing it again costs nothing.
 
-**What holds "custody does not learn the eight pairs" is one import and three source-text rules,
-and the third of them is what watches the import.** The class imports the codec's *operations* —
+**What holds "custody does not learn the eight pairs" is one type-only import and two source-text
+rules, each with a negative control, and the second of them is what watches the import.** The
+import is not a rule anything asserts: it is a fact about the class's own clause, held by the
+compiler and by the comment standing over it, which is exactly why the second scan exists to watch
+it. The class imports the codec's *operations* —
 `sealNarrativeField`, `openNarrativeField`, `refuseInvalidBinding` and `NarrativeFieldMisuseError`
 — together with the **type** `NarrativeFieldBinding`, and never `NARRATIVE_FIELDS`. At runtime the
 type is erased, and so is the `type` specifier carrying it inside that mixed clause, so no list is
@@ -1002,21 +1005,22 @@ custody will accept.
 
 **The index codec is imported the same way, and the four pairs are covered without widening
 anything.** Custody takes `computeBlindIndex`, `refuseInvalidIndexBinding` and the **type**
-`BlindIndexedField` from it, and never `BLIND_INDEXED_FIELDS` — the same distinction, made again
+`BlindIndexBinding` from it, and never `BLIND_INDEXED_FIELDS` — the same distinction, made again
 for the same reason: which pair a value belongs to is the caller's fact, and a class handed one
 already assembled has no business enumerating them. The word rule below reaches those four for
 free, because their vocabulary is a **subset** of the eight narrative pairs' — four of the six
 tables, and the one column `name`. That is not a coincidence to rely on blindly: it holds because a
 pair can only be indexed if it is encrypted, which the index codec states to the compiler.
 
-**The third rule does not stretch that far as declared, and the gap is named rather than assumed.**
+**The import rule does not stretch that far as declared, and the gap is named rather than assumed.**
 It derives the forbidden names by asking a module which of *its* exports are data, and the module
 it asks is the narrative codec — so `BLIND_INDEXED_FIELDS` is not one of the names it forbids, and
 an `import` of it would put four pairs inside custody with no forbidden **word** anywhere in the
 file, which is precisely the hole that rule exists to close on the other list. Widening the question
 to the index codec is the obvious follow-up, and until it is made that one edge is held by review.
 
-The rest is read off the source text by three rules in the class's spec:
+The rest is read off the source text by three rules in the class's spec, and only the last two are
+the pair above — the first holds a different invariant, that no key object can leave by a member:
 
 - **No public member returns a `CryptoKey`.** One scanner censuses every `public` declaration
   against the set the class is meant to declare; a second looks for `CryptoKey` in a **return

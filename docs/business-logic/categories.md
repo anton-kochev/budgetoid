@@ -499,9 +499,16 @@ erDiagram
     list: a genuine rename — `set name = …, name_key = …` — answers **`42501`**, and PostgreSQL
     **names only the relation**. There is no column in the message, no constraint, nothing pointing
     at which entry of the grant is missing; a reader meeting that error has to already suspect a
-    column list. Three controls succeeded in the same run, which is what says the refusal is the
+    column list. **That is a property of where the refusal is raised, not of this statement.**
+    A column-level privilege failure is reported through `aclcheck_error`, which is handed the
+    **table** as the object it refuses on, so the column that was actually missing has already been
+    dropped from the message by the time anything formats it. No spelling of the rename produces a
+    better error, and no `catch` on this side can recover the column, because the information never
+    left the server. Three controls succeeded in the same run, which is what says the refusal is the
     column's and not the role's: a two-column rename on `category_groups`, a `category_group_id`
-    move on `categories`, and a `position` write on `categories`.
+    move on `categories`, and a `position` write on `categories`. Those controls are the only way to
+    narrow it — the error will not, so the diagnosis is a set of statements that pass beside the one
+    that does not.
   - **What kept it quiet is the commonest edit, and it is a property of the *content comparer*
     rather than of the grant.** The update route takes the name and the index together, so a client
     editing only the **description** re-sends the name it already has. Every seal draws a fresh

@@ -329,7 +329,9 @@ restated here.
 
 ## What this does not replace
 
-The inventory is one axis. Several censuses ask different questions of the same columns and stay:
+The inventory is one axis, and **it replaces none of the ten censuses beside it.** They ask different
+questions of the same columns, so none of them is the inventory said another way and none is retired
+by it. The families a reader adding a column will meet:
 
 - `RowLevelSecurityCoverage` classifies **relations** for tenancy, discovered from the catalog, and
   fails closed on a relation nobody decided about.
@@ -338,8 +340,12 @@ The inventory is one axis. Several censuses ask different questions of the same 
 - `ProhibitedColumnVocabulary` and its two siblings are deny-lists over **names**, failing open by
   design.
 - `DataMinimizationSchemaTests` pins exact column sets for three tables; its verdict is *this column
-  must not exist*, where the inventory's is *classify it*. A new column on `users` now reddens twice,
-  and both are wanted.
+  must not exist*, where the inventory's is *classify it*. **A new column on `users` reddens twice
+  now, and both verdicts are wanted** — the second is not noise the first makes redundant. Answering
+  the inventory alone files the column under one of three words and says nothing about whether it may
+  be there; answering the pin alone decides it may be there and leaves it classified by nobody. The
+  reflex a double red produces is to delete one of the two reds, and either deletion loses a
+  question that has no other asker.
 - `AppRoleGrantMatrixTests` mirrors the grants file and says of itself that it is a mirror, not a
   judge.
 

@@ -171,6 +171,19 @@ query filter sitting over the same row.
 - **Transitive packages.** A direct id is pinned; what it drags in is not.
   `Directory.Build.props` sets `ManagePackageVersionsCentrally=false`, so there is no central
   version list or lock file to lean on either.
+- **A *kind* of outward edge it was never taught.** The renderer emits rows for the kinds somebody
+  put in it — `ProjectReference`, the package spellings, `FrameworkReference`, the `Sdk` attribute
+  and its element form, `InternalsVisibleTo` — and the section above is the list of them rather than
+  a description of everything MSBuild can express. **That is a different gap from a new instance of a
+  known kind, and the difference decides whether anyone finds out.** A second package on
+  `Application` is a *known* kind, so it renders a row, the set difference reports it by name, and
+  nobody has to remember anything. A kind nothing was taught renders **no row at all**: the graph
+  comes back byte-identical to the pinned set, the test is green for the same reason it is green on a
+  clean tree, and the edge stays invisible until somebody notices it and teaches the renderer. So the
+  subject is discovered only as far as the vocabulary describing it reaches, and each of the kinds
+  listed above is there because a person went looking — none of them was found by the scan. Reading
+  "the subject is discovered, the allowance is written down" as covering this is the mistake
+  available here: what is discovered is every *file*, not every way a file can point outward.
 - **Business logic in an endpoint.** The composition guard reads parameter *types*; an endpoint that
   takes the right handler and then does the wrong thing in its body is invisible to it. "No business
   logic in Api" has no reflective signature, and the one crisp part of it — which routes may create an

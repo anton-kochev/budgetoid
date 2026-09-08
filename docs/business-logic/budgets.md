@@ -286,7 +286,8 @@ erDiagram
 
 - **Per-owner budget-name uniqueness MUST NOT be reintroduced, and the unique index MUST NOT be
   deleted.** Both halves of that sentence are load-bearing and they point in opposite directions.
-  - **Why**: uniqueness over this column is **surrendered**, not deferred — see the rule below for
+  - **Why**: uniqueness over this column is **surrendered**, not deferred — FR-077 gives this column
+    no blind index, so there is no later slice in which the refusal returns; see the rule below for
     the whole argument. What the index still does is bound the *unnamed* budgets at one, which is
     the invariant registration's race safety rests on, so a reviewer who reads the surrender as a
     reason to drop the index takes the surviving half out with the dead one.
@@ -387,10 +388,14 @@ erDiagram
   mechanism, over bytes the database cannot interpret ([accounts.md](accounts.md#must),
   [payees.md](payees.md#must), [categories.md](categories.md#constraints)). So the exclusion here has
   been re-read against a **complete** set of working examples
-  rather than against an idea nobody tried, and it stands: the requirement
-  blind-indexes the name columns on `accounts`, `categories`, `category_groups` and `payees`, and
-  leaves this one out. There is no later slice in which this comes back, and the honest word for it
-  is surrendered. **A second exclusion has since joined it and is not the same kind of thing**: no
+  rather than against an idea nobody tried, and it stands: **FR-077** blind-indexes the name columns
+  on `accounts`, `categories`, `category_groups` and `payees`, and names this one nowhere.
+  - **That requirement is what makes the surrender permanent rather than pending**, and it is the
+    difference a reader will otherwise have to guess at. An absent blind index could mean either of
+    two things — the work has not reached this column yet, or the column was decided against — and
+    the four columns that *do* carry one are exactly the four FR-077 names, so this column's absence
+    is the requirement's own answer and not a slice nobody has got to. There is no later slice in
+    which this comes back, and the honest word for it is surrendered. **A second exclusion has since joined it and is not the same kind of thing**: no
   *description* column gets a blind index either, because a description is never looked up — that is
   a mechanism nobody wanted, where this is a rule given up. Do not read the two absences as one
   policy. See [categories.md](categories.md#constraints).

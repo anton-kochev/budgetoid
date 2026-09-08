@@ -1949,6 +1949,14 @@ and from the commit that gave it the second one, neither of them is the identity
   things the design has already decided between: the screen is selling the first, and somebody
   returning is looking for a control rather than being persuaded by one. Both are verbs in sentence
   case, and both clear the 48px target.
+- **There is no `/sign-in` route.** The screen carries one control and no fields, because **the
+  authenticator is the form** — there is nothing to type, so there is no page to type it on. A
+  sign-in *address* is the reflex carried over from password screens, where the second page exists
+  to hold the two fields, and here it would buy a URL for a ceremony that takes no input while
+  costing two things: a second entry point into one assertion, and the single refusal sentence
+  below split across two screens that would then have to be kept saying the same thing. The
+  absence is written down because an absence cannot be found by grep — a reader looking for the
+  sign-in page finds nothing, and nothing reads like an oversight.
 - **Mobile first**: the two stack full width in one grid column and sit side by side, each at its
   label's width, from the 600px query this screen already uses.
 - **The outcome of a sign-in lands in one `role="status"` region, in the DOM from first paint and

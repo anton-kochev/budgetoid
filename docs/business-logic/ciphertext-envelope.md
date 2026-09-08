@@ -904,11 +904,16 @@ answers a legal-amount row carrying an empty envelope. So the
 a table carrying that version check alone.
 
 **That is not the same as the spelling being uncaught, and the two must not be folded.**
-`SchemaConstraintSnapshotTests` pins each constraint's rendered definition, so swapping `substring`
-for `get_byte` moves text the snapshot holds and the suite goes red by name. What that red bar
-cannot supply is the *reason*: a moved literal reads as a paste, and the natural repair is to update
-the expectation. So the test holds the spelling and the argument at the element holds why it must
-not be updated away — two different jobs, and neither does the other's.
+`SchemaConstraintSnapshotTests` pins each constraint's rendered definition, and the renderer is
+**`pg_get_constraintdef`** — which is the whole of why an unobservable difference is still a visible
+one. The server does not store a predicate as the text somebody typed; it stores a parsed tree and
+renders it back, and the two spellings render **differently**, so swapping `substring` for
+`get_byte` moves text the snapshot holds and the suite goes red by name over a change no `INSERT`
+can be made to feel. A pin over an *outcome* — the SQLSTATE, the constraint reported — would see
+nothing here, because the length band sorts first and takes the one value that separates them.
+What that red bar cannot supply is the *reason*: a moved literal reads as a paste, and the natural
+repair is to update the expectation. So the test holds the spelling and the argument at the element
+holds why it must not be updated away — two different jobs, and neither does the other's.
 
 **The spelling now has a second holder, and the pair covers two different stages.**
 `NarrativeEncryptionCoverage` renders the version predicate it expects from
@@ -920,10 +925,15 @@ carrying the change exists and has run. Neither reaches the other's stage, and n
 the argument: both report a string that moved, and why it may not be moved back is what the element
 and this chapter carry.
 
-One more obstacle sits in front of measuring the behaviour from inside the suite at all: changing a
-`CHECK` in a configuration desynchronises the frozen migration baseline, so
-`PendingModelChangesWarning` kills the run before the database is handed the new constraint. A
-mutation aimed at one of these reddens on drift and never on the SQLSTATE it was written for.
+One more obstacle sits in front of measuring the behaviour from inside the suite at all, and it is
+worth a number rather than an assurance: a **model-only** mutation cannot be measured here by
+anything. Changing a `CHECK` in a configuration desynchronises the frozen migration baseline, so
+`PendingModelChangesWarning` kills roughly **1200** tests *before* the database is ever handed the
+new constraint. A zero-length-name case aimed at one of these reddens on **drift**, and never on the
+SQLSTATE it was written for — so the red bar it produces says nothing whatever about the predicate
+the mutation changed, and a reader who reads it as coverage of the spelling has read a drift guard
+as a behaviour test. Measuring any of these claims needs a container probe standing up its own table,
+not the suite.
 
 ### Which constraint a row is reported under is decided by OID
 
@@ -970,13 +980,21 @@ costs a reader a rule to understand and buys nothing, which is the argument for 
 review — there is no test that will.
 
 **`transactions` has no such alternate key at all, and the asymmetry is the reference graph showing
-through rather than an oversight.** Every other budget-owned table carries `(id, budget_id)`
-*because `transactions` references it compositely* — that is the whole reason those four keys exist,
-and the transaction configuration names all four as principals. `transactions` is the **leaf**:
+through rather than an oversight.** A budget-owned table carries `(id, budget_id)` as an alternate
+key when something references it **compositely**, because a composite foreign key needs a principal
+key to point at — and **the referrer is not always `transactions`**. Its configuration makes
+**three** `HasPrincipalKey` calls, which consume `AK_accounts_id_budget_id`, `AK_payees_id_budget_id`
+and `AK_categories_id_budget_id`, and those three alone. `AK_category_groups_id_budget_id` is not
+one of them: its single consumer is in `CategoryConfiguration`, because a **category** is what points
+at a group compositely. The shorter story — "those keys exist for `transactions`" — is the one a
+reader reconstructs from the transaction configuration by itself, and acting on it would retire the
+group key the day transactions stopped naming categories, taking the categories-to-groups foreign
+key with it. `transactions` is the **leaf**:
 nothing in the schema references it, so an alternate key there would be a constraint no foreign key
 points at and no failure can ever report, which is the same dead-code argument one paragraph up
 applied before the constraint is written rather than after. A reader meeting the missing key will
-read it as an inconsistency; it is the opposite.
+read it as an inconsistency; it is the opposite — the shape of the reference graph, said at the
+element too, because an absence cannot be found by grep.
 
 ### The type is the rule, and it is the strongest one available here
 
@@ -1513,7 +1531,21 @@ caller wrapping an open in a `catch` has to answer "is this column damaged?", an
   a binder that skips an unknown member the same body is accepted with the payee silently dropped,
   which is the one way a wire disagreement loses data rather than rendering it wrongly. Failing
   visibly is the cheaper failure, and it is why a screen cannot be wired half way — the half-wired
-  state is loud by construction. **The wrapped-key side is a companion here rather than a
+  state is loud by construction.
+
+  **`Disallow` has a counterpart on the other side of the wire, and it reaches exactly as far as the
+  object literal.** TypeScript's excess-property check covers members **written out** — spread or no
+  spread — and exempts only the ones arriving **through** a spread. Measured: `{...base,
+  descriptionn: 'x'}` is a compile error, while `{...carrier}` is not, however many unknown members
+  `carrier` carries. Every request body in this client is built as a literal today, so the compiler
+  is a real net over the misspelling and the specs are the second one. What is worth writing down is
+  the hazard rather than the guarantee: a later refactor that assembles a body by spreading a
+  carrier object removes the first net **silently** — nothing goes red, no member changes name, and
+  the shape that used to be refused at compile time now travels to a server whose own `Disallow` is
+  the only thing left refusing it. The two nets are not one rule stated twice: the server's answers a
+  wire contract for every client, and this one answers *this* client's own drift a release earlier.
+
+  **The wrapped-key side is a companion here rather than a
   counter-example**: `unwrapAccountKeys` is called on every passkey sign-in, and what each consumer
   needs is the same pair — a route to hand it an envelope, and a class to hold what came out.
   **Nothing here may be relaxed to make a later screen easier to write.** The format is a contract

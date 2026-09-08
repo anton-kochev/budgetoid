@@ -636,6 +636,60 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
 
 ---
 
+- **Rule**: A credential type has **exactly one spelling**, and it is **written out, never derived
+  from the member name**. `Domain/Users/CredentialTypeSpelling.cs` owns it. The `type` column, every
+  copy of that column the schema carries, and the `type` member of `GET /api/me/credentials` all read
+  that one definition, and `CK_credentials_type` bounds the same vocabulary.
+- **Why**: two layers have to agree on the token and neither may be the other's source — the
+  persistence configurations own the column, the API owns the wire. While each spelled the vocabulary
+  for itself, "the wire agrees with the column" was a coincidence rather than a fact, and it held
+  only while every member was one word: a camel-case policy over `ToString()` produces
+  `recoveryCodes` for a column holding `recovery_codes`. Reading one definition from both sides is
+  what converts the agreement into a fact. The Domain is the lowest layer both can reach — `Api` and
+  `Infrastructure` both reference it and it references neither — so the token is shared without
+  pointing a dependency edge outward; see
+  [dependency direction](../engineering/dependency-direction.md).
+  - **Do not answer it with a global `JsonNamingPolicy`.** `Api/Program.cs` registers
+    `JsonStringEnumConverter` with **no** policy, so a member handed straight to the serializer
+    reaches the wire as `Passkey` and disagrees with the column. The repair a reader reaches for is a
+    policy on the options, and it would silently respell **every other enum the API emits** — a
+    global setting bought to fix one member's spelling. The endpoint calls
+    `CredentialTypeSpelling.Of` and derives nothing instead.
+  - **Which spellings a *table* accepts is a separate rule each configuration keeps on top.** The
+    shared type says how a member is written; it deliberately does not say which members a given
+    column may hold. `passkey_public_keys` and `passkey_signature_counters` may say `passkey` or
+    `federated` and nothing else — a signature counter cannot hang off a set of codes —
+    `recovery_code_hashes` may say only `recovery_codes`, and each states that as its own `CHECK` and
+    its own converter arms **over** the shared spelling. A restriction folded into the shared type
+    would become a restriction on everything reading it, including the source column itself.
+  - **Adding a member costs a token, a migration and a review, and none of the three is a compile
+    error.** `Of` is a `switch` with a discard arm, so a member nobody chose a spelling for compiles
+    and throws `ArgumentOutOfRangeException` the first time a row carrying it is written;
+    `CK_credentials_type` spells the vocabulary out in SQL, because a `CHECK` predicate is text
+    PostgreSQL stores rather than something it can read out of a C# file. What writing the tokens out
+    buys is that the decision is *visible in a diff* — the same trade the deleted `User.Create`
+    factory makes above, and the same one `docs/decisions/0002` names when a rule sits above its
+    lowest capable layer.
+- **Enforced in**: `CredentialTypeSpelling.Of` and `CredentialTypeSpelling.TryParse` are the only two
+  places a token is spoken. `CredentialConfiguration` maps `credentials.type` through them, and the
+  four configurations carrying a copy of that column — `SessionConfiguration`,
+  `PasskeyPublicKeyConfiguration`, `PasskeySignatureCounterConfiguration` and
+  `RecoveryCodeHashConfiguration` — read the same definition, which is what makes each composite
+  foreign key's direct column-against-column comparison sound rather than lucky.
+  `CredentialEndpoints` calls `Of` on the way out and returns a response record of its own rather
+  than serializing the enum. `TryParse` is **case-sensitive and untrimmed on purpose**: the tokens
+  are a closed vocabulary a `CHECK` also bounds, so `PASSKEY` is not a lenient spelling of anything,
+  it is a value the database would have refused — where the `HasConversion<string>()` and
+  case-insensitive `Enum.Parse` pair this replaced accepted both `PASSKEY` and the numeric `0`.
+- **Counterexample**: reading the column with a permissive parse and letting an unrecognised token
+  materialize as a member. Each read arm throws instead, and each throws **from its own
+  configuration**, naming its own column and the constraint that should have refused the row — the
+  shared type has no way to know which of the schema's copies of this vocabulary it was asked about,
+  so moving that message into it would trade the attribution for one line saved.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
 - **Rule**: An account holds **at most one** credential of type `federated`.
 - **Why**: it is what makes "which provider gates this account" a question with one answer. Nothing
   is being built that would add a second, which is the point — this guards against a **bug** on the
@@ -880,6 +934,18 @@ The budget branch that runs after this, on every path, is in
   here.** Two transactions inserting into both tables cannot form a cycle if neither ever takes the
   second lock first. It is a property of the write order rather than of any lock hint, so it
   survives only as long as the order does.
+
+- **`CredentialType`'s declaration order is load-bearing, and it looks like alphabetical accident.**
+  `Federated` is declared first so that `default(CredentialType)` — what a struct default, a
+  zero-initialised buffer, or a deserializer that saw no member produces — describes a row the
+  database **refuses**: `CK_credentials_type_shape`'s federated arm demands a provider and a
+  non-empty subject, and a credential nobody initialised carries neither. Put `Passkey` first and the
+  identical accident becomes a perfectly storable row, because the passkey arm requires both to be
+  null, which is exactly what a zero-initialised `Credential` holds. Reordering moves no data —
+  `CredentialTypeSpelling` stores and reads text in both directions and no ordinal is persisted
+  anywhere — which is what makes this cheap to break and invisible when broken. `SessionKind` makes
+  the same choice for the same reason: `Locked` is first, so the default is the kind that reaches
+  nothing. Both are the fail-closed direction, and each enum's own comment is what carries it.
 
 - **A user with no budget is unreachable from any path that creates a user**, because the budget
   arrives in the same save. It is not forbidden by the schema: a direct `DELETE FROM budgets` still
