@@ -2533,6 +2533,12 @@ for a note that is drawn nowhere.
 Anything that does not open renders through [`narrative-value`](#the-locked-account) rather than as
 empty text, so a value that failed and a value nobody typed stay distinguishable on the row.
 
+**The list is still published once, and the read handing the frame back between chunks of opens is
+not licence to draw a partial one.** What yielding buys is a page that keeps responding *while* the
+opens run — see [frontend performance](../engineering/frontend-performance.md) — and not earlier
+pixels: rows arriving in batches would show a screenful assembling itself out of order, and a
+screenful is one snapshot or it is nothing.
+
 **Two rules of this chapter are unaffected and worth saying so, because they will look like
 casualties.** "Uncategorized shows *No category* muted" still holds: that branch turns on the
 category being absent, which is a null the client can still see, not on reading a name. And a row
@@ -2594,7 +2600,7 @@ rather than a rule being stated here. The rename rule under
 no Edit and no Delete has no control to disable on a value that did not open.
 
 **None of this row's presentation is held by a test, and the gap is wide enough to name.** Delete
-the component's whole `styles` block and all 63 cases in `transactions.component.spec.ts` stay
+the component's whole `styles` block and all 68 cases in `transactions.component.spec.ts` stay
 green: jsdom computes no layout, so the grid, the 64px floor, the gutter padding, the inset
 hairline, the press layer, the right alignment, the type weights and the tabular figures are held
 by review and by a browser. Four stacked `<div>`s pass everything. Two narrower ones sit under it:

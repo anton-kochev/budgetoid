@@ -10,6 +10,7 @@
 // The opener is therefore recorded rather than merely answered, and the
 // assertions read the bindings.
 import type { TransactionDto } from '@app-core/api/transactions-api.service';
+import type { NarrativeRequest } from '@app-core/security/narrative-batch';
 import {
   NarrativeFieldMisuseError,
   type NarrativeFieldBinding,
@@ -19,7 +20,10 @@ import type {
   NarrativeText,
 } from '@app-core/security/narrative-text';
 import { describe, expect, it } from 'vitest';
-import { toTransactionView } from './transaction-view';
+import {
+  toTransactionView,
+  transactionNarrativeRequests,
+} from './transaction-view';
 
 // Five canonical lower-case hyphenated UUIDs, one per row a member belongs to.
 // They differ in their last character so a binding that reached for the wrong
@@ -60,6 +64,22 @@ const bareTransaction: TransactionDto = {
   categoryName: null,
   categoryGroupId: null,
   categoryGroupName: null,
+};
+
+// The same row with the six optional members *absent* rather than null. Four
+// of the five sealed members are `?:` on `TransactionDto`, so `undefined` is a
+// shape the wire really produces, and the both-halves rule is written with `==`
+// so that it reads the same absence either way.
+const noOptionalMembers: TransactionDto = {
+  id: TRANSACTION_ID,
+  amount: -20.5,
+  date: '2026-07-14',
+  description: 'sealed-description',
+  createdAtUtc: '2026-07-14T10:00:00Z',
+  accountId: ACCOUNT_ID,
+  accountName: 'sealed-account-name',
+  currencyCode: 'USD',
+  currencySymbol: '$',
 };
 
 // Answers with the wire value's own name so a view can be read back to the
@@ -277,5 +297,238 @@ describe('toTransactionView', () => {
 
     // Assert
     await expect(mapping).rejects.toBeInstanceOf(NarrativeFieldMisuseError);
+  });
+});
+
+// A stable spelling of one request, so two lists can be compared without either
+// one's order being asserted. All four fields, for the reason `narrative-batch`
+// keys on all four: three of them say which row's envelope this is, and the
+// wire value says which read of it. Kept out of that module deliberately — its
+// key grammar is private, and a spec reaching for it would be a second opinion
+// about which requests are the same request.
+function requestKey(request: NarrativeRequest): string {
+  return [
+    request.binding.table,
+    request.binding.column,
+    request.binding.rowId,
+    request.wire,
+  ].join('|');
+}
+
+function sortedRequests(
+  requests: readonly NarrativeRequest[],
+): readonly NarrativeRequest[] {
+  return [...requests].sort((left, right) =>
+    requestKey(left).localeCompare(requestKey(right)),
+  );
+}
+
+// The batch hint beside the mapper, and **every case here spells its expected
+// binding out rather than reading one back from the thing under test.**
+//
+// That is the whole shape of this block, and it is a reaction to a measurement
+// rather than a preference. The obvious spec — run the mapper with a recording
+// opener, run the collector, assert the two agree — was written and then run
+// against a mutant with `payeeNameBinding(dto.id)` substituted into *both*
+// halves, which is exactly the defect `transaction-view.ts` says it exists to
+// prevent and exactly the way a copy-paste drifts. The comparison reported a
+// match on every DTO shape it was given. It could not even see that the mutant
+// changed the *arity* of the answer — `dto.id` is always present, so the
+// both-halves rule stops firing and a row with a payee name and no payee id
+// grows a fifth request out of nothing.
+//
+// So the five pairings are held by five independent literals below, each naming
+// its own row's identifier and, for the four foreign ones, naming this
+// transaction's id as the wrong answer. The differential check is kept at the
+// bottom as a drift detector and is labelled as one.
+describe('transactionNarrativeRequests', () => {
+  it('pairs the note with this row’s own description binding', () => {
+    // Act
+    const requests = transactionNarrativeRequests(sealedTransaction);
+
+    // Assert — `transactions.description` is the one member bound to the
+    // transaction, which is the whole reason the other four cannot be.
+    expect(
+      requests.filter((request) => request.binding.table === 'transactions'),
+    ).toEqual([
+      {
+        binding: {
+          table: 'transactions',
+          column: 'description',
+          rowId: TRANSACTION_ID,
+        },
+        wire: 'sealed-description',
+      },
+    ]);
+  });
+
+  it('pairs the account name with the account’s row id, never this row’s', () => {
+    // Act
+    const requests = transactionNarrativeRequests(sealedTransaction);
+
+    // Assert
+    const account = requests.filter(
+      (request) => request.binding.table === 'accounts',
+    );
+
+    expect(account).toEqual([
+      {
+        binding: { table: 'accounts', column: 'name', rowId: ACCOUNT_ID },
+        wire: 'sealed-account-name',
+      },
+    ]);
+    expect(account[0].binding.rowId).not.toBe(TRANSACTION_ID);
+  });
+
+  it('pairs the payee name with the payee’s row id, never this row’s', () => {
+    // Act
+    const requests = transactionNarrativeRequests(sealedTransaction);
+
+    // Assert
+    const payee = requests.filter(
+      (request) => request.binding.table === 'payees',
+    );
+
+    expect(payee).toEqual([
+      {
+        binding: { table: 'payees', column: 'name', rowId: PAYEE_ID },
+        wire: 'sealed-payee-name',
+      },
+    ]);
+    expect(payee[0].binding.rowId).not.toBe(TRANSACTION_ID);
+  });
+
+  it('pairs the category name with the category’s row id, never this row’s', () => {
+    // Act
+    const requests = transactionNarrativeRequests(sealedTransaction);
+
+    // Assert
+    const category = requests.filter(
+      (request) => request.binding.table === 'categories',
+    );
+
+    expect(category).toEqual([
+      {
+        binding: { table: 'categories', column: 'name', rowId: CATEGORY_ID },
+        wire: 'sealed-category-name',
+      },
+    ]);
+    expect(category[0].binding.rowId).not.toBe(TRANSACTION_ID);
+  });
+
+  it('pairs the group name with the group’s row id, never this row’s', () => {
+    // Act
+    const requests = transactionNarrativeRequests(sealedTransaction);
+
+    // Assert
+    const group = requests.filter(
+      (request) => request.binding.table === 'category_groups',
+    );
+
+    expect(group).toEqual([
+      {
+        binding: { table: 'category_groups', column: 'name', rowId: GROUP_ID },
+        wire: 'sealed-group-name',
+      },
+    ]);
+    expect(group[0].binding.rowId).not.toBe(TRANSACTION_ID);
+  });
+
+  it('asks for five requests and no more', () => {
+    // Act
+    const requests = transactionNarrativeRequests(sealedTransaction);
+
+    // Assert — the census beside the five literals above. Each of those names
+    // one pairing; together with this they say the five are these five and that
+    // no member was asked for twice. Sorted, because the order a batch is
+    // handed its requests in is nothing this may pin.
+    expect(requests.map((request) => request.binding.table).sort()).toEqual([
+      'accounts',
+      'categories',
+      'category_groups',
+      'payees',
+      'transactions',
+    ]);
+  });
+
+  it('asks nothing for an identifier whose wire value is missing', () => {
+    // Arrange — a payee this row names, with no sealed name beside it. There is
+    // nothing to open, so there is nothing to ask for.
+    const noPayeeName: TransactionDto = {
+      ...sealedTransaction,
+      payeeName: null,
+    };
+
+    // Act
+    const requests = transactionNarrativeRequests(noPayeeName);
+
+    // Assert
+    expect(
+      requests.filter((request) => request.binding.table === 'payees'),
+    ).toEqual([]);
+    expect(requests).toHaveLength(4);
+  });
+
+  it('asks nothing for a wire value whose identifier is missing', () => {
+    // Arrange — the shape the server does not send, and the one a collector
+    // reaching for a substitute would answer with this row's own id. The count
+    // is half of what this case holds: a substitute binding cannot decline,
+    // because `dto.id` is always there, so the request appears instead of
+    // vanishing.
+    const orphanedPayeeName: TransactionDto = {
+      ...sealedTransaction,
+      payeeId: null,
+    };
+
+    // Act
+    const requests = transactionNarrativeRequests(orphanedPayeeName);
+
+    // Assert
+    expect(
+      requests.filter((request) => request.binding.table === 'payees'),
+    ).toEqual([]);
+    expect(requests).toHaveLength(4);
+  });
+
+  it('asks for the note and the account name when every optional member is absent', () => {
+    // Act
+    const requests = transactionNarrativeRequests(noOptionalMembers);
+
+    // Assert — `undefined` is the same absence as `null` here, and the two
+    // members that are never optional are what is left.
+    expect(requests.map((request) => request.binding.table).sort()).toEqual([
+      'accounts',
+      'transactions',
+    ]);
+  });
+
+  it('asks only for the account name when the note is null as well', () => {
+    // Act
+    const requests = transactionNarrativeRequests(bareTransaction);
+
+    // Assert — one request, spelled out whole: a row naming nothing but its
+    // account.
+    expect(requests).toEqual([
+      {
+        binding: { table: 'accounts', column: 'name', rowId: ACCOUNT_ID },
+        wire: 'sealed-account-name',
+      },
+    ]);
+  });
+
+  it('asks for exactly what the mapper opens', async () => {
+    // Arrange — a drift detector, and only that. **It cannot see a defect that
+    // is present in both halves**: a wrong pairing copy-pasted into the mapper
+    // and into the collector agrees with itself, and this stays green — which
+    // was measured, not assumed. What it does catch is one half moving while
+    // the other stands still, which is the other way this pair goes wrong.
+    const opener = recordingOpener();
+
+    // Act
+    const requests = transactionNarrativeRequests(sealedTransaction);
+    await toTransactionView(sealedTransaction, opener.open);
+
+    // Assert
+    expect(sortedRequests(requests)).toEqual(sortedRequests(opener.calls));
   });
 });

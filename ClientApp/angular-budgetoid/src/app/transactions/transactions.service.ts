@@ -151,6 +151,16 @@
 // revert a list to rows the person has already replaced. `mergeMap` and an
 // unguarded `set` are the same defect written two ways.
 //
+// **The list opens each distinct narrative once, and the batch that does it is
+// an optimisation hint rather than a second authority.** A month of rows names
+// the same four accounts, the same handful of counterparties and the same
+// categories over and over, so opening per row spends an AEAD open per
+// *reference* where one per *value* would do. What makes that safe is the shape
+// rather than the saving: `toTransactionView` still names every binding it
+// opens under, and the opener the batch hands back falls through to custody on
+// a miss, so a request this file forgot to collect is opened inline rather than
+// answered wrongly. `#openList` argues the rest of it at the method.
+//
 // **The list is `TransactionView[] | null` and clears to `null` when a load
 // starts** — `docs/design/components.md`, "A value read from the network".
 // `null` and never `[]`: an empty array is the sentence *you have no
@@ -197,12 +207,16 @@ import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { CategoryGroupsApiService } from '@app-core/api/category-groups-api.service';
 import { CategoriesApiService } from '@app-core/api/categories-api.service';
 import { PayeesApiService } from '@app-core/api/payees-api.service';
-import { TransactionsApiService } from '@app-core/api/transactions-api.service';
+import {
+  TransactionsApiService,
+  type TransactionDto,
+} from '@app-core/api/transactions-api.service';
 import { writeOutcomeOf, type WriteOutcome } from '@app-core/api/write-outcome';
 import {
   AccountKeyCustodyService,
   type AccountKeyStatus,
 } from '@app-core/security/account-key-custody.service';
+import { openNarrativeBatch } from '@app-core/security/narrative-batch';
 import { mintNarrativeRowId } from '@app-core/security/narrative-row-id';
 import type {
   NarrativeIndexer,
@@ -236,6 +250,7 @@ import {
 import {
   toTransactionView,
   transactionDescriptionBinding,
+  transactionNarrativeRequests,
   type TransactionView,
 } from './transaction-view';
 
@@ -355,19 +370,7 @@ export class TransactionsService {
       .pipe(
         switchMap(() =>
           this.#api.getTransactions().pipe(
-            switchMap((response) =>
-              from(
-                Promise.all(
-                  // `Promise.all` and never `allSettled`: a
-                  // `NarrativeFieldMisuseError` is a defect in this client and
-                  // has to reach the failure branch, not be filed as one member
-                  // that did not open.
-                  response.items.map((dto) =>
-                    toTransactionView(dto, this.#open),
-                  ),
-                ),
-              ),
-            ),
+            switchMap((response) => from(this.#openList(response.items))),
             map((views): LoadOutcome => ({ state: 'loaded', views })),
             catchError((error: unknown): Observable<LoadOutcome> => {
               this.#report('the transactions could not be read', error);
@@ -623,6 +626,65 @@ export class TransactionsService {
     this.load();
 
     return { state: 'recorded' };
+  }
+
+  // One response, opened in two passes: collect what the rows are about to ask
+  // for and open each distinct question once, then map the rows against the
+  // opener that comes back.
+  //
+  // **The first pass is a hint and the mapper is still the only authority.**
+  // `transactionNarrativeRequests` guesses, in advance, at the five members
+  // `toTransactionView` is about to open; the opener handed to the mapper
+  // answers from that batch and **falls through to `#open` on a miss**. So a
+  // member the collector forgets, or pairs with the wrong row, is still opened
+  // inline under the binding the *mapper* names — the drift costs an open and
+  // can never cost a rendered value. That asymmetry is the whole reason a second
+  // list of bindings may sit beside the mapper at all: `transaction-view.ts`
+  // exists because a name opened under the wrong row's binding comes back
+  // `unreadable` in silence, and the one question that may never have two
+  // opinions is which binding a member is opened under. The fall-through is what
+  // keeps this file from being the second opinion, so it is the property rather
+  // than tidiness.
+  //
+  // **There is no composition here, and that is what holds it.** The opener
+  // arrives already wired: one call, one argument list, no second export to pair
+  // with the first and no fallback to get wrong. This method used to do that
+  // pairing itself, and `narrative-batch.ts` argues at `openNarrativeBatch` why
+  // it stopped — the short of it being that the fallback written here could be
+  // replaced with one answering `unreadable` and nothing went red, because a
+  // collector and a mapper that agree on every member never reach the miss. So
+  // the property is not watched from this file; there is nothing here that could
+  // omit it.
+  //
+  // **This file builds no key either.** The grammar is `narrative-batch.ts`'s
+  // and stays private there: a key spelled again here would be a second opinion
+  // about which two requests are one request, and a loose one —
+  // `<table>.<column>` with the row id dropped, say — does not miss and fall
+  // through. It answers, with another row's counterparty, on a value whose tag
+  // checked and which no server can ever see is wrong. Nothing here is handed a
+  // map to spell one against: what comes back is a function of the same two
+  // arguments the mapper already holds.
+  //
+  // **Nothing survives the read.** The opener is a local: it is handed to one
+  // `Promise.all` and is unreachable once that promise settles, and what it
+  // opened lives inside it rather than anywhere this class can reach. A field
+  // here would be a second store of opened narrative for `SessionService.ended()`
+  // to clear, and `account-keys.md` gives clearing exactly one owner.
+  //
+  // `Promise.all` and never `allSettled`, in both passes: a
+  // `NarrativeFieldMisuseError` is a defect in this client and has to reach the
+  // failure branch, not be filed as one member that did not open.
+  async #openList(
+    dtos: readonly TransactionDto[],
+  ): Promise<readonly TransactionView[]> {
+    const fromBatch = await openNarrativeBatch(
+      dtos.flatMap((dto) => transactionNarrativeRequests(dto)),
+      this.#open,
+    );
+
+    return await Promise.all(
+      dtos.map((dto) => toTransactionView(dto, fromBatch)),
+    );
   }
 
   // `''` exactly, and never `.trim()`: a note of spaces is a note somebody

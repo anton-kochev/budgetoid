@@ -50,6 +50,7 @@
 // shorter and would carry a sixth sealed column into a view as though it were
 // text the day this row gains one, with nothing red.
 import type { TransactionDto } from '@app-core/api/transactions-api.service';
+import type { NarrativeRequest } from '@app-core/security/narrative-batch';
 import type { NarrativeFieldBinding } from '@app-core/security/narrative-cipher';
 import type {
   NarrativeOpener,
@@ -178,4 +179,56 @@ export async function toTransactionView(
     payeeId: dto.payeeId ?? null,
     payeeName,
   };
+}
+
+// One request, or none. The same both-halves-or-nothing rule `openForeignName`
+// applies a few lines up, and for the same reason: a wire value with no
+// identifier has no binding this client may honestly build, and an identifier
+// with no wire value has nothing to open.
+function foreignNameRequest(
+  binding: (rowId: string) => NarrativeFieldBinding,
+  rowId: string | null | undefined,
+  wire: string | null | undefined,
+): NarrativeRequest | null {
+  return rowId == null || wire == null
+    ? null
+    : { binding: binding(rowId), wire };
+}
+
+/**
+ * The five sealed members of one row, each paired with the binding of the row
+ * it belongs to, ready to be handed to a batch.
+ *
+ * **This is an optimisation hint and never a second authority.** The service
+ * pre-opens what this returns and then hands {@link toTransactionView} an
+ * opener backed by that batch which *falls through to the real opener on a
+ * miss* — so a member this function forgets, or pairs with the wrong row, is
+ * still opened inline, under the binding the mapper names. A key nobody looks
+ * up is a wasted open and nothing else. Drift here costs a request and never a
+ * rendered value.
+ *
+ * That asymmetry is the whole of why this may sit beside the mapper at all.
+ * This file exists because a name opened under the wrong row's binding comes
+ * back `unreadable` in silence, with nothing on the server able to see it — and
+ * the one thing that can never be answered by a second opinion is which binding
+ * a member is opened under. Here the mapper still answers that question alone;
+ * this function only guesses, in advance, at what it is about to ask for.
+ *
+ * Lives here rather than beside its caller because the five pairings keep
+ * exactly one spelling, in the file that holds the mapper they are read from.
+ */
+export function transactionNarrativeRequests(
+  dto: TransactionDto,
+): readonly NarrativeRequest[] {
+  return [
+    foreignNameRequest(transactionDescriptionBinding, dto.id, dto.description),
+    foreignNameRequest(accountNameBinding, dto.accountId, dto.accountName),
+    foreignNameRequest(payeeNameBinding, dto.payeeId, dto.payeeName),
+    foreignNameRequest(categoryNameBinding, dto.categoryId, dto.categoryName),
+    foreignNameRequest(
+      categoryGroupNameBinding,
+      dto.categoryGroupId,
+      dto.categoryGroupName,
+    ),
+  ].filter((request): request is NarrativeRequest => request !== null);
 }

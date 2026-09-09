@@ -27,6 +27,8 @@
 // type system's `this` — and answers every call with a `TypeError` on the wrong
 // receiver. `@typescript-eslint/unbound-method` is off for specs, so nothing but
 // a call finds it.
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { provideHttpClient } from '@angular/common/http';
 import {
   HttpTestingController,
@@ -55,6 +57,7 @@ import type {
 import { ConfigurationService } from '@app-core/services/configuration.service';
 import { SessionService } from '@app-core/session/session.service';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { TransactionView } from './transaction-view';
 import { TransactionsService } from './transactions.service';
 
 const API_ORIGIN = 'https://api.test';
@@ -704,6 +707,702 @@ describe('TransactionsService', () => {
       http.expectOne(TRANSACTIONS_URL).flush({ items: [] });
       await settle();
       expect(service.failed()).toBe(false);
+    });
+  });
+
+  // How many narrative opens one list read performs.
+  //
+  // **The first three count opens and never read a value**, which is the only
+  // way that question can be asked at all: what a screen renders is identical
+  // whether a name was opened once or two hundred times, so every assertion in
+  // them is over `custody.openCalls` and the rows are checked only for being
+  // there.
+  //
+  // **The fourth reads values and counts nothing, and it is here because the
+  // saving the first three describe is what puts those values at risk.** A read
+  // that opens per row cannot pair a name with the wrong row; a read that looks
+  // one up in a map it pre-opened can, and a lookup with a loose key does not
+  // miss — it answers with somebody else's counterparty. That is the silent
+  // defect `transaction-view.ts`'s head names: the tag check never fails,
+  // nothing errors, no server can see it, and a person reads another row's
+  // payee on their own transaction. It is green against the read that ships
+  // today and has to stay green against the one that replaces it.
+  //
+  // **The fifth is a source-text pin and holds a delegation and nothing more.**
+  // Five of the six wrong key grammars produce the counts the right one does,
+  // so the pair below pins the count and not the key; the key is pinned in
+  // `narrative-batch.spec.ts`, and only if the service actually calls
+  // `openNarrativeBatch`. A service rolling its own map with a loose key passes
+  // every other case here and never reaches that file.
+  //
+  // **The first two are a pair, and the second is a conservation check rather
+  // than a guard on the first.** One says the count fell to the number of
+  // *distinct* values a response holds. The other runs a fixture with nothing
+  // to share and says the count is then exactly one open per sealed column —
+  // neither fewer, which would be a collapse of two values the key says are
+  // different, nor more, which would be a column opened twice. Said plainly
+  // because it is easy to overstate: a read answering one constant opens once
+  // and fails the first case on its own, and so does one keyed on
+  // `<table>.<column>`. What the second adds is the other direction, over the
+  // one fixture where the arithmetic has no duplicates hiding either mistake.
+  //
+  // **The third is the observable form of a rule that lives elsewhere.**
+  // `narrative-batch.ts` keeps no state between calls because opened narrative
+  // that outlived a read would be a second thing for `SessionService.ended()`
+  // to clear, and `account-keys.md` gives clearing exactly one owner. Nothing
+  // in the compiler holds that; a read that re-opens its own values does.
+  describe('how many opens one list read costs', () => {
+    // The five identifier families this fixture draws from. Kept apart by the
+    // leading pair of digits so a row id can never collide with an account id
+    // and quietly make two questions look like one.
+    const ROW_IDS = 10;
+    const ACCOUNT_IDS = 11;
+    const PAYEE_IDS = 12;
+    const CATEGORY_IDS = 13;
+    const GROUP_IDS = 14;
+
+    // Two hundred rows, which is a month somebody actually has. Small fixtures
+    // cannot ask this question: at three rows the difference between opening
+    // every member and opening every distinct member is a handful of calls
+    // either way, and nothing about the read's shape shows through it.
+    const ROWS = 200;
+
+    // Each case's own stretch of the identifier space, so that no two of them
+    // name one row or one counterparty. Nothing shares state between them
+    // today — a batch's map is built inside one call and handed to its caller
+    // — but these three cases exist because something might, and cases whose
+    // fixtures overlap would then fail in each other's names. Disjoint id
+    // spaces keep each red bar pointing at the case that earned it.
+    const SHARED_NAMES_AT = 0;
+    const DISTINCT_NAMES_AT = 1000;
+    const SECOND_READ_AT = 5000;
+
+    // Canonical lower-case hyphenated UUIDs, because that is the spelling the
+    // wire really carries and the one the codec accepts.
+    function censusId(family: number, index: number): string {
+      const tail = `${String(family)}${String(index).padStart(10, '0')}`;
+
+      return `0199c3d4-5f6a-7b8c-9d0e-${tail}`;
+    }
+
+    // Which account, payee, category and group one row names. Indices rather
+    // than identifiers, so a fixture states its own sharing in the one place a
+    // reader counts it from.
+    interface RowNames {
+      readonly account: number;
+      readonly payee: number;
+      readonly category: number;
+      readonly group: number;
+    }
+
+    function censusTransaction(row: number, names: RowNames): TransactionDto {
+      const id = censusId(ROW_IDS, row);
+      const accountId = censusId(ACCOUNT_IDS, names.account);
+      const payeeId = censusId(PAYEE_IDS, names.payee);
+      const categoryId = censusId(CATEGORY_IDS, names.category);
+      const groupId = censusId(GROUP_IDS, names.group);
+
+      return {
+        id,
+        amount: -20.5,
+        date: '2026-07-14',
+        description: sealedWire(
+          'transactions',
+          'description',
+          id,
+          `Note ${String(row)}`,
+        ),
+        createdAtUtc: '2026-07-14T10:00:00Z',
+        accountId,
+        accountName: sealedWire(
+          'accounts',
+          'name',
+          accountId,
+          `Account ${String(names.account)}`,
+        ),
+        currencyCode: 'USD',
+        currencySymbol: '$',
+        payeeId,
+        payeeName: sealedWire(
+          'payees',
+          'name',
+          payeeId,
+          `Payee ${String(names.payee)}`,
+        ),
+        categoryId,
+        categoryName: sealedWire(
+          'categories',
+          'name',
+          categoryId,
+          `Category ${String(names.category)}`,
+        ),
+        categoryGroupId: groupId,
+        categoryGroupName: sealedWire(
+          'category_groups',
+          'name',
+          groupId,
+          `Group ${String(names.group)}`,
+        ),
+      };
+    }
+
+    // A response of `count` rows, each built from its own index.
+    //
+    // `Array.from`'s mapper takes the element first and the index second, and
+    // there is no element here — so the discard is named once, in this one
+    // place, rather than at each of the three fixtures below.
+    function censusRows(
+      count: number,
+      row: (index: number) => TransactionDto,
+    ): readonly TransactionDto[] {
+      return Array.from({ length: count }, (unused, index) => row(index));
+    }
+
+    // How many distinct values one sealed member of a response holds.
+    //
+    // Counting wires counts (binding, wire) pairs here, and that is a property
+    // of the fixture rather than a shortcut: every wire above encodes the row
+    // id it was sealed under, so two equal wires on one member are two equal
+    // bindings as well. An open is charged per pair, which is why this is the
+    // unit the table below is written in.
+    function distinctWires(
+      rows: readonly TransactionDto[],
+      member: (row: TransactionDto) => string | null | undefined,
+    ): number {
+      const wires = rows
+        .map(member)
+        .filter((wire): wire is string => typeof wire === 'string');
+
+      return new Set(wires).size;
+    }
+
+    // Waits for the opens to stop arriving rather than for a fixed number of
+    // ticks. `settle()` yields one macrotask, which is everything an inline
+    // read needs; a read that pre-opens a whole screenful may hand the frame
+    // back to the browser between chunks, and each hand-back is a macrotask of
+    // its own. Fifty bounds a hang and is never a count of anything.
+    async function settleOpens(): Promise<void> {
+      let previous = -1;
+
+      for (
+        let attempt = 0;
+        attempt < 50 && previous !== custody.openCalls.length;
+        attempt += 1
+      ) {
+        previous = custody.openCalls.length;
+        await settle();
+      }
+
+      await settle();
+    }
+
+    it('opens each distinct narrative once across a two-hundred row list', async () => {
+      // Arrange — the ordinary shape of a month: every row carries a note of
+      // its own, and the four foreign names on it are copies. Four accounts,
+      // forty payees, twenty-five categories, eight groups.
+      const rows = censusRows(ROWS, (row) =>
+        censusTransaction(SHARED_NAMES_AT + row, {
+          account: SHARED_NAMES_AT + (row % 4),
+          category: SHARED_NAMES_AT + (row % 25),
+          group: SHARED_NAMES_AT + ((row % 25) % 8),
+          payee: SHARED_NAMES_AT + (row % 40),
+        }),
+      );
+
+      // What the fixture actually holds, read off the fixture rather than
+      // remembered. The table below restates these five numbers as claims, and
+      // these five lines are what stops the table being edited into agreement
+      // with whatever the service happened to do.
+      expect(distinctWires(rows, (row) => row.description)).toBe(200);
+      expect(distinctWires(rows, (row) => row.accountName)).toBe(4);
+      expect(distinctWires(rows, (row) => row.payeeName)).toBe(40);
+      expect(distinctWires(rows, (row) => row.categoryName)).toBe(25);
+      expect(distinctWires(rows, (row) => row.categoryGroupName)).toBe(8);
+
+      // Fixture cardinality → opens it is worth → why, and the expectation is
+      // the sum of these terms and of nothing else:
+      //
+      //   200 notes, one per row, each sealed under its own identifier
+      // +   4 account names, each named by fifty rows
+      // +  40 payee names
+      // +  25 category names
+      // +   8 category-group names
+      // = 277 distinct (binding, wire) pairs, and 277 opens.
+      //
+      // Written as a table so that greening this by pasting an observed number
+      // means adding a row here and saying what it is a count of. There is no
+      // sixth sealed member on this row for such a row to describe.
+      const census: readonly {
+        readonly member: string;
+        readonly distinct: number;
+        readonly why: string;
+      }[] = [
+        {
+          distinct: 200,
+          member: 'description',
+          why: 'sealed under its own row id, so no two rows ask one question',
+        },
+        {
+          distinct: 4,
+          member: 'accountName',
+          why: 'four accounts, denormalized onto every row that draws on one',
+        },
+        {
+          distinct: 40,
+          member: 'payeeName',
+          why: 'forty counterparties, most of them named by several rows',
+        },
+        {
+          distinct: 25,
+          member: 'categoryName',
+          why: 'twenty-five categories over two hundred rows',
+        },
+        {
+          distinct: 8,
+          member: 'categoryGroupName',
+          why: 'eight groups, and a group is named by every row in it',
+        },
+      ];
+
+      const expected = census.reduce(
+        (total, entry) => total + entry.distinct,
+        0,
+      );
+
+      // Act
+      service.load();
+      http.expectOne(TRANSACTIONS_URL).flush({ items: rows });
+      await settleOpens();
+
+      // Assert — the list is checked for being there and never for what it
+      // says, so that a read which opened 277 times and published nothing
+      // cannot be mistaken for one that did the work.
+      expect(service.transactions()).toHaveLength(ROWS);
+      expect(custody.openCalls).toHaveLength(expected);
+    });
+
+    it('opens all five members of every row when a list shares no name', async () => {
+      // Arrange — the control, and what it holds is a conservation invariant
+      // rather than a second reading of the case above. Every row here names an
+      // account, a payee, a category and a group of its own, so there is not
+      // one duplicate in the response to collapse and the count is pinned to
+      // the total number of sealed columns: fewer is a value collapsed that the
+      // key says is distinct, more is a column opened twice, and the fixture
+      // has no repetition for either to hide behind.
+      //
+      // **Not** because a read answering a constant would otherwise slip
+      // through — that read opens once and fails the 277 above it. The case
+      // above is a claim about de-duplication; this one is the claim that
+      // nothing else moved.
+      const rows = censusRows(ROWS, (row) =>
+        censusTransaction(DISTINCT_NAMES_AT + row, {
+          account: DISTINCT_NAMES_AT + row,
+          category: DISTINCT_NAMES_AT + row,
+          group: DISTINCT_NAMES_AT + row,
+          payee: DISTINCT_NAMES_AT + row,
+        }),
+      );
+
+      expect(distinctWires(rows, (row) => row.description)).toBe(ROWS);
+      expect(distinctWires(rows, (row) => row.accountName)).toBe(ROWS);
+      expect(distinctWires(rows, (row) => row.payeeName)).toBe(ROWS);
+      expect(distinctWires(rows, (row) => row.categoryName)).toBe(ROWS);
+      expect(distinctWires(rows, (row) => row.categoryGroupName)).toBe(ROWS);
+
+      // The same arithmetic as the case above with every term at its maximum:
+      // 200 notes + 200 account names + 200 payee names + 200 category names
+      // + 200 group names, which is the five sealed members of every row.
+      const membersPerRow = 5;
+      const expected = ROWS * membersPerRow;
+
+      // Act
+      service.load();
+      http.expectOne(TRANSACTIONS_URL).flush({ items: rows });
+      await settleOpens();
+
+      // Assert
+      expect(service.transactions()).toHaveLength(ROWS);
+      expect(custody.openCalls).toHaveLength(expected);
+    });
+
+    it('opens the second read’s values again rather than reusing the first’s', async () => {
+      // Arrange — two reads with nothing in between, and the **same** response
+      // both times. The identical payload is the instrument: a store that
+      // outlived a read would be missed by a second read of different rows,
+      // and this case would then pass straight over it. Ten rows sharing one
+      // account, one payee, one category and one group, so a cache built by
+      // the first read would have almost everything the second one wants.
+      const rows = censusRows(10, (row) =>
+        censusTransaction(SECOND_READ_AT + row, {
+          account: SECOND_READ_AT,
+          category: SECOND_READ_AT,
+          group: SECOND_READ_AT,
+          payee: SECOND_READ_AT,
+        }),
+      );
+
+      service.load();
+      http.expectOne(TRANSACTIONS_URL).flush({ items: rows });
+      await settleOpens();
+
+      const first = custody.openCalls.length;
+
+      expect(first).toBeGreaterThan(0);
+
+      // Act — no lock, no unlock, no session change: the one sequence in which
+      // a cache would look free.
+      service.load();
+      http.expectOne(TRANSACTIONS_URL).flush({ items: rows });
+      await settleOpens();
+
+      // Assert — on the count and never on the values, because a cache serves
+      // exactly the right text and is still the defect. A batch's map lives
+      // for one read; anything longer-lived is a second store of opened
+      // narrative, needing a clearer of its own, on a rule that has one owner.
+      expect(custody.openCalls.length - first).toBe(first);
+    });
+
+    // A fifth stretch of the identifier space, for the reason the three above
+    // have theirs: disjoint spaces keep a red bar pointing at the case that
+    // earned it.
+    const OWN_NAMES_AT = 9000;
+
+    // How often each foreign name repeats down the list, and the four numbers
+    // are the design of this fixture rather than four arbitrary sizes.
+    //
+    // **Pairwise coprime**, so a mispairing that hands row *i* the value from
+    // row *i + s* disagrees with row *i* on some member unless `s` is a
+    // multiple of 3 × 7 × 11 × 13 — three thousand and three, fifteen times
+    // longer than this list.
+    //
+    // **Interleaved (`row % k`) and never blocked (`Math.floor(row / k)`)**,
+    // which is the trap a fixture like this falls into first: blocked, fifty
+    // neighbouring rows share an account name and an off-by-one is invisible
+    // on forty-nine of them. Interleaved, no two neighbours agree on anything.
+    const ACCOUNT_CYCLE = 3;
+    const PAYEE_CYCLE = 7;
+    const CATEGORY_CYCLE = 11;
+    const GROUP_CYCLE = 13;
+
+    // Which family an identifier came from and which member of it — the
+    // inverse of `censusId`, and what lets a name's owner be read off the
+    // identifier the **view** came back with rather than off the fixture that
+    // wrote it. That direction is the whole of the pairing question: it asks
+    // each published row which account, payee, category and group it names,
+    // and then whether the words on it belong to those four rows.
+    interface CensusIdentifier {
+      readonly family: number;
+      readonly index: number;
+    }
+
+    function censusIdentifier(id: string): CensusIdentifier {
+      // The last twelve digits, which `censusId` writes as two of family
+      // followed by ten of index.
+      const tail = id.slice(-12);
+
+      return { family: Number(tail.slice(0, 2)), index: Number(tail.slice(2)) };
+    }
+
+    // The name an identifier owns, spelled the way `censusTransaction` sealed
+    // it. An identifier from the wrong family answers a sentence rather than a
+    // name — the colon is what keeps it out of the space of real names — so a
+    // row wearing an account id where a payee id belongs is a finding and
+    // never an accidental match.
+    function nameOwnedBy(
+      family: number,
+      label: string,
+      id: string | null | undefined,
+    ): string {
+      if (id == null) {
+        return `${label}: none`;
+      }
+
+      const owner = censusIdentifier(id);
+
+      return owner.family === family
+        ? `${label} ${String(owner.index)}`
+        : `${label}: from family ${String(owner.family)}`;
+    }
+
+    // The identifiers one row carries, on the DTO the fixture wrote and on the
+    // view the service published alike. The two are compared against each
+    // other below, so one accessor has to be able to read both.
+    interface RowIdentifiers {
+      readonly id: string;
+      readonly accountId: string;
+      readonly payeeId?: string | null;
+      readonly categoryId?: string | null;
+      readonly categoryGroupId?: string | null;
+    }
+
+    function namesOwnedBy(row: RowIdentifiers): readonly string[] {
+      return [
+        nameOwnedBy(ROW_IDS, 'Note', row.id),
+        nameOwnedBy(ACCOUNT_IDS, 'Account', row.accountId),
+        nameOwnedBy(PAYEE_IDS, 'Payee', row.payeeId),
+        nameOwnedBy(CATEGORY_IDS, 'Category', row.categoryId),
+        nameOwnedBy(GROUP_IDS, 'Group', row.categoryGroupId),
+      ];
+    }
+
+    // What a published row actually says. A word that is not `text` travels as
+    // the word: `unreadable` is exactly what the stub answers for a name
+    // opened under another row's binding, and it has to reach the comparison
+    // rather than being flattened into an absence.
+    function openedNames(view: TransactionView): readonly string[] {
+      return [
+        view.description,
+        view.accountName,
+        view.payeeName,
+        view.categoryName,
+        view.categoryGroupName,
+      ].map((value) => {
+        if (value === null) {
+          return 'none';
+        }
+
+        return value.state === 'text' ? value.value : value.state;
+      });
+    }
+
+    it('never hands a row another row’s counterparty', async () => {
+      // Arrange — two hundred rows on which each foreign name repeats on its
+      // own cycle and the note repeats not at all. No case in this file opens
+      // a multi-row list and asks whether row seven's payee is row seven's:
+      // the binding case up top uses a single row carrying one of each name,
+      // where mispairing is not available.
+      //
+      // It is not hypothetical. A read that opens per row cannot mispair; a
+      // read that looks a name up in a map it pre-opened can, and **a lookup
+      // with a loose key does not miss — it answers with the wrong value**.
+      // Row seven then renders row three's counterparty: the tag check never
+      // fails, nothing errors, and no server can see it, because the server
+      // holds no key and cannot tell a value that opened from one that did
+      // not. That is what `transaction-view.ts`'s head says the file exists to
+      // prevent.
+      const rows = censusRows(ROWS, (row) =>
+        censusTransaction(OWN_NAMES_AT + row, {
+          account: OWN_NAMES_AT + (row % ACCOUNT_CYCLE),
+          category: OWN_NAMES_AT + (row % CATEGORY_CYCLE),
+          group: OWN_NAMES_AT + (row % GROUP_CYCLE),
+          payee: OWN_NAMES_AT + (row % PAYEE_CYCLE),
+        }),
+      );
+
+      // What the fixture holds, read off the fixture. Sharing is the point
+      // here rather than a saving: a list on which nothing repeats cannot
+      // mispair, because there is no second row to pair a row with.
+      expect(distinctWires(rows, (row) => row.description)).toBe(ROWS);
+      expect(distinctWires(rows, (row) => row.accountName)).toBe(ACCOUNT_CYCLE);
+      expect(distinctWires(rows, (row) => row.payeeName)).toBe(PAYEE_CYCLE);
+      expect(distinctWires(rows, (row) => row.categoryName)).toBe(
+        CATEGORY_CYCLE,
+      );
+      expect(distinctWires(rows, (row) => row.categoryGroupName)).toBe(
+        GROUP_CYCLE,
+      );
+
+      // Three rows spelled out, and they are chosen rather than picked: across
+      // them every member holds three **different** values. That is the
+      // control that a mispairing is visible at all — the commonest loose key
+      // collapses a member to one entry and hands every row one row's name,
+      // and whichever row that is, two of these three disagree with it on
+      // every member. Rows 5, 13 and 30 differ mod 3, mod 7, mod 11 and mod 13
+      // alike, which is what "three of anything nearby" would not.
+      const sample = [5, 13, 30];
+      const repeated = [0, 1, 2, 3, 4]
+        .map((member) => sample.map((row) => namesOwnedBy(rows[row])[member]))
+        .filter((values) => new Set(values).size !== sample.length);
+
+      expect(
+        repeated,
+        `a member repeats across the sample: ${repeated.map((values) => values.join(', ')).join(' | ')}`,
+      ).toEqual([]);
+
+      // Act
+      service.load();
+      http.expectOne(TRANSACTIONS_URL).flush({ items: rows });
+      await settleOpens();
+
+      // Assert
+      const views = service.transactions() ?? [];
+
+      expect(views).toHaveLength(ROWS);
+
+      // Every row rather than only the sample, because it costs nothing: each
+      // published row is asked which four rows it names, and whether the five
+      // words on it are the ones those rows own. A row given somebody else's
+      // counterparty answers here with a name that exists, on a row that never
+      // named it — the whole shape of the defect.
+      //
+      // Measured rather than argued. Staged through this file's own stub,
+      // keyed on `<table>.<column>` with the row id dropped — the loose key a
+      // batch-backed opener invites — this fixture reports 199 of the 200 rows
+      // and names the first three of them.
+      const misplaced = views
+        .map((view) => ({
+          drew: openedNames(view).join(' / '),
+          owns: namesOwnedBy(view).join(' / '),
+        }))
+        .filter((entry) => entry.drew !== entry.owns)
+        .map((entry) => `${entry.drew} — on a row owning ${entry.owns}`);
+
+      expect(
+        misplaced,
+        `${String(misplaced.length)} of ${String(ROWS)} rows drew a name they do not own: ${misplaced.slice(0, 3).join(' | ')}`,
+      ).toEqual([]);
+
+      // And the sample once more, against the **fixture** rather than against
+      // each view's own identifiers — the half the sweep above cannot make. A
+      // read that published every row's own names in the wrong order agrees
+      // with every row about itself and disagrees here.
+      for (const row of sample) {
+        expect(
+          openedNames(views[row]).join(' / '),
+          `row ${String(row)} of the published list`,
+        ).toBe(namesOwnedBy(rows[row]).join(' / '));
+      }
+    });
+
+    // The service's own source, read from `src/` rather than from a bundle.
+    // The claim is about what was written — an import, a call — and a bundler
+    // inlines, renames and tree-shakes enough that the emitted JavaScript
+    // would answer this question wrongly whichever way it answered it.
+    const servicePath = join(
+      process.cwd(),
+      'src',
+      'app',
+      'transactions',
+      'transactions.service.ts',
+    );
+
+    // Comments blanked rather than deleted, so a line number in a finding is
+    // the line number in the file. Blanking is also what keeps the scan honest
+    // about prose: the head of `transactions.service.ts` argues its own
+    // mechanics at length, and a delegation described in a comment over one
+    // that was deleted is precisely the state worth reporting.
+    //
+    // A copy of `narrative-batch.spec.ts`'s stripper rather than an import of
+    // it: that file declares it at module scope and exports nothing, and a
+    // spec importing another spec would tie two runs together for the sake of
+    // two regular expressions.
+    function codeWithoutComments(source: string): string {
+      return source
+        .replace(/\/\*[\s\S]*?\*\//g, (block) => block.replace(/[^\n]/g, ' '))
+        .split('\n')
+        .map((line) => line.replace(/(^|\s)\/\/.*$/, '$1'))
+        .join('\n');
+    }
+
+    // Where the batch lives and what it is called, named once so a module that
+    // moves carries this scan with it rather than leaving it watching a string
+    // nothing imports.
+    const BATCH_MODULE = '@app-core/security/narrative-batch';
+    const BATCH_FUNCTION = 'openNarrativeBatch';
+
+    // What the service's code says about the batch, as findings and not as a
+    // boolean: this is a rule about what is written, so the text found is the
+    // whole of the report.
+    function batchDelegation(code: string): readonly string[] {
+      const findings: string[] = [];
+      const imported = new RegExp(
+        `import\\s+(type\\s+)?\\{([^}]*)\\}\\s*from\\s*'${BATCH_MODULE}'`,
+      ).exec(code);
+
+      if (imported === null) {
+        findings.push(`nothing is imported from ${BATCH_MODULE}`);
+      } else {
+        const names = imported[2]
+          .split(',')
+          .map((name) => name.trim())
+          .filter((name) => name !== '');
+
+        if (imported[1] !== undefined) {
+          findings.push(`${BATCH_MODULE} is imported for its types only`);
+        }
+
+        if (!names.includes(BATCH_FUNCTION)) {
+          findings.push(
+            `${names.join(', ')} is imported from ${BATCH_MODULE}, not ${BATCH_FUNCTION}`,
+          );
+        }
+      }
+
+      if (!code.includes(`${BATCH_FUNCTION}(`)) {
+        findings.push(`${BATCH_FUNCTION} is never called`);
+      }
+
+      // The roll-your-own shape, which is what the two positives above cannot
+      // see on their own: a service may call the batch **and** keep a map of
+      // opened values beside it. Honest about being a shape check — it catches
+      // the literal `new Map`, and a record built by `reduce`, or an object
+      // keyed by hand, walks straight past it.
+      code.split('\n').forEach((line, index) => {
+        if (/\bnew\s+(Map|WeakMap)\b/.test(line)) {
+          findings.push(
+            `line ${String(index + 1)}: a map of its own — ${line.trim()}`,
+          );
+        }
+      });
+
+      return findings;
+    }
+
+    it('reads the list through the shared batch and keeps no map of its own', () => {
+      // Arrange — a source scan, because nothing that runs here can see this.
+      // The count pair above pins how many opens a read costs and says nothing
+      // about the key they were looked up under: five of the six wrong key
+      // grammars cost exactly what the right one costs. The key is pinned in
+      // `narrative-batch.spec.ts` — and only for a service that calls the
+      // batch at all. One that rolls its own map with a loose key passes every
+      // other case in this file and never reaches that spec.
+      //
+      // **This holds a delegation and cannot hold that the delegation is
+      // right.** It says the import is there, the function is called, and no
+      // `new Map` sits beside it. It cannot see what is passed, whether the
+      // answer is used, or whether a miss falls through to the real opener —
+      // the case above it and `narrative-batch.spec.ts` are what say those.
+      const source = readFileSync(servicePath, 'utf8');
+      const code = codeWithoutComments(source);
+
+      // Two planted sources, so the scan is known to speak in both directions.
+      // Without them a pattern matching nothing reports the real file dirty
+      // forever and one matching everything reports it clean forever, and
+      // neither is visible from a single result.
+      const delegating = [
+        `import { openNarrativeBatch, type NarrativeRequest } from '${BATCH_MODULE}';`,
+        'const opened = await openNarrativeBatch(requests, this.#open);',
+      ].join('\n');
+      const rollingItsOwn = [
+        "import { toTransactionView } from './transaction-view';",
+        'const opened = new Map<string, NarrativeText>();',
+      ].join('\n');
+
+      // Act
+      const findings = batchDelegation(code);
+      const plantedClean = batchDelegation(delegating);
+      const plantedFindings = batchDelegation(rollingItsOwn);
+
+      // Assert
+      // Controls on the read, before any claim about what it found. A path
+      // that moved throws, but a stripper that ate the code — or one that ate
+      // nothing — hands a wrong answer to the assertion that matters.
+      expect(code).toContain('export class TransactionsService {');
+      expect(code).not.toContain('**The service mints, seals');
+
+      // The pin. Named and never counted: the finding is the text.
+      expect(
+        findings,
+        `transactions.service.ts: ${findings.join(' | ')}`,
+      ).toEqual([]);
+
+      // And the same scan over both plants, so the result above is an answer
+      // rather than a blind spot.
+      expect(plantedClean).toEqual([]);
+      expect(plantedFindings).toHaveLength(3);
+      expect(plantedFindings[0]).toContain('nothing is imported');
+      expect(plantedFindings[1]).toContain('is never called');
+      expect(plantedFindings[2]).toContain('a map of its own');
     });
   });
 

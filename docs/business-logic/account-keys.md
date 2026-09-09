@@ -836,6 +836,21 @@ on `unreachable` destroys both keys over one blinked request and demands a full 
 get them back. `established()` deliberately clears nothing: a session beginning says nothing about
 which factor opened it, and the paths that know hand the keys over themselves.
 
+**A screenful of opened narrative lives for exactly one read, and that is what keeps the owner
+single.** The transaction list opens its sealed columns in a batch — `openNarrativeBatch` in
+`+core/security/narrative-batch.ts` — and everything about that map's lifetime is arranged so that
+there is nothing here for `ended()` to gain. **No caller is ever handed the map.** It is created
+inside one call, captured by the **opener** that call hands back, and unreachable from the module
+the moment the promise settles: there is no collection to enumerate and no `.values()` to sum over,
+and the whole of it dies with that closure. What the caller holds is that opener, in a local and
+never on a field. Nothing in that module is injectable and nothing in it is module-level state, so
+no injector and no importer can reach an opened value after the read that asked for it. Made
+long-lived — a cache beside those functions, a field on the service that reads the list — it would
+be a **second store of opened narrative**, and it would need a clearer of its own: `ended()` cannot
+reach a `const` in a module it does not import, so the two would be wired together by somebody
+remembering, and the one nobody remembered would outlive the session that filled it. Clearing
+having exactly one owner is a property of what is kept, not only of who calls what.
+
 **A refused unlock leaves custody exactly as it found it, and no failure branch may call `lock()`.**
 Custody drops both keys the instant `unlock` starts, so an attempt that reached it and failed has
 already left the account locked and there is nothing for a caller to tidy up; an attempt refused

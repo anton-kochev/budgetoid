@@ -66,3 +66,32 @@ quietly green. Nothing else in the suite is zone-sensitive: the transactions spe
 
 `test-setup.ts` must **not** be named `*.spec.ts`, or the runner collects it as a test file
 containing no tests.
+
+## The performance harness is deliberately not a spec
+
+**No spec in this suite asserts a wall-clock duration, and none may.** The narrative read's
+cost is measured by a harness that lives outside `src/` — `tools/narrative-perf/`, run by
+`npm run perf:narrative` — which drives a real Chrome over CDP, calibrates that machine
+against a reference device, and **records** what it finds. Its exit code answers whether the
+measurement happened, never whether a number was small enough.
+
+Three reasons it is not a spec, and none of them is that it would be awkward to write:
+
+- **A timing assertion in `npm test` runs on the same shared machine every other case does.**
+  It goes red on a noisy neighbour, gets retried, then widened, then ignored — and a widened,
+  ignored threshold is worse than no threshold, because it looks like coverage.
+- **jsdom is the wrong subject.** The suite runs with no browser configured, so there is no
+  compositor, no `longtask` observer worth reading and no `requestAnimationFrame` cadence to
+  compare against. The one thing worth measuring here — whether the main thread is handed
+  back inside a frame — has no meaning in this runner.
+- **A number is not comparable without the machine it was taken on.** The harness prints the
+  Chrome version and the calibrated profile beside every figure precisely because a rate or a
+  millisecond quoted alone is unreadable; a spec constant carries neither.
+
+What the suite *does* hold is the **mechanism**, deterministically and with no clock:
+de-duplication happens, the frame budget is spent as elapsed time rather than as a count of
+opens, the tail is never dropped, and every row keeps its own value. Those cases are in
+`narrative-batch.spec.ts`, `transaction-view.spec.ts` and `transactions.service.spec.ts`.
+The consequence is worth stating plainly: **nothing in `npm test` will notice the read
+getting slower.** [frontend performance](frontend-performance.md) owns the numbers, the
+calibration, and the argument for keeping them out of CI.

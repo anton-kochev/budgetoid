@@ -226,6 +226,18 @@ Load-bearing rules. Each links the doc that argues it — **read that doc before
   them. Clearing has **one owner**, `SessionService.ended()`, never an `effect()`.
   [account-keys.md](docs/business-logic/account-keys.md),
   [sessions.md](docs/business-logic/sessions.md)
+- **A screenful of sealed columns is opened once per distinct ciphertext, and the driver owns the
+  iteration.** `openNarrativeBatch` de-duplicates on `(table, column, rowId, wire)`, hands the frame
+  back between chunks, and **returns an opener rather than a map** — it answers from the batch and
+  falls through to a real open on a miss, so a field the collector forgot costs one open and can
+  never cost a rendered value. **A yield placed inside a single field's open under `Promise.all`
+  chunks nothing**, because every open starts in the same synchronous burst. `scheduler.yield()` is
+  **refused** — it costs nothing because it resumes ahead of the browser's rendering and draws no
+  frame. Nothing here keeps an opened value past its own read, no spec asserts a wall clock, and none
+  of this may become a CI gate. **Every timing figure in that chapter is machine-local**: a
+  calibrated CPU-throttling profile does not transport, and the error flatters the slower rig.
+  [frontend performance](docs/engineering/frontend-performance.md),
+  [account-keys.md](docs/business-logic/account-keys.md)
 - **The recovery-code hand-off is the one screen that shows a secret, and it still mints and posts
   nothing.** The codes never enter a live region; what is saved or copied is the grouped codes and
   nothing else; **the acknowledgement gate is in the click handler, not only in the attribute**; and
