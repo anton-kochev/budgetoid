@@ -140,6 +140,11 @@ because every one of these is something a reader will otherwise simplify away.
 - **The export refuses rather than truncates** — it throws unless the owned set is *exactly* the
   ambient budget, **set equality in both directions**. Do not simplify to `Count > 1`.
   [export.md](docs/business-logic/export.md)
+- **Five list reads are delivered whole** — payees, accounts, categories, category groups and
+  currencies take no page, cursor, filter or search term, because the client orders and filters
+  them itself. Paginate one and the client sorts each page independently, with nothing thrown and
+  nothing logged. **The four reasons differ per list and the transaction list is outside the gate
+  by decision**, so do not flatten them. [whole list reads](docs/engineering/whole-list-reads.md)
 - `SessionContextInterceptor` must stay a **connection-opened** interceptor, and
   `No Reset On Close=true` / `Multiplexing=true` are forbidden in any connection string.
   [ADR 0008](docs/decisions/0008-read-the-ambient-budget-inside-the-policy.md)
@@ -272,8 +277,9 @@ Load-bearing rules. Each links the doc that argues it — **read that doc before
 - **Engineering invariants** — [data isolation](docs/engineering/data-isolation.md),
   [data inventory](docs/engineering/data-inventory.md),
   [migrations](docs/engineering/migrations.md),
-  [no third-party origins](docs/engineering/no-third-party-origins.md), and
-  [security headers](docs/engineering/security-headers.md). Each names the tests that lock it:
+  [no third-party origins](docs/engineering/no-third-party-origins.md),
+  [security headers](docs/engineering/security-headers.md), and
+  [whole list reads](docs/engineering/whole-list-reads.md). Each names the tests that lock it:
   removing a `HasQueryFilter` line, a policy, a self-hosted font, or a directive from the
   shipped `Content-Security-Policy` must fail one.
 - A change to a design rule, business rule, or invariant updates the owning doc **in the
