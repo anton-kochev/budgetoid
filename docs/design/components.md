@@ -1870,16 +1870,26 @@ it is what is holding the rule, because the next screen may not get it for free.
 ### Ordering falls out, and is not special-cased
 
 Lists sort through `compareNarrative`: opened text first, then unreadable, then locked. **Which
-lists those are is narrower than that sentence sounds** — the accounts list and the payee
-suggestions order by name through it, while the categories and their groups order on `position`, a
-plaintext column their owner arranges by hand, and must never be "corrected" into sorting by name.
-On a locked account every value is `locked`, every comparison answers 0, and a stable sort leaves
-the order the rows arrived in. That is the correct behaviour and it is a **consequence** of the
-ordering rather than a branch anybody wrote. Do not add a "if locked, skip sorting" case; there is
-nothing for it to do.
+lists those are is narrower than that sentence sounds** — the accounts list and the payee list
+behind the transaction form's suggestions order by name through it, while the categories and their
+groups order on `position`, a plaintext column their owner arranges by hand, and must never be
+"corrected" into sorting by name. On a locked account every value is `locked`, every comparison
+answers 0, and a stable sort leaves the order the rows arrived in. That is the correct behaviour and
+it is a **consequence** of the ordering rather than a branch anybody wrote. Do not add a "if locked,
+skip sorting" case; there is nothing for it to do.
 
-Written down and deliberately not fixed: two opened names compare with `localeCompare`, which reads
-the host's locale, and nothing in this app provides `LOCALE_ID`.
+**One function does it for every screen, and it is not a comparator each service keeps a copy of.**
+`sortByNarrativeName` takes a list and the accessor naming which of a row's words it is ordered by,
+and it is the only caller `compareNarrative` has outside its own spec. A copy per service is a place
+a defect can hide from its twin's cases; one function is covered by whichever of its callers has the
+better one.
+
+Two things about the comparison, written down and deliberately not fixed. Two opened names compare
+with `localeCompare`, which reads the host's locale, and nothing in this app provides `LOCALE_ID`.
+And they compare **trimmed** — surrounding whitespace is a *primary* collation difference, so
+without that step a name typed with a space in front of it sits above every other name on the screen
+while rendering identically to its neighbours. The trim is presentation and reaches nothing stored:
+what a screen seals is still what somebody typed, character for character.
 
 ### Accessibility
 

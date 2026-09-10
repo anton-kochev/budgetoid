@@ -221,9 +221,10 @@ import { mintNarrativeRowId } from '@app-core/security/narrative-row-id';
 import type {
   NarrativeIndexer,
   NarrativeOpener,
+  NarrativeText,
 } from '@app-core/security/narrative-text';
 import { SessionService } from '@app-core/session/session.service';
-import { compareNarrative } from '@app-shared/compare-narrative';
+import { sortByNarrativeName } from '@app-shared/sort-by-narrative-name';
 import {
   EMPTY,
   Observable,
@@ -313,19 +314,11 @@ interface DraftPayee {
   readonly nameKey: string;
 }
 
-// A second local copy of `accounts.service.ts`'s helper rather than one shared
-// from `+shared/`: a generic version would type-check against `CategoryView`
-// and `CategoryGroupView`, which carry a server-owned `position` somebody
-// arranged by hand and must not be sorted by name — and a helper a file must
-// not use should not be reachable from it. `compare-narrative.ts` argues the
-// ordering and what it answers on a locked account.
-function byName(views: readonly PayeeView[]): PayeeView[] {
-  // A copy, because `sort` mutates and the array it is handed may be the one a
-  // signal is already publishing.
-  return [...views].sort((left, right) =>
-    compareNarrative(left.name, right.name),
-  );
-}
+// The one narrative word the counterparty list is ordered by, named once so
+// that the two call sites below state the same one.
+// `sort-by-narrative-name.ts` owns the ordering itself, argues what it answers
+// on a locked account, and says which lists may not be sorted through it.
+const nameOf = (view: PayeeView): NarrativeText => view.name;
 
 @Injectable({ providedIn: 'root' })
 export class TransactionsService {
@@ -836,19 +829,39 @@ export class TransactionsService {
           ? payees
           : // The whole list re-sorted, and never an insertion at an index
             // computed here: an index is a second implementation of the
-            // ordering, and it agrees with `compareNarrative` only while the
-            // held list is already sorted. On a locked account that comparator
+            // ordering, and it agrees with the comparator only while the held
+            // list is already sorted. On a locked account that comparator
             // answers `0` for every pair, so the held order is arrival order
-            // and a computed position means nothing. `#readPayees` sorts what
-            // it reads through the same helper; this is the other site.
-            byName([
-              ...payees,
-              {
-                id: created.id,
-                name: { state: 'text', value: plaintext },
-                nameKey: nameKey.value,
-              },
-            ]),
+            // and a computed position means nothing.
+            //
+            // **`#readPayees` orders through the same function, and that is now
+            // a fact about the code rather than a claim about two bodies that
+            // happened to match.** `compareNarrative` has one caller in this
+            // product — `sort-by-narrative-name.ts` — so the two payee sites
+            // cannot drift apart without one of them growing a comparator of
+            // its own, which is a diff rather than an omission.
+            //
+            // **What the suite holds about *this* site is thinner than what it
+            // holds about the read, and the gap is measured rather than
+            // feared.** Inlined here alone: appending unsorted reddens one
+            // case, reversing the order reddens the same one — and an
+            // identifier tiebreak behind the name reddens nothing at all,
+            // where the identical tiebreak at the read site reddens the case
+            // about a locked list keeping the order the response listed it in.
+            // So this site is pinned to *an* order and not to the read's exact
+            // one, and it is the shared function that closes the rest of that
+            // distance rather than a case anybody could point at.
+            sortByNarrativeName(
+              [
+                ...payees,
+                {
+                  id: created.id,
+                  name: { state: 'text', value: plaintext },
+                  nameKey: nameKey.value,
+                },
+              ],
+              nameOf,
+            ),
       );
 
       return { state: 'resolved', id: created.id };
@@ -957,16 +970,28 @@ export class TransactionsService {
       // browser has been told, and `payee-view.ts` argues why a list of rows
       // carrying no key can never reach a create.
       const budgetId = this.#session.budgetId();
-      // Ordered above the generation check, so the list this read publishes and
-      // the list it answers with are the one value: the conflict path matches
-      // against what comes back, and a sort applied to only one of the two
-      // would be two answers to one question.
-      const views = byName(
+      // Ordered above the generation check, so the list this read publishes
+      // and the list it answers with are the one value — one sort because
+      // there is no reason for two, not because a second one would break
+      // something.
+      //
+      // **The order of the answered list decides nothing, and that is by
+      // construction rather than by care.** The conflict path matches on a
+      // blind index over a column the server holds unique per budget, so at
+      // most one row can ever match `matchPayeeByIndex`'s `find` and no
+      // ordering of the list can change which one it is. Measured: sorting
+      // what is published while answering the unsorted array leaves the whole
+      // suite green — there is no case that could hold it, and there is
+      // nothing for one to hold. What *is* pinned is the published order: the
+      // opposite half-sort reddens the case about the list this read hands the
+      // screen.
+      const views = sortByNarrativeName(
         await Promise.all(
           response.items.map((dto) =>
             toPayeeView(dto, budgetId, this.#open, this.#index),
           ),
         ),
+        nameOf,
       );
 
       // Published only by the newest read. An open plus a MAC per row is

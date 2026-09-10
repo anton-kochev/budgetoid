@@ -199,9 +199,12 @@ import {
   type AccountKeyStatus,
 } from '@app-core/security/account-key-custody.service';
 import { mintNarrativeRowId } from '@app-core/security/narrative-row-id';
-import type { NarrativeOpener } from '@app-core/security/narrative-text';
+import type {
+  NarrativeOpener,
+  NarrativeText,
+} from '@app-core/security/narrative-text';
 import { SessionService } from '@app-core/session/session.service';
-import { compareNarrative } from '@app-shared/compare-narrative';
+import { sortByNarrativeName } from '@app-shared/sort-by-narrative-name';
 import {
   Observable,
   Subject,
@@ -256,16 +259,11 @@ type NameForColumn =
   | { readonly state: 'sealed'; readonly wire: string; readonly key: string }
   | { readonly state: 'refused'; readonly outcome: WriteOutcome };
 
-function byName(views: readonly AccountView[]): AccountView[] {
-  // A copy, because `sort` mutates and the array it is handed may be the one a
-  // signal is already publishing. `compareNarrative` answers `0` for two values
-  // of one word, so on a locked account a stable sort leaves the rows in the
-  // order the API sent them — which is a property to keep rather than a case to
-  // write.
-  return [...views].sort((left, right) =>
-    compareNarrative(left.name, right.name),
-  );
-}
+// The one narrative word this screen's rows are ordered by, named once so that
+// the three call sites below state the same one. `sort-by-narrative-name.ts`
+// owns the ordering itself and argues both what it answers on a locked account
+// and which lists may not be sorted through it.
+const nameOf = (view: AccountView): NarrativeText => view.name;
 
 @Injectable({ providedIn: 'root' })
 export class AccountsService {
@@ -335,7 +333,7 @@ export class AccountsService {
         this.#failed.set(outcome.state === 'failed');
 
         if (outcome.state === 'loaded') {
-          this.#accounts.set(byName(outcome.views));
+          this.#accounts.set(sortByNarrativeName(outcome.views, nameOf));
         }
       });
 
@@ -464,7 +462,9 @@ export class AccountsService {
             this.#accounts.update((accounts) =>
               // A `null` list is "no answer yet", and appending to it would
               // fabricate a list of one over a read that never landed.
-              accounts === null ? accounts : byName([...accounts, view]),
+              accounts === null
+                ? accounts
+                : sortByNarrativeName([...accounts, view], nameOf),
             );
           }),
           map((): WriteOutcome => ({ state: 'recorded' })),
@@ -509,7 +509,7 @@ export class AccountsService {
             this.#accounts.update((accounts) =>
               accounts === null
                 ? accounts
-                : byName(
+                : sortByNarrativeName(
                     accounts.map((view) =>
                       view.id === id
                         ? {
@@ -520,6 +520,7 @@ export class AccountsService {
                           }
                         : view,
                     ),
+                    nameOf,
                   ),
             ),
           ),

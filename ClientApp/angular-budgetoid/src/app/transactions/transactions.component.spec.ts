@@ -153,6 +153,26 @@ const bakery: PayeeView = {
   nameKey: 'index-bakery',
 };
 
+// U+0131, the dotless lower-case `i`, which is what a Turkish or Azerbaijani
+// host folds `I` to.
+//
+// **Built from its code point rather than written out**, which is the argument
+// `NO_BREAK_SPACE` makes further down this file: it and an ordinary `i` differ
+// by a dot in a source file, in a diff and in a failure message alike, so a
+// literal here is one careless "tidy" away from turning the one expectation
+// that stages a Turkish host into a tautology.
+const DOTLESS_I = String.fromCharCode(0x131);
+
+// A payee whose name opens onto a letter whose lower case is a fact about the
+// **reader's host** rather than about the letter. `I` folds to the dotless `ı`
+// in Turkish and Azerbaijani and to `i` everywhere else, so this row is offered
+// or withheld for a typed `i` depending on where the browser is running.
+const istanbulBakery: PayeeView = {
+  id: '0199c3d4-5f6a-7b8c-9d0e-000000000010',
+  name: { state: 'text', value: 'Istanbul Bakery' },
+  nameKey: 'index-istanbul-bakery',
+};
+
 // A payee this browser could not read. There is no text to type-ahead against,
 // so it is not offered as a suggestion — which is a filter and not a collapse:
 // nothing turns its word into a string.
@@ -301,6 +321,71 @@ function suggestions(
       filteredPayees: () => readonly { id: string; name: string }[];
     }
   ).filteredPayees();
+}
+
+// One read, answered the way a browser on a Turkish or Azerbaijani host answers
+// it.
+//
+// **The host's *answer* is staged, because the host itself is not a per-case
+// knob.** Nothing pins this runner's locale — the frontend testing chapter pins
+// the time zone and says so — and the locale a no-argument
+// `toLocaleLowerCase()` follows is decided by the environment the process was
+// started in, which no case can set for itself. So the two locale-sensitive
+// case members of `String` are spied on instead: a call that names **no**
+// locale, which is the call the rule forbids, is redirected to `tr-TR`, and a
+// call that names one is passed through unchanged — because that is exactly
+// what a real Turkish host does with a named locale. Anything that passes this
+// window therefore passes on a Turkish host too, for this pair of letters.
+//
+// **What it cannot see** is any other route to the same defect: `localeCompare`,
+// an `Intl.Collator`, a normalization form, or a hand-written map. It is a spy
+// over two members, not a proof about locales.
+//
+// **Restored in a `finally`, and the restoration is checked rather than
+// assumed.** This runner configures no `restoreMocks`, so a prototype left
+// patched is not one case gone wrong — it is every later case in the file
+// running on a Turkish host, `mat-` selectors and all.
+function onATurkishHost<T>(read: () => T): T {
+  const lower = String.prototype.toLocaleLowerCase;
+  const upper = String.prototype.toLocaleUpperCase;
+  const lowerSpy = vi
+    .spyOn(String.prototype, 'toLocaleLowerCase')
+    .mockImplementation(function (
+      this: string,
+      locales?: Intl.LocalesArgument,
+    ): string {
+      return lower.call(this, locales ?? 'tr-TR');
+    });
+  const upperSpy = vi
+    .spyOn(String.prototype, 'toLocaleUpperCase')
+    .mockImplementation(function (
+      this: string,
+      locales?: Intl.LocalesArgument,
+    ): string {
+      return upper.call(this, locales ?? 'tr-TR');
+    });
+
+  let answer: T;
+
+  try {
+    answer = read();
+  } finally {
+    lowerSpy.mockRestore();
+    upperSpy.mockRestore();
+  }
+
+  // **Thrown, and thrown *after* the `finally` rather than inside it.** A
+  // failed expectation here would be reported against whichever case is
+  // unlucky enough to run next, and a throw inside a `finally` swallows
+  // whatever the read was already failing with.
+  if (
+    String.prototype.toLocaleLowerCase !== lower ||
+    String.prototype.toLocaleUpperCase !== upper
+  ) {
+    throw new Error('the Turkish host outlived the read that asked for it');
+  }
+
+  return answer;
 }
 
 // A run of whitespace written as the code points it is made of.
@@ -1717,6 +1802,45 @@ describe('TransactionsComponent', () => {
     expect(
       suggestions(fixture.componentInstance).map((payee) => payee.id),
     ).toEqual([bakery.id]);
+  });
+
+  it('matches what was typed however the reader’s host folds case', () => {
+    // Arrange
+    // **The fold is the host's opinion today, and this repository states the
+    // opposite rule in two places.** `+core/security/account-keys.ts` and
+    // `+core/security/factor-id.ts` both say `toLowerCase` and never
+    // `toLocaleLowerCase`, and one of them names this exact hazard. The filter
+    // here lower-cases both sides with no locale argument, so on a Turkish or
+    // Azerbaijani host `Istanbul Bakery` folds to `ıstanbul bakery` and typing
+    // `i` stops surfacing it — the row is in the list, the letter is on the
+    // screen, and the suggestion never appears.
+    transactions.payeesSignal.set([cornerShop, istanbulBakery]);
+    fill({ payee: 'i' });
+
+    // The staging, measured before it is leaned on: inside the window the
+    // capital `I` folds to the dotless one, which is a different letter from
+    // the `i` that was typed.
+    expect(onATurkishHost(() => 'I'.toLocaleLowerCase())).toBe(DOTLESS_I);
+
+    // Act
+    // **Nothing reads the list between the fill and this line, and that is
+    // what makes the window mean anything.** `filteredPayees` is a `computed`:
+    // it answers from cache until an input changes and recomputes on the first
+    // read after that, so a `detectChanges()` — or a read taken as a control —
+    // in between computes the list under the machine's own folding and hands
+    // this line the cached array. **Measured, not feared**: a bare
+    // `suggestions(…)` inserted one line above turns the expectation below
+    // green over the untouched defect. Change detection is kept out of the
+    // window for a second reason besides — Angular and Material fold case for
+    // their own purposes, and a Turkish `String` underneath a render would
+    // fail somewhere with nothing to do with what is being asked here.
+    const offered = onATurkishHost(() =>
+      suggestions(fixture.componentInstance),
+    );
+
+    // Assert — `Corner Shop` carries no `i` at all, so this is the filter
+    // keeping one row rather than keeping everything.
+    expect(offered.map((payee) => payee.id)).toEqual([istanbulBakery.id]);
   });
 
   it('suggests only the payees it could read', () => {

@@ -60,6 +60,62 @@ describe('compareNarrative', () => {
     expect(compareNarrative(apple, banana)).toBeLessThan(0);
   });
 
+  it('orders two opened names by the name and not by the space around it', () => {
+    // Arrange
+    // **Surrounding whitespace is a *primary* collation difference**, so it
+    // outranks every letter behind it: `'  Bakery  '.localeCompare('Apple')` is
+    // `-1` where `'Bakery'.localeCompare('Apple')` is `1`. A name typed with a
+    // space in front of it therefore sits at the top of the list, above every
+    // name in the budget, and renders indistinguishably from its neighbours.
+    //
+    // **It is reachable, and it cannot be repaired by re-typing.** The client
+    // seals what was typed, character for character — `transactions.service.ts`
+    // states that rule outright and there is no `.trim()` anywhere on the path
+    // — so `'  Bakery  '` is a storable payee name. The index normalization
+    // trims before it hashes, so the spaced and the unspaced spelling are **one
+    // row** to the unique index: typing the name again adopts the row that is
+    // already there, and the stored spelling stays whichever was typed first.
+    //
+    // **The trim belongs to this comparator and is not the index
+    // normalization written a second time.** This is a presentation decision
+    // about which name comes first on a page. Nothing here folds case,
+    // normalizes a form, or writes anything back: a value leaves this function
+    // as a number, and `NarrativeText.value` is `readonly`, so the compiler
+    // holds the half about the stored spelling.
+    //
+    // **The padding is built and named rather than typed into the literal.** A
+    // run of spaces inside a quoted string is invisible in a diff and in a
+    // failure message alike — `PADDING` reads as intent where `'  Bakery  '`
+    // reads as a typo somebody is entitled to tidy away.
+    const PADDING = ' '.repeat(2);
+    const spacedBakery: NarrativeText = {
+      state: 'text',
+      value: `${PADDING}Bakery${PADDING}`,
+    };
+    const apple: NarrativeText = { state: 'text', value: 'Apple' };
+
+    // Act, Assert
+    // Both directions, for the reason the first case in this file gives: a
+    // comparator answering one sign to everything is not an order.
+    expect(compareNarrative(spacedBakery, apple)).toBeGreaterThan(0);
+    expect(compareNarrative(apple, spacedBakery)).toBeLessThan(0);
+
+    // **The trailing half, and the one place a trailing space can change an
+    // answer.** Whitespace at the end can only break a tie between a name and
+    // its own prefix, so this pair is what tells a comparator that trims from
+    // one that trims the front alone — `.trimStart()` satisfies the two
+    // expectations above and leaves a payee list ordered by its own trailing
+    // spaces.
+    const trailingBakery: NarrativeText = {
+      state: 'text',
+      value: `Bakery${PADDING}`,
+    };
+    const bakery: NarrativeText = { state: 'text', value: 'Bakery' };
+
+    expect(compareNarrative(trailingBakery, bakery)).toBe(0);
+    expect(compareNarrative(bakery, trailingBakery)).toBe(0);
+  });
+
   it('returns zero for two locked values so a stable sort keeps arrival order', () => {
     // Arrange
     // **Three, not two, and told apart by identity alone.** The `locked` member

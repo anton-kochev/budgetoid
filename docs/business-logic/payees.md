@@ -248,8 +248,10 @@ erDiagram
   sends five creates for one blind index and asserts one 201 and four 409s. What changed is the
   mechanism it watches — a unique index refusing, instead of a re-read swallowing — which is the only
   half of the old guarantee this side still owns.
-- **Counterexample**: a client that folds with the host's `toLowerCase` instead of the shipped fold
-  table. It agrees with a correct client on almost every name a person types, disagrees on the
+- **Counterexample**: a client that folds with `toLowerCase` instead of the shipped fold table — a
+  lower-case mapping is not a case fold, whichever spelling of it is reached for, and this is a
+  different failure from the locale question the type-ahead's own gotcha raises below.
+  It agrees with a correct client on almost every name a person types, disagrees on the
   handful where the difference decides a match, and the symptom is a duplicate counterparty that
   never merges on the one column whose entire purpose is that equal names collide. A blind index
   **cannot be recomputed** after the fact — the plaintext behind it is encrypted — so there is no
@@ -857,10 +859,12 @@ up.
   save, and no order a person recognises would ever come back. A name order can be restored only by
   the client, which is the only side holding the text — **and the client restores it at every site
   that publishes the list, rather than at the obvious one.** `TransactionsService` orders through
-  `compareNarrative`, by way of its own `byName` helper, in `#readPayees` — over the views that read
-  had opened, and above the generation check, so the list it publishes and the list it hands the
-  conflict branch are one value — and again in the `#payees.update` inside `#createPayee`, which
-  re-sorts the whole list after appending the payee it has just created. Sorting one and not the
+  `sortByNarrativeName`, in `#readPayees` — over the views that read had opened — and again in the
+  `#payees.update` inside `#createPayee`, which re-sorts the whole list after appending the payee it
+  has just created. **That is one function and not a helper of this service's own**: `+shared/`
+  exports it, `accounts.service.ts` calls it over its own rows, and it is the only caller of
+  `compareNarrative` the product has, so the two payee sites cannot drift apart without one of them
+  growing a comparator of its own — which is a diff rather than an omission. Sorting one and not the
   other is the half-done implementation that "the client sorts" cannot be told apart from: the list
   is alphabetical until somebody records a transaction naming a new counterparty, wrong from that
   moment, and right again after the next read — a defect that repairs itself before anybody can
@@ -894,16 +898,41 @@ up.
   member and not the side. A client that has opened the list is sorting *names*, on the opened text
   through `compareNarrative`, and matching on the index it recomputed under its own key; neither of
   those is that member, and neither is available to anything holding only what the wire carried.
+  - **Those two opened names are compared trimmed, and the trim is presentation and nothing else.**
+    Surrounding whitespace is a **primary** collation difference, so it outranks every letter behind
+    it: without the trim a payee sealed as `'  Bakery  '` sorts above every name in the budget while
+    rendering indistinguishably from its neighbours. It is reachable, because this client seals what
+    was typed character for character: no step on the write path alters it, and the form's non-blank
+    validator trims **to judge** and never to rewrite. What leaves the comparator is a number, so
+    nothing stored moves — and **this is not the index normalization arriving one step at a time**.
+    Nothing in the comparator folds a case, normalizes a form or reaches a key, and that transform
+    has one home for the reason the gotcha below gives.
 
 - **The type-ahead and the blind index normalize differently, so a suggestion can be missing for a
-  counterparty the database and the index both consider one.** The suggestion panel filters by
-  trimming and lower-casing what has been typed and asking whether a lower-cased opened name
+  counterparty the database and the index both consider one.** The suggestion panel trims what has
+  been typed, maps it with **`toLowerCase`**, and asks whether an opened name mapped the same way
   *contains* it. The match that decides one-row-per-counterparty does something else entirely: it
   runs the index normalization — trim, NFKC, **full** case fold, UTF-8 — and compares the digest
   taken over the result. A lower-case mapping is not a fold and there is no NFKC in front of it, so a
   name spelled with the `ﬁ` ligature is not surfaced by typing `fi`, though the two normalize to one
   message, key to one value, and are one row to `IX_payees_budget_id_name_key`. `ß` against `ss` and
   the Cherokee case pairs are the same divergence by other characters.
+  - **`toLowerCase` on both sides and never `toLocaleLowerCase`, which is a second rule inside the
+    first.** The locale-aware form reads the host the reader started their browser on, and under a
+    Turkish one it maps `I` to `ı` — so a payee called `Istanbul Bakery` would fold to a spelling
+    that typing `i` never matches, and the row would be on the list and off the screen with nothing
+    anywhere naming why. It is the rule `canonicalFactorId` states at its own fold, arriving here
+    where it costs a suggestion rather than a binding. Either half left locale-aware reproduces it:
+    with the **typed** side folded by the host, a capital `I` becomes `ı` and matches no stored
+    `istanbul`.
+  - **One case watches one of those two halves, and the limit is worth more than the case.** What
+    the spec catches is the **candidate** side, because the text it types is already lower-case, so
+    reverting the typed side alone leaves the suite green. And the rule is about `String` and
+    nothing wider: an `Intl.Collator`, a `localeCompare`, a normalization form or a hand-written map
+    reach the same defect by routes those two calls say nothing about. A collator at
+    `sensitivity: 'base'` in particular would answer this the way the rest of the product wants,
+    pass the same case, and still hide the row from a Turkish reader — because that comparison is
+    locale-aware by design.
   - **It is documented and not fixed, deliberately, and the reason is the shape of the module rather
     than the size of the job.** `normalizeNameForIndex` answers **bytes** — the next thing that
     happens to its output is a MAC — and its own head forbids any caller but the blind index;

@@ -919,14 +919,37 @@ export class TransactionsComponent implements OnInit {
           ? [{ id: payee.id, name: payee.name.value }]
           : [],
       );
-      const filter = this.#payeeFilter().trim().toLocaleLowerCase();
+      // `toLowerCase`, never `toLocaleLowerCase`, for the reason
+      // `canonicalFactorId` states in `+core/security/account-keys.ts` at its
+      // own fold: the locale-aware form maps `I` to `ı` under a Turkish
+      // locale. Here that costs a suggestion rather than a binding — the
+      // no-argument form follows whatever host the reader started their
+      // browser on, so `Istanbul Bakery` folds to `ıstanbul bakery`, typing
+      // `i` matches nothing, and the row is on the list and off the screen
+      // with nothing anywhere naming why.
+      //
+      // **Both sides, and only one of the two is watched.** Either half left
+      // locale-aware reproduces the defect — measured: with the typed side
+      // folded by the host, a capital `I` becomes `ı` and matches no stored
+      // `istanbul`. What the case beside this catches is the *candidate* side
+      // alone, because the text it types is already lower-case; the typed side
+      // reverted on its own leaves the suite green.
+      //
+      // The rule this states is about `String`, and it is not the whole of
+      // locale-sensitive matching: `localeCompare`, an `Intl.Collator`, a
+      // normalization form or a hand-written map each reach the same defect
+      // by a route these two calls say nothing about. In particular a
+      // `Collator` at `sensitivity: 'base'` would answer this the way the
+      // rest of the product wants and still hide the row from a Turkish
+      // reader, because that comparison *is* locale-aware by design.
+      const filter = this.#payeeFilter().trim().toLowerCase();
 
       if (!filter) {
         return suggestions;
       }
 
       return suggestions.filter((payee) =>
-        payee.name.toLocaleLowerCase().includes(filter),
+        payee.name.toLowerCase().includes(filter),
       );
     },
   );

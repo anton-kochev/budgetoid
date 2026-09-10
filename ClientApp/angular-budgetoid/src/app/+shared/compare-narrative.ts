@@ -1,12 +1,19 @@
-// How a list of narrative values is ordered once the names in it are no longer
-// strings.
+// How two narrative values compare, which is how every list in this product that
+// sorts by a name is ordered.
 //
-// Every screen that lists rows sorts them by a name, and every one of those
-// names is about to stop being a `string`: `accounts.name`, `payees.name` and
-// both of a category group's are sealed columns, so what a mapper hands a
-// template is a {@link NarrativeText} — the text, or the reason there is none.
-// `accounts.service.ts` sorts on `a.name.localeCompare(b.name)` today, and that
-// line does not compile against the union. This is what it becomes.
+// A name on a row is not a `string`. `accounts.name`, `payees.name` and both of
+// a category group's are sealed columns, so what a mapper hands a template is a
+// {@link NarrativeText} — the text, or the reason there is none. An ordering has
+// to answer for all three of its words, and the rules below are that answer:
+// which word outranks which, what two of one word compare to, and what happens
+// between two names a person can actually read.
+//
+// **One function reaches this one, on behalf of every list that has a name to
+// sort by.** `sort-by-narrative-name.ts` is the only caller `compareNarrative`
+// has in the product — the services hand it their rows and a selector, and it
+// owns the copying and the iterating. That file argues why the ordering is one
+// implementation rather than one per service, and names the lists that may not
+// be sorted by a name at all.
 //
 // **Three words, and the order is `text`, then `unreadable`, then `locked`.**
 // The values a person can read come first, because a list is sorted for the
@@ -46,6 +53,31 @@
 // code units, which puts every capitalised name above every lower-case one and
 // reads as two alphabets stacked on top of each other.
 //
+// **Two opened names are compared trimmed.** Surrounding whitespace is a
+// *primary* collation difference, so it outranks every letter behind it:
+// `'  Bakery  '` sorts above `'Apple'` where `'Bakery'` sorts below it, and a
+// name typed with a space in front of it therefore sits at the top of the whole
+// budget while rendering indistinguishably from its neighbours. It is reachable
+// because the write path seals what was typed, character for character —
+// `accounts.service.ts` and `transactions.service.ts` each say so at their own,
+// and neither has a `.trim()` anywhere on it. The case beside this rule argues
+// why re-typing the name does not take the spelling back.
+//
+// **It is a presentation decision, and it is not `name-normalization.ts`
+// arriving here one step at a time.** That transform — trim, NFKC, full case
+// fold, UTF-8 against the table this repository ships — has one home and says in
+// its own head that nothing else in this client may call it, because a second
+// spelling of it is a second answer to a question that has to have one. The
+// resemblance stops at the first step: nothing here folds a case, normalizes a
+// form, reaches a key or writes anything back, and what leaves this module is a
+// number. Do not "complete" it.
+//
+// Neither half of that is held by anything but review, and saying so is cheaper
+// than a reader finding out. The case beside it separates a trim from a
+// `.trimStart()` and from no trim at all; it does not separate one from a
+// comparator that stripped every space in the string, and nothing in the suite
+// reddens if the index normalization is copied in below.
+//
 // Nothing here is a service and nothing here is injected: no state, no
 // dependency, no framework — the one import is a type, and it is erased. A
 // function is the whole of it.
@@ -69,7 +101,7 @@ const NARRATIVE_ORDER = {
 
 /**
  * Orders two narrative values: `text` before `unreadable` before `locked`, and
- * two opened names by `localeCompare`.
+ * two opened names by `localeCompare` over their trimmed spellings.
  *
  * Written to be handed straight to `Array.prototype.sort`, which is where the
  * two properties worth stating come from. It is **antisymmetric** — every pair
@@ -91,7 +123,10 @@ export function compareNarrative(
   // and with the equal-word cases it answers `0` to, which is the branch a
   // locked account takes and the reason there is no branch for it.
   if (left.state === 'text' && right.state === 'text') {
-    return left.value.localeCompare(right.value);
+    // Trimmed at the ends and nowhere else, over copies. The head of this file
+    // argues why the space around a name may not decide where it sorts, and
+    // why this one step is not the index normalization starting here.
+    return left.value.trim().localeCompare(right.value.trim());
   }
 
   return NARRATIVE_ORDER[left.state] - NARRATIVE_ORDER[right.state];
