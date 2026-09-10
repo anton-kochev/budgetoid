@@ -162,10 +162,13 @@ public sealed class SessionTokenSchemaTests
         // no direct foreign key from this table to users, so a broken link anywhere along that chain
         // strands the handle rather than removing it.
         //
-        // This is the claim erasure rests on. The application role holds DELETE on users and on no
-        // other owned table, so the only thing that takes a token row away when somebody asks to be
-        // forgotten is this transitive cascade — and ErasureAtomicityTests counts it from the other
-        // side, over the whole database, without knowing which foreign keys carried it.
+        // This is the claim erasure rests on, and it is about the tail of this chain rather than
+        // about the role's reach in general: the application role holds DELETE on several owned
+        // tables — users itself among them — but on neither sessions nor session_tokens. So nothing
+        // it can issue takes a token row away directly, and the only thing that removes one when
+        // somebody asks to be forgotten is this transitive cascade — which ErasureAtomicityTests
+        // counts from the other side, over the whole database, without knowing which foreign keys
+        // carried it.
         await Assert.That(await CountRowsAsync(connection, "session_tokens", "user_id", userId))
             .IsEqualTo(0L);
         await Assert.That(await CountRowsAsync(connection, "sessions", "user_id", userId))

@@ -211,10 +211,12 @@ public sealed class DeploymentProvisioningTests
 
     /// <summary>
     /// The budget-owned table the command-narrowing sabotage aims at. Not interchangeable with
-    /// <see cref="SabotagedTable" />: the role holds <c>UPDATE (name, type, opening_balance)</c>
-    /// <b>and</b> <c>DELETE</c> on accounts, so narrowing its policy to <c>FOR SELECT</c> costs
-    /// something nameable. On payees, which has no <c>DELETE</c> grant, the same narrowing would
-    /// still be wrong but the demonstration would be thinner.
+    /// <see cref="SabotagedTable" />: the role holds
+    /// <c>UPDATE (name, name_key, type, opening_balance)</c> <b>and</b> <c>DELETE</c> on accounts,
+    /// so narrowing its policy to <c>FOR SELECT</c> costs something nameable. <c>name</c> and
+    /// <c>name_key</c> travel as a pair — a grant naming one without the other forbids the rename
+    /// both columns exist to serve. On payees, which has no <c>DELETE</c> grant, the same narrowing
+    /// would still be wrong but the demonstration would be thinner.
     /// </summary>
     private const string GrantedForWriteTable = "accounts";
 
@@ -705,13 +707,14 @@ public sealed class DeploymentProvisioningTests
         // roles check reads is untouched, which is why this ships.
         //
         // accounts rather than payees because the cost has to be nameable. The role holds
-        // UPDATE (name, type, opening_balance) and DELETE on accounts, and a policy that covers only
-        // SELECT leaves both of those commands with no permissive policy to satisfy — PostgreSQL
-        // denies them outright. So a green gate here would have shipped a deploy where every account
-        // rename and every account deletion fails in production, for every tenant, while the check
-        // that exists to certify the isolation story reports it as fully covered. The failure is the
-        // opposite direction from a leak and is no less a reason to refuse: the gate's claim is that
-        // the rule enforced is the rule owed, and FOR SELECT is not the rule owed.
+        // UPDATE (name, name_key, type, opening_balance) and DELETE on accounts, and a policy that
+        // covers only SELECT leaves both of those commands with no permissive policy to satisfy —
+        // PostgreSQL denies them outright. So a green gate here would have shipped a deploy where
+        // every account rename and every account deletion fails in production, for every tenant,
+        // while the check that exists to certify the isolation story reports it as fully covered.
+        // The failure is the opposite direction from a leak and is no less a reason to refuse: the
+        // gate's claim is that the rule enforced is the rule owed, and FOR SELECT is not the rule
+        // owed.
         await using PostgreSqlContainer container = await StartBareContainerAsync();
         await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
 

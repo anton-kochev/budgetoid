@@ -212,8 +212,8 @@ that is the one table erasure empties itself.
 - **Why**: authenticating the request has already resolved the identity and the ambient budget
   through the same scoped context, which leaves the `Budget` entity tracked. Removing the `User`
   with that dependent still in the tracker makes EF cascade to the copy it can see and emit its own
-  `DELETE FROM budgets` — and the role holds `SELECT` and `INSERT` on `budgets` and deliberately no
-  `DELETE`, so the request dies with `42501` before it deletes anything. **The failure names a
+  `DELETE FROM budgets` — and the role holds `SELECT`, `INSERT` and `UPDATE (name)` on `budgets` and
+  deliberately no `DELETE`, so the request dies with `42501` before it deletes anything. **The failure names a
   permission and the cause is the change tracker.** Answering it with a grant would widen the role's
   reach, fail `AppRoleGrantMatrixTests`, and leave the real fault in place.
 - **Enforced in**: `IPersistenceState.DiscardTrackedEntities()`, called as the first line inside the

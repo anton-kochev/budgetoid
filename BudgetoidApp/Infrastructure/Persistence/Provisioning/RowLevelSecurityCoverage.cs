@@ -537,15 +537,23 @@ public static class RowLevelSecurityCoverage
     /// docs/decisions/0011 wrote down is not mutation: the exemption is argued about a query and
     /// applied by PostgreSQL to a whole table, so every column here is readable by every
     /// application session whatever user that session names, and the reason stops being cheap the
-    /// moment a wrapped key or a recovery-code hash joins the list. Such a secret is written once
-    /// at registration and never updated, so it satisfies an append-only rule perfectly — and this
-    /// table, already holding key material and already keyed on the credential, is the most
-    /// attractive place in the schema to propose putting one. <b>The recovery-code hash has since
+    /// moment a wrapped key or a recovery-code hash joins the list. A recovery-code hash is written
+    /// once and never updated, so it satisfies an append-only rule perfectly — and this table,
+    /// already holding key material and already keyed on the credential, is the most attractive
+    /// place in the schema to propose putting one. <b>A wrapped key no longer clears that screen at
+    /// all</b>: the role took <c>UPDATE (wrapped_content_key, wrapped_index_key)</c> on
+    /// <c>wrapped_account_keys</c> for a content-key rotation, so the write-once property this
+    /// paragraph once claimed for both secrets now holds for only one of them. That takes nothing
+    /// from the conclusion and sharpens it — a screen a later grant can revoke was never what was
+    /// deciding, and the hazard here is reading rather than writing, so an append-only test would
+    /// have admitted the hash and would have caught the wrapped key for the wrong reason. The pin is
+    /// what decides, on both. <b>The recovery-code hash has since
     /// stopped being hypothetical, and it landed on <c>recovery_code_hashes</c> instead</b> — which
     /// is the pin working rather than a reason to retire the example: the hypothetical is what made
-    /// the decision visible in advance, so it stays here as the evidence, and the next write-once
-    /// secret gets argued the same way. The application role's missing
-    /// <c>UPDATE</c> of any shape and missing <c>DELETE</c> keep mutable per-user state from
+    /// the decision visible in advance, so it stays here as the evidence, and the next secret of
+    /// either shape gets argued the same way. The application role's missing
+    /// <c>UPDATE</c> of any shape and missing <c>DELETE</c> <em>here</em>, on
+    /// <c>passkey_public_keys</c> itself, keep mutable per-user state from
     /// accumulating, which is a real narrowing and a corollary; it constrains how a column may
     /// change, never whether the wrong column may be read. When the pin goes red the fix is the
     /// same one docs/decisions/0012 already took for <c>credentials</c>: move the column to a table
@@ -627,11 +635,14 @@ public static class RowLevelSecurityCoverage
             "read to decide whether the signature on an assertion is genuine, which a WebAuthn "
             + "ceremony must answer before it knows whose account it is — a policy keyed on that "
             + "identity would refuse the query that establishes it; the pinned columns are what "
-            + "hold the exemption to that reason, because a write-once secret — a wrapped key, a "
-            + "recovery-code hash — satisfies any append-only rule the grants can express while "
-            + "being exactly what must not sit on a table every session reads in full; the role's "
-            + "absent UPDATE and DELETE stop mutable per-user state accumulating, which is a "
-            + "narrower table but not the narrowing that matters",
+            + "hold the exemption to that reason, because a secret read after identity — a "
+            + "recovery-code hash, a wrapped key — is exactly what must not sit on a table every "
+            + "session reads in full, and no grant shape screens one out: the hash satisfies any "
+            + "append-only rule the grants can express, and the wrapped key, which has held an "
+            + "UPDATE on its own table since content-key rotation, fails that rule without being "
+            + "one column safer here; this table's own absent UPDATE and DELETE stop mutable "
+            + "per-user state accumulating, which is a narrower table but not the narrowing that "
+            + "matters",
             TableOwnership.UserOwned,
             [
                 "credential_id", "user_id", "credential_type", "webauthn_credential_id",

@@ -39,14 +39,35 @@ public sealed class BudgetConfiguration : IEntityTypeConfiguration<Budget>
     // it may compare a null against a value and will never ask for the hash or the snapshot of one. An
     // arm written wider than its own signature would be dead code that reads like a rule.
     //
-    // NONE OF THE THREE ARMS IS HELD BY A TEST, AND BUDGETS SIT FURTHEST FROM ONE. The suite's single
-    // change-tracking class reads the statements a save composes for category_groups; this table has
-    // nothing of the kind, so the equality arm is as unheld as the snapshot arm below. What separates it
-    // from accounts and payees is that a failure here could not be quiet: the role holds no UPDATE grant
-    // on budgets of any shape — a budgets row is never updated at all, which app-role-grants.sql states
-    // as rule B2 — so a restatement this comparer failed to suppress would be refused for want of
-    // privilege, the fail-closed 42501 that file argues for, rather than committing like an edit nobody
-    // asked for. Unreachable, though, and not covered: no path modifies a tracked budget, so this arm
+    // NONE OF THE THREE ARMS IS HELD BY A TEST, AND BUDGETS SIT FURTHEST FROM ONE. The suite's
+    // change-tracking classes read the statements a save composes for category_groups, categories and
+    // transactions; this table has nothing of the kind, so the equality arm is as unheld as the snapshot
+    // arm below.
+    //
+    // What used to separate it from accounts and payees was that a failure here could not be quiet: the
+    // role held no UPDATE grant on budgets of any shape — a budgets row was never updated at all, which
+    // app-role-grants.sql stated as rule B2 — so a restatement this comparer failed to suppress would be
+    // refused for want of privilege, the fail-closed 42501 that file argues for, rather than committing
+    // like an edit nobody asked for.
+    //
+    // AMENDED: THAT ARGUMENT RESTED ENTIRELY ON THE ABSENT GRANT, AND THE GRANT NOW EXISTS.
+    // app-role-grants.sql holds GRANT UPDATE (name) ON budgets, because a content-key rotation (FR-099)
+    // has to re-seal this column under a new key. Of the table's five columns it is the only one that
+    // moved — user_id, base_currency_code, created_at_utc and id are still immutable by their absence
+    // from that list — and it is the exact column this comparer compares. Rule B2 did not go away, but
+    // it was restated: ADR 0004 now reads it as "no command updates a budgets row", which is a property
+    // of the route table rather than a privilege, so it refuses nothing at the database and cannot catch
+    // a statement the change tracker composed on its own.
+    //
+    // SO THE FAILURE MODE MOVED FROM LOUD TO QUIET, AND THE DATA IS NOT WHAT MOVED. A restatement is by
+    // definition the same envelope, so the UPDATE this comparer failed to suppress now writes the bytes
+    // already standing: nothing is corrupted, no reader sees a different name, and no constraint is
+    // troubled. What is lost is the announcement. Instead of 42501 refusing the write, the write commits,
+    // and the only trace is a statement in the log that should never have been sent.
+    //
+    // WHICH MAKES THIS ARM LOAD-BEARING IN A WAY IT WAS NOT. It used to be belt-and-braces behind a
+    // grant that would have caught the same mistake for it; it is now the only thing standing there.
+    // Still unreachable, though, and still not covered: no path modifies a tracked budget, so this arm
     // runs on every save with one in scope and is never handed two different values. The comparer is
     // depth for a path the product does not have, and review is all that holds it.
     private static readonly ValueComparer<NarrativeField> EnvelopeContentComparer = new(

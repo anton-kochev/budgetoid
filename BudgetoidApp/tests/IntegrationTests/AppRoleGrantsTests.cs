@@ -13,7 +13,8 @@ namespace IntegrationTests;
 
 /// <summary>
 /// Covers the immutability rules that only the application role's column grants can enforce: a
-/// budgets row is never updated at all, an account's currency never changes, a session's identity —
+/// budgets row is rewritten in exactly one column and never in the other four, an account's currency
+/// never changes, a session's identity —
 /// who it belongs to, which credential opened it, how much it reaches and when it runs out — is
 /// written whole when the session is established and only revoked_at_utc can ever be edited, and a
 /// credential — the row the whole sign-in resolves through — has an immutable identity: user_id,
@@ -39,11 +40,13 @@ namespace IntegrationTests;
 /// connection. Without the pair the <c>42501</c> is vacuous: a role with no <c>UPDATE</c> grant
 /// at all — or a grants script that is an empty file — refuses everything with the same SQLSTATE.
 /// The success half is what pins "exactly this column is immutable" rather than "the role cannot
-/// write". On <c>budgets</c> no column is updatable — that is the whole content of that rule. On
-/// <c>credentials</c> none is updatable today, not because the table is closed to writes but
-/// because the identity columns happen to be all the columns there are. Either way the pair is a
-/// permitted <c>INSERT</c> instead: provisioning creates budgets and sign-up creates credentials,
-/// and the role must still be able to. That stays the right pairing when an updatable column joins
+/// write". Where a table holds an updatable column the pair is that column's own write — on
+/// <c>budgets</c> the rewritten <c>name</c>, on <c>wrapped_account_keys</c> the two envelopes
+/// rewritten together, on <c>sessions</c> the revocation, on <c>passkey_signature_counters</c> the
+/// advanced counter. Where it holds none the pair is a permitted <c>INSERT</c> instead: on
+/// <c>credentials</c> no column is updatable today, not because the table is closed to writes but
+/// because the identity columns happen to be all the columns there are, and sign-up must still be
+/// able to create one. That stays the right pairing when an updatable column joins
 /// credentials — the <c>INSERT</c> is still the success the refusals need beside them.
 /// </para>
 /// <para>
@@ -76,11 +79,19 @@ public sealed class AppRoleGrantsTests
     private const int UsdMinorUnit = 2;
 
     [Test]
-    public async Task Database_RefusesEveryUpdateOnABudget_WhileStillAllowingInsert()
+    public async Task Database_AllowsRewritingABudgetsName_AndRefusesEveryOtherColumn()
     {
-        // Arrange — one budget, plus a second real user for the user_id statement below to aim
+        // Arrange — one NAMED budget, plus a second real user for the user_id statement below to aim
         // at: if the grant ever leaked user_id, the reassignment would then succeed outright
         // instead of tripping the users foreign key and passing for the wrong reason.
+        //
+        // THE SEEDED NAME IS WHAT MAKES THIS TEST POSSIBLE AT ALL, and it is not how the product
+        // produces a budget. Registration writes the NAMELESS budget and naming is unbuilt, so every
+        // budgets.name in a real database is NULL and nothing in the product exercises this grant
+        // today. FR-099 grants it anyway, because a content-key rotation has to re-encrypt that column
+        // and a grant added on the day the rotation ships is a conversation nobody has scheduled. So
+        // the arrangement seeds the row the rotation will meet rather than the row registration makes,
+        // and SeedAdditionalBudgetAsync is what puts a well-formed sealed envelope in the column.
         await using RepositoryTestHost host = await StartHostAsync();
         Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
         Guid otherUserId = await host.SeedUserAsync("google-2", "other@example.com");
@@ -89,57 +100,97 @@ public sealed class AppRoleGrantsTests
         // A user-only app-role session, not RepositoryTestHost.OpenAppConnectionAsync: budgets is
         // policed on the user — a budget is the tenant, not a tenant's row — so the session names
         // the owner and no ambient budget. The identity is what keeps the pair below intact: on a
-        // session with no user id the INSERT would fail its WITH CHECK instead of landing, and a
+        // session with no user id the rewrite would match zero rows and report success, and a
         // refusal with no permitted write beside it proves nothing (see the class remarks). With
         // the row reachable, only the column grant decides, which is what this test measures.
         await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(userId);
 
-        // Act — every column of budgets by name: name, user_id, base_currency_code. The rule is
-        // "a budgets row is never updated", and column-for-column is the only shape the grant
-        // list can hold that in. USD is a real currencies row, for the same leak-detection reason
-        // as the second user.
+        // Act — the four refused columns of budgets by name, then the one the grant list holds. The
+        // rule used to be "a budgets row is never updated at all"; it is now "name and nothing else",
+        // which is a narrower claim and needs MORE statements rather than fewer — every column of the
+        // table is named here, because the whole content of a one-column GRANT UPDATE is which of the
+        // five it is. A table-wide grant would let all five through and this test is the only shape
+        // that can tell the two apart from a statement.
         //
-        // The name is a sealed envelope, not the word "Renamed", because the column is bytea now —
-        // and the value has to be a WELL-FORMED one rather than any binary. Passing text came back
-        // 42804 from the type checker, and a short buffer would come back 23514 from the length
-        // check; both arrive BEFORE the column grant is consulted, so either would leave this test
-        // asserting a refusal it did not measure. A refusal has to be the one this test is about.
-        PostgresException nameRefusal = await ThrowsPostgresExceptionAsync(
-            app,
-            "update budgets set name = @value where id = @id",
-            SealedNarrative.Name("Renamed").Envelope.ToArray(),
-            budgetId);
+        // Each forged value is one the column itself would accept, or the refusal would be somebody
+        // else's: USD is a real currencies row, otherUserId a real users row, and the forged id is
+        // unused, so a leaked grant lands each statement instead of tripping a foreign key or a 23505
+        // and passing for the wrong reason.
         PostgresException userRefusal = await ThrowsPostgresExceptionAsync(
             app, "update budgets set user_id = @value where id = @id", otherUserId, budgetId);
         PostgresException currencyRefusal = await ThrowsPostgresExceptionAsync(
             app, "update budgets set base_currency_code = @value where id = @id", "USD", budgetId);
+        PostgresException createdAtRefusal = await ThrowsPostgresExceptionAsync(
+            app, "update budgets set created_at_utc = @value where id = @id", ForgedInstant, budgetId);
+        PostgresException idRefusal = await ThrowsPostgresExceptionAsync(
+            app, "update budgets set id = @value where id = @id", Guid.CreateVersion7(), budgetId);
 
-        // Assert
-        await Assert.That(nameRefusal.SqlState).IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        // The success half of the pair, and it is the whole of the UPDATE grant: re-encrypting the
+        // name is what a content-key rotation does to this table, so the column has to be writable for
+        // that operation to exist at all.
+        //
+        // Two traps sit under the value, and either turns this into a half that measures something
+        // else. The name is a SEALED ENVELOPE rather than the word "Rotated", because the column is
+        // bytea — text comes back 42804 from the type checker. And it has to be a WELL-FORMED envelope
+        // rather than any binary: a short buffer comes back 23514 from CK_budgets_name_length and a
+        // wrong first byte 23514 from CK_budgets_name_version. Both arrive BEFORE the column grant is
+        // consulted, so either would leave this half reporting a failure that has nothing to do with a
+        // grant. It differs from the seeded envelope, or the read-back below could not tell a landed
+        // rewrite from a statement that matched nothing.
+        //
+        // The affected count is load-bearing rather than decorative — without it this pair passes when
+        // row-level security matched nothing and the rewrite touched nobody, which is precisely the
+        // claim the pairing exists to rule out.
+        int rewritten = await ExecuteAsync(
+            app,
+            "update budgets set name = @value where id = @id",
+            SealedNarrative.Name("Rotated").Envelope.ToArray(),
+            budgetId);
+
+        // Assert — reassigning user_id would hand a whole tenant to another account, base_currency_code
+        // would restate every amount filed under the budget in a unit nobody chose, and an editable
+        // created_at_utc would rewrite an audit fact. id is the one that reads as pedantry and is not:
+        // the budget id is the associated data every narrative envelope in the tenant was sealed
+        // against, so moving it invalidates the whole tenant's sealed columns in place and nothing on
+        // this side could notice.
         await Assert.That(userRefusal.SqlState).IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
         await Assert.That(currencyRefusal.SqlState)
             .IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(createdAtRefusal.SqlState)
+            .IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(idRefusal.SqlState).IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(rewritten).IsEqualTo(1);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
 
-        // Bytes against bytes, and against the envelope the SEEDER produced rather than against a
-        // freshly built one. SealedNarrative.Name is deterministic in its label, so the two agree —
-        // but the claim being made is "the row is unchanged", and building the expectation from the
-        // same label the seed used is the only shape that stays honest if the helper ever starts
-        // varying its filler.
+        // Bytes against bytes, built from the same label the UPDATE used rather than compared as text.
+        // SealedNarrative.Name is deterministic in its label, so the two agree — and rebuilding the
+        // expectation from the label keeps the claim honest if the helper ever starts varying its
+        // filler.
         await Assert.That(await SelectBytesAsync(
                 admin, "select name from budgets where id = @id", budgetId))
-            .IsEquivalentTo(SealedNarrative.Name("Household").Envelope.ToArray());
+            .IsEquivalentTo(SealedNarrative.Name("Rotated").Envelope.ToArray());
+
+        // And the other four columns are untouched. A SQLSTATE says each statement was rejected; only
+        // this says none of them rewrote the row on its way to failing, and that the permitted rewrite
+        // reached the one column it named rather than carrying a neighbour with it. base_currency_code
+        // is still NULL because nothing in the product sets one yet — that is the seeded row, not a
+        // consequence of the rewrite.
         await Assert.That(await SelectScalarAsync(
                 admin, "select user_id from budgets where id = @id", budgetId))
             .IsEqualTo(userId);
         await Assert.That(await SelectScalarAsync(
                 admin, "select base_currency_code from budgets where id = @id", budgetId))
             .IsEqualTo(DBNull.Value);
+        await Assert.That(await SelectScalarAsync(
+                admin, "select created_at_utc from budgets where id = @id", budgetId))
+            .IsEqualTo(SeedInstant);
 
-        // The success half of the pair (see the class remarks) — an INSERT, because budgets is
-        // the one table where no UPDATE column exists to pair with.
+        // The INSERT this test used to pair its refusals with, kept although the rewrite above is now
+        // the success half. Provisioning creates budgets and the role must still be able to, and this
+        // is the only statement in the suite that measures that on the application role — dropping it
+        // because a better pair arrived would delete coverage nothing else holds.
         await using NpgsqlCommand insert = new(
             "insert into budgets (id, user_id, name, created_at_utc) " +
             "values (@id, @user_id, @name, @created_at_utc)",
@@ -1421,7 +1472,7 @@ public sealed class AppRoleGrantsTests
     }
 
     [Test]
-    public async Task Database_RefusesEveryUpdateOnAWrappedAccountKey_WhileStillAllowingInsert()
+    public async Task Database_AllowsRewritingBothWrappedKeyEnvelopesTogether_AndRefusesEveryOtherColumn()
     {
         // Arrange — one account holding a registered passkey with the account's two keys filed against
         // it, a SECOND bare passkey credential on the same account, and a second real user. Both extras
@@ -1447,20 +1498,21 @@ public sealed class AppRoleGrantsTests
         // beside it would prove nothing (see the class remarks).
         await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(userId);
 
-        // Act — every column of wrapped_account_keys by name: credential_id, user_id, factor_id,
-        // credential_type, wrapped_content_key, wrapped_index_key, created_at_utc. The rule is "no
-        // UPDATE of any shape — every column is immutable", and column-for-column is the only shape
-        // that absence can be pinned in: a table-wide GRANT UPDATE would let all seven through, and so
-        // would a column list quietly added for the key rotation that has not arrived.
+        // Act — the five refused columns of wrapped_account_keys by name: credential_id, user_id,
+        // factor_id, credential_type, created_at_utc. The rule used to be "no UPDATE of any shape —
+        // every column is immutable"; it is now "the two envelopes together and nothing else", which is
+        // a narrower claim and needs every column named rather than fewer. A table-wide GRANT UPDATE
+        // would let all seven through, and a column list quietly widened past the envelopes would let
+        // one of these five through — and column-for-column is the only shape that can tell either of
+        // those from the two-column grant this table is meant to hold.
         //
         // Each value is one the column itself would accept, which is what keeps every SQLSTATE below
-        // about the grant. The forged envelopes are exactly 61 bytes carrying version 1 — the four
-        // length and version checks refuse nothing, so a leaked grant lands them — and the forged
-        // credential type is 'recovery_codes', a spelling CK_wrapped_account_keys_credential_type
-        // accepts. Three of the seven could not land even with a leak: the foreign key is composite over
-        // (credential_id, user_id, credential_type), so no value moves user_id or credential_type alone.
-        // What still makes each a measurement is the SQLSTATE — a leaked grant RUNS the statement and
-        // reports 23503, while a refused grant never runs it and reports 42501.
+        // about the grant. The forged credential type is 'recovery_codes', a spelling
+        // CK_wrapped_account_keys_credential_type accepts. Two of the five could not land even with a
+        // leak: the foreign key is composite over (credential_id, user_id, credential_type), so no value
+        // moves user_id or credential_type alone. What still makes each a measurement is the SQLSTATE —
+        // a leaked grant RUNS the statement and reports 23503, while a refused grant never runs it and
+        // reports 42501.
         PostgresException credentialRefusal = await ThrowsPostgresExceptionAsync(
             app,
             "update wrapped_account_keys set credential_id = @value where credential_id = @id",
@@ -1481,55 +1533,71 @@ public sealed class AppRoleGrantsTests
             "update wrapped_account_keys set credential_type = @value where credential_id = @id",
             "recovery_codes",
             credentialId);
-        PostgresException contentKeyRefusal = await ThrowsPostgresExceptionAsync(
-            app,
-            "update wrapped_account_keys set wrapped_content_key = @value where credential_id = @id",
-            ForgedContentKey,
-            credentialId);
-        PostgresException indexKeyRefusal = await ThrowsPostgresExceptionAsync(
-            app,
-            "update wrapped_account_keys set wrapped_index_key = @value where credential_id = @id",
-            ForgedIndexKey,
-            credentialId);
         PostgresException createdAtRefusal = await ThrowsPostgresExceptionAsync(
             app,
             "update wrapped_account_keys set created_at_utc = @value where credential_id = @id",
             ForgedInstant,
             credentialId);
 
-        // Assert — rewriting either envelope is the attack the missing grant closes from the front. The
-        // database cannot tell a well-formed envelope from a well-formed lie: both columns are 61 bytes
-        // of version 1, and what says an envelope is the right one is the associated data it was sealed
-        // with, which only a client holding the key-encryption key can check. So an editable envelope
-        // column is a way to replace the account's keys with two the operator chose, and the discovery
-        // that they do not open happens in the browser, months later, on the day somebody needs them.
-        // Repointing credential_id, user_id or factor_id is the same door from the side — the factor id
-        // IS the associated data, so editing it invalidates both envelopes in place — and an editable
-        // created_at_utc would rewrite the one fact that says which factor was registered when.
+        // The success half of the pair, and it is the whole of the UPDATE grant: a content-key rotation
+        // re-wraps the account's two keys under the same factor and writes them back where they are.
         //
-        // Registering or revoking a factor writes or removes a whole row, which is why none of this
-        // costs the product anything: a content-key rotation is the one operation that would rewrite
-        // these two columns, and it must arrive with its own GRANT UPDATE and its own argument.
+        // BOTH ENVELOPE COLUMNS ARE NAMED IN ONE STATEMENT, AND THAT IS THE WHOLE POINT OF THIS HALF.
+        // A rotation assigns both properties together, so EF emits one UPDATE naming both, and
+        // PostgreSQL checks column privileges per column named in the statement — a grant covering one
+        // of them refuses the WHOLE statement with 42501, not the half it was not allowed. Two probes
+        // writing one column each would both go green under that half grant and rotation would still be
+        // impossible for this role. That is not hypothetical: it is exactly the defect a one-column
+        // probe hid on accounts.name for as long as the grant named name and not name_key, which is why
+        // Database_RefusesToChangeAnAccountsCurrency_WhileStillAllowingRename now writes both halves at
+        // once too. Do not split this into two statements to make it read like the refusals above.
+        //
+        // The rotated envelopes are exactly WrappedAccountKeys.EnvelopeLength bytes carrying version 1,
+        // so none of the four length and version checks refuses them and what answers is the grant. Both
+        // differ from the seeded pair, or the read-back could not tell a landed rewrite from a statement
+        // that matched nothing. The affected count is load-bearing for the same reason it is on every
+        // other pair here: without it this passes when the policy matched no row at all.
+        await using NpgsqlCommand rotate = new(
+            "update wrapped_account_keys " +
+            "set wrapped_content_key = @wrapped_content_key, wrapped_index_key = @wrapped_index_key " +
+            "where credential_id = @id",
+            app);
+        rotate.Parameters.AddWithValue("wrapped_content_key", RotatedContentKey);
+        rotate.Parameters.AddWithValue("wrapped_index_key", RotatedIndexKey);
+        rotate.Parameters.AddWithValue("id", credentialId);
+        int rotated = await rotate.ExecuteNonQueryAsync();
+
+        // Assert — repointing credential_id, user_id or factor_id is the attack the five refusals close.
+        // The factor id IS the associated data both envelopes were sealed against, so editing it
+        // invalidates them in place; a moved user_id or credential_id hands one account's wrapped keys
+        // to another; and an editable created_at_utc would rewrite the one fact that says which factor
+        // was registered when.
+        //
+        // The two envelopes are NOT on that list, and the reason is that every other shape of a rotation
+        // is closed rather than that rewriting an envelope is harmless. It is not harmless: the database
+        // cannot tell a well-formed envelope from a well-formed lie — both columns are the same length
+        // and the same version byte, and what says an envelope is the right one is the associated data
+        // only a client holding the key-encryption key can check. What forces the grant is that a
+        // rotation has to rewrite exactly this row: deleting its credentials parent would destroy the
+        // passkey registration, filing a new row under a new factor id and removing the old one needs the
+        // DELETE this table must never hold, and filing one without removing the other leaves
+        // GET /api/me/account-keys handing the browser an entry that unwraps a key nothing encrypts with.
         await Assert.That(credentialRefusal.SqlState)
             .IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
         await Assert.That(userRefusal.SqlState).IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
         await Assert.That(factorRefusal.SqlState).IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
         await Assert.That(credentialTypeRefusal.SqlState)
             .IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
-        await Assert.That(contentKeyRefusal.SqlState)
-            .IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
-        await Assert.That(indexKeyRefusal.SqlState)
-            .IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
         await Assert.That(createdAtRefusal.SqlState)
             .IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(rotated).IsEqualTo(1);
 
-        // The success half of the pair (see the class remarks), and here it is an INSERT because there
-        // is no permitted column to update and there is not meant to be one. Registering a factor writes
-        // a new row, so that half of the table's lifecycle has to work for a role holding no UPDATE at
-        // all — which is what rules out the other way every refusal above could pass, the role reaching
-        // nothing on this table whatsoever. Onto the same account's free credential with its own factor
-        // id: same owner, same type, so nothing but the grant and the policy stands between this
-        // statement and the row.
+        // The INSERT this test used to pair its refusals with, kept although the rotation above is now
+        // the success half. Registering a factor writes a new row, and this is the only statement in the
+        // suite that measures that half of the table's lifecycle on the application role — dropping it
+        // because a better pair arrived would delete coverage nothing else holds. Onto the same
+        // account's free credential with its own factor id: same owner, same type, so nothing but the
+        // grant and the policy stands between this statement and the row.
         await using NpgsqlCommand insert = new(
             "insert into wrapped_account_keys " +
             "(credential_id, user_id, factor_id, credential_type, " +
@@ -1545,10 +1613,13 @@ public sealed class AppRoleGrantsTests
         insert.Parameters.AddWithValue("created_at_utc", SeedInstant);
         await Assert.That(await insert.ExecuteNonQueryAsync()).IsEqualTo(1);
 
-        // And the seeded row is untouched, column for column. A SQLSTATE says each statement was
-        // rejected; only this says none of them rewrote the row on its way to failing. Both envelopes are
-        // read back as bytes rather than counted, because a swapped or replaced envelope is the one
-        // change nothing else in this system could ever notice.
+        // And the seeded row holds its four immutable columns and the two rewritten envelopes. A
+        // SQLSTATE says each refused statement was rejected; only this says none of them rewrote the row
+        // on its way to failing, and that the rotation reached the two columns it named rather than
+        // carrying a neighbour with it. Both envelopes are read back as bytes rather than counted,
+        // because a swapped or half-written envelope is the one change nothing else in this system could
+        // ever notice — the database would go on holding two well-formed values, and the discovery that
+        // they no longer open happens in the browser, months later, on the day somebody needs them.
         await Assert.That(await SelectScalarAsync(
                 admin, "select user_id from wrapped_account_keys where credential_id = @id", credentialId))
             .IsEqualTo(userId);
@@ -1562,16 +1633,22 @@ public sealed class AppRoleGrantsTests
                 "select credential_type from wrapped_account_keys where credential_id = @id",
                 credentialId))
             .IsEqualTo("passkey");
+        // Both envelopes read back as the ROTATED pair, and reading both is what makes this a claim
+        // about the statement rather than about a column. The two are distinct values, so a rotation
+        // that wrote the content envelope and left the index one describing the previous key would
+        // leave the row well-formed and this assertion is the only thing that would notice — which is
+        // the same asymmetry accounts' name/name_key read-back exists for, on material that cannot be
+        // recomputed from anything this server holds.
         await Assert.That(await SelectBytesAsync(
                 admin,
                 "select wrapped_content_key from wrapped_account_keys where credential_id = @id",
                 credentialId))
-            .IsEquivalentTo(SeededContentKey);
+            .IsEquivalentTo(RotatedContentKey);
         await Assert.That(await SelectBytesAsync(
                 admin,
                 "select wrapped_index_key from wrapped_account_keys where credential_id = @id",
                 credentialId))
-            .IsEquivalentTo(SeededIndexKey);
+            .IsEquivalentTo(RotatedIndexKey);
         await Assert.That(await SelectScalarAsync(
                 admin,
                 "select created_at_utc from wrapped_account_keys where credential_id = @id",
@@ -1795,13 +1872,15 @@ public sealed class AppRoleGrantsTests
     private static readonly DateTime ForgedInstant = new(2031, 1, 2, 3, 4, 5, DateTimeKind.Utc);
 
     /// <summary>
-    /// The two envelopes the seeded wrapped-keys row carries, and the two a refused statement tried to
-    /// put in their place. All four are well-formed — exactly
+    /// The two envelopes the seeded wrapped-keys row carries, and the two a content-key rotation puts
+    /// in their place. All four are well-formed — exactly
     /// <see cref="WrappedAccountKeys.EnvelopeLength" /> bytes carrying
     /// <see cref="WrappedAccountKeys.EnvelopeVersion" /> — which is the point: an envelope of any other
-    /// shape would be refused by one of the four length and version checks rather than by the grant, and
-    /// the test would go green against a table-wide <c>GRANT UPDATE</c>. All four differ from one
-    /// another, so a read-back cannot pass on the wrong column or on a value nobody wrote.
+    /// shape would be refused by one of the four length and version checks rather than by the grant, so
+    /// a permitted rotation would fail for a reason that is not a privilege and a refused statement
+    /// would report a <c>23514</c> that says nothing about a grant. All four differ from one another,
+    /// so a read-back cannot pass on the wrong column or on a value nobody wrote — and the rotated pair
+    /// differs from the seeded pair, so it cannot pass on a rotation that never landed.
     /// </summary>
     private static readonly byte[] SeededContentKey =
         RepositoryTestHost.WrappedKeyEnvelope(RepositoryTestHost.SeededContentKeyFiller);
@@ -1809,9 +1888,9 @@ public sealed class AppRoleGrantsTests
     private static readonly byte[] SeededIndexKey =
         RepositoryTestHost.WrappedKeyEnvelope(RepositoryTestHost.SeededIndexKeyFiller);
 
-    private static readonly byte[] ForgedContentKey = RepositoryTestHost.WrappedKeyEnvelope(0x5A);
+    private static readonly byte[] RotatedContentKey = RepositoryTestHost.WrappedKeyEnvelope(0x5A);
 
-    private static readonly byte[] ForgedIndexKey = RepositoryTestHost.WrappedKeyEnvelope(0x6B);
+    private static readonly byte[] RotatedIndexKey = RepositoryTestHost.WrappedKeyEnvelope(0x6B);
 
     /// <summary>
     /// The factor identifier the seeded wrapped-keys row carries, the one a refused statement tried to

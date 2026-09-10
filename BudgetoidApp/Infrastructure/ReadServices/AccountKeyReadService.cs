@@ -17,12 +17,21 @@ public sealed class AccountKeyReadService(BudgetoidDbContext dbContext) : IAccou
         // what enforces it is that no line here reads the entity set into memory.
         //
         // On this table that rule is a hazard rather than a preference. The application role holds NO
-        // UPDATE and NO DELETE on wrapped_account_keys, so a row this context has materialized and later
-        // decides to cascade into dies with 42501. That is the never-materialise rule
-        // GenerateRecoveryCodesHandler carries, and IAccountKeyReadService's own remarks say the
-        // projection is what keeps a display read from being what trips it. NOTHING GOES RED IF THIS IS
-        // GOT WRONG HERE: a read-only request has no cascade to walk, so the failure surfaces on
-        // whichever later request removes a credential through this context.
+        // DELETE on wrapped_account_keys, so a row this context has materialized and later decides to
+        // cascade into dies with 42501. That is the never-materialise rule GenerateRecoveryCodesHandler
+        // carries, and IAccountKeyReadService's own remarks say the projection is what keeps a display
+        // read from being what trips it. NOTHING GOES RED IF THIS IS GOT WRONG HERE: a read-only request
+        // has no cascade to walk, so the failure surfaces on whichever later request removes a credential
+        // through this context.
+        //
+        // THE DELETE IS THE WHOLE OF THAT PREMISE NOW. The role does hold
+        // UPDATE (wrapped_content_key, wrapped_index_key), granted for a content-key rotation, so a
+        // tracked row whose envelope something assigned would be committed by the next SaveChanges on
+        // this context with no SQLSTATE to say it happened — the silent half of the same mistake, on the
+        // two columns that carry the material. factor_id, credential_id, user_id, credential_type and
+        // created_at_utc are still absent from that list and still answer 42501. Nothing assigns an
+        // envelope today either — the entity exposes no mutator for one — so this is what a materialized
+        // row would cost, not a path the product has. Projecting keeps this read out of both halves.
         //
         // ONE PREDICATE, ON THE OWNER, AND IT IS UNOBSERVABLE — no test can hold it.
         // wrapped_account_keys is policed by user_isolation, so PostgreSQL appends

@@ -2239,9 +2239,11 @@ its pinned exemption untouched.
 
 What holds the exempt table to its reason is its **pinned column set**, not the absent `UPDATE` and
 `DELETE` grants. Those stop mutable per-user state accumulating, which is real but is not the
-threat: a wrapped key or a recovery-code hash is written once and never updated, so it satisfies any
-append-only rule perfectly while being exactly what must not sit on a table every session reads in
-full. A red on the pin means move the column, never widen the pin.
+threat: a recovery-code hash is written once and never updated, so it satisfies any append-only rule
+perfectly while being exactly what must not sit on a table every session reads in full. A red on the
+pin means move the column, never widen the pin. (A wrapped key was the second example until
+content-key rotation took `UPDATE` on its envelope columns. It now fails an append-only screen and is
+no safer on the exempt table than before, which strengthens the point rather than costing it one.)
 
 Four candidate columns were **refused outright** rather than relocated — AAGUID, transports, a
 last-used instant, and backup-eligibility flags. Nothing in this design reads any of them, and an

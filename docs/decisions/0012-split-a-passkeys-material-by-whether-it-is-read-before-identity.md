@@ -40,12 +40,19 @@ same shape `credentials` uses.
 precise about that, because the appealing answer is the wrong one. The hazard ADR 0011 recorded is
 not mutation — it is that the exemption is granted to a *query* and applied by PostgreSQL to a whole
 *table*, so every column on it is readable by every application session whoever that session names.
-A wrapped key is written once at registration and never updated; a recovery-code hash likewise. Both
-would satisfy any append-only rule perfectly, and this table — already holding key material, already
-keyed on the credential — is the most attractive place in the schema to propose one. So the column
-set is pinned, and `Exemptions_PinTheColumnsTheirReasonCovers` turns a new column red until someone
-answers for it. The answer is to move the column to a table carrying `user_id`, never to widen the
-pin.
+A recovery-code hash is written once and never updated, so it would satisfy any append-only rule
+perfectly, and this table — already holding key material, already keyed on the credential — is the
+most attractive place in the schema to propose one. So the column set is pinned, and
+`Exemptions_PinTheColumnsTheirReasonCovers` turns a new column red until someone answers for it. The
+answer is to move the column to a table carrying `user_id`, never to widen the pin.
+
+**Amended: a wrapped key stood beside the hash in that sentence and no longer belongs there.** The
+application role took `UPDATE (wrapped_content_key, wrapped_index_key)` on `wrapped_account_keys`
+when content-key rotation arrived (FR-099), so one of the two example secrets stopped being
+write-once. This makes the paragraph's conclusion stronger rather than weaker: an append-only screen
+would now admit the hash and reject the wrapped key, catching one of the two for a reason unrelated
+to why either is dangerous here — which is the clearest demonstration available that the pin, and
+not any grant shape, is what holds the exemption.
 
 **Half of that hypothetical has since happened, and it went where this paragraph said it should.** A
 recovery-code hash is now a real column on a real table — `recovery_code_hashes`, exempt for a reason
@@ -66,7 +73,11 @@ GRANT SELECT, INSERT ON passkey_public_keys TO budgetoid_app;
 No `UPDATE` of any shape, no `DELETE`. Rows leave only by the cascade from `credentials`.
 `credentials`'s exemption covers a table that may one day take an `UPDATE` column list; this one
 never can, so mutable per-user state cannot accumulate here. That is a genuine narrowing — it just
-does not cover the case that actually threatens the exemption, which is a secret that never changes.
+does not cover the case that actually threatens the exemption, which is a secret **read by every
+session**, whether or not that secret ever changes. This line used to say "a secret that never
+changes", and `wrapped_account_keys` taking an `UPDATE` is what exposed that as the wrong half of the
+property: a rotating secret sitting here would be exactly as readable as a frozen one, because the
+exemption is about who may read the table and never about who may write it.
 
 ### `passkey_signature_counters` — policed by `user_isolation`
 

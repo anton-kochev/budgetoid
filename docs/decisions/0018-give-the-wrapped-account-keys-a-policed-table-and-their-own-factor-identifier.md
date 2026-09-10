@@ -97,6 +97,14 @@ by the client — and deliberately not `credentials.id`. That column is the tabl
    is the one operation that would ever rewrite these two columns, and it must arrive with its own
    argument for the grant it needs.
 
+   **Amended: that rotation has arrived, and it brought the argument.** `GRANT UPDATE
+   (wrapped_content_key, wrapped_index_key)` is now held, serving one caller and one row per
+   rotation — the passkey the person presented. The grant is **forced rather than chosen**: every
+   other way of retiring that row is closed, and `app-role-grants.sql` walks each one. `DELETE` did
+   not move and must not: a retired recovery-code set still leaves by the cascade from `credentials`,
+   which is what keeps an EF cascade loud with `42501` instead of silent. The prediction in this item
+   stands as written because it was right; what follows it is what it predicted.
+
    **`SELECT` was granted to a reader that was not production code, and that was a real tension
    worth naming rather than glossing.** The paragraph above argues that withholding a privilege until
    something uses it costs nothing while granting an unused one leaves a standing capability with no
@@ -109,7 +117,8 @@ by the client — and deliberately not `credentials.id`. That column is the tabl
    **Amended: that reader has arrived, and the grant is now ordinary.** `GET /api/me/account-keys`
    reads the table on behalf of a signed-in browser — see the Consequences below, which record its
    shape and the narrowing that was tried and corrected. So `SELECT` no longer needs the tension argued
-   for it, and nothing else in this item moved: still no `UPDATE`, still no `DELETE`. What the
+   for it. `UPDATE` moved later, on the two envelope columns and for the reason the amendment above
+   gives; `DELETE` did not move and is not expected to. What the
    paragraph leaves behind on purpose is the *test* it justified. The probes keep the grant honest in
    a way the endpoint cannot: an application read answering correctly says nothing about what the
    policy refused, so a policed table whose isolation only production exercises is a policy nobody
@@ -174,10 +183,15 @@ that proves identity and unlocks nothing.
   They keep that sentence now that an endpoint reads the table as well: an application read
   answering correctly says nothing about what the policy refused, and a policed table whose
   isolation nothing exercises is a policy nobody has watched fire.
-- **Every column is refused an `UPDATE` individually.**
-  `Database_RefusesEveryUpdateOnAWrappedAccountKey_WhileStillAllowingInsert` states it column by
-  column, each `42501` paired with a permitted insert on the same connection so the refusal cannot be
-  vacuous.
+- **Exactly two columns accept an `UPDATE`, and every other column is refused individually.**
+  `Database_AllowsRewritingBothWrappedKeyEnvelopesTogether_AndRefusesEveryOtherColumn` states it
+  column by column, each `42501` paired with a permitted insert on the same connection so the refusal
+  cannot be vacuous. The two that are permitted — `wrapped_content_key` and `wrapped_index_key` — are
+  written by a content-key rotation (FR-080) and by nothing else, and the test names them **in one
+  statement** because a rotation assigns both together: a pair of single-column probes could not tell
+  this grant from one covering half of it. `factor_id`, `credential_id`, `user_id`, `credential_type`
+  and `created_at_utc` remain immutable by omission. The grant is forced rather than chosen —
+  `app-role-grants.sql` argues why each alternative way of retiring the row is closed.
 - **The missing `DELETE` is safe rather than merely narrow, and one test says why.**
   `Database_RefusesADeleteOnAWrappedAccountKey_WhileTheCascadeFromItsCredentialStillTakesIt` refuses
   the direct delete and then proves the row leaves anyway when its credential does.
@@ -194,9 +208,9 @@ that proves identity and unlocks nothing.
   the write paths compare ordinally for: a response that re-spelled it would reproduce, on the way
   out, the permanent and unnamed failure that rule exists to prevent. This is the endpoint the
   decision said would have to argue for itself in place, and the arguments live in
-  [account-keys.md](../business-logic/account-keys.md). Nothing else here moved: the table still
-  holds no `UPDATE` and no `DELETE`, and the read projects rather than materialising, so it cannot
-  become the change-tracker cascade those absences are aimed at.
+  [account-keys.md](../business-logic/account-keys.md). The read projects rather than materialising,
+  so it cannot become the change-tracker cascade the missing `DELETE` is aimed at — and that is
+  unaffected by the two-column `UPDATE` a rotation later brought, which no read on this path issues.
 - **The read was briefly narrowed to the credential that opened the session, and that shipped before
   it was corrected.** It is recorded here because the argument for it reads well and will be made
   again. The theory was that a browser can only ever be holding a key-encryption key derived from the

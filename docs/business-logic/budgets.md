@@ -87,11 +87,16 @@ erDiagram
     edit while missing an envelope rewritten in place). **No test holds any arm of that comparer,
     and this table sits furthest from one**: the product's three change-tracking classes read the
     statements a save composes for `category_groups`, `categories` and `transactions`
-    ([categories.md](categories.md#edge-cases--known-gotchas)) and nothing here is equivalent. A
-    failure could not be quiet, though — the role holds **no `UPDATE` grant on `budgets` of any
-    shape**, so a restatement the comparer failed to suppress is refused with `42501` rather than
-    committing like an edit nobody asked for. It is also unreachable: no path modifies a tracked
-    budget, so the comparer is depth for an operation the product does not have. The table carries
+    ([categories.md](categories.md#edge-cases--known-gotchas)) and nothing here is equivalent. A failure
+    used to be impossible to miss, and that is no longer true. The argument was that the role held
+    **no `UPDATE` grant on `budgets` of any shape**, so a restatement the comparer failed to suppress
+    was refused with `42501` rather than committing like an edit nobody asked for. The role now holds
+    `UPDATE (name)`, because a content-key rotation has to re-seal that column under a new key
+    (FR-099) — and `name` is the very column the comparer compares. So the same mistake now commits.
+    What it commits is the identical envelope, so no reader sees a different name and nothing is
+    corrupted; what is gone is the announcement, and this arm is load-bearing where it used to stand
+    behind a grant that would have caught the mistake for it. It remains unreachable: no path modifies
+    a tracked budget, so the comparer is depth for an operation the product does not have. The table carries
     two `CHECK` constraints, each rendered from the constant that owns its number rather than from a
     literal:
     `CK_budgets_name_length` bounds the stored envelope between `CiphertextEnvelope.MinimumLength`
@@ -225,9 +230,11 @@ erDiagram
   - **Enforced in**: `Budget.Create` and `Budget.CreateDefault` take no currency argument and
     `Budget` exposes no mutator. `BudgetTests` and the registration suite each assert the created
     budget's `BaseCurrencyCode` is null. `base_currency_code` is a nullable `varchar(3)` with a
-    `Restrict` foreign key to `currencies.code`. The bottom layer says something wider: the role
-    holds `SELECT` and `INSERT` on `budgets` and **no `UPDATE` grant of any shape**, so no column of
-    a budget row can be written after the insert.
+    `Restrict` foreign key to `currencies.code`. The bottom layer says something narrower than it used
+    to: the role holds `SELECT` and `INSERT` on `budgets` plus **`UPDATE (name)` and nothing else**,
+    so `base_currency_code` — along with `user_id`, `created_at_utc` and `id` — cannot be written
+    after the insert, by its absence from that column list. `name` is the single exception and it
+    exists for one caller, a content-key rotation re-sealing the envelope (FR-099).
 
 ### MUST NOT
 
@@ -667,9 +674,13 @@ The user branch that runs before this is in
 - **`BaseCurrencyCode` is never written.** Not "rarely set" or "set once" — no factory takes it and
   `Budget` exposes no method that sets it. Do not build display, defaulting or conversion logic on
   the assumption that some budget somewhere has one. The database is arranged the same way and will
-  say so loudly: with no `UPDATE` grant on `budgets`, the first operation that edits a budget fails
-  with `42501` until a column list for it is added to `app-role-grants.sql`. That is the intended
-  order of events: the grant is where the decision that a budget column is mutable gets recorded.
+  say so loudly: `base_currency_code` is absent from the `UPDATE` column list on `budgets`, so the
+  first operation that writes it fails with `42501` until somebody adds it there. That is the
+  intended order of events, and the column list is where the decision that a budget column is
+  mutable gets recorded. The list is no longer empty — `name` joined it so a content-key rotation
+  can re-seal that envelope (FR-099) — which makes the mechanism sharper rather than weaker: a
+  column is now immutable because it is missing from a list that exists, instead of because no
+  list exists at all.
 
 - **How the `BudgetIsolation` filter captures the budget is the most dangerous edit in the
   persistence layer.** Rewriting the lambda to read a captured local, a `static`, or a service

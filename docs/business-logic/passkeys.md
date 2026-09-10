@@ -105,9 +105,11 @@ erDiagram
   - **Why**: the role holds no `UPDATE` of any shape and no `DELETE` on `passkey_public_keys`, and
     that is a genuine narrowing, but not the one that matters. The hazard is that the exemption is
     granted to a *query* and applied to a whole *table*, so every column is readable by every
-    session whoever it names. **A wrapped key or a recovery-code hash is written once and never
-    updated** — it satisfies any append-only rule perfectly while being exactly what must not land
-    here. Both hypotheticals have since become real and both went elsewhere: `recovery_code_hashes`
+    session whoever it names. **A recovery-code hash is written once and never updated** — it satisfies
+    any append-only rule perfectly while being exactly what must not land here. A wrapped key was
+    named beside it until content-key rotation took `UPDATE` on its two envelope columns; it now
+    fails an append-only screen while being no safer here, which is the sharpest evidence that such
+    a screen was never what decided this. Both hypotheticals have since become real and both went elsewhere: `recovery_code_hashes`
     with its own exemption and pin
     ([ADR 0016](../decisions/0016-give-recovery-code-hashes-their-own-exempt-table.md)), and
     `wrapped_account_keys` onto a *policed* table, because it is read only after the request has an

@@ -102,10 +102,11 @@ public sealed class EraseAccountHandler(
                 // AuthenticateSessionHandler has already resolved the request's identity through this
                 // same scoped context, which leaves the Budget entity tracked. Remove the User with
                 // that dependent still in the tracker and EF cascades to the copy it can see, emitting
-                // its own `DELETE FROM budgets` — and the app role has SELECT and INSERT on budgets
-                // and deliberately no DELETE, so the request dies with 42501 before it deletes
-                // anything. Budgets are meant to leave by the database's own cascade from users, which
-                // runs as the table owner and is not a statement the app role has to be granted.
+                // its own `DELETE FROM budgets` — and the app role has SELECT, INSERT and
+                // UPDATE (name) on budgets and deliberately no DELETE, so the request dies with 42501
+                // before it deletes anything. Budgets are meant to leave by the database's own cascade
+                // from users, which runs as the table owner and is not a statement the app role has to
+                // be granted.
                 //
                 // Do not delete this line as retry hygiene, and do not answer the 42501 with a grant:
                 // the failure names a permission but the cause is the change tracker. It is also what

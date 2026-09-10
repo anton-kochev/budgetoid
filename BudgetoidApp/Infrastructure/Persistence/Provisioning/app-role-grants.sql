@@ -255,17 +255,28 @@ GRANT SELECT, INSERT ON session_tokens TO budgetoid_app;
 -- What holds this exemption to its reason is the PINNED COLUMN SET in RowLevelSecurityCoverage, not
 -- the two grant lines below. Read that carefully, because the appealing answer is the wrong one. The
 -- hazard is not mutation: the exemption is granted to a QUERY and applied to the whole TABLE, so
--- every column here is readable by every application session whoever that session names. A wrapped
--- key or a recovery-code hash is written once and never updated — each satisfies an append-only rule
--- perfectly, and this table, already holding key material, is the most attractive place in the schema
--- to propose one. The pin is what turns a new column red; the answer to that red is to MOVE THE
--- COLUMN to a table carrying user_id, never to widen the pin.
+-- every column here is readable by every application session whoever that session names. A
+-- recovery-code hash is written once and never updated — it satisfies an append-only rule perfectly,
+-- and this table, already holding key material, is the most attractive place in the schema to propose
+-- one. The pin is what turns a new column red; the answer to that red is to MOVE THE COLUMN to a
+-- table carrying user_id, never to widen the pin.
+--
+-- A wrapped key used to stand beside the hash in that sentence and no longer does: this role took
+-- UPDATE (wrapped_content_key, wrapped_index_key) on wrapped_account_keys for a content-key rotation,
+-- so one of the two secrets stopped being write-once. That SHARPENS the paragraph rather than
+-- weakening it. A screen a later GRANT can revoke was never what was deciding, and an append-only
+-- test would now admit the hash and reject the wrapped key — catching one of them, for a reason
+-- unrelated to why either is dangerous here.
 --
 -- The grants are the corollary, and worth having because they are checkable in one line: no UPDATE of
 -- any shape and no DELETE, ever, so mutable per-user state cannot accumulate here. credentials is
 -- exempt on a table that could one day take an UPDATE column list; this one cannot. That is a real
 -- narrowing — it just does not cover the case that actually threatens the exemption, which is a
--- secret that never changes. See docs/decisions/0012.
+-- secret READ BY EVERY SESSION, whether or not that secret ever changes. The older wording here said
+-- "a secret that never changes", and wrapped_account_keys taking an UPDATE is what showed that to be
+-- the wrong half of the property: a rotating secret on this table would be exactly as exposed as a
+-- frozen one, because the exemption is about who may read the table and never about who may write it.
+-- See docs/decisions/0012.
 --
 -- Rows leave only by the cascade from credentials, and through it from users, so a passkey leaves
 -- nothing behind an erasure.
@@ -428,12 +439,30 @@ GRANT SELECT, INSERT, DELETE ON recovery_code_hashes TO budgetoid_app;
 -- withdrawn and the day the policy is, which is what makes this paragraph a claim about the
 -- repository rather than a plan for one.
 --
--- NO UPDATE OF ANY SHAPE. Every column is immutable. Registering or revoking a recovery factor
--- rewrites wrapped keys only and is not a key rotation (FR-101), so adding a factor writes a new row
--- rather than editing one. A content-key rotation (FR-080) is the one operation that would rewrite
--- these two columns, and it will need GRANT UPDATE (wrapped_content_key, wrapped_index_key) and must
--- arrive with its own argument for it. Withholding a privilege until something uses it costs nothing;
--- granting one nobody uses is a standing capability with no reader to explain it.
+-- ONE UPDATE, TWO COLUMNS, ONE CALLER — AND THE SHAPE IS FORCED RATHER THAN CHOSEN. Registering or
+-- revoking a recovery factor rewrites wrapped keys only and is not a key rotation (FR-101), so those
+-- paths still write a new row rather than editing one. A content-key rotation (FR-080) is the single
+-- operation that rewrites an envelope in place, and it rewrites exactly one row: the passkey the
+-- person presented to begin the rotation.
+--
+-- Every other way of retiring that row is closed, which is what makes this a forced shape rather than
+-- a convenience. Deleting its credentials row would destroy the passkey registration itself. Inserting
+-- a replacement under a new factor_id and deleting the old needs a DELETE this table must never hold,
+-- for the reason the next paragraph gives. Inserting a replacement and leaving the old row behind is
+-- permanent litter on GET /api/me/account-keys — one dead entry per rotation, on the one route a
+-- browser uses to find the pair it can open, every entry of which it must try in turn. The in-place
+-- UPDATE is what is left, and it is narrowed to the two envelope columns: factor_id, credential_id,
+-- user_id, credential_type and created_at_utc stay immutable by their absence from this list.
+--
+-- BOTH COLUMNS OR NEITHER, and that is why the list names two rather than one. A rotation assigns both
+-- properties of one row together and EF emits one UPDATE naming both columns, so a grant covering only
+-- one of them fails that whole statement with 42501 — it would forbid the operation both columns exist
+-- to serve. It is also why AppRoleGrantsTests measures the permitted write in ONE statement naming
+-- both: a pair of single-column probes cannot tell a two-column grant from a one-column grant.
+--
+-- The ten wrapped rows of a REPLACED RECOVERY-CODE SET are not this grant's business and never become
+-- it. A rotation mints a fresh set rather than re-wrapping the old codes — the browser has never seen
+-- the card — and the retired set's rows leave by the cascade below, exactly as they do today.
 --
 -- NO DELETE, AND THE ABSENCE IS LOAD-BEARING. Revoking a factor removes its wrapped keys by the
 -- ON DELETE CASCADE from credentials, which runs with the referencing table owner's privileges rather
@@ -450,11 +479,27 @@ GRANT SELECT, INSERT, DELETE ON recovery_code_hashes TO budgetoid_app;
 -- document the identical mechanism for their own tables.
 REVOKE ALL ON wrapped_account_keys FROM budgetoid_app;
 GRANT SELECT, INSERT ON wrapped_account_keys TO budgetoid_app;
+GRANT UPDATE (wrapped_content_key, wrapped_index_key) ON wrapped_account_keys TO budgetoid_app;
 
--- budgets: a budgets row is never updated at all (rule B2), so there is no UPDATE grant of
--- any shape. No delete path exists either.
+-- budgets: ONE UPDATE, ONE COLUMN, and it is the exception ASM-004 names rather than a softening of
+-- rule B2. No command may change a budget's name: it is sealed once, at creation, and no route accepts
+-- a rename. The one operation that must rewrite it is a content-key rotation (FR-099), which re-seals
+-- the same text under a new key rather than changing what the text says — which is why ADR 0004 now
+-- states B2 as "no command updates a budgets row" instead of "a budgets row is never updated at all".
+--
+-- The column list is the enforcement. user_id, base_currency_code, created_at_utc and id are immutable
+-- by their absence from it, and a table-wide GRANT UPDATE ON budgets would reopen all four at once to
+-- buy nothing — the mistake the header of this file explains cannot be undone with REVOKE.
+--
+-- Every budgets row holds NULL in name today, because registration writes the nameless budget and
+-- naming is unbuilt, so this grant is exercised only by a test that seeds a named budget. It is
+-- granted now because FR-099 requires it now, and because a privilege added at the moment its first
+-- caller appears is a privilege added by whoever is in a hurry.
+--
+-- No delete path exists.
 REVOKE ALL ON budgets FROM budgetoid_app;
 GRANT SELECT, INSERT ON budgets TO budgetoid_app;
+GRANT UPDATE (name) ON budgets TO budgetoid_app;
 
 -- accounts: budget_id (tenancy, rule X1), currency_code (rule A1), and created_at_utc are
 -- immutable by omission.

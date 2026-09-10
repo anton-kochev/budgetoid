@@ -19,7 +19,11 @@ That mattered because three families of rules were held **only by the shape of t
 
 - **X1** — a budget-owned row never changes `budget_id`. No method on `Account`, `CategoryGroup`,
   `Category`, `Payee` or `Transaction` reaches `BudgetId`.
-- **B2** — a `budgets` row is never updated at all. `Budget` exposes no mutator of any kind.
+- **B2** — no command updates a `budgets` row. No route accepts a rename and `Budget` exposes no
+  public mutator. The rule was written as "never updated at all" while that was indistinguishable
+  from what it means; a content-key rotation (FR-099) re-seals `budgets.name` under a new key, so
+  the two came apart and the narrower sentence is the one that was always intended. What a rotation
+  changes is which key the text is sealed under, never what the text says.
 - **A1** — `accounts.currency_code` never changes after creation. `UpdateAccountCommand` does not
   carry it, and `Account` has no path that sets it.
 
@@ -73,11 +77,16 @@ privileges are additive.** This is the single most important thing about the fil
 removes a column-level privilege that was granted column-level. So every `UPDATE` grant names its
 columns, and an immutable column is one that is simply not on the list: `budget_id` appears on none
 of the five owned tables, `currency_code` is absent from `accounts`, `created_at_utc` is absent
-everywhere, and `budgets` and `credentials` have no `UPDATE` grant of any shape — the whole content
-of B2, and of the rule that a credential's **identity** (`user_id`, `type`, `provider`, `subject`,
-`created_at_utc`) is written once and never edited. On `credentials` the empty grant is the present
-state of that list rather than a property of the table: a passkey signature counter and a last-used
-timestamp are both specified, and each joins the list while the identity columns stay off it.
+everywhere, `budgets` grants `UPDATE (name)` and nothing else, and `credentials` has no `UPDATE`
+grant of any shape — the whole content of B2, and of the rule that a credential's **identity**
+(`user_id`, `type`, `provider`, `subject`, `created_at_utc`) is written once and never edited.
+`budgets` is the sharper illustration of the mechanism now that its list is not empty: `user_id`,
+`base_currency_code`, `created_at_utc` and `id` are immutable **because they are not on a list that
+exists**, which is a stronger position than being immutable because no list exists at all — the
+latter is one table-wide grant away from being nothing. On `credentials` the empty grant is the
+present state of that list rather than a property of the table: a passkey signature counter and a
+last-used timestamp are both specified, and each joins the list while the identity columns stay off
+it.
 **"Simplifying" any column-list grant into a table-wide one silently re-opens every hole the list
 exists to close**, and nothing fails at the time it is done.
 

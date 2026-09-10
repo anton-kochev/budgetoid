@@ -9,10 +9,18 @@ namespace Application.AccountKeys;
 /// <c>IUserAccountReadService</c> both state: a repository loads entities that rules are applied to, and
 /// this projects columns for a response. The split earns more here than on either of them, because on
 /// this table materializing an entity is itself a hazard — the application role holds <b>no
-/// <c>UPDATE</c> and no <c>DELETE</c></b> on <c>wrapped_account_keys</c>, so a tracked row that EF later
-/// decides to cascade into dies with <c>42501</c>. That is the never-materialise rule
-/// <c>GenerateRecoveryCodesHandler</c> carries, and this port is the shape that keeps a display read
-/// from ever being the thing that trips it.
+/// <c>DELETE</c></b> on <c>wrapped_account_keys</c>, so a tracked row that EF later decides to cascade
+/// into dies with <c>42501</c>. That is the never-materialise rule <c>GenerateRecoveryCodesHandler</c>
+/// carries, and this port is the shape that keeps a display read from ever being the thing that trips it.
+/// </para>
+/// <para>
+/// <b>The <c>DELETE</c> is the whole of that premise, and it is the half of it that is left.</b> The
+/// role holds <c>UPDATE (wrapped_content_key, wrapped_index_key)</c> for a content-key rotation, argued
+/// in <c>app-role-grants.sql</c> where it is granted, so an edit to either envelope column on a
+/// materialized row would now <em>commit</em> rather than die with <c>42501</c>. The rule above binds
+/// harder for that, not less: a row this context is holding is a row two mistakes can reach, and only
+/// one of them still announces itself. Nothing assigns either envelope today — the entity exposes no
+/// mutator for them — so what moved is what the mistake would cost, not how near it is.
 /// </para>
 /// <para>
 /// <b>An implementation therefore projects; it does not load and map.</b> The rows come back through a

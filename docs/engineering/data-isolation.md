@@ -74,9 +74,11 @@ Enforced today:
   `webauthn_challenges`
   pin their columns for the same reason, and the pin — not the grant matrix — is what holds each
   exemption to its stated reason. The absent `UPDATE` and `DELETE` on `passkey_public_keys` stop
-  *mutable* per-user state accumulating, which is real but is not the threat: a wrapped key or a
-  recovery-code hash is written once and never updated, so it would satisfy any append-only rule
-  while being precisely what must not sit on a table every session reads in full. **Neither of those
+  *mutable* per-user state accumulating, which is real but is not the threat: a recovery-code hash is
+  written once and never updated, so it would satisfy any append-only rule while being precisely what
+  must not sit on a table every session reads in full. A wrapped key was the second example here
+  until content-key rotation took `UPDATE (wrapped_content_key, wrapped_index_key)` on its own table;
+  it now fails an append-only screen while being not one column safer on this one. **Neither of those
   two is hypothetical any more, and both landed on tables of their own** — the recovery-code hash on
   `recovery_code_hashes`, and the wrapped key on `wrapped_account_keys`, which carries `user_id` and
   is policed by `user_isolation` with no rule added. The example stays because both arrived exactly

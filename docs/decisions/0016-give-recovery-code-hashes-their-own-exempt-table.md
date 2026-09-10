@@ -18,12 +18,17 @@ instruction for the first time, splitting a passkey's material by whether it is 
 the ceremony has produced a trusted identity: `passkey_public_keys` exempt, `passkey_signature_counters`
 policed. It also named, twice and in advance, the thing that must **not** land on the exempt table:
 
-> A wrapped key is written once at registration and never updated; a recovery-code hash likewise. Both
-> would satisfy any append-only rule perfectly, and this table — already holding key material, already
-> keyed on the credential — is the most attractive place in the schema to propose one.
+a secret that an append-only grant shape would wave straight through, on a table already holding key
+material and already keyed on the credential — the most attractive place in the schema to propose one.
 
 That hypothetical has now arrived. This decision is where it is answered, and it is answered exactly
 as those two ADRs predicted — which is the mechanism working rather than an exception to it.
+
+That sentence used to be quoted here verbatim from ADR 0012, and it is paraphrased now because the
+quotation went stale the moment its source was edited: ADR 0012 named a wrapped key alongside the
+hash, and a wrapped key stopped being write-once when content-key rotation took
+`UPDATE (wrapped_content_key, wrapped_index_key)` on `wrapped_account_keys`. A paraphrase ages
+honestly; a quotation of a living file does not, and nothing in the build would have caught it.
 
 The difficulty is that a recovery-code hash has the *same* structural property as a passkey public
 key, for a *different* reason. A code is redeemed by an **anonymous** request: somebody redeeming one
@@ -124,12 +129,12 @@ nothing checkable: "at most one set" is expressible as a partial unique index on
 row.
 
 **Put the hashes on `passkey_public_keys`.** This is the alternative ADR 0012's own written reason
-names by name as the thing that must not go there — *"a wrapped key or a recovery-code hash is written
-once and never updated, so it satisfies any append-only rule perfectly while being exactly what must
-not sit on a table every session reads in full"*. It is superficially attractive for exactly the
-reasons that ADR listed: the table already holds key material, it is already keyed on the credential,
-it is already exempt, and it already holds no `UPDATE` of any shape, so an append-only argument passes
-without a murmur. Rejected. The hazard is not mutation and never was: the exemption is argued about a
+names by name as the thing that must not go there: a recovery-code hash is written once and never
+updated, so it satisfies any append-only rule perfectly while being exactly what must not sit on a
+table every session reads in full. It is superficially attractive for exactly the reasons that ADR
+listed: the table already holds key material, it is already keyed on the credential, it is already
+exempt, and it already holds no `UPDATE` of any shape, so an append-only argument passes without a
+murmur. Rejected. The hazard is not mutation and never was: the exemption is argued about a
 query and applied to a whole table, so every column there is readable by every application session
 whatever user that session names. Putting a recovery-code hash beside a public key would also
 mis-describe both — one is the material an assertion is *checked against*, the other is a secret's

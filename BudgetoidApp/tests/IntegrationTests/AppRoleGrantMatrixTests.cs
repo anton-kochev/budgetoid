@@ -151,8 +151,11 @@ public sealed class AppRoleGrantMatrixTests
         // cannot issue the statement itself. With DELETE granted, an EF cascade into rows the change
         // tracker happens to be holding would succeed SILENTLY and the rows would leave by the
         // application instead of by the database, with no SQLSTATE to say so; without it, the same
-        // mistake dies loudly with 42501. It appears on no line of ExpectedUpdateColumnGrants either:
-        // every column is immutable, so the table holds no UPDATE of any shape — see the remarks there.
+        // mistake dies loudly with 42501. None of that is weakened by the two-column UPDATE this table
+        // now holds on ExpectedUpdateColumnGrants: a rotation rewrites the envelopes of a row that
+        // stays where it is, so it wants no DELETE and is not an argument for one — the ten factors of
+        // a replaced recovery-code set still leave by the cascade from credentials and by nothing else.
+        // See the remarks there for why that UPDATE is the only shape a rotation had available.
         ("wrapped_account_keys", ["SELECT", "INSERT"]),
         ("budgets", ["SELECT", "INSERT"]),
         ("accounts", ["SELECT", "INSERT", "DELETE"]),
@@ -168,26 +171,46 @@ public sealed class AppRoleGrantMatrixTests
     /// the whole of one <c>GRANT UPDATE (…)</c> in <c>app-role-grants.sql</c>, and every column of
     /// those tables that is <i>not</i> named here is immutable by that absence:
     /// <c>created_at_utc</c> everywhere, <c>budget_id</c> and <c>user_id</c> on every owned table,
-    /// <c>accounts.currency_code</c>, and every identity column of a session or a counter.
+    /// <c>accounts.currency_code</c>, <c>budgets.base_currency_code</c>,
+    /// <c>wrapped_account_keys.factor_id</c>, and every identity column of a session or a counter.
     /// </summary>
     /// <remarks>
     /// <para>
     /// The tables absent from this array hold no <c>UPDATE</c> grant of any shape —
     /// <c>currencies</c>, <c>credentials</c>, <c>passkey_public_keys</c>,
-    /// <c>webauthn_challenges</c>, <c>budgets</c>, <c>recovery_code_hashes</c>,
-    /// <c>wrapped_account_keys</c>, <c>session_tokens</c> and <c>__EFMigrationsHistory</c> — and their
-    /// absence is checked in
+    /// <c>webauthn_challenges</c>, <c>recovery_code_hashes</c>, <c>session_tokens</c> and
+    /// <c>__EFMigrationsHistory</c> — and their absence is checked in
     /// the same direction as everything else: a column grant appearing on one of them has no entry to
     /// match and is reported as unexpected.
     /// </para>
     /// <para>
-    /// <c>wrapped_account_keys</c> is absent for a reason of its own, and it is the reason a later
-    /// story will come here to change. Every column of that table is immutable: adding a recovery
-    /// factor writes a new row rather than editing one, so nothing on the registration or revocation
-    /// paths rewrites an envelope. A content-key rotation (FR-080) is the one operation that would,
-    /// and it will need <c>GRANT UPDATE (wrapped_content_key, wrapped_index_key)</c> and must arrive
-    /// with its own argument for it. Until then the absence is what makes an envelope rewritten in
-    /// place fail with <c>42501</c> rather than replace an account's only way back into its own data.
+    /// <c>budgets</c> is on this array for <b>one</b> column and that is the whole of the rule:
+    /// <c>name</c> is rewritten by a content-key rotation and by nothing else. Every other column is
+    /// immutable to the domain — no command changes a budget's owner, its base currency or when it was
+    /// created — and the single-column list is what keeps them that way, because the alternative
+    /// anybody reaches for is a table-wide <c>GRANT UPDATE ON budgets</c>, which would reopen all four
+    /// at once to buy the one. Nothing exercises this grant through the product today: registration
+    /// writes the nameless budget, every <c>budgets.name</c> in the database is NULL, and naming is
+    /// unbuilt — so the statement-shaped half in
+    /// <c>AppRoleGrantsTests.Database_AllowsRewritingABudgetsName_AndRefusesEveryOtherColumn</c> has to
+    /// seed a named budget to have anything to rewrite. The grant is written now because the rotation
+    /// is the reason the column exists in a writable shape at all, and adding it later is a
+    /// conversation nobody has scheduled.
+    /// </para>
+    /// <para>
+    /// <c>wrapped_account_keys</c> is here for two columns, and the in-place <c>UPDATE</c> is
+    /// <b>forced rather than chosen</b> — which is why it arrives as two envelope columns and not as a
+    /// wider list or a <c>DELETE</c>. A rotation rewrites exactly one row, the presented passkey's
+    /// envelopes, and every other shape of that write is closed: deleting the row's <c>credentials</c>
+    /// parent would destroy the passkey registration itself rather than re-wrap it; inserting a row
+    /// under a new <c>factor_id</c> and removing the old one needs the <c>DELETE</c> this table
+    /// deliberately does not hold and must never hold; and inserting without removing leaves permanent
+    /// litter on <c>GET /api/me/account-keys</c> — the one route a client opens its account through —
+    /// carrying an entry that unwraps a key nothing encrypts with any more. So the two envelope
+    /// columns are the only writable surface available, and they are the only two named:
+    /// <c>credential_id</c>, <c>user_id</c>, <c>factor_id</c>, <c>credential_type</c> and
+    /// <c>created_at_utc</c> stay off the list, and <c>factor_id</c> most of all, because it <i>is</i>
+    /// the associated data both envelopes were sealed against.
     /// </para>
     /// <para>
     /// <c>recovery_code_hashes</c> is absent for a reason of its own, and it is the reason worth
@@ -213,6 +236,24 @@ public sealed class AppRoleGrantMatrixTests
         ("users", ["email"]),
         ("sessions", ["revoked_at_utc"]),
         ("passkey_signature_counters", ["signature_counter"]),
+        // TWO columns in ONE entry, and unlike the name/name_key pairs below the pairing is not about
+        // what a domain method spells — it is about what a rotation IS. Re-wrapping an account's keys
+        // rewrites the content envelope and the index envelope together, under the same factor_id they
+        // are sealed against, so EF emits one UPDATE naming both; a grant covering one of them refuses
+        // that whole statement with 42501 and rotation becomes impossible for this role while a probe
+        // writing either column alone stays green. The remarks above argue why the in-place UPDATE is
+        // the only shape available at all. What must NOT follow from it is a DELETE on this table: the
+        // rotation needs neither, the ExpectedTableGrants line still holds the reason, and a set of
+        // recovery-code factors that is being replaced still leaves by the cascade from credentials.
+        ("wrapped_account_keys", ["wrapped_content_key", "wrapped_index_key"]),
+        // ONE column, and the entry is as much about the four columns that are not on it. FR-099 grants
+        // UPDATE on budgets.name because a content-key rotation has to re-encrypt it, and ASM-004 says
+        // in the same breath what that must not become: a table-wide grant would reopen user_id,
+        // base_currency_code, created_at_utc and id together to buy the one column somebody needed. The
+        // rule this line replaced was "a budgets row is never updated at all", so a reader arriving here
+        // from app-role-grants.sql's rule B2 or from an older test name is reading a rule that moved
+        // rather than a list that drifted.
+        ("budgets", ["name"]),
         // name_key joins name, and the two are ONE entry on this line rather than two facts that
         // happen to sit beside each other. A rename writes the sealed envelope and the blind index
         // over the same text in one UPDATE, because Account.Update takes an IndexedName and offers
