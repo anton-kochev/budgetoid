@@ -32,9 +32,12 @@ It opens from the Add button as a sheet (compact) or dialog (expanded).
 - **Amount first.** The amount field is focused on open, numeric keypad up. An
   expense/income toggle sits beside it, defaulting to expense.
 - **Everything else is pre-answered**: date pre-filled with today, account remembered
-  from last time, payee autocompletes from history (recent first), category suggests
-  the payee's last-used category. Category and payee stay optional — never block the
-  record on classification.
+  from last time, payee completes from the counterparties this browser could open,
+  ordered by name and narrowed by what has been typed (ordering them by recency is
+  work, and unreachable from any read the product has: a payee carries an id and a
+  sealed name and no timestamp, and *recently used* would need transaction history
+  besides), category suggests the payee's last-used category. Category and payee stay
+  optional — never block the record on classification.
 - Field order: amount → payee → category → account → date → note. Submit enables once
   amount and account are valid.
 - **An empty amount is not a zero.** An untouched amount field blocks submit; it never

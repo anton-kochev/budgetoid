@@ -1427,6 +1427,140 @@ describe('TransactionsService', () => {
         },
       ]);
     });
+
+    it('publishes the payee list in compareNarrative order', async () => {
+      // Arrange — four rows carrying all three of `compare-narrative.ts`'s
+      // words: two that opened, one that did not, one this browser holds no key
+      // for. The order it asks for is `text`, then `unreadable`, then `locked`,
+      // and the two opened names between themselves by `localeCompare`.
+      // A mixed list is reachable rather than exotic:
+      // lockedness is account-wide, but custody can move between the first
+      // row's open and the last one's, and `#readPayees` publishes whatever the
+      // opens came back with.
+      //
+      // The two readable names are ASCII and their relative order does not turn
+      // on collation, which is deliberate: `localeCompare` reads the host
+      // locale, nothing in this app provides `LOCALE_ID`, and the runner pins
+      // the time zone and not the locale. Measured from inside a run,
+      // `new Intl.Collator().resolvedOptions().locale` answers `en-US` on this
+      // machine — which is exactly the value a fixture may not depend on, since
+      // nothing configures it and CI is another machine. `Alpha` before `Zulu`
+      // is the same answer under every collation there is.
+      const bakeryId = '0199c3d4-5f6a-7b8c-9d0e-00000000000a';
+      const alphaId = '0199c3d4-5f6a-7b8c-9d0e-00000000000b';
+      const aardvarkId = '0199c3d4-5f6a-7b8c-9d0e-00000000000c';
+      const zuluId = '0199c3d4-5f6a-7b8c-9d0e-00000000000d';
+
+      // Which row opens to which word, keyed on the row rather than on the text
+      // — so the plaintext behind a name that never opens is a real name, and
+      // the word is what decides the row's place rather than the letters. It is
+      // also what stops the two rows that never open from being sorted by the
+      // text behind them: `Aardvark` leads this list alphabetically and comes
+      // last. Measured against this fixture, a sort on the plaintext with the
+      // word ignored answers locked, Alpha, unreadable, Zulu.
+      custody.openWith = (binding, wire) => {
+        if (binding.rowId === aardvarkId) {
+          return { state: 'locked' };
+        }
+
+        if (binding.rowId === bakeryId) {
+          return { state: 'unreadable' };
+        }
+
+        return { state: 'text', value: /\|([^|]*)\)$/.exec(wire)?.[1] ?? '' };
+      };
+      service.loadPayees();
+
+      // Act — flushed in an order that is wrong on every axis: not alphabetical
+      // (Aardvark, Zulu, Bakery, Alpha) and not identifier order (c, d, a, b),
+      // so a read publishing what the server sent and one sorting on `id` both
+      // redden here.
+      http.expectOne(PAYEES_URL).flush({
+        items: [
+          sealedPayee(aardvarkId, 'Aardvark'),
+          sealedPayee(zuluId, 'Zulu'),
+          sealedPayee(bakeryId, 'Bakery'),
+          sealedPayee(alphaId, 'Alpha'),
+        ],
+      });
+      await settle();
+
+      // Assert — on the words and their values and never on object identity.
+      // The identifier sequence this order carries is b, d, a, c: neither
+      // ascending nor descending, so a read that sorted on the id — or on the
+      // wire value, whose first varying part is that id — publishes
+      // unreadable, Alpha, locked,
+      // Zulu instead. Measured against this fixture, both do.
+      expect(service.payees()?.map((view) => view.name)).toEqual([
+        { state: 'text', value: 'Alpha' },
+        { state: 'text', value: 'Zulu' },
+        { state: 'unreadable' },
+        { state: 'locked' },
+      ]);
+    });
+
+    it('publishes a locked list in the order the response listed it', async () => {
+      // Arrange — the property `compare-narrative.ts` argues and deliberately
+      // does not branch for: on a locked account every comparison answers `0`,
+      // `Array.prototype.sort` is stable by specification, and the list a
+      // screen shows is therefore the order the API sent — insertion, or a
+      // position column — rather than a shuffle nobody chose. Adding an
+      // `if (locked) skip the sort` is how that gets lost, and so is a tiebreak.
+      //
+      // **Honest about how narrow this is.** It pins a consequence, not a
+      // branch, so almost nothing can object to it: measured, a missing
+      // comparator (`sort()` bare, which string-converts every row to
+      // `[object Object]`), a reversed comparator and a deleted sort all three
+      // publish exactly this. The one change it catches is a **tiebreak on some
+      // other key** — the well-meant "a locked list should at least be
+      // deterministic". A tiebreak written *inside* `compareNarrative` is also
+      // seen by `compare-narrative.spec.ts`'s `returns zero for two locked
+      // values`; one written in this file's `byName`, around a comparator that
+      // still answers `0`, is seen here and nowhere else.
+      //
+      // Three rows and not two, because a comparator that is not stable at all
+      // leaves a two-element array alone whatever it answers.
+      //
+      // Staged as the *opens* answering `locked`, never by moving custody's
+      // status: that signal is what the clear-on-lock effect watches, so
+      // setting it would empty the very list this case reads.
+      const thirdId = '0199c3d4-5f6a-7b8c-9d0e-000000000023';
+      const firstId = '0199c3d4-5f6a-7b8c-9d0e-000000000021';
+      const secondId = '0199c3d4-5f6a-7b8c-9d0e-000000000022';
+
+      custody.openWith = () => ({ state: 'locked' });
+      service.loadPayees();
+
+      // Act — the identifiers arrive out of ascending order, 03 then 01 then
+      // 02, and the names are out of alphabetical order beside them. Arrival
+      // order is then at odds with id order and with the wire value alike —
+      // every wire here is `sealed(payees.name|<id>|…)`, whose first varying
+      // part is that id — so a tiebreak has nowhere left to hide.
+      http.expectOne(PAYEES_URL).flush({
+        items: [
+          sealedPayee(thirdId, 'Cherry'),
+          sealedPayee(firstId, 'Apple'),
+          sealedPayee(secondId, 'Banana'),
+        ],
+      });
+      await settle();
+
+      // Assert
+      const views = service.payees() ?? [];
+
+      // The control first: one row that opened would make this a different
+      // question, and the comparison below would still pass on two of three.
+      expect(views.map((view) => view.name.state)).toEqual([
+        'locked',
+        'locked',
+        'locked',
+      ]);
+      expect(views.map((view) => view.id)).toEqual([
+        thirdId,
+        firstId,
+        secondId,
+      ]);
+    });
   });
 
   describe('writing a transaction', () => {
@@ -2156,6 +2290,123 @@ describe('TransactionsService', () => {
           name: { state: 'text', value: 'Bakery' },
           nameKey: indexValue('payees', 'name', BUDGET_ID, 'Bakery'),
         },
+      ]);
+    });
+
+    it('puts a created payee in its sorted place rather than at the end', async () => {
+      // Arrange — the read answers **Zulu before Alpha**, so the list this case
+      // publishes is alphabetical only if something sorted it.
+      //
+      // **On the question of which of the two sites sorts, this case covers the
+      // create path and the read case next door covers the read path — one
+      // each, and neither covers the other's.** Measured, strictly 1:1: taking
+      // the sort out of `#readPayees` alone reddens `publishes the payee list
+      // in compareNarrative order` and leaves this case passing; taking it out
+      // of the create path alone reddens this case and leaves that one passing.
+      // It can never be otherwise, and no fixture changes it: the create path
+      // re-sorts the **whole** list, so it launders an unsorted held list
+      // before the ordering assertion below ever reads it. That re-sort is
+      // required — an insertion at an index computed there would be a second
+      // implementation of the ordering — so the laundering is a property of the
+      // code under test, not of the arrangement above.
+      //
+      // **One row on the read never opens, and it is what makes the *word*
+      // ranking load-bearing on this path.** Without it this case pins only
+      // that the create path sorts *something*. Measured against the two-row,
+      // all-readable fixture it used to carry: a sort on `nameKey`, a sort that
+      // ignores the word and reads the plaintext, and an insertion at a
+      // computed index all three publish exactly what `compareNarrative`
+      // publishes.
+      //
+      // **What that row bought is one axis of comparator variation out of
+      // three.** Measured against the fixture below, with the change confined
+      // to this path: a comparator that reads the plaintext and ignores the
+      // word now reddens; one with the `unreadable` and `locked` ranks swapped
+      // does not, because this fixture holds no `locked` row; one with an `id`
+      // tiebreak does not, because no two rows here compare equal.
+      //
+      // Confining a change to this path at all means splitting `byName` in two,
+      // and the *unconfined* versions of those two are held: the rank order by
+      // `publishes the payee list in compareNarrative order` and by
+      // `compare-narrative.spec.ts`, a tiebreak inside the comparator by
+      // `compare-narrative.spec.ts` and one in `byName` by `publishes a locked
+      // list in the order the response listed it`. What no case anywhere sees
+      // is a create-path-only change on either axis. That is a limit worth
+      // naming rather than a gap worth closing: staging a `locked` row on this
+      // path would be stub artifice, for the reason the next paragraph gives.
+      //
+      // **`unreadable` rather than `locked`**, deliberately: a create has to
+      // seal a name and index it, so custody is open for the whole of this
+      // sequence, and one value that failed to open is the honest shape beside
+      // it. A `locked` row here would be a state this sequence cannot be in —
+      // stub artifice, standing in for the account-wide word.
+      //
+      // Each of the three now disagrees, and for its own reason. The row that
+      // did not open carries a real name, `Mango`, which sorts **in among** the
+      // readable ones — so a comparator reading the plaintext and ignoring the
+      // word puts it second where the ordering puts it last. It carries no key
+      // at all: `toPayeeView` keys nothing it could not read, so `nameKey` is
+      // `null` there, `left.nameKey.localeCompare(…)` does not even compile
+      // (TS18047), and the `?? ''` that does sorts the row to the front. And
+      // the created name sorts **after** every readable one, which is the
+      // position a computed index gets wrong — it finds no readable row to go
+      // in front of and appends, past the row that belongs last.
+      //
+      // **No second `GET /api/payees` is flushed anywhere below**, and that is
+      // the guard this case shares with `adds a created payee to the list it
+      // holds` next door: `afterEach`'s `http.verify()` refuses a request
+      // nobody expected, so an append "simplified" into a re-read — which would
+      // also publish a sorted list, and would otherwise take both cases quietly
+      // with it — fails rather than passing for the wrong reason.
+      const zuluId = '0199c3d4-5f6a-7b8c-9d0e-00000000001c';
+      const alphaId = '0199c3d4-5f6a-7b8c-9d0e-00000000001a';
+      const unopenedId = '0199c3d4-5f6a-7b8c-9d0e-00000000001b';
+
+      // Keyed on the row and not on the text, so the plaintext behind the value
+      // that never opens is a real name rather than a marker — which is what
+      // lets a comparator reading it sort the row somewhere plausible.
+      custody.openWith = (binding, wire) =>
+        binding.rowId === unopenedId
+          ? { state: 'unreadable' }
+          : { state: 'text', value: /\|([^|]*)\)$/.exec(wire)?.[1] ?? '' };
+
+      await loadPayees(
+        sealedPayee(zuluId, 'Zulu'),
+        sealedPayee(alphaId, 'Alpha'),
+        sealedPayee(unopenedId, 'Mango'),
+      );
+
+      // Act — a fourth counterparty, through the same 201 sequence the append
+      // case uses. Appending puts it after the row that did not open, where the
+      // list stays wrong until the next read hides it again.
+      void service.add(typed({ payee: 'Zurich' }));
+      await settle();
+
+      const create = http.expectOne(PAYEES_URL);
+      const created = create.request.body as { id: string };
+
+      create.flush(sealedPayee(created.id, 'Zurich'), {
+        status: 201,
+        statusText: 'Created',
+      });
+      await settle();
+      http
+        .expectOne(TRANSACTIONS_URL)
+        .flush(sealedTransaction(), { status: 201, statusText: 'Created' });
+      await settle();
+      http.expectOne(TRANSACTIONS_URL).flush({ items: [] });
+      await settle();
+
+      // Assert — the whole published sequence, because where the new row landed
+      // is only legible against its neighbours. Four ASCII names, whose
+      // relative order is the same answer under every collation there is: the
+      // runner pins the time zone and not the locale, and `localeCompare` reads
+      // the host's.
+      expect(service.payees()?.map((view) => view.name)).toEqual([
+        { state: 'text', value: 'Alpha' },
+        { state: 'text', value: 'Zulu' },
+        { state: 'text', value: 'Zurich' },
+        { state: 'unreadable' },
       ]);
     });
 

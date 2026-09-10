@@ -1869,11 +1869,14 @@ it is what is holding the rule, because the next screen may not get it for free.
 
 ### Ordering falls out, and is not special-cased
 
-Lists sort through `compareNarrative`: opened text first, then unreadable, then locked. On a locked
-account every value is `locked`, every comparison answers 0, and a stable sort leaves the order the
-rows arrived in. That is the correct behaviour and it is a **consequence** of the ordering rather
-than a branch anybody wrote. Do not add a "if locked, skip sorting" case; there is nothing for it to
-do.
+Lists sort through `compareNarrative`: opened text first, then unreadable, then locked. **Which
+lists those are is narrower than that sentence sounds** — the accounts list and the payee
+suggestions order by name through it, while the categories and their groups order on `position`, a
+plaintext column their owner arranges by hand, and must never be "corrected" into sorting by name.
+On a locked account every value is `locked`, every comparison answers 0, and a stable sort leaves
+the order the rows arrived in. That is the correct behaviour and it is a **consequence** of the
+ordering rather than a branch anybody wrote. Do not add a "if locked, skip sorting" case; there is
+nothing for it to do.
 
 Written down and deliberately not fixed: two opened names compare with `localeCompare`, which reads
 the host's locale, and nothing in this app provides `LOCALE_ID`.

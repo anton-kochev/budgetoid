@@ -767,8 +767,12 @@ up.
 - **Angular client**: `/app/transactions` shows the payee field as a free-text input with a Material
   autocomplete over `GET /api/payees`, and it is **on the sealed contract**. The browser opens each
   payee name, recomputes its blind index — no read returns one, which is precisely why that
-  recomputation exists — and matches the typed name **against the index and never against the
-  decrypted text**, so the local match and the server's unique index are decided by the same bytes.
+  recomputation exists — and **resolves** the typed counterparty against the index and never against
+  the decrypted text, so the local match and the server's unique index are decided by the same bytes.
+  That is the **resolution** and not the suggestion filter beside it, which does read the decrypted
+  text and normalizes it differently — a divergence argued under
+  [Edge Cases](#edge-cases--known-gotchas) and one that can hide a suggestion without ever costing a
+  row.
   No match mints a row id, seals the name and calls `POST /api/payees` before the transaction is
   posted.
 
@@ -851,7 +855,19 @@ up.
   different preference: over a `bytea` column the sort key after the version byte is the **nonce**,
   freshly drawn on every seal, so the list would be stable within one read and reshuffled by every
   save, and no order a person recognises would ever come back. A name order can be restored only by
-  the client, which is the only side holding the text.
+  the client, which is the only side holding the text — **and the client restores it at every site
+  that publishes the list, rather than at the obvious one.** `TransactionsService` orders through
+  `compareNarrative`, by way of its own `byName` helper, in `#readPayees` — over the views that read
+  had opened, and above the generation check, so the list it publishes and the list it hands the
+  conflict branch are one value — and again in the `#payees.update` inside `#createPayee`, which
+  re-sorts the whole list after appending the payee it has just created. Sorting one and not the
+  other is the half-done implementation that "the client sorts" cannot be told apart from: the list
+  is alphabetical until somebody records a transaction naming a new counterparty, wrong from that
+  moment, and right again after the next read — a defect that repairs itself before anybody can
+  point at it. The append re-sorts rather than splicing at a computed index, because an index is a
+  second implementation of the ordering and agrees with the comparator only while the held list is
+  already sorted — and on a locked account every comparison answers `0`, so the held order is
+  arrival order and a computed position means nothing.
   `PayeeIntegrationTests.GetPayees_OrdersByTheCreationInstantAndNotByInsertionOrder` is the case, and
   **its seed is the whole test**: a row written over HTTP takes its instant from the handler's clock
   and its **id from the request body**, so an ordinary seed leaves insertion order, id order and
@@ -874,7 +890,38 @@ up.
   nobody reads would hand every caller a deterministic per-budget fingerprint of every counterparty
   name — the one property of the pair that survives having no key — and on this table that is the
   worst of the eight columns to offer, because a payee list is the set of people one person deals
-  with. Anything that sorts, searches or groups `name` client-side is sorting ciphertext.
+  with. Anything that sorts, searches or groups **`PayeeDto.name`** is sorting ciphertext — the
+  member and not the side. A client that has opened the list is sorting *names*, on the opened text
+  through `compareNarrative`, and matching on the index it recomputed under its own key; neither of
+  those is that member, and neither is available to anything holding only what the wire carried.
+
+- **The type-ahead and the blind index normalize differently, so a suggestion can be missing for a
+  counterparty the database and the index both consider one.** The suggestion panel filters by
+  trimming and lower-casing what has been typed and asking whether a lower-cased opened name
+  *contains* it. The match that decides one-row-per-counterparty does something else entirely: it
+  runs the index normalization — trim, NFKC, **full** case fold, UTF-8 — and compares the digest
+  taken over the result. A lower-case mapping is not a fold and there is no NFKC in front of it, so a
+  name spelled with the `ﬁ` ligature is not surfaced by typing `fi`, though the two normalize to one
+  message, key to one value, and are one row to `IX_payees_budget_id_name_key`. `ß` against `ss` and
+  the Cherokee case pairs are the same divergence by other characters.
+  - **It is documented and not fixed, deliberately, and the reason is the shape of the module rather
+    than the size of the job.** `normalizeNameForIndex` answers **bytes** — the next thing that
+    happens to its output is a MAC — and its own head forbids any caller but the blind index;
+    `foldCase` states that folding on its own is not a name key and must not be used as one, since
+    without the NFKC in front of it `ﬁlm` and `film` stay two names. A filter that reproduced the
+    fold for itself would be a second implementation of the one transform those modules exist to keep
+    singular, and that is the mistake with no repair: two clients keying one name to two values
+    produce a duplicate that never merges, and **a blind index cannot be recomputed after the fact**,
+    because the plaintext behind it is encrypted.
+  - **What it costs is a suggestion and never a row.** Somebody who types the other spelling and
+    submits still resolves against the index: the browser folds and indexes what was typed, finds the
+    existing row in the list it holds, and the transaction names that payee. The divergence can hide
+    a suggestion; it cannot create a duplicate counterparty, because the value the match is decided
+    on is the value the unique index is decided on.
+  - **Closing it properly means a filter fed by the same normalization**, which means that module
+    handing back text as well as bytes — a second export, argued at the module, rather than a copy of
+    the transform anywhere else. That is work, and naming it here is what keeps the gap from reading
+    as an oversight.
 
 - **Two different code paths encode the same envelope, and only one case compares them.** The 201
   body comes from `PayeeDto.FromPayee` over the entity the handler just wrote; every other payee read

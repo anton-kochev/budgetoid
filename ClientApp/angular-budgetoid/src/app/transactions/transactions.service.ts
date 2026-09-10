@@ -223,6 +223,7 @@ import type {
   NarrativeOpener,
 } from '@app-core/security/narrative-text';
 import { SessionService } from '@app-core/session/session.service';
+import { compareNarrative } from '@app-shared/compare-narrative';
 import {
   EMPTY,
   Observable,
@@ -310,6 +311,20 @@ type PayeeRead =
 interface DraftPayee {
   readonly id: string;
   readonly nameKey: string;
+}
+
+// A second local copy of `accounts.service.ts`'s helper rather than one shared
+// from `+shared/`: a generic version would type-check against `CategoryView`
+// and `CategoryGroupView`, which carry a server-owned `position` somebody
+// arranged by hand and must not be sorted by name — and a helper a file must
+// not use should not be reachable from it. `compare-narrative.ts` argues the
+// ordering and what it answers on a locked account.
+function byName(views: readonly PayeeView[]): PayeeView[] {
+  // A copy, because `sort` mutates and the array it is handed may be the one a
+  // signal is already publishing.
+  return [...views].sort((left, right) =>
+    compareNarrative(left.name, right.name),
+  );
 }
 
 @Injectable({ providedIn: 'root' })
@@ -819,14 +834,21 @@ export class TransactionsService {
         // offer one suggestion as though it held the set.
         payees === null
           ? payees
-          : [
+          : // The whole list re-sorted, and never an insertion at an index
+            // computed here: an index is a second implementation of the
+            // ordering, and it agrees with `compareNarrative` only while the
+            // held list is already sorted. On a locked account that comparator
+            // answers `0` for every pair, so the held order is arrival order
+            // and a computed position means nothing. `#readPayees` sorts what
+            // it reads through the same helper; this is the other site.
+            byName([
               ...payees,
               {
                 id: created.id,
                 name: { state: 'text', value: plaintext },
                 nameKey: nameKey.value,
               },
-            ],
+            ]),
       );
 
       return { state: 'resolved', id: created.id };
@@ -935,9 +957,15 @@ export class TransactionsService {
       // browser has been told, and `payee-view.ts` argues why a list of rows
       // carrying no key can never reach a create.
       const budgetId = this.#session.budgetId();
-      const views = await Promise.all(
-        response.items.map((dto) =>
-          toPayeeView(dto, budgetId, this.#open, this.#index),
+      // Ordered above the generation check, so the list this read publishes and
+      // the list it answers with are the one value: the conflict path matches
+      // against what comes back, and a sort applied to only one of the two
+      // would be two answers to one question.
+      const views = byName(
+        await Promise.all(
+          response.items.map((dto) =>
+            toPayeeView(dto, budgetId, this.#open, this.#index),
+          ),
         ),
       );
 
