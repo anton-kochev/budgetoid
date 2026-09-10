@@ -140,11 +140,14 @@ because every one of these is something a reader will otherwise simplify away.
 - **The export refuses rather than truncates** — it throws unless the owned set is *exactly* the
   ambient budget, **set equality in both directions**. Do not simplify to `Count > 1`.
   [export.md](docs/business-logic/export.md)
-- **Five list reads are delivered whole** — payees, accounts, categories, category groups and
-  currencies take no page, cursor, filter or search term, because the client orders and filters
-  them itself. Paginate one and the client sorts each page independently, with nothing thrown and
-  nothing logged. **The four reasons differ per list and the transaction list is outside the gate
-  by decision**, so do not flatten them. [whole list reads](docs/engineering/whole-list-reads.md)
+- **Seven list reads are delivered whole** — no page, no cursor, no filter, no search term.
+  **Their reasons differ and must not be flattened into one**: payees and accounts have no
+  server-side name order to fall back on, categories and their groups are a tree whose positions
+  are relative to the whole set, currencies are a bounded reference set, and the credential and
+  passkey-handle reads are account control — truncate the latter and an authenticator enrols a
+  duplicate. **The transaction list is outside the gate by decision**, because it orders by date
+  and pagination for it is planned. Read the chapter for what the gate does *not* reach, which is
+  most of what matters. [whole list reads](docs/engineering/whole-list-reads.md)
 - `SessionContextInterceptor` must stay a **connection-opened** interceptor, and
   `No Reset On Close=true` / `Multiplexing=true` are forbidden in any connection string.
   [ADR 0008](docs/decisions/0008-read-the-ambient-budget-inside-the-policy.md)

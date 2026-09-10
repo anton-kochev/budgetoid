@@ -1,4 +1,5 @@
 using System.Reflection;
+using Application.Abstractions;
 using Application.AccountKeys;
 using Application.Accounts;
 using Application.Accounts.GetAccounts;
@@ -8,11 +9,14 @@ using Application.CategoryGroups;
 using Application.CategoryGroups.GetCategoryGroups;
 using Application.Currencies;
 using Application.Currencies.GetCurrencies;
+using Application.Passkeys.BeginRegistration;
 using Application.Payees;
 using Application.Payees.GetPayees;
 using Application.Transactions;
 using Application.Users;
 using Application.Users.ExportData;
+using Application.Users.ListCredentials;
+using Domain.Users;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
@@ -30,77 +34,171 @@ namespace IntegrationTests;
 /// may later hand back a window of.
 /// </summary>
 /// <remarks>
-/// No member of this enum is zero, so the CLR's <c>default</c> is not a disposition. Paired with
+/// No member is zero, so the CLR's <c>default</c> is not a disposition. Paired with
 /// <see cref="ListReadRow.Delivery" /> having no default value, that is what stops a row nobody decided
-/// about from compiling into existence: the author has to type one of these three words, and
-/// <c>EveryRow_CarriesItsOwnReasonAndARouteOnlyWhenGated</c> refuses an undefined value besides.
+/// about from compiling into existence.
 /// </remarks>
 public enum ListDelivery
 {
     /// <summary>
-    /// Held by this gate. The read takes nothing but a cancellation token, its query asks for nothing,
-    /// its response is one list, and its route binds nothing but its handler.
+    /// Held by this gate. The read offers a caller no way to ask for less than everything, and the
+    /// place its list lands — a route's response, or the member carrying it — is one list and nothing
+    /// else.
     /// </summary>
     DeliveredWhole = 1,
 
     /// <summary>
-    /// Outside the gate because the read is keyed on an owner rather than on the ambient budget. Its
-    /// wholeness, where it matters, is held by a stronger rule somewhere else.
+    /// Whole today, and held that way somewhere stronger than this file could hold it. Restating such
+    /// a rule here would put a weaker sentence on top of a stronger one, and the weaker one is what a
+    /// later reader quotes.
     /// </summary>
-    ScopedByOwner = 2,
+    HeldElsewhere = 2,
 
-    /// <summary>
-    /// Whole today, and deliberately not held that way. The server can order this list on a column it
-    /// can read, so a page of it is stable, and paging it is a change the product intends to make.
-    /// </summary>
+    /// <summary>Whole today, and deliberately not held. Paging it is a change the product intends.</summary>
     PageableLater = 3,
 }
 
 /// <summary>
-/// The route a delivered-whole read is served over, and the three types the assertions read.
+/// The kind of argument a row makes, as a closed tag rather than as prose.
 /// </summary>
-/// <param name="Pattern">
-/// The endpoint's <c>RoutePattern.RawText</c> exactly. A group prefix plus <c>MapGet("/")</c> produces a
-/// <b>trailing slash</b> — <c>/api/accounts/</c>, not <c>/api/accounts</c> — which is measured rather
-/// than assumed, and a pattern nothing answers to is reported rather than skipped.
-/// </param>
-/// <param name="Handler">The one type the route's delegate may bind besides a cancellation token.</param>
-/// <param name="Query">The query record the handler takes; it must declare no properties.</param>
-/// <param name="Response">The response record the handler returns; it must be exactly one list.</param>
-public sealed record GatedRoute(string Pattern, Type Handler, Type Query, Type Response);
+/// <remarks>
+/// <para>
+/// <b>This member exists because the guard it replaces was worse than nothing.</b> What stood here was
+/// a rule that every row's <see cref="ListReadRow.Reason" /> be distinct, which gave two rows that
+/// genuinely share one argument no legal way to say so — and on its first outing it made an author
+/// manufacture a difference that was not there. The prose is still per row and still has to be
+/// non-trivial; what it no longer has to be is <em>unique</em>.
+/// </para>
+/// <para>
+/// <b>What holds the paste instead is coverage.</b> The set is closed and every member of it must be
+/// claimed by at least one row, so tagging the whole table with one family leaves the rest unclaimed
+/// and goes red. The escape is to delete a family from this enum — a visible edit a reviewer weighs.
+/// The limit: nothing machine-checkable holds a row's prose against the family it claims, because a
+/// keyword rule over free prose is satisfied by pasting the keyword.
+/// </para>
+/// </remarks>
+public enum ReasonFamily
+{
+    /// <summary>No server-side name order exists, because the name column is a sealed envelope.</summary>
+    SealedNarrativeName = 1,
+
+    /// <summary>A page would be stable; what it breaks is a tree relative to the whole set.</summary>
+    WholeTree = 2,
+
+    /// <summary>A bounded reference set belonging to no tenant, which nobody's data grows.</summary>
+    BoundedReferenceSet = 3,
+
+    /// <summary>A window of it silently removes a person's control of their own account.</summary>
+    AccountControl = 4,
+
+    /// <summary>Stably ordered, with nothing rendered relative to the rest of the set.</summary>
+    StablyOrderable = 5,
+
+    /// <summary>The wholeness is held by a rule outside this file, and a stronger one.</summary>
+    HeldByAStrongerRule = 6,
+}
 
 /// <summary>
-/// One list read, its disposition, and the sentence a person wrote for <b>that</b> read.
+/// What the member takes besides its cancellation token, declared rather than derived.
 /// </summary>
-/// <param name="ReadService">The interface exactly as the Application assembly declares it.</param>
+/// <remarks>
+/// <b>Declared, because deriving it opens the hole this gate is about.</b> Were the rule merely "every
+/// parameter is a <see cref="Guid" /> or a cancellation token", then <c>GetAllAsync(Guid afterId)</c> —
+/// a keyset cursor, which is pagination — would satisfy it on the ambient reads that take nothing
+/// today. Declaring <see cref="TakesNothing" /> on those rows is what makes that parameter red. The
+/// limit, and it is real: a <see cref="Guid" /> cursor is indistinguishable by type from an owner key,
+/// so a row declaring <see cref="KeyedOnAnAccount" /> accepts either, and
+/// <c>ContractClassifiers_NameAPageAndCannotTellACursorFromAnOwner</c> demonstrates exactly that. What
+/// the declaration buys is that the escape costs an edit to this column, beside the parameter.
+/// </remarks>
+public enum ListKeying
+{
+    /// <summary>Nothing at all, so no caller names anything to read the list.</summary>
+    TakesNothing = 1,
+
+    /// <summary>
+    /// One <see cref="Guid" /> naming the account whose rows these are, put there by the server from
+    /// an established identity rather than by the caller.
+    /// </summary>
+    KeyedOnAnAccount = 2,
+}
+
+/// <summary>
+/// Where a delivered-whole read's list actually lands, as a closed pair of cases.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <b>Two cases rather than a nullable route, because a route-less gated read is real.</b>
+/// <c>IPasskeyRepository.ListWebAuthnCredentialIdsForUserAsync</c> is reached over no route of its
+/// own — it feeds <c>excludeCredentials</c> inside the registration ceremony — and tying "delivered
+/// whole" to "has a route" would have forced whoever added it to invent a route or drop the row.
+/// </para>
+/// <para>
+/// <b>Neither case can be satisfied by a value that is merely typed in.</b> A
+/// <see cref="ServedOverARoute" /> pattern nothing answers to is reported rather than skipped, and a
+/// <see cref="ReachedFromInsideTheServer" /> carrier must name a property that exists and is a list.
+/// That is the difference from the reason guard this file used to carry: there the manufactured value
+/// was unverifiable prose, and here there is nothing to manufacture that passes.
+/// </para>
+/// </remarks>
+public abstract record ListSurface
+{
+    private ListSurface()
+    {
+    }
+
+    /// <summary>Served over one GET route.</summary>
+    /// <param name="Pattern">
+    /// The endpoint's <c>RoutePattern.RawText</c> exactly. A group prefix plus <c>MapGet("/")</c>
+    /// produces a <b>trailing slash</b> — <c>/api/accounts/</c>, not <c>/api/accounts</c> — which is
+    /// measured rather than assumed.
+    /// </param>
+    /// <param name="Handler">
+    /// The one type the route's delegate may bind besides a cancellation token, and the type the query
+    /// and the response are <b>read from</b> rather than typed beside.
+    /// </param>
+    public sealed record ServedOverARoute(string Pattern, Type Handler) : ListSurface;
+
+    /// <summary>Reached over no route; the list is consumed inside the server.</summary>
+    /// <param name="Carrier">The type the list lands on.</param>
+    /// <param name="Member">
+    /// The property of <paramref name="Carrier" /> holding it, which must exist and must be an
+    /// <see cref="IReadOnlyList{T}" /> — the same thing a routed row's response is held to.
+    /// </param>
+    public sealed record ReachedFromInsideTheServer(Type Carrier, string Member) : ListSurface;
+}
+
+/// <summary>
+/// One list read, its disposition, the kind of argument that disposition rests on, what it takes, the
+/// sentence a person wrote for <b>that</b> read, and where its list lands.
+/// </summary>
+/// <param name="ReadService">The interface exactly as its assembly declares it.</param>
 /// <param name="Member">The member name; a spelling nothing answers to is reported by the census.</param>
 /// <param name="Delivery">
 /// What this list is. <b>No default value</b>, so the disposition cannot be inherited by silence.
 /// </param>
+/// <param name="Family">The kind of argument, closed and checked for coverage.</param>
+/// <param name="Keying">What the member takes besides a cancellation token.</param>
 /// <param name="Reason">
-/// Why <em>this</em> list has <em>that</em> disposition, in this row's own words. The four families of
-/// reason in play are genuinely different — no server-side name order exists at all; a tree's positions
-/// are relative to the whole set; a bounded reference set; an orderable column that can page stably —
-/// so one sentence pasted across the rows would make the table claim less than it appears to. Required
-/// to be non-trivial and <b>distinct across the table</b>, which is what stops the paste.
+/// Why <em>this</em> list has <em>that</em> disposition, in this row's own words. Required to be
+/// non-trivial and <b>not</b> required to be unique — see <see cref="ReasonFamily" /> for why the
+/// uniqueness rule was removed.
 /// </param>
-/// <param name="Route">
-/// The route half, present exactly when <paramref name="Delivery" /> is
-/// <see cref="ListDelivery.DeliveredWhole" />. A gated row missing it would skip Layer B in silence,
-/// and <c>EveryRow_CarriesItsOwnReasonAndARouteOnlyWhenGated</c> refuses that pairing in both
-/// directions. What that pairing cannot see is a row <b>demoted</b> out of
-/// <see cref="ListDelivery.DeliveredWhole" />: the two halves are compared to each other, so dropping
-/// the route beside the disposition satisfies it, and every assertion downstream filters on
-/// <see cref="ListDelivery.DeliveredWhole" /> first — the row leaves both layers together. The gated
-/// set is therefore pinned by name in
-/// <c>DeliveredWholeReads_AreExactlyTheSetThisFileNames</c>, which is what makes a demotion audible.
+/// <param name="Surface">
+/// Present exactly when <paramref name="Delivery" /> is <see cref="ListDelivery.DeliveredWhole" />, in
+/// both directions. That pairing compares the two halves to each other, so it cannot see a row
+/// <b>demoted</b> out of the gate with its surface dropped in the same edit;
+/// <c>DeliveredWholeReads_AreExactlyTheSetThisFileNames</c> is what catches that, and it pins the
+/// surface beside the key so a routed row quietly becoming a route-less one moves it too.
 /// </param>
 public sealed record ListReadRow(
     Type ReadService,
     string Member,
     ListDelivery Delivery,
+    ReasonFamily Family,
+    ListKeying Keying,
     string Reason,
-    GatedRoute? Route = null);
+    ListSurface? Surface = null);
 
 /// <summary>
 /// Every discovered list read sorted by how many rows claim it, plus the rows naming nothing.
@@ -131,42 +229,35 @@ public sealed record ListReadCensus(
 
 /// <summary>
 /// Holds that the list reads this product delivers <b>whole</b> stay whole — no page, no cursor, no
-/// filter, no search term — at the Application contract and again at the route table.
+/// filter, no search term — at the contract that declares them and again where their list lands.
 /// </summary>
 /// <remarks>
 /// <para>
 /// <b>The argument is in <c>docs/engineering/whole-list-reads.md</c></b> — the failure this exists for
-/// and why it has no symptom a person would recognise as pagination, the four families of reason, what
-/// neither layer reaches, and why the table below is deliberately editable. Read that chapter before
-/// promoting a row into the gate or demoting one out of it. What is kept here is what a reader of
-/// <em>this file</em> needs and the chapter does not carry.
+/// and why it has no symptom a person would recognise as pagination, what neither layer reaches, and
+/// why the table below is deliberately editable. Read that chapter before promoting a row into the
+/// gate or demoting one out of it. What is kept here is what a reader of <em>this file</em> needs and
+/// the chapter does not carry.
 /// </para>
 /// <para>
-/// <b>Do not paste one sentence across the rows below.</b> The four reasons are genuinely different:
-/// no server-side <em>name</em> order exists for payees or accounts, which is exactly why
-/// <c>AccountReadService</c> orders by the creation instant instead; categories and category groups
-/// order by a readable integer and are gated for the shape of the tree that is rendered; currencies are
-/// a bounded reference set; and the transaction list is whole today and deliberately outside the gate.
-/// Each row argues its own case in its own <see cref="ListReadRow.Reason" />, and
-/// <c>EveryRow_CarriesItsOwnReasonAndARouteOnlyWhenGated</c> refuses two rows that share one.
+/// <b>Which interfaces are swept, and why it is not just the <c>ReadService</c> suffix</b>, is argued
+/// on <c>WholeListDelivery.ReadSurface</c>.
 /// </para>
 /// <para>
-/// <b>Reading a red run here.</b> Nothing in this file reaches a database: Layer A is pure reflection,
-/// and Layer B boots <see cref="ApiFactory" /> in <c>Production</c> over a bogus connection string and
-/// reads the route table without making a request, the way <see cref="CompositionBoundaryTests" /> does.
-/// A connect timeout is therefore a finding about this file rather than the suite's usual load noise.
-/// Layer B is also why both layers live in the integration project — <c>tests/UnitTests</c> holds no
-/// reference to Api, and the absence is a pinned row in <c>ProjectReferenceGraphTests</c>.
+/// <b>Reading a red run here.</b> Nothing in this file reaches a database: the contract layer is pure
+/// reflection, and the route layer boots <see cref="ApiFactory" /> in <c>Production</c> over a bogus
+/// connection string and reads the route table without making a request, the way
+/// <see cref="CompositionBoundaryTests" /> does. A connect timeout is therefore a finding about this
+/// file rather than the suite's usual load noise. That layer is also why both live in the integration
+/// project — <c>tests/UnitTests</c> holds no reference to Api, and the absence is a pinned row in
+/// <c>ProjectReferenceGraphTests</c>.
 /// </para>
 /// <para>
-/// <b>The synthetic controls, which ship permanently rather than being run once and reverted.</b> Every
-/// live assertion has one beside it, because a reflection query that silently returned nothing satisfies
-/// every emptiness assertion while inspecting nothing at all:
-/// <c>NarrowingParameters_NamesTheParameterOfAPagedRead</c>,
+/// <b>The synthetic controls, which ship permanently rather than being run once and reverted.</b> A
+/// reflection query that silently returned nothing satisfies every emptiness assertion while inspecting
+/// nothing at all, so the classifiers are demonstrated against input built here:
+/// <c>ContractClassifiers_NameAPageAndCannotTellACursorFromAnOwner</c>,
 /// <c>Census_ReportsADiscoveredReadInNoRow</c>, <c>Census_ReportsARowNoMemberAnswersTo</c>,
-/// <c>Census_AcceptsAReadClaimedByExactlyOneRow</c>,
-/// <c>EveryListRead_ClassifiedAgainstAnEmptyTable_ComesBackUnclassified</c>,
-/// <c>UnexpectedBindings_NamesAPagingParameterOnARoute</c>,
 /// <c>UnexpectedBindings_NamesBothMembersOfAnAsParametersStruct</c> and
 /// <c>UnexpectedBindings_NamesAQueryAHeaderAndANullableOptionalParameter</c>.
 /// </para>
@@ -174,11 +265,11 @@ public sealed record ListReadCensus(
 public sealed class WholeListDeliveryTests
 {
     /// <summary>
-    /// Every list read the Application assembly declares, with the disposition a person gave it.
+    /// Every list read the swept ports declare, with the disposition a person gave it.
     /// </summary>
     /// <remarks>
-    /// Nine rows, matching the nine members discovery finds. Five are gated; one is whole and
-    /// deliberately not gated; three are keyed on an owner rather than on the ambient budget. Read each
+    /// Ten rows, matching the ten members discovery finds. Seven are gated; one is whole and
+    /// deliberately not gated; two are held by a stronger rule elsewhere. Read each
     /// <see cref="ListReadRow.Reason" /> rather than the bucket name — that is the member that stops
     /// this table from meaning less than it says.
     /// </remarks>
@@ -188,6 +279,8 @@ public sealed class WholeListDeliveryTests
             typeof(IPayeeReadService),
             nameof(IPayeeReadService.GetAllAsync),
             ListDelivery.DeliveredWhole,
+            ReasonFamily.SealedNarrativeName,
+            ListKeying.TakesNothing,
             "Only the client can order this list, because no server-side name order exists at all: "
             + "payees.name is an AEAD envelope drawn under a fresh nonce, so the first differing byte "
             + "of two seals is nonce rather than text and an ordering by it reshuffles on every "
@@ -195,125 +288,145 @@ public sealed class WholeListDeliveryTests
             + "client resolves a counterparty against before it posts a transaction, so a name missing "
             + "from the page it was handed reads as a payee that must be created, and the create "
             + "collides on IX_payees_budget_id_name_key.",
-            new GatedRoute(
-                "/api/payees/",
-                typeof(GetPayeesHandler),
-                typeof(GetPayeesQuery),
-                typeof(PayeeListResponse))),
+            new ListSurface.ServedOverARoute("/api/payees/", typeof(GetPayeesHandler))),
         new(
             typeof(IAccountReadService),
             nameof(IAccountReadService.GetAllAsync),
             ListDelivery.DeliveredWhole,
-            "The payees argument applies — accounts.name is an envelope under a fresh nonce, so "
-            + "AccountReadService deleted the orderby account.Name it used to carry and orders by the "
-            + "creation instant instead — and this read carries a second half payees does not: the "
-            + "client sorts accounts by the OPENED name today, in the byName helper of "
-            + "accounts.service.ts. So a page boundary here does not merely forbid a future screen, it "
-            + "breaks one that ships: each page would be sorted independently and the merged list "
-            + "would be in no order a person recognises, with nothing thrown and nothing logged.",
-            new GatedRoute(
-                "/api/accounts/",
-                typeof(GetAccountsHandler),
-                typeof(GetAccountsQuery),
-                typeof(AccountListResponse))),
+            ReasonFamily.SealedNarrativeName,
+            ListKeying.TakesNothing,
+            "The payees argument, sharing its family because it is the same argument and not a second "
+            + "one: accounts.name is an envelope under a fresh nonce, so AccountReadService deleted "
+            + "the orderby account.Name it used to carry and orders by CreatedAtUtc then Id instead. "
+            + "The client sorts the opened names itself, and accounts and payees sort through the "
+            + "SAME CODE — accounts.service.ts and transactions.service.ts each hand their rows to "
+            + "sortByNarrativeName in +shared/, one function rather than a copy apiece, and that "
+            + "function is the one place the product calls compareNarrative. Two lists ordered by "
+            + "one body is why this row shares a family instead of arguing the case twice. So a page "
+            + "boundary hands each page to a sort that cannot see the others, and the merged list "
+            + "comes out in no order a person recognises, with nothing thrown and nothing logged.",
+            new ListSurface.ServedOverARoute("/api/accounts/", typeof(GetAccountsHandler))),
         new(
             typeof(ICategoryGroupReadService),
             nameof(ICategoryGroupReadService.GetAllAsync),
             ListDelivery.DeliveredWhole,
+            ReasonFamily.WholeTree,
+            ListKeying.TakesNothing,
             "NOT the ordering argument, and a reader who assumes it is will widen this row wrongly. "
             + "category_groups.position is a readable integer and CategoryGroupReadService does order "
             + "by it, so a page of this list would be perfectly stable. The reason is what is rendered: "
             + "the categories screen draws one tree whose group positions are relative to the ENTIRE "
             + "set, so a page boundary splits the tree and leaves the client arranging branches it "
             + "cannot see the rest of.",
-            new GatedRoute(
+            new ListSurface.ServedOverARoute(
                 "/api/category-groups/",
-                typeof(GetCategoryGroupsHandler),
-                typeof(GetCategoryGroupsQuery),
-                typeof(CategoryGroupListResponse))),
+                typeof(GetCategoryGroupsHandler))),
         new(
             typeof(ICategoryReadService),
             nameof(ICategoryReadService.GetAllAsync),
             ListDelivery.DeliveredWhole,
+            ReasonFamily.WholeTree,
+            ListKeying.TakesNothing,
             "The other half of the same tree, and stated in its own words rather than deferred to the "
-            + "group row, because the two are read together and a single shared sentence is how a "
-            + "later author would come to believe one argument covers both tables. Category positions "
-            + "are readable integers ordered within their group, and categories.service.ts sorts by "
-            + "group position then category position then id — an ordering computed across the whole "
-            + "set. A page of categories arriving without the groups they hang from, or without their "
-            + "siblings, is a tree the client cannot assemble.",
-            new GatedRoute(
-                "/api/categories/",
-                typeof(GetCategoriesHandler),
-                typeof(GetCategoriesQuery),
-                typeof(CategoryListResponse))),
+            + "group row, because the two are read together. Category positions are readable integers "
+            + "ordered within their group, and categories.service.ts sorts by group position then "
+            + "category position then id — an ordering computed across the whole set. A page of "
+            + "categories arriving without the groups they hang from, or without their siblings, is a "
+            + "tree the client cannot assemble.",
+            new ListSurface.ServedOverARoute("/api/categories/", typeof(GetCategoriesHandler))),
         new(
             typeof(ICurrencyReadService),
             nameof(ICurrencyReadService.GetAllAsync),
             ListDelivery.DeliveredWhole,
+            ReasonFamily.BoundedReferenceSet,
+            ListKeying.TakesNothing,
             "A bounded reference set the client picks from in full — shared data belonging to no "
             + "tenant, SELECT only, with no row-level-security policy, ordered by the ISO 4217 code the "
             + "server can read. Nothing about a nonce or a tree applies here. It is whole because a "
             + "picker offering a window of the currencies that exist is a picker that cannot be used to "
             + "choose the one the person wants, and because the set does not grow with anybody's data.",
-            new GatedRoute(
-                "/api/currencies/",
-                typeof(GetCurrenciesHandler),
-                typeof(GetCurrenciesQuery),
-                typeof(CurrencyListResponse))),
+            new ListSurface.ServedOverARoute("/api/currencies/", typeof(GetCurrenciesHandler))),
+        new(
+            typeof(ICredentialReadService),
+            nameof(ICredentialReadService.ListForUserAsync),
+            ListDelivery.DeliveredWhole,
+            ReasonFamily.AccountControl,
+            ListKeying.KeyedOnAnAccount,
+            "GET /api/me/credentials backs the Ways to sign in list on /app/settings, which draws one "
+            + "row per credential and hangs a Revoke control on the rows that carry one. A window of "
+            + "this list is therefore a credential a person can neither see nor act on, and an "
+            + "account's own inventory of authenticators coming back short is read as 'that one is "
+            + "not registered here'. It is bounded by how many authenticators a person enrols, so "
+            + "there is nothing for a page to relieve. Its owner argument is load-bearing — "
+            + "credentials is exempt from row-level security, so nothing beneath the application "
+            + "narrows the read — but scoping and pageability are different questions, and the owner "
+            + "argument answers only the first.",
+            new ListSurface.ServedOverARoute("/api/me/credentials", typeof(ListCredentialsHandler))),
+        new(
+            typeof(IPasskeyRepository),
+            nameof(IPasskeyRepository.ListWebAuthnCredentialIdsForUserAsync),
+            ListDelivery.DeliveredWhole,
+            ReasonFamily.AccountControl,
+            ListKeying.KeyedOnAnAccount,
+            "These handles feed excludeCredentials in the registration ceremony, so a window of this "
+            + "list stops excluding: an authenticator already enrolled and left off the page it was "
+            + "handed is offered the ceremony again and registers a second credential for the same "
+            + "key, with nothing thrown and nothing logged. Nobody sees that happen: it is a fact "
+            + "about what an authenticator did, not about a screen, which is what makes it easy to "
+            + "miss afterwards. It is reached over no route of its own, so its surface names the "
+            + "member the list lands on instead.",
+            new ListSurface.ReachedFromInsideTheServer(
+                typeof(PasskeyCreationOptions),
+                nameof(PasskeyCreationOptions.ExcludeCredentials))),
         new(
             typeof(ITransactionReadService),
             nameof(ITransactionReadService.GetAllWithPayeeAsync),
             ListDelivery.PageableLater,
-            "WHOLE TODAY AND DELIBERATELY OUTSIDE THE GATE, which is why it carries no route half. "
+            ReasonFamily.StablyOrderable,
+            ListKeying.TakesNothing,
+            "WHOLE TODAY AND DELIBERATELY OUTSIDE THE GATE, which is why it carries no surface. "
             + "TransactionReadService orders by transaction.Date descending then CreatedAtUtc "
-            + "descending — both columns this server reads in the clear — so unlike every gated row "
-            + "above, a page of this list is stable and a client does not have to reorder it. "
+            + "descending, both columns this server reads in the clear, so a page of this list is "
+            + "stable and a client does not have to reorder it. Stability alone is not what separates "
+            + "it from the gated rows — the category-group row says plainly that a page of its list "
+            + "would hold still too — it is that nothing renders a transaction relative to the set. "
             + "Pagination for it is planned. Adding it to the gate would cost nothing today and would "
             + "forbid a change the product intends to make, which is the failure mode a table like "
-            + "this one is most likely to produce: a rule that reads as caution and is really a "
-            + "veto nobody argued for.",
-            Route: null),
+            + "this one is most likely to produce: a rule that reads as caution and is really a veto "
+            + "nobody argued for.",
+            Surface: null),
         new(
             typeof(IAccountKeyReadService),
             nameof(IAccountKeyReadService.ListForAccountAsync),
-            ListDelivery.ScopedByOwner,
-            "Keyed on the account rather than on the ambient budget, so it is not one of the ambient "
-            + "list reads this gate is about. Its wholeness is held far more strongly than a route "
-            + "assertion could: IAccountKeyReadService says in its own remarks that paging it would "
-            + "hand somebody nine of their ten ways back into their account, and the set is bounded by "
-            + "how many factors one account can hold rather than by anybody's data volume.",
-            Route: null),
-        new(
-            typeof(ICredentialReadService),
-            nameof(ICredentialReadService.ListForUserAsync),
-            ListDelivery.ScopedByOwner,
-            "Keyed on the account. It orders by CreatedAtUtc, a readable column, and the credentials "
-            + "table is exempt from row-level security precisely because it is what a request's "
-            + "identity is resolved out of — so the owner argument is the only thing that scopes it, "
-            + "and an owner parameter is the opposite of a caller-supplied narrowing. Nothing about "
-            + "this read is the ambient-budget shape the gate holds.",
-            Route: null),
+            ListDelivery.HeldElsewhere,
+            ReasonFamily.HeldByAStrongerRule,
+            ListKeying.KeyedOnAnAccount,
+            "Held far more strongly than a route assertion could hold it: IAccountKeyReadService says "
+            + "in its own remarks that paging it would hand somebody nine of their ten ways back into "
+            + "their account, and the set is bounded by how many factors one account can hold rather "
+            + "than by anybody's data volume. Repeating that here as a shape assertion would put a "
+            + "weaker sentence on top of the stronger one, and the weaker one is what a later reader "
+            + "quotes.",
+            Surface: null),
         new(
             typeof(IExportReadService),
             nameof(IExportReadService.ListOwnedBudgetsAsync),
-            ListDelivery.ScopedByOwner,
-            "Keyed on the account, and held by a stronger rule running in the OPPOSITE direction: the "
-            + "export refuses rather than truncates, throwing unless the owned set is exactly the "
-            + "ambient budget, by set equality in both directions. A gate saying merely 'this comes "
-            + "back whole' would be a weaker claim sitting on top of a refusal, and the weaker one is "
-            + "the sentence a later reader would quote.",
-            Route: null),
+            ListDelivery.HeldElsewhere,
+            ReasonFamily.HeldByAStrongerRule,
+            ListKeying.KeyedOnAnAccount,
+            "Held by a stronger rule running in the OPPOSITE direction: the export refuses rather than "
+            + "truncates, throwing unless the owned set is exactly the ambient budget, by set equality "
+            + "in both directions. A gate saying merely 'this comes back whole' would be a weaker "
+            + "claim sitting on top of a refusal, and the weaker one is the sentence a later reader "
+            + "would quote.",
+            Surface: null),
     ];
 
     [Test]
-    public async Task Discovery_FindsExactlyTheListReadsTheApplicationDeclares()
+    public async Task Discovery_FindsExactlyTheListReadsTheSweptPortsDeclare()
     {
-        // Arrange
-        Assembly application = typeof(IAccountReadService).Assembly;
-
         // Act
-        IReadOnlyList<string> discovered = WholeListDelivery.DiscoveredIn(application);
+        IReadOnlyList<string> discovered = WholeListDelivery.Discovered();
 
         // Assert — pinning the set is what catches a list read that changes SHAPE rather than
         // arriving. Give one an owner parameter, or return a Task<PagedResult<T>>, and it leaves
@@ -328,6 +441,7 @@ public sealed class WholeListDeliveryTests
             "ICredentialReadService.ListForUserAsync",
             "ICurrencyReadService.GetAllAsync",
             "IExportReadService.ListOwnedBudgetsAsync",
+            "IPasskeyRepository.ListWebAuthnCredentialIdsForUserAsync",
             "IPayeeReadService.GetAllAsync",
             "ITransactionReadService.GetAllWithPayeeAsync",
         ];
@@ -338,18 +452,17 @@ public sealed class WholeListDeliveryTests
         await Assert.That(discovered.Except(expected, StringComparer.Ordinal)).IsEmpty();
         await Assert.That(expected.Except(discovered, StringComparer.Ordinal)).IsEmpty();
 
-        // Non-vacuity. A reflection query that came back empty satisfies the first line above and
-        // says nothing to anybody.
+        // Not a restatement of the two lines above, and the reason it is the last size assertion
+        // standing after the vacuity decorations came out: it pins the COUNT, so a sweep returning
+        // the same ten keys twice moves it while both differences stay empty.
         await Assert.That(discovered.Count).IsEqualTo(expected.Length);
-        await Assert.That(discovered.Count).IsGreaterThan(0);
     }
 
     [Test]
     public async Task EveryListRead_IsClaimedByExactlyOneRow()
     {
         // Arrange
-        Assembly application = typeof(IAccountReadService).Assembly;
-        IReadOnlyList<string> discovered = WholeListDelivery.DiscoveredIn(application);
+        IReadOnlyList<string> discovered = WholeListDelivery.Discovered();
 
         // Act
         ListReadCensus census = WholeListDelivery.Take(discovered, Table.Select(WholeListDelivery.KeyOf));
@@ -359,27 +472,29 @@ public sealed class WholeListDeliveryTests
         await Assert.That(census.ClaimedTwice).IsEmpty();
         await Assert.That(census.NamingNoMember).IsEmpty();
 
-        // Non-vacuity, twice over: the classifier saw every discovered read, and there was at least
-        // one to see.
+        // The classifier saw every discovered read. That the set is not empty is pinned by the
+        // discovery test, which is why no size floor is repeated here.
         await Assert.That(census.Classified.Count).IsEqualTo(discovered.Count);
-        await Assert.That(census.Classified.Count).IsGreaterThan(0);
     }
 
     [Test]
-    public async Task EveryRow_CarriesItsOwnReasonAndARouteOnlyWhenGated()
+    public async Task EveryRow_CarriesADecidedDispositionFamilyKeyingReasonAndSurface()
     {
-        // Act — three ways a row can be present and mean nothing.
+        // Act — the ways a row can be present and mean nothing.
         IReadOnlyList<string> undecided =
         [
             .. Table
-                .Where(row => !Enum.IsDefined(row.Delivery))
+                .Where(row => !Enum.IsDefined(row.Delivery)
+                              || !Enum.IsDefined(row.Family)
+                              || !Enum.IsDefined(row.Keying))
                 .Select(WholeListDelivery.KeyOf)
                 .Order(StringComparer.Ordinal),
         ];
 
         // A reason that is blank, or a word, satisfies a census perfectly and tells the next reader
         // nothing — the prose failure one layer in. Sixty characters is not a quality bar; it is the
-        // floor beneath which "n/a" and "see above" live.
+        // floor beneath which "n/a" and "see above" live. There is deliberately no uniqueness rule
+        // beside it: see ReasonFamily for the guard that replaced one.
         IReadOnlyList<string> silent =
         [
             .. Table
@@ -388,31 +503,25 @@ public sealed class WholeListDeliveryTests
                 .Order(StringComparer.Ordinal),
         ];
 
-        // The paste this table exists to make expensive.
-        IReadOnlyList<string> sharedReasons =
+        // The paste this table exists to make expensive, caught by coverage rather than by
+        // uniqueness: one family pasted across every row leaves the rest of the set unclaimed.
+        IReadOnlyList<string> unclaimedFamilies =
         [
-            .. Table
-                .GroupBy(row => row.Reason, StringComparer.Ordinal)
-                .Where(group => group.Count() > 1)
-                .SelectMany(group => group.Select(WholeListDelivery.KeyOf))
+            .. Enum.GetValues<ReasonFamily>()
+                .Where(family => Array.TrueForAll(Table, row => row.Family != family))
+                .Select(family => family.ToString())
                 .Order(StringComparer.Ordinal),
         ];
 
-        // A gated row with no route half would skip Layer B in silence. The other direction matters
-        // too: a route hung on an ungated row is a claim nothing checks.
-        //
-        // This compares the two halves TO EACH OTHER, so it says nothing about a row demoted out of
-        // DeliveredWhole — measured: flipping the payee row to PageableLater and dropping its route
-        // together leaves this test green, and left the whole suite green before the pin below was
-        // written. Demotion takes a row out of both layers at once.
-        // DeliveredWholeReads_AreExactlyTheSetThisFileNames is what catches that,
-        // and it is deliberately a pin rather than a prohibition: pagination for the transaction
-        // list is planned and will one day need exactly this edit. The point is that widening the
-        // gate costs a written reason a reviewer can weigh, not that it is impossible.
-        IReadOnlyList<string> mismatchedRoutes =
+        // A gated row with no surface would skip every shape assertion in silence, and a surface
+        // hung on an ungated row is a claim nothing checks. This compares the two halves TO EACH
+        // OTHER, so it says nothing about a row demoted out of DeliveredWhole with its surface
+        // dropped in the same edit — measured, that left this test green — and
+        // DeliveredWholeReads_AreExactlyTheSetThisFileNames is what catches it.
+        IReadOnlyList<string> mismatchedSurfaces =
         [
             .. Table
-                .Where(row => (row.Delivery is ListDelivery.DeliveredWhole) != (row.Route is not null))
+                .Where(row => (row.Delivery is ListDelivery.DeliveredWhole) != (row.Surface is not null))
                 .Select(WholeListDelivery.KeyOf)
                 .Order(StringComparer.Ordinal),
         ];
@@ -420,54 +529,50 @@ public sealed class WholeListDeliveryTests
         // Assert
         await Assert.That(undecided).IsEmpty();
         await Assert.That(silent).IsEmpty();
-        await Assert.That(sharedReasons).IsEmpty();
-        await Assert.That(mismatchedRoutes).IsEmpty();
-        await Assert.That(Table.Length).IsGreaterThan(0);
+        await Assert.That(unclaimedFamilies).IsEmpty();
+        await Assert.That(mismatchedSurfaces).IsEmpty();
     }
 
     [Test]
     public async Task DeliveredWholeReads_AreExactlyTheSetThisFileNames()
     {
-        // Arrange — the second half of the pin Discovery_FindsExactlyTheListReadsTheApplicationDeclares
-        // starts. That one holds which reads EXIST; this one holds which of them this gate is about,
-        // and the two are different facts. Every assertion that reads a signature, a query, a response
-        // or a route filters on DeliveredWhole before it reads anything, so the size of this set is
-        // the size of what those four inspect. The census and the reason assertions still cover the
-        // whole table and are not what this is about.
+        // Arrange — the second half of the pin the discovery test starts. That one holds which reads
+        // EXIST; this one holds which of them this gate is about, and the two are different facts.
         //
         // MEASURED, which is why it is here. Before this test existed, flipping the payee row to
         // PageableLater and dropping its route in the same edit left the suite green while real
-        // pagination shipped on GetPayeesQuery and on the live route: a demotion takes a row out of
-        // both layers at once, and nothing else notices. Measured again with this test in place, that
-        // same mutation reddens exactly one test in this project — this one — and the failure names
-        // the row it took out.
+        // pagination shipped on the query and on the live route: a demotion takes a row out of both
+        // halves at once, and nothing else notices. Measured again with this test in place: that
+        // mutation reddens exactly one test in the whole suite — this one — and the failure names
+        // the row. Measured a third time: swapping a row's surface between the two cases keeps its
+        // key and moves this line, which is what catches a routed row rewritten as a route-less
+        // one — an edit that would otherwise take it out of the route layer in silence.
         //
         // A PIN AND NOT A PROHIBITION. Demoting a row is a change this product intends to make — the
-        // transaction list is already outside the gate for exactly that reason, and a gated row could
-        // follow it the day its own Reason stops holding. What this costs a person is one line here
-        // and a rewritten Reason on the row, in a diff a reviewer can weigh. What it buys is that
-        // neither edit can be made by accident.
+        // transaction list is already outside the gate for exactly that reason. What it costs is one
+        // line here and a rewritten Reason on the row, in a diff a reviewer can weigh.
         //
-        // THE LIMIT, stated rather than papered over: this holds the SET and nothing machine-checkable
-        // holds the row's prose against its disposition. A demoted row can keep a Reason still arguing
-        // the gated case — measured, one did. Nothing cheap fixes that, because a keyword rule over
-        // free prose is satisfied by pasting the keyword. What stands in for it is the red above: the
-        // person clearing it edits this list and that row in one diff, with the stale sentence in it.
+        // THE LIMIT, stated rather than papered over: this holds the SET, and nothing machine-checkable
+        // holds a row's prose against its disposition. A demoted row can keep a Reason still arguing
+        // the gated case — measured, one did. What stands in for it is the red above: the person
+        // clearing it edits this list and that row in one diff, with the stale sentence in it.
         string[] expected =
         [
-            "IAccountReadService.GetAllAsync",
-            "ICategoryGroupReadService.GetAllAsync",
-            "ICategoryReadService.GetAllAsync",
-            "ICurrencyReadService.GetAllAsync",
-            "IPayeeReadService.GetAllAsync",
+            "IAccountReadService.GetAllAsync at /api/accounts/",
+            "ICategoryGroupReadService.GetAllAsync at /api/category-groups/",
+            "ICategoryReadService.GetAllAsync at /api/categories/",
+            "ICredentialReadService.ListForUserAsync at /api/me/credentials",
+            "ICurrencyReadService.GetAllAsync at /api/currencies/",
+            "IPasskeyRepository.ListWebAuthnCredentialIdsForUserAsync into "
+            + "PasskeyCreationOptions.ExcludeCredentials",
+            "IPayeeReadService.GetAllAsync at /api/payees/",
         ];
 
         // Act
         IReadOnlyList<string> gated =
         [
-            .. Table
-                .Where(row => row.Delivery is ListDelivery.DeliveredWhole)
-                .Select(WholeListDelivery.KeyOf)
+            .. WholeListDelivery.Gated(Table)
+                .Select(WholeListDelivery.DescribeGated)
                 .Order(StringComparer.Ordinal),
         ];
 
@@ -482,83 +587,56 @@ public sealed class WholeListDeliveryTests
         await Assert.That(promoted).IsEmpty();
 
         // The count is not a restatement of the two lines above: a row DUPLICATED in the table leaves
-        // both differences empty and moves this one. The last line is the emptiness control the rest
-        // of this file writes, and here it is redundant — an empty gated set already reddens the
-        // demoted line — so it is kept for the shape rather than for what it catches.
+        // both differences empty and moves this one.
         await Assert.That(gated.Count).IsEqualTo(expected.Length);
-        await Assert.That(gated.Count).IsGreaterThan(0);
     }
 
     [Test]
-    public async Task EveryDeliveredWholeRead_TakesNothingButACancellationToken()
+    public async Task EveryListRead_TakesOnlyWhatItsKeyingDeclares()
     {
-        // Arrange
-        ListReadRow[] gated = [.. Table.Where(row => row.Delivery is ListDelivery.DeliveredWhole)];
-
-        // Act — the allow-list at the contract layer. Anything a caller could pass that is not the
-        // cancellation token is a way to ask for less than everything, whatever it is called.
-        IReadOnlyList<string> narrowing =
+        // Act — the allow-list at the contract layer, and it runs over the WHOLE table rather than
+        // over the gated rows. Every row today declares one of two shapes, so a parameter added to
+        // any of them reddens here, including the transaction read this file has argued is pageable
+        // later: paging it means editing its keying column, which is the visible cost, not a
+        // silently accepted parameter. Every owner-keyed read takes its Guid from
+        // IUserContext.UserId, never from the caller — measured on all four.
+        IReadOnlyList<string> misKeyed =
         [
-            .. gated
-                .SelectMany(row => WholeListDelivery
-                    .NarrowingParametersOf(WholeListDelivery.MemberOf(row))
-                    .Select(parameter => $"{WholeListDelivery.KeyOf(row)} takes {parameter}"))
-                .Order(StringComparer.Ordinal),
-        ];
-
-        IReadOnlyList<string> wrongArity =
-        [
-            .. gated
-                .Where(row => WholeListDelivery.MemberOf(row).GetParameters() is not [_])
-                .Select(WholeListDelivery.KeyOf)
-                .Order(StringComparer.Ordinal),
-        ];
-
-        // Optional, so no caller is ever forced to name anything to read the list at all.
-        IReadOnlyList<string> mandatoryToken =
-        [
-            .. gated
-                .Where(row => WholeListDelivery.MemberOf(row).GetParameters()
-                    is not [{ IsOptional: true, ParameterType.IsValueType: true }])
-                .Select(WholeListDelivery.KeyOf)
+            .. Table
+                .Select(WholeListDelivery.MisKeyingOf)
+                .OfType<string>()
                 .Order(StringComparer.Ordinal),
         ];
 
         // Assert
-        await Assert.That(narrowing).IsEmpty();
-        await Assert.That(wrongArity).IsEmpty();
-        await Assert.That(mandatoryToken).IsEmpty();
-        await Assert.That(gated.Length).IsGreaterThan(0);
+        await Assert.That(misKeyed).IsEmpty();
     }
 
     [Test]
     public async Task EveryDeliveredWholeRead_AsksForNothingAndAnswersWithOneList()
     {
         // Arrange
-        ListReadRow[] gated = [.. Table.Where(row => row.Delivery is ListDelivery.DeliveredWhole)];
+        ListReadRow[] gated = [.. WholeListDelivery.Gated(Table)];
 
         // Act — a query record with a property is a query with a knob on it, whether the knob is
-        // called Page, Skip or SearchTerm.
+        // called Page, Skip or SearchTerm. The query and the response are read from the handler's own
+        // IQueryHandler<,> arguments, never typed beside it: two columns naming types nothing uses
+        // would inspect nothing while passing.
         IReadOnlyList<string> askingQueries =
         [
             .. gated
-                .SelectMany(row => WholeListDelivery
-                    .PublicPropertiesOf(WholeListDelivery.RouteOf(row).Query)
-                    .Select(property =>
-                        $"{WholeListDelivery.RouteOf(row).Query.Name} declares {property.Name}"))
+                .SelectMany(WholeListDelivery.AskedForBy)
                 .Order(StringComparer.Ordinal),
         ];
 
-        // Exactly one property, and it is the list. Stronger than "carries one IReadOnlyList<>",
-        // deliberately: a response carrying Items AND NextCursor, or Items AND TotalCount, satisfies
-        // the weaker sentence while being precisely the shape this file exists to refuse.
+        // Exactly one list and nothing beside it, deliberately: a response carrying Items AND
+        // NextCursor, or Items AND TotalCount, satisfies "carries a list" while being precisely the
+        // shape this file exists to refuse. A route-less row is held to the same thing on the member
+        // its list lands on.
         IReadOnlyList<string> answeringMoreThanAList =
         [
             .. gated
-                .Where(row => WholeListDelivery
-                        .PublicPropertiesOf(WholeListDelivery.RouteOf(row).Response)
-                    is not [{ } sole] || !WholeListDelivery.IsReadOnlyList(sole.PropertyType))
-                .Select(row => WholeListDelivery.RouteOf(row).Response.Name)
+                .SelectMany(WholeListDelivery.AnsweredNotAsOneListBy)
                 .Order(StringComparer.Ordinal),
         ];
 
@@ -567,14 +645,13 @@ public sealed class WholeListDeliveryTests
         await Assert.That(answeringMoreThanAList).IsEmpty();
 
         // Non-vacuity: PublicPropertiesOf returning nothing for everything would satisfy the first
-        // line above and hollow out the second, so one known list property is asserted to be found.
+        // line above, so one known list property is asserted to be found.
         await Assert.That(WholeListDelivery.PublicPropertiesOf(typeof(PayeeListResponse)).Count)
             .IsEqualTo(1);
-        await Assert.That(gated.Length).IsGreaterThan(0);
     }
 
     [Test]
-    public async Task EveryDeliveredWholeRoute_BindsNothingButItsHandlerAndACancellationToken()
+    public async Task EveryRoutedWholeRead_BindsNothingButItsHandlerAndACancellationToken()
     {
         // Arrange — Production over a connection string nothing answers on, exactly as
         // CompositionBoundaryTests does: the route table is built at startup and no request is made,
@@ -584,16 +661,24 @@ public sealed class WholeListDeliveryTests
             "Host=localhost;Port=5432;Database=unused;Username=postgres;Password=postgres",
             environment: "Production");
         EndpointDataSource dataSource = factory.Services.GetRequiredService<EndpointDataSource>();
-        ListReadRow[] gated = [.. Table.Where(row => row.Delivery is ListDelivery.DeliveredWhole)];
+
+        // The route-less row has nothing here to inspect, stated rather than hidden: what stands in
+        // for this layer on it is the carrier assertion above and the pinned surface.
+        (ListReadRow Row, ListSurface.ServedOverARoute Route)[] routed =
+        [
+            .. WholeListDelivery.Gated(Table)
+                .Select(row => (Row: row, Route: row.Surface as ListSurface.ServedOverARoute))
+                .Where(pair => pair.Route is not null)
+                .Select(pair => (pair.Row, Route: pair.Route!)),
+        ];
 
         // Act
         List<string> unroutable = [];
         List<string> unexpected = [];
         int inspectedBindings = 0;
 
-        foreach (ListReadRow row in gated)
+        foreach ((ListReadRow row, ListSurface.ServedOverARoute route) in routed)
         {
-            GatedRoute route = WholeListDelivery.RouteOf(row);
             RouteEndpoint[] matches =
             [
                 .. dataSource.Endpoints
@@ -608,7 +693,9 @@ public sealed class WholeListDeliveryTests
             // nothing, and two matches means the assertion below picked one of them arbitrarily.
             if (matches is not [RouteEndpoint endpoint])
             {
-                unroutable.Add($"{route.Pattern} matched {matches.Length} GET endpoints");
+                unroutable.Add(
+                    $"{WholeListDelivery.KeyOf(row)} at {route.Pattern} matched {matches.Length} GET "
+                    + "endpoints");
                 continue;
             }
 
@@ -623,31 +710,50 @@ public sealed class WholeListDeliveryTests
         await Assert.That(unroutable).IsEmpty();
         await Assert.That(unexpected).IsEmpty();
 
-        // Non-vacuity, three ways. The route table is EMPTY before the host starts — measured, 0
-        // endpoints before StartAsync and the full set after — so a factory that failed to start
-        // would leave every list above empty and this test would pass having inspected nothing.
-        // WebApplicationFactory starts the host when Services is first read, which is what makes the
-        // arrangement above sufficient; these three lines are what proves it did.
+        // Non-vacuity, and these two are kept where the rest came out because neither size is pinned
+        // anywhere. The route table is EMPTY before the host starts — measured, 0 endpoints before
+        // StartAsync and the full set after — so a factory that failed to start would leave every
+        // list above empty and this test would pass having inspected nothing. WebApplicationFactory
+        // starts the host when Services is first read; these two lines are what prove it did.
         await Assert.That(dataSource.Endpoints.Count).IsGreaterThan(0);
         await Assert.That(inspectedBindings).IsGreaterThan(0);
-        await Assert.That(gated.Length).IsGreaterThan(0);
     }
 
     [Test]
-    public async Task NarrowingParameters_NamesTheParameterOfAPagedRead()
+    public async Task ContractClassifiers_NameAPageAndCannotTellACursorFromAnOwner()
     {
-        // Arrange — the defect, built here rather than staged in the Application assembly and
-        // reverted, so the proof is permanent. A read service whose list member has grown a page.
-        Type[] types = [typeof(IPagedProbeReadService)];
+        // Arrange — the defects, built here rather than staged in a real assembly and reverted, so
+        // the proof is permanent. One read service with a page on one member and a Guid cursor on
+        // another.
+        Type[] types = [typeof(IProbeReadService)];
+        ListReadRow paged = ProbeRow(nameof(IProbeReadService.PagedAsync), ListKeying.TakesNothing);
+        ListReadRow cursored = ProbeRow(nameof(IProbeReadService.CursorAsync), ListKeying.TakesNothing);
 
         // Act
         IReadOnlyList<MethodInfo> members = WholeListDelivery.MembersIn(types);
-        IReadOnlyList<string> narrowing = WholeListDelivery.NarrowingParametersOf(members[0]);
 
-        // Assert — the shape filter finds it (it does return Task<IReadOnlyList<T>>), and the
+        // Assert — the shape filter finds both (each returns Task<IReadOnlyList<T>>), and the
         // classifier names the parameter rather than merely counting it.
-        await Assert.That(members.Count).IsEqualTo(1);
-        await Assert.That(narrowing).IsEquivalentTo(new[] { "page" }, CollectionOrdering.Matching);
+        await Assert.That(members.Select(WholeListDelivery.KeyOf))
+            .IsEquivalentTo(
+                new[] { "IProbeReadService.CursorAsync", "IProbeReadService.PagedAsync" },
+                CollectionOrdering.Matching);
+        await Assert.That(WholeListDelivery.NarrowingParametersOf(members[1]))
+            .IsEquivalentTo(new[] { "page" }, CollectionOrdering.Matching);
+
+        // A page and a cursor are both refused on a row declaring TakesNothing, which is the whole
+        // reason that column is declared rather than derived: a Guid cursor is a parameter no
+        // type-shaped rule would object to.
+        await Assert.That(WholeListDelivery.MisKeyingOf(paged)).IsNotNull();
+        await Assert.That(WholeListDelivery.MisKeyingOf(cursored)).IsNotNull();
+
+        // THE LIMIT, demonstrated rather than admitted in prose: the same Guid cursor passes on a row
+        // that declares KeyedOnAnAccount, because an owner key and a cursor are the same type. The
+        // declaration does not make that impossible; it makes it an edit to the row, next to the
+        // parameter, in one diff.
+        await Assert
+            .That(WholeListDelivery.MisKeyingOf(cursored with { Keying = ListKeying.KeyedOnAnAccount }))
+            .IsNull();
     }
 
     [Test]
@@ -694,74 +800,11 @@ public sealed class WholeListDeliveryTests
     }
 
     [Test]
-    public async Task Census_AcceptsAReadClaimedByExactlyOneRow()
-    {
-        // Arrange — without this, a classifier that reported every read in every bucket would satisfy
-        // both cases above while making the live assertions fire on a table nobody has broken.
-        string[] discovered = ["IGatedReadService.GetAllAsync", "IExemptReadService.FeedAsync"];
-
-        // Act
-        ListReadCensus census = WholeListDelivery.Take(discovered, discovered);
-
-        // Assert
-        await Assert.That(census.Unclassified).IsEmpty();
-        await Assert.That(census.ClaimedTwice).IsEmpty();
-        await Assert.That(census.NamingNoMember).IsEmpty();
-        await Assert.That(census.Classified).IsEquivalentTo(discovered);
-    }
-
-    [Test]
-    public async Task EveryListRead_ClassifiedAgainstAnEmptyTable_ComesBackUnclassified()
-    {
-        // Arrange — the control the synthetic cases cannot supply. They prove the classifier sorts
-        // strings; this proves the LIVE subject reaches it, which is what the census would silently
-        // stop doing if discovery ever narrowed to nothing.
-        Assembly application = typeof(IAccountReadService).Assembly;
-        IReadOnlyList<string> discovered = WholeListDelivery.DiscoveredIn(application);
-
-        // Act
-        ListReadCensus census = WholeListDelivery.Take(discovered, []);
-
-        // Assert — every real list read comes back unclaimed, so the red direction is demonstrated
-        // against real input rather than only against strings this file made up.
-        await Assert.That(census.Unclassified).IsEquivalentTo(discovered);
-        await Assert.That(census.Unclassified.Count).IsGreaterThan(0);
-        await Assert.That(census.Classified).IsEmpty();
-    }
-
-    [Test]
-    public async Task UnexpectedBindings_NamesAPagingParameterOnARoute()
-    {
-        // Arrange — a throwaway route table of this file's own, so the defect ships as a permanent
-        // demonstration instead of a paragraph about an edit that was reverted. TestServer rather
-        // than a real socket: nothing here makes a request, only the route table is read.
-        await using WebApplication app = ThrowawayApp();
-        app.MapGet(
-            "/probe/paged",
-            (ThrowawayHandler handler, int page, CancellationToken cancellationToken) => handler.Answer());
-
-        // The route table is EMPTY before StartAsync — measured on a host of this shape, 0 endpoints
-        // before and the full set after. Reading the data source without starting is the silent-pass
-        // trap this whole control would otherwise fall into.
-        await app.StartAsync();
-        RouteEndpoint endpoint = SoleEndpointOf(app);
-
-        // Act
-        IReadOnlyList<string> unexpected =
-            WholeListDelivery.UnexpectedBindingsOf(endpoint, typeof(ThrowawayHandler));
-
-        // Assert
-        await Assert.That(unexpected).IsEquivalentTo(new[] { "page" }, CollectionOrdering.Matching);
-        await Assert.That(WholeListDelivery.BoundParametersOf(endpoint).Count).IsEqualTo(3);
-        await app.StopAsync();
-    }
-
-    [Test]
     public async Task UnexpectedBindings_NamesBothMembersOfAnAsParametersStruct()
     {
-        // Arrange — the measurement that makes Layer B worth building rather than folding into a
-        // signature read. An [AsParameters] wrapper flattens into IParameterBindingMetadata as one
-        // entry PER MEMBER and the wrapper itself does not appear, while MethodInfo.GetParameters()
+        // Arrange — the measurement that makes the route layer worth building rather than folding
+        // into a signature read. An [AsParameters] wrapper flattens into IParameterBindingMetadata as
+        // one entry PER MEMBER and the wrapper itself does not appear, while MethodInfo.GetParameters()
         // shows the wrapper and none of its members. A signature read sees one harmless struct here;
         // binding metadata sees two paging knobs.
         await using WebApplication app = ThrowawayApp();
@@ -770,6 +813,9 @@ public sealed class WholeListDeliveryTests
             (ThrowawayHandler handler, [AsParameters] PagingWindow window, CancellationToken cancellationToken) =>
                 handler.Answer());
 
+        // The route table is EMPTY before StartAsync — measured on a host of this shape, 0 endpoints
+        // before and the full set after. Reading the data source without starting is the silent-pass
+        // trap this control would otherwise fall into.
         await app.StartAsync();
         RouteEndpoint endpoint = SoleEndpointOf(app);
 
@@ -784,10 +830,10 @@ public sealed class WholeListDeliveryTests
             .IsEquivalentTo(new[] { "Page", "PageSize" }, CollectionOrdering.Matching);
 
         // The control for the sentence above: the signature shows the wrapper and not its members, so
-        // a Layer B built on GetParameters would have found nothing to report. Pattern-matched rather
-        // than asserted and then dereferenced — IsNotNull does not narrow for the compiler, so the line
-        // beneath it would carry a null-forgiving operator and would die unnamed if a route delegate
-        // ever stopped recording its MethodInfo.
+        // a route layer built on GetParameters would have found nothing to report. Pattern-matched
+        // rather than asserted and then dereferenced — IsNotNull does not narrow for the compiler, so
+        // the line beneath it would carry a null-forgiving operator and would die unnamed if a route
+        // delegate ever stopped recording its MethodInfo.
         if (endpoint.Metadata.GetMetadata<MethodInfo>() is not { } signature)
         {
             throw new InvalidOperationException(
@@ -804,21 +850,15 @@ public sealed class WholeListDeliveryTests
     [Test]
     public async Task UnexpectedBindings_NamesAQueryAHeaderAndANullableOptionalParameter()
     {
-        // Arrange — the three binding shapes the classifier is claimed to reach and that no other
-        // control here demonstrates. The two beside this one bind a plain int and an [AsParameters]
-        // struct, so on their evidence alone the classifier is only known to see required, unadorned
-        // parameters. Each of these three is a way to hang a narrowing knob on a route that LOOKS
-        // unlike a page:
+        // Arrange — three binding shapes no other control here reaches. The one beside this binds an
+        // [AsParameters] struct, so on its evidence alone the classifier is only known to see
+        // required, unadorned parameters. Each of these is a narrowing knob that LOOKS unlike a page:
+        // a nullable and therefore optional parameter; one bound from an explicitly named query
+        // source and called 'window' rather than 'page', because the classifier is an allow-list and
+        // must not care; and a header bind, which is not in the URL at all and would go quiet on its
+        // own if a later .NET stopped recording header binds in IParameterBindingMetadata.
         //
-        //   int? cursor            — nullable, therefore optional; a caller may omit it entirely.
-        //   [FromQuery] window     — bound from an explicitly named query source rather than by
-        //                            convention, and named 'window' rather than 'page' precisely
-        //                            because the classifier is an allow-list and must not care.
-        //   [FromHeader] token     — not in the URL at all, so a reader of the route pattern sees
-        //                            nothing. This is also the shape that would go quiet on its own
-        //                            if a later .NET stopped recording header binds in
-        //                            IParameterBindingMetadata, and this control is the only thing
-        //                            in the suite that would notice.
+        // It also carries the in/out filter: five parameters bind and three come back.
         await using WebApplication app = ThrowawayApp();
         app.MapGet(
             "/probe/varied",
@@ -849,6 +889,17 @@ public sealed class WholeListDeliveryTests
         await Assert.That(WholeListDelivery.BoundParametersOf(endpoint).Count).IsEqualTo(5);
         await app.StopAsync();
     }
+
+    /// <summary>A table row over the probe interface, for the contract controls.</summary>
+    private static ListReadRow ProbeRow(string member, ListKeying keying) => new(
+        typeof(IProbeReadService),
+        member,
+        ListDelivery.DeliveredWhole,
+        ReasonFamily.SealedNarrativeName,
+        keying,
+        "Synthetic, and never in the table: the census reaches real assemblies and this interface is "
+        + "private and nested, so nothing discovers it.",
+        new ListSurface.ReachedFromInsideTheServer(typeof(PayeeListResponse), nameof(PayeeListResponse.Items)));
 
     /// <summary>
     /// A host with a route table and nothing else — no database, no socket, no application code.
@@ -886,18 +937,19 @@ public sealed class WholeListDeliveryTests
     }
 
     /// <summary>
-    /// A read service whose list member has grown a page, for the control that proves the contract
-    /// classifier names it.
+    /// A read service whose list members have grown a page and a cursor, for the controls that prove
+    /// the contract classifiers name them.
     /// </summary>
     /// <remarks>
-    /// Nested and private, so it can never be mistaken for a port. Discovery over the Application
-    /// assembly cannot see it; the control hands it to <see cref="WholeListDelivery.MembersIn" />
-    /// directly, which is the same seam <c>RepositoryAttributionCensusTests</c> opens for its
-    /// synthetic input.
+    /// Nested and private, so it can never be mistaken for a port. Discovery over the real assemblies
+    /// cannot see it; the controls hand it to <see cref="WholeListDelivery.MembersIn" /> directly,
+    /// which is the same seam <c>RepositoryAttributionCensusTests</c> opens for its synthetic input.
     /// </remarks>
-    private interface IPagedProbeReadService
+    private interface IProbeReadService
     {
-        Task<IReadOnlyList<string>> GetAllAsync(int page, CancellationToken cancellationToken = default);
+        Task<IReadOnlyList<string>> CursorAsync(Guid afterId, CancellationToken cancellationToken = default);
+
+        Task<IReadOnlyList<string>> PagedAsync(int page, CancellationToken cancellationToken = default);
     }
 
     /// <summary>Two paging knobs inside a struct, for the <c>[AsParameters]</c> control.</summary>
@@ -910,12 +962,12 @@ public sealed class WholeListDeliveryTests
     }
 
     /// <summary>
-    /// Finds the list reads the Application assembly declares, sorts them against the written table,
-    /// and names what a member or a route offers a caller besides everything.
+    /// Finds the list reads the swept ports declare, sorts them against the written table, and names
+    /// what a member, a query, a response or a route offers a caller besides everything.
     /// </summary>
     /// <remarks>
     /// <see cref="Take" /> takes the written keys as a parameter rather than reading
-    /// <see cref="Table" />, and <see cref="MembersIn" /> takes types rather than reaching for the
+    /// <see cref="Table" />, and <see cref="MembersIn" /> takes types rather than reaching for an
     /// assembly itself. That is what lets the synthetic cases prove both failure directions without
     /// anybody deleting a real row to watch the suite go red — the same seam
     /// <c>RepositoryAttribution.Take</c> opens for the same reason.
@@ -946,21 +998,41 @@ public sealed class WholeListDeliveryTests
                     + "interface's own members cannot produce; the discovery filter has changed.");
         }
 
+        /// <summary>The gated rows, which the query, response and route assertions filter to first.</summary>
+        internal static IEnumerable<ListReadRow> Gated(IEnumerable<ListReadRow> rows)
+        {
+            ArgumentNullException.ThrowIfNull(rows);
+
+            return rows.Where(row => row.Delivery is ListDelivery.DeliveredWhole);
+        }
+
         /// <summary>
-        /// The route half of a gated row, refusing a gated row that has none. Measured: without this,
-        /// a row gated with no route made the two assertion loops die on a bare
+        /// The surface half of a gated row, refusing a gated row that has none. Measured: without
+        /// this, a row gated with no route made the assertion loops die on a bare
         /// <c>NullReferenceException</c> naming nothing, beside the one test that named the row.
         /// </summary>
-        internal static GatedRoute RouteOf(ListReadRow row)
+        internal static ListSurface SurfaceOf(ListReadRow row)
         {
             ArgumentNullException.ThrowIfNull(row);
 
-            return row.Route
+            return row.Surface
                    ?? throw new InvalidOperationException(
-                       $"{KeyOf(row)} is marked {row.Delivery} and carries no route, so this assertion "
-                       + "has nothing to read. EveryRow_CarriesItsOwnReasonAndARouteOnlyWhenGated is the "
-                       + "test that says so in full.");
+                       $"{KeyOf(row)} is marked {row.Delivery} and carries no surface, so this "
+                       + "assertion has nothing to read. "
+                       + "EveryRow_CarriesADecidedDispositionFamilyKeyingReasonAndSurface is the test "
+                       + "that says so in full.");
         }
+
+        /// <summary>One line naming a gated row and where its list lands, for the set pin.</summary>
+        internal static string DescribeGated(ListReadRow row) => SurfaceOf(row) switch
+        {
+            ListSurface.ServedOverARoute route => $"{KeyOf(row)} at {route.Pattern}",
+            ListSurface.ReachedFromInsideTheServer inside =>
+                $"{KeyOf(row)} into {inside.Carrier.Name}.{inside.Member}",
+            _ => throw new InvalidOperationException(
+                $"{KeyOf(row)} carries a surface this file has no description for. ListSurface is a "
+                + "closed pair of cases, so a third one was added without this switch."),
+        };
 
         /// <summary>The member a row names, refusing a spelling the interface does not declare.</summary>
         /// <remarks>
@@ -976,42 +1048,61 @@ public sealed class WholeListDeliveryTests
                        $"{row.ReadService.Name} declares no member called '{row.Member}'.");
         }
 
-        /// <summary>Every list read the assembly declares, ordered by key.</summary>
-        internal static IReadOnlyList<string> DiscoveredIn(Assembly assembly)
-        {
-            ArgumentNullException.ThrowIfNull(assembly);
-
-            return
-            [
-                .. MembersIn(assembly.GetTypes())
-                    .Select(KeyOf)
-                    .Order(StringComparer.Ordinal),
-            ];
-        }
-
-        /// <summary>
-        /// The subject filter, applied to types rather than to an assembly so it can be aimed at
-        /// synthetic input.
-        /// </summary>
+        /// <summary>The interfaces this file sweeps for list reads.</summary>
         /// <remarks>
         /// <para>
-        /// <b>Structural, and the two halves are chosen rather than convenient.</b> The interface half
-        /// is a name suffix, because <c>ReadService</c> is the word this codebase uses for the port a
-        /// projection lives behind and there is no base type or attribute to key on. The member half is
-        /// the <b>return shape</b> — <c>Task&lt;IReadOnlyList&lt;T&gt;&gt;</c> — and never the member
-        /// name, because the transaction list is called <c>GetAllWithPayeeAsync</c> and a
-        /// <c>GetAll</c> filter would already be missing it today. A list read called
-        /// <c>FeedAsync</c> is found by this and by no name rule anybody would think to write.
+        /// <b>Two naming sweeps and one named port, the shape <see cref="CompositionBoundaryTests" />
+        /// uses against the identical weakness.</b> <c>ReadService</c> is what this codebase calls a
+        /// projection's port and <c>Repository</c> what it calls an aggregate's, and both halves hold
+        /// list reads: <c>IPasskeyRepository.ListWebAuthnCredentialIdsForUserAsync</c> lives in
+        /// <c>Domain</c>, would be invisible to a <c>ReadService</c> sweep alone, and is the read
+        /// whose truncation costs the most — a duplicate credential enrolment, not an odd screen.
         /// </para>
         /// <para>
-        /// <b>The honest limit</b>, stated rather than fixed by widening: a list read that stops
-        /// returning <c>Task&lt;IReadOnlyList&lt;T&gt;&gt;</c> — an <c>IAsyncEnumerable&lt;T&gt;</c>,
-        /// a <c>Task&lt;PagedResult&lt;T&gt;&gt;</c>, or a port whose name loses the suffix — leaves
-        /// discovery entirely and the census would go on passing with one fewer subject. Widening the
-        /// filter only moves that boundary; what covers it instead is
-        /// <c>Discovery_FindsExactlyTheListReadsTheApplicationDeclares</c>, which pins the nine keys,
-        /// so a read that changes shape goes red there rather than quietly leaving.
+        /// <b>Both halves are still conventions, and the residual hole is a port conforming to
+        /// neither.</b> There is no base type or attribute to key on, so what covers it is listing
+        /// such a port by name below and pinning the discovered set. A second one needs a line here,
+        /// and that is the intended cost.
         /// </para>
+        /// </remarks>
+        internal static IReadOnlyList<Type> ReadSurface() =>
+        [
+            .. typeof(IPayeeReadService).Assembly
+                .GetTypes()
+                .Where(type => type.IsInterface
+                               && type.Name.EndsWith("ReadService", StringComparison.Ordinal)),
+
+            .. typeof(IPasskeyRepository).Assembly
+                .GetTypes()
+                .Where(type => type.IsInterface
+                               && type.Name.EndsWith("Repository", StringComparison.Ordinal)),
+
+            // Named individually because it ends in neither suffix and is a persistence port that
+            // reads — the same type CompositionBoundaryTests lists for the same reason. It holds no
+            // list read today; this line is what makes the day it grows one audible.
+            typeof(IWebAuthnChallengeStore),
+        ];
+
+        /// <summary>Every list read the swept interfaces declare, ordered by key.</summary>
+        internal static IReadOnlyList<string> Discovered() =>
+        [
+            .. MembersIn(ReadSurface())
+                .Select(KeyOf)
+                .Order(StringComparer.Ordinal),
+        ];
+
+        /// <summary>
+        /// The member filter, applied to types rather than to an assembly so it can be aimed at
+        /// synthetic input. Which interfaces are swept is <see cref="ReadSurface" />'s question.
+        /// </summary>
+        /// <remarks>
+        /// <b>The filter is the return shape</b> — <c>Task&lt;IReadOnlyList&lt;T&gt;&gt;</c> — and
+        /// never the member name, because the transaction list is called <c>GetAllWithPayeeAsync</c>
+        /// and a <c>GetAll</c> filter would already be missing it today. A list read called
+        /// <c>FeedAsync</c> is found by this and by no name rule anybody would think to write. The
+        /// honest limit, stated rather than fixed by widening: a read that stops returning that shape
+        /// leaves discovery entirely and the census would go on passing with one fewer subject.
+        /// Widening only moves the boundary; what covers it is the pinned key set, which reddens.
         /// </remarks>
         internal static IReadOnlyList<MethodInfo> MembersIn(IEnumerable<Type> types)
         {
@@ -1021,7 +1112,6 @@ public sealed class WholeListDeliveryTests
             [
                 .. types
                     .Where(type => type.IsInterface)
-                    .Where(type => type.Name.EndsWith("ReadService", StringComparison.Ordinal))
                     .SelectMany(type => type.GetMethods().Select(member => (Interface: type, Member: member)))
                     .Where(found => ReturnsAList(found.Member.ReturnType))
                     .OrderBy(found => found.Interface.Name, StringComparer.Ordinal)
@@ -1103,6 +1193,117 @@ public sealed class WholeListDeliveryTests
             ];
         }
 
+        /// <summary>
+        /// How this member fails the keying its row declares, or <see langword="null" /> when it holds.
+        /// </summary>
+        internal static string? MisKeyingOf(ListReadRow row)
+        {
+            ArgumentNullException.ThrowIfNull(row);
+
+            ParameterInfo[] parameters = MemberOf(row).GetParameters();
+
+            // The token is optional on every one of these, so no caller is ever forced to name
+            // anything to read the list at all.
+            bool holds = row.Keying switch
+            {
+                ListKeying.TakesNothing =>
+                    parameters is [{ IsOptional: true } only]
+                    && only.ParameterType == typeof(CancellationToken),
+                ListKeying.KeyedOnAnAccount =>
+                    parameters is [{ IsOptional: false } owner, { IsOptional: true } token]
+                    && owner.ParameterType == typeof(Guid)
+                    && token.ParameterType == typeof(CancellationToken),
+                _ => false,
+            };
+
+            return holds
+                ? null
+                : $"{KeyOf(row)} declares {row.Keying} and takes ({SignatureOf(parameters)})";
+        }
+
+        /// <summary>
+        /// The properties a gated row's query declares, each as one offender line. A route-less row
+        /// has no query — nothing outside the server asks for its list — so it contributes nothing
+        /// here, which is one of the two things the route layer's absence costs it.
+        /// </summary>
+        internal static IEnumerable<string> AskedForBy(ListReadRow row) =>
+            SurfaceOf(row) is ListSurface.ServedOverARoute route
+                ? PublicPropertiesOf(ContractOf(route.Handler).Query)
+                    .Select(property => $"{ContractOf(route.Handler).Query.Name} declares {property.Name}")
+                : [];
+
+        /// <summary>
+        /// The place a gated row's list lands, named when it is anything other than one list. A
+        /// routed row is held on its handler's response — either the response IS the list, or it is a
+        /// record whose one public property is. A route-less row is held on the member its list lands
+        /// on, which must exist and must be a list: the same claim, where the list actually arrives.
+        /// </summary>
+        internal static IEnumerable<string> AnsweredNotAsOneListBy(ListReadRow row)
+        {
+            switch (SurfaceOf(row))
+            {
+                case ListSurface.ServedOverARoute route:
+                    {
+                        Type response = ContractOf(route.Handler).Response;
+                        bool oneList = IsReadOnlyList(response)
+                                       || (PublicPropertiesOf(response) is [{ } sole]
+                                           && IsReadOnlyList(sole.PropertyType));
+
+                        return oneList ? [] : [response.Name];
+                    }
+
+                case ListSurface.ReachedFromInsideTheServer inside:
+                    {
+                        PropertyInfo? carrier = inside.Carrier.GetProperty(
+                            inside.Member,
+                            BindingFlags.Public | BindingFlags.Instance);
+
+                        return carrier is not null && IsReadOnlyList(carrier.PropertyType)
+                            ? []
+                            : [$"{inside.Carrier.Name}.{inside.Member}"];
+                    }
+
+                default:
+                    throw new InvalidOperationException(
+                        $"{KeyOf(row)} carries a surface this file cannot read a list out of. "
+                        + "ListSurface is a closed pair of cases, so a third one was added without "
+                        + "this switch.");
+            }
+        }
+
+        /// <summary>
+        /// The query and the response a handler declares, read from its own
+        /// <see cref="IQueryHandler{TQuery,TResult}" /> arguments.
+        /// </summary>
+        /// <remarks>
+        /// <b>Derived rather than typed beside the handler in the table, and that is the point.</b>
+        /// While the query and the response were columns of their own, nothing tied them to the
+        /// handler. Measured both ways: with the row's handler declaring a query that carries a
+        /// property and a response that is not a list, reading the pair off a column leaves the
+        /// shape assertions inspecting the old, unused types and green, and reading it off the
+        /// handler reddens them naming the property. Reflection inspecting nothing is the exact
+        /// failure this file ships controls against, and that pair had no control.
+        /// </remarks>
+        internal static (Type Query, Type Response) ContractOf(Type handler)
+        {
+            ArgumentNullException.ThrowIfNull(handler);
+
+            Type[] implemented =
+            [
+                .. handler.GetInterfaces()
+                    .Where(contract => contract.IsGenericType
+                                       && contract.GetGenericTypeDefinition() == typeof(IQueryHandler<,>)),
+            ];
+
+            return implemented is [{ } sole]
+                ? (sole.GetGenericArguments()[0], sole.GetGenericArguments()[1])
+                : throw new InvalidOperationException(
+                    $"{handler.Name} implements {implemented.Length} IQueryHandler<,> interfaces, so "
+                    + "the query and the response cannot be read off it. Every gated route is served "
+                    + "by exactly one, and a handler answering two queries needs the table to say "
+                    + "which of them this row is about.");
+        }
+
         /// <summary>Every parameter the route binds, flattened as ASP.NET Core records them.</summary>
         internal static IReadOnlyList<string> BoundParametersOf(Endpoint endpoint)
         {
@@ -1165,6 +1366,11 @@ public sealed class WholeListDeliveryTests
             return type.IsGenericType
                    && type.GetGenericTypeDefinition() == typeof(IReadOnlyList<>);
         }
+
+        /// <summary>A parameter list as a reader would write it, for an offender line.</summary>
+        private static string SignatureOf(ParameterInfo[] parameters) => string.Join(
+            ", ",
+            parameters.Select(parameter => $"{parameter.ParameterType.Name} {parameter.Name}"));
 
         /// <summary>Whether a member returns <c>Task&lt;IReadOnlyList&lt;T&gt;&gt;</c> exactly.</summary>
         private static bool ReturnsAList(Type returnType) =>
