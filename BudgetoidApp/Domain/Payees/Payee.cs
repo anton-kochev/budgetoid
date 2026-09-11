@@ -73,7 +73,8 @@ public sealed class Payee
     /// counterparty deduplication in this budget, so a rewritten name filed under an index from the
     /// previous generation splits one counterparty into two payees that can neither be merged nor found
     /// — and it does so in the one column where uniqueness is enforced rather than merely tidy.
-    /// <b>Private setter, no mutator, no factory parameter</b> — nothing writes it in this commit.
+    /// <b>Private setter and no factory parameter</b>: <see cref="Reseal"/> is the one member that writes
+    /// a stamp, and <see cref="Rename"/> is the one that clears it.
     /// </remarks>
     public Guid? RotationId { get; private set; }
 
@@ -166,6 +167,16 @@ public sealed class Payee
     /// change and could not have been handed: a no-op that reads as protection, which is worse than no
     /// call, because the next reader trusts it to be doing something. Do not add one back for symmetry.
     /// </para>
+    /// <para>
+    /// <b>It disowns any rotation stamp the row carries, and that line is part of the rename rather than
+    /// bookkeeping beside it.</b> A second browser tab still holding the <em>previous</em> content key
+    /// can reach this member for a row a chunk has already re-sealed: it writes old-key ciphertext, and
+    /// with the stamp left standing the row reads as rewritten while its name is sealed under the
+    /// generation the completion step destroys. Nothing is red, no constraint is violated, and the
+    /// symptom is a list entry that stops opening. Cleared, the same sequence makes completion refuse a
+    /// run the person can start again. The clearing sits <em>below</em> the refusal with the assignments:
+    /// a rename that never landed wrote no ciphertext and so has nothing to disown.
+    /// </para>
     /// </remarks>
     public void Rename(IndexedName name)
     {
@@ -183,6 +194,84 @@ public sealed class Payee
 
         Name = name.Name;
         NameKey = name.BlindIndex;
+
+        // Beside the ciphertext it disowns - see the remarks above.
+        RotationId = null;
+    }
+
+    /// <summary>
+    /// Replaces the name with the pair a content-key rotation sealed and indexed under the next
+    /// generation of the account's keys, and records which run rewrote the row.
+    /// </summary>
+    /// <param name="name">
+    /// The text the row already holds, re-sealed under the new content key and re-indexed under the new
+    /// index key — the same name, not a new one.
+    /// </param>
+    /// <param name="rotationId">
+    /// The run in flight, as <see cref="Users.KeyRotation.RotationId"/> spells it.
+    /// </param>
+    /// <remarks>
+    /// <para>
+    /// <b>It takes an <see cref="IndexedName"/> for the reason <see cref="Rename"/> gives, and on a payee
+    /// that is the half that bites.</b> A rotation replaces the index key as well as the content key, so
+    /// every value in <see cref="NameKey"/> changes — and <see cref="NameKey"/> is the whole of
+    /// counterparty deduplication in this budget. A member that re-sealed the envelope alone would leave
+    /// every payee keyed under the previous generation: find-or-create stops finding anything, and the
+    /// next transaction against each existing counterparty mints a duplicate.
+    /// </para>
+    /// <para>
+    /// <b>The identity columns are not writable from here, and that is the member.</b>
+    /// <see cref="Id"/> is the associated data every envelope this row has ever held was sealed against,
+    /// so a member that re-minted it would store a name nobody can open, in the one operation whose
+    /// entire purpose is that the names keep opening; <see cref="BudgetId"/> is the tenancy.
+    /// </para>
+    /// <para>
+    /// <b>No length is measured here.</b> Caps have three owners already — the two constants,
+    /// <see cref="NarrativeField.Sealed"/> applying whichever one its caller names, and the column's
+    /// <c>CHECK</c> — and <see cref="NarrativeReseal"/> spells out why a fourth opinion could only agree
+    /// redundantly or disagree silently.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ArgumentNullException">No name was supplied.</exception>
+    /// <exception cref="ValidationException">
+    /// <paramref name="rotationId"/> is <see cref="Guid.Empty"/>.
+    /// </exception>
+    public void Reseal(IndexedName name, Guid rotationId)
+    {
+        // The sibling mutators' guard, for the reason Create states: this signature says a name is
+        // present, so a null is a defect in this codebase rather than a field a caller corrects.
+        ArgumentNullException.ThrowIfNull(name);
+
+        // Ahead of every assignment, so a refused reseal leaves the row exactly as the last chunk left
+        // it. Rewriting the ciphertext first and refusing afterwards would strand a row whose stamp says
+        // nothing about the generation it is sealed under - readable today, and unopenable the moment
+        // some later, real run is completed over it.
+        RequireRotation(rotationId);
+
+        Name = name.Name;
+        NameKey = name.BlindIndex;
+        RotationId = rotationId;
+    }
+
+    /// <summary>
+    /// Refuses the empty rotation identifier, keyed on the member the stamp lands in.
+    /// </summary>
+    /// <remarks>
+    /// <b>The rule belongs to <see cref="Users.KeyRotation.Begin"/> and is restated at the far end of the
+    /// same identifier rather than invented here.</b> That factory argues it: all-zeros is a storable
+    /// uuid and is what a client that has begun no run sends, so a stamp carrying it marks a row as
+    /// rewritten under a rotation no <c>key_rotations</c> row matches — a full house belonging to nobody,
+    /// read by the step that destroys the old keys.
+    /// </remarks>
+    private static void RequireRotation(Guid rotationId)
+    {
+        if (rotationId == Guid.Empty)
+        {
+            throw new ValidationException(new Dictionary<string, string[]>
+            {
+                [nameof(RotationId)] = ["Rotation id is required."],
+            });
+        }
     }
 
     /// <summary>

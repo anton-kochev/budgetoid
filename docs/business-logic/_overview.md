@@ -165,6 +165,10 @@ references are additionally constrained by composite foreign keys to a row in th
 - [Ciphertext Envelope](ciphertext-envelope.md) — the one AEAD framing both consumers share, the
   two grammars that bind a ciphertext to where it lives, and what the server can check without
   holding a key.
+- [Key Rotation](key-rotation.md) — the remedy for a compromise of the keys themselves, why the
+  next generation is staged beside the one still in force, and the row stamp a server that can
+  decrypt nothing uses to tell a finished rewrite from an unfinished one. Schema and domain
+  behaviour only today; no route reaches it.
 - [Sessions](sessions.md) — an established sign-in the product records and can end itself.
 - [Budgets](budgets.md) — the pool of money a user presides over, the unit of tenancy, its default,
   and its base currency.

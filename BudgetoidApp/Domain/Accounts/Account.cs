@@ -82,7 +82,8 @@ public sealed class Account
     /// under the account's <em>index</em> key, so a rotation that changes that key changes every value in
     /// the column, and a stamp recording a row as rewritten while its index still belongs to the previous
     /// generation would be the stamp lying about the half nobody can decrypt to check.
-    /// <b>Private setter, no mutator, no factory parameter</b> — nothing writes it in this commit.
+    /// <b>Private setter and no factory parameter</b>: <see cref="Reseal"/> is the one member that writes
+    /// a stamp, and <see cref="Update"/> is the one that clears it.
     /// </remarks>
     public Guid? RotationId { get; private set; }
 
@@ -172,6 +173,17 @@ public sealed class Account
     /// notice the disagreement — recomputing an index needs the account's index key, which lives in a
     /// browser.
     /// </para>
+    /// <para>
+    /// <b>It disowns any rotation stamp the row carries, and that line is part of the rename rather than
+    /// bookkeeping beside it.</b> A second browser tab still holding the <em>previous</em> content key
+    /// can reach this member for a row a chunk has already re-sealed: it writes old-key ciphertext, and
+    /// with the stamp left standing the row reads as rewritten while its name is sealed under the
+    /// generation the completion step destroys. Nothing is red, no constraint is violated, and the
+    /// symptom is a screen that stops opening. Cleared, the same sequence makes completion refuse a run
+    /// the person can start again. The clearing sits <em>below</em> the refusal for the same reason the
+    /// assignments do: an update that was refused wrote no ciphertext, so it has nothing to disown, and
+    /// clearing there would fail a rotation over edits that never landed.
+    /// </para>
     /// </remarks>
     public void Update(IndexedName name, AccountType type, decimal openingBalance, int minorUnit)
     {
@@ -183,6 +195,86 @@ public sealed class Account
         NameKey = name.BlindIndex;
         Type = type;
         OpeningBalance = openingBalance;
+
+        // Below the refusal, beside the ciphertext it disowns - see the remarks above.
+        RotationId = null;
+    }
+
+    /// <summary>
+    /// Replaces the name with the pair a content-key rotation sealed and indexed under the next
+    /// generation of the account's keys, and records which run rewrote the row.
+    /// </summary>
+    /// <param name="name">
+    /// The text the row already holds, re-sealed under the new content key and re-indexed under the new
+    /// index key — the same name, not a new one.
+    /// </param>
+    /// <param name="rotationId">
+    /// The run in flight, as <see cref="Users.KeyRotation.RotationId"/> spells it.
+    /// </param>
+    /// <remarks>
+    /// <para>
+    /// <b>It takes an <see cref="IndexedName"/> for the reason <see cref="Update"/> gives, and here that
+    /// reason is the arithmetic of the operation rather than a precaution.</b> A rotation replaces the
+    /// index key as well as the content key, so every value in <see cref="NameKey"/> changes; a member
+    /// that re-sealed the envelope alone would leave the row's uniqueness value describing text the row
+    /// no longer holds — on every account at once, and by a path no read can report.
+    /// </para>
+    /// <para>
+    /// <b>Nothing else on the row is writable from here, and the omissions are the member.</b> There is
+    /// no type, no opening balance and no minor unit, so a reseal cannot be built by delegating to
+    /// <see cref="Update"/> with the entity's current values standing in for the arguments it lacks —
+    /// which reads as harmless and quietly overwrites whatever a concurrent edit changed between the read
+    /// and the rewrite. <see cref="Id"/> is stronger still: it is the associated data every envelope this
+    /// row has ever held was sealed against, so a member that re-minted it would store a name nobody can
+    /// open, in the one operation whose entire purpose is that the names keep opening.
+    /// </para>
+    /// <para>
+    /// <b>No length is measured here.</b> Caps have three owners already — the two constants,
+    /// <see cref="NarrativeField.Sealed"/> applying whichever one its caller names, and the column's
+    /// <c>CHECK</c> — and <see cref="NarrativeReseal"/> spells out why a fourth opinion could only agree
+    /// redundantly or disagree silently.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ArgumentNullException">No name was supplied.</exception>
+    /// <exception cref="ValidationException">
+    /// <paramref name="rotationId"/> is <see cref="Guid.Empty"/>.
+    /// </exception>
+    public void Reseal(IndexedName name, Guid rotationId)
+    {
+        // The sibling mutators' guard, for the reason Create states: this signature says a name is
+        // present, so a null is a defect in this codebase rather than a field a caller corrects.
+        ArgumentNullException.ThrowIfNull(name);
+
+        // Ahead of every assignment, so a refused reseal leaves the row exactly as the last chunk left
+        // it. Rewriting the ciphertext first and refusing afterwards would strand a row whose stamp says
+        // nothing about the generation it is sealed under - readable today, and unopenable the moment
+        // some later, real run is completed over it.
+        RequireRotation(rotationId);
+
+        Name = name.Name;
+        NameKey = name.BlindIndex;
+        RotationId = rotationId;
+    }
+
+    /// <summary>
+    /// Refuses the empty rotation identifier, keyed on the member the stamp lands in.
+    /// </summary>
+    /// <remarks>
+    /// <b>The rule belongs to <see cref="Users.KeyRotation.Begin"/> and is restated at the far end of the
+    /// same identifier rather than invented here.</b> That factory argues it: all-zeros is a storable
+    /// uuid and is what a client that has begun no run sends, so a stamp carrying it marks a row as
+    /// rewritten under a rotation no <c>key_rotations</c> row matches — a full house belonging to nobody,
+    /// read by the step that destroys the old keys.
+    /// </remarks>
+    private static void RequireRotation(Guid rotationId)
+    {
+        if (rotationId == Guid.Empty)
+        {
+            throw new ValidationException(new Dictionary<string, string[]>
+            {
+                [nameof(RotationId)] = ["Rotation id is required."],
+            });
+        }
     }
 
     /// <summary>

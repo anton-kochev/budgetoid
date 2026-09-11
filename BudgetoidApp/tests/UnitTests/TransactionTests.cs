@@ -932,6 +932,539 @@ public sealed class TransactionTests
     }
 
     /// <summary>
+    /// A content-key rotation replaces the note with the envelope sealed under the new key.
+    /// </summary>
+    /// <remarks>
+    /// <b>The second label models the same text under two keys, not new text.</b> A rotation
+    /// re-encrypts what the row already holds, so nothing about the transaction changes except the bytes
+    /// — but <see cref="SealedNarrative" /> derives the envelope from the label it is handed, so "the
+    /// same text under a new key" has no other spelling here than a second label. A reseal that decided
+    /// the presence question correctly and then left the column's existing envelope in place passes
+    /// every assertion that only checks for a non-null note: same width, same version byte, same
+    /// <c>CHECK</c> constraint underneath. What it produces is a row that survived a rotation without
+    /// being rotated, and the promotion step at the end of the run destroys the only key that opens it.
+    /// </remarks>
+    [Test]
+    public async Task ResealDescription_ReplacesTheNote()
+    {
+        // Arrange
+        Transaction transaction = NewTransaction();
+
+        // Act
+        transaction.ResealDescription(
+            SealedNarrative.Description("Corner shop resealed"), Guid.CreateVersion7());
+
+        // Assert — CollectionOrdering.Matching on the positive assertion for the reason
+        // Create_WithValidInput_StoresEveryColumnItWasGiven states; the negative one keeps the default,
+        // which is the stronger "not even a permutation" claim.
+        await Assert.That(transaction.Description).IsNotNull();
+        await Assert.That(transaction.Description!.Envelope.ToArray()).IsEquivalentTo(
+            SealedNarrative.Description("Corner shop resealed").Envelope.ToArray(),
+            CollectionOrdering.Matching);
+        await Assert.That(transaction.Description.Envelope.ToArray())
+            .IsNotEquivalentTo(SealedNarrative.Description("Corner shop").Envelope.ToArray());
+    }
+
+    /// <summary>
+    /// A reseal stamps the row with the id of the rotation that rewrote it.
+    /// </summary>
+    /// <remarks>
+    /// The stamp is the whole reason the column exists, argued at <c>Budget.RotationId</c>: a re-sealed
+    /// envelope and an untouched one are byte-for-byte indistinguishable to a server holding no key, so
+    /// the completion step — which destroys the only copies of the old keys — can only know the rewrite
+    /// finished by being told, in the same transaction as the ciphertext. A reseal that replaced the
+    /// envelope and left this column null passes every other accepting case in this file and makes the
+    /// account un-completable — and transactions are the rows there are most of, so this is the entity
+    /// where "the run never finishes" will be noticed first.
+    /// </remarks>
+    [Test]
+    public async Task ResealDescription_StampsTheRotationItWasGiven()
+    {
+        // Arrange — the id minted here and threaded in, so the assertion is not "a stamp appeared" but
+        // "this rotation's did". A member that minted its own would leave every row stamped with an id
+        // no completion step is looking for.
+        Transaction transaction = NewTransaction();
+        var rotationId = Guid.CreateVersion7();
+
+        // Act
+        transaction.ResealDescription(
+            SealedNarrative.Description("Corner shop resealed"), rotationId);
+
+        // Assert
+        await Assert.That(transaction.RotationId).IsEqualTo(rotationId);
+    }
+
+    /// <summary>
+    /// A reseal moves the note and the stamp and touches nothing else.
+    /// </summary>
+    /// <remarks>
+    /// <b>This is the case that catches a reseal built by reusing <see cref="Transaction.Update" />.</b>
+    /// Update takes an account, an amount, a minor unit and a date; a reseal that delegated to it would
+    /// have to invent values for all four, and the obvious inventions are the row's own current values —
+    /// which looks correct until a second request changes one of them between the read and the reseal.
+    /// A transaction is the one narrative-bearing row whose other columns are money, so this is where a
+    /// rotation that wrote more than ciphertext stops being a display bug: the amounts are what every
+    /// balance in the product is summed from, and nothing about a re-encryption gives it standing to
+    /// touch them. The assignments are asserted too, because they are nullable and a reseal that reset
+    /// them would silently uncategorise a ledger.
+    /// </remarks>
+    [Test]
+    public async Task ResealDescription_LeavesAmountDateAccountPayeeCategoryAndIdentityUnchanged()
+    {
+        // Arrange — every non-narrative column set to something other than its default, including both
+        // assignments, so a reseal that overwrote one with a default is visible rather than accidentally
+        // right.
+        var id = Guid.CreateVersion7();
+        var budgetId = Guid.CreateVersion7();
+        var accountId = Guid.CreateVersion7();
+        var payeeId = Guid.CreateVersion7();
+        var categoryId = Guid.CreateVersion7();
+        DateOnly date = new(2026, 6, 12);
+        DateTime createdAtUtc = UtcNow();
+        Transaction transaction = Transaction.Create(
+            id,
+            budgetId,
+            accountId,
+            Money("-42.50"),
+            UsdMinorUnit,
+            date,
+            SealedNarrative.Description("Corner shop"),
+            createdAtUtc);
+        transaction.AssignPayee(payeeId);
+        transaction.AssignCategory(categoryId);
+
+        // Act
+        transaction.ResealDescription(
+            SealedNarrative.Description("Corner shop resealed"), Guid.CreateVersion7());
+
+        // Assert
+        await Assert.That(transaction.Id).IsEqualTo(id);
+        await Assert.That(transaction.BudgetId).IsEqualTo(budgetId);
+        await Assert.That(transaction.AccountId).IsEqualTo(accountId);
+        await Assert.That(transaction.Amount).IsEqualTo(Money("-42.50"));
+        await Assert.That(transaction.Date).IsEqualTo(date);
+        await Assert.That(transaction.PayeeId).IsEqualTo(payeeId);
+        await Assert.That(transaction.CategoryId).IsEqualTo(categoryId);
+        await Assert.That(transaction.CreatedAtUtc).IsEqualTo(createdAtUtc);
+    }
+
+    /// <summary>
+    /// A rotation that supplies no note for a transaction that has one is refused.
+    /// </summary>
+    /// <remarks>
+    /// The clearing arm of the presence rule <c>NarrativeReseal.Resealed</c> owns, reached through this
+    /// entity so that the transaction's note is actually routed through it. The column is nullable, so
+    /// writing the absence through produces a legal row that violates no constraint and is
+    /// byte-identical to one belonging to somebody who deliberately filed no note. Nothing in the schema
+    /// can tell that bug from an operation, which is why the refusal has to be in the domain.
+    /// </remarks>
+    [Test]
+    public async Task ResealDescription_WithNoNoteOverATransactionThatHasOne_IsRefused()
+    {
+        // Arrange
+        Transaction transaction = NewTransaction();
+
+        // Act
+        ValidationException exception = ThrowsValidationException(() =>
+            transaction.ResealDescription(null, Guid.CreateVersion7()));
+
+        // Assert — keyed on the member the request carries. A refusal filed under a word invented by the
+        // entity reaches the client verbatim as a 400 naming a member no request has.
+        await Assert.That(exception.Errors.ContainsKey(nameof(Transaction.Description))).IsTrue();
+    }
+
+    /// <summary>
+    /// A rotation that supplies a note for a transaction that has none is refused.
+    /// </summary>
+    /// <remarks>
+    /// The quieter arm, and the one a reviewer will propose relaxing: filling in an empty note harms no
+    /// data. It is refused because presence is the only property this side can check at all, so an arm
+    /// that admits a change of presence gives up the whole of what the rule is made of — and what lands
+    /// in that column is text the server cannot read, attributed to a person who never wrote it, in a
+    /// run they authorised as "re-encrypt what I have".
+    /// </remarks>
+    [Test]
+    public async Task ResealDescription_WithANoteOverATransactionThatHasNone_IsRefused()
+    {
+        // Arrange — the note-less transaction is built here rather than taken from NewTransaction, which
+        // always carries one for the reason its own remarks give.
+        Transaction transaction = Transaction.Create(
+            Guid.CreateVersion7(),
+            Guid.CreateVersion7(),
+            Guid.CreateVersion7(),
+            Money("-42.50"),
+            UsdMinorUnit,
+            new DateOnly(2026, 6, 12),
+            null,
+            UtcNow());
+
+        // Act
+        ValidationException exception = ThrowsValidationException(() =>
+            transaction.ResealDescription(
+                SealedNarrative.Description("Corner shop"), Guid.CreateVersion7()));
+
+        // Assert
+        await Assert.That(exception.Errors.ContainsKey(nameof(Transaction.Description))).IsTrue();
+    }
+
+    /// <summary>
+    /// A transaction that never had a note is stamped anyway.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The control for both refusals, and not a filler case.</b> Without it, a reseal that threw
+    /// whenever either side of the note was null would pass both cases above and would make every
+    /// account un-rotatable the moment it held one note-less transaction — which is most accounts, on
+    /// the entity there are most rows of. A refusal the person cannot act on, because the field they are
+    /// being refused for is one they never filled in.
+    /// </para>
+    /// <para>
+    /// <b>The stamp is the half that matters, and this is the only row in the product where a reseal
+    /// writes the stamp and nothing else.</b> The sibling entities all have a non-nullable name to
+    /// re-encrypt, so their note-less cases still produce a visible write; here there is nothing to
+    /// re-encrypt at all, and the row must still be accounted for or completion is permanently one
+    /// short. A member that returned early on a null note would look correct on every other case in this
+    /// file and would leave the run stuck on exactly the rows that had the least to hide.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task ResealDescription_WithNoNoteOverATransactionThatHasNone_IsAcceptedAndStillStamps()
+    {
+        // Arrange
+        Transaction transaction = Transaction.Create(
+            Guid.CreateVersion7(),
+            Guid.CreateVersion7(),
+            Guid.CreateVersion7(),
+            Money("-42.50"),
+            UsdMinorUnit,
+            new DateOnly(2026, 6, 12),
+            null,
+            UtcNow());
+        var rotationId = Guid.CreateVersion7();
+
+        // Act
+        transaction.ResealDescription(null, rotationId);
+
+        // Assert
+        await Assert.That(transaction.Description).IsNull();
+        await Assert.That(transaction.RotationId).IsEqualTo(rotationId);
+    }
+
+    /// <summary>
+    /// A refused reseal writes nothing at all — not the note, and above all not the stamp.
+    /// </summary>
+    /// <remarks>
+    /// <b>The stamp is the assertion that matters here.</b> A reseal that stamped before it judged the
+    /// note leaves a row marked as rotated that was not — and the stamp is the one signal completion
+    /// trusts, so the destructive step would promote the new keys over a row still sealed under the old
+    /// one. That is the exact loss the column was added to prevent, produced by the member that writes
+    /// it. The previous rotation's id is the fixture rather than <see langword="null" /> so that a
+    /// member which cleared the stamp on refusal also reddens.
+    /// </remarks>
+    [Test]
+    public async Task ResealDescription_WithARefusedNote_LeavesTheNoteAndTheStampAsTheyWere()
+    {
+        // Arrange — a transaction already carried through one rotation, now handed a chunk that drops
+        // its note.
+        Transaction transaction = NewTransaction();
+        var firstRotationId = Guid.CreateVersion7();
+        transaction.ResealDescription(
+            SealedNarrative.Description("Corner shop resealed"), firstRotationId);
+
+        // Act
+        ThrowsValidationException(() =>
+            transaction.ResealDescription(null, Guid.CreateVersion7()));
+
+        // Assert — CollectionOrdering.Matching for the reason
+        // Create_WithValidInput_StoresEveryColumnItWasGiven states.
+        await Assert.That(transaction.Description!.Envelope.ToArray()).IsEquivalentTo(
+            SealedNarrative.Description("Corner shop resealed").Envelope.ToArray(),
+            CollectionOrdering.Matching);
+        await Assert.That(transaction.RotationId).IsEqualTo(firstRotationId);
+    }
+
+    /// <summary>
+    /// An ordinary update clears the stamp a rotation left on the row.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This is the rule the whole stamp rests on, and it is the easiest one to leave out</b> —
+    /// nothing about <see cref="Transaction.Update" /> reads as being part of a rotation, so a reader
+    /// implementing the reseal member has no reason to open this one.
+    /// </para>
+    /// <para>
+    /// <b>What goes wrong without it.</b> A second browser tab still holding the OLD content key can
+    /// edit a transaction this rotation has already stamped. It writes old-key ciphertext, and — with
+    /// this line missing — it does not touch the stamp, so the row ends up carrying old-key ciphertext
+    /// under a current stamp. Completion then reads a full house, promotes the new keys and destroys the
+    /// old ones, and that transaction's note is gone: no constraint violated, nothing red, and the
+    /// symptom is a ledger line that will not decrypt. Clearing the stamp is what makes completion
+    /// refuse instead, which is a run the person can retry.
+    /// </para>
+    /// <para>
+    /// <b><see cref="Transaction.AssignPayee" />, <see cref="Transaction.ClearPayee" />,
+    /// <see cref="Transaction.AssignCategory" /> and <see cref="Transaction.ClearCategory" /> are
+    /// deliberately not given the same case.</b> None of them writes a narrative column, so a stale tab
+    /// recategorising a transaction invalidates no ciphertext and has nothing to disown. Clearing there
+    /// would fail rotations for edits that cost them nothing.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Update_ClearsTheRotationStamp()
+    {
+        // Arrange — stamped through the real reseal path rather than reflected in, so the case describes
+        // the sequence that actually happens: a chunk rewrites the row, then a stale tab edits it.
+        Transaction transaction = NewTransaction();
+        transaction.ResealDescription(
+            SealedNarrative.Description("Corner shop resealed"), Guid.CreateVersion7());
+
+        // Act
+        transaction.Update(
+            Guid.CreateVersion7(),
+            Money("-12.00"),
+            UsdMinorUnit,
+            new DateOnly(2026, 6, 13),
+            SealedNarrative.Description("Chemist"));
+
+        // Assert
+        await Assert.That(transaction.RotationId).IsNull();
+    }
+
+    /// <summary>
+    /// A refused update leaves the stamp where it was.
+    /// </summary>
+    /// <remarks>
+    /// The companion to <see cref="Update_ClearsTheRotationStamp" />, and the reason the clearing cannot
+    /// be a line at the top of <see cref="Transaction.Update" />: a refused update wrote no ciphertext,
+    /// so there is nothing to disown. Cleared anyway, a rotation would be failed by edits that never
+    /// landed — a completion step that refuses a run the person can see nothing wrong with, whose only
+    /// remedy is to re-rotate the whole account. This is the one entity where the claim is testable
+    /// against a ValidationException rather than a null dereference, for the reason
+    /// <see cref="Update_WithARefusedAmount_LeavesTheDescriptionUnchanged" /> gives.
+    /// </remarks>
+    [Test]
+    public async Task Update_WithARefusedAmount_LeavesTheRotationStampWhereItWas()
+    {
+        // Arrange
+        Transaction transaction = NewTransaction();
+        var rotationId = Guid.CreateVersion7();
+        transaction.ResealDescription(
+            SealedNarrative.Description("Corner shop resealed"), rotationId);
+
+        // Act
+        ThrowsValidationException(() => transaction.Update(
+            Guid.CreateVersion7(),
+            Money("10.005"),
+            UsdMinorUnit,
+            new DateOnly(2026, 6, 13),
+            SealedNarrative.Description("Chemist")));
+
+        // Assert
+        await Assert.That(transaction.RotationId).IsEqualTo(rotationId);
+    }
+
+    /// <summary>
+    /// Assigning a payee leaves the stamp standing.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The inverse of <see cref="Update_ClearsTheRotationStamp" />, and the mutation it catches is
+    /// clearing the stamp HERE.</b> This is the first of four cases making the same claim about the four
+    /// assignment members; the argument is written out once, on this one, and the other three point at
+    /// it. All four write a nullable <see cref="Guid" /> the server reads and touch no envelope, so after
+    /// any of them runs the row's ciphertext is still whatever the rotation sealed and the stamp is
+    /// still honest. A reader who takes "an edit clears the stamp" as the rule rather than "a NARRATIVE
+    /// write clears the stamp" will put the line in all five members of this entity, and every case in
+    /// this file except these four stays green.
+    /// </para>
+    /// <para>
+    /// <b>Why that is worse than it looks, and why it is not a data-loss bug.</b> Nothing is lost — the
+    /// row is fine. What breaks is convergence. Completion refuses a rotation that genuinely finished,
+    /// the client re-seals the un-stamped rows, and on an account where somebody is categorising a
+    /// backlog of transactions while the run proceeds, each pass re-stamps rows the next assignment
+    /// un-stamps. The rotation may never finish, and transactions are the rows there are most of, so
+    /// this is the entity where a non-converging run will actually happen.
+    /// </para>
+    /// <para>
+    /// <b>These four are pins, not red bars.</b> They go green the moment the member exists, because no
+    /// assignment member writes a stamp today. Their value is entirely in the mutation named above.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task AssignPayee_LeavesTheRotationStampStanding()
+    {
+        // Arrange — stamped through the real reseal path, then categorised.
+        Transaction transaction = NewTransaction();
+        var rotationId = Guid.CreateVersion7();
+        transaction.ResealDescription(
+            SealedNarrative.Description("Corner shop resealed"), rotationId);
+        var payeeId = Guid.CreateVersion7();
+
+        // Act
+        transaction.AssignPayee(payeeId);
+
+        // Assert
+        await Assert.That(transaction.PayeeId).IsEqualTo(payeeId);
+        await Assert.That(transaction.RotationId).IsEqualTo(rotationId);
+    }
+
+    /// <summary>
+    /// Clearing a payee leaves the stamp standing.
+    /// </summary>
+    /// <remarks>
+    /// The same claim <see cref="AssignPayee_LeavesTheRotationStampStanding" /> argues, on the member
+    /// that removes an assignment rather than adds one. It is its own case because clearing reads like a
+    /// deletion, which is the shape a reader is most likely to reach for the stamp over.
+    /// </remarks>
+    [Test]
+    public async Task ClearPayee_LeavesTheRotationStampStanding()
+    {
+        // Arrange
+        Transaction transaction = NewTransaction();
+        transaction.AssignPayee(Guid.CreateVersion7());
+        var rotationId = Guid.CreateVersion7();
+        transaction.ResealDescription(
+            SealedNarrative.Description("Corner shop resealed"), rotationId);
+
+        // Act
+        transaction.ClearPayee();
+
+        // Assert
+        await Assert.That(transaction.PayeeId).IsNull();
+        await Assert.That(transaction.RotationId).IsEqualTo(rotationId);
+    }
+
+    /// <summary>
+    /// Assigning a category leaves the stamp standing.
+    /// </summary>
+    /// <remarks>
+    /// The same claim <see cref="AssignPayee_LeavesTheRotationStampStanding" /> argues, on the
+    /// assignment a person makes most often — categorising a backlog is the bulk edit most likely to be
+    /// running at the same time as a rotation.
+    /// </remarks>
+    [Test]
+    public async Task AssignCategory_LeavesTheRotationStampStanding()
+    {
+        // Arrange
+        Transaction transaction = NewTransaction();
+        var rotationId = Guid.CreateVersion7();
+        transaction.ResealDescription(
+            SealedNarrative.Description("Corner shop resealed"), rotationId);
+        var categoryId = Guid.CreateVersion7();
+
+        // Act
+        transaction.AssignCategory(categoryId);
+
+        // Assert
+        await Assert.That(transaction.CategoryId).IsEqualTo(categoryId);
+        await Assert.That(transaction.RotationId).IsEqualTo(rotationId);
+    }
+
+    /// <summary>
+    /// Clearing a category leaves the stamp standing.
+    /// </summary>
+    /// <remarks>
+    /// The same claim <see cref="AssignPayee_LeavesTheRotationStampStanding" /> argues, on the fourth
+    /// and last of the assignment members. Listed rather than folded into its sibling so that the four
+    /// members and the four cases are the same count, which is what makes a fifth assignment member
+    /// arrive as a row somebody has to write.
+    /// </remarks>
+    [Test]
+    public async Task ClearCategory_LeavesTheRotationStampStanding()
+    {
+        // Arrange
+        Transaction transaction = NewTransaction();
+        transaction.AssignCategory(Guid.CreateVersion7());
+        var rotationId = Guid.CreateVersion7();
+        transaction.ResealDescription(
+            SealedNarrative.Description("Corner shop resealed"), rotationId);
+
+        // Act
+        transaction.ClearCategory();
+
+        // Assert
+        await Assert.That(transaction.CategoryId).IsNull();
+        await Assert.That(transaction.RotationId).IsEqualTo(rotationId);
+    }
+
+    /// <summary>
+    /// A reseal quoting the empty rotation id is refused.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The rule is <see cref="Domain.Users.KeyRotation.Begin" />'s, restated where the stamp is
+    /// written rather than invented here.</b> That factory already refuses <see cref="Guid.Empty" /> for
+    /// this identifier, keyed on the same member name, and says why: all-zeros is what a client that has
+    /// not begun a run sends, and it is the one value two accounts reach independently.
+    /// </para>
+    /// <para>
+    /// <b>What an accepting version produces.</b> A storable uuid in every row's stamp, matching no
+    /// <c>key_rotations</c> row — so completion reads a house that is full of a rotation nobody started.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task ResealDescription_WithTheEmptyRotationId_IsRefused()
+    {
+        // Arrange
+        Transaction transaction = NewTransaction();
+
+        // Act
+        ValidationException exception = ThrowsValidationException(() =>
+            transaction.ResealDescription(
+                SealedNarrative.Description("Corner shop resealed"), Guid.Empty));
+
+        // Assert — keyed on the member the stamp lands in, as KeyRotation.Begin keys its own. The note
+        // is read back too, so a member that assigned before it judged reddens here rather than leaving
+        // a row rewritten under a rotation that does not exist.
+        await Assert.That(exception.Errors.ContainsKey(nameof(Transaction.RotationId))).IsTrue();
+        await Assert.That(transaction.Description!.Envelope.ToArray()).IsEquivalentTo(
+            SealedNarrative.Description("Corner shop").Envelope.ToArray(),
+            CollectionOrdering.Matching);
+        await Assert.That(transaction.RotationId).IsNull();
+    }
+
+    /// <summary>
+    /// A chunk re-sent under the rotation id it already carried is accepted, and leaves the note and the
+    /// stamp where the first arrival put them.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>A re-sent chunk is the ordinary case and not an anomaly.</b> A rotation is cut into chunks
+    /// because an account can hold more rows than one request should carry, and every chunk of one run
+    /// quotes the same rotation id — that is what the id is for. This is the entity that makes chunking
+    /// necessary in the first place: transactions outnumber every other narrative-bearing row in the
+    /// product by orders of magnitude, so a rotation's longest leg is here and so is its likeliest
+    /// timeout.
+    /// </para>
+    /// <para>
+    /// <b>What this case is here to refuse.</b> A member that additionally rejected a rotation id equal
+    /// to the stamp the row already carries reads as sensible idempotence protection and passes every
+    /// other case in this file, because they all mint a fresh id. It would fail exactly the runs long
+    /// enough to need chunking — the retry, on the accounts with the most rows — and it protects against
+    /// nothing: a reseal is a whole-value write, so the same chunk applied twice lands the same bytes and
+    /// the same stamp.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task ResealDescription_RepeatedUnderTheSameRotationId_IsAccepted()
+    {
+        // Arrange — the chunk that landed, and the id its run is quoting throughout.
+        Transaction transaction = NewTransaction();
+        var rotationId = Guid.CreateVersion7();
+        transaction.ResealDescription(SealedNarrative.Description("Corner shop resealed"), rotationId);
+
+        // Act — the same chunk again, under the same id, as a re-sent request carries it.
+        transaction.ResealDescription(SealedNarrative.Description("Corner shop resealed"), rotationId);
+
+        // Assert — the note still sealed under the new key, and the stamp still standing, so a member
+        // that refused would redden on the call and one that cleared on a repeat would redden here.
+        await Assert.That(transaction.Description!.Envelope.ToArray()).IsEquivalentTo(
+            SealedNarrative.Description("Corner shop resealed").Envelope.ToArray(),
+            CollectionOrdering.Matching);
+        await Assert.That(transaction.RotationId).IsEqualTo(rotationId);
+    }
+
+    /// <summary>
     /// A legal transaction carrying the note labelled <c>"Corner shop"</c>, for the cases whose subject is
     /// something other than the arguments <see cref="Transaction.Create" /> was handed.
     /// </summary>

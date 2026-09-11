@@ -79,7 +79,9 @@ public sealed class Transaction
     /// still hold the previous generation when a tab closes. A <see cref="Description"/> that was never
     /// filed leaves nothing to re-seal, so a completed row and an untouched one are the same row without
     /// the stamp.
-    /// <b>Private setter, no mutator, no factory parameter</b> — nothing writes it in this commit.
+    /// <b>Private setter and no factory parameter</b>: <see cref="ResealDescription"/> is the one member
+    /// that writes a stamp, and <see cref="Update"/> is the one that clears it — the four assignment
+    /// members below deliberately do neither, for the reason they state.
     /// </remarks>
     public Guid? RotationId { get; private set; }
 
@@ -155,6 +157,17 @@ public sealed class Transaction
     /// <c>PATCH /api/transactions/{id}</c> carries an <c>Optional&lt;string?&gt;</c> and decides absence
     /// before the entity is reached, handing this member whichever value survives. An entity that
     /// invented a third state here would make the route's clear leg unwritable.
+    /// <para>
+    /// <b>It disowns any rotation stamp the row carries, and that line is part of the edit rather than
+    /// bookkeeping beside it.</b> A second browser tab still holding the <em>previous</em> content key
+    /// can reach this member for a row a chunk has already re-sealed: it writes old-key ciphertext into
+    /// <see cref="Description"/>, and with the stamp left standing the row reads as rewritten while its
+    /// note is sealed under the generation the completion step destroys. Nothing is red, no constraint is
+    /// violated, and the symptom is a note that stops opening. Cleared, the same sequence makes
+    /// completion refuse a run the person can start again. The clearing sits <em>below</em>
+    /// <c>ValidateOrThrow</c> with the assignments: a refused edit wrote no ciphertext and so has nothing
+    /// to disown, and clearing there would fail a rotation over edits that never landed.
+    /// </para>
     /// </remarks>
     public void Update(
         Guid accountId,
@@ -175,6 +188,87 @@ public sealed class Transaction
         Amount = amount;
         Date = date;
         Description = description;
+
+        // Beside the ciphertext it disowns - see the remarks above.
+        RotationId = null;
+    }
+
+    /// <summary>
+    /// Replaces the sealed note with the envelope a content-key rotation produced under the next
+    /// generation of the account's keys, and records which run rewrote the row.
+    /// </summary>
+    /// <param name="description">
+    /// The note the row already holds, re-sealed under the new content key, or <see langword="null"/>
+    /// where the transaction has none. Anything else is refused — see below.
+    /// </param>
+    /// <param name="rotationId">
+    /// The run in flight, as <see cref="Users.KeyRotation.RotationId"/> spells it.
+    /// </param>
+    /// <remarks>
+    /// <para>
+    /// <b>The note is judged by <see cref="NarrativeReseal.Resealed"/> and not by four lines written
+    /// here.</b> That rule is the one property a side holding no key can check — a column that held
+    /// something still holds something — and its remarks say plainly how weak it is and why it is
+    /// nonetheless the strongest available. Eight narrative columns pass through it; restated per entity
+    /// it would be a rule that drifts, and the copy that forgot an arm still stores, still reads back and
+    /// still opens.
+    /// </para>
+    /// <para>
+    /// <b>It is named for the column because the column is the whole of what it may write.</b> A
+    /// transaction's other fields — the account, the amount, the date, the payee and the category — are
+    /// values this server still reads and no re-encryption has any business touching, so there is no
+    /// parameter for any of them and no delegation to <see cref="Update"/>, which would have to invent
+    /// four. <see cref="Id"/> is stronger still: it is the associated data every envelope this row has
+    /// ever held was sealed against, so a member that re-minted it would store a note nobody can open.
+    /// </para>
+    /// <para>
+    /// <b>A row that never carried a note is still stamped, and that arm is the ordinary one here.</b>
+    /// Most transactions have no description, so a member that returned early on a null would leave the
+    /// majority of an account's largest table unaccounted for and the run permanently short of the full
+    /// house completion needs.
+    /// </para>
+    /// <para>
+    /// <b>No length is measured here</b>, for the reason <see cref="NarrativeReseal"/> gives about the
+    /// three owners a cap already has.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ValidationException">
+    /// <paramref name="rotationId"/> is <see cref="Guid.Empty"/>, or <paramref name="description"/>
+    /// changes whether <see cref="Description"/> holds a value.
+    /// </exception>
+    public void ResealDescription(NarrativeField? description, Guid rotationId)
+    {
+        // Both refusals run ahead of both assignments, so a refused reseal leaves the note and the stamp
+        // exactly as the last chunk left them. A member that stamped first would mark a row as rewritten
+        // that was not, which is the one signal the destructive completion step trusts.
+        RequireRotation(rotationId);
+
+        NarrativeField? resealedDescription =
+            NarrativeReseal.Resealed(Description, description, nameof(Description));
+
+        Description = resealedDescription;
+        RotationId = rotationId;
+    }
+
+    /// <summary>
+    /// Refuses the empty rotation identifier, keyed on the member the stamp lands in.
+    /// </summary>
+    /// <remarks>
+    /// <b>The rule belongs to <see cref="Users.KeyRotation.Begin"/> and is restated at the far end of the
+    /// same identifier rather than invented here.</b> That factory argues it: all-zeros is a storable
+    /// uuid and is what a client that has begun no run sends, so a stamp carrying it marks a row as
+    /// rewritten under a rotation no <c>key_rotations</c> row matches — a full house belonging to nobody,
+    /// read by the step that destroys the old keys.
+    /// </remarks>
+    private static void RequireRotation(Guid rotationId)
+    {
+        if (rotationId == Guid.Empty)
+        {
+            throw new ValidationException(new Dictionary<string, string[]>
+            {
+                [nameof(RotationId)] = ["Rotation id is required."],
+            });
+        }
     }
 
     /// <summary>
@@ -271,6 +365,21 @@ public sealed class Transaction
         }
     }
 
+    /// <summary>
+    /// Files the transaction against <paramref name="payeeId"/>.
+    /// </summary>
+    /// <remarks>
+    /// <b>This member and the three below it write no stamp and, more importantly, clear none — the
+    /// omission is the rule rather than an oversight, and it is stated once for all four.</b> An
+    /// assignment writes a foreign key the server reads and touches no envelope, so after it runs the
+    /// row's ciphertext is still whatever the rotation sealed and <see cref="RotationId"/> is still
+    /// honest. The clearing line <see cref="Update"/> carries belongs to <em>narrative</em> writes, not
+    /// to edits in general; added here it loses no data and instead costs convergence — completion
+    /// refuses a run that genuinely finished, the client re-seals the un-stamped rows, and on an account
+    /// where somebody is categorising a backlog while the run proceeds each pass re-stamps rows the next
+    /// assignment un-stamps. The rotation may never finish, on exactly the accounts large enough to need
+    /// several chunks, with nothing on screen to explain why.
+    /// </remarks>
     public void AssignPayee(Guid payeeId)
     {
         // An empty id here is a programmer/invariant error (the caller always passes a real

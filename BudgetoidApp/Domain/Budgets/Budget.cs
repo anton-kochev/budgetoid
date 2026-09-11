@@ -61,10 +61,18 @@ public sealed class Budget
     /// while the transaction is the property the rule actually rests on.
     /// </para>
     /// <para>
-    /// <b>It has a private setter, no mutator and no factory parameter, and that is deliberate rather
-    /// than unfinished.</b> Nothing writes a stamp yet — the members that do arrive with the reseal
-    /// behaviour. The column is inert today, and a factory parameter added ahead of its caller would be
-    /// a value every existing creation path has to pass and none of them has an answer for.
+    /// <b>It has a private setter and no factory parameter, and the one member that writes it is
+    /// <see cref="ResealName"/>.</b> A factory parameter would be a value every existing creation path
+    /// has to pass and none of them has an answer for.
+    /// </para>
+    /// <para>
+    /// <b>Its five siblings each carry a clearing line on their ordinary narrative write and this entity
+    /// carries none, because there is no such write to hang one on.</b> A budget is created and never
+    /// renamed — <see cref="Create"/> and <see cref="CreateDefault"/> are the whole instance surface —
+    /// so no path exists that could leave old-key ciphertext under a current stamp. The day a "name your
+    /// budget" screen ships, the member that serves it clears this column in the same commit, modelled on
+    /// <see cref="Payees.Payee.Rename"/>; a member that wrote <see cref="BaseCurrencyCode"/> and nothing
+    /// else would be on the other side of that line and must leave the stamp standing.
     /// </para>
     /// </remarks>
     public Guid? RotationId { get; private set; }
@@ -139,6 +147,88 @@ public sealed class Budget
             Name = null,
             CreatedAtUtc = createdAtUtc,
         };
+    }
+
+    /// <summary>
+    /// Replaces the sealed name with the envelope a content-key rotation produced under the next
+    /// generation of the account's keys, and records which run rewrote the row.
+    /// </summary>
+    /// <param name="name">
+    /// The text the row already holds, re-sealed under the new content key, or <see langword="null"/>
+    /// where the budget is nameless. Anything else is refused — see below.
+    /// </param>
+    /// <param name="rotationId">
+    /// The run in flight, as <see cref="Users.KeyRotation.RotationId"/> spells it.
+    /// </param>
+    /// <remarks>
+    /// <para>
+    /// <b>It is <see langword="internal"/>, and the access level is the rule rather than an
+    /// implementation detail.</b> <c>Domain.csproj</c> grants its internals to <c>Infrastructure</c> and
+    /// to nothing else, so the Application ring — where a rotation's command handlers live — cannot bind
+    /// to this member at all. Made public it becomes a door onto the one entity whose creation is a
+    /// single consented act, reachable from any handler anybody adds, with nothing red; widening the
+    /// grant to reach it instead moves a pinned row in <c>ProjectReferenceGraphTests</c>. Neither is a
+    /// way to make a caller compile.
+    /// </para>
+    /// <para>
+    /// <b>It takes a bare <see cref="NarrativeField"/> where its four siblings take an
+    /// <c>IndexedName</c>, and that is a consequence of the sealing rather than an inconsistency.</b>
+    /// Sealing surrendered uniqueness on <c>budgets.name</c> — a decision, not a gap — so there is no
+    /// blind index on this column and no second half for a pair type to hold together.
+    /// </para>
+    /// <para>
+    /// <b>The name is judged by <see cref="NarrativeReseal.Resealed"/> and not by four lines written
+    /// here</b>, and on this entity the nameless arm is the ordinary case rather than the exotic one: a
+    /// budget is provisioned without a name by the one path that creates an account, and most stay that
+    /// way. So a rotation supplying a name for a nameless budget is refused — presence is the only
+    /// property this side can check, and an arm admitting a change of it would let a budget silently
+    /// acquire a name nobody typed — while a nameless budget handed no name is accepted <em>and still
+    /// stamped</em>. There is nothing to re-encrypt on that row and it must still be accounted for, or
+    /// completion is permanently one short on nearly every account in the product.
+    /// </para>
+    /// <para>
+    /// <b>Nothing else on the row is writable from here.</b> <see cref="UserId"/> above all: a budget is
+    /// the unit of tenancy, so a row that changed owner carries a whole ledger with it. The database
+    /// says the same by granting <c>UPDATE</c> on <c>name</c> alone, which
+    /// <c>DomainImmutabilityTests</c> and <c>AppRoleGrantMatrixTests</c> hold from their two ends.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ValidationException">
+    /// <paramref name="rotationId"/> is <see cref="Guid.Empty"/>, or <paramref name="name"/> changes
+    /// whether <see cref="Name"/> holds a value.
+    /// </exception>
+    internal void ResealName(NarrativeField? name, Guid rotationId)
+    {
+        // Both refusals run ahead of both assignments, so a refused reseal leaves the name and the stamp
+        // exactly as the last chunk left them. A member that stamped first would mark a row as rewritten
+        // that was not, which is the one signal the destructive completion step trusts.
+        RequireRotation(rotationId);
+
+        NarrativeField? resealedName = NarrativeReseal.Resealed(Name, name, nameof(Name));
+
+        Name = resealedName;
+        RotationId = rotationId;
+    }
+
+    /// <summary>
+    /// Refuses the empty rotation identifier, keyed on the member the stamp lands in.
+    /// </summary>
+    /// <remarks>
+    /// <b>The rule belongs to <see cref="Users.KeyRotation.Begin"/> and is restated at the far end of the
+    /// same identifier rather than invented here.</b> That factory argues it: all-zeros is a storable
+    /// uuid and is what a client that has begun no run sends, so a stamp carrying it marks a row as
+    /// rewritten under a rotation no <c>key_rotations</c> row matches — a full house belonging to nobody,
+    /// read by the step that destroys the old keys.
+    /// </remarks>
+    private static void RequireRotation(Guid rotationId)
+    {
+        if (rotationId == Guid.Empty)
+        {
+            throw new ValidationException(new Dictionary<string, string[]>
+            {
+                [nameof(RotationId)] = ["Rotation id is required."],
+            });
+        }
     }
 
     /// <summary>

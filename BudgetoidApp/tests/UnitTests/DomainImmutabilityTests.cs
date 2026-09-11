@@ -128,8 +128,26 @@ public sealed class DomainImmutabilityTests
         // name's index — a row whose uniqueness value stops describing its own content, which no
         // constraint can see and no read can report, because recomputing either half needs the account's
         // index key and that lives in a browser. Such an overload would appear here as a second entry.
+        //
+        // Reseal is the second entry, and it is here because a content-key rotation has to rewrite a
+        // name it cannot read. Why an account needs a second public mutator at all: Update is a rename —
+        // it takes a type, an opening balance and a minor unit, re-validates all three, and clears the
+        // rotation stamp — and a rotation supplies none of that and must clear nothing. A rotation
+        // routed through Update would have to invent the three arithmetic arguments, and the only
+        // inventions available are the entity's current values, which is correct right up to the account
+        // whose balance a second request changed between the read and the reseal; and clearing the stamp
+        // is the one thing a reseal must not do, because the stamp is the only signal the destructive
+        // completion step trusts. So the two are different acts on different columns with opposite
+        // effects on RotationId, and collapsing them costs more than the line below.
+        //
+        // What this row still pins, unchanged: the name parameter is an IndexedName, so a rotation
+        // cannot write half a name either; there is no currency parameter, so a rotation cannot
+        // redenominate; and there are three parameters and not four, so a reseal cannot quietly grow the
+        // ability to move an arithmetic column. A third entry means a third way to write this entity and
+        // belongs in a paragraph of its own, not appended to this one.
         string[] expected =
         [
+            "Void Reseal(IndexedName name, Guid rotationId)",
             "Void Update(IndexedName name, AccountType type, Decimal openingBalance, Int32 minorUnit)",
         ];
         await Assert.That(signatures).IsEquivalentTo(expected);

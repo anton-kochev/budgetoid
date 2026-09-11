@@ -543,6 +543,458 @@ public sealed class CategoryGroupTests
     }
 
     /// <summary>
+    /// A content-key rotation replaces both halves of the name and the description together.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The second labels model the same text under two keys, not new text.</b> A rotation
+    /// re-encrypts what the row already holds, so nothing about the group changes except the bytes — but
+    /// <see cref="SealedNarrative" /> derives everything from the label it is handed, so "the same text
+    /// under a new key" has no other spelling here than a second label.
+    /// </para>
+    /// <para>
+    /// <b>The index is asserted to have moved too, and that is the reason the parameter is an
+    /// <see cref="IndexedName" />.</b> The index key rotates alongside the content key, so a reseal that
+    /// replaced the envelope alone would leave the row's name sealed under the new content key and keyed
+    /// under the old index one — the half-written name
+    /// <see cref="Update_ReplacesBothHalvesOfTheNameAndTheDescription" /> argues about, arriving on
+    /// every group in the budget at once and by a path nobody is watching.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Reseal_ReplacesBothHalvesOfTheNameAndTheDescription()
+    {
+        // Arrange
+        CategoryGroup group = NewGroup("Essential Obligations", "Required spending");
+
+        // Act
+        group.Reseal(
+            SealedNarrative.Indexed("Essential Obligations resealed"),
+            SealedNarrative.Description("Required spending resealed"),
+            Guid.CreateVersion7());
+
+        // Assert — CollectionOrdering.Matching on the positive assertions for the reason
+        // Create_WithValidInput_StoresBothHalvesOfTheNameBudgetIdPositionAndCreatedAtUtc states; the
+        // negative one keeps the default, which is the stronger "not even a permutation" claim.
+        await Assert.That(group.Name.Envelope.ToArray()).IsEquivalentTo(
+            SealedNarrative.Name("Essential Obligations resealed").Envelope.ToArray(),
+            CollectionOrdering.Matching);
+        await Assert.That(group.NameKey.ToArray()).IsEquivalentTo(
+            SealedNarrative.BlindIndex("Essential Obligations resealed").ToArray(),
+            CollectionOrdering.Matching);
+        await Assert.That(group.NameKey.ToArray())
+            .IsNotEquivalentTo(SealedNarrative.BlindIndex("Essential Obligations").ToArray());
+        await Assert.That(group.Description!.Envelope.ToArray()).IsEquivalentTo(
+            SealedNarrative.Description("Required spending resealed").Envelope.ToArray(),
+            CollectionOrdering.Matching);
+    }
+
+    /// <summary>
+    /// A reseal stamps the row with the id of the rotation that rewrote it.
+    /// </summary>
+    /// <remarks>
+    /// The stamp is the whole reason the column exists, argued at <c>Budget.RotationId</c>: a re-sealed
+    /// envelope and an untouched one are byte-for-byte indistinguishable to a server holding no key, so
+    /// the completion step — which destroys the only copies of the old keys — can only know the rewrite
+    /// finished by being told, in the same transaction as the ciphertext. A reseal that replaced the
+    /// envelopes and left this column null passes every other accepting case in this file and makes the
+    /// account un-completable.
+    /// </remarks>
+    [Test]
+    public async Task Reseal_StampsTheRotationItWasGiven()
+    {
+        // Arrange — the id minted here and threaded in, so the assertion is not "a stamp appeared" but
+        // "this rotation's did". A member that minted its own would leave every row stamped with an id
+        // no completion step is looking for.
+        CategoryGroup group = NewGroup("Essential Obligations", "Required spending");
+        var rotationId = Guid.CreateVersion7();
+
+        // Act
+        group.Reseal(
+            SealedNarrative.Indexed("Essential Obligations resealed"),
+            SealedNarrative.Description("Required spending resealed"),
+            rotationId);
+
+        // Assert
+        await Assert.That(group.RotationId).IsEqualTo(rotationId);
+    }
+
+    /// <summary>
+    /// A reseal moves the two narrative columns and the stamp and touches nothing else.
+    /// </summary>
+    /// <remarks>
+    /// <b>This is the case that catches a reseal built by reusing <see cref="CategoryGroup.Update" />.</b>
+    /// Update reaches ValidateOrThrow with the group's current position and assigns nothing else, so the
+    /// reuse looks harmless — until a reseal reads a position from its own request rather than off the
+    /// row. Position is relative to the whole set, which is why the group list is one of the seven reads
+    /// delivered whole; a rotation that renumbered it would reorder somebody's budget as a side effect
+    /// of re-encrypting it, silently and in bulk. The identity columns are stronger still —
+    /// <see cref="CategoryGroup.Id" /> is the associated data every envelope this row has ever held was
+    /// sealed against, so a reseal that re-minted it would produce values nobody can ever open.
+    /// </remarks>
+    [Test]
+    public async Task Reseal_LeavesPositionAndIdentityUnchanged()
+    {
+        // Arrange — a non-zero position, so a reseal that reset it to the default is visible rather than
+        // accidentally right.
+        var id = Guid.CreateVersion7();
+        var budgetId = Guid.CreateVersion7();
+        DateTime createdAtUtc = UtcNow();
+        CategoryGroup group = CategoryGroup.Create(
+            id,
+            budgetId,
+            SealedNarrative.Indexed("Essential Obligations"),
+            SealedNarrative.Description("Required spending"),
+            3,
+            createdAtUtc);
+
+        // Act
+        group.Reseal(
+            SealedNarrative.Indexed("Essential Obligations resealed"),
+            SealedNarrative.Description("Required spending resealed"),
+            Guid.CreateVersion7());
+
+        // Assert
+        await Assert.That(group.Id).IsEqualTo(id);
+        await Assert.That(group.BudgetId).IsEqualTo(budgetId);
+        await Assert.That(group.Position).IsEqualTo(3);
+        await Assert.That(group.CreatedAtUtc).IsEqualTo(createdAtUtc);
+    }
+
+    /// <summary>
+    /// A rotation that supplies no description for a group that has one is refused.
+    /// </summary>
+    /// <remarks>
+    /// The clearing arm of the presence rule <c>NarrativeReseal.Resealed</c> owns, reached through this
+    /// entity so that the group's description is actually routed through it. The column is nullable, so
+    /// writing the absence through produces a legal row that violates no constraint and is
+    /// byte-identical to one belonging to somebody who deliberately filed no note. Nothing in the schema
+    /// can tell that bug from an operation, which is why the refusal has to be in the domain.
+    /// </remarks>
+    [Test]
+    public async Task Reseal_WithNoDescriptionOverAGroupThatHasOne_IsRefused()
+    {
+        // Arrange
+        CategoryGroup group = NewGroup("Essential Obligations", "Required spending");
+
+        // Act
+        ValidationException exception = ThrowsValidationException(() => group.Reseal(
+            SealedNarrative.Indexed("Essential Obligations resealed"),
+            null,
+            Guid.CreateVersion7()));
+
+        // Assert — keyed on the member the request carries. A refusal filed under a word invented by the
+        // entity reaches the client verbatim as a 400 naming a member no request has.
+        await Assert.That(exception.Errors.ContainsKey(nameof(CategoryGroup.Description))).IsTrue();
+    }
+
+    /// <summary>
+    /// A rotation that supplies a description for a group that has none is refused.
+    /// </summary>
+    /// <remarks>
+    /// The quieter arm, and the one a reviewer will propose relaxing: filling in an empty note harms no
+    /// data. It is refused because presence is the only property this side can check at all, so an arm
+    /// that admits a change of presence gives up the whole of what the rule is made of — and what lands
+    /// in that column is text the server cannot read, attributed to a person who never wrote it, in a
+    /// run they authorised as "re-encrypt what I have".
+    /// </remarks>
+    [Test]
+    public async Task Reseal_WithADescriptionOverAGroupThatHasNone_IsRefused()
+    {
+        // Arrange
+        CategoryGroup group = NewGroup("Essential Obligations", null);
+
+        // Act
+        ValidationException exception = ThrowsValidationException(() => group.Reseal(
+            SealedNarrative.Indexed("Essential Obligations resealed"),
+            SealedNarrative.Description("Required spending"),
+            Guid.CreateVersion7()));
+
+        // Assert
+        await Assert.That(exception.Errors.ContainsKey(nameof(CategoryGroup.Description))).IsTrue();
+    }
+
+    /// <summary>
+    /// A group that never had a description is rotated, stamped, and left without one.
+    /// </summary>
+    /// <remarks>
+    /// <b>The control for both refusals, and not a filler case.</b> Without it, a reseal that threw
+    /// whenever either side of the description was null would pass both cases above and would make every
+    /// account holding one note-less group un-rotatable — a refusal the person cannot act on, because
+    /// the field they are being refused for is one they never filled in. The stamp is asserted here for
+    /// the same reason: completion needs a full house, so the rows with nothing to re-encrypt still have
+    /// to be accounted for, and a reseal that returned early on a null description would leave exactly
+    /// those rows unstamped and the run permanently one short.
+    /// </remarks>
+    [Test]
+    public async Task Reseal_WithNoDescriptionOverAGroupThatHasNone_IsAcceptedAndStillStamps()
+    {
+        // Arrange
+        CategoryGroup group = NewGroup("Essential Obligations", null);
+        var rotationId = Guid.CreateVersion7();
+
+        // Act
+        group.Reseal(
+            SealedNarrative.Indexed("Essential Obligations resealed"), null, rotationId);
+
+        // Assert
+        await Assert.That(group.Description).IsNull();
+        await Assert.That(group.Name.Envelope.ToArray()).IsEquivalentTo(
+            SealedNarrative.Name("Essential Obligations resealed").Envelope.ToArray(),
+            CollectionOrdering.Matching);
+        await Assert.That(group.RotationId).IsEqualTo(rotationId);
+    }
+
+    /// <summary>
+    /// A refused reseal writes nothing at all — not the name, not the note, and above all not the stamp.
+    /// </summary>
+    /// <remarks>
+    /// <b>The stamp is the assertion that matters here.</b> A reseal that stamped before it judged the
+    /// description, or that assigned the name first and refused afterwards, leaves a row marked as
+    /// rotated that was not — and the stamp is the one signal completion trusts, so the destructive step
+    /// would promote the new keys over a row still sealed under the old one. That is the exact loss the
+    /// column was added to prevent, produced by the member that writes it. The previous rotation's id is
+    /// the fixture rather than <see langword="null" /> so that a member which cleared the stamp on
+    /// refusal also reddens.
+    /// </remarks>
+    [Test]
+    public async Task Reseal_WithARefusedDescription_LeavesEveryColumnAndTheStampAsTheyWere()
+    {
+        // Arrange — a group already carried through one rotation, now handed a chunk that drops its
+        // note.
+        CategoryGroup group = NewGroup("Essential Obligations", "Required spending");
+        var firstRotationId = Guid.CreateVersion7();
+        group.Reseal(
+            SealedNarrative.Indexed("Essential Obligations resealed"),
+            SealedNarrative.Description("Required spending resealed"),
+            firstRotationId);
+
+        // Act
+        ThrowsValidationException(() => group.Reseal(
+            SealedNarrative.Indexed("Essential Obligations rotated twice"),
+            null,
+            Guid.CreateVersion7()));
+
+        // Assert — CollectionOrdering.Matching for the reason
+        // Create_WithValidInput_StoresBothHalvesOfTheNameBudgetIdPositionAndCreatedAtUtc states.
+        await Assert.That(group.Name.Envelope.ToArray()).IsEquivalentTo(
+            SealedNarrative.Name("Essential Obligations resealed").Envelope.ToArray(),
+            CollectionOrdering.Matching);
+        await Assert.That(group.NameKey.ToArray()).IsEquivalentTo(
+            SealedNarrative.BlindIndex("Essential Obligations resealed").ToArray(),
+            CollectionOrdering.Matching);
+        await Assert.That(group.Description!.Envelope.ToArray()).IsEquivalentTo(
+            SealedNarrative.Description("Required spending resealed").Envelope.ToArray(),
+            CollectionOrdering.Matching);
+        await Assert.That(group.RotationId).IsEqualTo(firstRotationId);
+    }
+
+    /// <summary>
+    /// An ordinary update clears the stamp a rotation left on the row.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This is the rule the whole stamp rests on, and it is the easiest one to leave out</b> —
+    /// nothing about <see cref="CategoryGroup.Update" /> reads as being part of a rotation, so a reader
+    /// implementing the reseal member has no reason to open this one.
+    /// </para>
+    /// <para>
+    /// <b>What goes wrong without it.</b> A second browser tab still holding the OLD content key can
+    /// rename a group this rotation has already stamped. It writes old-key ciphertext, and — with this
+    /// line missing — it does not touch the stamp, so the row ends up carrying old-key ciphertext under
+    /// a current stamp. Completion then reads a full house, promotes the new keys and destroys the old
+    /// ones, and that group's name and note are gone: no constraint violated, nothing red, and the
+    /// symptom is a screen that will not decrypt. Clearing the stamp is what makes completion refuse
+    /// instead, which is a run the person can retry.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Update_ClearsTheRotationStamp()
+    {
+        // Arrange — stamped through the real reseal path rather than reflected in, so the case describes
+        // the sequence that actually happens: a chunk rewrites the row, then a stale tab edits it.
+        CategoryGroup group = NewGroup("Essential Obligations", "Required spending");
+        group.Reseal(
+            SealedNarrative.Indexed("Essential Obligations resealed"),
+            SealedNarrative.Description("Required spending resealed"),
+            Guid.CreateVersion7());
+
+        // Act
+        group.Update(
+            SealedNarrative.Indexed("Everyday Costs"),
+            SealedNarrative.Description("Day to day"));
+
+        // Assert
+        await Assert.That(group.RotationId).IsNull();
+    }
+
+    /// <summary>
+    /// Reordering a group leaves the stamp standing.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The inverse of <see cref="Update_ClearsTheRotationStamp" />, and the mutation it catches is
+    /// clearing the stamp HERE.</b> <see cref="CategoryGroup.SetPosition" /> writes an int the server
+    /// reads; it touches no envelope, so after it runs the row's ciphertext is still whatever the
+    /// rotation sealed and the stamp is still honest. A reader who takes "an edit clears the stamp" as
+    /// the rule rather than "a NARRATIVE write clears the stamp" will put the line in both members, and
+    /// every case in this file except this one stays green.
+    /// </para>
+    /// <para>
+    /// <b>Why that is worse than it looks, and why it is not a data-loss bug.</b> Nothing is lost — the
+    /// row is fine. What breaks is convergence. Completion refuses a rotation that genuinely finished,
+    /// the client re-seals the un-stamped rows, and on an account where somebody is dragging groups
+    /// around while the run proceeds, each pass re-stamps rows the next drag un-stamps. The rotation may
+    /// never finish, on exactly the accounts large enough to need several chunks, and there is nothing
+    /// on screen to explain why.
+    /// </para>
+    /// <para>
+    /// <b>This is a pin, not a red bar.</b> It goes green the moment the member exists, because
+    /// <see cref="CategoryGroup.SetPosition" /> writes no stamp today. Its value is entirely in the
+    /// mutation named above.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task SetPosition_LeavesTheRotationStampStanding()
+    {
+        // Arrange — stamped through the real reseal path, then reordered.
+        CategoryGroup group = NewGroup("Essential Obligations", "Required spending");
+        var rotationId = Guid.CreateVersion7();
+        group.Reseal(
+            SealedNarrative.Indexed("Essential Obligations resealed"),
+            SealedNarrative.Description("Required spending resealed"),
+            rotationId);
+
+        // Act
+        group.SetPosition(4);
+
+        // Assert
+        await Assert.That(group.Position).IsEqualTo(4);
+        await Assert.That(group.RotationId).IsEqualTo(rotationId);
+    }
+
+    /// <summary>
+    /// A reseal quoting the empty rotation id is refused.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The rule is <see cref="Domain.Users.KeyRotation.Begin" />'s, restated where the stamp is
+    /// written rather than invented here.</b> That factory already refuses <see cref="Guid.Empty" /> for
+    /// this identifier, keyed on the same member name, and says why: all-zeros is what a client that has
+    /// not begun a run sends, and it is the one value two accounts reach independently.
+    /// </para>
+    /// <para>
+    /// <b>What an accepting version produces.</b> A storable uuid in every row's stamp, matching no
+    /// <c>key_rotations</c> row — so completion reads a house that is full of a rotation nobody started.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Reseal_WithTheEmptyRotationId_IsRefused()
+    {
+        // Arrange
+        CategoryGroup group = NewGroup("Essential Obligations", "Required spending");
+
+        // Act
+        ValidationException exception = ThrowsValidationException(() => group.Reseal(
+            SealedNarrative.Indexed("Essential Obligations resealed"),
+            SealedNarrative.Description("Required spending resealed"),
+            Guid.Empty));
+
+        // Assert — keyed on the member the stamp lands in, as KeyRotation.Begin keys its own. The name
+        // is read back too, so a member that assigned before it judged reddens here rather than leaving
+        // a row rewritten under a rotation that does not exist.
+        await Assert.That(exception.Errors.ContainsKey(nameof(CategoryGroup.RotationId))).IsTrue();
+        await Assert.That(group.Name.Envelope.ToArray()).IsEquivalentTo(
+            SealedNarrative.Name("Essential Obligations").Envelope.ToArray(),
+            CollectionOrdering.Matching);
+        await Assert.That(group.RotationId).IsNull();
+    }
+
+    /// <summary>
+    /// A reseal handed no name at all is refused as an argument fault, not as a field error.
+    /// </summary>
+    /// <remarks>
+    /// <b>The exception type comes from the sibling mutators, not from this file.</b>
+    /// <see cref="CategoryGroup.Create" /> and <see cref="CategoryGroup.Update" /> both guard this
+    /// parameter with <c>ArgumentNullException.ThrowIfNull</c> and both argue why in the entity: the
+    /// signature says a name is present, so a null is a defect in this codebase rather than a field a
+    /// caller corrects by editing a request, and a <see cref="ValidationException" /> would report it as
+    /// a 400 about a member the request may not even have. A reseal that let the null reach
+    /// <c>name.Name</c> instead answers with a <see cref="NullReferenceException" /> — a 500, with no
+    /// parameter named — which would make it the only write path on this entity that behaves that way.
+    /// </remarks>
+    [Test]
+    public async Task Reseal_WithoutAName_ThrowsArgumentNullException()
+    {
+        // Arrange
+        CategoryGroup group = NewGroup("Essential Obligations", "Required spending");
+
+        // Act
+        ArgumentNullException exception = ThrowsArgumentNullException(() => group.Reseal(
+            null!,
+            SealedNarrative.Description("Required spending resealed"),
+            Guid.CreateVersion7()));
+
+        // Assert
+        await Assert.That(exception.ParamName).IsEqualTo("name");
+    }
+
+    /// <summary>
+    /// A chunk re-sent under the rotation id it already carried is accepted, and leaves every sealed
+    /// column and the stamp where the first arrival put them.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>A re-sent chunk is the ordinary case and not an anomaly.</b> A rotation is cut into chunks
+    /// because an account can hold more rows than one request should carry, and every chunk of one run
+    /// quotes the same rotation id — that is what the id is for. A request that timed out on the wire, a
+    /// retry, or a client that never saw the response sends the same rows under the same id again.
+    /// </para>
+    /// <para>
+    /// <b>What this case is here to refuse.</b> A member that additionally rejected a rotation id equal
+    /// to the stamp the row already carries reads as sensible idempotence protection and passes every
+    /// other case in this file, because they all mint a fresh id. It would fail exactly the runs long
+    /// enough to need chunking, and it protects against nothing: a reseal is a whole-value write, so the
+    /// same chunk applied twice lands the same bytes and the same stamp.
+    /// </para>
+    /// <para>
+    /// <b>The description is carried through the repeat deliberately</b>, for the reason the sibling case
+    /// on <c>Category</c> gives: a second pass over a row whose description is present is where a
+    /// presence rule reading a stale copy rather than the column would refuse the repeat.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Reseal_RepeatedUnderTheSameRotationId_IsAccepted()
+    {
+        // Arrange — the chunk that landed, and the id its run is quoting throughout.
+        CategoryGroup group = NewGroup("Essential Obligations", "Required spending");
+        var rotationId = Guid.CreateVersion7();
+        group.Reseal(
+            SealedNarrative.Indexed("Essential Obligations resealed"),
+            SealedNarrative.Description("Required spending resealed"),
+            rotationId);
+
+        // Act — the same chunk again, under the same id, as a re-sent request carries it.
+        group.Reseal(
+            SealedNarrative.Indexed("Essential Obligations resealed"),
+            SealedNarrative.Description("Required spending resealed"),
+            rotationId);
+
+        // Assert — both halves of the name, the description, and the stamp, all as the first arrival
+        // left them.
+        await Assert.That(group.Name.Envelope.ToArray()).IsEquivalentTo(
+            SealedNarrative.Name("Essential Obligations resealed").Envelope.ToArray(),
+            CollectionOrdering.Matching);
+        await Assert.That(group.NameKey.ToArray()).IsEquivalentTo(
+            SealedNarrative.BlindIndex("Essential Obligations resealed").ToArray(),
+            CollectionOrdering.Matching);
+        await Assert.That(group.Description!.Envelope.ToArray()).IsEquivalentTo(
+            SealedNarrative.Description("Required spending resealed").Envelope.ToArray(),
+            CollectionOrdering.Matching);
+        await Assert.That(group.RotationId).IsEqualTo(rotationId);
+    }
+
+    /// <summary>
     /// A group under <paramref name="label" /> and <paramref name="descriptionLabel" />, for the cases
     /// whose subject is the update rather than the identifier, the position or the creation instant.
     /// </summary>

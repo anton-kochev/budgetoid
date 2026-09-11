@@ -657,6 +657,467 @@ public sealed class CategoryTests
     /// differ from <paramref name="label" />: the two fixtures run one filler, so a shared label makes a
     /// factory that assigned one parameter twice invisible.
     /// </param>
+    /// <summary>
+    /// A content-key rotation replaces both halves of the name and the note together.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The second labels model the same text under two keys, not new text.</b> A rotation
+    /// re-encrypts what the row already holds, so nothing about the category changes except the bytes —
+    /// but <see cref="SealedNarrative" /> derives everything from the label it is handed, so "the same
+    /// text under a new key" has no other spelling here than a second label.
+    /// </para>
+    /// <para>
+    /// <b>The index is asserted to have moved too, and that is the reason the parameter is an
+    /// <see cref="IndexedName" />.</b> The index key rotates alongside the content key, so a reseal that
+    /// replaced the envelope alone would leave the row's name sealed under the new content key and keyed
+    /// under the old index one — the half-written name
+    /// <see cref="Update_WithANewNameAndANewNote_ReplacesBothHalvesAndTheNote" /> argues about, arriving
+    /// on every category in the budget at once and by a path nobody is watching.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Reseal_ReplacesBothHalvesOfTheNameAndTheNote()
+    {
+        // Arrange
+        Category category = NewCategory("Groceries", "Weekly food shop");
+
+        // Act
+        category.Reseal(
+            SealedNarrative.Indexed("Groceries resealed"),
+            SealedNarrative.Description("Weekly food shop resealed"),
+            Guid.CreateVersion7());
+
+        // Assert — CollectionOrdering.Matching on the positive assertions for the reason
+        // Create_WithANameAndANote_AssignsBothHalvesAndTheNote states; the negative one keeps the
+        // default, which is the stronger "not even a permutation" claim.
+        await Assert.That(category.Name.Envelope.ToArray()).IsEquivalentTo(
+            SealedNarrative.Name("Groceries resealed").Envelope.ToArray(),
+            CollectionOrdering.Matching);
+        await Assert.That(category.NameKey.ToArray()).IsEquivalentTo(
+            SealedNarrative.BlindIndex("Groceries resealed").ToArray(),
+            CollectionOrdering.Matching);
+        await Assert.That(category.NameKey.ToArray())
+            .IsNotEquivalentTo(SealedNarrative.BlindIndex("Groceries").ToArray());
+        await Assert.That(category.Description!.Envelope.ToArray()).IsEquivalentTo(
+            SealedNarrative.Description("Weekly food shop resealed").Envelope.ToArray(),
+            CollectionOrdering.Matching);
+    }
+
+    /// <summary>
+    /// A reseal stamps the row with the id of the rotation that rewrote it.
+    /// </summary>
+    /// <remarks>
+    /// The stamp is the whole reason the column exists, argued at <c>Budget.RotationId</c>: a re-sealed
+    /// envelope and an untouched one are byte-for-byte indistinguishable to a server holding no key, so
+    /// the completion step — which destroys the only copies of the old keys — can only know the rewrite
+    /// finished by being told, in the same transaction as the ciphertext. A reseal that replaced the
+    /// envelopes and left this column null passes every other accepting case in this file and makes the
+    /// account un-completable.
+    /// </remarks>
+    [Test]
+    public async Task Reseal_StampsTheRotationItWasGiven()
+    {
+        // Arrange — the id minted here and threaded in, so the assertion is not "a stamp appeared" but
+        // "this rotation's did". A member that minted its own would leave every row stamped with an id
+        // no completion step is looking for.
+        Category category = NewCategory("Groceries", "Weekly food shop");
+        var rotationId = Guid.CreateVersion7();
+
+        // Act
+        category.Reseal(
+            SealedNarrative.Indexed("Groceries resealed"),
+            SealedNarrative.Description("Weekly food shop resealed"),
+            rotationId);
+
+        // Assert
+        await Assert.That(category.RotationId).IsEqualTo(rotationId);
+    }
+
+    /// <summary>
+    /// A reseal moves the two narrative columns and the stamp and touches nothing else.
+    /// </summary>
+    /// <remarks>
+    /// <b>This is the case that catches a reseal built by reusing <see cref="Category.Update" /> or
+    /// <see cref="Category.Place" />.</b> A category's placement is two columns, not one: the group it
+    /// sits in and its position inside that group, and both are relative to the whole tree — which is
+    /// why the category list is one of the reads delivered whole. A rotation that wrote either would
+    /// rearrange somebody's budget as a side effect of re-encrypting it, in bulk and with nothing to
+    /// show for it on screen but a tree that moved. The identity columns are stronger still —
+    /// <see cref="Category.Id" /> is the associated data every envelope this row has ever held was
+    /// sealed against, so a reseal that re-minted it would produce values nobody can ever open.
+    /// </remarks>
+    [Test]
+    public async Task Reseal_LeavesPositionCategoryGroupIdAndIdentityUnchanged()
+    {
+        // Arrange — a non-zero position, so a reseal that reset it to the default is visible rather than
+        // accidentally right.
+        var id = Guid.CreateVersion7();
+        var budgetId = Guid.CreateVersion7();
+        var categoryGroupId = Guid.CreateVersion7();
+        DateTime createdAtUtc = UtcNow();
+        Category category = Category.Create(
+            id,
+            budgetId,
+            categoryGroupId,
+            SealedNarrative.Indexed("Groceries"),
+            SealedNarrative.Description("Weekly food shop"),
+            2,
+            createdAtUtc);
+
+        // Act
+        category.Reseal(
+            SealedNarrative.Indexed("Groceries resealed"),
+            SealedNarrative.Description("Weekly food shop resealed"),
+            Guid.CreateVersion7());
+
+        // Assert
+        await Assert.That(category.Id).IsEqualTo(id);
+        await Assert.That(category.BudgetId).IsEqualTo(budgetId);
+        await Assert.That(category.CategoryGroupId).IsEqualTo(categoryGroupId);
+        await Assert.That(category.Position).IsEqualTo(2);
+        await Assert.That(category.CreatedAtUtc).IsEqualTo(createdAtUtc);
+    }
+
+    /// <summary>
+    /// A rotation that supplies no note for a category that has one is refused.
+    /// </summary>
+    /// <remarks>
+    /// The clearing arm of the presence rule <c>NarrativeReseal.Resealed</c> owns, reached through this
+    /// entity so that the category's note is actually routed through it. The column is nullable, so
+    /// writing the absence through produces a legal row that violates no constraint and is
+    /// byte-identical to one belonging to somebody who deliberately filed no note — the failure
+    /// <see cref="Category.Description" />'s own remarks describe as invisible where the same omission
+    /// on a <c>NOT NULL</c> name is <c>23502</c>.
+    /// </remarks>
+    [Test]
+    public async Task Reseal_WithNoNoteOverACategoryThatHasOne_IsRefused()
+    {
+        // Arrange
+        Category category = NewCategory("Groceries", "Weekly food shop");
+
+        // Act
+        ValidationException exception = ThrowsValidationException(() => category.Reseal(
+            SealedNarrative.Indexed("Groceries resealed"),
+            null,
+            Guid.CreateVersion7()));
+
+        // Assert — keyed on the member the request carries. A refusal filed under a word invented by the
+        // entity reaches the client verbatim as a 400 naming a member no request has.
+        await Assert.That(exception.Errors.ContainsKey(nameof(Category.Description))).IsTrue();
+    }
+
+    /// <summary>
+    /// A rotation that supplies a note for a category that has none is refused.
+    /// </summary>
+    /// <remarks>
+    /// The quieter arm, and the one a reviewer will propose relaxing: filling in an empty note harms no
+    /// data. It is refused because presence is the only property this side can check at all, so an arm
+    /// that admits a change of presence gives up the whole of what the rule is made of — and what lands
+    /// in that column is text the server cannot read, attributed to a person who never wrote it, in a
+    /// run they authorised as "re-encrypt what I have".
+    /// </remarks>
+    [Test]
+    public async Task Reseal_WithANoteOverACategoryThatHasNone_IsRefused()
+    {
+        // Arrange
+        Category category = NewCategory("Groceries", null);
+
+        // Act
+        ValidationException exception = ThrowsValidationException(() => category.Reseal(
+            SealedNarrative.Indexed("Groceries resealed"),
+            SealedNarrative.Description("Weekly food shop"),
+            Guid.CreateVersion7()));
+
+        // Assert
+        await Assert.That(exception.Errors.ContainsKey(nameof(Category.Description))).IsTrue();
+    }
+
+    /// <summary>
+    /// A category that never had a note is rotated, stamped, and left without one.
+    /// </summary>
+    /// <remarks>
+    /// <b>The control for both refusals, and not a filler case.</b> Without it, a reseal that threw
+    /// whenever either side of the note was null would pass both cases above and would make every
+    /// account holding one note-less category un-rotatable — a refusal the person cannot act on, because
+    /// the field they are being refused for is one they never filled in. The stamp is asserted here for
+    /// the same reason: completion needs a full house, so the rows with less to re-encrypt still have to
+    /// be accounted for, and a reseal that returned early on a null note would leave exactly those rows
+    /// unstamped and the run permanently one short.
+    /// </remarks>
+    [Test]
+    public async Task Reseal_WithNoNoteOverACategoryThatHasNone_IsAcceptedAndStillStamps()
+    {
+        // Arrange
+        Category category = NewCategory("Groceries", null);
+        var rotationId = Guid.CreateVersion7();
+
+        // Act
+        category.Reseal(SealedNarrative.Indexed("Groceries resealed"), null, rotationId);
+
+        // Assert
+        await Assert.That(category.Description).IsNull();
+        await Assert.That(category.Name.Envelope.ToArray()).IsEquivalentTo(
+            SealedNarrative.Name("Groceries resealed").Envelope.ToArray(),
+            CollectionOrdering.Matching);
+        await Assert.That(category.RotationId).IsEqualTo(rotationId);
+    }
+
+    /// <summary>
+    /// A refused reseal writes nothing at all — not the name, not the note, and above all not the stamp.
+    /// </summary>
+    /// <remarks>
+    /// <b>The stamp is the assertion that matters here.</b> A reseal that stamped before it judged the
+    /// note, or that assigned the name first and refused afterwards, leaves a row marked as rotated that
+    /// was not — and the stamp is the one signal completion trusts, so the destructive step would
+    /// promote the new keys over a row still sealed under the old one. That is the exact loss the column
+    /// was added to prevent, produced by the member that writes it. The previous rotation's id is the
+    /// fixture rather than <see langword="null" /> so that a member which cleared the stamp on refusal
+    /// also reddens.
+    /// </remarks>
+    [Test]
+    public async Task Reseal_WithARefusedNote_LeavesEveryColumnAndTheStampAsTheyWere()
+    {
+        // Arrange — a category already carried through one rotation, now handed a chunk that drops its
+        // note.
+        Category category = NewCategory("Groceries", "Weekly food shop");
+        var firstRotationId = Guid.CreateVersion7();
+        category.Reseal(
+            SealedNarrative.Indexed("Groceries resealed"),
+            SealedNarrative.Description("Weekly food shop resealed"),
+            firstRotationId);
+
+        // Act
+        ThrowsValidationException(() => category.Reseal(
+            SealedNarrative.Indexed("Groceries rotated twice"),
+            null,
+            Guid.CreateVersion7()));
+
+        // Assert — CollectionOrdering.Matching for the reason
+        // Create_WithANameAndANote_AssignsBothHalvesAndTheNote states.
+        await Assert.That(category.Name.Envelope.ToArray()).IsEquivalentTo(
+            SealedNarrative.Name("Groceries resealed").Envelope.ToArray(),
+            CollectionOrdering.Matching);
+        await Assert.That(category.NameKey.ToArray()).IsEquivalentTo(
+            SealedNarrative.BlindIndex("Groceries resealed").ToArray(),
+            CollectionOrdering.Matching);
+        await Assert.That(category.Description!.Envelope.ToArray()).IsEquivalentTo(
+            SealedNarrative.Description("Weekly food shop resealed").Envelope.ToArray(),
+            CollectionOrdering.Matching);
+        await Assert.That(category.RotationId).IsEqualTo(firstRotationId);
+    }
+
+    /// <summary>
+    /// An ordinary update clears the stamp a rotation left on the row.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This is the rule the whole stamp rests on, and it is the easiest one to leave out</b> —
+    /// nothing about <see cref="Category.Update" /> reads as being part of a rotation, so a reader
+    /// implementing the reseal member has no reason to open this one.
+    /// </para>
+    /// <para>
+    /// <b>What goes wrong without it.</b> A second browser tab still holding the OLD content key can
+    /// rename a category this rotation has already stamped. It writes old-key ciphertext, and — with
+    /// this line missing — it does not touch the stamp, so the row ends up carrying old-key ciphertext
+    /// under a current stamp. Completion then reads a full house, promotes the new keys and destroys the
+    /// old ones, and that category's name and note are gone: no constraint violated, nothing red, and
+    /// the symptom is a screen that will not decrypt. Clearing the stamp is what makes completion refuse
+    /// instead, which is a run the person can retry.
+    /// </para>
+    /// <para>
+    /// <b><see cref="Category.Place" /> is deliberately not given the same case.</b> It writes no
+    /// narrative column, so a stale tab moving a category between groups invalidates no ciphertext and
+    /// has nothing to disown. Clearing there would fail rotations for edits that cost them nothing.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Update_ClearsTheRotationStamp()
+    {
+        // Arrange — stamped through the real reseal path rather than reflected in, so the case describes
+        // the sequence that actually happens: a chunk rewrites the row, then a stale tab edits it.
+        Category category = NewCategory("Groceries", "Weekly food shop");
+        category.Reseal(
+            SealedNarrative.Indexed("Groceries resealed"),
+            SealedNarrative.Description("Weekly food shop resealed"),
+            Guid.CreateVersion7());
+
+        // Act
+        category.Update(
+            SealedNarrative.Indexed("Household"),
+            SealedNarrative.Description("Everything else"));
+
+        // Assert
+        await Assert.That(category.RotationId).IsNull();
+    }
+
+    /// <summary>
+    /// Moving a category between groups, or within one, leaves the stamp standing.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The inverse of <see cref="Update_ClearsTheRotationStamp" />, and the mutation it catches is
+    /// clearing the stamp HERE.</b> <see cref="Category.Place" /> writes a group id and an int, both
+    /// values the server reads; it touches no envelope, so after it runs the row's ciphertext is still
+    /// whatever the rotation sealed and the stamp is still honest. A reader who takes "an edit clears
+    /// the stamp" as the rule rather than "a NARRATIVE write clears the stamp" will put the line in both
+    /// members, and every case in this file except this one stays green.
+    /// </para>
+    /// <para>
+    /// <b>Why that is worse than it looks, and why it is not a data-loss bug.</b> Nothing is lost — the
+    /// row is fine. What breaks is convergence. Completion refuses a rotation that genuinely finished,
+    /// the client re-seals the un-stamped rows, and on an account where somebody is rearranging the
+    /// category tree while the run proceeds, each pass re-stamps rows the next drag un-stamps. The
+    /// rotation may never finish, on exactly the accounts large enough to need several chunks, and there
+    /// is nothing on screen to explain why.
+    /// </para>
+    /// <para>
+    /// <b>This is a pin, not a red bar.</b> It goes green the moment the member exists, because
+    /// <see cref="Category.Place" /> writes no stamp today. Its value is entirely in the mutation named
+    /// above.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Place_LeavesTheRotationStampStanding()
+    {
+        // Arrange — stamped through the real reseal path, then moved.
+        Category category = NewCategory("Groceries", "Weekly food shop");
+        var rotationId = Guid.CreateVersion7();
+        category.Reseal(
+            SealedNarrative.Indexed("Groceries resealed"),
+            SealedNarrative.Description("Weekly food shop resealed"),
+            rotationId);
+        var destinationGroupId = Guid.CreateVersion7();
+
+        // Act
+        category.Place(destinationGroupId, 5);
+
+        // Assert
+        await Assert.That(category.CategoryGroupId).IsEqualTo(destinationGroupId);
+        await Assert.That(category.Position).IsEqualTo(5);
+        await Assert.That(category.RotationId).IsEqualTo(rotationId);
+    }
+
+    /// <summary>
+    /// A reseal quoting the empty rotation id is refused.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The rule is <see cref="Domain.Users.KeyRotation.Begin" />'s, restated where the stamp is
+    /// written rather than invented here.</b> That factory already refuses <see cref="Guid.Empty" /> for
+    /// this identifier, keyed on the same member name, and says why: all-zeros is what a client that has
+    /// not begun a run sends, and it is the one value two accounts reach independently.
+    /// </para>
+    /// <para>
+    /// <b>What an accepting version produces.</b> A storable uuid in every row's stamp, matching no
+    /// <c>key_rotations</c> row — so completion reads a house that is full of a rotation nobody started.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Reseal_WithTheEmptyRotationId_IsRefused()
+    {
+        // Arrange
+        Category category = NewCategory("Groceries", "Weekly food shop");
+
+        // Act
+        ValidationException exception = ThrowsValidationException(() => category.Reseal(
+            SealedNarrative.Indexed("Groceries resealed"),
+            SealedNarrative.Description("Weekly food shop resealed"),
+            Guid.Empty));
+
+        // Assert — keyed on the member the stamp lands in, as KeyRotation.Begin keys its own. The name
+        // is read back too, so a member that assigned before it judged reddens here rather than leaving
+        // a row rewritten under a rotation that does not exist.
+        await Assert.That(exception.Errors.ContainsKey(nameof(Category.RotationId))).IsTrue();
+        await Assert.That(category.Name.Envelope.ToArray()).IsEquivalentTo(
+            SealedNarrative.Name("Groceries").Envelope.ToArray(), CollectionOrdering.Matching);
+        await Assert.That(category.RotationId).IsNull();
+    }
+
+    /// <summary>
+    /// A reseal handed no name at all is refused as an argument fault, not as a field error.
+    /// </summary>
+    /// <remarks>
+    /// <b>The exception type comes from the sibling mutators, not from this file.</b>
+    /// <see cref="Category.Create" /> and <see cref="Category.Update" /> both guard this parameter with
+    /// <c>ArgumentNullException.ThrowIfNull</c> and both argue why in the entity: the signature says a
+    /// name is present, so a null is a defect in this codebase rather than a field a caller corrects by
+    /// editing a request, and a <see cref="ValidationException" /> would report it as a 400 about a
+    /// member the request may not even have. A reseal that let the null reach <c>name.Name</c> instead
+    /// answers with a <see cref="NullReferenceException" /> — a 500, with no parameter named — which
+    /// would make it the only write path on this entity that behaves that way.
+    /// </remarks>
+    [Test]
+    public async Task Reseal_WithoutAName_ThrowsArgumentNullException()
+    {
+        // Arrange
+        Category category = NewCategory("Groceries", "Weekly food shop");
+
+        // Act
+        ArgumentNullException exception = ThrowsArgumentNullException(() => category.Reseal(
+            null!,
+            SealedNarrative.Description("Weekly food shop resealed"),
+            Guid.CreateVersion7()));
+
+        // Assert
+        await Assert.That(exception.ParamName).IsEqualTo("name");
+    }
+
+    /// <summary>
+    /// A chunk re-sent under the rotation id it already carried is accepted, and leaves every sealed
+    /// column and the stamp where the first arrival put them.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>A re-sent chunk is the ordinary case and not an anomaly.</b> A rotation is cut into chunks
+    /// because an account can hold more rows than one request should carry, and every chunk of one run
+    /// quotes the same rotation id — that is what the id is for. A request that timed out on the wire, a
+    /// retry, or a client that never saw the response sends the same rows under the same id again.
+    /// </para>
+    /// <para>
+    /// <b>What this case is here to refuse.</b> A member that additionally rejected a rotation id equal
+    /// to the stamp the row already carries reads as sensible idempotence protection and passes every
+    /// other case in this file, because they all mint a fresh id. It would fail exactly the runs long
+    /// enough to need chunking, and it protects against nothing: a reseal is a whole-value write, so the
+    /// same chunk applied twice lands the same bytes and the same stamp.
+    /// </para>
+    /// <para>
+    /// <b>The note is carried through the repeat deliberately.</b> A second pass over a row whose
+    /// description is present is where a presence rule reading the wrong side would show up — one
+    /// comparing the incoming value against a stale copy rather than against the column would refuse the
+    /// repeat as an attempt to change a field, and a category with a note is the fixture that catches it.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Reseal_RepeatedUnderTheSameRotationId_IsAccepted()
+    {
+        // Arrange — the chunk that landed, and the id its run is quoting throughout.
+        Category category = NewCategory("Groceries", "Weekly food shop");
+        var rotationId = Guid.CreateVersion7();
+        category.Reseal(
+            SealedNarrative.Indexed("Groceries resealed"),
+            SealedNarrative.Description("Weekly food shop resealed"),
+            rotationId);
+
+        // Act — the same chunk again, under the same id, as a re-sent request carries it.
+        category.Reseal(
+            SealedNarrative.Indexed("Groceries resealed"),
+            SealedNarrative.Description("Weekly food shop resealed"),
+            rotationId);
+
+        // Assert — both halves of the name, the note, and the stamp, all as the first arrival left them.
+        await Assert.That(category.Name.Envelope.ToArray()).IsEquivalentTo(
+            SealedNarrative.Name("Groceries resealed").Envelope.ToArray(),
+            CollectionOrdering.Matching);
+        await Assert.That(category.NameKey.ToArray()).IsEquivalentTo(
+            SealedNarrative.BlindIndex("Groceries resealed").ToArray(),
+            CollectionOrdering.Matching);
+        await Assert.That(category.Description!.Envelope.ToArray()).IsEquivalentTo(
+            SealedNarrative.Description("Weekly food shop resealed").Envelope.ToArray(),
+            CollectionOrdering.Matching);
+        await Assert.That(category.RotationId).IsEqualTo(rotationId);
+    }
+
     private static Category NewCategory(string label, string? descriptionLabel) =>
         Category.Create(
             Guid.CreateVersion7(),

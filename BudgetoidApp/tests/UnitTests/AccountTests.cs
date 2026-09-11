@@ -599,6 +599,299 @@ public sealed class AccountTests
     }
 
     /// <summary>
+    /// A content-key rotation replaces both halves of the name with the pair sealed under the new keys.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The two labels model one name under two keys, not two names.</b> A rotation re-encrypts the
+    /// text the row already holds, so nothing about the account changes except the bytes — but
+    /// <see cref="SealedNarrative" /> derives both halves from the label it is handed, so "the same text
+    /// under a new key" has no other spelling here than a second label.
+    /// </para>
+    /// <para>
+    /// <b>The index is asserted to have moved too, and that is the reason the parameter is an
+    /// <see cref="IndexedName" />.</b> The index key rotates alongside the content key, so a reseal that
+    /// replaced the envelope alone would leave the row's name sealed under the new content key and keyed
+    /// under the old index one — the same half-written name
+    /// <see cref="Update_ReplacesBothHalvesOfTheNameTogether" /> argues about, arriving by a path nobody
+    /// is watching, on every row of the account at once.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Reseal_ReplacesBothHalvesOfTheName()
+    {
+        // Arrange
+        Account account = NewAccount("Checking");
+
+        // Act
+        account.Reseal(SealedNarrative.Indexed("Checking resealed"), Guid.CreateVersion7());
+
+        // Assert — CollectionOrdering.Matching on the positive assertions for the reason
+        // Create_WithValidInput_StoresBothHalvesOfTheNameTypeOpeningBalanceAndCreatedAtUtc states; the
+        // negative one keeps the default, which is the stronger "not even a permutation" claim.
+        await Assert.That(account.Name.Envelope.ToArray()).IsEquivalentTo(
+            SealedNarrative.Name("Checking resealed").Envelope.ToArray(),
+            CollectionOrdering.Matching);
+        await Assert.That(account.NameKey.ToArray()).IsEquivalentTo(
+            SealedNarrative.BlindIndex("Checking resealed").ToArray(),
+            CollectionOrdering.Matching);
+        await Assert.That(account.NameKey.ToArray())
+            .IsNotEquivalentTo(SealedNarrative.BlindIndex("Checking").ToArray());
+    }
+
+    /// <summary>
+    /// A reseal stamps the row with the id of the rotation that rewrote it.
+    /// </summary>
+    /// <remarks>
+    /// The stamp is the whole reason the column exists, argued at <c>Budget.RotationId</c>: a
+    /// re-sealed envelope and an untouched one are byte-for-byte indistinguishable to a server holding
+    /// no key, so the completion step — which destroys the only copies of the old keys — can only know
+    /// the rewrite finished by being told, in the same transaction as the ciphertext. A reseal that
+    /// replaced the envelopes and left this column null passes every other assertion in this file and
+    /// makes the account un-completable: the run is refused for rows that were in fact rotated, and the
+    /// person is stuck part-way with no way forward the product offers.
+    /// </remarks>
+    [Test]
+    public async Task Reseal_StampsTheRotationItWasGiven()
+    {
+        // Arrange — the id minted here and threaded in, so the assertion is not "a stamp appeared" but
+        // "this rotation's did". A member that minted its own would leave every row stamped with an id
+        // no completion step is looking for.
+        Account account = NewAccount("Checking");
+        var rotationId = Guid.CreateVersion7();
+
+        // Act
+        account.Reseal(SealedNarrative.Indexed("Checking resealed"), rotationId);
+
+        // Assert
+        await Assert.That(account.RotationId).IsEqualTo(rotationId);
+    }
+
+    /// <summary>
+    /// A reseal moves the name and the stamp and touches nothing else.
+    /// </summary>
+    /// <remarks>
+    /// <b>This is the case that catches a reseal built by reusing <see cref="Account.Update" />.</b>
+    /// Update takes a type, a balance and a minor unit; a reseal that delegated to it would have to
+    /// invent values for all three, and the obvious inventions are the entity's own current values —
+    /// which looks correct and is, right up to the account whose type or balance a second request
+    /// changed between the read and the reseal. A rotation is a re-encryption and nothing else: the
+    /// arithmetic columns are values this server reads, and no rotation has any business writing them.
+    /// The identity columns are stronger still — <see cref="Account.Id" /> is the associated data every
+    /// envelope this row has ever held was sealed against, so a reseal that re-minted it would produce
+    /// a name nobody can ever open.
+    /// </remarks>
+    [Test]
+    public async Task Reseal_LeavesTypeOpeningBalanceCurrencyCodeAndIdentityUnchanged()
+    {
+        // Arrange — every non-narrative column set to something other than its default, so a reseal
+        // that overwrote one with a default is visible rather than accidentally right.
+        var id = Guid.CreateVersion7();
+        var budgetId = Guid.CreateVersion7();
+        DateTime createdAtUtc = UtcNow();
+        Account account = Account.Create(
+            id,
+            budgetId,
+            SealedNarrative.Indexed("Checking"),
+            AccountType.CreditCard,
+            Money("123.45"),
+            "USD",
+            UsdMinorUnit,
+            createdAtUtc);
+
+        // Act
+        account.Reseal(SealedNarrative.Indexed("Checking resealed"), Guid.CreateVersion7());
+
+        // Assert
+        await Assert.That(account.Id).IsEqualTo(id);
+        await Assert.That(account.BudgetId).IsEqualTo(budgetId);
+        await Assert.That(account.Type).IsEqualTo(AccountType.CreditCard);
+        await Assert.That(account.OpeningBalance).IsEqualTo(Money("123.45"));
+        await Assert.That(account.CurrencyCode).IsEqualTo("USD");
+        await Assert.That(account.CreatedAtUtc).IsEqualTo(createdAtUtc);
+    }
+
+    /// <summary>
+    /// An ordinary rename clears the stamp a rotation left on the row.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This is the rule the whole stamp rests on, and it is the easiest one to leave out</b> —
+    /// nothing about <see cref="Account.Update" /> reads as being part of a rotation, so a reader
+    /// implementing the reseal members has no reason to open this one.
+    /// </para>
+    /// <para>
+    /// <b>What goes wrong without it.</b> A second browser tab still holding the OLD content key can
+    /// rename an account this rotation has already stamped. It writes old-key ciphertext, and — with
+    /// this line missing — it does not touch the stamp, so the row ends up carrying old-key ciphertext
+    /// under a current stamp. Completion then reads a full house, promotes the new keys and destroys the
+    /// old ones, and that account's name is gone: no constraint violated, nothing red, and the symptom
+    /// is a screen that will not decrypt. Clearing the stamp is what makes completion refuse instead,
+    /// which is a run the person can retry.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Update_ClearsTheRotationStamp()
+    {
+        // Arrange — stamped through the real reseal path rather than reflected in, so the case
+        // describes the sequence that actually happens: a chunk rewrites the row, then a stale tab
+        // renames it.
+        Account account = NewAccount("Checking");
+        account.Reseal(SealedNarrative.Indexed("Checking resealed"), Guid.CreateVersion7());
+
+        // Act
+        account.Update(SealedNarrative.Indexed("Savings"), AccountType.Savings, 50m, UsdMinorUnit);
+
+        // Assert
+        await Assert.That(account.RotationId).IsNull();
+    }
+
+    /// <summary>
+    /// A refused update leaves the stamp where it was.
+    /// </summary>
+    /// <remarks>
+    /// The companion to <see cref="Update_ClearsTheRotationStamp" />, and the reason the clearing cannot
+    /// be a line at the top of <see cref="Account.Update" />: a refused update wrote no ciphertext, so
+    /// there is nothing to disown. Cleared anyway, a rotation would be failed by edits that never
+    /// landed — a completion step that refuses a run the person cannot see anything wrong with, and the
+    /// only remedy on offer is to re-rotate the whole account.
+    /// </remarks>
+    [Test]
+    public async Task Update_WithInvalidInput_LeavesTheRotationStampWhereItWas()
+    {
+        // Arrange — refused by an undefined account type, the rule Update still owns, for the reason
+        // Update_WithInvalidInput_ThrowsValidationExceptionAndLeavesAccountUnchanged gives.
+        Account account = NewAccount("Checking");
+        var rotationId = Guid.CreateVersion7();
+        account.Reseal(SealedNarrative.Indexed("Checking resealed"), rotationId);
+
+        // Act
+        ThrowsValidationException(() =>
+            account.Update(SealedNarrative.Indexed("Savings"), (AccountType)999, 50m, UsdMinorUnit));
+
+        // Assert
+        await Assert.That(account.RotationId).IsEqualTo(rotationId);
+    }
+
+    /// <summary>
+    /// A reseal quoting the empty rotation id is refused.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The rule is <see cref="Domain.Users.KeyRotation.Begin" />'s, restated where the stamp is
+    /// written rather than invented here.</b> That factory already refuses <see cref="Guid.Empty" /> for
+    /// this identifier, keyed on the same member name, and says why: all-zeros is what a client that has
+    /// not begun a run sends, and it is the one value two accounts reach independently.
+    /// </para>
+    /// <para>
+    /// <b>What an accepting version produces.</b> A storable uuid in every row's stamp, matching no
+    /// <c>key_rotations</c> row — so completion reads a house that is full of a rotation nobody started.
+    /// Whether that promotes the wrong generation or refuses forever depends on a lookup nothing in this
+    /// entity can see, which is the reason the value is refused at the point it is written rather than
+    /// argued about at the point it is read.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Reseal_WithTheEmptyRotationId_IsRefused()
+    {
+        // Arrange
+        Account account = NewAccount("Checking");
+
+        // Act
+        ValidationException exception = ThrowsValidationException(() =>
+            account.Reseal(SealedNarrative.Indexed("Checking resealed"), Guid.Empty));
+
+        // Assert — keyed on the member the stamp lands in, as KeyRotation.Begin keys its own. Both
+        // halves of the name are read back too, so a member that assigned before it judged reddens here
+        // rather than leaving a row rewritten under a rotation that does not exist.
+        await Assert.That(exception.Errors.ContainsKey(nameof(Account.RotationId))).IsTrue();
+        await Assert.That(account.Name.Envelope.ToArray()).IsEquivalentTo(
+            SealedNarrative.Name("Checking").Envelope.ToArray(), CollectionOrdering.Matching);
+        await Assert.That(account.RotationId).IsNull();
+    }
+
+    /// <summary>
+    /// A reseal handed no name at all is refused as an argument fault, not as a field error.
+    /// </summary>
+    /// <remarks>
+    /// <b>The exception type comes from the sibling mutators, not from this file.</b>
+    /// <see cref="Account.Create" /> and <see cref="Account.Update" /> both guard this parameter with
+    /// <c>ArgumentNullException.ThrowIfNull</c> and both argue why in the entity: the signature says a
+    /// name is present, so a null is a defect in this codebase rather than a field a caller corrects by
+    /// editing a request, and a <see cref="ValidationException" /> would report it as a 400 about a
+    /// member the request may not even have. A reseal that let the null reach <c>name.Name</c> instead
+    /// answers with a <see cref="NullReferenceException" /> — a 500, with no parameter named — which
+    /// would make it the only write path on this entity that behaves that way.
+    /// </remarks>
+    [Test]
+    public async Task Reseal_WithoutAName_ThrowsArgumentNullException()
+    {
+        // Arrange
+        Account account = NewAccount("Checking");
+
+        // Act — the inline shape Create_WithoutAName_ThrowsArgumentNullException uses, restated rather
+        // than lifted into a helper, so this case reads without a detour.
+        ArgumentNullException? caught = null;
+        try
+        {
+            account.Reseal(null!, Guid.CreateVersion7());
+        }
+        catch (ArgumentNullException exception)
+        {
+            caught = exception;
+        }
+
+        // Assert
+        await Assert.That(caught).IsNotNull();
+        await Assert.That(caught!.ParamName).IsEqualTo("name");
+    }
+
+    /// <summary>
+    /// A chunk re-sent under the rotation id it already carried is accepted, and leaves the row sealed
+    /// and stamped.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>A re-sent chunk is the ordinary case and not an anomaly.</b> A rotation is cut into chunks
+    /// precisely because an account can hold more rows than one request should carry, and every chunk of
+    /// one run quotes the same rotation id — that is the whole of what the id is for. So a request that
+    /// timed out on the wire, a retry, or a client that never saw the response sends the same rows under
+    /// the same id again, and on this side the second arrival is indistinguishable from the first.
+    /// </para>
+    /// <para>
+    /// <b>What this case is here to refuse.</b> A member that additionally rejected a rotation id equal
+    /// to the stamp the row already carries reads as sensible idempotence protection and passes every
+    /// other case in this file, because they all mint a fresh
+    /// <see cref="Guid.CreateVersion7()" />. It would fail exactly the long runs that need chunking most
+    /// — the retry, on the accounts with the most rows — and it would protect against nothing, because a
+    /// reseal is a whole-value write: applying the same chunk twice lands the same bytes and the same
+    /// stamp.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Reseal_RepeatedUnderTheSameRotationId_IsAccepted()
+    {
+        // Arrange — the chunk that landed, and the id its run is quoting throughout.
+        Account account = NewAccount("Checking");
+        var rotationId = Guid.CreateVersion7();
+        account.Reseal(SealedNarrative.Indexed("Checking resealed"), rotationId);
+
+        // Act — the same chunk again, under the same id, as a re-sent request carries it.
+        account.Reseal(SealedNarrative.Indexed("Checking resealed"), rotationId);
+
+        // Assert — both halves of the name still sealed under the new key, and the stamp still standing,
+        // so a member that refused would redden on the call and one that cleared on a repeat would
+        // redden here.
+        await Assert.That(account.Name.Envelope.ToArray()).IsEquivalentTo(
+            SealedNarrative.Name("Checking resealed").Envelope.ToArray(),
+            CollectionOrdering.Matching);
+        await Assert.That(account.NameKey.ToArray()).IsEquivalentTo(
+            SealedNarrative.BlindIndex("Checking resealed").ToArray(),
+            CollectionOrdering.Matching);
+        await Assert.That(account.RotationId).IsEqualTo(rotationId);
+    }
+
+    /// <summary>
     /// A USD account at zero, for the cases whose subject is the balance or the minor unit rather than
     /// the identifier or the name.
     /// </summary>

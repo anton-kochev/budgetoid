@@ -276,6 +276,238 @@ public sealed class PayeeTests
     /// A payee under <paramref name="label" />, for the cases whose subject is the rename rather than
     /// the identifier or the creation instant.
     /// </summary>
+    /// <summary>
+    /// A content-key rotation replaces both halves of the name with the pair sealed under the new keys.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The two labels model one name under two keys, not two names.</b> A rotation re-encrypts the
+    /// text the row already holds, so nothing about the payee changes except the bytes — but
+    /// <see cref="SealedNarrative" /> derives both halves from the label it is handed, so "the same text
+    /// under a new key" has no other spelling here than a second label.
+    /// </para>
+    /// <para>
+    /// <b>The index is asserted to have moved too, and on a payee that is the half that bites.</b> The
+    /// index key rotates alongside the content key, so a reseal that replaced the envelope alone would
+    /// leave every payee in the budget sealed under the new content key and keyed under the old index
+    /// one — which is <see cref="Rename_ReplacesBothHalvesOfTheName" />'s failure applied to the whole
+    /// list at once, on the mechanism the domain deduplicates counterparties with. Find-or-create stops
+    /// finding anything, so the next transaction against every existing payee mints a duplicate.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Reseal_ReplacesBothHalvesOfTheName()
+    {
+        // Arrange
+        Payee payee = NewPayee("Starbucks");
+
+        // Act
+        payee.Reseal(SealedNarrative.Indexed("Starbucks resealed"), Guid.CreateVersion7());
+
+        // Assert — CollectionOrdering.Matching on the positive assertions for the reason
+        // Create_WithValidInput_StoresBothHalvesOfTheNameBudgetIdAndCreatedAtUtc states; the negative
+        // one keeps the default, which is the stronger "not even a permutation" claim.
+        await Assert.That(payee.Name.Envelope.ToArray()).IsEquivalentTo(
+            SealedNarrative.Name("Starbucks resealed").Envelope.ToArray(),
+            CollectionOrdering.Matching);
+        await Assert.That(payee.NameKey.ToArray()).IsEquivalentTo(
+            SealedNarrative.BlindIndex("Starbucks resealed").ToArray(),
+            CollectionOrdering.Matching);
+        await Assert.That(payee.NameKey.ToArray())
+            .IsNotEquivalentTo(SealedNarrative.BlindIndex("Starbucks").ToArray());
+    }
+
+    /// <summary>
+    /// A reseal stamps the row with the id of the rotation that rewrote it.
+    /// </summary>
+    /// <remarks>
+    /// The stamp is the whole reason the column exists, argued at <c>Budget.RotationId</c>: a re-sealed
+    /// envelope and an untouched one are byte-for-byte indistinguishable to a server holding no key, so
+    /// the completion step — which destroys the only copies of the old keys — can only know the rewrite
+    /// finished by being told, in the same transaction as the ciphertext. A reseal that replaced the
+    /// envelopes and left this column null passes every other assertion in this file and makes the
+    /// account un-completable.
+    /// </remarks>
+    [Test]
+    public async Task Reseal_StampsTheRotationItWasGiven()
+    {
+        // Arrange — the id minted here and threaded in, so the assertion is not "a stamp appeared" but
+        // "this rotation's did". A member that minted its own would leave every row stamped with an id
+        // no completion step is looking for.
+        Payee payee = NewPayee("Starbucks");
+        var rotationId = Guid.CreateVersion7();
+
+        // Act
+        payee.Reseal(SealedNarrative.Indexed("Starbucks resealed"), rotationId);
+
+        // Assert
+        await Assert.That(payee.RotationId).IsEqualTo(rotationId);
+    }
+
+    /// <summary>
+    /// A reseal moves the name and the stamp and touches nothing else.
+    /// </summary>
+    /// <remarks>
+    /// <b>This is the case that catches a reseal built by reusing <see cref="Payee.Rename" />.</b> A
+    /// payee carries no arithmetic at all, so what is left to protect is the identity: BudgetId is the
+    /// tenancy rule, and <see cref="Payee.Id" /> is the associated data every envelope this row has ever
+    /// held was sealed against — a reseal that re-minted it would store a name nobody can open, in the
+    /// one operation whose entire purpose is that the names keep opening.
+    /// </remarks>
+    [Test]
+    public async Task Reseal_LeavesIdBudgetIdAndCreatedAtUtcUnchanged()
+    {
+        // Arrange
+        var id = Guid.CreateVersion7();
+        var budgetId = Guid.CreateVersion7();
+        DateTime createdAtUtc = UtcNow();
+        Payee payee = Payee.Create(id, budgetId, SealedNarrative.Indexed("Starbucks"), createdAtUtc);
+
+        // Act
+        payee.Reseal(SealedNarrative.Indexed("Starbucks resealed"), Guid.CreateVersion7());
+
+        // Assert
+        await Assert.That(payee.Id).IsEqualTo(id);
+        await Assert.That(payee.BudgetId).IsEqualTo(budgetId);
+        await Assert.That(payee.CreatedAtUtc).IsEqualTo(createdAtUtc);
+    }
+
+    /// <summary>
+    /// An ordinary rename clears the stamp a rotation left on the row.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This is the rule the whole stamp rests on, and it is the easiest one to leave out</b> —
+    /// nothing about <see cref="Payee.Rename" /> reads as being part of a rotation, so a reader
+    /// implementing the reseal member has no reason to open this one.
+    /// </para>
+    /// <para>
+    /// <b>What goes wrong without it.</b> A second browser tab still holding the OLD content key can
+    /// rename a payee this rotation has already stamped. It writes old-key ciphertext, and — with this
+    /// line missing — it does not touch the stamp, so the row ends up carrying old-key ciphertext under
+    /// a current stamp. Completion then reads a full house, promotes the new keys and destroys the old
+    /// ones, and that payee's name is gone: no constraint violated, nothing red, and the symptom is a
+    /// list entry that will not decrypt. Clearing the stamp is what makes completion refuse instead,
+    /// which is a run the person can retry.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Rename_ClearsTheRotationStamp()
+    {
+        // Arrange — stamped through the real reseal path rather than reflected in, so the case describes
+        // the sequence that actually happens: a chunk rewrites the row, then a stale tab renames it.
+        Payee payee = NewPayee("Starbuks");
+        payee.Reseal(SealedNarrative.Indexed("Starbuks resealed"), Guid.CreateVersion7());
+
+        // Act
+        payee.Rename(SealedNarrative.Indexed("Starbucks"));
+
+        // Assert
+        await Assert.That(payee.RotationId).IsNull();
+    }
+
+    /// <summary>
+    /// A reseal quoting the empty rotation id is refused.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The rule is <see cref="Domain.Users.KeyRotation.Begin" />'s, restated where the stamp is
+    /// written rather than invented here.</b> That factory already refuses <see cref="Guid.Empty" /> for
+    /// this identifier, keyed on the same member name, and says why: all-zeros is what a client that has
+    /// not begun a run sends, and it is the one value two accounts reach independently.
+    /// </para>
+    /// <para>
+    /// <b>What an accepting version produces.</b> A storable uuid in every row's stamp, matching no
+    /// <c>key_rotations</c> row — so completion reads a house that is full of a rotation nobody started.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Reseal_WithTheEmptyRotationId_IsRefused()
+    {
+        // Arrange
+        Payee payee = NewPayee("Starbucks");
+
+        // Act
+        ValidationException exception = ThrowsValidationException(() =>
+            payee.Reseal(SealedNarrative.Indexed("Starbucks resealed"), Guid.Empty));
+
+        // Assert — keyed on the member the stamp lands in, as KeyRotation.Begin keys its own. The name
+        // is read back too, so a member that assigned before it judged reddens here rather than leaving
+        // a row rewritten under a rotation that does not exist.
+        await Assert.That(exception.Errors.ContainsKey(nameof(Payee.RotationId))).IsTrue();
+        await Assert.That(payee.Name.Envelope.ToArray()).IsEquivalentTo(
+            SealedNarrative.Name("Starbucks").Envelope.ToArray(), CollectionOrdering.Matching);
+        await Assert.That(payee.RotationId).IsNull();
+    }
+
+    /// <summary>
+    /// A reseal handed no name at all is refused as an argument fault, not as a field error.
+    /// </summary>
+    /// <remarks>
+    /// <b>The exception type comes from the sibling mutators, not from this file.</b>
+    /// <see cref="Payee.Create" /> and <see cref="Payee.Rename" /> both guard this parameter with
+    /// <c>ArgumentNullException.ThrowIfNull</c> and both argue why in the entity: the signature says a
+    /// name is present, so a null is a defect in this codebase rather than a field a caller corrects by
+    /// editing a request, and a <see cref="ValidationException" /> would report it as a 400 about a
+    /// member the request may not even have. A reseal that let the null reach <c>name.Name</c> instead
+    /// answers with a <see cref="NullReferenceException" /> — a 500, with no parameter named — which
+    /// would make it the only write path on this entity that behaves that way.
+    /// </remarks>
+    [Test]
+    public async Task Reseal_WithoutAName_ThrowsArgumentNullException()
+    {
+        // Arrange
+        Payee payee = NewPayee("Starbucks");
+
+        // Act
+        ArgumentNullException exception =
+            ThrowsArgumentNullException(() => payee.Reseal(null!, Guid.CreateVersion7()));
+
+        // Assert
+        await Assert.That(exception.ParamName).IsEqualTo("name");
+    }
+
+    /// <summary>
+    /// A chunk re-sent under the rotation id it already carried is accepted, and leaves the row sealed
+    /// and stamped.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>A re-sent chunk is the ordinary case and not an anomaly.</b> A rotation is cut into chunks
+    /// because an account can hold more rows than one request should carry, and every chunk of one run
+    /// quotes the same rotation id — that is what the id is for. Payees are the list most likely to make
+    /// that happen: an account accumulates one row per place it has ever paid, so this is the entity
+    /// whose rotation runs longest and whose requests are likeliest to be re-sent.
+    /// </para>
+    /// <para>
+    /// <b>What this case is here to refuse.</b> A member that additionally rejected a rotation id equal
+    /// to the stamp the row already carries reads as sensible idempotence protection and passes every
+    /// other case in this file, because they all mint a fresh id. It would fail exactly the runs long
+    /// enough to need chunking, and it would protect against nothing: a reseal is a whole-value write,
+    /// so the same chunk applied twice lands the same bytes and the same stamp.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Reseal_RepeatedUnderTheSameRotationId_IsAccepted()
+    {
+        // Arrange — the chunk that landed, and the id its run is quoting throughout.
+        Payee payee = NewPayee("Starbucks");
+        var rotationId = Guid.CreateVersion7();
+        payee.Reseal(SealedNarrative.Indexed("Starbucks resealed"), rotationId);
+
+        // Act — the same chunk again, under the same id, as a re-sent request carries it.
+        payee.Reseal(SealedNarrative.Indexed("Starbucks resealed"), rotationId);
+
+        // Assert — both halves of the name still sealed under the new key, and the stamp still standing.
+        await Assert.That(payee.Name.Envelope.ToArray()).IsEquivalentTo(
+            SealedNarrative.Name("Starbucks resealed").Envelope.ToArray(),
+            CollectionOrdering.Matching);
+        await Assert.That(payee.NameKey.ToArray()).IsEquivalentTo(
+            SealedNarrative.BlindIndex("Starbucks resealed").ToArray(),
+            CollectionOrdering.Matching);
+        await Assert.That(payee.RotationId).IsEqualTo(rotationId);
+    }
+
     private static Payee NewPayee(string label) =>
         Payee.Create(Guid.CreateVersion7(), Guid.CreateVersion7(), SealedNarrative.Indexed(label), UtcNow());
 

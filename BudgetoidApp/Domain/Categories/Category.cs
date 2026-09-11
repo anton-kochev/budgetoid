@@ -113,7 +113,9 @@ public sealed class Category
     /// this row is where it sits: categories and their groups are a tree whose list read is delivered
     /// whole, so a run that stopped part-way leaves one response carrying rows of both generations. The
     /// stamp is what tells those rows apart; nothing about their contents does.
-    /// <b>Private setter, no mutator, no factory parameter</b> — nothing writes it in this commit.
+    /// <b>Private setter and no factory parameter</b>: <see cref="Reseal"/> is the one member that writes
+    /// a stamp, and <see cref="Update"/> is the one that clears it — <see cref="Place"/> deliberately
+    /// does neither, for the reason that member states.
     /// </remarks>
     public Guid? RotationId { get; private set; }
 
@@ -227,6 +229,17 @@ public sealed class Category
     /// a test covers it, and do not delete the call for symmetry with <see cref="Payees.Payee.Rename"/>,
     /// which deliberately does not make it because a payee has no <see cref="Position"/> to examine.
     /// </para>
+    /// <para>
+    /// <b>It disowns any rotation stamp the row carries, and that line is part of the update rather than
+    /// bookkeeping beside it.</b> A second browser tab still holding the <em>previous</em> content key
+    /// can reach this member for a row a chunk has already re-sealed: it writes old-key ciphertext into
+    /// both narrative columns, and with the stamp left standing the row reads as rewritten while its name
+    /// and note are sealed under the generation the completion step destroys. Nothing is red, no
+    /// constraint is violated, and the symptom is a screen that stops opening. Cleared, the same sequence
+    /// makes completion refuse a run the person can start again. The clearing sits <em>below</em> the
+    /// refusal with the assignments: an update that never landed wrote no ciphertext and so has nothing
+    /// to disown.
+    /// </para>
     /// </remarks>
     public void Update(IndexedName name, NarrativeField? description)
     {
@@ -246,17 +259,33 @@ public sealed class Category
         Name = name.Name;
         NameKey = name.BlindIndex;
         Description = description;
+
+        // Beside the ciphertext it disowns - see the remarks above.
+        RotationId = null;
     }
 
     /// <summary>
     /// Moves the category into <paramref name="categoryGroupId"/> at <paramref name="position"/>.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// <b>Untouched by the sealing, and it is the THIRD write path on this entity — the only one whose
     /// signature mentions no narrative value at all.</b> A group id and a position are values the server
     /// still reads, so nothing here surrendered a capability. What that costs is that a <c>Place</c> which
     /// reset a name or a note would go unnoticed on the nullable description: a legal row, and no other
     /// case in the suite reads a note back across a move.
+    /// </para>
+    /// <para>
+    /// <b>It writes no stamp and, more importantly, clears none — and the omission is the rule rather
+    /// than an oversight.</b> This member touches no envelope, so after it runs the row's ciphertext is
+    /// still whatever the rotation sealed and <see cref="RotationId"/> is still honest. The clearing line
+    /// <see cref="Update"/> carries belongs to <em>narrative</em> writes, not to edits in general; added
+    /// here it loses no data and instead costs convergence — completion refuses a run that genuinely
+    /// finished, the client re-seals the un-stamped rows, and on an account where somebody is dragging
+    /// categories around while the run proceeds each pass re-stamps rows the next move un-stamps. The
+    /// rotation may never finish, on exactly the accounts large enough to need several chunks, with
+    /// nothing on screen to explain why.
+    /// </para>
     /// </remarks>
     public void Place(Guid categoryGroupId, int position)
     {
@@ -279,6 +308,99 @@ public sealed class Category
 
         CategoryGroupId = categoryGroupId;
         Position = position;
+    }
+
+    /// <summary>
+    /// Replaces the two narrative columns with the values a content-key rotation sealed and indexed
+    /// under the next generation of the account's keys, and records which run rewrote the row.
+    /// </summary>
+    /// <param name="name">
+    /// The text the row already holds, re-sealed under the new content key and re-indexed under the new
+    /// index key — the same name, not a new one.
+    /// </param>
+    /// <param name="description">
+    /// The note the row already holds, re-sealed under the new content key, or <see langword="null"/>
+    /// where the category has none. Anything else is refused — see below.
+    /// </param>
+    /// <param name="rotationId">
+    /// The run in flight, as <see cref="Users.KeyRotation.RotationId"/> spells it.
+    /// </param>
+    /// <remarks>
+    /// <para>
+    /// <b>The description is judged by <see cref="NarrativeReseal.Resealed"/> and not by four lines
+    /// written here.</b> That rule is the one property a side holding no key can check — a column that
+    /// held something still holds something — and its remarks say plainly how weak it is and why it is
+    /// nonetheless the strongest available. Eight narrative columns pass through it; restated per entity
+    /// it would be a rule that drifts, and the copy that forgot an arm still stores, still reads back and
+    /// still opens.
+    /// </para>
+    /// <para>
+    /// <b>It takes an <see cref="IndexedName"/> for the reason <see cref="Update"/> gives, and here that
+    /// reason is the arithmetic of the operation rather than a precaution.</b> A rotation replaces the
+    /// index key as well as the content key, so every value in <see cref="NameKey"/> changes; a member
+    /// that re-sealed the envelope alone would leave the row's uniqueness value describing text the row
+    /// no longer holds, on every category in the budget at once.
+    /// </para>
+    /// <para>
+    /// <b>A category's placement is two columns and neither is a parameter here.</b>
+    /// <see cref="CategoryGroupId"/> and <see cref="Position"/> are what <see cref="Place"/> writes;
+    /// a reseal that took them — by delegating to <see cref="Place"/>, or by reading them off its own
+    /// request — would move categories between groups as a side effect of re-encrypting them, silently
+    /// and in bulk. <see cref="Id"/> is stronger still: it is the associated data every envelope this row
+    /// has ever held was sealed against, so a member that re-minted it would store values nobody can
+    /// open.
+    /// </para>
+    /// <para>
+    /// <b>No length is measured here</b>, for the reason <see cref="NarrativeReseal"/> gives about the
+    /// three owners a cap already has.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ArgumentNullException">No name was supplied.</exception>
+    /// <exception cref="ValidationException">
+    /// <paramref name="rotationId"/> is <see cref="Guid.Empty"/>, or <paramref name="description"/>
+    /// changes whether <see cref="Description"/> holds a value.
+    /// </exception>
+    public void Reseal(IndexedName name, NarrativeField? description, Guid rotationId)
+    {
+        // The sibling mutators' guard, for the reason Create states: this signature says a name is
+        // present, so a null is a defect in this codebase rather than a field a caller corrects.
+        ArgumentNullException.ThrowIfNull(name);
+
+        // Both refusals run ahead of every assignment, so a refused reseal leaves all four columns
+        // exactly as the last chunk left them. A member that wrote the name and judged the note
+        // afterwards would leave a row half-rotated under a stamp that never arrived; a member that
+        // stamped first would mark a row as rewritten that was not, which is the one signal the
+        // destructive completion step trusts.
+        RequireRotation(rotationId);
+
+        NarrativeField? resealedDescription =
+            NarrativeReseal.Resealed(Description, description, nameof(Description));
+
+        Name = name.Name;
+        NameKey = name.BlindIndex;
+        Description = resealedDescription;
+        RotationId = rotationId;
+    }
+
+    /// <summary>
+    /// Refuses the empty rotation identifier, keyed on the member the stamp lands in.
+    /// </summary>
+    /// <remarks>
+    /// <b>The rule belongs to <see cref="Users.KeyRotation.Begin"/> and is restated at the far end of the
+    /// same identifier rather than invented here.</b> That factory argues it: all-zeros is a storable
+    /// uuid and is what a client that has begun no run sends, so a stamp carrying it marks a row as
+    /// rewritten under a rotation no <c>key_rotations</c> row matches — a full house belonging to nobody,
+    /// read by the step that destroys the old keys.
+    /// </remarks>
+    private static void RequireRotation(Guid rotationId)
+    {
+        if (rotationId == Guid.Empty)
+        {
+            throw new ValidationException(new Dictionary<string, string[]>
+            {
+                [nameof(RotationId)] = ["Rotation id is required."],
+            });
+        }
     }
 
     /// <summary>
