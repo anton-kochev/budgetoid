@@ -562,16 +562,31 @@ public sealed class KeyMaterialSecrecyTests
     /// entry with no column is a red.
     /// </para>
     /// <para>
-    /// The entries divide into five kinds, and the kinds are worth seeing. Two are the envelopes
+    /// The entries divide into five kinds, and the kinds are worth seeing. The first is the envelopes
     /// themselves — the only key-shaped thing this design lets cross the wire, and safe because the
     /// server holds nothing that opens them. Two are WebAuthn's own material, a handle that selects a
     /// credential and a <i>public</i> key published by design. Three are one-way values, two hashes and
-    /// a nonce, from which nothing is derived. Those three kinds are closed, which is the only reason
+    /// a nonce, from which nothing is derived. Those two kinds are closed, which is the only reason
     /// they are counted here. The rest are <i>content</i> and <i>blind indexes</i>, and those two are
     /// named rather than counted because they are the two that grow: every column a screen seals joins
     /// the first, and every sealed name that has to stay unique joins the second, so a number written
     /// against either is a pin no assertion in this file holds. No sixth kind exists, and a new column
     /// would have to argue itself into one of the five or invent a sixth in writing.
+    /// </para>
+    /// <para>
+    /// <b>THE ENVELOPE KIND STOPPED BEING COUNTED, AND IT IS WORTH SAYING WHY RATHER THAN QUIETLY
+    /// WRITING "FOUR".</b> The paragraph above used to open "Two are the envelopes themselves" and
+    /// close by calling three kinds closed. That was true while <c>wrapped_account_keys</c> was the only
+    /// table holding a wrapped account key. <c>key_rotations</c> holds the <i>next generation</i> of the
+    /// identical pair while a content-key rotation is in flight, so the kind now has four members and,
+    /// more to the point, has demonstrated that it grows — any table that has to hold a second copy of
+    /// the account's two keys joins it. A number here would be a pin no assertion in this file holds,
+    /// which is exactly the reason content and blind indexes were never counted, so the envelope kind
+    /// moves to the same footing. What did <b>not</b> change is the kind's argument: every member is
+    /// sealed under a key-encryption key derived on somebody's device from a recovery factor, and the
+    /// server holds no value that opens any of them. A new member still owes that argument in its own
+    /// words — the two <c>key_rotations</c> entries below write it out rather than pointing at their
+    /// siblings, because a classification that says "see above" stops being a per-column argument.
     /// </para>
     /// <para>
     /// <b>The fourth kind arrived exactly as this list said one would</b> — the paragraph above used to
@@ -964,6 +979,52 @@ public sealed class KeyMaterialSecrecyTests
             "the same argument, and one more: the two envelopes carry DIFFERENT associated data, so "
             + "even an operator who obtained one factor's key-encryption key could not move a copy "
             + "between the two columns without the tag failing to verify"),
+        new(
+            "key_rotations",
+            "wrapped_content_key",
+            "the NEXT generation of the account's content key, staged while a rotation is in flight — "
+            + "the same 61-byte envelope of version, nonce, ciphertext and tag that "
+            + "wrapped_account_keys.wrapped_content_key holds, sealed under one factor's "
+            + "key-encryption key and waiting for a completion step to promote it",
+            "the key-encryption key it is sealed under is derived in the browser from a recovery "
+            + "factor and imported non-extractable, so it exists nowhere this row can be read from — "
+            + "written out rather than pointed at its sibling, because a classification that says "
+            + "\"see above\" stops being a per-column argument. AES-GCM without that key yields "
+            + "nothing but the fact that 32 bytes were sealed, which the column's fixed width and its "
+            + "two check constraints already say out loud. WHAT IS NEW HERE IS NOT THE BYTES BUT THE "
+            + "SIMULTANEITY, and it is the one thing a reader should check rather than assume: for as "
+            + "long as a run is in flight the server holds TWO generations of one account's content "
+            + "key at once, which is a second envelope and not a second chance at the first. Both are "
+            + "sealed under key-encryption keys derived on somebody's device, so holding two opens "
+            + "neither, and holding both does not let one be used against the other — they are "
+            + "independent seals over independent 32-byte keys, not a key and a re-key of it, so "
+            + "there is no relation between the ciphertexts for an operator to exploit. The staging "
+            + "row is also the ONLY copy of the new generation this server ever sees before promotion: "
+            + "if the factor is revoked mid-run the row cascades away with it, which is correct rather "
+            + "than lossy — the envelopes were sealed under that factor's key-encryption key, so once "
+            + "it is gone they are two blobs nothing in the world can open"),
+        new(
+            "key_rotations",
+            "wrapped_index_key",
+            "the next generation of the account's index key in the same envelope, staged under the "
+            + "same factor as the content key beside it",
+            "the key-encryption key argument is its neighbour's and holds here for the same reason: "
+            + "it is derived on somebody's device from a recovery factor and never reaches this "
+            + "server, so nothing here opens this value. THE SEPARATION ARGUMENT IS THE ONE THIS "
+            + "COLUMN OWES IN ITS OWN WORDS, and it is a sharper claim on this table than on "
+            + "wrapped_account_keys, so it must not be inherited from there. The two envelopes carry "
+            + "DIFFERENT associated data, so an operator who obtained the factor's key-encryption key "
+            + "still could not move a copy between these two columns without the tag failing to "
+            + "verify — that much is the sibling's claim. What this table adds is a SECOND axis the "
+            + "tag has to hold: a staged envelope and a promoted one are two rows for the same factor "
+            + "in two tables, so swapping across tables is a move the associated data refuses as well "
+            + "as swapping across columns, and only that refusal stands between a half-finished "
+            + "rotation and an account sealed under a key the completion step never staged. NOTHING "
+            + "HERE UNWRAPS ANYTHING IN THE SECOND SENSE EITHER: the index key this envelope contains "
+            + "is an input to the client's HMAC over normalised names and to no KDF and no wrapping "
+            + "step on this side, so even a recovered index key would open no envelope — it would only "
+            + "let somebody recompute blind indexes, which is the bound accounts.name_key already "
+            + "states for itself"),
         new(
             "passkey_public_keys",
             "public_key_cose",

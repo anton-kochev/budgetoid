@@ -62,6 +62,21 @@ public sealed class Payee
     /// </remarks>
     public ReadOnlyMemory<byte> NameKey { get; private set; }
 
+    /// <summary>
+    /// The content-key rotation that last re-sealed this row's narrative columns, or
+    /// <see langword="null"/> while no rotation has ever touched it.
+    /// </summary>
+    /// <remarks>
+    /// <b>What the stamp is for, and why the server needs to be told rather than able to look, is argued
+    /// once at <see cref="Budgets.Budget.RotationId"/> and is not restated here.</b> What is specific to
+    /// this row is the consequence of getting the pair wrong: <see cref="NameKey"/> is the whole of
+    /// counterparty deduplication in this budget, so a rewritten name filed under an index from the
+    /// previous generation splits one counterparty into two payees that can neither be merged nor found
+    /// — and it does so in the one column where uniqueness is enforced rather than merely tidy.
+    /// <b>Private setter, no mutator, no factory parameter</b> — nothing writes it in this commit.
+    /// </remarks>
+    public Guid? RotationId { get; private set; }
+
     public DateTime CreatedAtUtc { get; private set; }
 
     /// <summary>

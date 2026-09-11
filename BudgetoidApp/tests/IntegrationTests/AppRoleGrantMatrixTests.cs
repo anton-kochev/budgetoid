@@ -157,6 +157,36 @@ public sealed class AppRoleGrantMatrixTests
         // a replaced recovery-code set still leave by the cascade from credentials and by nothing else.
         // See the remarks there for why that UPDATE is the only shape a rotation had available.
         ("wrapped_account_keys", ["SELECT", "INSERT"]),
+        // SELECT AND NOTHING ELSE, AND THIS IS THE ONLY LINE IN THE MATRIX WHERE THAT IS TRUE OF A
+        // TABLE THE APPLICATION WILL EVENTUALLY WRITE. currencies and __EFMigrationsHistory are
+        // read-only because nothing in the product owns them; this one is read-only because its writers
+        // have not landed yet — the handlers that begin a content-key rotation and promote it arrive
+        // with their own commit, and app-role-grants.sql's standing rule is that a privilege withheld
+        // until something uses it costs nothing while an unused one is a standing capability with no
+        // reader to explain it. By that rule alone this table would appear here with an EMPTY list.
+        //
+        // SELECT did not wait, and the asymmetry is the argument rather than an inconsistency to tidy:
+        // AN UNGRANTED UPDATE OR DELETE LEAVES NOTHING UNOBSERVABLE, AND AN UNGRANTED SELECT DOES. With
+        // no SELECT, NarrativeSecrecyTests' plaintext scan walks the catalog on the app-role connection,
+        // meets 42501 here and reports the table UNSCANNABLE — so two secrecy gates would pass while
+        // covering one table fewer than the schema holds, which is the same defect as a census that
+        // reads as complete and is not. INSERT and DELETE cost no gate by being absent: both fail loudly
+        // with 42501 the first time a handler reaches for them, which is a red test rather than a rule
+        // going quiet. DELETE in particular is not an oversight — clearing the staging is how a rotation
+        // ENDS, since the primary key is user_id and an abandoned run has to be deleted rather than
+        // marked — and it arrives with the completion handler that issues it.
+        //
+        // The table also appears on no line of ExpectedUpdateColumnGrants, and that is the stronger
+        // half. A staged envelope is never edited: a rotation that has to change its staged keys is a
+        // different run, which means deleting this row and beginning another under a new rotation id.
+        // So every column here is the row's identity or its payload, and a column-level UPDATE
+        // appearing on this table later would be somebody making a run mutable rather than replaceable.
+        //
+        // Rows leave by the cascade from wrapped_account_keys, and through it from credentials and
+        // users — the same referential action this matrix relies on three lines up, running with the
+        // referencing table owner's privileges rather than this role's. That is what lets an account
+        // erasure carry a staging row away while this role cannot issue a single DELETE against it.
+        ("key_rotations", ["SELECT"]),
         ("budgets", ["SELECT", "INSERT"]),
         ("accounts", ["SELECT", "INSERT", "DELETE"]),
         ("category_groups", ["SELECT", "INSERT", "DELETE"]),

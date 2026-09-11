@@ -58,7 +58,7 @@ GRANT SELECT ON currencies TO budgetoid_app;
 -- decision rather than an oversight. Every owned table hangs off this row by ON DELETE CASCADE —
 -- users → budgets → {payees, accounts, category_groups → categories}, and users → credentials →
 -- {sessions → session_tokens, passkey_public_keys, passkey_signature_counters,
--- recovery_code_hashes, wrapped_account_keys} — and
+-- recovery_code_hashes, wrapped_account_keys → key_rotations} — and
 -- PostgreSQL performs a
 -- referential action through internal triggers that run with the privileges of the REFERENCING
 -- table's owner, not of the role that issued the statement. So this one grant empties the
@@ -91,7 +91,10 @@ GRANT SELECT ON currencies TO budgetoid_app;
 -- and the budget for budget_isolation.
 --
 -- The children holding no DELETE of any shape are budgets, payees, sessions, session_tokens,
--- passkey_public_keys, passkey_signature_counters and wrapped_account_keys. That is a list of the
+-- passkey_public_keys, passkey_signature_counters, wrapped_account_keys and key_rotations. The last
+-- of those holds SELECT and nothing else, because nothing in the application writes it yet; its own
+-- block argues why SELECT did not wait with the writes, and its DELETE will arrive with the
+-- completion step that clears the staging. That is a list of the
 -- same kind as the cascade rendering above and carries the same obligation — it is exhaustive or it
 -- is misleading, and this is the list somebody consults to decide whether a child needs a grant.
 -- Two of those absences would cost something real to fill.
@@ -480,6 +483,31 @@ GRANT SELECT, INSERT, DELETE ON recovery_code_hashes TO budgetoid_app;
 REVOKE ALL ON wrapped_account_keys FROM budgetoid_app;
 GRANT SELECT, INSERT ON wrapped_account_keys TO budgetoid_app;
 GRANT UPDATE (wrapped_content_key, wrapped_index_key) ON wrapped_account_keys TO budgetoid_app;
+
+-- key_rotations: SELECT ONLY, AND THE ASYMMETRY IS THE ARGUMENT. Nothing in the application writes
+-- this table yet — the handlers that stage a rotation and promote it arrive with their own commit —
+-- and this file's standing rule is that withholding a privilege until something uses it costs
+-- nothing while granting an unused one leaves a standing capability with no reader to explain it.
+-- By that rule this table would hold no grant at all today.
+--
+-- SELECT is granted anyway, for the reason ADR 0018 already settled on wrapped_account_keys when it
+-- granted SELECT to the row-level-security probes before any production code read the table: AN
+-- UNGRANTED UPDATE LEAVES NOTHING UNOBSERVABLE; AN UNGRANTED SELECT DOES. Measured here rather than
+-- argued from precedent alone — with no SELECT, NarrativeSecrecyTests' plaintext scan runs over the
+-- catalog on the app-role connection, meets 42501 on this table, and reports it as UNSCANNABLE. Two
+-- secrecy gates then pass while covering one table fewer than the schema holds, which is the same
+-- defect as a census that reads as complete and is not. A table nothing can read is a table nothing
+-- can check.
+--
+-- INSERT and DELETE wait for their callers, and their absence costs no gate: both leave a loud 42501
+-- the first time a handler reaches for them, which is a test failing rather than a rule going quiet.
+-- The completion step will also need DELETE here — clearing the staging is how a rotation ends — and
+-- that grant arrives with the handler that issues it, carrying its own argument.
+--
+-- The table is POLICED rather than exempt: it carries user_id, so user_isolation appends the owner
+-- to every statement against it. See the policy at the foot of this file.
+REVOKE ALL ON key_rotations FROM budgetoid_app;
+GRANT SELECT ON key_rotations TO budgetoid_app;
 
 -- budgets: ONE UPDATE, ONE COLUMN, and it is the exception ASM-004 names rather than a softening of
 -- rule B2. No command may change a budget's name: it is sealed once, at creation, and no route accepts
@@ -878,5 +906,41 @@ CREATE POLICY user_isolation ON passkey_signature_counters FOR ALL TO budgetoid_
 ALTER TABLE wrapped_account_keys ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS user_isolation ON wrapped_account_keys;
 CREATE POLICY user_isolation ON wrapped_account_keys FOR ALL TO budgetoid_app
+    USING      (user_id = COALESCE(current_setting('app.current_user_id', true), '')::uuid)
+    WITH CHECK (user_id = COALESCE(current_setting('app.current_user_id', true), '')::uuid);
+
+-- key_rotations is the staging row of an unfinished content-key rotation: the next generation of an
+-- account's two wrapped keys, held beside the generation still in force until one completion step
+-- promotes it. It sits on the same side of the same boundary as wrapped_account_keys directly above,
+-- for the same reason — a rotation is begun under a passkey assertion that has already verified, so
+-- an identity is on the connection before this policy is ever evaluated.
+--
+-- THE TABLE HOLDS SELECT AND NO WRITE ABOVE, AND BOTH HALVES OF THAT ARE DELIBERATE. Nothing in the
+-- application writes it yet; the handlers arrive with the reseal behaviour, and withholding a
+-- privilege until something uses it costs nothing, so INSERT and DELETE wait for their caller. SELECT
+-- did not wait, because an ungranted SELECT is the one absence that hides something: the plaintext
+-- scan behind NarrativeSecrecyTests meets 42501 and reports the table UNSCANNABLE, so two secrecy
+-- gates would pass while covering one table fewer than the schema holds. Its own block above carries
+-- that argument.
+--
+-- The policy did not wait either, and for a different reason again — the two halves fail in opposite
+-- directions, as the header says at length. A table nobody grants is invisible to the role and the
+-- first feature to touch it fails loudly with 42501; a table nobody polices is silently readable
+-- across every tenant the moment somebody adds the grant. Writing the policy first is the ordering
+-- with no silent failure in it, and RlsCoverageTests derives its subject from the live schema, so an
+-- absent policy here would fail a test rather than ship. That ordering is what made granting SELECT
+-- safe to do early rather than a widening: the policy was already standing when it landed.
+--
+-- The policy reads only the ownership column, like the three above it. It says nothing about
+-- rotation_id or factor_id: whether a chunk may continue a given run is decided by the handler above
+-- this layer, and a predicate here consulting either would be inventing an isolation axis beside the
+-- two this file carries. What it cannot do is worth stating, because it is the same shape as the
+-- sibling's limit: it scopes which rows the app role may see and write, and it cannot tell a content
+-- key from an index key, nor notice the staged envelopes being written to each other's column. That
+-- binding lives in each envelope's associated data and is checkable only by a client holding the
+-- key-encryption key.
+ALTER TABLE key_rotations ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS user_isolation ON key_rotations;
+CREATE POLICY user_isolation ON key_rotations FOR ALL TO budgetoid_app
     USING      (user_id = COALESCE(current_setting('app.current_user_id', true), '')::uuid)
     WITH CHECK (user_id = COALESCE(current_setting('app.current_user_id', true), '')::uuid);

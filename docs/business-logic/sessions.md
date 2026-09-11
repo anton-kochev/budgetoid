@@ -770,8 +770,8 @@ ELSE                                                    ← an unenumerated futu
     reach an opened account. What a *factor* can open is the account keys' subject; **the session's
     own lifetime is not custody's** — the keys end at a sign-out, at a `401` and at a page load, and
     only the first two of those are anything this file records.
-- **`user_isolation`** — the same policy `users`, `budgets`, `passkey_signature_counters` and
-  `wrapped_account_keys` carry, keyed on the same session setting.
+- **`user_isolation`** — the same policy `users`, `budgets`, `passkey_signature_counters`,
+  `wrapped_account_keys` and `key_rotations` carry, keyed on the same session setting.
 - **CORS** — the default policy gains `AllowCredentials()`, because a browser drops a cross-origin
   response carrying a cookie unless the header says so, and drops it **silently**: the request
   succeeded, the server wrote the `Set-Cookie`, and the jar is simply empty afterwards. The

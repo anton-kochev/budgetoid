@@ -41,6 +41,12 @@ public sealed class WrappedAccountKeysConfiguration : IEntityTypeConfiguration<W
 
     private const string CredentialForeignKeyName = "FK_wrapped_account_keys_credentials";
 
+    // Pinned for the reason every name above it is pinned, and named after the precedent it copies:
+    // AK_credentials_id_user_id_type exists solely so another table can reference a tuple as a unit, and
+    // this one exists solely so key_rotations can reference (factor_id, user_id) as a unit. See the
+    // alternate key itself, at the bottom of Configure.
+    private const string FactorIdUserIdAlternateKeyName = "AK_wrapped_account_keys_factor_id_user_id";
+
     // The comparer PasskeyPublicKeyConfiguration declares, for the reason it declares one: change
     // tracking compares a property against the snapshot it took at load, and for a ReadOnlyMemory<byte>
     // the default comparison is the struct's own equality — pointer, offset and length. That is wrong in
@@ -262,6 +268,26 @@ public sealed class WrappedAccountKeysConfiguration : IEntityTypeConfiguration<W
             .HasPrincipalKey(credential => new { credential.Id, credential.UserId, credential.Type })
             .HasConstraintName(CredentialForeignKeyName)
             .OnDelete(DeleteBehavior.Cascade);
+
+        // Exists so key_rotations can reference (factor_id, user_id) as a unit, which is the same job
+        // AK_credentials_id_user_id_type does for sessions, passkey_public_keys and this very table.
+        // PostgreSQL will only let a foreign key name columns a unique constraint already covers, and
+        // the primary key here covers factor_id alone — so without this the composite key over there
+        // cannot exist, and "a rotation is staged against this account's own factor" would go back to
+        // being an application habit.
+        //
+        // This adds an INDEX, not a column, which matters for two neighbours. The data inventory keys on
+        // columns, so it is untouched. And the uniqueness is not a NEW rule: factor_id is already unique
+        // table-wide by the primary key, so any pair this constraint would refuse is a pair the primary
+        // key refuses first — it is created inside the same CREATE TABLE and therefore holds the lower
+        // OID, which is the order PostgreSQL reports a violated constraint in. WrappedAccountKeysSchemaTests
+        // asserts PK_wrapped_account_keys by name on a duplicate factor, and that assertion is unaffected.
+        builder.HasAlternateKey(wrappedAccountKeys => new
+        {
+            wrappedAccountKeys.FactorId,
+            wrappedAccountKeys.UserId,
+        })
+            .HasName(FactorIdUserIdAlternateKeyName);
     }
 
     // Static methods rather than inline lambdas because the comparer's arguments are expression trees,

@@ -11,7 +11,7 @@ Enforced today:
 - **Row-level security, on both axes.** A `budget_isolation` policy on `accounts`,
   `category_groups`, `categories`, `payees` and `transactions` compares `budget_id` against the
   session's ambient budget, and a `user_isolation` policy on `users`, `budgets`, `sessions`,
-  `passkey_signature_counters` and `wrapped_account_keys`
+  `passkey_signature_counters`, `wrapped_account_keys` and `key_rotations`
   compares `id` and `user_id` against the session's authenticated user — each in both `USING` and
   `WITH CHECK`, so the connection every request is served by reaches no other tenant's rows and can insert into
   no tenant but its own, whatever produced the statement. `SessionContextInterceptor` puts both

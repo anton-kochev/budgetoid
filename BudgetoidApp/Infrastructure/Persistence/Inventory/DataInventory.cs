@@ -78,8 +78,12 @@ public static class DataInventory
     /// <b>Narrative and arithmetic together are the members of
     /// <c>Application.Users.ExportData.ExportDocument</c>, one for one.</b> Forty-one columns carry
     /// one of those two words and the document's seven records declare forty-one members between
-    /// them; the four <c>name_key</c> columns are the only owned-table columns excluded, and each
-    /// record's own remarks already argue for leaving its own out. That correspondence is the whole
+    /// them; ten owned-table columns are excluded — the four <c>name_key</c> blind indexes and the six
+    /// <c>rotation_id</c> stamps — and each record's own remarks already argue for leaving its own
+    /// out. The stamps joined that set without moving the number above it, which is the property to
+    /// check when one of these tables grows a column: a new owned-table column is either a
+    /// forty-second member of the document or an eleventh written exclusion, and never neither. That
+    /// correspondence is the whole
     /// content of "the export is a copy of what the person owns", and it is what a later card asserts
     /// — so a column moved between these two words and the export is a column the two files now
     /// disagree about.
@@ -94,12 +98,14 @@ public static class DataInventory
     /// </para>
     /// <para>
     /// <b>One entry per column, and never a reason written at table grain for its columns to
-    /// inherit.</b> Fifty-two written reasons is a real cost and the obvious saving is the wrong one:
+    /// inherit.</b> Sixty-four written reasons is a real cost and the obvious saving is the wrong one:
     /// a reason argued about a table drifts the moment a column arrives that it was not about, which
     /// is exactly why <see cref="Provisioning.TableExemption" /> had to grow
     /// <see cref="Provisioning.TableExemption.ColumnsTheReasonCovers" />, and why the rule there is
-    /// <i>move the column, do not widen the pin</i>. The nine wholly-excluded tables below are nine
-    /// tables' worth of separate arguments, not nine sentences and a rubber stamp.
+    /// <i>move the column, do not widen the pin</i>. The ten wholly-excluded tables below are ten
+    /// tables' worth of separate arguments, not ten sentences and a rubber stamp — and the six
+    /// <c>rotation_id</c> stamps are six more, spread across six owned tables that each lose
+    /// something different by publishing one.
     /// </para>
     /// <para>
     /// <b>The reasons are the review surface no test can judge.</b> A length floor is asserted next
@@ -121,6 +127,17 @@ public static class DataInventory
         ColumnClassificationEntry.Arithmetic("budgets", "user_id"),
         ColumnClassificationEntry.Narrative("budgets", "name"),
         ColumnClassificationEntry.Arithmetic("budgets", "base_currency_code"),
+        ColumnClassificationEntry.Excluded(
+            "budgets",
+            "rotation_id",
+            "names the content-key rotation that last re-sealed this row, and it is the first of six "
+            + "identical stamps — argued separately on each table, because the six say different "
+            + "things about what a reader would lose. Here it would be a foreign key into "
+            + "key_rotations, a table whose row is deleted the moment the run it describes finishes, "
+            + "so a durable file naming one names something that no longer exists by the time "
+            + "anybody opens the file. The person is owed the budget's name, which ships sealed one "
+            + "column over; which generation of key sealed it is the server's bookkeeping about work "
+            + "it did on their behalf"),
         ColumnClassificationEntry.Arithmetic("budgets", "created_at_utc"),
 
         // accounts
@@ -138,6 +155,15 @@ public static class DataInventory
         ColumnClassificationEntry.Arithmetic("accounts", "type"),
         ColumnClassificationEntry.Arithmetic("accounts", "opening_balance"),
         ColumnClassificationEntry.Arithmetic("accounts", "currency_code"),
+        ColumnClassificationEntry.Excluded(
+            "accounts",
+            "rotation_id",
+            "the rotation stamp on the table that carries a blind index beside its sealed name. A "
+            + "rotation changes the index key as well as the content key, so this row's name_key is "
+            + "re-derived whenever this stamp moves — and name_key is itself excluded, so publishing "
+            + "the stamp would hand a reader a marker for the regeneration of a column the file "
+            + "deliberately does not carry. The name the person actually owns ships sealed, with "
+            + "nothing about which generation sealed it left to work out"),
         ColumnClassificationEntry.Arithmetic("accounts", "created_at_utc"),
 
         // category_groups — the first table carrying two sealed columns, name and description.
@@ -153,6 +179,15 @@ public static class DataInventory
             + "does carry, so publishing it is all risk and no return"),
         ColumnClassificationEntry.Narrative("category_groups", "description"),
         ColumnClassificationEntry.Arithmetic("category_groups", "position"),
+        ColumnClassificationEntry.Excluded(
+            "category_groups",
+            "rotation_id",
+            "the rotation stamp on the first table holding two sealed columns. One stamp covers the "
+            + "row, so in a file it would say 'both of these were rewritten together' about a name "
+            + "and a description the export already carries in full — a statement about the order "
+            + "work happened in rather than about the group. A person reading their own export wants "
+            + "the group and its note; how many passes the server made over them answers nothing "
+            + "they asked"),
         ColumnClassificationEntry.Arithmetic("category_groups", "created_at_utc"),
 
         // categories
@@ -169,6 +204,15 @@ public static class DataInventory
             + "derivable from the name this file already carries"),
         ColumnClassificationEntry.Narrative("categories", "description"),
         ColumnClassificationEntry.Arithmetic("categories", "position"),
+        ColumnClassificationEntry.Excluded(
+            "categories",
+            "rotation_id",
+            "the rotation stamp on the rows a person has the most of after transactions, and the "
+            + "place where publishing it would be closest to useful and still wrong. Read across a "
+            + "whole budget the six stamps reconstruct the order and the shape of an interrupted "
+            + "run — which rows were reached before somebody closed the tab — which is a trace of "
+            + "how the account's key custody was maintained rather than anything about a category. "
+            + "The category and its note ship; the maintenance record does not"),
         ColumnClassificationEntry.Arithmetic("categories", "created_at_utc"),
 
         // payees
@@ -182,6 +226,15 @@ public static class DataInventory
             + "the set of counterparties one person deals with, so a deterministic digest of it lets "
             + "a reader confirm guesses at who they pay. It is derivable from the name the export "
             + "carries, so its absence costs the person nothing at all"),
+        ColumnClassificationEntry.Excluded(
+            "payees",
+            "rotation_id",
+            "the rotation stamp on the table whose blind index is load-bearing rather than tidy: "
+            + "name_key is the whole of counterparty deduplication here, and a rotation re-derives "
+            + "every value in it. So this stamp is the marker of the riskiest rewrite in the "
+            + "product, and a file naming it would invite a reader to believe the payee list could "
+            + "be reconstructed or repaired from the export. It cannot — the names ship sealed and "
+            + "the indexes ship not at all"),
         ColumnClassificationEntry.Arithmetic("payees", "created_at_utc"),
 
         // transactions — the leaf, and the one owned table that omits nothing.
@@ -193,6 +246,15 @@ public static class DataInventory
         ColumnClassificationEntry.Narrative("transactions", "description"),
         ColumnClassificationEntry.Arithmetic("transactions", "payee_id"),
         ColumnClassificationEntry.Arithmetic("transactions", "category_id"),
+        ColumnClassificationEntry.Excluded(
+            "transactions",
+            "rotation_id",
+            "the rotation stamp on the highest-volume table in an account, which is what makes it "
+            + "the costly one to publish and the least informative. Repeated on every row, it would "
+            + "add a column to the largest part of the file to say the same thing each time: that "
+            + "the server re-sealed this row during some run. The description the person wrote ships "
+            + "sealed and the amount, date, payee and category ship in full — nothing about what "
+            + "they recorded depends on knowing which pass rewrote it"),
         ColumnClassificationEntry.Arithmetic("transactions", "created_at_utc"),
 
         // currencies — shared reference data belonging to no tenant.
@@ -537,6 +599,58 @@ public static class DataInventory
             "when a factor's envelopes were written, which dates when a passkey or a set of recovery "
             + "codes was enrolled. That is key-custody history rather than content, and it would tell "
             + "a reader of the file how long the account has had each way in"),
+
+        // key_rotations — the staging row of an unfinished re-seal, which exists only while one is
+        // running. Every column is excluded, and the arguments differ because the columns do.
+        ColumnClassificationEntry.Excluded(
+            "key_rotations",
+            "user_id",
+            "repeats the account already named by the exported user, here on the row that says a "
+            + "re-seal of the account's own content is part-way through. An export taken while one "
+            + "is running would carry a claim about work in progress into a file that outlives the "
+            + "work, and the row it names is deleted the moment the run ends — so the copy would be "
+            + "stale before anybody read it"),
+        ColumnClassificationEntry.Excluded(
+            "key_rotations",
+            "rotation_id",
+            "the identifier a run is continued and completed by. It is the value the six stamps on "
+            + "the owned tables quote, and a client presenting it is asking the server to keep "
+            + "writing to a run somebody already started. Putting it in a downloadable file hands "
+            + "that handle to whoever holds the file; it gives the person nothing back, because the "
+            + "way to resume a rotation is the browser that began it, never a value typed in"),
+        ColumnClassificationEntry.Excluded(
+            "key_rotations",
+            "factor_id",
+            "the client-minted identifier the staged envelopes were sealed against — associated data "
+            + "rather than content, exactly as on wrapped_account_keys. It opens nothing on its own "
+            + "and is meaningless without the envelopes it binds, and those are excluded here too, "
+            + "so it would arrive as a bare identifier for something the file deliberately does not "
+            + "carry"),
+        ColumnClassificationEntry.Excluded(
+            "key_rotations",
+            "wrapped_content_key",
+            "the account's NEXT content key, sealed under one factor's key-encryption key and not "
+            + "yet in force. It is the same kind of value wrapped_account_keys holds and the same "
+            + "answer applies — only the factor opens it, and a browser holding the factor is served "
+            + "it over a live session — with one thing on top: while a run is in flight this is the "
+            + "only copy of a key half the account's rows are already sealed under, so a file "
+            + "holding it is an offline target against material that has no second home"),
+        ColumnClassificationEntry.Excluded(
+            "key_rotations",
+            "wrapped_index_key",
+            "the next index key, sealed the same way, and the more damaging of the pair for the "
+            + "reason its counterpart next door gives: opening it regenerates every blind index in "
+            + "the budget, turning a stolen export from a pile of ciphertext into an oracle that "
+            + "confirms guesses at names. That it is the incoming generation rather than the current "
+            + "one changes nothing about what opening it would yield"),
+        ColumnClassificationEntry.Excluded(
+            "key_rotations",
+            "started_at_utc",
+            "when a re-seal was begun, which dates a security operation rather than anything the "
+            + "person recorded. Read beside a file that also carried the stamps it would say how "
+            + "long a run has been sitting unfinished — how long the account has been half-way "
+            + "between two keys — which is the one fact here an attacker would rather have than the "
+            + "person would"),
     ];
 
     /// <summary>The entries carrying one classification, in the order the list declares them.</summary>

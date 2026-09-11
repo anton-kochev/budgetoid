@@ -72,6 +72,16 @@ public sealed class BudgetoidDbContext(
     public DbSet<RecoveryCodeHash> RecoveryCodeHashes => Set<RecoveryCodeHash>();
     public DbSet<WrappedAccountKeys> WrappedAccountKeys => Set<WrappedAccountKeys>();
 
+    // Key rotations are unfiltered for exactly the reason the wrapped keys above them are. A staging row
+    // holds the NEXT generation of an account's two wrapped keys; the content key it wraps is the
+    // account's, so a copy keyed on one budget would claim that some of an account's data is sealed
+    // under a different key than the rest. It names no budget and could not. Isolation on user_id comes
+    // from the user_isolation policy, which this table is subject to rather than exempt from: nothing
+    // about it is read before the request has an identity — a rotation is begun under a passkey
+    // assertion that has already verified — so every read must both carry its own user_id filter and
+    // stay policed.
+    public DbSet<KeyRotation> KeyRotations => Set<KeyRotation>();
+
     // Internal rather than public, following its row type: nothing outside this assembly has a reason
     // to read a protocol nonce, and a public set would be the first step towards one.
     internal DbSet<WebAuthnChallengeRow> WebAuthnChallenges => Set<WebAuthnChallengeRow>();

@@ -5,7 +5,7 @@ Every column of every table carries exactly one classification — **narrative**
 the coverage tests read, so that adding a column is a decision made once rather than a change to be
 remembered in five places.
 
-`Infrastructure/Persistence/Inventory/` holds it: `DataInventory` (the 93 entries and the reader),
+`Infrastructure/Persistence/Inventory/` holds it: `DataInventory` (the 105 entries and the reader),
 `DataInventoryCoverage` (the comparison), `MappedSchema` (the enumerator, in two walks — one over
 what the model says a property holds, one over what the store is handed), and
 `NarrativeEncryptionCoverage` (the gate that demands ciphertext of the narrative half).
@@ -121,10 +121,11 @@ flatten the table away; a storage description bolted onto it would be dead weigh
 put two contradictory answers about one property behind two members of one value.
 
 **The two type checks are a floor, not a ceiling, and reading the pair the other way round is the
-mistake available here.** Measured over this model: 19 of the 93 mapped columns already have an
-effective provider type of `byte[]`, and 11 of those are not narrative — the four `name_key` blind
+mistake available here.** Measured over this model: 21 of the 105 mapped columns already have an
+effective provider type of `byte[]`, and 13 of those are not narrative — the four `name_key` blind
 indexes, `session_tokens.token_hash`, `recovery_code_hashes.verifier_hash`, both of
-`wrapped_account_keys`' envelopes, `passkey_public_keys`' two columns and
+`wrapped_account_keys`' envelopes, both of `key_rotations`' staged envelopes,
+`passkey_public_keys`' two columns and
 `webauthn_challenges.challenge`. Raw bytes carrying no envelope at all satisfy both type checks, so
 a column misclassified as narrative passes half the gate on shape alone. What tells a sealed column
 from a hashed one is the version check and the length band; the type pair only rules out a column
@@ -138,7 +139,7 @@ converters are supplied as objects rather than through the generic overload — 
 complementary, so a reader taking either alone reports every narrative column as storing
 `NarrativeField` — eight defects shaped exactly like a real substitution and belonging entirely to
 the reader, over a schema in which nothing is wrong. Falling
-through to the property's own type covers 63 of the 93 columns, which answer neither accessor, and
+through to the property's own type covers 73 of the 105 columns, which answer neither accessor, and
 it is not a guess dressed as an answer: a property with no converter and no declared provider type
 is handed to the provider as its own type, and that is the whole of the claim.
 

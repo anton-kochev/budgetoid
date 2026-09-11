@@ -62,6 +62,34 @@ public sealed class SchemaConstraintSnapshotTests
             "budgets.FK_budgets_currencies_base_currency_code: FOREIGN KEY (base_currency_code) REFERENCES currencies(code) ON DELETE RESTRICT",
             "budgets.FK_budgets_users_user_id: FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE",
             "categories.FK_categories_budgets_budget_id: FOREIGN KEY (budget_id) REFERENCES budgets(id) ON DELETE CASCADE",
+            // THE ONLY EDGE ON THIS SCHEMA THAT REFERENCES A TABLE OTHER THAN credentials, budgets,
+            // users, sessions, accounts, categories or payees — it points at wrapped_account_keys, and
+            // which table it points at is the decision this line pins. A rotation is staged under a
+            // FACTOR, and a set of recovery codes is ten factors under one credentials row, so a key to
+            // the credential would have left "which factor" a value nothing checks; pointed here, the
+            // row this rotation will overwrite exists by construction.
+            //
+            // Composite, and the composite is what the owner half buys: user_isolation on key_rotations
+            // reads user_id and never looks at the factor, so shortened to factor_id alone the database
+            // would accept envelopes staged against another account's factor — and the factor id is the
+            // associated data both staged envelopes were sealed with, so the completion step would
+            // promote them over somebody else's keys. Referencing (factor_id, user_id) through
+            // AK_wrapped_account_keys_factor_id_user_id is what makes the two columns agree by
+            // construction rather than by a rule somebody remembers. That alternate key is why the
+            // unique-index snapshot below grew a row in the same change.
+            //
+            // Cascade, and on this table it is the only answer that is not actively harmful. Restrict
+            // would let an unfinished staging row hold up the revocation of a passkey, and through the
+            // credentials cascade an account erasure — bookkeeping for an abandoned run outranking a
+            // person's request to be forgotten, which is the refusal the credentials -> users row above
+            // records. It is right on its own terms too: the staged envelopes were sealed under the
+            // key-encryption key that factor derives, so once the factor is gone they are two blobs
+            // nothing in the world can open, and a rotation that cannot be completed must not be
+            // resumable either. This edge is also the last link of the chain an erasure runs through —
+            // users -> credentials -> wrapped_account_keys -> key_rotations — so turning it to Restrict
+            // would leave a remnant of an erasure in the schema, which docs/business-logic/erasure.md
+            // forbids outright.
+            "key_rotations.FK_key_rotations_wrapped_account_keys: FOREIGN KEY (factor_id, user_id) REFERENCES wrapped_account_keys(factor_id, user_id) ON DELETE CASCADE",
             "categories.FK_categories_category_groups_category_group_id_budget_id: FOREIGN KEY (category_group_id, budget_id) REFERENCES category_groups(id, budget_id) ON DELETE RESTRICT",
             "category_groups.FK_category_groups_budgets_budget_id: FOREIGN KEY (budget_id) REFERENCES budgets(id) ON DELETE CASCADE",
             // Cascade, and deliberately not Restrict: a credential is how the account is reached,
@@ -185,6 +213,21 @@ public sealed class SchemaConstraintSnapshotTests
             // handle naming a session belonging to somebody else — and session_tokens is exempt from
             // row-level security, so nothing underneath would notice.
             """CREATE UNIQUE INDEX "AK_sessions_id_user_id" ON public.sessions USING btree (id, user_id)""",
+            // Redundant as a uniqueness claim and not there for uniqueness, exactly like
+            // AK_sessions_id_user_id above: factor_id is already PK_wrapped_account_keys, so
+            // (factor_id, user_id) cannot repeat whatever this index says. It is the referencable
+            // target the key_rotations composite foreign key needs — PostgreSQL accepts a foreign key
+            // only against a unique constraint covering exactly the referenced columns — so dropping it
+            // reads as removing a duplicate index while it is the thing that stops a rotation being
+            // staged against another account's factor.
+            //
+            // The user_id half is the half that carries the rule, and it is the half a tidier would
+            // shorten away: user_isolation on key_rotations decides on that column and never looks at
+            // the factor, so a single-column reference to PK_wrapped_account_keys would leave the
+            // database willing to store a staging row whose owner disagrees with the factor's — and the
+            // factor id is the associated data both staged envelopes were sealed with, so the promotion
+            // step would overwrite the wrong account's keys with envelopes nobody there can open.
+            """CREATE UNIQUE INDEX "AK_wrapped_account_keys_factor_id_user_id" ON public.wrapped_account_keys USING btree (factor_id, user_id)""",
             // THE SAME RULE — one name per budget — OVER A DIFFERENT COLUMN, and the column is the
             // whole of what moved. `name` is a sealed narrative field now, and every seal draws a
             // fresh nonce, so two rows holding one name hold different bytes: a unique index left on
@@ -290,6 +333,27 @@ public sealed class SchemaConstraintSnapshotTests
             """CREATE UNIQUE INDEX "PK_category_groups" ON public.category_groups USING btree (id)""",
             """CREATE UNIQUE INDEX "PK_credentials" ON public.credentials USING btree (id)""",
             """CREATE UNIQUE INDEX "PK_currencies" ON public.currencies USING btree (code)""",
+            // THE THIRD PRIMARY KEY IN THIS SET THAT IS NOT A SURROGATE ID, and the one whose key IS the
+            // rule rather than a lookup handle. "At most one content-key rotation in flight per account"
+            // is what the chunking depends on: a rotation re-seals every narrative column across several
+            // requests, and two concurrent runs would each re-wrap a subset of the same rows under a
+            // DIFFERENT new content key, leaving the account holding columns sealed under two keys with
+            // nothing recording which got which. Neither generation is distinguishable from the other by
+            // looking — both are well-formed envelopes of the one legal width carrying the one legal
+            // version — and the server can open neither, so nothing could sort it out afterwards.
+            //
+            // Keyed on the owner, the second INSERT collides with a 23505 the beginning handler filters
+            // by constraint NAME to answer "you already have a rotation in flight". A "check whether one
+            // is running, then insert" in a handler is two statements with a window between them, and the
+            // window is exactly wide enough for the second browser tab.
+            //
+            // A surrogate id added beside user_id is therefore not tidying: it would demote this to an
+            // ordinary index, make the duplicate storable, and give this table the shape every other
+            // table in the schema has — which is precisely the shape somebody reaches for first. The
+            // cost of keying it this way is real and deliberate: a rotation cannot be modelled as one row
+            // per attempt with a status column, so an abandoned run has to be DELETED rather than marked,
+            // or the account can never begin another.
+            """CREATE UNIQUE INDEX "PK_key_rotations" ON public.key_rotations USING btree (user_id)""",
             // Both keyed on credential_id alone, which is what makes each table hold at most one row
             // per credential: a key that could be joined by a second row, or a counter that could,
             // would leave the ceremony with two answers and no rule saying which one binds.
@@ -542,6 +606,33 @@ public sealed class SchemaConstraintSnapshotTests
             """CK_credentials_type_shape: credentials CHECK (((((type)::text = 'federated'::text) AND (provider IS NOT NULL) AND (subject IS NOT NULL) AND (length((subject)::text) > 0)) OR (((type)::text = 'passkey'::text) AND (provider IS NULL) AND (subject IS NULL)) OR (((type)::text = 'recovery_codes'::text) AND (provider IS NULL) AND (subject IS NULL))))""",
             """CK_currencies_code: currencies CHECK (((code)::text ~ '^[A-Z]{3}$'::text))""",
             """CK_currencies_minor_unit: currencies CHECK (((minor_unit >= 0) AND (minor_unit <= 4)))""",
+            // FOUR ROWS THAT ARE BYTE-FOR-BYTE THE FOUR CK_wrapped_account_keys_wrapped_* ROWS AT THE
+            // FOOT OF THIS LIST, over a second table, and the identity is the assertion rather than a
+            // paste somebody should tidy. key_rotations stages the NEXT generation of exactly the
+            // envelopes wrapped_account_keys holds — the same AEAD framing over the same two 32-byte
+            // keys, under the same factor — and one completion step moves them from here to there. A
+            // width or a version this table accepted and its sibling refused is a row that stores here
+            // and fails on promotion, at the one moment in an account's life when the old generation has
+            // already been overwritten and neither is readable. Both configurations render all four from
+            // WrappedAccountKeys.EnvelopeLength and WrappedAccountKeys.EnvelopeVersion, so the 61 and
+            // the 1 rendered below are one fact printed twice rather than two facts that happen to
+            // agree; moving either constant moves eight lines in this file and that is the wanted
+            // failure.
+            //
+            // Per column rather than once over both, and the reason is the sibling's: a violation has to
+            // say WHICH envelope was malformed, and no other check on the row can tell the two apart.
+            //
+            // get_byte and not SUBSTRING, matching the sibling and departing from every narrative
+            // version check above. Recorded rather than defended: get_byte raises 2202E on a
+            // zero-length bytea instead of answering false, and these are safe today only because
+            // "length" sorts before "version" so the width check refuses the value first. That accident
+            // is now duplicated onto a second table, which makes the fix larger rather than the risk
+            // higher — the two tables must stay spelled alike, so re-spelling belongs to the hardening
+            // item that owns both, not to an edit that fixes one and leaves the pair disagreeing.
+            """CK_key_rotations_wrapped_content_key_length: key_rotations CHECK ((length(wrapped_content_key) = 61))""",
+            """CK_key_rotations_wrapped_content_key_version: key_rotations CHECK ((get_byte(wrapped_content_key, 0) = 1))""",
+            """CK_key_rotations_wrapped_index_key_length: key_rotations CHECK ((length(wrapped_index_key) = 61))""",
+            """CK_key_rotations_wrapped_index_key_version: key_rotations CHECK ((get_byte(wrapped_index_key, 0) = 1))""",
             // The two COSE algorithms the verifier accepts, bounded here rather than trusted to the
             // writer. A row naming any other algorithm is one no verification path can read back, so
             // it would be a credential that authenticates nobody. Negative literals render with the

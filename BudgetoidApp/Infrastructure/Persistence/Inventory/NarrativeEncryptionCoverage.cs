@@ -33,11 +33,12 @@ namespace Infrastructure.Persistence.Inventory;
 /// </para>
 /// <para>
 /// <b>The two type members are a floor and the two check members are the ceiling, and reading the
-/// pair the other way round is the mistake available here.</b> Measured over this model: <b>19</b> of
-/// the 93 mapped columns already have an effective provider type of <c>byte[]</c>, and <b>11</b> of
+/// pair the other way round is the mistake available here.</b> Measured over this model: <b>21</b> of
+/// the 105 mapped columns already have an effective provider type of <c>byte[]</c>, and <b>13</b> of
 /// those are not narrative — the four <c>name_key</c> blind indexes, <c>session_tokens.token_hash</c>,
-/// <c>recovery_code_hashes.verifier_hash</c>, both of <c>wrapped_account_keys</c>' envelopes,
-/// <c>passkey_public_keys</c>' two columns and <c>webauthn_challenges.challenge</c>. So raw bytes
+/// <c>recovery_code_hashes.verifier_hash</c>, both of <c>wrapped_account_keys</c>' envelopes, both of
+/// <c>key_rotations</c>' staged envelopes, <c>passkey_public_keys</c>' two columns and
+/// <c>webauthn_challenges.challenge</c>. So raw bytes
 /// carrying no envelope at all satisfy <see cref="ProviderTypeIsNotBytes" /> and
 /// <see cref="StoreTypeIsNotOpaque" /> both, and a column misclassified as narrative would pass two of
 /// the four checks on shape alone. What distinguishes a sealed column from a hashed one is

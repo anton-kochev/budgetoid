@@ -120,8 +120,8 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
     than a separate rule.
 
     The tables that name a person are the exception: `users`, `budgets`, `sessions`,
-    `passkey_signature_counters` and `wrapped_account_keys` are policed by a `user_isolation` policy
-    comparing `id` and `user_id` against the session's authenticated user. Budget isolation cannot
+    `passkey_signature_counters`, `wrapped_account_keys` and `key_rotations` are policed by a
+    `user_isolation` policy comparing `id` and `user_id` against the session's authenticated user. Budget isolation cannot
     express that — a budget *is* the tenant, so there is no ambient budget to check a budgets row
     against — and leaving it to application code would make the tables that name a person the only
     ones the database does not guard. See

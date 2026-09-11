@@ -179,6 +179,43 @@ public sealed class BudgetConfiguration : IEntityTypeConfiguration<Budget>
             .HasColumnType("bytea");
 
         builder.Property(budget => budget.BaseCurrencyCode).HasColumnName("base_currency_code").HasMaxLength(3);
+        // The content-key rotation stamp, and the anchor for the five identical mappings on the other
+        // narrative-bearing tables — each of those points here rather than restating this.
+        //
+        // NULLABLE, and the nullability is the decision rather than the default. Three things follow
+        // from it. NULL is the honest reading of "no rotation has ever touched this row", which is the
+        // state of every row in the product today and of every row created between rotations; a NOT NULL
+        // column with a sentinel default would make that state indistinguishable from "rewritten under
+        // the rotation whose id happens to be the sentinel", and the sentinel is a value a client can
+        // send. It also keeps the backfill honest: this column arrives on tables already holding rows,
+        // and a default would write a value onto rows nothing has re-sealed. And it keeps the completion
+        // check writable as a comparison against the in-flight id, where an unstamped row and a
+        // stale-stamped row are both simply "not this rotation".
+        //
+        // NO .IsRequired(false) call: a Guid? is nullable by convention, and a call restating the
+        // convention reads as though it were overriding something.
+        //
+        // WHAT THE NULLABILITY COSTS, stated here because the next commit is where it bites and
+        // nothing will catch it there. The completion step refuses unless every narrative-bearing row
+        // carries the current stamp, and the obvious predicate for "not this rotation" is
+        // rotation_id <> @current. Over a NULLable column that predicate is SILENTLY WRONG: NULL <>
+        // anything is NULL, never true, so every row no rotation has ever touched is excluded from the
+        // count of rows still to do. On an account rotating for the first time that is every row in it
+        // — the check passes immediately, the promotion overwrites the live envelopes, and the whole
+        // budget is left sealed under a key nobody holds any more. The predicate has to be
+        // rotation_id IS DISTINCT FROM @current, or an explicit `IS NULL OR <>`. A NOT NULL column with
+        // a sentinel default would make the naive predicate correct; it would also make "never
+        // rotated" a value the application agrees to read a certain way rather than a fact the column
+        // states, and would write that value onto rows nothing has re-sealed. This comment is the
+        // trade, chosen deliberately.
+        //
+        // NO INDEX. Completion reads this column under budget_isolation, which appends budget_id to
+        // every statement, and this table is already keyed on the column that scopes it. An index over a
+        // column nothing queries yet is write amplification paying for a seek nobody performs — the same
+        // argument app-role-grants.sql makes about a privilege with no caller. Whoever writes the
+        // completion query decides whether one is worth it, with a plan in front of them.
+        builder.Property(budget => budget.RotationId).HasColumnName("rotation_id");
+
         builder.Property(budget => budget.CreatedAtUtc).HasColumnName("created_at_utc").HasColumnType("timestamp with time zone").IsRequired();
 
         // Deliberately no unique index or key over user_id alone: the schema is multi-budget-ready

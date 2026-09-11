@@ -721,12 +721,14 @@ public sealed class ErasureAtomicityTests
 
     /// <summary>
     /// Adds the passkey material, the session row and the handle it is presented by, the set of
-    /// recovery codes and the wrapped account keys, so the whole-database enumeration has something to
-    /// find in every user-owned table rather than only in the two provisioning fills. Without it the
-    /// non-vacuity guard fails on <c>sessions</c>, on <c>session_tokens</c> and on
-    /// <c>recovery_code_hashes</c>, which is the point of the guard.
+    /// recovery codes, the wrapped account keys and one in-flight key rotation, so the whole-database
+    /// enumeration has something to find in every user-owned table rather than only in the two
+    /// provisioning fills. Without it the non-vacuity guard fails on <c>sessions</c>, on
+    /// <c>session_tokens</c>, on <c>recovery_code_hashes</c> and on <c>key_rotations</c>, which is the
+    /// point of the guard.
     /// <c>wrapped_account_keys</c> would survive it — <see cref="RegisterPasskeyAsync" /> writes a row
-    /// of that route's own — and the seeded row is kept beside it for the reason below.
+    /// of that route's own — and the seeded row is kept beside it for the reason below, and is now also
+    /// the factor the staging row hangs off.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -767,16 +769,60 @@ public sealed class ErasureAtomicityTests
         // rather than the recovery-code set below because a passkey is the factor whose PRF output
         // derives the key-encryption key in production; either is legal here, the federated credential
         // is not.
+        //
+        // Minted into a local rather than inline, which it used to be, because the staging row below
+        // has to name this exact factor: key_rotations references wrapped_account_keys by a composite
+        // foreign key on (factor_id, user_id), so a second Guid.CreateVersion7() there would be a 23503
+        // rather than a seeded row.
+        //
+        // Minted here rather than derived from the owner, which is what production does: the value is
+        // chosen by the client and it is the table's primary key, so its uniqueness is global rather
+        // than per account. Nothing asserts on it, and a fresh one per call is what keeps two seeded
+        // accounts from colliding on that key.
+        Guid factorId = Guid.CreateVersion7();
         db.WrappedAccountKeys.Add(WrappedAccountKeys.For(
             passkey,
-
-            // Minted here rather than derived from the owner, which is what production does: the value
-            // is chosen by the client and it is the table's primary key, so its uniqueness is global
-            // rather than per account. Nothing asserts on it, and a fresh one per call is what keeps two
-            // seeded accounts from colliding on that key.
-            Guid.CreateVersion7(),
+            factorId,
             Envelope(0xC0),
             Envelope(0x1D),
+            SeedInstant));
+
+        // A content-key rotation caught mid-flight, in key_rotations — the newest table the enumeration
+        // discovers, and one the non-vacuity guard reports as a zero until something puts a row in it.
+        // Nothing in the product writes this table yet: the handlers that begin a rotation and promote
+        // it arrive with their own commit, and the app role holds SELECT here and no write grant at all.
+        // That is exactly why the row has to be seeded, and why it is seeded on the container superuser
+        // like every other row in this helper — a table that only ever holds zero rows makes both of
+        // this file's claims about it vacuously true, "nothing moved" and "everything went" alike, and
+        // the guard refusing to count an empty relation is that refusal working rather than an obstacle
+        // to route around.
+        //
+        // Through KeyRotation.Begin rather than raw SQL, for the reason the remarks above give about
+        // every other row here: the factory is what keeps a seeded row the shape production will write,
+        // and it reads the owner off the credential, so nothing here can stage a rotation onto another
+        // account. It takes the PASSKEY deliberately — Begin refuses any other credential type, because
+        // a federated credential derives no key-encryption key and a set of recovery codes is ten
+        // factors with no way to say which one a run began under.
+        //
+        // Filed against the factor seeded immediately above, which is the whole point of hoisting that
+        // identifier out of the call: the composite foreign key demands a wrapped_account_keys row for
+        // this (factor_id, user_id) pair, so the staging row is unstorable against a factor this account
+        // does not own. Both rows go in the same SaveChangesAsync below and EF orders the two inserts
+        // from the configured relationship.
+        //
+        // The two envelopes carry fillers of their own rather than reusing the pair above, so a failure
+        // message can tell a staged envelope from a promoted one by eye — the same argument the two
+        // fillers beside them already make about content versus index.
+        db.KeyRotations.Add(KeyRotation.Begin(
+            passkey,
+            factorId,
+
+            // Client-minted in production, and minted fresh here for the same reason the factor is:
+            // nothing asserts on it, and a value shared between two seeded accounts would be a value
+            // this seeding invented a meaning for.
+            Guid.CreateVersion7(),
+            Envelope(0x2E),
+            Envelope(0x3F),
             SeedInstant));
 
         // Established against the passkey rather than the federated credential because
@@ -921,9 +967,11 @@ public sealed class ErasureAtomicityTests
     /// <remarks>
     /// The filler is neither a nonce nor a ciphertext, and nothing here opens either — no unlock path
     /// exists and this server holds no value that could. What the row has to satisfy is the width and
-    /// the version, which <see cref="WrappedAccountKeys.For" /> and two check constraints per column
-    /// both refuse to bend. The two callers pass different fillers so the columns can be told apart by
-    /// eye in a failure message.
+    /// the version, which <see cref="WrappedAccountKeys.For" />, <see cref="KeyRotation.Begin" /> and
+    /// two check constraints per column on each of the two tables all refuse to bend — one pair of
+    /// constants, rendered four ways, which is why this helper serves both tables rather than growing a
+    /// twin. The four callers pass four different fillers so the columns can be told apart by eye in a
+    /// failure message: content from index, and the generation in force from the one staged beside it.
     /// </remarks>
     private static byte[] Envelope(byte filler)
     {

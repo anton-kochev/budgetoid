@@ -135,10 +135,29 @@ public sealed class OwnershipKeyImmutabilityTests
             "Category.BudgetId",
             "CategoryGroup.BudgetId",
             "Credential.UserId",
+            // The key whose column is the table's own primary key, which is unusual on this list and
+            // is the point. KeyRotation is the staging row a content-key rotation runs under:
+            // re-encrypting every narrative field of an account is more work than one request, so the
+            // next generation of wrapped keys is held here across several of them until one completion
+            // step promotes it into wrapped_account_keys. Keyed on the account, "at most one rotation
+            // in flight per account" is a primary key rather than a rule somebody has to enforce.
+            // Begin() reads the owner off the loaded Credential rather than taking it as an argument,
+            // the same decision every other factory on this list makes. What a settable UserId would
+            // cost is specific to this row: it names the factor whose envelopes the completion step
+            // overwrites in place — wrapped_account_keys already grants
+            // UPDATE (wrapped_content_key, wrapped_index_key) for exactly that — so re-filing this row
+            // against another account would point a destructive UPDATE at somebody else's wrapped
+            // keys. That is worse than a mis-owned row, and it is the concrete reason the property has
+            // no setter. The persistence half of the same rule is designed and not yet built:
+            // key_rotations is to carry a composite foreign key on (factor_id, user_id) referencing
+            // wrapped_account_keys, which makes a rotation staged against another account's factor
+            // unstorable underneath as well. The table does not exist today, so until it does this
+            // literal and the factory are the whole of it.
+            "KeyRotation.UserId",
             "PasskeyPublicKey.UserId",
             "PasskeySignatureCounter.UserId",
             "Payee.BudgetId",
-            // The eleventh key, and the one this rule is strictest about. recovery_code_hashes is
+            // One of the two keys this rule is strictest about. recovery_code_hashes is
             // exempt from row-level security — the row is found by the SHA-256 of the verifier on an
             // anonymous redemption request, before anybody has said who they are — so nothing beneath
             // the application re-checks whose row it is, exactly as on Credential.UserId. What is
@@ -148,8 +167,8 @@ public sealed class OwnershipKeyImmutabilityTests
             // this one as carrying that weight for this property.
             "RecoveryCodeHash.UserId",
             "Session.UserId",
-            // The thirteenth key, and the one this rule is strictest about for the reason
-            // RecoveryCodeHash.UserId is, only more so. session_tokens is exempt from row-level
+            // The other of those two, and the stricter, for the reason RecoveryCodeHash.UserId is,
+            // only more so. session_tokens is exempt from row-level
             // security — the row is found by the digest of a presented token before anybody has said
             // who they are — so nothing beneath the application re-checks whose row it is, and what the
             // column is FOR is that the request adopts the owner it finds here. A settable UserId is
@@ -160,17 +179,39 @@ public sealed class OwnershipKeyImmutabilityTests
             // list makes.
             "SessionToken.UserId",
             "Transaction.BudgetId",
-            // The twelfth key, and the first one whose column has no table yet: WrappedAccountKeys is
-            // Domain-only today, so the database half of the rule — the column's absence from every
-            // GRANT UPDATE list — is not in place, and this file is the whole enforcement until the
-            // table lands. What it protects is the factory's one decision: For() reads the owner off
-            // the loaded credential rather than taking it as an argument, so a settable UserId would
-            // hand back a way to re-file an account's two envelopes against another account's factor
-            // after every validation that could have caught it has already run.
+            // Held at two layers now, and each catches a different thing. The database half is in
+            // place: wrapped_account_keys is a real table, granted SELECT, INSERT and
+            // UPDATE (wrapped_content_key, wrapped_index_key), policed by user_isolation, with
+            // AppRoleGrantMatrixTests pinning both the table's verb set and that column list. user_id
+            // is absent from the list, which is how this schema spells an immutable column, so an
+            // UPDATE naming it is refused by Postgres with 42501 however it was built. What a grant
+            // cannot refuse is the property: assigning WrappedAccountKeys.UserId in C# compiles, and
+            // the grant only ever fires if EF then emits that column in a SET list. On an INSERT it
+            // never fires at all — every column is insertable — and a foreign owner there is caught,
+            // if at all, by user_isolation's WITH CHECK. A grant refuses a statement; this census
+            // refuses the value being formed. What it protects is the factory's one decision: For()
+            // reads the owner off the loaded credential rather than taking it as an argument, so a
+            // settable UserId would hand back a way to re-file an account's two envelopes against
+            // another account's factor after every validation that could have caught it has already
+            // run.
             "WrappedAccountKeys.UserId",
         ];
-        await Assert.That(string.Join(", ", declared.Except(expected))).IsEqualTo(string.Empty);
-        await Assert.That(string.Join(", ", expected.Except(declared))).IsEqualTo(string.Empty);
+        // Asserted as collections, and the difference is what a failure can SAY rather than when it
+        // fires. Both directions used to be joined into one string and compared with the empty one.
+        // That went red at exactly the same moments — the rule below is unchanged, and both
+        // directions are still compared — but it could not name what it caught: TUnit truncates the
+        // received string at about a hundred characters, so five offenders of ordinary length lose
+        // the tail mid-word and nothing says whether there was a sixth. What it prints in place of
+        // the missing names is a "differs at index 0" caret diagram drawing the empty string
+        // against itself, which is noise here because the expected side is always "". A census that
+        // reddens without naming its offenders sends the next person hunting through 14 literals.
+        // IsEmpty() lists every item. Measured against this file with five entries removed.
+        await Assert.That(declared.Except(expected)).IsEmpty();
+        await Assert.That(expected.Except(declared)).IsEmpty();
+
+        // Left as a count deliberately: a different assertion doing a different job. It catches a
+        // reflection query that enumerated nothing and passed both lines above vacuously, and a
+        // number is the whole of what it has to report.
         await Assert.That(declared.Count).IsGreaterThan(0);
     }
 
@@ -183,8 +224,12 @@ public sealed class OwnershipKeyImmutabilityTests
         // Act
         IReadOnlyList<string> offenders = OwnershipKeys.MutableIn(domainTypes);
 
-        // Assert — joined rather than counted so a failure names the offending property.
-        await Assert.That(string.Join(", ", offenders)).IsEqualTo(string.Empty);
+        // Assert — asserted on the collection rather than counted, so a failure names the offending
+        // properties, and rather than joined, so it names ALL of them. Joining and comparing with
+        // the empty string reddens identically; it just truncates the report at about a hundred
+        // characters, and the refactor that opens several setters at once is exactly the change
+        // that produces more offenders than fit.
+        await Assert.That(offenders).IsEmpty();
 
         // A reflection query that silently came back empty would satisfy the line above while
         // proving nothing, so the subject is asserted to exist as well.

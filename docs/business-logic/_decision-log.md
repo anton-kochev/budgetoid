@@ -8,6 +8,58 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-09-11 — A rotation stages its next keys beside the ones still in force
+
+**Context:** a content-key rotation re-encrypts every narrative field of an account. The API caps a
+request body at 64 KB, and a whole-account rewrite does not fit in one, so a rotation is chunked
+across several requests and can be interrupted part-way. With a single generation of wrapped keys
+there are only two orderings and **both lose the account**: promote the new keys first and every row
+not yet rewritten is sealed under a key nobody holds any more; promote them last and every row
+already rewritten is stranded the moment the tab closes, because the new key lived only in that tab.
+
+**Decision:** the next generation of an account's two wrapped keys is staged on its own table,
+`key_rotations`, and stays there until one completion step promotes it into `wrapped_account_keys`.
+Both generations are readable for as long as a rotation is in flight, so an interruption is always
+recoverable. This buys **recoverability, not atomicity** — chunks still commit independently and a
+mid-rotation observer sees a mixed-key account. Atomicity is a separate piece of work.
+
+**`user_id` is the primary key**, which is unusual for a staging table and is the point: "at most one
+rotation in flight per account" becomes a primary key rather than a rule somebody remembers. A
+composite foreign key on `(factor_id, user_id)` makes a rotation staged against another account's
+factor unstorable rather than merely unlikely, and cascades, so revoking that passkey mid-rotation
+takes the staging row with it.
+
+**Rejected — a second generation of rows inside `wrapped_account_keys`.** It needs no new grant,
+which is its only real argument. But `factor_id` is the primary key there, so a second generation
+needs a second factor id, which changes the associated data the envelopes were sealed against and
+puts two ids on the wire for one factor. Worse, a client locating its pair by trying each entry in
+turn would start succeeding on the dead one, and retiring the superseded generation eventually needs
+a `DELETE` this schema deliberately withholds.
+
+**Rejected — one request, one transaction, the whole account.** Atomic for free, and killed by the
+64 KB cap plus connection-pool pressure: one long transaction holds one of five connections for an
+entire account rewrite.
+
+**The six `rotation_id` stamp columns are the other half**, and they exist because the server can
+decide nothing here by looking. It cannot tell rotated ciphertext from un-rotated — a fresh nonce
+changes the bytes either way, and the associated data is never carried inside the envelope — so a
+chunk stamps the in-flight rotation's id onto each row it rewrites, in the **same transaction** as
+the ciphertext, and completion refuses unless every row carrying a narrative value carries the
+current stamp. The guarantee is transactional and not statement-level: if EF split the two into
+separate statements they would still commit or roll back together.
+
+**The stamp columns are nullable, and that has a trap with teeth.** `rotation_id <> @current` is the
+predicate everybody writes first and it is silently wrong, because `NULL <> anything` is `NULL` and
+never true. Every row no rotation has touched drops out of "rows still to do" — on an account
+rotating for the first time that is *every* row, so the completeness check passes immediately, the
+destructive promotion runs, and the whole budget ends up sealed under a key nobody holds. The
+predicate is `IS DISTINCT FROM`. A `NOT NULL` default would make the naive predicate correct, and it
+was rejected anyway: every candidate default either invents an identifier naming no rotation that
+ever happened, or makes "never rotated" a sentinel the application agrees to read a certain way,
+one layer above the column that should be saying it.
+
+---
+
 ## 2026-09-07 — Every column is classified, and the three words are about what is owed
 
 **Context:** five coverage rules each need to enumerate columns by what they are, and ten separate

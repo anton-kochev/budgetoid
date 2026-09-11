@@ -237,6 +237,10 @@ public sealed class PayeeConfiguration : IEntityTypeConfiguration<Payee>
             .HasColumnType("bytea")
             .IsRequired();
 
+        // The content-key rotation stamp. Nullable, uncalled, unindexed; BudgetConfiguration argues all
+        // three at its own copy of this line and the argument is not restated per table.
+        builder.Property(payee => payee.RotationId).HasColumnName("rotation_id");
+
         builder.Property(payee => payee.CreatedAtUtc).HasColumnName("created_at_utc").HasColumnType("timestamp with time zone").IsRequired();
 
         // THE RULE IS THE SAME RULE — one payee name per budget — ENFORCED BY THE SAME MECHANISM OVER

@@ -70,6 +70,22 @@ public sealed class Account
     public AccountType Type { get; private set; }
     public decimal OpeningBalance { get; private set; }
     public string CurrencyCode { get; private set; } = string.Empty;
+
+    /// <summary>
+    /// The content-key rotation that last re-sealed this row's narrative columns, or
+    /// <see langword="null"/> while no rotation has ever touched it.
+    /// </summary>
+    /// <remarks>
+    /// <b>What the stamp is for, and why the server needs to be told rather than able to look, is argued
+    /// once at <see cref="Budgets.Budget.RotationId"/> and is not restated here.</b> What is specific to
+    /// this row is that a rewrite has to carry <see cref="NameKey"/> with it: the blind index is computed
+    /// under the account's <em>index</em> key, so a rotation that changes that key changes every value in
+    /// the column, and a stamp recording a row as rewritten while its index still belongs to the previous
+    /// generation would be the stamp lying about the half nobody can decrypt to check.
+    /// <b>Private setter, no mutator, no factory parameter</b> — nothing writes it in this commit.
+    /// </remarks>
+    public Guid? RotationId { get; private set; }
+
     public DateTime CreatedAtUtc { get; private set; }
 
     /// <summary>

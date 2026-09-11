@@ -624,6 +624,37 @@ public sealed class BudgetoidDbContextConstructionTests
             + "length(wrapped_index_key) = 61",
             "CK_wrapped_account_keys_wrapped_index_key_version: wrapped_account_keys "
             + "get_byte(wrapped_index_key, 0) = 1",
+            // THE SAME FOUR BOUNDS OVER A SECOND TABLE, and the duplication is the rule rather than a
+            // paste. key_rotations stages the NEXT generation of the two envelopes directly above: the
+            // same AEAD framing over the same two 32-byte keys, under the same factor, waiting for a
+            // completion step to promote it into those columns. So a width this table accepted and its
+            // sibling refused would be a row that stores here and fails there — after the old keys have
+            // already been overwritten, which is the one moment in an account's life when the server
+            // holds no readable copy of either generation. Both configurations render these from
+            // WrappedAccountKeys.EnvelopeLength and WrappedAccountKeys.EnvelopeVersion for that reason,
+            // and this pin is on the RENDERING: a local copy of 61 or of the version byte would not be
+            // a second fact, it would be one fact able to disagree with itself.
+            //
+            // Four rows and not two, per column rather than once over both, for the sibling's reason: a
+            // violation has to name WHICH envelope was malformed, and nothing else on the row can tell
+            // them apart — every check here reads identically on either column.
+            //
+            // These two carry get_byte rather than substring, matching wrapped_account_keys and NOT the
+            // narrative columns above. That is recorded rather than defended: the four wrapped-key
+            // checks are correct today only by the same alphabetical accident the budgets entry
+            // describes at length — "length" sorts before "version", so a zero-length envelope answers
+            // 23514 from the width check and the version predicate never runs to raise 2202E. Spelling
+            // these two the same way as their sibling keeps the pair of tables identical, which is what
+            // this entry is about; changing the idiom is a change to both tables at once and belongs to
+            // the hardening item that owns it, not to a drive-by edit here.
+            "CK_key_rotations_wrapped_content_key_length: key_rotations "
+            + "length(wrapped_content_key) = 61",
+            "CK_key_rotations_wrapped_content_key_version: key_rotations "
+            + "get_byte(wrapped_content_key, 0) = 1",
+            "CK_key_rotations_wrapped_index_key_length: key_rotations "
+            + "length(wrapped_index_key) = 61",
+            "CK_key_rotations_wrapped_index_key_version: key_rotations "
+            + "get_byte(wrapped_index_key, 0) = 1",
             "CK_currencies_code: currencies code ~ '^[A-Z]{3}$'",
             "CK_currencies_minor_unit: currencies minor_unit between 0 and 4",
             // The kind vocabulary, bounded the way the credential vocabularies above are, and it is
@@ -809,7 +840,31 @@ public sealed class BudgetoidDbContextConstructionTests
         // description and forgets to assign it writes a legal NULL row where the NOT NULL name would
         // have answered 23502. Same obligation, unchanged: whoever regenerates the baseline resets
         // production's __EFMigrationsHistory in the same deploy (DEPLOYMENT.md, Step 3).
-        const string frozenBaselineId = "20260903122251_InitialCreate";
+        //
+        // And it moved again for the content-key rotation's staging schema, which is the first move in
+        // this sequence that adds a TABLE rather than re-typing a column. Three things arrive together
+        // and none of them is expressible additively over a populated database. key_rotations holds the
+        // next generation of an account's two wrapped keys while a rotation is in flight, keyed on
+        // user_id — "at most one rotation in flight per account" is a PRIMARY KEY rather than a rule a
+        // handler remembers, which is ADR 0002 applied literally and is why no surrogate id sits beside
+        // it. AK_wrapped_account_keys_factor_id_user_id arrives with it, because the composite foreign
+        // key on (factor_id, user_id) needs a unique constraint covering exactly those columns, and the
+        // composite is what makes a rotation staged against another account's factor unstorable rather
+        // than merely unlikely. And six NULLABLE rotation_id columns land on budgets, accounts, payees,
+        // category_groups, categories and transactions — every table carrying a narrative column — so a
+        // completion step can refuse to promote the new keys until every sealed row has been rewritten.
+        // NOTHING WRITES THOSE SIX YET, and that is deliberate rather than an omission: the members
+        // that stamp them arrive with the reseal handlers, and a nullable column added ahead of its
+        // writer costs nothing while a completion step with no way to tell a rewritten row from an
+        // untouched one would strand half an account's data. An added table, an added alternate key and
+        // six added columns are each expressible as an alter in isolation; landing them as one initial
+        // migration is the rebaseline window's whole purpose (CON-002 — the production database holds
+        // no rows), and the chain of alters nothing will ever replay step by step is what it exists to
+        // avoid. Same obligation, unchanged and not softened by being the seventh time it is written:
+        // whoever regenerates the baseline resets production's __EFMigrationsHistory in the same deploy
+        // (DEPLOYMENT.md, Step 3), or that deploy fails on the first CREATE TABLE against a database
+        // that already holds the schema.
+        const string frozenBaselineId = "20260911115008_InitialCreate";
         await using BudgetoidDbContext db = CreateDbContext();
 
         // Act

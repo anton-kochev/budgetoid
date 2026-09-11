@@ -71,6 +71,7 @@ public partial class InitialCreate : Migration
                 user_id = table.Column<Guid>(type: "uuid", nullable: false),
                 name = table.Column<byte[]>(type: "bytea", nullable: true),
                 base_currency_code = table.Column<string>(type: "character varying(3)", maxLength: 3, nullable: true),
+                rotation_id = table.Column<Guid>(type: "uuid", nullable: true),
                 created_at_utc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
             },
             constraints: table =>
@@ -129,6 +130,7 @@ public partial class InitialCreate : Migration
                 type = table.Column<string>(type: "character varying(20)", maxLength: 20, nullable: false),
                 opening_balance = table.Column<decimal>(type: "numeric(14,4)", nullable: false),
                 currency_code = table.Column<string>(type: "character varying(3)", maxLength: 3, nullable: false),
+                rotation_id = table.Column<Guid>(type: "uuid", nullable: true),
                 created_at_utc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
             },
             constraints: table =>
@@ -164,6 +166,7 @@ public partial class InitialCreate : Migration
                 name_key = table.Column<byte[]>(type: "bytea", nullable: false),
                 description = table.Column<byte[]>(type: "bytea", nullable: true),
                 position = table.Column<int>(type: "integer", nullable: false),
+                rotation_id = table.Column<Guid>(type: "uuid", nullable: true),
                 created_at_utc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
             },
             constraints: table =>
@@ -192,6 +195,7 @@ public partial class InitialCreate : Migration
                 budget_id = table.Column<Guid>(type: "uuid", nullable: false),
                 name = table.Column<byte[]>(type: "bytea", nullable: false),
                 name_key = table.Column<byte[]>(type: "bytea", nullable: false),
+                rotation_id = table.Column<Guid>(type: "uuid", nullable: true),
                 created_at_utc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
             },
             constraints: table =>
@@ -323,6 +327,7 @@ public partial class InitialCreate : Migration
             constraints: table =>
             {
                 table.PrimaryKey("PK_wrapped_account_keys", x => x.factor_id);
+                table.UniqueConstraint("AK_wrapped_account_keys_factor_id_user_id", x => new { x.factor_id, x.user_id });
                 table.CheckConstraint("CK_wrapped_account_keys_credential_type", "credential_type in ('passkey', 'recovery_codes')");
                 table.CheckConstraint("CK_wrapped_account_keys_wrapped_content_key_length", "length(wrapped_content_key) = 61");
                 table.CheckConstraint("CK_wrapped_account_keys_wrapped_content_key_version", "get_byte(wrapped_content_key, 0) = 1");
@@ -347,6 +352,7 @@ public partial class InitialCreate : Migration
                 name_key = table.Column<byte[]>(type: "bytea", nullable: false),
                 description = table.Column<byte[]>(type: "bytea", nullable: true),
                 position = table.Column<int>(type: "integer", nullable: false),
+                rotation_id = table.Column<Guid>(type: "uuid", nullable: true),
                 created_at_utc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
             },
             constraints: table =>
@@ -394,6 +400,32 @@ public partial class InitialCreate : Migration
             });
 
         migrationBuilder.CreateTable(
+            name: "key_rotations",
+            columns: table => new
+            {
+                user_id = table.Column<Guid>(type: "uuid", nullable: false),
+                rotation_id = table.Column<Guid>(type: "uuid", nullable: false),
+                factor_id = table.Column<Guid>(type: "uuid", nullable: false),
+                wrapped_content_key = table.Column<byte[]>(type: "bytea", nullable: false),
+                wrapped_index_key = table.Column<byte[]>(type: "bytea", nullable: false),
+                started_at_utc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
+            },
+            constraints: table =>
+            {
+                table.PrimaryKey("PK_key_rotations", x => x.user_id);
+                table.CheckConstraint("CK_key_rotations_wrapped_content_key_length", "length(wrapped_content_key) = 61");
+                table.CheckConstraint("CK_key_rotations_wrapped_content_key_version", "get_byte(wrapped_content_key, 0) = 1");
+                table.CheckConstraint("CK_key_rotations_wrapped_index_key_length", "length(wrapped_index_key) = 61");
+                table.CheckConstraint("CK_key_rotations_wrapped_index_key_version", "get_byte(wrapped_index_key, 0) = 1");
+                table.ForeignKey(
+                    name: "FK_key_rotations_wrapped_account_keys",
+                    columns: x => new { x.factor_id, x.user_id },
+                    principalTable: "wrapped_account_keys",
+                    principalColumns: new[] { "factor_id", "user_id" },
+                    onDelete: ReferentialAction.Cascade);
+            });
+
+        migrationBuilder.CreateTable(
             name: "transactions",
             columns: table => new
             {
@@ -405,6 +437,7 @@ public partial class InitialCreate : Migration
                 description = table.Column<byte[]>(type: "bytea", nullable: true),
                 payee_id = table.Column<Guid>(type: "uuid", nullable: true),
                 category_id = table.Column<Guid>(type: "uuid", nullable: true),
+                rotation_id = table.Column<Guid>(type: "uuid", nullable: true),
                 created_at_utc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
             },
             constraints: table =>
@@ -536,6 +569,11 @@ public partial class InitialCreate : Migration
             filter: "type = 'recovery_codes'");
 
         migrationBuilder.CreateIndex(
+            name: "IX_key_rotations_factor_id_user_id",
+            table: "key_rotations",
+            columns: new[] { "factor_id", "user_id" });
+
+        migrationBuilder.CreateIndex(
             name: "IX_passkey_public_keys_credential_id_user_id_credential_type",
             table: "passkey_public_keys",
             columns: new[] { "credential_id", "user_id", "credential_type" });
@@ -634,6 +672,9 @@ public partial class InitialCreate : Migration
     /// <inheritdoc />
     protected override void Down(MigrationBuilder migrationBuilder)
     {
+        migrationBuilder.DropTable(
+            name: "key_rotations");
+
         migrationBuilder.DropTable(
             name: "passkey_public_keys");
 

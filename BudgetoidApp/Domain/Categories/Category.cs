@@ -102,6 +102,21 @@ public sealed class Category
     public NarrativeField? Description { get; private set; }
 
     public int Position { get; private set; }
+
+    /// <summary>
+    /// The content-key rotation that last re-sealed this row's narrative columns, or
+    /// <see langword="null"/> while no rotation has ever touched it.
+    /// </summary>
+    /// <remarks>
+    /// <b>What the stamp is for, and why the server needs to be told rather than able to look, is argued
+    /// once at <see cref="Budgets.Budget.RotationId"/> and is not restated here.</b> What is specific to
+    /// this row is where it sits: categories and their groups are a tree whose list read is delivered
+    /// whole, so a run that stopped part-way leaves one response carrying rows of both generations. The
+    /// stamp is what tells those rows apart; nothing about their contents does.
+    /// <b>Private setter, no mutator, no factory parameter</b> — nothing writes it in this commit.
+    /// </remarks>
+    public Guid? RotationId { get; private set; }
+
     public DateTime CreatedAtUtc { get; private set; }
 
     /// <summary>

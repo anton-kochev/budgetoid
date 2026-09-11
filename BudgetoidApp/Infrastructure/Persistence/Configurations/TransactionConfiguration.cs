@@ -172,6 +172,10 @@ public sealed class TransactionConfiguration : IEntityTypeConfiguration<Transact
             .HasColumnType("bytea");
         builder.Property(transaction => transaction.PayeeId).HasColumnName("payee_id");
         builder.Property(transaction => transaction.CategoryId).HasColumnName("category_id");
+        // The content-key rotation stamp. Nullable, uncalled, unindexed; BudgetConfiguration argues all
+        // three at its own copy of this line and the argument is not restated per table.
+        builder.Property(transaction => transaction.RotationId).HasColumnName("rotation_id");
+
         builder.Property(transaction => transaction.CreatedAtUtc)
             .HasColumnName("created_at_utc")
             .HasColumnType("timestamp with time zone")

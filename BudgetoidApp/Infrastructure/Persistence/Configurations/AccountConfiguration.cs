@@ -243,6 +243,10 @@ public sealed class AccountConfiguration : IEntityTypeConfiguration<Account>
         builder.Property(account => account.Type).HasColumnName("type").HasConversion<string>().HasMaxLength(20).IsRequired();
         builder.Property(account => account.OpeningBalance).HasColumnName("opening_balance").HasColumnType("numeric(14,4)").IsRequired();
         builder.Property(account => account.CurrencyCode).HasColumnName("currency_code").HasMaxLength(3).IsRequired();
+        // The content-key rotation stamp. Nullable, uncalled, unindexed; BudgetConfiguration argues all
+        // three at its own copy of this line and the argument is not restated per table.
+        builder.Property(account => account.RotationId).HasColumnName("rotation_id");
+
         builder.Property(account => account.CreatedAtUtc).HasColumnName("created_at_utc").HasColumnType("timestamp with time zone").IsRequired();
 
         // THE RULE IS THE SAME RULE — one name per budget — ENFORCED BY THE SAME MECHANISM OVER BYTES THE

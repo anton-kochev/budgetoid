@@ -12,7 +12,7 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(BudgetoidDbContext))]
-    [Migration("20260903122251_InitialCreate")]
+    [Migration("20260911115008_InitialCreate")]
     partial class InitialCreate
     {
         /// <inheritdoc />
@@ -60,6 +60,10 @@ namespace Infrastructure.Persistence.Migrations
                     b.Property<decimal>("OpeningBalance")
                         .HasColumnType("numeric(14,4)")
                         .HasColumnName("opening_balance");
+
+                    b.Property<Guid?>("RotationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("rotation_id");
 
                     b.Property<string>("Type")
                         .IsRequired()
@@ -109,6 +113,10 @@ namespace Infrastructure.Persistence.Migrations
                     b.Property<byte[]>("Name")
                         .HasColumnType("bytea")
                         .HasColumnName("name");
+
+                    b.Property<Guid?>("RotationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("rotation_id");
 
                     b.Property<Guid>("UserId")
                         .HasColumnType("uuid")
@@ -169,6 +177,10 @@ namespace Infrastructure.Persistence.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("position");
 
+                    b.Property<Guid?>("RotationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("rotation_id");
+
                     b.HasKey("Id")
                         .HasName("PK_categories");
 
@@ -228,6 +240,10 @@ namespace Infrastructure.Persistence.Migrations
                     b.Property<int>("Position")
                         .HasColumnType("integer")
                         .HasColumnName("position");
+
+                    b.Property<Guid?>("RotationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("rotation_id");
 
                     b.HasKey("Id")
                         .HasName("PK_category_groups");
@@ -405,6 +421,10 @@ namespace Infrastructure.Persistence.Migrations
                         .HasColumnType("bytea")
                         .HasColumnName("name_key");
 
+                    b.Property<Guid?>("RotationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("rotation_id");
+
                     b.HasKey("Id")
                         .HasName("PK_payees");
 
@@ -547,6 +567,10 @@ namespace Infrastructure.Persistence.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("payee_id");
 
+                    b.Property<Guid?>("RotationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("rotation_id");
+
                     b.HasKey("Id")
                         .HasName("PK_transactions");
 
@@ -630,6 +654,52 @@ namespace Infrastructure.Persistence.Migrations
                             t.HasCheckConstraint("CK_credentials_type", "type in ('passkey', 'federated', 'recovery_codes')");
 
                             t.HasCheckConstraint("CK_credentials_type_shape", "(type = 'federated' and provider is not null and subject is not null and length(subject) > 0) or (type = 'passkey' and provider is null and subject is null) or (type = 'recovery_codes' and provider is null and subject is null)");
+                        });
+                });
+
+            modelBuilder.Entity("Domain.Users.KeyRotation", b =>
+                {
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.Property<Guid>("FactorId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("factor_id");
+
+                    b.Property<Guid>("RotationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("rotation_id");
+
+                    b.Property<DateTime>("StartedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("started_at_utc");
+
+                    b.Property<byte[]>("WrappedContentKey")
+                        .IsRequired()
+                        .HasColumnType("bytea")
+                        .HasColumnName("wrapped_content_key");
+
+                    b.Property<byte[]>("WrappedIndexKey")
+                        .IsRequired()
+                        .HasColumnType("bytea")
+                        .HasColumnName("wrapped_index_key");
+
+                    b.HasKey("UserId")
+                        .HasName("PK_key_rotations");
+
+                    b.HasIndex("FactorId", "UserId")
+                        .HasDatabaseName("IX_key_rotations_factor_id_user_id");
+
+                    b.ToTable("key_rotations", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_key_rotations_wrapped_content_key_length", "length(wrapped_content_key) = 61");
+
+                            t.HasCheckConstraint("CK_key_rotations_wrapped_content_key_version", "get_byte(wrapped_content_key, 0) = 1");
+
+                            t.HasCheckConstraint("CK_key_rotations_wrapped_index_key_length", "length(wrapped_index_key) = 61");
+
+                            t.HasCheckConstraint("CK_key_rotations_wrapped_index_key_version", "get_byte(wrapped_index_key, 0) = 1");
                         });
                 });
 
@@ -822,6 +892,9 @@ namespace Infrastructure.Persistence.Migrations
                     b.HasKey("FactorId")
                         .HasName("PK_wrapped_account_keys");
 
+                    b.HasAlternateKey("FactorId", "UserId")
+                        .HasName("AK_wrapped_account_keys_factor_id_user_id");
+
                     b.HasIndex("CredentialId", "UserId", "CredentialType")
                         .HasDatabaseName("IX_wrapped_account_keys_credential_id_user_id_credential_type");
 
@@ -1009,6 +1082,17 @@ namespace Infrastructure.Persistence.Migrations
                         .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+                });
+
+            modelBuilder.Entity("Domain.Users.KeyRotation", b =>
+                {
+                    b.HasOne("Domain.Users.WrappedAccountKeys", null)
+                        .WithMany()
+                        .HasForeignKey("FactorId", "UserId")
+                        .HasPrincipalKey("FactorId", "UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("FK_key_rotations_wrapped_account_keys");
                 });
 
             modelBuilder.Entity("Domain.Users.PasskeyPublicKey", b =>

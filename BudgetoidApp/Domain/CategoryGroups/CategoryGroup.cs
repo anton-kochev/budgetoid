@@ -90,6 +90,22 @@ public sealed class CategoryGroup
     public NarrativeField? Description { get; private set; }
 
     public int Position { get; private set; }
+
+    /// <summary>
+    /// The content-key rotation that last re-sealed this row's narrative columns, or
+    /// <see langword="null"/> while no rotation has ever touched it.
+    /// </summary>
+    /// <remarks>
+    /// <b>What the stamp is for, and why the server needs to be told rather than able to look, is argued
+    /// once at <see cref="Budgets.Budget.RotationId"/> and is not restated here.</b> What is specific to
+    /// this row is that it carries two sealed columns and a nullable one among them: a group with no
+    /// description has nothing to re-seal in <see cref="Description"/>, so "this row is done" cannot be
+    /// inferred from any column's contents and has to be the stamp. One stamp covers the row rather than
+    /// one per sealed column, because a chunk rewrites a row whole.
+    /// <b>Private setter, no mutator, no factory parameter</b> — nothing writes it in this commit.
+    /// </remarks>
+    public Guid? RotationId { get; private set; }
+
     public DateTime CreatedAtUtc { get; private set; }
 
     /// <summary>

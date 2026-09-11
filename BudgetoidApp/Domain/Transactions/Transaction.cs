@@ -66,6 +66,23 @@ public sealed class Transaction
 
     public Guid? PayeeId { get; private set; }
     public Guid? CategoryId { get; private set; }
+
+    /// <summary>
+    /// The content-key rotation that last re-sealed this row's narrative columns, or
+    /// <see langword="null"/> while no rotation has ever touched it.
+    /// </summary>
+    /// <remarks>
+    /// <b>What the stamp is for, and why the server needs to be told rather than able to look, is argued
+    /// once at <see cref="Budgets.Budget.RotationId"/> and is not restated here.</b> What is specific to
+    /// this row is volume: transactions outnumber every other narrative-bearing table in an account, so
+    /// this is the column that decides how many requests a rotation costs and the one most likely to
+    /// still hold the previous generation when a tab closes. A <see cref="Description"/> that was never
+    /// filed leaves nothing to re-seal, so a completed row and an untouched one are the same row without
+    /// the stamp.
+    /// <b>Private setter, no mutator, no factory parameter</b> — nothing writes it in this commit.
+    /// </remarks>
+    public Guid? RotationId { get; private set; }
+
     public DateTime CreatedAtUtc { get; private set; }
 
     /// <summary>

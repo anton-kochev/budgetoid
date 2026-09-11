@@ -29,6 +29,46 @@ public sealed class Budget
     public NarrativeField? Name { get; private set; }
 
     public string? BaseCurrencyCode { get; private set; }
+
+    /// <summary>
+    /// The content-key rotation that last re-sealed this row's narrative columns, or
+    /// <see langword="null"/> while no rotation has ever touched it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This is the anchor for the six identical stamps, and the other five point here rather than
+    /// restating it.</b> A content-key rotation re-encrypts every narrative field an account holds. The
+    /// API caps a request body at 64 KB, so a whole-account rotation is chunked across several requests
+    /// and can be interrupted part-way; the next generation of wrapped keys is therefore staged in
+    /// <see cref="Users.KeyRotation"/> until one completion step promotes it. That completion step is
+    /// destructive — it overwrites the live envelopes in place, destroying the only copies of the old
+    /// keys — so it must refuse unless every narrative-bearing row has already been rewritten.
+    /// </para>
+    /// <para>
+    /// <b>The server cannot see which rows those are, which is the whole reason for a column.</b> A
+    /// re-sealed envelope and an untouched one are byte-for-byte indistinguishable to anything that
+    /// cannot open them: a fresh nonce changes the bytes either way, and the associated data is never
+    /// carried inside the envelope. So the client has to <em>tell</em> the server which rows it rewrote,
+    /// and the telling has to be something the server can check for itself rather than a count it is
+    /// asked to believe. A chunk stamps the in-flight rotation's id onto each row it rewrites, and
+    /// completion reads the stamps back.
+    /// </para>
+    /// <para>
+    /// <b>The stamp and the new ciphertext are written in one transaction, and the guarantee is
+    /// transactional rather than statement-level.</b> They commit together or roll back together, so a
+    /// row can never carry the new stamp over old ciphertext or the reverse. Do not write down that they
+    /// are one <c>UPDATE</c>: whether EF emits one statement or two is EF's decision and may change,
+    /// while the transaction is the property the rule actually rests on.
+    /// </para>
+    /// <para>
+    /// <b>It has a private setter, no mutator and no factory parameter, and that is deliberate rather
+    /// than unfinished.</b> Nothing writes a stamp yet — the members that do arrive with the reseal
+    /// behaviour. The column is inert today, and a factory parameter added ahead of its caller would be
+    /// a value every existing creation path has to pass and none of them has an answer for.
+    /// </para>
+    /// </remarks>
+    public Guid? RotationId { get; private set; }
+
     public DateTime CreatedAtUtc { get; private set; }
 
     /// <summary>

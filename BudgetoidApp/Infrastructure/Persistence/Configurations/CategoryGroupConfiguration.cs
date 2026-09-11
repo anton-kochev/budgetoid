@@ -308,6 +308,10 @@ public sealed class CategoryGroupConfiguration : IEntityTypeConfiguration<Catego
         builder.Property(categoryGroup => categoryGroup.Position)
             .HasColumnName("position")
             .IsRequired();
+        // The content-key rotation stamp. Nullable, uncalled, unindexed; BudgetConfiguration argues all
+        // three at its own copy of this line and the argument is not restated per table.
+        builder.Property(categoryGroup => categoryGroup.RotationId).HasColumnName("rotation_id");
+
         builder.Property(categoryGroup => categoryGroup.CreatedAtUtc)
             .HasColumnName("created_at_utc")
             .HasColumnType("timestamp with time zone")
