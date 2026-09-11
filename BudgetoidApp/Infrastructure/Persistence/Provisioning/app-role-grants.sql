@@ -92,9 +92,10 @@ GRANT SELECT ON currencies TO budgetoid_app;
 --
 -- The children holding no DELETE of any shape are budgets, payees, sessions, session_tokens,
 -- passkey_public_keys, passkey_signature_counters, wrapped_account_keys and key_rotations. The last
--- of those holds SELECT and nothing else, because nothing in the application writes it yet; its own
--- block argues why SELECT did not wait with the writes, and its DELETE will arrive with the
--- completion step that clears the staging. That is a list of the
+-- of those is the one to read carefully: it holds SELECT, INSERT and a column-listed UPDATE and
+-- still no DELETE of any shape, so it belongs on this list rather than being mistaken for a
+-- write-free table. Its own block argues why staging needs the insert and the update together and
+-- why the delete waits for the completion step that clears the staging. That is a list of the
 -- same kind as the cascade rendering above and carries the same obligation — it is exhaustive or it
 -- is misleading, and this is the list somebody consults to decide whether a child needs a grant.
 -- Two of those absences would cost something real to fill.
@@ -484,30 +485,47 @@ REVOKE ALL ON wrapped_account_keys FROM budgetoid_app;
 GRANT SELECT, INSERT ON wrapped_account_keys TO budgetoid_app;
 GRANT UPDATE (wrapped_content_key, wrapped_index_key) ON wrapped_account_keys TO budgetoid_app;
 
--- key_rotations: SELECT ONLY, AND THE ASYMMETRY IS THE ARGUMENT. Nothing in the application writes
--- this table yet — the handlers that stage a rotation and promote it arrive with their own commit —
--- and this file's standing rule is that withholding a privilege until something uses it costs
--- nothing while granting an unused one leaves a standing capability with no reader to explain it.
--- By that rule this table would hold no grant at all today.
+-- key_rotations: SELECT and INSERT, plus an UPDATE over every column BUT the primary key. This block
+-- used to say the write privileges were waiting for their callers; the caller arrived, so the
+-- argument moves here rather than being deleted — a grant whose reason was only ever "nothing uses
+-- it yet" has no reason at all once something does.
 --
--- SELECT is granted anyway, for the reason ADR 0018 already settled on wrapped_account_keys when it
--- granted SELECT to the row-level-security probes before any production code read the table: AN
--- UNGRANTED UPDATE LEAVES NOTHING UNOBSERVABLE; AN UNGRANTED SELECT DOES. Measured here rather than
--- argued from precedent alone — with no SELECT, NarrativeSecrecyTests' plaintext scan runs over the
--- catalog on the app-role connection, meets 42501 on this table, and reports it as UNSCANNABLE. Two
--- secrecy gates then pass while covering one table fewer than the schema holds, which is the same
--- defect as a census that reads as complete and is not. A table nothing can read is a table nothing
--- can check.
+-- SELECT was granted before any of it, for the reason ADR 0018 settled on wrapped_account_keys when
+-- it granted SELECT to the row-level-security probes ahead of any production reader: AN UNGRANTED
+-- UPDATE LEAVES NOTHING UNOBSERVABLE; AN UNGRANTED SELECT DOES. Measured rather than argued from
+-- precedent — with no SELECT, NarrativeSecrecyTests' plaintext scan runs over the catalog on the
+-- app-role connection, meets 42501 on this table, and reports it as UNSCANNABLE. Two secrecy gates
+-- then pass while covering one table fewer than the schema holds, which is the same defect as a
+-- census that reads as complete and is not. A table nothing can read is a table nothing can check.
 --
--- INSERT and DELETE wait for their callers, and their absence costs no gate: both leave a loud 42501
--- the first time a handler reaches for them, which is a test failing rather than a rule going quiet.
--- The completion step will also need DELETE here — clearing the staging is how a rotation ends — and
--- that grant arrives with the handler that issues it, carrying its own argument.
+-- INSERT AND UPDATE ARRIVE TOGETHER BECAUSE STAGING IS AN UPSERT, and the pairing is forced by the
+-- primary key rather than chosen for symmetry. user_id is the whole of PK_key_rotations, so an
+-- account holds at most one rotation in flight as a KEY rather than as a rule nobody executes. Begin
+-- is also the repair path — a completion refused because the live factor set moved is answered by
+-- beginning again with the corrected set — so a second begin has to go through, and going through
+-- means rewriting the row that is already there. KeyRotationRepository.StageAsync finds and updates
+-- for exactly this reason and says so at its own call site.
+--
+-- THE COLUMN LIST OMITS user_id, AND THAT OMISSION IS THE IMMUTABILITY. PostgreSQL column privileges
+-- are additive and REVOKE UPDATE (col) cannot subtract from a table-wide grant, so the only spelling
+-- that makes a column unwritable is leaving it out of the list — rule B2 at the head of this file,
+-- and the same mechanism holding users.email's four siblings and sessions' five. A table-wide GRANT
+-- UPDATE ON key_rotations would let a staged rotation be reassigned to another account in one
+-- statement, on a table whose whole purpose is to hold the next generation of somebody's keys.
+--
+-- NO DELETE, AND THE ABSENCE IS LOAD-BEARING RATHER THAN PENDING. Completion is what ends a rotation
+-- and completion is unbuilt; when it lands it will need DELETE and will bring its own argument. Until
+-- then the missing privilege is what stops a half-written promotion path from clearing the staging
+-- before it has promoted anything — the one destruction on this whole path that has no repair, since
+-- the staged envelopes are the only copies of the new generation until the live row is overwritten.
+-- It fails loud: 42501 on the first reach, which is a test failing rather than a rule going quiet.
 --
 -- The table is POLICED rather than exempt: it carries user_id, so user_isolation appends the owner
 -- to every statement against it. See the policy at the foot of this file.
 REVOKE ALL ON key_rotations FROM budgetoid_app;
-GRANT SELECT ON key_rotations TO budgetoid_app;
+GRANT SELECT, INSERT ON key_rotations TO budgetoid_app;
+GRANT UPDATE (rotation_id, factor_id, wrapped_content_key, wrapped_index_key, started_at_utc)
+    ON key_rotations TO budgetoid_app;
 
 -- budgets: ONE UPDATE, ONE COLUMN, and it is the exception ASM-004 names rather than a softening of
 -- rule B2. No command may change a budget's name: it is sealed once, at creation, and no route accepts
@@ -915,13 +933,14 @@ CREATE POLICY user_isolation ON wrapped_account_keys FOR ALL TO budgetoid_app
 -- for the same reason — a rotation is begun under a passkey assertion that has already verified, so
 -- an identity is on the connection before this policy is ever evaluated.
 --
--- THE TABLE HOLDS SELECT AND NO WRITE ABOVE, AND BOTH HALVES OF THAT ARE DELIBERATE. Nothing in the
--- application writes it yet; the handlers arrive with the reseal behaviour, and withholding a
--- privilege until something uses it costs nothing, so INSERT and DELETE wait for their caller. SELECT
--- did not wait, because an ungranted SELECT is the one absence that hides something: the plaintext
--- scan behind NarrativeSecrecyTests meets 42501 and reports the table UNSCANNABLE, so two secrecy
--- gates would pass while covering one table fewer than the schema holds. Its own block above carries
--- that argument.
+-- THE TABLE HOLDS SELECT, INSERT AND A COLUMN-LISTED UPDATE ABOVE, AND STILL NO DELETE. Each of those
+-- arrived when something reached for it, which is this file's standing rule: SELECT first, because an
+-- ungranted SELECT is the one absence that hides something — the plaintext scan behind
+-- NarrativeSecrecyTests meets 42501 and reports the table UNSCANNABLE, so two secrecy gates would pass
+-- while covering one table fewer than the schema holds. INSERT and UPDATE followed together with
+-- BeginKeyRotationHandler, because staging is an upsert rather than an append and the two cannot be
+-- separated. DELETE is still waiting for the completion step. Its own block above carries each of
+-- those arguments in full.
 --
 -- The policy did not wait either, and for a different reason again — the two halves fail in opposite
 -- directions, as the header says at length. A table nobody grants is invisible to the role and the

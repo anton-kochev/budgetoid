@@ -41,6 +41,7 @@ public static class DependencyInjection
         services.AddScoped<IPasskeyRepository, PasskeyRepository>();
         services.AddScoped<IRecoveryCodeRepository, RecoveryCodeRepository>();
         services.AddScoped<IRegistrationRepository, RegistrationRepository>();
+        services.AddScoped<IKeyRotationRepository, KeyRotationRepository>();
 
         // Scoped like every other writer over the DbContext, and for the same reason: it holds the
         // scoped BudgetoidDbContext, so a longer lifetime would keep one request's context alive
@@ -58,6 +59,7 @@ public static class DependencyInjection
         services.AddScoped<IRecoveryCodeReadService, RecoveryCodeReadService>();
         services.AddScoped<IExportReadService, ExportReadService>();
         services.AddScoped<IRotationCompletenessReadService, RotationCompletenessReadService>();
+        services.AddScoped<IRotationInventoryReadService, RotationInventoryReadService>();
         services.AddScoped<ITransactionalExecutor, DbContextTransactionalExecutor>();
 
         // Scoped for the reason every writer over the context is: it holds the scoped

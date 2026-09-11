@@ -9,6 +9,7 @@ using Application.CategoryGroups;
 using Application.CategoryGroups.GetCategoryGroups;
 using Application.Currencies;
 using Application.Currencies.GetCurrencies;
+using Application.KeyRotations;
 using Application.Passkeys.BeginRegistration;
 using Application.Payees;
 using Application.Payees.GetPayees;
@@ -268,8 +269,8 @@ public sealed class WholeListDeliveryTests
     /// Every list read the swept ports declare, with the disposition a person gave it.
     /// </summary>
     /// <remarks>
-    /// Ten rows, matching the ten members discovery finds. Seven are gated; one is whole and
-    /// deliberately not gated; two are held by a stronger rule elsewhere. Read each
+    /// Eleven rows, matching the eleven members discovery finds. Seven are gated; one is whole and
+    /// deliberately not gated; three are held by a stronger rule elsewhere. Read each
     /// <see cref="ListReadRow.Reason" /> rather than the bucket name — that is the member that stops
     /// this table from meaning less than it says.
     /// </remarks>
@@ -420,6 +421,31 @@ public sealed class WholeListDeliveryTests
             + "claim sitting on top of a refusal, and the weaker one is the sentence a later reader "
             + "would quote.",
             Surface: null),
+        new(
+            typeof(IRotationInventoryReadService),
+            nameof(IRotationInventoryReadService.ListOwnedBudgetIdsAsync),
+            ListDelivery.HeldElsewhere,
+            ReasonFamily.HeldByAStrongerRule,
+            ListKeying.KeyedOnAnAccount,
+            "The export's rule in the export's spelling, over a different destination, and the row "
+            + "beside it shares this family because it IS the same rule rather than a second one that "
+            + "resembles it — see ReasonFamily for why nothing here demands a manufactured difference. "
+            + "BeginKeyRotationHandler reads this list and throws RotationScopeException unless the "
+            + "owned set equals the ambient budget by set equality in both directions, deliberately "
+            + "not Count > 1: owning a budget the request is not inside means rows the rotation will "
+            + "never rewrite are invisible to every read beneath it, and being inside a budget the "
+            + "account does not own means somebody else's rows are being counted as this account's "
+            + "progress. WHAT IS ACTUALLY DIFFERENT IS WHAT THE REFUSAL STANDS IN FRONT OF. The export "
+            + "refuses a READ that would come back short, and the worst a truncated one costs is a "
+            + "person holding an incomplete copy of their own data. This refuses a ROTATION: a run "
+            + "begun on a short owned set finishes by promoting a new content key over rows it never "
+            + "re-encrypted, and the promotion is the step that destroys the only wrapped copies of "
+            + "the keys those rows are still sealed under. One is an incomplete download; the other is "
+            + "narrative columns nothing in the world can open, with no SQLSTATE and nothing logged. "
+            + "That is why the refusal is at BEGIN, where the client has re-encrypted nothing, and why "
+            + "restating it here as 'this comes back whole' would put the weaker of two sentences "
+            + "where a later reader finds it first.",
+            Surface: null),
     ];
 
     [Test]
@@ -443,6 +469,7 @@ public sealed class WholeListDeliveryTests
             "IExportReadService.ListOwnedBudgetsAsync",
             "IPasskeyRepository.ListWebAuthnCredentialIdsForUserAsync",
             "IPayeeReadService.GetAllAsync",
+            "IRotationInventoryReadService.ListOwnedBudgetIdsAsync",
             "ITransactionReadService.GetAllWithPayeeAsync",
         ];
 
@@ -599,7 +626,8 @@ public sealed class WholeListDeliveryTests
         // any of them reddens here, including the transaction read this file has argued is pageable
         // later: paging it means editing its keying column, which is the visible cost, not a
         // silently accepted parameter. Every owner-keyed read takes its Guid from
-        // IUserContext.UserId, never from the caller — measured on all four.
+        // IUserContext.UserId, never from the caller — read on all five, the newest of them in
+        // BeginKeyRotationHandler, which assigns userContext.UserId before it asks anything.
         IReadOnlyList<string> misKeyed =
         [
             .. Table

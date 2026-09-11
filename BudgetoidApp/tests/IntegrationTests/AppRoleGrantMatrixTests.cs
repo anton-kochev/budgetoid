@@ -157,36 +157,45 @@ public sealed class AppRoleGrantMatrixTests
         // a replaced recovery-code set still leave by the cascade from credentials and by nothing else.
         // See the remarks there for why that UPDATE is the only shape a rotation had available.
         ("wrapped_account_keys", ["SELECT", "INSERT"]),
-        // SELECT AND NOTHING ELSE, AND THIS IS THE ONLY LINE IN THE MATRIX WHERE THAT IS TRUE OF A
-        // TABLE THE APPLICATION WILL EVENTUALLY WRITE. currencies and __EFMigrationsHistory are
-        // read-only because nothing in the product owns them; this one is read-only because its writers
-        // have not landed yet — the handlers that begin a content-key rotation and promote it arrive
-        // with their own commit, and app-role-grants.sql's standing rule is that a privilege withheld
-        // until something uses it costs nothing while an unused one is a standing capability with no
-        // reader to explain it. By that rule alone this table would appear here with an EMPTY list.
+        // INSERT JOINS THE SELECT THIS LINE USED TO HOLD ALONE, and what the line has to say changed
+        // with it. It used to be the one entry in the matrix reading SELECT-only about a table the
+        // application would eventually write, and its argument was about waiting: the writers had not
+        // landed, a withheld privilege costs nothing, only SELECT could not wait because an ungranted
+        // SELECT is the one absence that hides something — NarrativeSecrecyTests' plaintext scan meets
+        // 42501 and reports the table UNSCANNABLE, so two secrecy gates pass over one table fewer than
+        // the schema holds. That argument has been spent. A begin now writes this row, so the question
+        // this entry answers is no longer why the table is read-only but which two of the four
+        // privileges it still is not, and why each stays off.
         //
-        // SELECT did not wait, and the asymmetry is the argument rather than an inconsistency to tidy:
-        // AN UNGRANTED UPDATE OR DELETE LEAVES NOTHING UNOBSERVABLE, AND AN UNGRANTED SELECT DOES. With
-        // no SELECT, NarrativeSecrecyTests' plaintext scan walks the catalog on the app-role connection,
-        // meets 42501 here and reports the table UNSCANNABLE — so two secrecy gates would pass while
-        // covering one table fewer than the schema holds, which is the same defect as a census that
-        // reads as complete and is not. INSERT and DELETE cost no gate by being absent: both fail loudly
-        // with 42501 the first time a handler reaches for them, which is a red test rather than a rule
-        // going quiet. DELETE in particular is not an oversight — clearing the staging is how a rotation
-        // ENDS, since the primary key is user_id and an abandoned run has to be deleted rather than
-        // marked — and it arrives with the completion handler that issues it.
+        // NO TABLE-WIDE UPDATE, AND THAT ABSENCE IS THIS LINE'S LOAD-BEARING HALF — more than the
+        // INSERT beside it, because the INSERT is the ordinary half. Staging is an upsert forced by the
+        // primary key: user_id is the whole of PK_key_rotations, and begin is also the repair path, so
+        // a second begin has to rewrite the row that is already there rather than add one. The
+        // privilege that allows it is column-level, five columns listed in ExpectedUpdateColumnGrants,
+        // and user_id is not among them. Widen that list to the table and this matrix names the edit
+        // from both ends at once — a table-wide UPDATE appears HERE with nothing to match it, and the
+        // five column grants vanish from the other half — which is the two-directional failure the
+        // class remarks describe.
         //
-        // The table also appears on no line of ExpectedUpdateColumnGrants, and that is the stronger
-        // half. A staged envelope is never edited: a rotation that has to change its staged keys is a
-        // different run, which means deleting this row and beginning another under a new rotation id.
-        // So every column here is the row's identity or its payload, and a column-level UPDATE
-        // appearing on this table later would be somebody making a run mutable rather than replaceable.
+        // STILL NO DELETE, AND IT IS NO LONGER THE "NOTHING USES IT YET" KIND. The old entry predicted
+        // the wrong shape for this table: it said a staged envelope is never edited and that changing
+        // one means deleting the row and beginning again under a new rotation id. Deleting is exactly
+        // what the role cannot do, which is one of two reasons KeyRotationRepository.StageAsync finds
+        // and updates instead — the other being that EF batches a delete and an insert of the same
+        // primary key in no guaranteed order, so the tidier-looking spelling is a coin flip on 23505.
+        // What the absence buys now is the destruction that has no repair: completion is unbuilt, and
+        // until it lands a half-written promotion path cannot clear the staging before it has promoted
+        // anything, when the staged envelopes are the only copies of the new generation until the live
+        // wrapped_account_keys row is overwritten. It fails loud — 42501 on the first reach, a red test
+        // rather than a rule going quiet — and the completion handler will arrive carrying its own
+        // argument for the privilege rather than inheriting this one.
         //
-        // Rows leave by the cascade from wrapped_account_keys, and through it from credentials and
-        // users — the same referential action this matrix relies on three lines up, running with the
-        // referencing table owner's privileges rather than this role's. That is what lets an account
-        // erasure carry a staging row away while this role cannot issue a single DELETE against it.
-        ("key_rotations", ["SELECT"]),
+        // Rows still leave without it. The ON DELETE CASCADE from wrapped_account_keys, and through it
+        // from credentials and users, runs with the referencing table owner's privileges rather than
+        // this role's — the same referential action this matrix relies on three lines up. That is what
+        // lets an account erasure, or a revoked passkey, carry a staging row away that this role could
+        // not have deleted itself.
+        ("key_rotations", ["SELECT", "INSERT"]),
         ("budgets", ["SELECT", "INSERT"]),
         ("accounts", ["SELECT", "INSERT", "DELETE"]),
         ("category_groups", ["SELECT", "INSERT", "DELETE"]),
@@ -202,7 +211,9 @@ public sealed class AppRoleGrantMatrixTests
     /// those tables that is <i>not</i> named here is immutable by that absence:
     /// <c>created_at_utc</c> everywhere, <c>budget_id</c> and <c>user_id</c> on every owned table,
     /// <c>accounts.currency_code</c>, <c>budgets.base_currency_code</c>,
-    /// <c>wrapped_account_keys.factor_id</c>, and every identity column of a session or a counter.
+    /// <c>wrapped_account_keys.factor_id</c>, <c>key_rotations.user_id</c> — which is that table's
+    /// whole primary key, and the one column of the five-column list beside it that is missing — and
+    /// every identity column of a session or a counter.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -276,6 +287,35 @@ public sealed class AppRoleGrantMatrixTests
         // rotation needs neither, the ExpectedTableGrants line still holds the reason, and a set of
         // recovery-code factors that is being replaced still leaves by the cascade from credentials.
         ("wrapped_account_keys", ["wrapped_content_key", "wrapped_index_key"]),
+        // FIVE columns, and the entry is entirely about the SIXTH. user_id is the whole of
+        // PK_key_rotations and it is the column user_isolation appends its predicate over, so a
+        // statement able to move it could reassign somebody's staged rotation to another account in one
+        // UPDATE — on the one table whose entire purpose is to hold the next generation of an account's
+        // keys, where the envelopes are sealed against a factor that belongs to the owner being left
+        // behind. Leaving it out of the list is the only spelling that makes it unwritable: column
+        // privileges are additive and REVOKE UPDATE (user_id) cannot subtract from a table-wide grant.
+        //
+        // THE OTHER FIVE ARE ON THE LIST BECAUSE A SECOND BEGIN REWRITES ALL OF THEM. This is the one
+        // entry in this array where the column list is "every column but the key", and it reads like
+        // the table-wide grant it must never become — so the distinction is worth stating rather than
+        // leaving to the reader. A rotation is replaced, not amended: beginning again after a
+        // completion refused for a moved factor set stages a new rotation id, a possibly different
+        // factor, two fresh envelopes and a later instant, all onto the row the account already has,
+        // because the primary key allows it no second row and the role holds no DELETE to clear the
+        // first. EF emits that as one UPDATE naming all five, so a list short by any one of them
+        // refuses the whole statement with 42501 and a second begin becomes impossible for this role —
+        // the same failure mode the accounts and categories entries below record for their own pairs,
+        // where a probe writing one column alone stays green over it.
+        //
+        // WHAT WOULD BE WRONG TO CONCLUDE from a list this wide is that the table is freely mutable.
+        // Nothing amends a staged rotation in place: KeyRotationRepository.StageAsync copies every
+        // mapped scalar off a whole new KeyRotation and forces the entity Modified, so what reaches the
+        // database is always a complete generation rather than a field somebody touched. A future
+        // narrower write — a handler updating started_at_utc to keep a long run alive, say — would pass
+        // this grant untouched and is a decision about the write path that this matrix cannot see.
+        (
+            "key_rotations",
+            ["rotation_id", "factor_id", "wrapped_content_key", "wrapped_index_key", "started_at_utc"]),
         // ONE column, and the entry is as much about the four columns that are not on it. FR-099 grants
         // UPDATE on budgets.name because a content-key rotation has to re-encrypt it, and ASM-004 says
         // in the same breath what that must not become: a table-wide grant would reopen user_id,

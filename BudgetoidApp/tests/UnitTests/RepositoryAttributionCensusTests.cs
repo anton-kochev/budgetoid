@@ -73,9 +73,9 @@ public sealed record AttributionCensus(
 /// <para>
 /// <b>Recognisably a sibling of <c>RowLevelSecurityCoverage</c>,</b> and for its reason. The subject is
 /// <i>discovered</i> from the live assembly and never written down; what is written down is the
-/// disposition. A list of the repositories that <i>are</i> covered fails open — the twelfth nobody
+/// disposition. A list of the repositories that <i>are</i> covered fails open — the next one nobody
 /// adds to it keeps the census green on the only day it matters. Requiring every discovered type to be
-/// claimed by exactly one set fails closed: the twelfth is claimed by neither, and it stays red until
+/// claimed by exactly one set fails closed: the next one is claimed by neither, and it stays red until
 /// a person decides. Do not "simplify" this into a written list of repository names; a written list is
 /// precisely the thing that just drifted.
 /// </para>
@@ -101,12 +101,12 @@ public sealed record AttributionCensus(
 /// see <c>Discovery_IsBlindToARepositoryOutsideTheNamespace</c>, which is a permanent demonstration
 /// rather than a defect to fix by widening the scan. Widening only moves the blind spot; what covers
 /// it instead is <c>Discovery_FindsExactlyTheRepositoriesTheNamespaceDeclares</c>, which pins the
-/// twelve names, so a repository that leaves the namespace goes red there rather than quietly leaving
+/// thirteen names, so a repository that leaves the namespace goes red there rather than quietly leaving
 /// the census with nothing to count.
 /// </para>
 /// <para>
 /// <b>A gap this recorded, closed, and then partly reopened by a deletion.</b> Narrowing on
-/// <c>PostgresException.ConstraintName</c> is the house rule — ten of the twelve repositories do it,
+/// <c>PostgresException.ConstraintName</c> is the house rule — ten of the thirteen repositories do it,
 /// and two of those spell it inside a helper rather than in the <c>when</c> clause. Having a narrowed
 /// <c>catch</c> is not the same as having it <i>tested from both sides</i>, and
 /// <see cref="PinnedElsewhere" /> says per entry which halves exist. It once said, for three entries,
@@ -130,10 +130,13 @@ public sealed record AttributionCensus(
 /// one that hides a gap it does have, and the second is only easier to notice.
 /// </para>
 /// <para>
-/// <b>What is not claimed is that the twelve are now uniformly covered</b> — only that every entry says
+/// <b>What is not claimed is that the thirteen are now uniformly covered</b> — only that every entry says
 /// which halves it holds. <c>SessionRepository</c> holds neither and says so, because it translates
-/// nothing, and <c>SessionTokenRepository</c> says the stronger version of that: it has no
-/// <c>catch</c> at all. The five in <see cref="CoveredByAttributionTests" /> hold both by that file's
+/// nothing; <c>SessionTokenRepository</c> says the stronger version of that, having no <c>catch</c> at
+/// all over a member that writes nothing; and <c>KeyRotationRepository</c> says a third version again,
+/// having no <c>catch</c> over a member that <b>does</b> write — so the absence there is a translation
+/// this product owes from the commit that gives it a reachable caller, rather than one it will never
+/// owe. The five in <see cref="CoveredByAttributionTests" /> hold both by that file's
 /// own definition. The next repository to land here still has to be argued about by a person, which is the
 /// property that survives every one of these lines being correct today.
 /// </para>
@@ -141,8 +144,8 @@ public sealed record AttributionCensus(
 /// Sabotaged in four directions before it was believed, each on synthetic input so the proof is
 /// permanent rather than a sentence about a change that was reverted: a repository in neither set, one
 /// in both, a set naming a repository that does not exist, and — the control without which the first
-/// three could all pass while the real census checked nothing — the live twelve classified against two
-/// <b>empty</b> sets, which must report all twelve unlisted.
+/// three could all pass while the real census checked nothing — the live thirteen classified against
+/// two <b>empty</b> sets, which must report all thirteen unlisted.
 /// </para>
 /// <para>
 /// It lives in <c>UnitTests</c> because <c>UnitTests.csproj</c> already references Infrastructure, so
@@ -204,13 +207,14 @@ public sealed class RepositoryAttributionCensusTests
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Read <see cref="AttributionPin.PinsWhat" /> on each, not the bucket name. Three of the seven are
+    /// Read <see cref="AttributionPin.PinsWhat" /> on each, not the bucket name. Three of the eight are
     /// pinned in both directions on every narrowing they hold — <c>TransactionRepository</c>;
     /// <c>UserRepository</c>, which now holds only one narrowing because the insert that carried its
     /// other one was deleted with the provisioning path; and <c>RegistrationRepository</c>, which holds
     /// both halves on all four of its narrowings, the second half being <b>one</b> test rather than
-    /// four. Two — <c>SessionRepository</c> and <c>SessionTokenRepository</c> — have nothing to
-    /// attribute at all, which is a different statement and each says so in its own words. The
+    /// four. Three — <c>SessionRepository</c>, <c>SessionTokenRepository</c> and
+    /// <c>KeyRotationRepository</c> — have nothing to attribute at all, which is a different statement
+    /// and each says so in its own words, the third of them naming what would change that. The
     /// remaining two of the three that write <c>wrapped_account_keys</c> each gained a <c>factor_id</c>
     /// narrowing whose two halves are not both in the file named beside it.
     /// </para>
@@ -232,6 +236,30 @@ public sealed class RepositoryAttributionCensusTests
     /// </remarks>
     private static readonly AttributionPin[] PinnedElsewhere =
     [
+        new(
+            nameof(KeyRotationRepository),
+            "KeyRotationSchemaTests",
+            "nothing to attribute today, and it is a THIRD form of that sentence rather than a copy of "
+            + "SessionTokenRepository's. Like that one it has NO CATCH AT ALL — no constraint-name "
+            + "filter, no entries-based narrowing, nothing for a mis-attribution control to aim at. "
+            + "UNLIKE IT, THIS REPOSITORY WRITES: StageAsync is a find-then-add over key_rotations, so "
+            + "'the statement writes nothing' is not available as the reason. What the absent catch "
+            + "WOULD translate is the rule KeyRotationSchemaTests holds — "
+            + "Database_RefusesASecondRotationForOneAccount stages a second rotation for one account "
+            + "with a different rotation id, a different factor, a different passkey and different "
+            + "envelopes, and asserts the refusal is 23505 naming PK_key_rotations, the primary key "
+            + "over user_id. THE PATH TO IT IS IN StageAsync's OWN SHAPE, and no test in the suite "
+            + "stages it: the method reads for a staged row and adds one when it finds none, so at READ "
+            + "COMMITTED two begins from different requests can both see nothing and both Add, and the "
+            + "loser meets that 23505 with nothing between it and GlobalExceptionHandler — which has no "
+            + "case for a DbUpdateException, so it answers 500 with a title about an unexpected error "
+            + "rather than 'you already have a rotation running' and the resumable run behind it. "
+            + "UNREACHABLE TODAY ONLY BECAUSE NO ROUTE REACHES BeginKeyRotationHandler — the handler is "
+            + "registered in Application.DependencyInjection and mapped nowhere, so the race has no way "
+            + "to be started twice. WHAT CHANGES THIS ENTRY IS THE COMMIT THAT MAKES A BEGIN ROUTE "
+            + "REACHABLE, not a story number and not the day somebody feels the catch is overdue: from "
+            + "that commit the narrowing is a translation this repository owes, and this entry is then "
+            + "a gap rather than an absence"),
         new(
             nameof(PasskeyRepository),
             "PasskeyRepositoryTests",
@@ -465,6 +493,7 @@ public sealed class RepositoryAttributionCensusTests
             nameof(BudgetRepository),
             nameof(CategoryGroupRepository),
             nameof(CategoryRepository),
+            nameof(KeyRotationRepository),
             nameof(PasskeyRepository),
             nameof(PayeeRepository),
             nameof(RecoveryCodeRepository),

@@ -33,17 +33,31 @@ as re-encrypting everything.
 
 ## What is built today
 
-**The schema, the domain behaviour, and the read a completion step will consult. No route, no handler,
-no client.** Nothing in the application calls a reseal member yet, so no rotation can be started, and
-every `rotation_id` column in every database is `NULL`.
+**The schema, the domain behaviour, the read a completion step will consult, and the handler that
+begins a run. No route, no client.** Nothing reaches `BeginKeyRotationHandler` over HTTP, so no
+rotation can be started, and every `rotation_id` column in every database is `NULL`.
 
 Built: the `key_rotations` staging table and its `KeyRotation` entity; the six `rotation_id` stamp
 columns; the presence rule; the six reseal members and the clearing rule beside them; the completeness
 gate — `Application.KeyRotations.IRotationCompletenessReadService` and its one implementation — which is
-registered and which nothing calls.
+registered and which nothing calls; and the begin — `BeginKeyRotationHandler` over
+`Domain.Users.IKeyRotationRepository` and `Application.KeyRotations.IRotationInventoryReadService`,
+all three registered and none of them called.
 
-Not built: the routes that begin, continue and complete a rotation; the ceremony that gates a begin; the
+Not built: the routes that begin, continue and complete a rotation; the chunk that reseals rows; the
 client that does the actual encryption. Do not state any of those in the present tense until they ship.
+
+**The begin can write its row, and `key_rotations` still holds no `DELETE` of any shape.**
+`app-role-grants.sql` grants `SELECT`, `INSERT` and a column-listed `UPDATE` over `rotation_id`,
+`factor_id`, `wrapped_content_key`, `wrapped_index_key` and `started_at_utc`. The insert and the update
+arrive together because staging is an upsert rather than an append: `user_id` is the whole of the
+primary key, so an account holds at most one rotation in flight, and a second begin — the repair path
+when completion refuses — has to rewrite the row already there. `user_id` is never in a `SET` list and
+so stays out of that column list; an omission from a column list is how this schema makes a column
+immutable, never a `REVOKE` and never a table-wide grant. The absent `DELETE` is what stops a
+half-written promotion path clearing the staging before it has promoted anything, which is the one
+destruction here with no repair: until the live row is overwritten, the staged envelopes are the only
+copies of the new generation.
 
 ## Key Entities
 
@@ -215,6 +229,65 @@ Development branch of `GlobalExceptionHandler` echoes it into the response body.
 exactly why it is written now: the schema has been multi-budget-ready since day one, and this is the
 tripwire for the day a second budget becomes creatable.
 
+### Beginning a run: four rules, and none of them is visible in the result
+
+**The re-authentication gate runs first and runs to completion, before the owned budget set is read,
+before the factor set is judged and before anything is counted.** Every refusal below it is a real
+sentence or a named exception, and each would tell an unproven caller something about the account: that
+it owns more than one budget, that it holds a second passkey, that the factor it named is real.
+`RotationScopeException` is the concrete one, because the Development branch of
+`GlobalExceptionHandler` echoes the message into the response body. Past the gate the same sentences
+cost nothing — the caller has proved possession of an authenticator registered to this account, and
+there is nobody left to enumerate about. It is
+[sessions.md](sessions.md)'s ordering applied to a third route, and
+[recovery-codes.md](recovery-codes.md) argues it where it is decided.
+
+**The gate also runs outside the transactional delegate**, for the two reasons the erasure and
+recovery-code paths write out in full: the consume commits on a save of its own, so a rolled-back
+attempt would restore the spent nonce and make the assertion replayable; and the delegate is replayed
+under a retrying execution strategy, so a gate inside it would consume twice and refuse a **valid**
+begin with the same 401 an attacker gets.
+
+**The staged factor set must be exactly the account's live passkey factor set — set equality, in both
+directions — and not "the factor presented is one of them".** Today an account holds one passkey, so
+the two readings are indistinguishable and every fixture passes either way. They come apart the day a
+second passkey becomes registrable, and they come apart silently: under "is one of", a begin naming one
+factor out of two succeeds, the run completes, the promotion overwrites `wrapped_account_keys`, and the
+second passkey is left holding a wrapped copy of a content key that no longer opens anything — an
+authenticator the person still has, still enrolled, that can no longer unlock the account, with no
+repair path that does not go through a recovery code. Under set equality the same begin is refused at
+the start of the run, while the client can still re-post one carrying both factors.
+
+**A second begin replaces the first and is not a conflict.** When a completion refuses because the live
+factor set moved — a passkey registered or revoked while a run was in flight — the only way forward is
+a begin carrying the corrected set. Answer that with a `409` and the client is left holding a staged
+row it cannot replace and a rotation it cannot finish, with no route that removes either. So
+`IKeyRotationRepository.StageAsync` promises replacement, and the adapter honours it as an upsert —
+find and update, never a blind insert, and never a delete followed by an insert of the same key, since
+EF orders that pair no particular way and `key_rotations` is granted no `DELETE` besides.
+
+**That upsert has a window, and saying otherwise would be the overclaim to avoid here.** Find-then-add
+is two statements, so two begins racing from different requests both find no staged row, both add, and
+the loser takes `23505` on `PK_key_rotations` — measured against the test container at READ COMMITTED,
+which is what `DbContextTransactionalExecutor` opens since it names no isolation level. The retrying
+execution strategy does not cover it: that is two requests, not two attempts of one. `user_id` being the
+primary key holds the *rule* — an account cannot store two rotations — but a key raising a violation and
+an application translating it are different claims, and nothing translates this one today.
+
+Nothing raises it today either, because no route reaches the handler. When one lands, the answer is to
+**converge rather than refuse**: catch the violation, re-read, copy the values over and save once more.
+A `409` would break this section's own promise at the one moment it is under load, and last-begin-wins
+is already the rule — the concurrent case should simply answer like the sequential one. The commit that
+makes a begin route reachable owes that, and `RepositoryAttributionCensusTests` is where it is recorded
+so the next person to touch the route reads it in a census rather than in a backlog.
+
+**The begin makes the completeness gate's scope refusal early.** The same set equality over owned
+budgets, in the same spelling, thrown as the same `RotationScopeException` — a rotation that cannot
+finish is better not begun, and at begin the client has re-encrypted nothing. What it answers with
+otherwise is a count per narrative-bearing table, drawn from the same presence-aware population the
+gate asks about, and a chunk byte budget. A denominator measured over a wider population than the gate
+checks is a progress bar that never reaches the end.
+
 ### Clearing too little is silent data loss
 
 A second browser tab holding the **old** content key can rename a payee this rotation already
@@ -247,8 +320,8 @@ stateDiagram-v2
     Staged --> Staged: interrupted — both generations still on file, resumable
 ```
 
-Only the `None` state exists in the product today; nothing can reach `Staged`, because no route
-writes a staging row.
+Only the `None` state exists in the product today; nothing can reach `Staged`, because no route reaches
+the handler that writes a staging row.
 
 ## Edge Cases & Known Gotchas
 
@@ -284,10 +357,13 @@ writes a staging row.
   a begin is gated on a passkey assertion a set of codes cannot produce. Somebody who has lost their
   authenticator and signed in with a code must register a new passkey first. That is a position, not
   an oversight.
-- **`key_rotations` holds `SELECT` and no write grant today.** Withholding a privilege until
-  something uses it costs nothing, but an ungranted `SELECT` is the one absence that hides something:
-  the plaintext scan behind `NarrativeSecrecyTests` meets `42501` and reports the table unscannable,
-  so two secrecy gates would pass while covering one table fewer than the schema holds.
+- **`key_rotations` got its write grants the commit its first writer landed, and not before.**
+  Withholding a privilege until something uses it costs nothing, which is why the table held `SELECT`
+  alone until `BeginKeyRotationHandler` arrived. `SELECT` is the one absence that would have hidden
+  something and so never waited: without it the plaintext scan behind `NarrativeSecrecyTests` meets
+  `42501`, reports the table unscannable, and two secrecy gates pass while covering one table fewer
+  than the schema holds. An ungranted write, by contrast, hides nothing — it fails loudly on first
+  reach.
 - **The six `rotation_id` columns have no `GRANT UPDATE` yet either**, and that is deliberate for the
   same reason. The first handler to reseal a row will fail loudly with `42501` until the six column
   lists are widened, which is the fail-closed direction.

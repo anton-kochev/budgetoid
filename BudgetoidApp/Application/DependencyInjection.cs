@@ -17,6 +17,7 @@ using Application.CategoryGroups.GetCategoryGroups;
 using Application.CategoryGroups.MoveCategoryGroup;
 using Application.CategoryGroups.UpdateCategoryGroup;
 using Application.Currencies.GetCurrencies;
+using Application.KeyRotations.BeginKeyRotation;
 using Application.Passkeys.BeginAssertion;
 using Application.Passkeys.BeginRegistration;
 using Application.Passkeys.CompleteAssertion;
@@ -96,6 +97,7 @@ public static class DependencyInjection
         services.AddScoped<GenerateRecoveryCodesHandler>();
         services.AddScoped<CountRecoveryCodesHandler>();
         services.AddScoped<RedeemRecoveryCodeHandler>();
+        services.AddScoped<BeginKeyRotationHandler>();
         services.AddScoped<BeginAccountRegistrationHandler>();
         services.AddScoped<RegisterAccountHandler>();
 
