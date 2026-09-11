@@ -4,6 +4,7 @@ using Application.Accounts;
 using Application.Categories;
 using Application.CategoryGroups;
 using Application.Currencies;
+using Application.KeyRotations;
 using Application.Payees;
 using Application.RecoveryCodes;
 using Application.Transactions;
@@ -56,6 +57,7 @@ public static class DependencyInjection
         services.AddScoped<IAccountKeyReadService, AccountKeyReadService>();
         services.AddScoped<IRecoveryCodeReadService, RecoveryCodeReadService>();
         services.AddScoped<IExportReadService, ExportReadService>();
+        services.AddScoped<IRotationCompletenessReadService, RotationCompletenessReadService>();
         services.AddScoped<ITransactionalExecutor, DbContextTransactionalExecutor>();
 
         // Scoped for the reason every writer over the context is: it holds the scoped

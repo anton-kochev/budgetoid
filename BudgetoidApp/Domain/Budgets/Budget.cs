@@ -183,8 +183,26 @@ public sealed class Budget
     /// way. So a rotation supplying a name for a nameless budget is refused — presence is the only
     /// property this side can check, and an arm admitting a change of it would let a budget silently
     /// acquire a name nobody typed — while a nameless budget handed no name is accepted <em>and still
-    /// stamped</em>. There is nothing to re-encrypt on that row and it must still be accounted for, or
-    /// completion is permanently one short on nearly every account in the product.
+    /// stamped</em>.
+    /// </para>
+    /// <para>
+    /// <b>The stamp on that nameless row is uniformity rather than necessity, and the difference is worth
+    /// stating because the obvious reason for it is false.</b> The completeness gate
+    /// (<c>Application.KeyRotations.IRotationCompletenessReadService</c>) is <em>presence-aware</em>: a
+    /// row carrying no narrative value owes no stamp, because there is nothing on it to re-seal. A
+    /// nameless budget is exactly such a row, so it neither blocks a completion nor is counted by one,
+    /// and the gate answers the same whether this member stamps it or not. Completion is <em>not</em> one
+    /// short without it. What the stamp buys is smaller and still worth having: the client drives all six
+    /// stamped tables through one shape, and this member has one post-condition instead of two.
+    /// </para>
+    /// <para>
+    /// <b>The dependency runs the other way, so name it rather than leave it implied.</b> If the gate ever
+    /// stopped being presence-aware — if it required a stamp on every row of all six tables — this line
+    /// would become load-bearing on nearly every account in the product, because
+    /// <c>budgets.name</c> is <c>NULL</c> on every row in every database today. That same change would
+    /// also make every note-less transaction owe a write it has nothing to perform, which is why the gate
+    /// is built the way it is and why it is not expected to change. A reader removing the stamp here must
+    /// check that predicate first; a reader tightening that predicate must come back to this line.
     /// </para>
     /// <para>
     /// <b>Nothing else on the row is writable from here.</b> <see cref="UserId"/> above all: a budget is

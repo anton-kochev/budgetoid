@@ -33,16 +33,17 @@ as re-encrypting everything.
 
 ## What is built today
 
-**The schema and the domain behaviour. No route, no handler, no client.** Nothing in the application
-calls a reseal member yet, so no rotation can be started, and every `rotation_id` column in every
-database is `NULL`.
+**The schema, the domain behaviour, and the read a completion step will consult. No route, no handler,
+no client.** Nothing in the application calls a reseal member yet, so no rotation can be started, and
+every `rotation_id` column in every database is `NULL`.
 
 Built: the `key_rotations` staging table and its `KeyRotation` entity; the six `rotation_id` stamp
-columns; the presence rule; the six reseal members and the clearing rule beside them.
+columns; the presence rule; the six reseal members and the clearing rule beside them; the completeness
+gate — `Application.KeyRotations.IRotationCompletenessReadService` and its one implementation — which is
+registered and which nothing calls.
 
-Not built: the routes that begin, continue and complete a rotation; the completeness gate that
-consumes the stamps; the ceremony that gates a begin; the client that does the actual encryption.
-Do not state any of those in the present tense until they ship.
+Not built: the routes that begin, continue and complete a rotation; the ceremony that gates a begin; the
+client that does the actual encryption. Do not state any of those in the present tense until they ship.
 
 ## Key Entities
 
@@ -144,6 +145,76 @@ issued.** Not that the bytes are correct — that needs the key, so it is the br
 it buys is the one property that matters: the destructive promotion cannot run while a row is
 unwritten.
 
+### The completeness gate is presence-aware
+
+The gate asks the six stamped tables one question: does this account hold a row that **carries a
+narrative value** and is **not** stamped with the rotation in flight? If one does, it refuses.
+
+**A row carrying no narrative value at all is not counted, and that is the design rather than a
+shortcut.** A transaction with no note has nothing to re-seal, so a chunk never visits it and a finished
+rotation leaves it unstamped. Counting it would make an account of ten thousand mostly note-less
+transactions owe ten thousand writes whose only effect is to satisfy this read — and it would refuse a
+rotation that genuinely finished, which is the failure
+[Clearing too much](#clearing-too-much-is-a-rotation-that-cannot-finish) describes. Only two of the four
+nullable narrative columns are the **whole** of their row's narrative: `budgets.name` and
+`transactions.description`. On `category_groups` and `categories` a nullable description sits beside a
+required name, and `accounts` and `payees` carry a required name and nothing else, so rows in those four
+tables always bear a narrative value and always owe a stamp.
+
+**It is not leniency.** A note *added* mid-rotation by a second tab arrives as narrative-with-no-stamp,
+which is outstanding under this rule, so the gate refuses — which is exactly what should happen.
+
+**One consequence to carry forward: the stamp `Budget.ResealName` writes onto a nameless budget is
+uniformity rather than necessity.** That row carries no narrative, so the gate is satisfied with or
+without it; the reason to keep stamping is that the client then drives all six tables through one shape.
+Were the gate ever to stop being presence-aware, that stamp would become load-bearing on nearly every
+account in the product — and every note-less transaction would owe a write it has nothing to perform.
+
+**The predicate must reach PostgreSQL as `IS DISTINCT FROM`**, for the reason the first gotcha below
+argues. Written as EF LINQ, `row.RotationId != rotationId` is exactly that: the emitted SQL reads
+`rotation_id <> @rotation OR rotation_id IS NULL`, so an unstamped row and a stale-stamped row both
+count as outstanding.
+
+**`budgets` is scoped by hand and the other five are not.** Five of the six sets carry the
+`BudgetIsolation` query filter and are scoped to the ambient budget whether or not the read asks;
+`budgets` carries none, so the owner predicate on that one set is written or it is not there at all.
+`ExportReadService` makes and documents the same split.
+
+### The gate refuses rather than rotating half an account
+
+**The gate's question is about an account; five of its six reads can only see one budget.** The
+`budgets` arm is scoped by owner and sees every budget the account holds. The other five ride the
+`BudgetIsolation` query filter, which scopes to the **ambient** budget, takes no argument and cannot be
+re-pointed part-way through a request. On an account owning two budgets that asymmetry lets the gate
+compare both budgets' name stamps against one budget's contents and answer *complete* with an entire
+second budget unrotated — after which the promotion destroys the only wrapped copies of the key that
+budget is sealed under.
+
+**So it refuses, under the export's rule and in the export's spelling.** Unless the set of budgets the
+account owns is **exactly** the ambient budget, it throws `RotationScopeException`: set equality, **in
+both directions**, deliberately not `Count > 1`. [export.md](export.md) is the authority and argues the
+rule in full; the directions fail differently here for the same reasons it gives — owning a budget the
+request is not inside means rows are invisible to the gate, and being inside a budget the account does
+not own means another budget's rows are reported as this account's progress. A count refuses only the
+first.
+
+**Answering `false` was the other option and it is wrong.** It is indistinguishable from "rows still to
+do", so the client would re-seal everything it can see and the gate would go on refusing — the
+non-converging rotation [Clearing too much](#clearing-too-much-is-a-rotation-that-cannot-finish)
+describes. A throw says the server cannot answer, which is what is true.
+
+**The refusal lives in the read rather than in a handler, and that is the one place it departs from the
+export.** `ExportDataHandler` throws because it exists and is the export's only caller. Rotation's
+completion route is unbuilt, so a guard placed in a handler that does not exist yet guards nothing and
+the first handler written would have to remember it — for a mistake with no repair path. It surfaces as
+a bodyless `500` on the catch-all handler, with **no `IExceptionHandler` of its own**, for every reason
+`ExportCompletenessException` gives; the message names counts and never budget identifiers, because the
+Development branch of `GlobalExceptionHandler` echoes it into the response body.
+
+**No account in the product can reach this today** — no code path creates a second budget — which is
+exactly why it is written now: the schema has been multi-budget-ready since day one, and this is the
+tripwire for the day a second budget becomes creatable.
+
 ### Clearing too little is silent data loss
 
 A second browser tab holding the **old** content key can rename a payee this rotation already
@@ -181,11 +252,23 @@ writes a staging row.
 
 ## Edge Cases & Known Gotchas
 
-- **`rotation_id <> @current` is silently wrong, and it is the predicate everybody writes first.**
-  `NULL <> anything` is `NULL`, never true, so every row no rotation has touched drops out of "rows
-  still to do". On an account rotating for the **first time** that is every row: a completeness check
-  written that way passes immediately, the destructive promotion runs, and the whole budget ends up
-  sealed under a key nobody holds. The predicate is **`IS DISTINCT FROM`**.
+- **A completeness predicate that treats `NULL` as "not a mismatch" is catastrophic, and the exact
+  spelling that does so is narrower than it first looks.** `NULL <> anything` is `NULL`, never true,
+  so every row no rotation has touched drops out of "rows still to do". On an account rotating for
+  the **first time** that is every row: the check answers "complete" immediately, the destructive
+  promotion runs, and the whole budget ends up sealed under a key nobody holds.
+
+  **Measured, rather than assumed:** written as EF LINQ, `row.RotationId != rotationId` is **safe** —
+  EF Core's null compensation rewrites it to SQL carrying `IS DISTINCT FROM` semantics. Reproducing
+  the failure took `RotationId.HasValue && RotationId.Value != rotationId`, which reads as a careful
+  null guard and is the dangerous spelling. Raw SQL would be the other way in, and is largely closed
+  off already: `FromSql*` is a banned symbol, so it cannot be written in the application at all —
+  though the provisioning script and the deploy-time verifier are not bound by that.
+
+  So the rule is **not** "never write `!=`". It is: the answer must be `IS DISTINCT FROM` in the SQL
+  that reaches PostgreSQL, whatever produced it, and a hand-written `HasValue` guard is the way that
+  stops being true. `Completeness_ForAnAccountThatHasNeverBeenRotated_IsFalse` is the one test that
+  catches that spelling.
 - **A `NOT NULL` default was rejected, and it would have made the predicate above correct.** It was
   still wrong: a generated identifier per row names a rotation that never happened, and a fixed
   sentinel makes "never rotated" a value the application agrees to read a certain way, one layer

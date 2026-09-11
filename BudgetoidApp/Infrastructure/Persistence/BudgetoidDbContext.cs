@@ -86,6 +86,38 @@ public sealed class BudgetoidDbContext(
     // to read a protocol nonce, and a public set would be the first step towards one.
     internal DbSet<WebAuthnChallengeRow> WebAuthnChallenges => Set<WebAuthnChallengeRow>();
 
+    /// <summary>
+    /// The budget every filtered set below is scoped to — the same value the <c>BudgetIsolation</c>
+    /// filters read, exposed so that a read whose question is about an <b>account</b> can say whether
+    /// its own reach covers it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>It exists for one caller and the caller is a refusal, not a query.</b>
+    /// <c>RotationCompletenessReadService</c> asks a question about every narrative row an account
+    /// owns, while five of its six sets are scoped here; when the account owns a budget other than this
+    /// one the honest answer is not <see langword="false" /> but "this read cannot see enough to
+    /// answer", and it needs this value to know that. Nothing else may use it to <em>scope</em>
+    /// anything: the filters and the two isolation policies own scoping, and a hand-written
+    /// <c>budget_id = </c> predicate built from this property would be a third copy that can disagree
+    /// with both.
+    /// </para>
+    /// <para>
+    /// <b><see langword="internal" />, and it stays that way.</b> Public, it becomes the easy way for a
+    /// handler in the Application ring to learn a tenant id off a persistence object rather than from
+    /// <c>IBudgetContext</c>, which is the abstraction that owns it.
+    /// </para>
+    /// <para>
+    /// The throw is not a new failure mode. A context built without an <c>IBudgetContext</c> cannot run
+    /// a query over any filtered set either — the filter dereferences the same field — so this reports
+    /// the state it is already in, with a sentence instead of a <see cref="NullReferenceException" />.
+    /// </para>
+    /// </remarks>
+    internal Guid AmbientBudgetId => budgetContext?.BudgetId
+        ?? throw new InvalidOperationException(
+            "This context was built with no IBudgetContext, so it has no ambient budget — and no "
+            + "budget-isolated set on it can be queried either.");
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.ApplyConfigurationsFromAssembly(typeof(BudgetoidDbContext).Assembly);

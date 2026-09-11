@@ -209,11 +209,24 @@ public sealed class BudgetConfiguration : IEntityTypeConfiguration<Budget>
         // states, and would write that value onto rows nothing has re-sealed. This comment is the
         // trade, chosen deliberately.
         //
-        // NO INDEX. Completion reads this column under budget_isolation, which appends budget_id to
-        // every statement, and this table is already keyed on the column that scopes it. An index over a
-        // column nothing queries yet is write amplification paying for a seek nobody performs — the same
-        // argument app-role-grants.sql makes about a privilege with no caller. Whoever writes the
-        // completion query decides whether one is worth it, with a plan in front of them.
+        // NOTHING AMBIENT SCOPES THIS TABLE, SO A READER OF THIS COLUMN WRITES ITS OWN OWNER PREDICATE.
+        // budgets carries no budget_id — a budget IS the tenant — so budget_isolation is not its policy;
+        // that one is on the five budget-owned tables. What stands here is user_isolation on user_id,
+        // and this set carries no BudgetIsolation query filter either. A read that leaves scoping to the
+        // ambient machinery therefore sees ONE budget of an account that may own several, and on a
+        // completion check that is the difference between refusing and destroying data: the budgets it
+        // cannot see read as "nothing left to do", the promotion lands, and their names stay sealed
+        // under a key nobody holds any more. RotationCompletenessReadService is the reader that does
+        // write it — budget.UserId == userId on its budgets arm, over a question it has already refused
+        // to answer unless the owned budgets are exactly the ambient one.
+        // ExportReadService.ListOwnedBudgetsAsync makes the same split for the same reason and argues it
+        // there, including why the policy underneath does not stand in for the predicate.
+        //
+        // NO INDEX, which is a separate decision and still holds. That read filters on user_id first,
+        // and the composite unique index below leads with that column; an index over a column nothing
+        // queries yet is write amplification paying for a seek nobody performs — the same argument
+        // app-role-grants.sql makes about a privilege with no caller. Whoever writes the completion
+        // query decides whether one is worth it, with a plan in front of them.
         builder.Property(budget => budget.RotationId).HasColumnName("rotation_id");
 
         builder.Property(budget => budget.CreatedAtUtc).HasColumnName("created_at_utc").HasColumnType("timestamp with time zone").IsRequired();

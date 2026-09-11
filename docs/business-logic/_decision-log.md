@@ -48,12 +48,18 @@ the ciphertext, and completion refuses unless every row carrying a narrative val
 current stamp. The guarantee is transactional and not statement-level: if EF split the two into
 separate statements they would still commit or roll back together.
 
-**The stamp columns are nullable, and that has a trap with teeth.** `rotation_id <> @current` is the
-predicate everybody writes first and it is silently wrong, because `NULL <> anything` is `NULL` and
-never true. Every row no rotation has touched drops out of "rows still to do" — on an account
-rotating for the first time that is *every* row, so the completeness check passes immediately, the
-destructive promotion runs, and the whole budget ends up sealed under a key nobody holds. The
-predicate is `IS DISTINCT FROM`. A `NOT NULL` default would make the naive predicate correct, and it
+**The stamp columns are nullable, and that has a trap with teeth — though a narrower one than it
+first appears.** A predicate treating `NULL` as "not a mismatch" drops every row no rotation has
+touched out of "rows still to do". On an account rotating for the first time that is *every* row, so
+the completeness check passes immediately, the destructive promotion runs, and the whole budget ends
+up sealed under a key nobody holds.
+
+Measured rather than assumed: written as EF LINQ, `row.RotationId != rotationId` is **safe**, because
+EF Core's null compensation emits `IS DISTINCT FROM` semantics. The failure needed
+`RotationId.HasValue && RotationId.Value != rotationId` — a spelling that reads as a careful null
+guard. Raw SQL is the other way in and is mostly closed already, `FromSql*` being a banned symbol.
+So the rule is not "never write `!=`"; it is that the SQL reaching PostgreSQL must be
+`IS DISTINCT FROM` whatever produced it. A `NOT NULL` default would make the naive predicate correct, and it
 was rejected anyway: every candidate default either invents an identifier naming no rotation that
 ever happened, or makes "never rotated" a sentinel the application agrees to read a certain way,
 one layer above the column that should be saying it.
