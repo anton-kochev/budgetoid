@@ -135,6 +135,14 @@ because every one of these is something a reader will otherwise simplify away.
   surrendered uniqueness on `budgets.name`; both are decisions, not gaps.
   [ciphertext-envelope.md](docs/business-logic/ciphertext-envelope.md),
   [ADR 0022](docs/decisions/0022-mint-narrative-row-identifiers-on-the-client.md)
+- **A second framing is defined and stored nowhere.** `EncapsulatedValueEnvelope` —
+  `version(1) ‖ ephemeral public key(65) ‖ nonce(12) ‖ ciphertext ‖ tag(16)`, floor 94. Both
+  framings lead with `0x01` on **different suites** and nothing in the bytes says which, so the
+  column is the only discriminator — and **neither version constant may alias the other**, because
+  reflection cannot tell a `const` literal from a `const` alias and only a source-text census holds
+  it. **Three verbs, and they are not interchangeable**: *sealed under* a key over data, *wrapped
+  under* a key over another key, *encapsulated to* a public key.
+  [ciphertext-envelope.md](docs/business-logic/ciphertext-envelope.md)
 - **The schema carries no remnant of an erasure and the route table offers no way back.** Three
   gates each hold a different half. Read [erasure.md](docs/business-logic/erasure.md) before
   widening any.

@@ -5,11 +5,22 @@ using Domain.Security;
 namespace Application.Security;
 
 /// <summary>
-/// The one decode-and-validate step for every AEAD envelope a client hands the API as text: base64url
-/// within a ceiling the caller names, then the framing rules
-/// <see cref="CiphertextEnvelope"/> owns.
+/// The one decode-and-validate step for every envelope carrying the <see cref="CiphertextEnvelope"/>
+/// framing that a client hands the API as text: base64url within a ceiling the caller names, then the
+/// framing rules that type owns.
 /// </summary>
 /// <remarks>
+/// <para>
+/// <b>That framing and no other.</b> The member below names
+/// <see cref="CiphertextEnvelope.IsWellFormed"/> outright rather than taking a rule as an argument, so
+/// what it accepts is the one layout — bytes carrying a different framing are outside what this type
+/// says anything about, whatever their leading byte happens to be. The framing that would be confused
+/// with it is <see cref="EncapsulatedValueEnvelope"/>: it leads with the same <c>0x01</c> and splices a
+/// 65-byte ephemeral point after it, so text carrying an encapsulated value decodes here, clears the
+/// version check, and is accepted by a floor 65 bytes below its own. Nothing hands this member such a
+/// value today, and a decoder for that framing would be a second member beside this one rather than a
+/// rule passed into it.
+/// </para>
 /// <para>
 /// A <c>Try</c> shape rather than a throw, for the reason <see cref="PasskeyEncoding.TryDecode"/> gives
 /// for its own: every call site already turns a malformed member into a refusal sentence of its own,
@@ -25,8 +36,9 @@ namespace Application.Security;
 /// from the caller — which is what keeps the edge and the format from drifting apart.
 /// </para>
 /// <para>
-/// <b>The ceiling is a parameter, and it has to be.</b> Every field sealed this way has its own size:
-/// a note is as long as somebody typed, a wrapped key has exactly one width. A constant here would be
+/// <b>The ceiling is a parameter, and it has to be.</b> Every field carrying this framing has its own
+/// size: a note sealed under the content key is as long as somebody typed, an account key wrapped under
+/// a factor's key-encryption key has exactly one width. A constant here would be
 /// one number pretending to serve all of them, and the first field that did not fit it would be
 /// refused for a limit nobody wrote for it.
 /// </para>

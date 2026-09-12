@@ -1,11 +1,22 @@
 namespace Domain.Security;
 
 /// <summary>
-/// The framing every AEAD envelope this system stores carries:
-/// <c>version(1) || nonce(12) || ciphertext || tag(16)</c>, with <c>0x01</c> — AES-256-GCM, 96-bit
-/// nonce, 128-bit tag — as the only version defined.
+/// The framing every value carries that is encrypted under a key the client already holds — a
+/// narrative field sealed under the content key, an account key wrapped under a factor's
+/// key-encryption key: <c>version(1) || nonce(12) || ciphertext || tag(16)</c>, with <c>0x01</c> —
+/// AES-256-GCM, 96-bit nonce, 128-bit tag — as the only version defined.
 /// </summary>
 /// <remarks>
+/// <para>
+/// <b>Not the only framing this system defines.</b> <see cref="EncapsulatedValueEnvelope"/> is the
+/// other: same AES-256-GCM at the end, but preceded by an ECDH key agreement, so its layout splices a
+/// 65-byte ephemeral public key in between the version byte and the nonce. Both lead with <c>0x01</c>
+/// and neither carries anything saying which it is, so the column the bytes were read from is what
+/// tells them apart — and a reader who slices encapsulated bytes by the framing below reads the head of
+/// a P-256 point as a nonce. This type is the one to reach for when the key that opens the value is a
+/// key the client already has, and it is the one every stored value uses; the other is for a value
+/// encapsulated to a factor nobody is holding, and nothing produces one yet.
+/// </para>
 /// <para>
 /// <b>In <c>Domain</c> because the numbers already live here.</b>
 /// <see cref="Users.WrappedAccountKeys.EnvelopeLength"/> and

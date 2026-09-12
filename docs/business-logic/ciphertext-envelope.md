@@ -15,16 +15,51 @@
 
 ## Purpose
 
-One AEAD envelope for everything this product encrypts, and one version byte in front of it
-saying which one:
+**Two framings are defined here, and the version byte in front of each names the cryptographic
+suite that framing is at — never which of the two framings you are holding.**
 
 ```
 version (1 byte) || nonce (12 bytes) || ciphertext || tag (16 bytes)
 ```
 
-Version `0x01` is AES-256-GCM with a 96-bit nonce and a 128-bit tag, and it is the only
-version defined. On the wire and in a column the bytes are rendered as **unpadded
-base64url**.
+That is the **AEAD framing**, `Domain/Security/CiphertextEnvelope`, and every value this product
+stores is carried in it. Version `0x01` is AES-256-GCM with a 96-bit nonce and a 128-bit tag,
+and it is the only version of it defined. On the wire and in a column the bytes are rendered as
+**unpadded base64url**.
+
+```
+version (1) || ephemeral public key (65) || nonce (12) || ciphertext || tag (16)
+```
+
+That is the **encapsulation framing**, `Domain/Security/EncapsulatedValueEnvelope`. Version
+`0x01` of it is ECDH over NIST P-256, then HKDF-SHA-256 with an empty salt, then that same
+AES-256-GCM: a value **encapsulated to** a public key rather than **wrapped under** a key whoever
+opens it already holds, which is what makes it producible while nobody is holding the factor.
+
+**Three verbs are load-bearing, and this chapter uses them that way throughout.**
+
+| Construction | Verb | Example |
+|---|---|---|
+| symmetric AEAD over data | *sealed under* | a narrative field is sealed under the content key |
+| symmetric AEAD over a key | *wrapped under* | an account key is wrapped under a factor's key-encryption key |
+| ECDH to a public key, then AEAD | *encapsulated to* | a value is encapsulated to a factor's public key |
+
+Only the third is new. The word is **encapsulated** and not *sealed* because *sealed under*
+already names symmetric encryption at every other site in this repository, so "sealed **to** a
+public key" would have stood one preposition away from "sealed **under** a key" — two
+constructions whose confusion is silent, since both spellings compile, both sets of bytes
+authenticate, and the wrong one opens nothing. RFC 9180 supplies the replacement: it calls the
+ECDH step a *key encapsulation*, and calls the ephemeral public key this framing carries the
+*encapsulated key*. `EncapsulatedValueEnvelope` carries that argument in full. Two consequences
+of it are easy to get wrong. The AEAD that runs **after** the key agreement is still **sealing**,
+because there the word is in the symmetric sense of the first row. And the noun is **the
+encapsulation framing**, never "the encapsulated framing" — the framing is not the thing that
+gets encapsulated.
+
+**Nothing stores an encapsulated value.** No column is typed for one, no route accepts one, and
+there is no decoder for one on this side. What this chapter owns about that framing is its
+layout, its floor, its version byte and what tells it apart from the framing above; what will
+carry it is not this chapter's to claim until something does.
 
 **This chapter is normative.** The requirement it serves fixes the binding *property* — a
 ciphertext is bound to where it lives — and not the grammar that expresses it, so somebody
@@ -34,14 +69,18 @@ implementation cannot read another's test files, so anything stated only in code
 of the contract. A client that reproduces the frozen vectors byte for byte agrees with every
 other client; one that does not is the one in the wrong.
 
-Two consumers share the format. **Wrapped account keys** are a fixed 61-byte payload over a
-32-byte key, and are described in [account-keys.md](account-keys.md) — this chapter owns the
-framing beneath them and nothing about what they mean. **Narrative fields** — the free text a
-person types into a ledger — are variable length, because AES-GCM ciphertext is exactly as
-long as its plaintext. Two envelope formats would be two places for the nonce width, the tag
-width or the associated-data binding to drift apart, and every symptom of drift here is
-silent: bytes of exactly the right shape that decrypt to nothing on a device that did not
-seal them.
+Two consumers share the **AEAD** framing. **Wrapped account keys** are a fixed 61-byte payload
+over a 32-byte key, and are described in [account-keys.md](account-keys.md) — this chapter owns
+the framing beneath them and nothing about what they mean. **Narrative fields** — the free text
+a person types into a ledger — are variable length, because AES-GCM ciphertext is exactly as
+long as its plaintext. **Those two do not get a layout each**, and the encapsulation framing is
+not the exception it looks like: a second layout for one construction would be two places for
+the nonce width, the tag width or the associated-data binding to drift apart, and every symptom
+of drift is silent — bytes of exactly the right shape that decrypt to nothing on a device that
+did not seal them. What earns a framing of its own is a different **construction**, never a
+further consumer. The encapsulation layout splices a 65-byte point into the middle because an
+ECDH agreement has an ephemeral public half to carry; the AEAD at the end of it is the same
+primitive, and its three widths are read from the declarations above rather than restated.
 
 **All eight columns hold a narrative envelope, and every screen now seals and opens one.**
 `budgets.name` is the first: `bytea`, **nullable**, mapped through a converter over
@@ -94,12 +133,13 @@ again under
 reads a settled contract as an adjustable one and relaxes a clause to make the next screen
 easier.
 
-**Each consumer has a live writer and a live reader, and neither one's traffic says anything about
-the other.** Wrapped account keys are sealed on every registration and **opened on every passkey
-sign-in**; narrative fields are sealed on every write those screens make and opened on every read
-they answer. What either buys the other is nothing at all — a format exercised by one consumer is
-not a format checked for the other, since the two grammars differ and only the frozen vectors
-speak to both.
+**Each consumer of the AEAD framing has a live writer and a live reader, and neither one's traffic
+says anything about the other.** Account keys are wrapped on every registration and **unwrapped on
+every passkey sign-in**; narrative fields are sealed on every write those screens make and opened
+on every read they answer. What either buys the other is nothing at all — a format exercised by one
+consumer is not a format checked for the other, since the two grammars differ and only the frozen
+vectors speak to both. **The encapsulation framing has neither a writer nor a reader**, which is
+the same sentence said about a format with no traffic rather than a gap in this census.
 
 **The server's format edge now has a column behind it.** Four types stand between a client's bytes
 and storage: `Domain/Security/NarrativeFieldLimits` (the two byte caps),
@@ -170,13 +210,21 @@ and which one applies is decided by whether the column has an index beside it.**
 
 ## Key Entities
 
-- **Envelope** — the byte sequence above. Not a type anywhere in the client: `sealEnvelope`
-  returns bytes and `openEnvelope` takes them, because a wrapper would be a second place the
-  layout is stated.
-- **Version byte** — the leading byte, `0x01`. **Outside the authenticated data on purpose.**
-  GCM has no opinion about it, which is why the reader has to check it deliberately — and why
-  a later reader can look at it *before* it knows the layout, rather than having to guess a
-  layout in order to authenticate the byte that names one.
+- **Envelope** — the AEAD byte sequence above. Not a type anywhere in the client:
+  `sealEnvelope` returns bytes and `openEnvelope` takes them, because a wrapper would be a
+  second place the layout is stated.
+- **Encapsulated value** — the second byte sequence above, carrying an ephemeral public key
+  between the version byte and the nonce. A type on the server — `EncapsulatedValueEnvelope`, a
+  floor, a version and a well-formedness rule — and nothing else anywhere: no column holds one,
+  no member accepts one, and nothing opens one. The **encapsulation framing** is the byte layout;
+  an **encapsulated value** is one sequence of bytes in it.
+- **Version byte** — the leading byte of either framing, `0x01` in both. **Outside the
+  authenticated data on purpose.** GCM has no opinion about it, which is why the reader has to
+  check it deliberately. What it answers is *which suite of this framing*, and a reader of a
+  later version of a framing it already knows can therefore look at it before slicing. What it
+  does **not** answer is which of the two framings it leads, and nothing else in the bytes does
+  either — see
+  [the byte that cannot tell you which one you are holding](#the-second-framing-and-the-byte-that-cannot-tell-you-which-one-you-are-holding).
 - **Nonce** — 12 bytes, drawn per operation. Twelve is the one width GCM uses directly as the
   counter block's prefix instead of hashing the nonce down to one, which is what makes a nonce
   drawn at random per message safe. Another width is a new version, not an edit.
@@ -208,14 +256,22 @@ erDiagram
     ENVELOPE }o--|| ASSOCIATED_DATA : "bound to, never carrying"
     ASSOCIATED_DATA ||--o{ WRAPPED_KEY_GRAMMAR : "one of two"
     ASSOCIATED_DATA ||--o{ NARRATIVE_FIELD_GRAMMAR : "one of two"
+    ENCAPSULATED_VALUE ||--|| VERSION_BYTE : "leads with the same 0x01"
+    ENCAPSULATED_VALUE ||--|| EPHEMERAL_POINT : "65 bytes, before the nonce"
+    ENCAPSULATED_VALUE ||--|| NONCE : "12 bytes"
+    ENCAPSULATED_VALUE ||--|| CIPHERTEXT : "as long as the plaintext"
+    ENCAPSULATED_VALUE ||--|| TAG : "16 bytes"
 ```
+
+The two shapes share four of the five parts and share the byte that leads them, which is why
+the diagram is drawn as one and why no reader may decide between them from bytes.
 
 ## Constraints
 
 ### MUST
 
-- **The layout MUST be `version(1) || nonce(12) || ciphertext || tag(16)`, and version `0x01`
-  MUST mean AES-256-GCM with a 96-bit nonce and a 128-bit tag.**
+- **The AEAD layout MUST be `version(1) || nonce(12) || ciphertext || tag(16)`, and version
+  `0x01` MUST mean AES-256-GCM with a 96-bit nonce and a 128-bit tag.**
   - **Why**: these three widths are what a client's AES-GCM implementation slices on. A byte
     moved from the nonce to the tag keeps the total length and produces envelopes that open
     perfectly against themselves and against nothing else.
@@ -232,6 +288,36 @@ erDiagram
     that file where a literal is correct, because a test computing the sum from the same
     constants it is checking agrees with any three numbers the type later chooses.
 
+- **The encapsulation layout MUST be
+  `version(1) || ephemeral public key(65) || nonce(12) || ciphertext || tag(16)`, the point MUST
+  be an uncompressed SEC1 encoding, and version `0x01` MUST mean ECDH over NIST P-256, then
+  HKDF-SHA-256, then AES-256-GCM with a 96-bit nonce and a 128-bit tag.**
+  - **Why**: the 65 is the one width in either framing with no twin next door, and it is the one
+    a later reader gets wrong honestly — a compressed point is 33 bytes and a bare coordinate
+    pair is 64. Either number re-cuts every slice after it, so the nonce a client reads is not
+    the nonce that was written and the tag never verifies, with nothing at this layer able to say
+    so: a point is not checkable without running curve arithmetic this side has no reason to hold.
+  - **Enforced in**: `Domain/Security/EncapsulatedValueEnvelope`, whose `MinimumLength` is const
+    arithmetic over four widths, of which three are declared as aliases of
+    `CiphertextEnvelope`'s. `EncapsulatedValueEnvelopeTests` pins each of the four as a literal
+    and the sum as `94`, and pins the relation — this floor is the AEAD floor plus a point —
+    beside them, because the relation can fail on its own.
+
+- **Each framing's version byte MUST be a number written out, never the other framing's
+  constant.**
+  - **Why**: the two constants hold `1` today by coincidence of both suites being first, and they
+    number *different* cryptography. Aliased, a successor to either suite silently renumbers the
+    other, and neither failure is visible at the edit — values get written claiming a suite
+    nothing implements, or values written under a suite this deployment does implement start being
+    refused. The three **width** constants alias `CiphertextEnvelope` legitimately and must not be
+    read as the same case: the AEAD at the end of the encapsulation framing genuinely is the same
+    primitive, so a nonce width has one owner. It is the byte that numbers a *suite* that may not
+    be shared.
+  - **Enforced in**: `EnvelopeSuiteCensusTests`, which **reads the source text** rather than
+    reflecting, because nothing in the build can tell the two spellings apart — measured,
+    `FieldInfo.GetRawConstantValue()` returns `1` and `IsLiteral` is true for the alias exactly as
+    for the literal. See [the two constants](#the-two-version-constants-and-why-neither-may-alias-the-other).
+
 - **Every nonce MUST be freshly drawn from a cryptographically secure random source, once per
   operation. This is a requirement of the contract, not an implementation detail.**
   - **Why**: a counter is an ordinary, defensible choice for an implementer reading only the
@@ -243,9 +329,9 @@ erDiagram
     envelopes, and every frozen vector still passes. **Both consumers reach the failure, and
     the counter that looks safest is the one the larger consumer breaks.**
     - On the **wrapped-key** side a counter per factor repeats on the very next operation,
-      because both of a factor's envelopes are sealed under the same key-encryption key.
-      That is the loudest case and also the smallest one: an account seals roughly
-      twenty-two of these envelopes in its whole life.
+      because both of a factor's envelopes are wrapped under the same key-encryption key.
+      That is the loudest case and also the smallest one: an account wraps roughly
+      twenty-two keys in its whole life.
     - The **narrative** side is the one that dominates. Every field of every row is sealed
       under **one** content key, once per field per save, for the life of the account — so a
       counter scoped per *row* never repeats within that row and collides against every other
@@ -385,8 +471,8 @@ erDiagram
 
 - **A blind index MUST be decoded through the shared base64url decoder, never through
   `CiphertextEnvelopeText`.**
-  - **Why**: that type applies the framing rules of an envelope — a 29-byte floor and a leading
-    `0x01`. A blind index is a keyed digest whose first byte is whatever HMAC-SHA-256 produced,
+  - **Why**: that type applies the framing rules of the **AEAD** envelope — a 29-byte floor and
+    a leading `0x01`. A blind index is a keyed digest whose first byte is whatever HMAC-SHA-256 produced,
     so the envelope type would refuse roughly 255 values in 256. What the two genuinely share is
     the alphabet, and that is the layer `BlindIndexText` reuses.
   - **Enforced in**: `BlindIndexText.TryDecode`, calling `PasskeyEncoding.TryDecode` with
@@ -421,12 +507,15 @@ erDiagram
   - **Why**: they are answering different questions. See
     [Two grammars, one join](#two-grammars-one-join).
 
-- **The two grammar prefixes and the version byte MUST NOT be edited.**
+- **The two grammar prefixes and the AEAD version byte MUST NOT be edited.**
   - **Why**: each carries a `/v1` suffix, and associated data is re-supplied rather than
     stored, so a changed prefix stops every envelope already written from opening — and the
     version byte changed means this deployment stops recognising what it is handed *and* reads
     what is already written under a rule it was not sealed with. A change is a new version
-    minted alongside the old, never an edit in place.
+    minted alongside the old, never an edit in place. The encapsulation framing's byte has no
+    stored value behind it yet and is under the same rule for a different reason: it is pinned in
+    the census beside its sibling, so moving it is a claim about cryptography rather than a
+    tidy-up.
 
 - **The two caps MUST NOT be restated as character limits, and MUST NOT be written out per
   column.**
@@ -476,22 +565,143 @@ erDiagram
 
 ### The layout, and the two widths that follow from it
 
-`MinimumLength` is `1 + 12 + 16 = 29`: a version, a nonce and a tag with **no ciphertext
-between them**. That is **a floor, not a width.** An empty plaintext is a legitimate value — a
-transaction with no memo, a category note somebody cleared — and it seals to exactly 29 bytes,
-which is why every length rule over this format compares with `>=` and the client's refusal is
-`<` rather than `<=`.
+`CiphertextEnvelope.MinimumLength` is `1 + 12 + 16 = 29`: a version, a nonce and a tag with **no
+ciphertext between them**. That is **a floor, not a width.** An empty plaintext is a legitimate
+value — a transaction with no memo, a category note somebody cleared — and it **produces**
+exactly 29 bytes, which is why every length rule over this format compares with `>=` and the
+client's refusal is `<` rather than `<=`.
 
 A wrapped account key is **61 bytes**, which is `29 + 32`: the shared framing stretched over
 one AES-256 key. That is a **width**, and it belongs to the entity rather than to the format —
 see [below](#why-the-wrapped-key-entity-keeps-its-own-exact-width).
 
+`EncapsulatedValueEnvelope.MinimumLength` is `1 + 65 + 12 + 16 = 94`, and it is a floor for the
+same reason and with the same comparison. An empty plaintext **produces** a version, a point, a
+nonce and a tag and nothing between them. **A statement about a length takes none of the three
+verbs**, which is why both paragraphs say *produces*: each verb names what a value was protected
+under or to, and nothing is ever sealed, wrapped or encapsulated *to a number of bytes*. The next
+reader reaches for a verb here, and the two within reach — "seals to 29" and "encapsulates to 94"
+— are both wrong, the second doubly so, since *to* in that verb is already spoken for by a public
+key. Nothing is stored under this floor, so there is no width beside it to confuse it with
+— and none may be folded into it either, for the reason the AEAD floor has none: a width folded
+into a format serves exactly one consumer and refuses every other.
+
 The version byte sits **outside** the authenticated data. GCM ignores it, which is deliberate
 twice over: the reader has to check it on purpose, and a reader of a later version can look at
-it before it knows the layout. A reader that skipped it has only two readings available —
-refuse, or decode as v1 anyway — and the second is how a future format silently becomes
-unreadable, because the day a successor ships with a different nonce width, every v1 reader
-slices the nonce in the wrong place and reports genuine data as corrupt.
+it before slicing. Read that at its real width — it lets a reader recognise a **successor to a
+framing it already knows**, and says nothing about which framing it is holding, which is the
+next section. A reader that skipped it has only two readings available — refuse, or decode as
+v1 anyway — and the second is how a future format silently becomes unreadable, because the day
+a successor ships with a different nonce width, every v1 reader slices the nonce in the wrong
+place and reports genuine data as corrupt.
+
+### The second framing, and the byte that cannot tell you which one you are holding
+
+Both framings lead with `0x01` and **neither carries anything saying which of the two it is.**
+The column the bytes were read from is the only thing that distinguishes them. A reader that
+slices encapsulated bytes by the AEAD framing takes the first twelve bytes of a P-256 point for a
+nonce and the rest of the point for ciphertext — and the failure surfaces as an authentication
+refusal a long way from the mistake, not as anything this layer could call malformed.
+
+So each framing carries its **own** floor, its own version and its own well-formedness rule,
+and `EncapsulatedValueEnvelope.IsWellFormed` does not delegate to its sibling. The delegation is
+the likely wrong implementation rather than an imagined one: the two suites share a version byte
+and three of their five widths, so `CiphertextEnvelope.IsWellFormed(value)` is the shorter line
+and reads as reuse. It admits everything from 29 bytes upward, which means every buffer 65 bytes
+too short to hold an ephemeral point is accepted as an encapsulated value.
+`IsWellFormed_WithABufferLongEnoughForTheAeadFramingAlone_Refuses` is the case written for
+attribution rather than for coverage — the one-byte-short case reddens under that implementation
+too, and under every floor at or below 93, but 93 refused reads as an off-by-one while a buffer
+of exactly the sibling's minimum names the sibling.
+
+**Why the second construction exists at all**, stated once so that nobody reads the splice as
+gratuitous: under the AEAD framing an account key is wrapped *symmetrically*, under a
+key-encryption key a factor derives, so whoever wraps holds the same key as whoever unwraps.
+**Encapsulating to** a factor's public half needs only that public half, which is what makes a
+value producible for a factor nobody is holding. That difference is the reason for the ephemeral
+point, and the point is the reason for a second layout.
+
+**Framing is still the whole of what is checkable, and on this side it is less than it looks.**
+An ephemeral "public key" of 65 zeros is not a point on P-256 and is well-formed by every rule
+this type owns. The server can run neither the ECDH the format names nor the AES-GCM after it,
+so the two questions it answers are whether the leading byte is one this deployment recognises
+and whether the fixed parts have room to exist.
+
+### The two version constants, and why neither may alias the other
+
+`CiphertextEnvelope.Version` and `EncapsulatedValueEnvelope.Version` are both the literal `1`,
+declared twice, in one namespace. Every instinct a reader brings to that says to make the second
+an alias of the first — which is what `WrappedAccountKeys.EnvelopeVersion` correctly is, because
+that *is* the AEAD format's byte. Here the two are equal by coincidence of both suites being
+first, and by nothing else.
+
+**Nothing in the build can tell the two spellings apart, and that is measured.** For
+`public const byte Literal = 1;` and `public const byte Alias = One.Version;`,
+`FieldInfo.GetRawConstantValue()` returns `1` and `IsLiteral` is `true` for both — the compiler
+folds a `const` initialiser, so by the time an assembly is loaded the spelling is gone. That is
+why the guard reads the **source text**: `EveryVersionByte_IsWrittenOutRatherThanAliased` opens
+each type's own file and asks whether the initialiser is a number. The repository already owns
+that idiom for the same reason, in `ConflictKindDispositionCensusTests`, which reads `.cs` files
+because reflection cannot see an argument at a construction either.
+
+**The alias is inert on the day it lands, and that is exactly what makes it dangerous.**
+Measured: writing it reddened nothing across the 26 tests over these two types, before the scan
+existed. The harm arrives later. Bump `CiphertextEnvelope.Version` to `2` and the red bar that
+fires reads *"Version should be 1, was 2"* — whose obvious repair is to move the pin. A careful
+person moves it, the bar goes green, and every value produced under the second framing now claims
+a suite no client ever agreed to. A test that leads a careful reader to the wrong repair is
+worse than no test, which is why the scan exists to make that red unreachable.
+
+**The three width constants alias `CiphertextEnvelope` deliberately, and the contrast is the
+point.** `VersionBytes`, `NonceBytes` and `TagBytes` on the encapsulation type are second names
+for one owner's numbers, because the AEAD at the end of the key agreement genuinely is the same
+primitive — one nonce width, one tag width, one place to change either. It is the byte that
+numbers a *suite* that may not be shared. `EphemeralPublicKeyBytes` is the one width with no
+twin, and `EncapsulatedValueEnvelopeTests` restates all four as literals precisely because three
+of them are aliases: written relatively, an alias whose target moved would agree with itself
+forever.
+
+**What the two halves each fail to catch, so neither is deleted as the other's duplicate.** The
+source scan sees spelling and not meaning — `= 7` is a numeric literal and passes it. The value
+pins in `EncapsulatedValueEnvelopeTests` and `CiphertextEnvelopeTests` see the number and not the
+spelling. They fail on different edits.
+
+### A floor with no ceiling, and the coverage that was there by accident
+
+The chapter's position is that `MinimumLength` is **a floor and not a width**, and an
+**undeclared ceiling** is the edit that quietly turns it back into one. It is a different mistake
+from the equality both files already catch, and the difference is how loud it is. An equality on
+the width refuses every non-empty plaintext, so the first person to save anything finds out. A
+generous cap admits every value anybody tests with and refuses the one that arrives later and is
+larger than whoever wrote the cap imagined — a value sealed correctly, stored nowhere, reported
+as malformed.
+
+**A ceiling at or above 2560 bytes on `CiphertextEnvelope.IsWellFormed` was invisible to the
+suite until this commit, and the coverage below that was accidental.** Measured, one mutation at
+a time: a cap of `MinimumLength + 512` reddened **four** tests, `+ 2048` reddened **one**, and
+`+ 2560` and `+ 4096` reddened **nothing at all** — a whole green suite over a format that had
+acquired a maximum. The four are `NarrativeFieldTests` and `IndexedNameTests` cases, and they
+redden only because the narrative caps happen to exceed the mutation's. They are about
+`NarrativeFieldLimits` and not about this format, so lowering `DescriptionBytes` one day — a
+product decision, made for product reasons — takes that coverage with it and no test mentions
+the loss.
+
+**On the encapsulation side nothing incidental covered it at all**, which is the same finding
+without the accident. Measured: a body reading
+`value.Length >= MinimumLength && value.Length <= MinimumLength + 512 && value[0] == Version`
+left the unit tier green at 1062 of 1062, because every accepting case in that file hands over a
+buffer of at most `MinimumLength + 137` — so any cap above about 231 bytes was invisible,
+including every cap a person would actually write, since nobody caps a buffer at 231.
+
+A case at `MinimumLength + 64 * 1024` now holds it on each framing:
+`IsWellFormed_WithAnEnvelopeFarWiderThanAnyPlausibleCeiling_Accepts` and its twin on the
+encapsulation type.
+64 KiB clears both narrative caps, the wrapped-key width and every power of two up to 32768 —
+every number a reader reaching for "a sensible upper bound" would land on. **What it cannot do,
+said plainly: no test proves the absence of a bound.** It proves only that any bound sits above
+about 65 KiB. A cap at a megabyte survives it, and the answer to that is not a wider buffer — a
+cap at a megabyte is not an edit anybody makes by accident, where a cap at 512 bytes is exactly
+what "let us be defensive about input" produces.
 
 ### Two grammars, one join
 
@@ -658,19 +868,26 @@ checkable on that side, and that is not a shortcoming.** A nonce of zeros and a 
 are well-formed by every rule it owns. Anything stronger would need a key, and a design in
 which the server had one is the design this product exists to avoid.
 
-Two types split the **framing** job, and four more sit above them for the narrative side — the
-caps, the value type, the pair type and the index's wire step, each argued in its own section
-below:
+Three types hold the **framing** job between them, and four more sit above them for the
+narrative side — the caps, the value type, the pair type and the index's wire step, each argued
+in its own section below:
 
-- **`Domain/Security/CiphertextEnvelope`** owns the format: at least 29 bytes, leading with
+- **`Domain/Security/CiphertextEnvelope`** owns the AEAD format: at least 29 bytes, leading with
   version 1. Length is judged **before** version, and the order is a correctness rule rather
   than a style one — an empty buffer has no leading byte for a version check to look at, so an
   implementation reaching for `envelope[0]` first would not answer `false`; it would throw, out
   of a method whose entire contract is to answer without one.
-- **`Application/Security/CiphertextEnvelopeText`** is the edge: base64url within a ceiling the
-  caller names, then the domain's rules. It defines no number of its own — the floor and the
-  version come from the domain, the ceiling comes from the caller — which is what keeps the
-  edge and the format from drifting apart.
+- **`Domain/Security/EncapsulatedValueEnvelope`** owns the encapsulation framing on exactly the
+  same terms: at least 94 bytes, leading with version 1, length before version, no width and no
+  message. It stands beside its sibling rather than inside it, for the reason
+  [the section above](#the-second-framing-and-the-byte-that-cannot-tell-you-which-one-you-are-holding)
+  gives.
+- **`Application/Security/CiphertextEnvelopeText`** is the edge for the **AEAD** framing:
+  base64url within a ceiling the caller names, then that framing's rules. It defines no number
+  of its own — the floor and the version come from the domain, the ceiling comes from the
+  caller — which is what keeps the edge and the format from drifting apart. **There is no
+  decoder for an encapsulated value**, at this layer or any other: nothing accepts one as text,
+  so nothing turns text into one.
 
 **The ceiling is applied once, and not by that type.** The shared base64url decoder bounds
 the *encoded* text against an allowance computed in the **padded** form, which overshoots the
@@ -689,11 +906,15 @@ admitted 513, 64 admitted 66 — and `CredentialIdBytes` was the only one that d
 comparison would go: "a second comparison against `maxDecodedBytes` would be one rule with
 two owners." The owner that got edited would be whichever one the next reader opened.
 
-**So what that type exists for is the framing, not the ceiling.** It is the one place a
-decoded buffer meets the format's *floor* and its *version byte*, in that order and taken
-from the type that owns them, for every sealed member the API accepts as text. It still
-declares no number of its own. Fold it away and those two rules are restated in each caller
-that decodes a sealed member, which is exactly the drift a shared edge exists to prevent.
+**So what that type exists for is *that* framing, not the ceiling.** It is the one place a
+decoded buffer meets the AEAD format's *floor* and its *version byte*, in that order and taken
+from the type that owns them, for every member the API accepts as text under that framing. It
+names `CiphertextEnvelope.IsWellFormed` outright rather than taking a rule as an argument, so
+bytes carrying the other framing are outside what it says anything about, whatever their leading
+byte happens to be — and since both framings lead with `0x01`, a caller that handed it
+encapsulated bytes would be told they were well-formed at 29. It still declares no number of its
+own. Fold it away and those two rules are restated in each caller that decodes a sealed member,
+which is exactly the drift a shared edge exists to prevent.
 
 **The wrapped-key path never showed the symptom, which is why the slack went unnoticed as
 long as it did.** Its exact 61-byte width sat behind the same decode and refused the one or
@@ -1076,10 +1297,10 @@ be constructed — the factory one line further down. What it would buy is nothi
 is a reader holding three types to understand one column pair, and a plausible-looking way to build
 an index that is attached to no name.
 
-**And the pair is not two envelopes.** The name is AEAD ciphertext with the framing this chapter
-owns. The index is a keyed digest: no version byte, no nonce, no tag, nothing to open, and no way
-back to the text it was taken over. They travel together and are judged by rules that come from two
-different places.
+**And a name and its index are not two envelopes** — not one of each framing, and not two of
+either. The name is AEAD ciphertext under the framing at the top of this chapter. The index is a
+keyed digest: no version byte, no nonce, no tag, nothing to open, and no way back to the text it
+was taken over. They travel together and are judged by rules that come from two different places.
 
 ### The read side does not judge, and that is the decision
 
@@ -1120,8 +1341,8 @@ already reaches `Domain` — what travels is visibility, not a dependency. See t
 
 `BlindIndexText` decodes the 43 characters an index arrives as. It is built on the shared base64url
 decoder and **not** on `CiphertextEnvelopeText`, which sits beside it in the same request and the
-same row and looks like the natural base. That type applies the framing rules of an envelope: a
-29-byte floor and a leading version byte. A blind index is a keyed digest whose first byte is
+same row and looks like the natural base. That type applies the framing rules of the AEAD
+envelope: a 29-byte floor and a leading version byte. A blind index is a keyed digest whose first byte is
 whatever HMAC-SHA-256 produced, so requiring `0x01` would admit roughly one value in 256 and refuse
 the rest as malformed. What the two genuinely share is the alphabet, and that is the layer this type
 reuses. Two cases hold the distinction —
@@ -1249,9 +1470,18 @@ has an implementation, and runs them in both directions — sealing to the froze
 opening the frozen wire value back — with the key import, the cipher and the encoder all
 production's and only the nonce fed through a seam.
 
-What the server asserts over the format is exactly what it **enforces** at the edge — the
-base64url alphabet, the minimum length, the version byte, and the wrapped path's exact width —
-and nothing more. A check the server does not enforce is a check nothing keeps honest.
+What the server asserts over the **AEAD** format is exactly what it **enforces** at the edge —
+the base64url alphabet, the minimum length, the version byte, and the wrapped path's exact
+width — and nothing more. A check the server does not enforce is a check nothing keeps honest.
+
+**The encapsulation framing is the one place that sentence is bent, and it is bent on purpose
+rather than overlooked.** Its floor, its version and its well-formedness rule are asserted by a
+unit file whose subject no production call site reaches, because nothing stores an encapsulated
+value yet. That is the same order the narrative format was agreed in — a layout is far cheaper to
+settle before a column holds data under it than after, and [Purpose](#purpose) argues why — and it
+carries the same obligation: the day a caller arrives, the rule it enforces is the one already
+written here, not a new one written to fit it. What may not be inferred from the assertions is
+any claim that something on this side is checking encapsulated bytes today. Nothing is.
 
 ### The vector index, which is kept in three places
 
@@ -1268,7 +1498,7 @@ reproduce if the budget were dropped from the message, because they all share on
 — no version byte, no nonce, no tag, nothing to open — so none of this chapter's framing
 reaches it, and `budgetoid/blind-index/v1` is not a third associated-data grammar. The
 [decision tree](#decision-trees) that says there is no third one is asking which grammar
-*seals* a value, and this seals nothing. The file is indexed here because the registry is one
+*binds* a ciphertext, and a blind index is not a ciphertext. The file is indexed here because the registry is one
 registry, not because the format is shared.
 
 **The answers were frozen first, the client computes against them, and four columns store what it
@@ -1405,16 +1635,35 @@ for either arm to run on. **Storing is where the rules
 stop being reversible**, which is why they were agreed first and why nothing here may be relaxed to
 make a screen easier to write. Nothing on this side opens anything, and nothing ever will.
 
+**The encapsulation framing has no step in any of this.** No route decodes one, no converter maps
+one and no column stores one, so there is no arm above to describe and none below to run.
+`IsWellFormed` on that type has no production caller today.
+
 ## Decision Trees
 
-**Which grammar seals this value?**
+**Which framing do these bytes carry?**
+
+- they came out of one of the eight narrative columns, or out of `wrapped_account_keys` → the
+  AEAD framing.
+- they came out of anywhere else → **no column holds an encapsulated value today**, so the
+  question does not arise in this product yet. When one does, the answer is still *the column
+  they came from*, because nothing in the bytes says: both framings lead with `0x01`, and the
+  leading byte names a suite of a framing rather than a framing.
+- **never**: read the leading byte and decide from it. That is the mistake the two floors exist
+  to make refusable — sliced by the shorter framing, a P-256 point's first twelve bytes become a
+  nonce.
+
+**Which grammar binds this value?** — *binds*, and not *seals*, because one of the two arms
+below is a wrap rather than a seal and the verbs are not interchangeable.
 
 - an account key wrapped under a recovery factor → the wrapped-key grammar, over the factor
   id and the purpose. See [account-keys.md](account-keys.md).
 - free text in one of the eight columns → the narrative grammar, over the table, the column
   and the row id.
 - anything else → **there is no third grammar.** A new one is a new prefix, argued in the
-  chapter that owns the values it binds, never a field bolted onto one of these two.
+  chapter that owns the values it binds, never a field bolted onto one of these two. The
+  encapsulation framing has none of its own, because nothing produces one — a grammar is written
+  where a value is bound to where it lives, and no value lives anywhere yet.
 
 **An envelope will not open. What does that mean?**
 
@@ -1502,8 +1751,8 @@ caller wrapping an open in a `catch` has to answer "is this column damaged?", an
   neither gate checks — a column's cap, in either direction, and any constraint's name — and for
   which neighbour picks each of those up, a stage later, so that neither absence is read as a hole.
 - **[recovery-codes.md](recovery-codes.md)** and **[passkeys.md](passkeys.md)** — where the
-  key-encryption keys that seal the wrapped copies come from. Neither reaches this format
-  directly.
+  key-encryption keys an account's copies are wrapped under come from. Neither reaches this
+  format directly.
 - **[registration.md](registration.md)** — the one path a screen reaches that writes a
   **wrapped-key** envelope: eleven factors, twenty-two wrapped keys, in one save. The other two
   producers of one — registering a further passkey, and replacing a set of recovery codes — sit
@@ -1550,9 +1799,36 @@ caller wrapping an open in a `catch` has to answer "is this column damaged?", an
   needs is the same pair — a route to hand it an envelope, and a class to hold what came out.
   **Nothing here may be relaxed to make a later screen easier to write.** The format is a contract
   with every client that will ever seal an envelope, and rows are written under it.
-- **An empty plaintext is legal and seals to exactly 29 bytes.** A reader tempted to treat
-  "too short" as "empty is not allowed" would refuse a value the format produces. The spec
-  seals an empty string and opens it back, which is the half that stops the misreading.
+- **An empty plaintext is legal and produces exactly 29 bytes under the AEAD framing, and exactly
+  94 under the encapsulation framing.** *Produces*, because none of the three verbs fits a
+  statement about a length and both of the ones within reach are wrong here. A reader tempted to
+  treat "too short" as "empty is not allowed" would refuse a value either format produces. On the
+  AEAD side the client spec seals an empty string and opens it back, which is the half that stops
+  the misreading; on the encapsulation side nothing produces anything, so what holds the polarity
+  is the accepting case sitting exactly on the bound with a refusing case one byte below it.
+- **Nothing in a stored byte says which of the two framings it carries, and both lead with
+  `0x01`.** The column is the only discriminator, so a helper that takes bytes and decides for
+  itself is wrong however carefully it is written. `CiphertextEnvelopeText` names
+  `CiphertextEnvelope.IsWellFormed` outright for that reason, and is the decode step for that
+  framing alone; there is no decoder for an encapsulated value, and one handed to this decoder
+  would be judged against a floor 65 bytes too low and pass. See
+  [the second framing](#the-second-framing-and-the-byte-that-cannot-tell-you-which-one-you-are-holding).
+- **Aliasing one framing's version constant to the other's reddens nothing on the day it is
+  written**, and reflection cannot see the difference — measured, `IsLiteral` and
+  `GetRawConstantValue()` answer identically for a literal and an alias. What holds it is a
+  source-text scan, and what makes the scan worth its weight is the trap the alias sets: the red
+  bar it eventually produces reads as "the version moved, update the pin", and updating the pin
+  ships values under a suite nobody agreed to. The three **width** constants alias legitimately;
+  see [the two version constants](#the-two-version-constants-and-why-neither-may-alias-the-other).
+- **A ceiling quietly added to `CiphertextEnvelope.IsWellFormed` at or above 2560 bytes was
+  invisible to the suite until this commit, and the coverage below that was borrowed from the
+  narrative caps.** Measured: `+512` reddened four tests, `+2048` one, `+2560` and `+4096`
+  nothing. On the encapsulation side nothing incidental covered it at all — a `+512` cap there
+  left the unit tier green at 1062 of 1062. Each framing now carries a case at
+  `MinimumLength + 64 * 1024`, which still cannot see a cap above a megabyte — said out loud
+  because a reader who takes the case for a proof of "no bound" has read it as more than it is.
+  See
+  [a floor with no ceiling](#a-floor-with-no-ceiling-and-the-coverage-that-was-there-by-accident).
 - **`openNarrativeField` does not hand back exactly what was sealed for a *lone surrogate*, and
   the loss happens before the cipher rather than in the reader.** `TextEncoder` substitutes
   U+FFFD for an unpaired surrogate — measured: `'café \uD83D'` comes back `'café �'` — so what

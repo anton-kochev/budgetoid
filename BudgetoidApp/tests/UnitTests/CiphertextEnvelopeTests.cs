@@ -180,6 +180,62 @@ public sealed class CiphertextEnvelopeTests
     }
 
     /// <summary>
+    /// An envelope far wider than anything this product will ever seal is still well-formed.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The case that catches an undeclared ceiling, which is a different mistake from the equality
+    /// the case above catches.</b> An equality on the width is loud: it refuses every non-empty
+    /// plaintext, so the first person to save anything finds out. A generous cap is silent. It admits
+    /// every value anybody tests with and refuses the one that arrives later and is larger than
+    /// whoever wrote the cap imagined — a note that was sealed correctly, could not be stored, and was
+    /// reported as malformed. The format states no maximum on purpose: how long a plaintext may be
+    /// belongs to whatever stores it, which is why the wrapped-key path enforces its one legal size on
+    /// top of this and narrative text has a cap of its own.
+    /// </para>
+    /// <para>
+    /// <b>A low cap is already caught, and by accident, which is the argument for this case rather than
+    /// against it.</b> Measured against this suite: a body reading
+    /// <c>Length &gt;= MinimumLength &amp;&amp; Length &lt;= MinimumLength + 512</c> reddens four
+    /// tests — none of them in this file. They are
+    /// <c>NarrativeFieldTests.Sealed_WithAnEnvelopeExactlyAtTheCeiling_IsAccepted</c> at both 1024 and
+    /// 2560, its neighbour over the two caps, and
+    /// <c>IndexedNameTests.Of_WithAnEnvelopeAtTheNameCap_IsAccepted</c>. Those cases are about
+    /// <see cref="NarrativeFieldLimits"/>, not about this format, and they redden only because the
+    /// narrative caps happen to be larger than the mutation's. Lower <c>DescriptionBytes</c> one day —
+    /// a product decision, made for product reasons — and that coverage disappears with no test
+    /// mentioning it.
+    /// </para>
+    /// <para>
+    /// <b>Where the incidental coverage actually stops, measured rather than assumed.</b> A cap of
+    /// <c>MinimumLength + 2048</c> reddens one test; <c>+ 2560</c>, <c>+ 4096</c> and
+    /// <c>+ 64 * 1024</c> redden nothing at all. The whole suite was green over a format that had
+    /// quietly acquired a maximum. 64 KiB here clears both narrative caps, every power of two up to
+    /// 32768, and any number a reader reaching for "a sensible upper bound" would land on.
+    /// </para>
+    /// <para>
+    /// <b>What it cannot do.</b> No test proves the absence of a bound; this proves only that any bound
+    /// sits above 65,565 bytes. A cap at a megabyte survives it — and is not an edit anybody makes by
+    /// accident, where a cap at 512 is exactly what "let us be defensive about input" produces.
+    /// <c>EncapsulatedValueEnvelopeTests</c> carries the twin of this case, for the same mutation
+    /// against the encapsulation framing, where nothing incidental covered it at all.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task IsWellFormed_WithAnEnvelopeFarWiderThanAnyPlausibleCeiling_Accepts()
+    {
+        // Arrange
+        byte[] enormous = Envelope(
+            CiphertextEnvelope.Version, CiphertextEnvelope.MinimumLength + (64 * 1024));
+
+        // Act
+        bool wellFormed = CiphertextEnvelope.IsWellFormed(enormous);
+
+        // Assert
+        await Assert.That(wellFormed).IsTrue();
+    }
+
+    /// <summary>
     /// A buffer one byte shorter than the minimum is refused, however well-formed its leading byte.
     /// </summary>
     /// <remarks>
