@@ -120,6 +120,27 @@ public partial class InitialCreate : Migration
             });
 
         migrationBuilder.CreateTable(
+            name: "factor_manifests",
+            columns: table => new
+            {
+                user_id = table.Column<Guid>(type: "uuid", nullable: false),
+                manifest = table.Column<byte[]>(type: "bytea", nullable: false),
+                rotation_epoch = table.Column<int>(type: "integer", nullable: false)
+            },
+            constraints: table =>
+            {
+                table.PrimaryKey("PK_factor_manifests", x => x.user_id);
+                table.CheckConstraint("CK_factor_manifests_manifest_length", "length(manifest) between 1 and 4096");
+                table.CheckConstraint("CK_factor_manifests_rotation_epoch", "rotation_epoch >= 1");
+                table.ForeignKey(
+                    name: "FK_factor_manifests_users",
+                    column: x => x.user_id,
+                    principalTable: "users",
+                    principalColumn: "id",
+                    onDelete: ReferentialAction.Cascade);
+            });
+
+        migrationBuilder.CreateTable(
             name: "accounts",
             columns: table => new
             {
@@ -672,6 +693,9 @@ public partial class InitialCreate : Migration
     /// <inheritdoc />
     protected override void Down(MigrationBuilder migrationBuilder)
     {
+        migrationBuilder.DropTable(
+            name: "factor_manifests");
+
         migrationBuilder.DropTable(
             name: "key_rotations");
 

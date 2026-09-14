@@ -721,10 +721,12 @@ public sealed class ErasureAtomicityTests
 
     /// <summary>
     /// Adds the passkey material, the session row and the handle it is presented by, the set of
-    /// recovery codes, the wrapped account keys and one in-flight key rotation, so the whole-database
+    /// recovery codes, the wrapped account keys, one in-flight key rotation and the account's manifest
+    /// of factor public keys, so the whole-database
     /// enumeration has something to find in every user-owned table rather than only in the two
     /// provisioning fills. Without it the non-vacuity guard fails on <c>sessions</c>, on
-    /// <c>session_tokens</c>, on <c>recovery_code_hashes</c> and on <c>key_rotations</c>, which is the
+    /// <c>session_tokens</c>, on <c>recovery_code_hashes</c>, on <c>key_rotations</c> and on
+    /// <c>factor_manifests</c>, which is the
     /// point of the guard.
     /// <c>wrapped_account_keys</c> would survive it — <see cref="RegisterPasskeyAsync" /> writes a row
     /// of that route's own — and the seeded row is kept beside it for the reason below, and is now also
@@ -824,6 +826,36 @@ public sealed class ErasureAtomicityTests
             Envelope(0x2E),
             Envelope(0x3F),
             SeedInstant));
+
+        // The account's manifest of every recovery factor's public key, in factor_manifests — the
+        // newest table the enumeration discovers, and one the non-vacuity guard reports as a zero until
+        // something puts a row in it. Nothing in the product writes it: the app role holds SELECT and
+        // no write grant of any shape, so there is no route to reach it through and no INSERT this
+        // application could issue if there were. That is exactly why it is seeded here, on the
+        // container superuser like every other row in this helper — a table that only ever holds zero
+        // rows makes both of this file's claims about it vacuously true, "nothing moved" and
+        // "everything went" alike, and excluding it instead would hide the one edge this row exists to
+        // exercise: FK_factor_manifests_users cascades from users, which is how an erasure reaches
+        // a table the role cannot delete from.
+        //
+        // Through FactorManifest.For rather than raw SQL, for the reason the remarks above give
+        // about every other row here: the factory is what keeps a seeded row the shape production will
+        // write. It takes the LOADED USER rather than an owner id, and what that buys here is TYPE
+        // SAFETY AND NOT OWNERSHIP: a loose Guid parameter would accept the credential id and the
+        // factor id that are both in scope on the lines above, and a User accepts neither. It does not
+        // stop one account's factor set being filed against another — the user below is obtained by
+        // reading one keyed on userId, so a transposed id would arrive here as a perfectly well-typed
+        // owner. Nor is the idiom universal in this aggregate: Credential.CreatePasskey a few lines up
+        // takes a loose Guid.
+        //
+        // The epoch is the floor rather than an arbitrary generation, and the floor is where it is
+        // because EPOCH 0 IS THE ABSENCE OF A ROW: seeding at zero would file a row asserting its own
+        // absence, which FactorManifest.For and CK_factor_manifests_rotation_epoch both refuse.
+        User owner = await db.Users.SingleAsync(candidate => candidate.Id == userId);
+        db.FactorManifests.Add(FactorManifest.For(
+            owner,
+            ManifestNaming(factorId),
+            FactorManifest.MinimumRotationEpoch));
 
         // Established against the passkey rather than the federated credential because
         // CK_sessions_kind_matches_credential ties the two together.
@@ -981,6 +1013,22 @@ public sealed class ErasureAtomicityTests
 
         return envelope;
     }
+
+    /// <summary>
+    /// A stand-in manifest naming the one factor this helper seeds.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately NOT built by <see cref="Envelope" />, and the difference is the point rather than a
+    /// detail: a manifest is authenticated PUBLIC material the server holds in the clear, not a sealed
+    /// envelope, so a value carrying the wrapped-key version byte would misstate what the column holds
+    /// to anybody reading this seeding for an example. Nothing verifies the authentication here — the
+    /// tag is checkable only by a client holding the account's keys, and no such client exists in this
+    /// file — so the only rules the row has to satisfy are the length band and an owner, which
+    /// <see cref="FactorManifest.For" /> and <c>CK_factor_manifests_manifest_length</c> refuse
+    /// to bend from either end. Derived from the factor rather than random so a failure message can say
+    /// which factor the seeded manifest was written for.
+    /// </remarks>
+    private static byte[] ManifestNaming(Guid factorId) => factorId.ToByteArray();
 
     /// <summary>
     /// A host whose factory leaves the application's own authentication standing, because every request

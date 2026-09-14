@@ -655,6 +655,41 @@ public sealed class BudgetoidDbContextConstructionTests
             + "length(wrapped_index_key) = 61",
             "CK_key_rotations_wrapped_index_key_version: key_rotations "
             + "get_byte(wrapped_index_key, 0) = 1",
+            // A FLOOR AND NOT A BAND, and the only entry in this list whose lower bound is where it is
+            // because of what the ABSENCE of a row means. Generations have no last one, so there is no
+            // ceiling to write; the floor is 1 because EPOCH 0 IS THE ABSENCE OF A MANIFEST — an
+            // account with no row answers 0, which is the state of every account that exists today and
+            // is not an error — so a stored row claiming epoch 0 would assert its own absence, and the
+            // one read that has to tell "never rotated" from "rotated to generation zero" could not.
+            // The negative side is refused by the same comparison because no generation has a number
+            // below the first.
+            //
+            // Rendered from FactorManifest.MinimumRotationEpoch, so this line is a pin on the
+            // RENDERING and the Domain still owns the number: FactorManifest.For refuses an epoch
+            // below the floor and this refuses the identical row arriving by any other path, which is
+            // one fact printed twice rather than two facts free to disagree.
+            //
+            // WHAT IT DOES NOT HOLD is the half a reader will assume it does. "A promotion writes an
+            // epoch exactly one greater than the one it read" is held by no declarative layer at all: a
+            // CHECK sees one row and not the step between two. The arithmetic is application code, so
+            // deleting the application-side check falls back on nothing.
+            "CK_factor_manifests_rotation_epoch: factor_manifests rotation_epoch >= 1",
+            // Both bounds over one column, and the empty side is the one worth reading twice. An empty
+            // bytea is exactly what an unset member sends, and this blob is the SOLE CARRIER of every
+            // recovery factor's public key — there is deliberately no per-row public key column beside
+            // it — so a caller that forgot to attach the manifest would otherwise file a row naming no
+            // factor at all: an account with no way back in, stored as though it had one.
+            //
+            // The wide side is REFUSED RATHER THAN TRUNCATED, which is why the ceiling is a bound and
+            // not a varchar-style cap somebody could soften. Cutting the blob at the line silently
+            // drops whichever factor fell past it; that factor stops being encapsulatable-to, and
+            // nothing about the stored row says so — the manifest is well formed, the epoch is
+            // plausible, and the loss surfaces on the day somebody reaches for the factor that is gone.
+            // The upper bound is rendered from FactorManifest.MaximumBytes and the lower one is
+            // written as 1 the way PasskeyPublicKeyConfiguration writes its own, because "not empty" is
+            // a fact about bytea rather than a fact about a manifest that could ever be tuned.
+            "CK_factor_manifests_manifest_length: factor_manifests "
+            + "length(manifest) between 1 and 4096",
             "CK_currencies_code: currencies code ~ '^[A-Z]{3}$'",
             "CK_currencies_minor_unit: currencies minor_unit between 0 and 4",
             // The kind vocabulary, bounded the way the credential vocabularies above are, and it is
@@ -864,7 +899,34 @@ public sealed class BudgetoidDbContextConstructionTests
         // whoever regenerates the baseline resets production's __EFMigrationsHistory in the same deploy
         // (DEPLOYMENT.md, Step 3), or that deploy fails on the first CREATE TABLE against a database
         // that already holds the schema.
-        const string frozenBaselineId = "20260911115008_InitialCreate";
+        //
+        // And it moved once more for factor_manifests, which is the second move in this sequence
+        // that adds a TABLE and the first that adds one hanging straight off users rather than off a
+        // credential. One row per account, keyed on user_id, holding the authenticated list of every
+        // recovery factor's public key — the value a client reads to learn which factors exist and what
+        // to encapsulate the account's keys to. Keyed on the owner for key_rotations' reason and not a
+        // weaker one: the manifest is authenticated as a SET, so a second row would be a second claim
+        // about which factors exist and nothing could say which of them a client was looking at. It
+        // carries a rotation_epoch that counts generations, an epoch floor of 1 because EPOCH 0 IS THE
+        // ABSENCE OF A ROW — the state of every account that exists today — and a manifest length band,
+        // and its foreign key to users cascades so that key bookkeeping can never outrank an erasure.
+        // NOTHING WRITES IT YET: the app role holds SELECT and no write grant of any shape, which is
+        // why the erasure suite seeds the row out of band rather than reaching it through a route that
+        // does not exist. A CREATE TABLE is as additively expressible as a change gets, and this one is
+        // no exception — the paragraph above says the same of key_rotations, its alternate key and its
+        // six columns. What puts it inside the baseline is the window rather than the shape: the
+        // production database holds no rows (CON-002), more schema is still ahead of this slice, and
+        // one initial migration is worth more than the chain of alters nothing will ever replay step by
+        // step.
+        //
+        // Same obligation, unchanged and not softened by being the eighth time it is written: whoever
+        // regenerates the baseline resets production's __EFMigrationsHistory in the same deploy
+        // (DEPLOYMENT.md, Step 3), or that deploy fails on the first CREATE TABLE against a database
+        // that already holds the schema. This literal is the checkpoint a human edits deliberately —
+        // docs/engineering/migrations.md says the CI window makes a regenerated baseline permitted and
+        // never free, and this line is the half of the freeze the window does not cover — so it moves
+        // in the same commit as the baseline it names and in no other.
+        const string frozenBaselineId = "20260914212557_InitialCreate";
         await using BudgetoidDbContext db = CreateDbContext();
 
         // Act

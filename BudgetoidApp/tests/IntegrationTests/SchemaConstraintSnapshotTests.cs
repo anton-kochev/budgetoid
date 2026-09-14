@@ -90,6 +90,23 @@ public sealed class SchemaConstraintSnapshotTests
             // would leave a remnant of an erasure in the schema, which docs/business-logic/erasure.md
             // forbids outright.
             "key_rotations.FK_key_rotations_wrapped_account_keys: FOREIGN KEY (factor_id, user_id) REFERENCES wrapped_account_keys(factor_id, user_id) ON DELETE CASCADE",
+            // SINGLE-COLUMN, AND ON THIS SCHEMA THAT IS THE DECISION RATHER THAN THE DEFAULT. Every
+            // other key-material edge here is a composite reaching a credential, because those rows
+            // belong to one factor and the extra columns are what stop a copy disagreeing with its
+            // source. This one names users DIRECTLY and has nothing to widen: a manifest lists EVERY
+            // factor's public key at once, so a key to any single credential would be a claim that the
+            // whole set belongs to one member of it, and a credential_id column beside user_id would
+            // be a column with nothing true to put in it. The owner is also the primary key here, so
+            // the two columns a composite would compare are the same column.
+            //
+            // Cascade, and deliberately not Restrict, for the reason the credentials -> users row below
+            // records: a row of key bookkeeping must never be able to hold up an account erasure —
+            // a list of public keys outranking a person's request to be forgotten. It is right on its
+            // own terms too. This row names the public keys of factors that hang off the very account
+            // being deleted, so once the account is gone it is a list of public keys for factors that
+            // no longer exist, kept against nobody. Turned to Restrict it would also leave a remnant of
+            // an erasure in the schema, which docs/business-logic/erasure.md forbids outright.
+            "factor_manifests.FK_factor_manifests_users: FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE",
             "categories.FK_categories_category_groups_category_group_id_budget_id: FOREIGN KEY (category_group_id, budget_id) REFERENCES category_groups(id, budget_id) ON DELETE RESTRICT",
             "category_groups.FK_category_groups_budgets_budget_id: FOREIGN KEY (budget_id) REFERENCES budgets(id) ON DELETE CASCADE",
             // Cascade, and deliberately not Restrict: a credential is how the account is reached,
@@ -354,6 +371,27 @@ public sealed class SchemaConstraintSnapshotTests
             // per attempt with a status column, so an abandoned run has to be DELETED rather than marked,
             // or the account can never begin another.
             """CREATE UNIQUE INDEX "PK_key_rotations" ON public.key_rotations USING btree (user_id)""",
+            // THE FOURTH PRIMARY KEY IN THIS SET THAT IS NOT A SURROGATE ID, and the second keyed on the
+            // owner — it borrows PK_key_rotations' shape and argues its own reason for it. "One manifest
+            // per account" is what the design depends on: the manifest is authenticated as a SET, so a
+            // second row would be a second claim about which factors exist, and a client deciding what
+            // to encapsulate the account's keys to would have no way to ask which of them it was looking
+            // at. Keyed here, the second INSERT collides and the database refuses it; a "check whether
+            // one exists, then insert" in a handler is two statements with a window between them, and
+            // the window is exactly wide enough for the second browser tab. ADR 0002 applied literally.
+            //
+            // A surrogate id added beside user_id would demote this to an ordinary index and make the
+            // duplicate storable — the shape every other table in this schema has, and therefore the
+            // shape somebody tidying reaches for first. The cost is the one key_rotations already pays
+            // and it is deliberate: a generation cannot be modelled as one row per epoch with the newest
+            // winning, so a promotion rewrites this row in place rather than appending beside it.
+            //
+            // This index is also every policed read of the table. user_isolation appends a predicate
+            // over user_id and the seek is the same column, which is why — unlike wrapped_account_keys —
+            // no second index over user_id sits beside it: that would be write amplification for a seek
+            // this key already answers. Its absence from this list is therefore correct rather than an
+            // omission, and it is not a unique index anyway.
+            """CREATE UNIQUE INDEX "PK_factor_manifests" ON public.factor_manifests USING btree (user_id)""",
             // Both keyed on credential_id alone, which is what makes each table hold at most one row
             // per credential: a key that could be joined by a second row, or a counter that could,
             // would leave the ceremony with two answers and no rule saying which one binds.
@@ -633,6 +671,37 @@ public sealed class SchemaConstraintSnapshotTests
             """CK_key_rotations_wrapped_content_key_version: key_rotations CHECK ((get_byte(wrapped_content_key, 0) = 1))""",
             """CK_key_rotations_wrapped_index_key_length: key_rotations CHECK ((length(wrapped_index_key) = 61))""",
             """CK_key_rotations_wrapped_index_key_version: key_rotations CHECK ((get_byte(wrapped_index_key, 0) = 1))""",
+            // THE ONLY CHECK IN THIS SET WHOSE BOUND IS DECIDED BY WHAT AN ABSENT ROW MEANS. Epoch 0 is
+            // the absence of a manifest — an account with no row answers 0, which is the state of every
+            // account that exists today and is not an error — so a stored row claiming epoch 0 would
+            // assert its own absence, and the one read that has to tell "never rotated" from "rotated
+            // to generation zero" could not. A floor and no ceiling, because generations have no last
+            // one; the negative side falls to the same comparison rather than to an arm of its own.
+            //
+            // pg_get_constraintdef renders the integer bare with no cast, like CK_accounts_name_key_length
+            // and unlike the numeric comparisons further down: rotation_epoch is an integer column and 1
+            // is already one, so there is nothing to print. "Correcting" this line to carry a cast is
+            // how this test starts failing for no reason.
+            //
+            // What this line cannot see is the step between two epochs. A CHECK reads one row, so
+            // "a promotion writes an epoch exactly one greater than the one it read" is held nowhere
+            // declarative — it is application arithmetic, and nothing below it will notice if it
+            // goes wrong.
+            """CK_factor_manifests_rotation_epoch: factor_manifests CHECK ((rotation_epoch >= 1))""",
+            // A band, rendered as two ANDed comparisons the way pg_get_constraintdef renders every
+            // BETWEEN, and it reads like CK_passkey_public_keys_public_key_length while guarding
+            // something quite different. That column holds one credential's key; this one is the SOLE
+            // CARRIER of every recovery factor's public key on the account, because there is
+            // deliberately no per-row public key column beside it.
+            //
+            // The floor is 1 and it is the half that earns its place: an empty bytea is exactly what an
+            // unset member sends, so without it a caller that forgot to attach the manifest files a row
+            // naming no factor at all — an account with no way back in, stored as though it had one.
+            // The ceiling REFUSES rather than truncates, which is not a style preference: cutting the
+            // blob at the line drops whichever factor fell past it, and the stored row would still be
+            // well formed, still carry a plausible epoch, and say nothing about the factor that is gone
+            // until somebody reaches for it.
+            """CK_factor_manifests_manifest_length: factor_manifests CHECK (((length(manifest) >= 1) AND (length(manifest) <= 4096)))""",
             // The two COSE algorithms the verifier accepts, bounded here rather than trusted to the
             // writer. A row naming any other algorithm is one no verification path can read back, so
             // it would be a credential that authenticates nobody. Negative literals render with the

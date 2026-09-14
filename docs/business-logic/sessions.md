@@ -770,8 +770,14 @@ ELSE                                                    ← an unenumerated futu
     reach an opened account. What a *factor* can open is the account keys' subject; **the session's
     own lifetime is not custody's** — the keys end at a sign-out, at a `401` and at a page load, and
     only the first two of those are anything this file records.
-- **`user_isolation`** — the same policy `users`, `budgets`, `passkey_signature_counters`,
-  `wrapped_account_keys` and `key_rotations` carry, keyed on the same session setting.
+- **`user_isolation`** — the policy on `sessions` is the policy every user-owned table carries, keyed
+  on the same session setting: `users`, `budgets`, `sessions` itself,
+  `passkey_signature_counters`, `wrapped_account_keys`, `key_rotations` and `factor_manifests`.
+  Written as the whole set rather than as the neighbours, because a reader checking whether a table
+  is policed reads the list they are standing in front of, and one that silently omits its own
+  subject teaches them to read it as a sample. What actually holds the rule is
+  `RowLevelSecurityCoverage`, which reaches the verdict from a table's columns and fails closed on a
+  table nobody decided about.
 - **CORS** — the default policy gains `AllowCredentials()`, because a browser drops a cross-origin
   response carrying a cookie unless the header says so, and drops it **silently**: the request
   succeeded, the server wrote the `Set-Cookie`, and the jar is simply empty afterwards. The

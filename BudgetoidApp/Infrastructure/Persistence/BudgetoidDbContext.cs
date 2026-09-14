@@ -82,6 +82,16 @@ public sealed class BudgetoidDbContext(
     // stay policed.
     public DbSet<KeyRotation> KeyRotations => Set<KeyRotation>();
 
+    // Factor manifests are unfiltered for the reason the two sets above them are, and the reason is
+    // one step stronger here. This row is the sole authenticated carrier of every recovery factor's
+    // public key, and a factor lets a person back into their ACCOUNT rather than into one budget — so a
+    // copy keyed on a budget would be a claim that some of an account's factors belong to part of it.
+    // It names no budget and could not. Isolation on user_id comes from the user_isolation policy,
+    // which this table is subject to rather than exempt from: nothing about it is read before the
+    // request has an identity — a client asks what to encapsulate to once it already knows whose
+    // account it is — so every read must both carry its own user_id filter and stay policed.
+    public DbSet<FactorManifest> FactorManifests => Set<FactorManifest>();
+
     // Internal rather than public, following its row type: nothing outside this assembly has a reason
     // to read a protocol nonce, and a public set would be the first step towards one.
     internal DbSet<WebAuthnChallengeRow> WebAuthnChallenges => Set<WebAuthnChallengeRow>();

@@ -63,8 +63,8 @@ because every one of these is something a reader will otherwise simplify away.
 - **Budget-owned rows are isolated twice** — PostgreSQL `budget_isolation` RLS policies enforce, EF
   `BudgetIsolation` query filters turn a foreign row into the API's 404/400. Not duplication; delete
   neither. [ADR 0005](docs/decisions/0005-isolate-budget-owned-rows-with-row-level-security.md)
-- **`users`, `budgets`, `sessions`, `passkey_signature_counters`, `wrapped_account_keys` and
-  `key_rotations` are policed on the user**, not a
+- **`users`, `budgets`, `sessions`, `passkey_signature_counters`, `wrapped_account_keys`,
+  `key_rotations` and `factor_manifests` are policed on the user**, not a
   budget. Six tables are exempt because each is read *before* the request has an identity — so the
   credential lookup must never join `users`. **An exempt table scopes nothing**: only the discovery
   lookup may omit an owner filter. Each exemption is held by its **pinned column set** — a new column
@@ -102,7 +102,7 @@ because every one of these is something a reader will otherwise simplify away.
   reference of any kind.
 - **Every column carries exactly one classification** — *narrative*, *arithmetic* or *excluded* —
   and the words are about what the product owes the person, not what the column holds. `DataInventory`
-  names all 105; a unit-tier gate fails on one nobody classified. **Narrative is derived** from the
+  names all 108; a unit-tier gate fails on one nobody classified. **Narrative is derived** from the
   `NarrativeField` properties, so a column cannot be re-classified to green a coverage test. The
   schema is enumerated in exactly one place (`MappedSchema`). It replaces none of the ten censuses
   beside it. [data inventory](docs/engineering/data-inventory.md),

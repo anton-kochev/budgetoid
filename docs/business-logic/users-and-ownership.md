@@ -32,8 +32,11 @@ payees, transactions — belongs to a budget, so **the budget, not the user, is 
 those rules live in [budgets.md](budgets.md). What this file owns is the identity, the two provider
 claims the one account-creating route reads, the step that turns a presented session into an
 internal user together with the ambient budget, and the isolation of the identity rows themselves —
-`users`, `budgets`, `sessions`, `passkey_signature_counters` and `wrapped_account_keys` are the
-tables scoped to a **user** rather than to a budget, and that rule has its canonical statement here.
+`users`, `budgets`, `sessions`, `passkey_signature_counters`, `wrapped_account_keys`,
+`key_rotations` and `factor_manifests` are the tables scoped to a **user** rather than to a budget,
+and that rule has its canonical statement here. **A table joining that set joins this sentence**:
+it is the one a reader consults to find out whether a new user-owned table is covered, so a list
+that reads as complete and is not is worse here than anywhere else in this file.
 
 ## Key Entities
 
@@ -120,7 +123,8 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
     than a separate rule.
 
     The tables that name a person are the exception: `users`, `budgets`, `sessions`,
-    `passkey_signature_counters`, `wrapped_account_keys` and `key_rotations` are policed by a
+    `passkey_signature_counters`, `wrapped_account_keys`, `key_rotations` and `factor_manifests`
+    are policed by a
     `user_isolation` policy comparing `id` and `user_id` against the session's authenticated user. Budget isolation cannot
     express that — a budget *is* the tenant, so there is no ambient budget to check a budgets row
     against — and leaving it to application code would make the tables that name a person the only
@@ -538,33 +542,55 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
 - **Rule**: The application role may **delete a `users` row**, and that one statement removes the
   account's whole structural graph. Of the other **user-owned** tables it holds `DELETE` on exactly
   two, `credentials` and `recovery_code_hashes`, and **neither grant exists for erasure** — the
-  first is for passkey revocation, the second for redeeming a recovery code. `budgets`, `sessions`,
-  `passkey_public_keys`, `passkey_signature_counters` and `payees` are emptied by the cascade
-  descending from the `users` row, not by a privilege of their own, and so is
-  `recovery_code_hashes`. The asymmetry is worth reading twice: erasure needs neither of those two
-  grants and would still work if both were revoked tomorrow.
+  first is for passkey revocation, the second for redeeming a recovery code. The user-owned tables
+  beside them hold no `DELETE` of any shape and are emptied by the cascade descending from the
+  `users` row — `budgets`, `sessions`, `session_tokens`, `passkey_public_keys`,
+  `passkey_signature_counters`, `wrapped_account_keys`, `key_rotations` and `factor_manifests` —
+  and so is `recovery_code_hashes`, whose own grant is spent on a redemption rather than here. The
+  budget-owned rows leave the same way, `transactions` excepted, which erasure empties itself
+  because four `RESTRICT` edges name it. The asymmetry is worth reading twice: erasure needs
+  neither of those two grants and would still work if both were revoked tomorrow.
 - **Why**: erasing an account has to run as the application rather than on an elevated connection —
   that is the whole point of [ADR 0004](../decisions/0004-connect-as-a-least-privilege-role.md).
   Every owned table hangs off `users` by `ON DELETE CASCADE`: `users` → `budgets` → {`payees`,
-  `accounts`, `category_groups` → `categories`}, and `users` → `credentials` → {`sessions`,
-  `passkey_public_keys`, `passkey_signature_counters`}. PostgreSQL performs a referential action
-  through internal triggers running with the privileges of the **referencing table's owner**, not of
-  the role that issued the statement, so the cascade reaches every one of those tables with no grant
-  on any of them.
+  `accounts`, `category_groups` → `categories`}, `users` → `credentials` → {`sessions` →
+  `session_tokens`, `passkey_public_keys`, `passkey_signature_counters`, `recovery_code_hashes`,
+  `wrapped_account_keys` → `key_rotations`}, and `users` → `factor_manifests`. PostgreSQL performs a
+  referential action through internal triggers running with the privileges of the **referencing
+  table's owner**, not of the role that issued the statement, so the cascade reaches every one of
+  those tables with no grant on any of them.
+  - **That rendering is exhaustive or it is misleading**, which is why it carries every hop rather
+    than the interesting ones. It is the drawing somebody consults to decide whether a child needs a
+    grant, and a drawing that reads as complete while naming one table fewer than the schema holds
+    sends them to the wrong answer with nothing to correct it. The same rendering stands in
+    `app-role-grants.sql`, beside the grant it justifies; a new table cascading from anything here
+    joins **both**, at the level its own foreign key names — `session_tokens` under `sessions`
+    because that is what a `DELETE FROM sessions` takes with it, and `factor_manifests` under
+    `users` because a manifest names every factor at once and belongs to the account rather than to
+    any one credential.
   - **It is not sufficient on its own.** Five edges in the owned graph are `Restrict` rather than
     `Cascade`, and erasure empties the one table that is the child of four of them — `transactions`
     — before it deletes this row; see [erasure.md](erasure.md), which owns the sequence. The whole
     sequence runs on **one** session: `SessionContextInterceptor` writes `app.current_user_id` and
     `app.current_budget_id` in the same statement on every connection open.
   - **The grants the cascade does without are a decision, not an oversight.** `budgets`, `payees`,
-    `sessions`, `passkey_public_keys` and `passkey_signature_counters` hold no `DELETE` of any
-    shape, and two of those absences would cost something real to fill. `passkey_public_keys` is
+    `sessions`, `session_tokens`, `passkey_public_keys`, `passkey_signature_counters`,
+    `wrapped_account_keys`, `key_rotations` and `factor_manifests` hold no `DELETE` of any shape.
+    **That is a list of absent `DELETE`s and not a list of read-only tables**, which is the reading
+    to guard against at both ends of it: `key_rotations` holds `INSERT` and a column-listed `UPDATE`
+    and still no `DELETE`, because staging a rotation is an upsert and clearing the staging waits
+    for the completion step; `factor_manifests` holds `SELECT` and nothing else, because nothing
+    writes a manifest at all.
+    Two of the absences would cost something real to fill. `passkey_public_keys` is
     exempt from row-level security, so a `DELETE` there would be **unpoliced**, and one statement
     carrying the wrong id would remove somebody else's only way in with nothing to catch it. On
     `passkey_signature_counters` a `DELETE` would reopen counter rewind: deleting the row and
     re-inserting it at zero is the same thing the deliberately single-column
-    `GRANT UPDATE (signature_counter)` exists to forbid. The cascade reaches every one of them
-    safely, because it descends from one row rather than holding a privilege over a table.
+    `GRANT UPDATE (signature_counter)` exists to forbid. `session_tokens` and `wrapped_account_keys`
+    share a third reason: with the grant, an EF cascade into rows the change tracker happens to be
+    holding succeeds **silently** and the rows leave by the application rather than by the database,
+    where without it the same mistake dies loudly with `42501`. The cascade reaches every one of
+    them safely, because it descends from one row rather than holding a privilege over a table.
 - **Enforced in**: **database-owned.** `GRANT SELECT, INSERT, DELETE ON users` in
   `app-role-grants.sql`, scoped by the `user_isolation` policy — which is `FOR ALL`, so it
   constrains the delete exactly as it constrains a read.

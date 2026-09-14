@@ -11,7 +11,8 @@ Enforced today:
 - **Row-level security, on both axes.** A `budget_isolation` policy on `accounts`,
   `category_groups`, `categories`, `payees` and `transactions` compares `budget_id` against the
   session's ambient budget, and a `user_isolation` policy on `users`, `budgets`, `sessions`,
-  `passkey_signature_counters`, `wrapped_account_keys` and `key_rotations`
+  `passkey_signature_counters`, `wrapped_account_keys`, `key_rotations` and
+  `factor_manifests`
   compares `id` and `user_id` against the session's authenticated user — each in both `USING` and
   `WITH CHECK`, so the connection every request is served by reaches no other tenant's rows and can insert into
   no tenant but its own, whatever produced the statement. `SessionContextInterceptor` puts both
@@ -207,21 +208,24 @@ Enforced today:
   `(Id, BudgetId)` alternate key. PostgreSQL rejects a cross-budget reference whatever code path
   wrote it. This proves internal consistency only; *which* budget a write lands in is still the
   filter's and `IBudgetContext`'s job alone.
-- **None of the user-owned entities carries a query filter** — `Budget`, `User`, `Credential`,
-  `Session`, `PasskeyPublicKey`, `PasskeySignatureCounter`, `RecoveryCodeHash`, `WrappedAccountKeys`,
-  and the challenge row. A read of one that is not a discovery lookup therefore names its owner in
-  the statement: `AccountKeyReadService.ListForAccountAsync` filters on `user_id` — its only
-  predicate — even though `user_isolation` appends the same comparison underneath it, for the
-  reason `ExportReadService.ListOwnedBudgetsAsync` below does the same — a policy makes a wrong
-  query answer *empty*, not *correct*, so the copy in the statement is the one that survives a
-  policy missed on a table added later. The discovery lookups are the deliberate exception, argued
-  as their own rule further down.
+- **None of the user-owned entities carries a query filter** — `Budget`, `User`,
+  `Credential`, `Session`, `PasskeyPublicKey`, `PasskeySignatureCounter`,
+  `RecoveryCodeHash`, `WrappedAccountKeys`, `KeyRotation`, `FactorManifest`, and the
+  challenge row. A read of one that is not a discovery lookup therefore names its owner in
+  the statement: `AccountKeyReadService.ListForAccountAsync` filters on `user_id` — its
+  only predicate — even though `user_isolation` appends the same comparison underneath it,
+  for the reason `ExportReadService.ListOwnedBudgetsAsync` below does the same — a policy
+  makes a wrong query answer *empty*, not *correct*, so the copy in the statement is the
+  one that survives a policy missed on a table added later. The discovery lookups are the
+  deliberate exception, argued as their own rule further down.
   The lookup that resolves the ambient budget
   runs before a budget id exists, so every query over `Budgets` must scope by owner explicitly
   — `BudgetRepository.FindFirstForUserAsync` and `ExportReadService.ListOwnedBudgetsAsync`, which are
   the two that exist today and which a third must join rather than assume it is covered; a session and
   a passkey name no budget at all, so there is none to filter them by. That is a statement about the
-  *read-side filter* only, and it no longer travels with the coverage exemption: `users`, `budgets`, `sessions`, `passkey_signature_counters` and `wrapped_account_keys` are
+  *read-side filter* only, and it no longer travels with the coverage exemption: `users`, `budgets`,
+  `sessions`, `passkey_signature_counters`, `wrapped_account_keys`, `key_rotations` and
+  `factor_manifests` are
   policed on the user, while `credentials`, `passkey_public_keys`, `recovery_code_hashes`,
   `session_tokens` and `webauthn_challenges` are
   exempt. The first four have to be — reading them is how a request discovers who is asking and
@@ -248,7 +252,8 @@ Escape hatches the filter does **not** cover. These no longer leak — each one 
 the policies instead, and a cross-budget read comes back empty rather than populated.
 Still do not introduce them on budget-scoped data: an empty result where the code expects
 a row is a bug, and a connection that names no ambient budget — or no ambient user, for
-`users`, `budgets`, `sessions`, `passkey_signature_counters` and `wrapped_account_keys` — fails
+`users`, `budgets`, `sessions`, `passkey_signature_counters`, `wrapped_account_keys`,
+`key_rotations` and `factor_manifests` — fails
 with `22P02` rather than answering. The build enforces this list: `BannedSymbols.txt` (referenced by
 `Infrastructure` and `Api`, the only projects with an EF reference) turns each API below
 into an RS0030 compile error.

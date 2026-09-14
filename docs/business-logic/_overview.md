@@ -33,10 +33,11 @@ column of `credentials` — is one PostgreSQL refuses to write at all
 well, on both axes. `budget_isolation` policies on the five budget-owned tables mean that role
 reaches no other budget's rows on any statement and can insert into no budget but the ambient one,
 so the query filters above them shape the answer rather than hold the boundary
-([ADR 0005](../decisions/0005-isolate-budget-owned-rows-with-row-level-security.md)); the five
-tables policed on the **user** instead by `user_isolation` — `users`, `budgets`, `sessions`,
-`passkey_signature_counters` and `wrapped_account_keys` — are keyed there because a budget *is* the
-tenant and so has no ambient budget to be checked against
+([ADR 0005](../decisions/0005-isolate-budget-owned-rows-with-row-level-security.md)); the seven
+tables policed on the **user** instead by `user_isolation` — `users`, `budgets`,
+`sessions`, `passkey_signature_counters`, `wrapped_account_keys`, `key_rotations` and
+`factor_manifests` — are keyed there because a budget *is* the tenant and so has no
+ambient budget to be checked against
 ([ADR 0011](../decisions/0011-police-the-user-owned-tables.md)). Carrying `user_id` is not by itself
 what decides it: `credentials`, `passkey_public_keys`, `recovery_code_hashes` and `session_tokens`
 carry one and are policed by neither, exempt by written decision because each is read *before* the
@@ -162,7 +163,8 @@ references are additionally constrained by composite foreign keys to a row in th
   and never seen by the server, and two more paths that open a session.
 - [Account Keys](account-keys.md) — the one pair of keys an account owns, the key-encryption key
   each recovery factor derives, the blind index and the normalization it is taken over, and the
-  cross-client cryptographic contract.
+  cross-client cryptographic contract. It also carries the manifest of factor public keys, which
+  stands in the schema with nothing writing it.
 - [Ciphertext Envelope](ciphertext-envelope.md) — the AEAD framing both consumers share, the
   two grammars that bind a ciphertext to where it lives, what the server can check without
   holding a key, the three verbs for the three constructions, and the encapsulation framing this

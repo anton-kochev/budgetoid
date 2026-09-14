@@ -196,6 +196,38 @@ public sealed class AppRoleGrantMatrixTests
         // lets an account erasure, or a revoked passkey, carry a staging row away that this role could
         // not have deleted itself.
         ("key_rotations", ["SELECT", "INSERT"]),
+        // THE ONLY READ-ONLY LINE IN THIS MATRIX OVER A TABLE THE APPLICATION WILL EVENTUALLY WRITE,
+        // which is the argument the entry above spent and this one now carries alone. Three privileges
+        // are absent and all three are absent for the same plain reason: NOTHING WRITES A MANIFEST YET.
+        // No handler mints the row, no route promotes a generation, and a privilege granted ahead of
+        // its caller is reach nobody has argued for.
+        //
+        // NO INSERT, NO UPDATE, NO DELETE, AND WITHHOLDING A WRITE COSTS NOTHING. That is the whole
+        // asymmetry of this file and it is worth saying on the one line where the two halves are most
+        // visible: an ungranted write fails LOUD — 42501, on the statement that wanted it, in the test
+        // that exercises the path — so the first feature to reach for one arrives carrying its own
+        // sentence about which operation needs it. An ungranted SELECT fails QUIET, which is why the
+        // read could not wait: NarrativeSecrecyTests' plaintext scan runs on the app-role connection,
+        // meets 42501 on an unreadable table and reports it UNSCANNABLE, so two secrecy gates pass
+        // over one table fewer than the schema holds. A table nothing can read is a table nothing can
+        // check, and this is the one place the account's whole set of factor public keys is written
+        // down.
+        //
+        // NO TABLE-WIDE UPDATE AND NO COLUMN LIST EITHER, which is an absence rather than a
+        // simplification: immutability in this project is expressed by omission FROM a GRANT UPDATE
+        // column list, so today every column here is immutable in the strongest available way because
+        // no UPDATE exists to name one. When promotion lands it wants rotation_epoch and manifest as an
+        // explicit two-column list, and user_id stays off it — a table-wide
+        // grant would let one statement re-file an account's whole factor set against another account.
+        // That widening would show up here as an unexpected table-wide UPDATE with nothing in
+        // ExpectedUpdateColumnGrants to match it, which is the two-directional failure the class
+        // remarks describe.
+        //
+        // Rows still leave without DELETE. FK_factor_manifests_users cascades from users, and a
+        // referential action runs with the referencing table owner's privileges rather than this
+        // role's — the same mechanism three lines up — so an account erasure carries this row away
+        // although the role could not have deleted it itself.
+        ("factor_manifests", ["SELECT"]),
         ("budgets", ["SELECT", "INSERT"]),
         ("accounts", ["SELECT", "INSERT", "DELETE"]),
         ("category_groups", ["SELECT", "INSERT", "DELETE"]),

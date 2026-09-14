@@ -654,6 +654,32 @@ namespace Infrastructure.Persistence.Migrations
                         });
                 });
 
+            modelBuilder.Entity("Domain.Users.FactorManifest", b =>
+                {
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.Property<byte[]>("Manifest")
+                        .IsRequired()
+                        .HasColumnType("bytea")
+                        .HasColumnName("manifest");
+
+                    b.Property<int>("RotationEpoch")
+                        .HasColumnType("integer")
+                        .HasColumnName("rotation_epoch");
+
+                    b.HasKey("UserId")
+                        .HasName("PK_factor_manifests");
+
+                    b.ToTable("factor_manifests", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_factor_manifests_manifest_length", "length(manifest) between 1 and 4096");
+
+                            t.HasCheckConstraint("CK_factor_manifests_rotation_epoch", "rotation_epoch >= 1");
+                        });
+                });
+
             modelBuilder.Entity("Domain.Users.KeyRotation", b =>
                 {
                     b.Property<Guid>("UserId")
@@ -1079,6 +1105,16 @@ namespace Infrastructure.Persistence.Migrations
                         .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+                });
+
+            modelBuilder.Entity("Domain.Users.FactorManifest", b =>
+                {
+                    b.HasOne("Domain.Users.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("FK_factor_manifests_users");
                 });
 
             modelBuilder.Entity("Domain.Users.KeyRotation", b =>

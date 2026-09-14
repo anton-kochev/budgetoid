@@ -49,10 +49,16 @@ growing**: four columns in the schema carry a blind index and all four are omitt
 three description columns adds a fifth, because a description carries no index at all — which is a
 rule about the field class and not an accident of which tables have been sealed so far.
 
-Out of the document: `credentials`, `sessions`, `passkey_public_keys`, `passkey_signature_counters`,
-`webauthn_challenges` and `recovery_code_hashes` are identity material rather than the person's own
-records — the last has a rule of its own below. `currencies` is global reference data belonging to
-no tenant.
+Out of the document, and the reasons are three rather than one. `credentials`, `sessions`,
+`session_tokens`, `passkey_public_keys`, `passkey_signature_counters`, `webauthn_challenges` and
+`recovery_code_hashes` are identity material rather than the person's own records — the last has a
+rule of its own below. `wrapped_account_keys`, `key_rotations` and `factor_manifests` are **key
+custody and account control**: the envelopes open only under a factor the person holds and are
+served to a browser that presents one, and the manifest is the account's list of which factors
+exist — a map of the front door, in an artifact that outlives every session that could have vouched
+for whoever is holding it. `currencies` is global reference data belonging to no tenant. Every
+column of all eleven is classified *excluded* in `DataInventory`, one written argument each, which
+is where a table joining this list has to earn its place.
 
 ## Constraints
 

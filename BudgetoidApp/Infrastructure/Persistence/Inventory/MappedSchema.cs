@@ -270,8 +270,8 @@ public static class MappedSchema
     /// narrative property's converter refuses the model build outright, so the state this misread
     /// imitates is one no schema reaches. The converter is consulted first
     /// because the converter is what actually runs when both answer. Falling through to
-    /// <see cref="MappedColumn.ClrType" /> is <b>the ordinary case rather than the edge one</b> — 73 of
-    /// the 105 mapped columns answer neither accessor, against 31 carrying a converter and exactly one
+    /// <see cref="MappedColumn.ClrType" /> is <b>the ordinary case rather than the edge one</b> — 75 of
+    /// the 108 mapped columns answer neither accessor, against 32 carrying a converter and exactly one
     /// naming a provider type — and it is not a guess dressed as an answer: a property with no
     /// converter and no declared provider type is handed to the provider as its own type, and that is
     /// the whole of the claim.
@@ -284,7 +284,7 @@ public static class MappedSchema
     /// </para>
     /// <para>
     /// <b>The nullable arm of <see cref="StoredColumn.StoreType" /> is insurance with no known source
-    /// in this schema, and the file should not imply otherwise.</b> Every one of the 105 mapped columns
+    /// in this schema, and the file should not imply otherwise.</b> Every one of the 108 mapped columns
     /// was measured to answer a store type, so nothing here has ever produced the
     /// <see langword="null" />; it has been exercised only by handing a reader a value built by hand.
     /// It is kept because the accessor's own signature admits it and because a gate meeting an absence
@@ -300,7 +300,7 @@ public static class MappedSchema
     /// <b>This walk's completeness rests on being held equal to <see cref="ColumnsOf" />, because its
     /// one consumer cannot notice a subset.</b>
     /// <see cref="NarrativeEncryptionCoverage.Compare" /> reads only the columns the inventory calls
-    /// narrative, so a walk returning those eight and dropping the other ninety-seven answers every
+    /// narrative, so a walk returning those eight and dropping the other hundred answers every
     /// question the FR-057 gate asks.
     /// <c>NarrativeEncryptionCoverageTests.StoredColumns_DescribeTheSameSchemaTheEnumeratorDoes</c>
     /// stands under it: the two walks' <see cref="StoredColumn.Qualified" /> sets compared in both
@@ -312,7 +312,8 @@ public static class MappedSchema
     /// provider type, the store type and the constraint set of <c>accounts.name</c> and
     /// <c>transactions.amount</c> — a sealed column beside a <see langword="decimal" /> one, so neither
     /// answer can be standing in for the other — and says nothing about those three members on the
-    /// remaining hundred and three. A walk handing <c>users.email</c> some other table's constraints agrees on
+    /// remaining hundred and six. A walk handing <c>users.email</c> some other table's constraints
+    /// agrees on
     /// every name, at the right count, and passes. Two columns are a floor, not a guarantee; the
     /// alternative is a second copy of the schema living in a test file.
     /// </para>

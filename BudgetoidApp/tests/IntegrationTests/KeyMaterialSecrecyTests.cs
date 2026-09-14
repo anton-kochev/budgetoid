@@ -570,8 +570,38 @@ public sealed class KeyMaterialSecrecyTests
     /// they are counted here. The rest are <i>content</i> and <i>blind indexes</i>, and those two are
     /// named rather than counted because they are the two that grow: every column a screen seals joins
     /// the first, and every sealed name that has to stay unique joins the second, so a number written
-    /// against either is a pin no assertion in this file holds. No sixth kind exists, and a new column
-    /// would have to argue itself into one of the five or invent a sixth in writing.
+    /// against either is a pin no assertion in this file holds. A new column has to argue itself into
+    /// one of those kinds or invent another in writing, which is what the paragraph below does.
+    /// </para>
+    /// <para>
+    /// <b>A SIXTH KIND ARRIVED, AND IT IS NOT SECRET.</b> <c>factor_manifests.manifest</c> is
+    /// <i>authenticated public material held in the clear</i>: the account's list of every recovery
+    /// factor's public key, written by the client and read back by it to learn which factors exist and
+    /// what to <i>encapsulate to</i>. Not secret is not what is new about it —
+    /// <c>passkey_public_keys.public_key_cose</c> is in this census, is a public key, and is no more
+    /// secret than this one. What is new is that no existing kind will take it without saying something
+    /// false. It is not an envelope — nothing seals it and nothing opens it, so "the server holds no
+    /// value that opens this" is not an argument about it but a category error. It is not content,
+    /// because no plaintext is hidden here. It is not a blind index, because nothing is keyed and
+    /// nothing is compared. It is not one-way, because no digest was taken. And it is not WebAuthn's
+    /// own material, whose kind is closed and whose two members belong to the authenticator rather than
+    /// to this design's key hierarchy — so <c>passkey_public_keys.public_key_cose</c> is the entry whose
+    /// <i>argument</i> comes closest, and closest is not the same table, not the same key and not the
+    /// same job.
+    /// </para>
+    /// <para>
+    /// <b>The standing argument every other <c>bytea</c> on this schema makes does not apply here, and
+    /// pasting it over this entry would be the worst kind of pass.</b> Those columns are safe because
+    /// the server has never held the key that opens them. This one is safe for the opposite reason:
+    /// there is nothing to open, because these are <i>public</i> keys and publishing a public key is
+    /// what a public key is for. So the entry owes a different account — not what stands between the
+    /// bytes and a key-encryption key, but <b>what an operator reading the column actually learns</b>,
+    /// which is how many recovery factors an account holds and what each factor's public key is.
+    /// Neither of those opens anything: an ECDH public key encapsulates <i>to</i> a factor and decrypts
+    /// nothing, and the count is metadata about an account's recovery arrangements rather than about
+    /// the person's money. The kind is open like content and blind indexes are, and for the same
+    /// reason — any table that has to publish a set of public keys joins it — so it is named here and
+    /// never counted.
     /// </para>
     /// <para>
     /// <b>THE ENVELOPE KIND STOPPED BEING COUNTED, AND IT IS WORTH SAYING WHY RATHER THAN QUIETLY
@@ -1025,6 +1055,34 @@ public sealed class KeyMaterialSecrecyTests
             + "step on this side, so even a recovered index key would open no envelope — it would only "
             + "let somebody recompute blind indexes, which is the bound accounts.name_key already "
             + "states for itself"),
+        new(
+            "factor_manifests",
+            "manifest",
+            "the account's authenticated manifest of every recovery factor's PUBLIC key, written by "
+            + "the client — the sole carrier of those keys, since no per-row public key column "
+            + "exists beside it",
+            "IT IS NOT AN ENVELOPE, NOT CONTENT AND NOT A DIGEST, AND THE STANDING ARGUMENT EVERY "
+            + "OTHER bytea ON THIS SCHEMA MAKES DOES NOT APPLY TO IT. Those columns are safe because "
+            + "the server has never held the key that opens them; here there is nothing to open. These "
+            + "are PUBLIC keys, held in the clear on purpose, because publishing a public key is what a "
+            + "public key is for — so an entry claiming an operator cannot read this value would "
+            + "be false, and the honest account is what reading it DOES yield. Two things, and neither "
+            + "is a key that unwraps anything. The first is HOW MANY recovery factors the account "
+            + "holds, which is metadata about somebody's recovery arrangements rather than about their "
+            + "money, and which the credentials and wrapped_account_keys row counts already give away. "
+            + "The second is each factor's ECDH P-256 PUBLIC key, which is the half of the pair the "
+            + "design intends the world to see: the account's content and index keys are ENCAPSULATED "
+            + "TO it, and encapsulating to a public key is a one-way operation — the private half "
+            + "is wrapped under the key-encryption key that factor derives on somebody's device and "
+            + "never reaches this server, so holding every public key in the account opens not one of "
+            + "the envelopes next door. It unwraps nothing in the second sense either: no value here is "
+            + "an input to a KDF or a wrapping step on this side. WHAT THE BYTES DO CARRY IS "
+            + "AUTHENTICATION, and it runs the other way — the set is signed as a SET so that a "
+            + "client can tell whether it is looking at all of the factors, which means an operator who "
+            + "added, removed or swapped an entry produces a manifest the client refuses rather than "
+            + "one it believes. That tag is the whole of what this column defends, and it defends "
+            + "integrity rather than secrecy, which is why no concession about AES-GCM length belongs "
+            + "on this line: nothing here was sealed"),
         new(
             "passkey_public_keys",
             "public_key_cose",

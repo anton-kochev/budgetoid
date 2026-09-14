@@ -135,6 +135,13 @@ public sealed class OwnershipKeyImmutabilityTests
             "Category.BudgetId",
             "CategoryGroup.BudgetId",
             "Credential.UserId",
+            // The primary key of factor_manifests, a per-account table policed by user_isolation —
+            // the manifest belongs to the account, not to any one factor, so there is exactly one row
+            // per user rather than one per credential. FactorManifest.For reads the owner off the
+            // loaded User rather than taking an id argument, the same decision every other factory on
+            // this list makes; a settable UserId would let the sole authenticated carrier of every
+            // factor's public key be re-filed against another account's row.
+            "FactorManifest.UserId",
             // The key whose column is the table's own primary key, which is unusual on this list and
             // is the point. KeyRotation is the staging row a content-key rotation runs under:
             // re-encrypting every narrative field of an account is more work than one request, so the

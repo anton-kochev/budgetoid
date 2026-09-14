@@ -56,9 +56,9 @@ GRANT SELECT ON currencies TO budgetoid_app;
 --
 -- IT IS THE ONLY TABLE ERASURE NEEDS A NEW GRANT ON, and the grants the cascade does without are a
 -- decision rather than an oversight. Every owned table hangs off this row by ON DELETE CASCADE —
--- users → budgets → {payees, accounts, category_groups → categories}, and users → credentials →
+-- users → budgets → {payees, accounts, category_groups → categories}, users → credentials →
 -- {sessions → session_tokens, passkey_public_keys, passkey_signature_counters,
--- recovery_code_hashes, wrapped_account_keys → key_rotations} — and
+-- recovery_code_hashes, wrapped_account_keys → key_rotations}, and users → factor_manifests — and
 -- PostgreSQL performs a
 -- referential action through internal triggers that run with the privileges of the REFERENCING
 -- table's owner, not of the role that issued the statement. So this one grant empties the
@@ -73,7 +73,10 @@ GRANT SELECT ON currencies TO budgetoid_app;
 -- a new table cascading from anything here joins this rendering, at the level ITS OWN foreign key
 -- names: session_tokens hangs off SESSIONS rather than off credentials, because
 -- (session_id, user_id) → sessions(id, user_id) is what a DELETE FROM sessions takes with it, and
--- flattening it onto the credentials level would misstate that.
+-- flattening it onto the credentials level would misstate that. factor_manifests hangs off USERS by
+-- the same rule read the other way: its one foreign key names users, because a manifest lists every
+-- factor's public key at once and so belongs to the account rather than to any one credential, and
+-- filing it under credentials would misstate what a DELETE FROM credentials takes with it.
 --
 -- IT IS NOT SUFFICIENT ON ITS OWN, and reading it that way is the mistake this paragraph exists to
 -- stop. Five edges in the owned graph are Restrict rather than Cascade, and transactions is the
@@ -91,11 +94,15 @@ GRANT SELECT ON currencies TO budgetoid_app;
 -- and the budget for budget_isolation.
 --
 -- The children holding no DELETE of any shape are budgets, payees, sessions, session_tokens,
--- passkey_public_keys, passkey_signature_counters, wrapped_account_keys and key_rotations. The last
--- of those is the one to read carefully: it holds SELECT, INSERT and a column-listed UPDATE and
--- still no DELETE of any shape, so it belongs on this list rather than being mistaken for a
--- write-free table. Its own block argues why staging needs the insert and the update together and
--- why the delete waits for the completion step that clears the staging. That is a list of the
+-- passkey_public_keys, passkey_signature_counters, wrapped_account_keys, key_rotations and
+-- factor_manifests. Two of them are the ones to read carefully, and they sit at opposite ends of the
+-- same list. key_rotations holds SELECT, INSERT and a column-listed UPDATE and still no DELETE of
+-- any shape, so it belongs here rather than being mistaken for a write-free table; ITS OWN block
+-- argues why staging needs the insert and the update together and why the delete waits for the
+-- completion step that clears the staging. factor_manifests holds SELECT and nothing else, because
+-- nothing writes a manifest yet — no insert, no update, no delete and no staging to wait on — and it
+-- belongs here for the same reason the first one does: this is a list of absent DELETEs, not a list
+-- of read-only tables. That is a list of the
 -- same kind as the cascade rendering above and carries the same obligation — it is exhaustive or it
 -- is misleading, and this is the list somebody consults to decide whether a child needs a grant.
 -- Two of those absences would cost something real to fill.
@@ -526,6 +533,42 @@ REVOKE ALL ON key_rotations FROM budgetoid_app;
 GRANT SELECT, INSERT ON key_rotations TO budgetoid_app;
 GRANT UPDATE (rotation_id, factor_id, wrapped_content_key, wrapped_index_key, started_at_utc)
     ON key_rotations TO budgetoid_app;
+
+-- factor_manifests: SELECT AND NOTHING ELSE, which is the standing rule this file already applied
+-- to key_rotations and to wrapped_account_keys before it, arriving here in its plainest form. The
+-- table is one row per account holding the authenticated list of every recovery factor's public key —
+-- the value a client reads to learn which factors exist and what to encapsulate the account's keys to.
+--
+-- SELECT FIRST, BECAUSE AN UNGRANTED SELECT IS THE ONE ABSENCE THAT HIDES SOMETHING. Measured on
+-- key_rotations rather than argued from precedent: with no SELECT, NarrativeSecrecyTests' plaintext
+-- scan runs over the catalog on the app-role connection, meets 42501 on the table, and reports it as
+-- UNSCANNABLE. Two secrecy gates then pass while covering one table fewer than the schema holds, which
+-- is the same defect as a census that reads as complete and is not. A table nothing can read is a table
+-- nothing can check — and this table is one nobody would want unchecked, because it is the one place
+-- an account's factor set is written down.
+--
+-- NO INSERT, NO UPDATE, NO DELETE, BECAUSE NOTHING WRITES A MANIFEST YET. That is the opposite of the
+-- SELECT argument and the reason the two are not symmetric: an ungranted write leaves nothing
+-- unobservable. It fails loud on the first reach — 42501, on the statement that wanted it, in the test
+-- that exercises the path — where an ungranted read fails quiet by turning a scan into a skip. So a
+-- write privilege is added by whoever brings the caller, together with the sentence saying which
+-- operation needs it, and not now by whoever is in a hurry.
+--
+-- THERE IS NO GRANT UPDATE OF ANY SHAPE HERE, SO THERE IS NO COLUMN LIST EITHER, AND THAT IS WORTH
+-- SAYING RATHER THAN LEAVING AS AN ABSENCE. Immutability in this file is expressed by OMISSION FROM A
+-- GRANT UPDATE COLUMN LIST — never by REVOKE, which cannot subtract from a table-wide grant, and never
+-- by widening a list to table-wide (rule B2 at the head of this file). Today every column of this table
+-- is immutable in the strongest available way, because no UPDATE exists to name one. When promotion
+-- lands it will want rotation_epoch and manifest and must take them as an explicit two-column list:
+-- user_id stays off it, or a promotion could re-file an account's whole factor set against another
+-- account in one statement.
+--
+-- The table is POLICED rather than exempt: it carries user_id, so the coverage classifier reaches that
+-- verdict from the columns without being told, and user_isolation appends the owner to every statement
+-- against it. Nothing here is read before the request has an identity. See the policy at the foot of
+-- this file.
+REVOKE ALL ON factor_manifests FROM budgetoid_app;
+GRANT SELECT ON factor_manifests TO budgetoid_app;
 
 -- budgets: ONE UPDATE, ONE COLUMN, and it is the exception ASM-004 names rather than a softening of
 -- rule B2. No command may change a budget's name: it is sealed once, at creation, and no route accepts
@@ -961,5 +1004,33 @@ CREATE POLICY user_isolation ON wrapped_account_keys FOR ALL TO budgetoid_app
 ALTER TABLE key_rotations ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS user_isolation ON key_rotations;
 CREATE POLICY user_isolation ON key_rotations FOR ALL TO budgetoid_app
+    USING      (user_id = COALESCE(current_setting('app.current_user_id', true), '')::uuid)
+    WITH CHECK (user_id = COALESCE(current_setting('app.current_user_id', true), '')::uuid);
+
+-- factor_manifests is the account's list of every recovery factor's public key, one row per account.
+-- It sits on the same side of the same boundary as the three tables above it, and the test is the one
+-- the header states: not "is this sensitive" but "is this reachable before the request has an
+-- identity". It is not — a client asks what to encapsulate to once it already knows whose account it
+-- is — so a policy costs nothing and the table is policed rather than exempt.
+--
+-- THE GRANT ABOVE IS SELECT ALONE AND THE POLICY IS STILL FOR ALL, which is not an oversight and not
+-- a widening. A policy is not a privilege: FOR ALL says which ROWS each command may reach if the role
+-- ever holds that command, and holding none of the write commands means the write arms of this policy
+-- are unreachable today. Writing it narrower would mean the day INSERT is granted the rows it may
+-- write are decided by nobody — and the two halves fail in opposite directions, as the header says at
+-- length: a table nobody grants fails loudly with 42501, a table nobody polices is silently readable
+-- and writable across every tenant. Writing the policy first is the ordering with no silent failure
+-- in it, and it is the same ordering key_rotations landed under.
+--
+-- The policy reads only the ownership column, like the four above it. It says nothing about
+-- rotation_epoch and nothing about the manifest bytes: whether a generation may be promoted is a
+-- question for the handler that will write one, above this layer, and a predicate here consulting the
+-- epoch would be inventing an isolation axis beside the two this file carries. What it cannot do is
+-- the same shape as its siblings' limit — it scopes which rows the app role may see, and it cannot
+-- tell a well-formed manifest from a forged one. That binding is the manifest's own authentication
+-- tag, checkable only by a client holding the key, and deliberately not here.
+ALTER TABLE factor_manifests ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS user_isolation ON factor_manifests;
+CREATE POLICY user_isolation ON factor_manifests FOR ALL TO budgetoid_app
     USING      (user_id = COALESCE(current_setting('app.current_user_id', true), '')::uuid)
     WITH CHECK (user_id = COALESCE(current_setting('app.current_user_id', true), '')::uuid);

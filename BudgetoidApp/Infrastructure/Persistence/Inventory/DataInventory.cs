@@ -98,12 +98,12 @@ public static class DataInventory
     /// </para>
     /// <para>
     /// <b>One entry per column, and never a reason written at table grain for its columns to
-    /// inherit.</b> Sixty-four written reasons is a real cost and the obvious saving is the wrong one:
+    /// inherit.</b> Sixty-seven written reasons is a real cost and the obvious saving is the wrong one:
     /// a reason argued about a table drifts the moment a column arrives that it was not about, which
     /// is exactly why <see cref="Provisioning.TableExemption" /> had to grow
     /// <see cref="Provisioning.TableExemption.ColumnsTheReasonCovers" />, and why the rule there is
-    /// <i>move the column, do not widen the pin</i>. The ten wholly-excluded tables below are ten
-    /// tables' worth of separate arguments, not ten sentences and a rubber stamp — and the six
+    /// <i>move the column, do not widen the pin</i>. The eleven wholly-excluded tables below are
+    /// eleven tables' worth of separate arguments, not eleven sentences and a rubber stamp — and the six
     /// <c>rotation_id</c> stamps are six more, spread across six owned tables that each lose
     /// something different by publishing one.
     /// </para>
@@ -651,6 +651,42 @@ public static class DataInventory
             + "long a run has been sitting unfinished — how long the account has been half-way "
             + "between two keys — which is the one fact here an attacker would rather have than the "
             + "person would"),
+
+        // factor_manifests — one row per account, listing every recovery factor's public key. Every
+        // column is excluded, and one of the three has to concede what it discloses before it can
+        // argue the exclusion.
+        ColumnClassificationEntry.Excluded(
+            "factor_manifests",
+            "user_id",
+            "repeats the account already named by the exported user, here on the one row that says "
+            + "how many ways back into the account there are. The repetition is not the objection — "
+            + "the row is: a count of a person's recovery factors is the shape of their security "
+            + "setup, and an export is a copy of what somebody recorded rather than an inventory of "
+            + "the locks on the door"),
+        ColumnClassificationEntry.Excluded(
+            "factor_manifests",
+            "manifest",
+            "every factor's PUBLIC key, authenticated as one blob — and this entry has to concede "
+            + "what it would disclose before it can argue for withholding it, because unlike the "
+            + "envelopes next door this is not ciphertext and the server holds it in the clear. "
+            + "Published, it gives up exactly two things: how many recovery factors the account has, "
+            + "and what those factors' public keys are. Neither opens anything. A public key is the "
+            + "half an envelope is encapsulated TO, and the private half is wrapped under a "
+            + "key-encryption key derived in a browser from a factor this server has never seen — so "
+            + "a reader holding the whole blob can seal a value nobody will ever read and can open "
+            + "nothing at all. It is excluded because it is account-control machinery rather than "
+            + "content: no route in this product enrols a factor from a file, so the person could do "
+            + "nothing with it but read a map of their own front door, in an artefact that outlives "
+            + "every session that could have vouched for whoever is holding it"),
+        ColumnClassificationEntry.Excluded(
+            "factor_manifests",
+            "rotation_epoch",
+            "counts how many generations of the factor list this account has been through, which "
+            + "measures how often somebody has added, revoked or re-minted a way into their own "
+            + "account. That is security-maintenance history, and the number means nothing away "
+            + "from the live row it is compared against: it only ever answers 'is this still the "
+            + "generation I read', and a file has no read to compare with. What a reader of a "
+            + "published one would learn is how churned the person's recovery setup has been"),
     ];
 
     /// <summary>The entries carrying one classification, in the order the list declares them.</summary>
