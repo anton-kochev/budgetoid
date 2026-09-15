@@ -165,9 +165,9 @@ public sealed class WrappedAccountKeysSchemaTests
         {
             await Assert.That(rows[ordinal].FactorId).IsEqualTo(CodeFactorId(ordinal));
             await Assert.That(rows[ordinal].ContentKey)
-                .IsEquivalentTo(RepositoryTestHost.WrappedKeyEnvelope(ContentKeyFiller(ordinal)));
+                .IsEquivalentTo(RepositoryTestHost.WrappedPrivateKeyPayload(ContentKeyFiller(ordinal)));
             await Assert.That(rows[ordinal].IndexKey)
-                .IsEquivalentTo(RepositoryTestHost.WrappedKeyEnvelope(IndexKeyFiller(ordinal)));
+                .IsEquivalentTo(RepositoryTestHost.EncapsulatedAccountKeysPayload(IndexKeyFiller(ordinal)));
         }
     }
 
@@ -242,7 +242,7 @@ public sealed class WrappedAccountKeysSchemaTests
 
     /// <summary>
     /// Builds one well-formed <c>wrapped_account_keys</c> INSERT. Every column is named, and both
-    /// envelopes are built by <see cref="RepositoryTestHost.WrappedKeyEnvelope" /> at the one legal width
+    /// envelopes are built by <see cref="RepositoryTestHost.WrappedPrivateKeyPayload" /> and <see cref="RepositoryTestHost.EncapsulatedAccountKeysPayload" /> at the one legal width
     /// and version, so no length or version check is ever what answers a probe here.
     /// </summary>
     private static NpgsqlCommand BuildWrappedKeysInsert(
@@ -257,20 +257,20 @@ public sealed class WrappedAccountKeysSchemaTests
         NpgsqlCommand insert = new(
             "insert into wrapped_account_keys " +
             "(credential_id, user_id, factor_id, credential_type, " +
-            "wrapped_content_key, wrapped_index_key, created_at_utc) " +
+            "wrapped_private_key, encapsulated_account_keys, created_at_utc) " +
             "values (@credential_id, @user_id, @factor_id, @credential_type, " +
-            "@wrapped_content_key, @wrapped_index_key, @created_at_utc)",
+            "@wrapped_private_key, @encapsulated_account_keys, @created_at_utc)",
             connection);
         insert.Parameters.AddWithValue("credential_id", credentialId);
         insert.Parameters.AddWithValue("user_id", userId);
         insert.Parameters.AddWithValue("factor_id", factorId);
         insert.Parameters.AddWithValue("credential_type", credentialType);
         insert.Parameters.AddWithValue(
-            "wrapped_content_key",
-            RepositoryTestHost.WrappedKeyEnvelope(contentKeyFiller));
+            "wrapped_private_key",
+            RepositoryTestHost.WrappedPrivateKeyPayload(contentKeyFiller));
         insert.Parameters.AddWithValue(
-            "wrapped_index_key",
-            RepositoryTestHost.WrappedKeyEnvelope(indexKeyFiller));
+            "encapsulated_account_keys",
+            RepositoryTestHost.EncapsulatedAccountKeysPayload(indexKeyFiller));
         insert.Parameters.AddWithValue("created_at_utc", SeedInstant);
 
         return insert;
@@ -317,7 +317,7 @@ public sealed class WrappedAccountKeysSchemaTests
         Guid credentialId)
     {
         await using NpgsqlCommand read = new(
-            "select factor_id, wrapped_content_key, wrapped_index_key from wrapped_account_keys " +
+            "select factor_id, wrapped_private_key, encapsulated_account_keys from wrapped_account_keys " +
             "where credential_id = @credential_id order by factor_id",
             connection);
         read.Parameters.AddWithValue("credential_id", credentialId);

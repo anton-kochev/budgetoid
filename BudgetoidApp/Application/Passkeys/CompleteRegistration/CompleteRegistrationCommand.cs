@@ -3,8 +3,9 @@ using Domain.Users;
 namespace Application.Passkeys.CompleteRegistration;
 
 /// <summary>
-/// The response an authenticator produced for a registration ceremony, and the share of the account
-/// keys the factor it stands for is to hold.
+/// The response an authenticator produced for a registration ceremony, and the key material the factor
+/// it stands for is to hold: that factor's wrapped private key and the account's keys encapsulated to
+/// its public half.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -37,29 +38,35 @@ namespace Application.Passkeys.CompleteRegistration;
 /// <c>getClientExtensionResults()</c>, or null when the client reported none.
 /// </param>
 /// <param name="FactorId">
-/// The client-minted identifier of the factor this passkey stands for, and the associated data both
-/// envelopes below were sealed with — see <see cref="WrappedAccountKeys.FactorId"/> for why it is
+/// The client-minted identifier of the factor this passkey stands for, and the associated data of the
+/// wrapped private key below — see <see cref="WrappedAccountKeys.FactorId"/> for why it is
 /// deliberately not <c>credentials.id</c>. One uuid in one spelling: the <b>lower-case</b> 36-character
 /// hyphenated form with no surrounding whitespace, which is what a <see cref="Guid"/> renders as and
 /// therefore what every later read hands back. This contract is cross-client, and a value the browser
-/// cannot recognise as the bytes it bound is a factor whose envelopes never open. Enforced by
+/// cannot recognise as the bytes it bound is a factor whose private key never unwraps. Enforced by
 /// <see cref="Application.Security.CanonicalIdentifier.TryParse"/>, which compares the text against what
 /// the parsed value renders as — <see cref="Guid.TryParseExact(string, string, out Guid)"/> under
 /// <c>"D"</c> admits upper-case and mixed-case hex and trims whitespace before it reads the format at
 /// all, so the format alone does not pin a spelling.
 /// </param>
-/// <param name="WrappedContentKey">
-/// The account's content key as this factor holds it: one base64url envelope, judged by
-/// <see cref="WrappedKeyEnvelope.TryDecode"/>.
+/// <param name="WrappedPrivateKey">
+/// This factor's ECDH P-256 private key, <em>wrapped under</em> the key-encryption key the PRF output
+/// of this ceremony yields: one base64url envelope of the AEAD framing, judged by
+/// <see cref="WrappedPrivateKeyEnvelope.TryDecode"/>.
 /// </param>
-/// <param name="WrappedIndexKey">The account's index key — the same shape, judged by the same rule.</param>
+/// <param name="EncapsulatedAccountKeys">
+/// The account's content key and index key as one 64-byte plaintext, <em>encapsulated to</em> the public
+/// half of that key pair: one base64url value of the encapsulation framing, judged by
+/// <see cref="EncapsulatedAccountKeysEnvelope.TryDecode"/>. <b>Not the same shape and not judged by the
+/// same rule as the member above</b> — a different suite, a different floor and a different width.
+/// </param>
 public sealed record CompleteRegistrationCommand(
     string ClientDataJson,
     string AttestationObject,
     PasskeyClientExtensionResults? ClientExtensionResults,
     string FactorId,
-    string WrappedContentKey,
-    string WrappedIndexKey);
+    string WrappedPrivateKey,
+    string EncapsulatedAccountKeys);
 
 /// <summary>The client extension results a registration response may carry.</summary>
 public sealed record PasskeyClientExtensionResults(PasskeyPrfResults? Prf);

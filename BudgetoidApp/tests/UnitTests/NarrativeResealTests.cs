@@ -43,7 +43,7 @@ namespace UnitTests;
 /// <para>
 /// <b>Refusals are <see cref="ValidationException"/>, keyed on the property the value lands in.</b>
 /// That is the entity factories' idiom — <c>WrappedAccountKeys.For</c> keys on
-/// <c>nameof(WrappedContentKey)</c>, <c>PasskeyPublicKey.Register</c> on its own member — and it is
+/// <c>nameof(WrappedPrivateKey)</c>, <c>PasskeyPublicKey.Register</c> on its own member — and it is
 /// available here, where it was not available to <see cref="NarrativeField"/>: that type is shared by
 /// eight columns and owns none of them, so every one of them would key under one word. This rule is
 /// shared by eight columns too, but it is <em>told</em> which one it is being run for, so the key is

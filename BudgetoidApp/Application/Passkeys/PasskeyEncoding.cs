@@ -109,9 +109,10 @@ public static class PasskeyEncoding
     /// <see cref="PasskeyPayloadLimits.CredentialIdBytes"/> admitted one or two bytes more.
     /// </para>
     /// <para>
-    /// A caller may still need a rule this cannot make. <see cref="WrappedKeyEnvelope"/> keeps an exact
-    /// width because its member has one, and what that catches is the <em>short</em> side — the band
-    /// between the shared format's floor and the width — which no ceiling of any tightness can see.
+    /// A caller may still need a rule this cannot make. <see cref="WrappedPrivateKeyEnvelope"/> and
+    /// <see cref="EncapsulatedAccountKeysEnvelope"/> each keep an exact width because their members
+    /// have one, and what that catches is the <em>short</em> side — the band between each format's own
+    /// floor and its own width — which no ceiling of any tightness can see.
     /// </para>
     /// </remarks>
     public static int MaxEncodedLength(int decodedBytes)

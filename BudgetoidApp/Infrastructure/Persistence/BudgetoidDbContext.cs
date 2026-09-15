@@ -82,6 +82,16 @@ public sealed class BudgetoidDbContext(
     // stay policed.
     public DbSet<KeyRotation> KeyRotations => Set<KeyRotation>();
 
+    // Rotation seals are unfiltered for exactly the reason the staging row above them is. A seal holds
+    // the NEXT generation of the account's two keys, encapsulated to one factor's public key; a factor
+    // lets a person back into their ACCOUNT rather than into one budget, so a copy keyed on a budget
+    // would claim that some of an account's factors belong to part of it. It names no budget and could
+    // not. Isolation on user_id comes from the user_isolation policy, which this table is subject to
+    // rather than exempt from: nothing about it is read before the request has an identity — a run is
+    // begun under a passkey assertion that has already verified — so every read must both carry its own
+    // user_id filter and stay policed.
+    public DbSet<KeyRotationSeal> KeyRotationSeals => Set<KeyRotationSeal>();
+
     // Factor manifests are unfiltered for the reason the two sets above them are, and the reason is
     // one step stronger here. This row is the sole authenticated carrier of every recovery factor's
     // public key, and a factor lets a person back into their ACCOUNT rather than into one budget — so a

@@ -605,56 +605,87 @@ public sealed class BudgetoidDbContextConstructionTests
             // somebody decides here that it may hold the account's keys.
             "CK_wrapped_account_keys_credential_type: wrapped_account_keys credential_type in "
             + "('passkey', 'recovery_codes')",
-            // Two bounds per envelope and both read off WrappedAccountKeys, which is the whole reason
-            // they are not local literals: WrappedAccountKeys.For refuses an envelope that is not exactly
-            // EnvelopeLength bytes carrying EnvelopeVersion, and these constraints refuse the identical
-            // row arriving by any other path. A copy of 61 here would not be a second fact, it would be
-            // the same fact able to disagree with itself.
+            // FOUR BOUNDS OVER TWO COLUMNS, AND THE PAIRS MAY NOT BE CROSSED. Each pair is read off
+            // WrappedAccountKeys, which is the whole reason they are not local literals:
+            // WrappedAccountKeys.For refuses a value that is not exactly its column's width carrying
+            // its column's version, and these constraints refuse the identical row arriving by any
+            // other path. A copy of 167 or of 158 here would not be a second fact, it would be the same
+            // fact able to disagree with itself.
+            //
+            // THE TWO COLUMNS ARE DIFFERENT CRYPTOGRAPHIC SUITES AND THE NUMBERS SAY SO. wrapped_private_key
+            // is a CiphertextEnvelope — version, nonce, ciphertext, tag — over a 138-byte PKCS#8 P-256
+            // private key, so 29 + 138 = 167. encapsulated_account_keys is an EncapsulatedValueEnvelope
+            // — version, ephemeral public key, nonce, ciphertext, tag — over both 32-byte account keys
+            // as one plaintext, so 94 + 64 = 158. Rendering either column's width from the other's
+            // constant compiles, reads plausibly, and accepts a value 65 bytes too short to hold an
+            // ephemeral point.
+            //
+            // BOTH VERSION CHECKS SAY 1 AND THEY MEAN DIFFERENT THINGS BY IT. Nothing in the bytes says
+            // which suite a value belongs to, so the COLUMN is the only discriminator, and the two
+            // version checks stay two checks rendered from two constants even while the two constants
+            // hold the same number. Folding them into one predicate over both columns would make a bump
+            // to either suite renumber the other's column — and nothing in the build could see it,
+            // because the rendered SQL would be byte-identical.
             //
             // Equality rather than a range, and stated per column rather than once over both. AES-GCM
-            // ciphertext is the length of its plaintext and the plaintext is a 32-byte key, so an
-            // envelope has one legal size and both sides of the bound are refused; per column, so a
-            // violation names which envelope was malformed — nothing else can tell the two apart, since
-            // every check here reads the same on either.
-            "CK_wrapped_account_keys_wrapped_content_key_length: wrapped_account_keys "
-            + "length(wrapped_content_key) = 61",
-            "CK_wrapped_account_keys_wrapped_content_key_version: wrapped_account_keys "
-            + "get_byte(wrapped_content_key, 0) = 1",
-            "CK_wrapped_account_keys_wrapped_index_key_length: wrapped_account_keys "
-            + "length(wrapped_index_key) = 61",
-            "CK_wrapped_account_keys_wrapped_index_key_version: wrapped_account_keys "
-            + "get_byte(wrapped_index_key, 0) = 1",
-            // THE SAME FOUR BOUNDS OVER A SECOND TABLE, and the duplication is the rule rather than a
-            // paste. key_rotations stages the NEXT generation of the two envelopes directly above: the
-            // same AEAD framing over the same two 32-byte keys, under the same factor, waiting for a
-            // completion step to promote it into those columns. So a width this table accepted and its
-            // sibling refused would be a row that stores here and fails there — after the old keys have
-            // already been overwritten, which is the one moment in an account's life when the server
-            // holds no readable copy of either generation. Both configurations render these from
-            // WrappedAccountKeys.EnvelopeLength and WrappedAccountKeys.EnvelopeVersion for that reason,
-            // and this pin is on the RENDERING: a local copy of 61 or of the version byte would not be
-            // a second fact, it would be one fact able to disagree with itself.
+            // ciphertext is the length of its plaintext and each plaintext here is fixed-width, so each
+            // column has one legal size and both sides of each bound are refused; per column, so a
+            // violation names which value was malformed.
             //
-            // Four rows and not two, per column rather than once over both, for the sibling's reason: a
-            // violation has to name WHICH envelope was malformed, and nothing else on the row can tell
-            // them apart — every check here reads identically on either column.
+            // THE TRANSPOSITION HAZARD THE OLD VERSION OF THIS ENTRY NAMED IS GONE, and it went because
+            // of the numbers rather than because anybody added a check. What stood here said every
+            // check on this table read identically on either column, so a swapped pair satisfied all
+            // four — true when both held a 61-byte AEAD envelope, and false now.
+            "CK_wrapped_account_keys_wrapped_private_key_length: wrapped_account_keys "
+            + "length(wrapped_private_key) = 167",
+            "CK_wrapped_account_keys_wrapped_private_key_version: wrapped_account_keys "
+            + "get_byte(wrapped_private_key, 0) = 1",
+            "CK_wrapped_account_keys_encapsulated_account_keys_length: wrapped_account_keys "
+            + "length(encapsulated_account_keys) = 158",
+            "CK_wrapped_account_keys_encapsulated_account_keys_version: wrapped_account_keys "
+            + "get_byte(encapsulated_account_keys, 0) = 1",
+            // THE SAME TWO BOUNDS OVER A THIRD TABLE, and the duplication is the rule rather than a
+            // paste. key_rotation_seals holds one surviving factor's copy of the NEXT generation of the
+            // account's two keys: the same encapsulation framing, at the same width, waiting for a
+            // completion step to copy it into wrapped_account_keys.encapsulated_account_keys. So a
+            // width this table accepted and its sibling refused would be a row that stores here and
+            // fails there — after the old generation has already been overwritten, which is the one
+            // moment in an account's life when the server holds no promotable copy of either. Both
+            // configurations render these from WrappedAccountKeys.EncapsulatedAccountKeysLength and
+            // WrappedAccountKeys.EncapsulatedAccountKeysVersion for that reason, and this pin is on the
+            // RENDERING.
             //
-            // These two carry get_byte rather than substring, matching wrapped_account_keys and NOT the
-            // narrative columns above. That is recorded rather than defended: the four wrapped-key
-            // checks are correct today only by the same alphabetical accident the budgets entry
-            // describes at length — "length" sorts before "version", so a zero-length envelope answers
-            // 23514 from the width check and the version predicate never runs to raise 2202E. Spelling
-            // these two the same way as their sibling keeps the pair of tables identical, which is what
-            // this entry is about; changing the idiom is a change to both tables at once and belongs to
-            // the hardening item that owns it, not to a drive-by edit here.
-            "CK_key_rotations_wrapped_content_key_length: key_rotations "
-            + "length(wrapped_content_key) = 61",
-            "CK_key_rotations_wrapped_content_key_version: key_rotations "
-            + "get_byte(wrapped_content_key, 0) = 1",
-            "CK_key_rotations_wrapped_index_key_length: key_rotations "
-            + "length(wrapped_index_key) = 61",
-            "CK_key_rotations_wrapped_index_key_version: key_rotations "
-            + "get_byte(wrapped_index_key, 0) = 1",
+            // TWO ROWS AND NOT FOUR, which is the shape difference from the table above and not an
+            // omission: a seal carries no wrapped private key. The factor's key pair survives a
+            // rotation untouched, because the key-encryption key that factor derives does not change
+            // when the account's keys do — a run that re-wrapped it would need exactly the
+            // authenticator this whole design exists to do without.
+            //
+            // These carry get_byte rather than substring, matching wrapped_account_keys and NOT the
+            // narrative columns above. That is recorded rather than defended: they are correct today
+            // only by the same alphabetical accident the budgets entry describes at length — "length"
+            // sorts before "version", so a zero-length value answers 23514 from the width check and the
+            // version predicate never runs to raise 2202E.
+            "CK_key_rotation_seals_encapsulated_account_keys_length: key_rotation_seals "
+            + "length(encapsulated_account_keys) = 158",
+            "CK_key_rotation_seals_encapsulated_account_keys_version: key_rotation_seals "
+            + "get_byte(encapsulated_account_keys, 0) = 1",
+            // THE MANIFEST BOUNDS, OVER A SECOND TABLE, and this pair is the whole of what key_rotations
+            // bounds now. The table used to carry four envelope checks over two columns it no longer
+            // has; a run stages the factor SET it committed to — the manifest and the epoch it was read
+            // at — rather than a per-factor value, and the per-factor value moved to key_rotation_seals
+            // above. Both bounds are the ones factor_manifests keeps over the identical bytes, rendered
+            // from FactorManifest.MaximumBytes and FactorManifest.MinimumRotationEpoch, because a staged
+            // manifest is a manifest: a width or a floor this table accepted and that one refused would
+            // be a generation that stages and cannot be promoted.
+            //
+            // The empty side of the band is the one worth reading twice. An empty bytea is exactly what
+            // an unset member sends, so a caller that forgot to attach the manifest would otherwise
+            // stage a generation naming no factor at all — and the promotion would file it: an account
+            // with no way back in, stored as though it had one.
+            "CK_key_rotations_staged_manifest_length: key_rotations "
+            + "length(staged_manifest) between 1 and 4096",
+            "CK_key_rotations_staged_rotation_epoch: key_rotations staged_rotation_epoch >= 1",
             // A FLOOR AND NOT A BAND, and the only entry in this list whose lower bound is where it is
             // because of what the ABSENCE of a row means. Generations have no last one, so there is no
             // ceiling to write; the floor is 1 because EPOCH 0 IS THE ABSENCE OF A MANIFEST — an
@@ -919,14 +950,37 @@ public sealed class BudgetoidDbContextConstructionTests
         // one initial migration is worth more than the chain of alters nothing will ever replay step by
         // step.
         //
-        // Same obligation, unchanged and not softened by being the eighth time it is written: whoever
+        // And it moved once more for the factor key pair, which is the largest reshape in this sequence
+        // and the first that REMOVES columns rather than only adding them. Every recovery factor now
+        // holds an ECDH P-256 key pair. wrapped_account_keys lost wrapped_content_key and
+        // wrapped_index_key — two AEAD envelopes of one width — and gained wrapped_private_key, 167
+        // bytes of CiphertextEnvelope over a PKCS#8 private key, beside encapsulated_account_keys, 158
+        // bytes of EncapsulatedValueEnvelope over both account keys as one plaintext. key_rotations lost
+        // factor_id and both of its envelope columns and gained staged_manifest and
+        // staged_rotation_epoch, because a run no longer performs a rotation UNDER one factor: it
+        // encapsulates the new keys TO every surviving factor's public half, which needs nobody present.
+        // The per-factor value moved down to key_rotation_seals, a new table keyed on
+        // (user_id, factor_id) with two cascading foreign keys and a SELECT-only grant.
+        //
+        // TWO CONSEQUENCES A READER SHOULD NOT HAVE TO INFER. The composite foreign key key_rotations
+        // used to carry to wrapped_account_keys left with factor_id, and FK_key_rotations_users replaces
+        // it — an ON DELETE CASCADE from users, which is what keeps the table on the erasure chain the
+        // departed key used to carry it along. And the two framings both lead with 0x01 on DIFFERENT
+        // suites, so the column a value was read from is the only thing that says which it is: the four
+        // check constraints on wrapped_account_keys are rendered from four constants and the pairs may
+        // not be crossed.
+        //
+        // Dropping a column is not additively expressible and this one is not pretending to be. What
+        // puts it inside the baseline is the window: the production database holds no rows (CON-002).
+        //
+        // Same obligation, unchanged and not softened by being the ninth time it is written: whoever
         // regenerates the baseline resets production's __EFMigrationsHistory in the same deploy
         // (DEPLOYMENT.md, Step 3), or that deploy fails on the first CREATE TABLE against a database
         // that already holds the schema. This literal is the checkpoint a human edits deliberately —
         // docs/engineering/migrations.md says the CI window makes a regenerated baseline permitted and
         // never free, and this line is the half of the freeze the window does not cover — so it moves
         // in the same commit as the baseline it names and in no other.
-        const string frozenBaselineId = "20260914212557_InitialCreate";
+        const string frozenBaselineId = "20260914230000_InitialCreate";
         await using BudgetoidDbContext db = CreateDbContext();
 
         // Act

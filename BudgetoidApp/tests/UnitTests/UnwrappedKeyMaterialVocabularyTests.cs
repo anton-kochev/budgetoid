@@ -90,6 +90,8 @@ public sealed class UnwrappedKeyMaterialVocabularyTests
     [Arguments("indexKey", UnwrappedKeyMaterialCategory.UnwrappedKey)]
     [Arguments("account_key", UnwrappedKeyMaterialCategory.UnwrappedKey)]
     [Arguments("account_keys", UnwrappedKeyMaterialCategory.UnwrappedKey)]
+    [Arguments("private_key", UnwrappedKeyMaterialCategory.UnwrappedKey)]
+    [Arguments("privateKey", UnwrappedKeyMaterialCategory.UnwrappedKey)]
     [Arguments("unwrapped_content_key", UnwrappedKeyMaterialCategory.UnwrappedKey)]
     [Arguments("unwrapped_key", UnwrappedKeyMaterialCategory.UnwrappedKey)]
     [Arguments("plaintext_key", UnwrappedKeyMaterialCategory.UnwrappedKey)]
@@ -156,6 +158,22 @@ public sealed class UnwrappedKeyMaterialVocabularyTests
     /// combination, and backing either expansion out reds the shipped table.
     /// </para>
     /// <para>
+    /// <c>encapsulated_account_keys</c> is the row that pins the <c>account_key</c> rule's
+    /// <b>second</b> qualifier. It is the same pattern and the same side as the row above it, excused
+    /// by a different word — because the account's two keys are now stored under two constructions,
+    /// <em>wrapped under</em> a key-encryption key and <em>encapsulated to</em> a factor's public
+    /// key, and the schema carries a column for each. A rule keeping only one of the two qualifiers
+    /// still passes every other row in this file and reds one shipped column; these two rows side by
+    /// side are what says which.
+    /// </para>
+    /// <para>
+    /// <c>private_key</c> against <c>wrapped_private_key</c> is the newest pair and the one whose
+    /// refusing half is easiest to lose. The private half of a factor's ECDH key pair is what
+    /// decapsulates the account's keys, so a bare column of that name hands an operator both — and
+    /// the name reads innocuous, because <c>public_key_cose</c> sits two tables away and is published
+    /// by design. The permitting half is the shipped column on <c>wrapped_account_keys</c>.
+    /// </para>
+    /// <para>
     /// <c>recovery_code_hashes</c> is the pair that runs the other way round — the qualifier
     /// <i>follows</i> the pattern, and it is the pattern's singular beside the qualifier's plural.
     /// Two positions exist because these two exemptions sit on opposite sides, and a single symmetric
@@ -169,6 +187,10 @@ public sealed class UnwrappedKeyMaterialVocabularyTests
     [Arguments("index_key", "wrapped_index_key")]
     [Arguments("indexKey", "wrappedIndexKey")]
     [Arguments("account_keys", "wrapped_account_keys")]
+    [Arguments("account_keys", "encapsulated_account_keys")]
+    [Arguments("accountKeys", "encapsulatedAccountKeys")]
+    [Arguments("private_key", "wrapped_private_key")]
+    [Arguments("privateKey", "wrappedPrivateKey")]
     [Arguments("recovery_code", "recovery_code_hash")]
     [Arguments("recovery_codes", "recovery_code_hashes")]
     public async Task Vocabulary_RefusesAnUnsealedKeyNameAndPermitsItsSealedSpelling(
@@ -209,6 +231,18 @@ public sealed class UnwrappedKeyMaterialVocabularyTests
     /// reassuring and is a PRF output on the server.
     /// </para>
     /// <para>
+    /// <b><c>encapsulated</c> has the same boundary and it is the one most likely to be widened,
+    /// because the word is new here.</b> It excuses <c>account_key</c> and nothing else:
+    /// <c>encapsulated_key_encryption_key</c> and <c>encapsulated_prf_output</c> are refused, because
+    /// there is no design in which either is encapsulated to a public key — a key-encryption key is
+    /// derived in the browser and never leaves it, and a PRF output should never have been read out
+    /// of the ceremony at all. <c>encapsulated_private_key</c> is the third row and the subtlest: a
+    /// factor's private key <em>is</em> stored, but wrapped under the key-encryption key that factor
+    /// derives, never encapsulated to anything — nothing holds a public key it could be encapsulated
+    /// to, and a column of that name is the private key filed under the wrong verb, which is exactly
+    /// the confusion the two envelope types exist to prevent.
+    /// </para>
+    /// <para>
     /// <b>It does not travel between sides.</b> <c>content_key_wrapped</c> and
     /// <c>hash_recovery_code</c> each carry the right word on the wrong side and are refused, which
     /// is why <see cref="QualifierPosition" /> exists rather than a bare "adjacent".
@@ -225,9 +259,15 @@ public sealed class UnwrappedKeyMaterialVocabularyTests
     [Arguments("wrapped_prf_output")]
     [Arguments("wrapped_recovery_code")]
     [Arguments("wrapped_kek")]
+    [Arguments("encapsulated_key_encryption_key")]
+    [Arguments("encapsulated_prf_output")]
+    [Arguments("encapsulated_private_key")]
     [Arguments("content_key_wrapped")]
+    [Arguments("private_key_wrapped")]
+    [Arguments("account_keys_encapsulated")]
     [Arguments("hash_recovery_code")]
     [Arguments("wrapped_at_content_key")]
+    [Arguments("wrapped_for_private_key")]
     public async Task Vocabulary_DoesNotLetAQualifierExcuseARuleThatDoesNotCarryIt(string identifier)
     {
         // Arrange — the argument rows above are the subject; each carries a permitted word beside the
@@ -302,6 +342,25 @@ public sealed class UnwrappedKeyMaterialVocabularyTests
     /// It reads the written patterns rather than the compiled ones, as the prohibited-column sibling
     /// does and for its reason: the compiled list is private and holds each pattern twice, and the
     /// written list is the one a reviewer edits, so it is the one a red has a remedy on.
+    /// </para>
+    /// <para>
+    /// <b>What it proves, stated narrowly, because the reshape added a rule and the green bar is
+    /// about to be read as more than it is.</b> It proves exactly one thing: no written pattern's
+    /// tokens are a contiguous run inside another written pattern's, so no rule can be made
+    /// unreachable by a rule listed before it and the subject's claim that its list order carries no
+    /// meaning holds. <c>private_key</c> passes it because no other pattern is a run inside
+    /// <c>private / key</c> and <c>private / key</c> is a run inside none — there is no bare
+    /// <c>key</c> rule, which is the only pattern that would have swallowed it.
+    /// </para>
+    /// <para>
+    /// <b>What it does not prove is larger.</b> It says nothing about the <i>qualifiers</i>: two
+    /// rules sharing a pattern would be caught, but a rule whose qualifier is so wide that nothing is
+    /// left for it to refuse passes here untouched — that is
+    /// <see cref="Vocabulary_AnswersEveryRuleWithItselfOnItsOwnPattern" />'s and
+    /// <see cref="Vocabulary_HasNoQualifierThatCouldNotDoItsJob" />'s job, and neither is implied by
+    /// this one. It says nothing about the plural forms the subject compiles beside each pattern, and
+    /// nothing at all about whether the set of rules is <i>complete</i> — a secret nobody wrote a
+    /// pattern for shadows nothing and passes every line of this file.
     /// </para>
     /// </remarks>
     [Test]
@@ -519,10 +578,13 @@ public sealed class UnwrappedKeyMaterialVocabularyTests
     /// red the gate that exists to make PRF mandatory, which is as backwards as a refusal gets.
     /// </para>
     /// <para>
-    /// <c>wrappedContentKey</c> and <c>wrappedIndexKey</c> are here in their wire spelling as well as
-    /// in the column spelling the pair test uses, because the two reach the same rule only through
-    /// case-boundary tokenization and this is the only place the member form is read beside the
-    /// members it travels with.
+    /// <c>wrappedPrivateKey</c> and <c>encapsulatedAccountKeys</c> are here in their wire spelling as
+    /// well as in the column spelling the pair test uses, because the two reach the same rule only
+    /// through case-boundary tokenization and this is the only place the member form is read beside
+    /// the members it travels with. They are also the two members whose <em>names</em> are the
+    /// contract: one says unwrap under a key-encryption key, the other says decapsulate with the
+    /// private half that unwrapping produced, and a client running them in the wrong order gets an
+    /// authentication failure naming nothing.
     /// </para>
     /// <para>
     /// <c>verifiers</c> is the sharpest of these. A verifier is derived from a recovery code and
@@ -542,8 +604,9 @@ public sealed class UnwrappedKeyMaterialVocabularyTests
     [Arguments("signature")]
     [Arguments("userHandle")]
     [Arguments("factorId")]
-    [Arguments("wrappedContentKey")]
-    [Arguments("wrappedIndexKey")]
+    [Arguments("wrappedPrivateKey")]
+    [Arguments("encapsulatedAccountKeys")]
+    [Arguments("stagedManifest")]
     [Arguments("verifier")]
     [Arguments("verifiers")]
     public async Task Vocabulary_DoesNotRefuseTheMembersTheWritePathsCarry(string identifier)

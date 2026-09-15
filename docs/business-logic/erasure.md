@@ -31,13 +31,15 @@ erDiagram
     USER ||--o{ CREDENTIAL : "cascade"
     USER ||--o{ BUDGET : "cascade"
     USER ||--o| FACTOR_MANIFEST : "cascade"
+    USER ||--o| KEY_ROTATION : "cascade"
     CREDENTIAL ||--o{ SESSION : "cascade"
     SESSION ||--o{ SESSION_TOKEN : "cascade"
     CREDENTIAL ||--o| PASSKEY_PUBLIC_KEY : "cascade"
     CREDENTIAL ||--o| PASSKEY_SIGNATURE_COUNTER : "cascade"
     CREDENTIAL ||--o{ RECOVERY_CODE_HASH : "cascade"
     CREDENTIAL ||--o{ WRAPPED_ACCOUNT_KEYS : "cascade"
-    WRAPPED_ACCOUNT_KEYS ||--o| KEY_ROTATION : "cascade"
+    KEY_ROTATION ||--o{ KEY_ROTATION_SEAL : "cascade"
+    WRAPPED_ACCOUNT_KEYS ||--o| KEY_ROTATION_SEAL : "cascade"
     BUDGET ||--o{ ACCOUNT : "cascade"
     BUDGET ||--o{ PAYEE : "cascade"
     BUDGET ||--o{ CATEGORY_GROUP : "cascade"
@@ -52,6 +54,16 @@ erDiagram
 Every edge is `ON DELETE CASCADE` except the five marked `restrict`, and that distinction is the
 whole of the deletion order below. Four of the five have `transactions` as their child, which is why
 that is the one table erasure empties itself.
+
+**`KEY_ROTATION_SEAL` is reached twice and that is the graph rather than a mistake in the drawing.**
+It carries two foreign keys — `user_id` to `key_rotations` and `(factor_id, user_id)` to
+`wrapped_account_keys` — so a delete of either parent takes its rows. PostgreSQL permits the two
+cascading paths that creates; the multiple-cascade-path restriction is SQL Server's, not this
+server's. `KEY_ROTATION` itself moved up a level when it stopped carrying a factor: its one remaining
+key names `users`, so an erasure reaches it in one hop rather than through the wrapped keys, and
+without that edge an erased account would have left a staging row behind carrying its own user id —
+which the post-condition below forbids outright, and which no grant could have cleaned up, because the
+role holds no `DELETE` there of any shape.
 
 ## Constraints
 

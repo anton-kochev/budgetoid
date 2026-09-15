@@ -31,17 +31,24 @@ namespace UnitTests;
 /// <item>
 /// "both envelopes land in their own column" —
 /// <see cref="For_CopiesTheCredentialsIdentityAndBothEnvelopesOntoTheRow" /> gives the two columns
-/// <em>different</em> bytes and names which is which. Two envelopes filled with the same value would
-/// let a factory that assigned one argument twice pass, and swapping the pair is the one mistake at
-/// this layer that no width check, no version check and no database constraint can see.
+/// <em>different</em> bytes and names which is which. Two payloads filled with the same value would
+/// let a factory that assigned one argument twice pass. Swapping the pair used to be the one mistake at
+/// this layer that no width check, no version check and no database constraint could see; it is now
+/// refused by each column's own width, which <see cref="For_WithTheTwoPayloadsTransposed_Throws" />
+/// states outright.
 /// </item>
 /// <item>
-/// "exactly 61 bytes" — <see cref="For_WithAnEnvelopeOfTheWrongWidth_Throws" /> takes the bound from
-/// both sides and on both columns; the accepting tests are the control at the boundary itself, so a
-/// check written <c>&gt;= 61</c> or <c>&lt;= 61</c> fails exactly one case rather than none.
+/// "exactly its own column's width" — <see cref="For_WithAPayloadOfTheWrongWidth_Throws" /> takes
+/// each bound from both sides and on both columns; the accepting tests are the control at the boundary
+/// itself, so a check written <c>&gt;=</c> or <c>&lt;=</c> fails exactly one case rather than none.
 /// </item>
 /// <item>
-/// "a recognised envelope version" — <see cref="For_WithAnUnknownEnvelopeVersion_Throws" />, whose
+/// "and each column is judged against ITS OWN suite" —
+/// <see cref="For_WithTheTwoPayloadsTransposed_Throws" />, which the two widths diverging is what made
+/// writable at all.
+/// </item>
+/// <item>
+/// "a recognised envelope version" — <see cref="For_WithAnUnknownFramingVersion_Throws" />, whose
 /// control is that the accepting tests use version 1 and would go red if the check refused
 /// everything.
 /// </item>
@@ -55,20 +62,43 @@ namespace UnitTests;
 public sealed class WrappedAccountKeysTests
 {
     /// <summary>
-    /// The only legal width of an envelope over a 32-byte key.
+    /// The only legal width of the wrapped private key — the AEAD framing over a PKCS#8 P-256 private
+    /// key.
     /// </summary>
     /// <remarks>
     /// Restated here rather than read off the entity, for the reason
     /// <c>RecoveryCodeHashTests.VerifierLength</c> gives: a test taking its bound from the type under
     /// test agrees with any bound that type later chooses. The arithmetic is
-    /// <c>1 (version) + 12 (nonce) + 32 (ciphertext) + 16 (tag)</c> — AES-GCM ciphertext is the
-    /// length of its plaintext, and the plaintext is a 32-byte key, so an envelope over a wrapped key
-    /// has exactly one legal size. This is not a cap.
+    /// <c>1 (version) + 12 (nonce) + 138 (ciphertext) + 16 (tag)</c> — AES-GCM ciphertext is the length
+    /// of its plaintext, and the plaintext is one PKCS#8 private key, so this column has exactly one
+    /// legal size. This is not a cap.
     /// </remarks>
-    private const int EnvelopeLength = 61;
+    private const int WrappedPrivateKeyLength = 167;
 
-    /// <summary>The one envelope version defined today (IFR-007): AES-256-GCM, 96-bit nonce, 128-bit tag.</summary>
-    private const byte EnvelopeVersion = 1;
+    /// <summary>The AEAD framing version (IFR-007): AES-256-GCM, 96-bit nonce, 128-bit tag.</summary>
+    private const byte WrappedPrivateKeyVersion = 1;
+
+    /// <summary>
+    /// The only legal width of the encapsulated account keys — the encapsulation framing over both
+    /// 32-byte keys as one plaintext.
+    /// </summary>
+    /// <remarks>
+    /// <b>A second pair of literals rather than a shared one, and that is the whole reason this file
+    /// pins four numbers instead of two.</b> The arithmetic is
+    /// <c>1 (version) + 65 (ephemeral public key) + 64 (ciphertext) + 16 (tag)</c> — a different suite
+    /// with a different layout, whose only resemblance to the pair above is the leading byte. Written as
+    /// one shared constant, a change to either suite would move both columns' expectations together and
+    /// this file would go on agreeing with whatever the entity said. The two <em>version</em> literals
+    /// hold the same number today, which is exactly why they are two: nothing in the build can tell a
+    /// cross-read from a correct one, so the only thing that can is a second independent statement.
+    /// </remarks>
+    private const int EncapsulatedAccountKeysLength = 158;
+
+    /// <summary>
+    /// The encapsulation framing version (IFR-014, IFR-015): ECDH over NIST P-256, HKDF-SHA-256, then
+    /// AES-256-GCM.
+    /// </summary>
+    private const byte EncapsulatedAccountKeysVersion = 1;
 
     /// <summary>Fixed instant, so nothing here depends on the wall clock.</summary>
     private static readonly DateTime UtcNow = new(2026, 8, 12, 13, 14, 15, DateTimeKind.Utc);
@@ -78,12 +108,10 @@ public sealed class WrappedAccountKeysTests
     /// its own place.
     /// </summary>
     /// <remarks>
-    /// The two envelopes carry different filler bytes on purpose. This is the only test at this layer
-    /// that can catch a factory assigning the content argument to the index column: both values are
-    /// 61 bytes, both carry version 1, both columns are <c>NOT NULL</c>, so every width check, every
-    /// version check and every database constraint is satisfied by the swap. The associated data of
-    /// each envelope binds its purpose, so a swapped pair fails to open in the browser — months later,
-    /// with no server-side symptom at all.
+    /// The two payloads carry different filler bytes and different widths on purpose. This is the test
+    /// that catches a factory assigning one argument to both columns — which no width check would
+    /// notice if the two widths agreed, and which the associated data of each value would only expose
+    /// in a browser, months later, with no server-side symptom at all.
     /// </remarks>
     [Test]
     public async Task For_CopiesTheCredentialsIdentityAndBothEnvelopesOntoTheRow()
@@ -91,8 +119,8 @@ public sealed class WrappedAccountKeysTests
         // Arrange
         Credential credential = Credential.CreatePasskey(Guid.CreateVersion7(), UtcNow);
         Guid factorId = Guid.CreateVersion7();
-        byte[] content = Envelope(0xC0);
-        byte[] index = Envelope(0x1D);
+        byte[] content = PrivateKey(0xC0);
+        byte[] index = AccountKeys(0x1D);
 
         // Act
         WrappedAccountKeys wrapped = WrappedAccountKeys.For(credential, factorId, content, index, UtcNow);
@@ -102,8 +130,8 @@ public sealed class WrappedAccountKeysTests
         await Assert.That(wrapped.UserId).IsEqualTo(credential.UserId);
         await Assert.That(wrapped.CredentialType).IsEqualTo(CredentialType.Passkey);
         await Assert.That(wrapped.FactorId).IsEqualTo(factorId);
-        await Assert.That(wrapped.WrappedContentKey.ToArray()).IsEquivalentTo(content);
-        await Assert.That(wrapped.WrappedIndexKey.ToArray()).IsEquivalentTo(index);
+        await Assert.That(wrapped.WrappedPrivateKey.ToArray()).IsEquivalentTo(content);
+        await Assert.That(wrapped.EncapsulatedAccountKeys.ToArray()).IsEquivalentTo(index);
         await Assert.That(wrapped.CreatedAtUtc).IsEqualTo(UtcNow);
     }
 
@@ -123,7 +151,7 @@ public sealed class WrappedAccountKeysTests
 
         // Act
         WrappedAccountKeys wrapped = WrappedAccountKeys.For(
-            credential, Guid.CreateVersion7(), Envelope(0xC0), Envelope(0x1D), UtcNow);
+            credential, Guid.CreateVersion7(), PrivateKey(0xC0), AccountKeys(0x1D), UtcNow);
 
         // Assert
         await Assert.That(wrapped.CredentialType).IsEqualTo(CredentialType.RecoveryCodes);
@@ -147,7 +175,7 @@ public sealed class WrappedAccountKeysTests
 
         // Act
         ValidationException exception = ThrowsValidationException(() => WrappedAccountKeys.For(
-            credential, Guid.CreateVersion7(), Envelope(0xC0), Envelope(0x1D), UtcNow));
+            credential, Guid.CreateVersion7(), PrivateKey(0xC0), AccountKeys(0x1D), UtcNow));
 
         // Assert
         await Assert.That(exception.Errors.ContainsKey(nameof(WrappedAccountKeys.CredentialType))).IsTrue();
@@ -171,38 +199,87 @@ public sealed class WrappedAccountKeysTests
 
         // Act
         ValidationException exception = ThrowsValidationException(() => WrappedAccountKeys.For(
-            credential, Guid.Empty, Envelope(0xC0), Envelope(0x1D), UtcNow));
+            credential, Guid.Empty, PrivateKey(0xC0), AccountKeys(0x1D), UtcNow));
 
         // Assert
         await Assert.That(exception.Errors.ContainsKey(nameof(WrappedAccountKeys.FactorId))).IsTrue();
     }
 
     /// <summary>
-    /// An envelope that is not exactly 61 bytes is refused, from both sides and on both columns.
+    /// A payload that is not exactly its own column's width is refused, from both sides and on both
+    /// columns.
     /// </summary>
     /// <remarks>
-    /// Refused rather than padded or truncated. Either repair would store a well-formed row holding an
-    /// envelope whose tag cannot verify, and the account would look registered until the day the keys
-    /// were needed.
+    /// <para>
+    /// Refused rather than padded or truncated. Either repair would store a well-formed row holding
+    /// bytes whose tag cannot verify, and the account would look registered until the day the keys were
+    /// needed.
+    /// </para>
+    /// <para>
+    /// <b>Each column is stepped off <em>its own</em> bound, which is why <c>offset</c> is the parameter
+    /// rather than a width.</b> The two columns are values of two different suites at two different
+    /// widths, so one shared width argument could only be right about one of them — and stepping the
+    /// encapsulated column off the AEAD width would feed it a 166-byte or 168-byte value, refused for a
+    /// reason that says nothing about the bound this case is written for.
+    /// </para>
     /// </remarks>
     [Test]
-    [Arguments(EnvelopeLength - 1)]
-    [Arguments(EnvelopeLength + 1)]
-    public async Task For_WithAnEnvelopeOfTheWrongWidth_Throws(int width)
+    [Arguments(-1)]
+    [Arguments(1)]
+    public async Task For_WithAPayloadOfTheWrongWidth_Throws(int offset)
     {
         // Arrange
         Credential credential = Credential.CreatePasskey(Guid.CreateVersion7(), UtcNow);
-        byte[] misshapen = Envelope(0xC0, width);
 
         // Act
-        ValidationException onContent = ThrowsValidationException(() => WrappedAccountKeys.For(
-            credential, Guid.CreateVersion7(), misshapen, Envelope(0x1D), UtcNow));
-        ValidationException onIndex = ThrowsValidationException(() => WrappedAccountKeys.For(
-            credential, Guid.CreateVersion7(), Envelope(0xC0), misshapen, UtcNow));
+        ValidationException onPrivateKey = ThrowsValidationException(() => WrappedAccountKeys.For(
+            credential,
+            Guid.CreateVersion7(),
+            PrivateKey(0xC0, WrappedPrivateKeyLength + offset),
+            AccountKeys(0x1D),
+            UtcNow));
+        ValidationException onAccountKeys = ThrowsValidationException(() => WrappedAccountKeys.For(
+            credential,
+            Guid.CreateVersion7(),
+            PrivateKey(0xC0),
+            AccountKeys(0x1D, EncapsulatedAccountKeysLength + offset),
+            UtcNow));
 
         // Assert
-        await Assert.That(onContent.Errors.ContainsKey(nameof(WrappedAccountKeys.WrappedContentKey))).IsTrue();
-        await Assert.That(onIndex.Errors.ContainsKey(nameof(WrappedAccountKeys.WrappedIndexKey))).IsTrue();
+        await Assert.That(
+            onPrivateKey.Errors.ContainsKey(nameof(WrappedAccountKeys.WrappedPrivateKey))).IsTrue();
+        await Assert.That(
+            onAccountKeys.Errors.ContainsKey(nameof(WrappedAccountKeys.EncapsulatedAccountKeys))).IsTrue();
+    }
+
+    /// <summary>
+    /// A payload of the <em>other</em> column's exact width and version is refused on both columns.
+    /// </summary>
+    /// <remarks>
+    /// <b>The transposition, said at the entity.</b> Both values are well-formed by their own suite's
+    /// rules and both lead with the same byte, so nothing in the bytes says which column they belong in
+    /// — the parameter position is the only discriminator. Until the two widths diverged this case could
+    /// not have been written at all: a swapped pair satisfied every check at every layer, and the
+    /// discovery happened in a browser on the day somebody needed the keys. It is written against the
+    /// other suite's constants rather than against 158 and 167, so that making the two widths equal
+    /// again reddens here instead of quietly deleting the guarantee.
+    /// </remarks>
+    [Test]
+    public async Task For_WithTheTwoPayloadsTransposed_Throws()
+    {
+        // Arrange
+        Credential credential = Credential.CreatePasskey(Guid.CreateVersion7(), UtcNow);
+
+        // Act
+        ValidationException transposed = ThrowsValidationException(() => WrappedAccountKeys.For(
+            credential, Guid.CreateVersion7(), AccountKeys(0x1D), PrivateKey(0xC0), UtcNow));
+
+        // Assert — both members named, because a transposition is wrong about both at once and an
+        // entity that only judged one of them would pass a single-key assertion.
+        await Assert.That(
+            transposed.Errors.ContainsKey(nameof(WrappedAccountKeys.WrappedPrivateKey))).IsTrue();
+        await Assert.That(
+            transposed.Errors.ContainsKey(nameof(WrappedAccountKeys.EncapsulatedAccountKeys))).IsTrue();
     }
 
     /// <summary>
@@ -216,22 +293,28 @@ public sealed class WrappedAccountKeysTests
     /// Accepting it stores bytes that no version of this system can interpret.
     /// </remarks>
     [Test]
-    public async Task For_WithAnUnknownEnvelopeVersion_Throws()
+    public async Task For_WithAnUnknownFramingVersion_Throws()
     {
         // Arrange
         Credential credential = Credential.CreatePasskey(Guid.CreateVersion7(), UtcNow);
-        byte[] successor = Envelope(0xC0);
-        successor[0] = EnvelopeVersion + 1;
+        byte[] successorPrivateKey = PrivateKey(0xC0);
+        successorPrivateKey[0] = WrappedPrivateKeyVersion + 1;
+        byte[] successorAccountKeys = AccountKeys(0x1D);
+        successorAccountKeys[0] = EncapsulatedAccountKeysVersion + 1;
 
-        // Act
-        ValidationException onContent = ThrowsValidationException(() => WrappedAccountKeys.For(
-            credential, Guid.CreateVersion7(), successor, Envelope(0x1D), UtcNow));
-        ValidationException onIndex = ThrowsValidationException(() => WrappedAccountKeys.For(
-            credential, Guid.CreateVersion7(), Envelope(0xC0), successor, UtcNow));
+        // Act — each column's successor is built from its OWN suite's version constant. The two hold
+        // the same number today, so a cross-read renders identical bytes and would go on passing; the
+        // separation is what the day either suite is bumped depends on.
+        ValidationException onPrivateKey = ThrowsValidationException(() => WrappedAccountKeys.For(
+            credential, Guid.CreateVersion7(), successorPrivateKey, AccountKeys(0x1D), UtcNow));
+        ValidationException onAccountKeys = ThrowsValidationException(() => WrappedAccountKeys.For(
+            credential, Guid.CreateVersion7(), PrivateKey(0xC0), successorAccountKeys, UtcNow));
 
         // Assert
-        await Assert.That(onContent.Errors.ContainsKey(nameof(WrappedAccountKeys.WrappedContentKey))).IsTrue();
-        await Assert.That(onIndex.Errors.ContainsKey(nameof(WrappedAccountKeys.WrappedIndexKey))).IsTrue();
+        await Assert.That(
+            onPrivateKey.Errors.ContainsKey(nameof(WrappedAccountKeys.WrappedPrivateKey))).IsTrue();
+        await Assert.That(
+            onAccountKeys.Errors.ContainsKey(nameof(WrappedAccountKeys.EncapsulatedAccountKeys))).IsTrue();
     }
 
     /// <summary>
@@ -249,18 +332,19 @@ public sealed class WrappedAccountKeysTests
     {
         // Arrange
         Credential credential = Credential.CreatePasskey(Guid.CreateVersion7(), UtcNow);
-        byte[] content = Envelope(0xC0);
-        byte[] index = Envelope(0x1D);
+        byte[] content = PrivateKey(0xC0);
+        byte[] index = AccountKeys(0x1D);
         WrappedAccountKeys wrapped = WrappedAccountKeys.For(
             credential, Guid.CreateVersion7(), content, index, UtcNow);
 
         // Act
-        content[EnvelopeLength - 1] ^= 0xFF;
-        index[EnvelopeLength - 1] ^= 0xFF;
+        content[^1] ^= 0xFF;
+        index[^1] ^= 0xFF;
 
-        // Assert
-        await Assert.That(wrapped.WrappedContentKey.Span[EnvelopeLength - 1]).IsEqualTo((byte)0xC0);
-        await Assert.That(wrapped.WrappedIndexKey.Span[EnvelopeLength - 1]).IsEqualTo((byte)0x1D);
+        // Assert — the expected values are cast, because TUnit's IsEqualTo(1) against a byte compiles
+        // and then throws at run time on the comparison rather than failing the assertion.
+        await Assert.That(wrapped.WrappedPrivateKey.Span[^1]).IsEqualTo((byte)0xC0);
+        await Assert.That(wrapped.EncapsulatedAccountKeys.Span[^1]).IsEqualTo((byte)0x1D);
     }
 
     /// <summary>
@@ -275,7 +359,7 @@ public sealed class WrappedAccountKeysTests
     {
         // Act, Assert
         await Assert.That(() => WrappedAccountKeys.For(
-                null!, Guid.CreateVersion7(), Envelope(0xC0), Envelope(0x1D), UtcNow))
+                null!, Guid.CreateVersion7(), PrivateKey(0xC0), AccountKeys(0x1D), UtcNow))
             .Throws<ArgumentNullException>();
     }
 
@@ -287,17 +371,30 @@ public sealed class WrappedAccountKeysTests
     /// matters is that the two columns can be told apart by eye in a failure message, which is why the
     /// callers above pass different bytes rather than the same ones.
     /// </remarks>
-    private static byte[] Envelope(byte filler, int width = EnvelopeLength)
+    private static byte[] PrivateKey(byte filler, int width = WrappedPrivateKeyLength) =>
+        Payload(width, WrappedPrivateKeyVersion, filler);
+
+    /// <inheritdoc cref="PrivateKey" />
+    private static byte[] AccountKeys(byte filler, int width = EncapsulatedAccountKeysLength) =>
+        Payload(width, EncapsulatedAccountKeysVersion, filler);
+
+    /// <summary>
+    /// The shared body of the two above. The width and the version are parameters rather than read
+    /// inside, because the one mistake this helper could make is pairing one suite's width with the
+    /// other's version — which renders bytes the entity refuses for the wrong reason, or accepts when it
+    /// should not, with nothing in the build able to say which.
+    /// </summary>
+    private static byte[] Payload(int width, byte version, byte filler)
     {
-        byte[] envelope = new byte[width];
-        Array.Fill(envelope, filler);
+        byte[] payload = new byte[width];
+        Array.Fill(payload, filler);
 
         if (width > 0)
         {
-            envelope[0] = EnvelopeVersion;
+            payload[0] = version;
         }
 
-        return envelope;
+        return payload;
     }
 
     /// <summary>

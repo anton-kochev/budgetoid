@@ -15,11 +15,36 @@ using ValidationException = Domain.Common.ValidationException;
 namespace UnitTests;
 
 /// <summary>
-/// The act that opens a content-key rotation: which factor set a begin may be staged under, where the
-/// re-authentication gate sits relative to the transaction, what a second begin does to the first, and
-/// what the client is handed to drive the rest of the run.
+/// The act that opens a key rotation: what a begin stages, where the re-authentication gate sits
+/// relative to the transaction, what a second begin does to the first, and what the client is handed to
+/// drive the rest of the run.
 /// </summary>
 /// <remarks>
+/// <para>
+/// <b>THREE CASES WERE DELETED HERE AND THE RULE THEY HELD MOVED RATHER THAN LAPSED. Read this before
+/// writing a weaker replacement.</b> The command used to carry a <c>FactorId</c>, and this file carried
+/// three refusals around it: a second live passkey factor, a factor the account does not hold, and a
+/// recovery-code factor. All three existed to hold one rule — <b>the factor set a rotation commits to
+/// must be exactly the account's live set, set equality in both directions, never "the factor presented
+/// is one of them"</b> — whose failure mode is an authenticator the person still holds, still enrolled,
+/// that can no longer unlock the account, with no repair path except a recovery code.
+/// </para>
+/// <para>
+/// The rule now lives in the <b>staged manifest</b>. A rotation no longer names one factor; it stages
+/// the whole factor set it committed to, as the manifest blob and the epoch it was read at, and
+/// encapsulates the new account keys to every public key that manifest names. So "exactly the live set"
+/// is a question about the manifest's contents and the epoch beside it — and <b>this slice cannot parse
+/// a manifest</b>. The bytes are authenticated client-side material; nothing on this server reads
+/// inside them. Rewriting the three cases into something this layer <em>can</em> check would have
+/// produced a guard over the epoch alone, which admits a stale manifest carrying the right number, and
+/// a green bar saying a rule is held that is not. They were deleted instead.
+/// </para>
+/// <para>
+/// <b>What stands in for them until it lands:</b> the handler is unreachable over HTTP — no route
+/// begins a rotation — so no account can reach the gap. <c>docs/business-logic/key-rotation.md</c>
+/// carries the rule as prose. The commit that makes a begin route reachable owes the manifest check and
+/// owes these three cases back, in whatever shape the manifest reader makes checkable.
+/// </para>
 /// <para>
 /// <b>The gate is a real <see cref="PasskeyReauthentication" /> over fakes rather than a stub, and there
 /// is no interface to stub it behind</b> — the rule <c>EraseAccountHandlerTests</c> states and the reason
@@ -67,18 +92,19 @@ public sealed class BeginKeyRotationHandlerTests
     private const int ReplayedAttempts = 2;
 
     /// <summary>
-    /// The exact width of a wrapped-key envelope, and the version byte it leads with.
+    /// The generation the staged manifest names, and how many bytes of it the fixture builds.
     /// </summary>
     /// <remarks>
-    /// Literals rather than <c>WrappedAccountKeys</c>'s constants, for the reason <c>KeyRotationTests</c>
-    /// gives where it writes the same two values out: every type on this path <em>reads</em> those
-    /// constants, so a test that read them too would feed the code under test whatever that code currently
-    /// believes.
+    /// Literals rather than <c>FactorManifest</c>'s constants, for the reason <c>KeyRotationTests</c>
+    /// gives where it writes the same values out: every type on this path <em>reads</em> those
+    /// constants, so a test that read them too would feed the code under test whatever that code
+    /// currently believes. The length is arbitrary and well under the cap — nothing in this file is
+    /// about the manifest's bounds, which <c>KeyRotationTests</c> owns.
     /// </remarks>
-    private const int EnvelopeLength = 61;
+    private const int StagedRotationEpoch = 4;
 
-    /// <inheritdoc cref="EnvelopeLength" />
-    private const byte EnvelopeVersion = 1;
+    /// <inheritdoc cref="StagedRotationEpoch" />
+    private const int StagedManifestBytes = 24;
 
     /// <summary>
     /// The cap the API puts on a request body, which is what a chunk budget has to fit inside.
@@ -91,95 +117,6 @@ public sealed class BeginKeyRotationHandlerTests
     /// a chunk of <c>MaxChunkBytes</c> fits in a body that also carries the rest of the request's JSON.
     /// </remarks>
     private const int RequestBodyCapBytes = 64 * 1024;
-
-    /// <summary>
-    /// <b>The highest-value case in this file.</b> The account holds a second passkey, the command names
-    /// one factor, and the begin is refused.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// The staged factor set must be <em>exactly</em> the account's live passkey factor set — set equality,
-    /// in both directions — and not "the supplied factor is one of the account's passkey factors". Today
-    /// every account holds exactly one passkey, so the two spellings are indistinguishable on every other
-    /// test here. This is the one case that tells them apart, and it is written before the day it bites.
-    /// </para>
-    /// <para>
-    /// The day is <b>Story 11.13</b>, which makes a second passkey registrable. Under set equality a begin
-    /// that names one factor out of two reddens loudly, here, at the start of the run — before a single row
-    /// has been rewritten and while the client can still re-post a begin carrying both. Under "is one of"
-    /// it succeeds silently, the rotation runs to completion, the promotion overwrites
-    /// <c>wrapped_account_keys</c>, and the second passkey is left holding a wrapped copy of a content key
-    /// that no longer opens anything — an authenticator the person still has, still enrolled, that can no
-    /// longer unlock the account. There is no repair path from there that does not go through a recovery
-    /// code.
-    /// </para>
-    /// </remarks>
-    [Test]
-    public async Task HandleAsync_WhenTheAccountHoldsASecondPasskeyFactor_RefusesAndStagesNothing()
-    {
-        // Arrange — two live passkey factors, and a command naming the first of them, which is exactly
-        // what a client built against today's one-passkey world would send.
-        Fixture fixture = Fixture.Build(passkeyFactors: 2);
-
-        // Act
-        ValidationException refusal = await ThrowsAsync<ValidationException>(
-            () => fixture.Handler.HandleAsync(fixture.Command));
-
-        // Assert — refused on the member the client can correct, and nothing staged.
-        await Assert.That(refusal.Errors.Keys).Contains(nameof(BeginKeyRotationCommand.FactorId));
-        await Assert.That(fixture.KeyRotations.StageCallCount).IsEqualTo(0);
-        await Assert.That(fixture.KeyRotations.Staged.Count).IsEqualTo(0);
-    }
-
-    /// <summary>
-    /// A factor identifier naming nothing the account holds is refused.
-    /// </summary>
-    [Test]
-    public async Task HandleAsync_WithAFactorTheAccountDoesNotHold_RefusesAndStagesNothing()
-    {
-        // Arrange — a well-formed identifier that is filed against nothing at all.
-        Fixture fixture = Fixture.Build();
-        BeginKeyRotationCommand namingNothing = fixture.Command with { FactorId = Guid.CreateVersion7() };
-
-        // Act
-        ValidationException refusal = await ThrowsAsync<ValidationException>(
-            () => fixture.Handler.HandleAsync(namingNothing));
-
-        // Assert
-        await Assert.That(refusal.Errors.Keys).Contains(nameof(BeginKeyRotationCommand.FactorId));
-        await Assert.That(fixture.KeyRotations.StageCallCount).IsEqualTo(0);
-    }
-
-    /// <summary>
-    /// A factor identifier naming one of the account's <b>recovery-code</b> factors is refused, even
-    /// though the account genuinely holds that factor.
-    /// </summary>
-    /// <remarks>
-    /// A set of codes is ten factors under one credential, so "the factor this rotation began under" would
-    /// have ten answers; and a begin is gated on a passkey assertion, which a set of codes cannot produce.
-    /// The fixture files the factor for real — it is a <c>wrapped_account_keys</c> row that is really
-    /// there — so this case cannot be satisfied by a handler that merely fails to find it.
-    /// <para>
-    /// The consequence is deliberate and a reader will file it as a bug: somebody who lost their
-    /// authenticator and signed in with a code must register a replacement passkey before they can begin a
-    /// rotation. <c>docs/business-logic/key-rotation.md</c> records it as a position.
-    /// </para>
-    /// </remarks>
-    [Test]
-    public async Task HandleAsync_WithARecoveryCodeFactor_RefusesAndStagesNothing()
-    {
-        // Arrange
-        Fixture fixture = Fixture.Build(seedRecoveryCodeSet: true);
-        Guid recoveryCodeFactor = fixture.KeyRotations.RecoveryCodeFactorsOf(fixture.UserId)[0];
-
-        // Act
-        ValidationException refusal = await ThrowsAsync<ValidationException>(
-            () => fixture.Handler.HandleAsync(fixture.Command with { FactorId = recoveryCodeFactor }));
-
-        // Assert
-        await Assert.That(refusal.Errors.Keys).Contains(nameof(BeginKeyRotationCommand.FactorId));
-        await Assert.That(fixture.KeyRotations.StageCallCount).IsEqualTo(0);
-    }
 
     /// <summary>
     /// A begin whose assertion does not verify stages nothing.
@@ -286,14 +223,15 @@ public sealed class BeginKeyRotationHandlerTests
     [Test]
     public async Task HandleAsync_WhenARotationIsAlreadyStaged_ReplacesItRatherThanRefusing()
     {
-        // Arrange — an abandoned run, staged under its own identifier and its own envelopes.
+        // Arrange — an abandoned run, staged under its own identifier, manifest and epoch. Every one of
+        // the three differs from the replacing begin's, so nothing below can pass on a row that was
+        // never rewritten.
         Fixture fixture = Fixture.Build();
         KeyRotation abandoned = KeyRotation.Begin(
             fixture.Passkey,
-            fixture.PasskeyFactorId,
             Guid.CreateVersion7(),
-            Envelope(0xAA),
-            Envelope(0xBB),
+            Manifest(0xAA),
+            StagedRotationEpoch - 1,
             Fixture.UtcNow);
         fixture.KeyRotations.SeedStagedRotation(abandoned);
 
@@ -305,8 +243,9 @@ public sealed class BeginKeyRotationHandlerTests
         await Assert.That(fixture.KeyRotations.Staged.Count).IsEqualTo(1);
         await Assert.That(staged!.RotationId).IsEqualTo(fixture.Command.RotationId);
         await Assert.That(staged.RotationId).IsNotEqualTo(abandoned.RotationId);
-        await Assert.That(staged.WrappedContentKey.ToArray())
-            .IsEquivalentTo(fixture.Command.WrappedContentKey.ToArray(), CollectionOrdering.Matching);
+        await Assert.That(staged.StagedManifest.ToArray())
+            .IsEquivalentTo(fixture.Command.StagedManifest.ToArray(), CollectionOrdering.Matching);
+        await Assert.That(staged.StagedRotationEpoch).IsEqualTo(fixture.Command.StagedRotationEpoch);
     }
 
     /// <summary>
@@ -440,17 +379,17 @@ public sealed class BeginKeyRotationHandlerTests
     }
 
     /// <summary>
-    /// The control: the account's one passkey factor, named by the command, stages the rotation with every
-    /// value the client sent on it.
+    /// The control: a verified assertion stages the rotation with every value the client sent on it.
     /// </summary>
     /// <remarks>
-    /// Without this, a handler that refused everything passes every refusal above. The two envelopes carry
-    /// <em>different</em> filler and are compared in order, so a handler that assigned one argument twice —
-    /// or swapped the pair — fails here; a swapped pair is the one mistake at this layer that no width
-    /// check, no version check and no database constraint can see.
+    /// Without this, a handler that refused everything passes every refusal above. The manifest carries
+    /// distinct bytes and is compared in order, because TUnit's bare <c>IsEquivalentTo</c> defaults to
+    /// <see cref="CollectionOrdering.Any" /> and a handler that reversed or rebuilt the buffer would
+    /// satisfy anything weaker — and for a blob nothing on this side can read, position is the whole of
+    /// what "the bytes the client sent" means.
     /// </remarks>
     [Test]
-    public async Task HandleAsync_WithTheAccountsOnlyPasskeyFactor_StagesTheRotation()
+    public async Task HandleAsync_WithAVerifiedAssertion_StagesTheRotation()
     {
         // Arrange
         Fixture fixture = Fixture.Build();
@@ -462,12 +401,10 @@ public sealed class BeginKeyRotationHandlerTests
         KeyRotation? staged = await fixture.KeyRotations.FindStagedRotationAsync(fixture.UserId);
         await Assert.That(staged).IsNotNull();
         await Assert.That(staged!.UserId).IsEqualTo(fixture.UserId);
-        await Assert.That(staged.FactorId).IsEqualTo(fixture.PasskeyFactorId);
         await Assert.That(staged.RotationId).IsEqualTo(fixture.Command.RotationId);
-        await Assert.That(staged.WrappedContentKey.ToArray())
-            .IsEquivalentTo(fixture.Command.WrappedContentKey.ToArray(), CollectionOrdering.Matching);
-        await Assert.That(staged.WrappedIndexKey.ToArray())
-            .IsEquivalentTo(fixture.Command.WrappedIndexKey.ToArray(), CollectionOrdering.Matching);
+        await Assert.That(staged.StagedManifest.ToArray())
+            .IsEquivalentTo(fixture.Command.StagedManifest.ToArray(), CollectionOrdering.Matching);
+        await Assert.That(staged.StagedRotationEpoch).IsEqualTo(fixture.Command.StagedRotationEpoch);
         await Assert.That(staged.StartedAtUtc).IsEqualTo(Fixture.UtcNow);
     }
 
@@ -552,21 +489,17 @@ public sealed class BeginKeyRotationHandlerTests
     }
 
     /// <summary>
-    /// A well-formed envelope: the version byte the contract defines, then filler.
+    /// A staged factor manifest of distinct bytes, so an assertion over it is about position.
     /// </summary>
     /// <remarks>
-    /// Built from this file's own literals, for the reason <c>KeyRotationTests</c> gives. The filler is
-    /// neither a nonce nor a ciphertext — nothing at this layer inspects either — and its only job is to
-    /// let the two columns be told apart by eye in a failure message.
+    /// <paramref name="seed" /> is what tells one fixture's manifest from another's — the abandoned
+    /// rotation and the replacing one have to differ, or the replacement test could pass on a row that
+    /// was never rewritten. Nothing at this layer parses a manifest: it is authenticated client-side
+    /// material, and the whole reason three refusals were deleted from this file is that this server
+    /// cannot read inside it.
     /// </remarks>
-    private static byte[] Envelope(byte filler)
-    {
-        byte[] envelope = new byte[EnvelopeLength];
-        Array.Fill(envelope, filler);
-        envelope[0] = EnvelopeVersion;
-
-        return envelope;
-    }
+    private static byte[] Manifest(byte seed) =>
+        [.. Enumerable.Range(0, StagedManifestBytes).Select(offset => (byte)(seed + offset))];
 
     /// <summary>
     /// Runs <paramref name="action" /> and returns the exception it was expected to throw.
@@ -767,12 +700,11 @@ public sealed class BeginKeyRotationHandlerTests
                         assertion.AuthenticatorDataBase64Url,
                         assertion.SignatureBase64Url,
                         assertion.UserHandleBase64Url),
-                    passkeyFactorIds[0],
                     Guid.CreateVersion7(),
 
-                    // Different filler per column, so a swapped or duplicated assignment is visible.
-                    Envelope(0xC0),
-                    Envelope(0x1D)),
+                    // Distinct bytes, so the read-back below is about position rather than content.
+                    Manifest(0xC0),
+                    StagedRotationEpoch),
                 keyRotations,
                 inventory,
                 challenges,

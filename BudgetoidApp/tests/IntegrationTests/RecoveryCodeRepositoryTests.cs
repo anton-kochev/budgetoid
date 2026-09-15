@@ -811,7 +811,7 @@ public sealed class RecoveryCodeRepositoryTests
             WrappedKeyFixture keys = WrappedKeyFixture.Mint();
 
             return WrappedAccountKeys.For(
-                set, keys.Factor, keys.ContentEnvelope, keys.IndexEnvelope, SeedInstant);
+                set, keys.Factor, keys.PrivateKeyEnvelope, keys.AccountKeysEnvelope, SeedInstant);
         }),
     ];
 

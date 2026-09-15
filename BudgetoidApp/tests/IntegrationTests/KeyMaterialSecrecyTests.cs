@@ -175,7 +175,7 @@ public sealed class KeyMaterialSecrecyTests
                 .Select(member => member.Qualified)
                 .Distinct(StringComparer.Ordinal),
         ];
-        await Assert.That(text).Contains("RegistrationEndpoints.RegistrationRequest.WrappedContentKey");
+        await Assert.That(text).Contains("RegistrationEndpoints.RegistrationRequest.WrappedPrivateKey");
         await Assert.That(text).Contains("RecoveryCodeSubmission.Verifier");
     }
 
@@ -195,7 +195,7 @@ public sealed class KeyMaterialSecrecyTests
     /// argument in the list is an argument for a member that is not there, and one of them is named.
     /// </para>
     /// <para>
-    /// <see cref="ProbeRequest.WrappedContentKey" /> is deliberately among the reported three. It is the
+    /// <see cref="ProbeRequest.WrappedPrivateKey" /> is deliberately among the reported three. It is the
     /// legal spelling the deny-list census lets through, which is exactly the point: this leg does not
     /// judge names at all, so a member being innocently named buys it nothing here.
     /// </para>
@@ -214,17 +214,17 @@ public sealed class KeyMaterialSecrecyTests
 
         // Assert — the three text members of the probe are named, whatever they are called.
         await Assert.That(unargued).Contains("KeyMaterialSecrecyTests.ProbeRequest.ContentKey");
-        await Assert.That(unargued).Contains("KeyMaterialSecrecyTests.ProbeRequest.WrappedContentKey");
+        await Assert.That(unargued).Contains("KeyMaterialSecrecyTests.ProbeRequest.WrappedPrivateKey");
         await Assert.That(unargued).Contains("KeyMaterialSecrecyTests.ProbeNestedResults.PrfOutput");
 
         // And a real member that IS argued for is not, in the same call, so this cannot pass by a
         // comparison that reports every member it sees.
         await Assert.That(unargued)
-            .DoesNotContain("RegistrationEndpoints.RegistrationRequest.WrappedContentKey");
+            .DoesNotContain("RegistrationEndpoints.RegistrationRequest.WrappedPrivateKey");
 
         // The other direction, proven rather than assumed: over a surface holding only the probe, an
         // argument for a member of the real surface is an argument for a member that is gone.
-        await Assert.That(stale).Contains("RegistrationEndpoints.RegistrationRequest.WrappedContentKey");
+        await Assert.That(stale).Contains("RegistrationEndpoints.RegistrationRequest.WrappedPrivateKey");
     }
 
     [Test]
@@ -259,7 +259,7 @@ public sealed class KeyMaterialSecrecyTests
         // And the deliberately innocent members of the same two records are NOT reported, so the
         // control cannot pass by a rule that fires on everything.
         await Assert.That(offenders)
-            .DoesNotContain("KeyMaterialSecrecyTests.ProbeRequest.WrappedContentKey");
+            .DoesNotContain("KeyMaterialSecrecyTests.ProbeRequest.WrappedPrivateKey");
         await Assert.That(offenders)
             .DoesNotContain("KeyMaterialSecrecyTests.ProbeNestedResults.Enabled");
     }
@@ -297,8 +297,8 @@ public sealed class KeyMaterialSecrecyTests
         // also what a broken join looks like. Naming the story's own two columns proves the scan
         // reached the catalog and reached this table in particular.
         Console.WriteLine($"Binary columns: {string.Join(", ", binaryColumns)}");
-        await Assert.That(binaryColumns).Contains("wrapped_account_keys.wrapped_content_key");
-        await Assert.That(binaryColumns).Contains("wrapped_account_keys.wrapped_index_key");
+        await Assert.That(binaryColumns).Contains("wrapped_account_keys.wrapped_private_key");
+        await Assert.That(binaryColumns).Contains("wrapped_account_keys.encapsulated_account_keys");
     }
 
     [Test]
@@ -346,18 +346,18 @@ public sealed class KeyMaterialSecrecyTests
         await admin.OpenAsync();
         await ExecuteAsync(
             admin,
-            "alter table wrapped_account_keys drop column wrapped_index_key cascade");
+            "alter table wrapped_account_keys drop column encapsulated_account_keys cascade");
 
         // Act
         IReadOnlyList<string> binaryColumns = await ReadBinaryColumnsAsync(admin);
         (_, string[] stale) = CompareToClassifications(binaryColumns);
 
         // Assert — the orphaned classification is named.
-        await Assert.That(stale).Contains("wrapped_account_keys.wrapped_index_key");
+        await Assert.That(stale).Contains("wrapped_account_keys.encapsulated_account_keys");
 
         // And its surviving sibling is not, so this cannot be passing because the comparison reports
         // the whole classification list whenever anything moves.
-        await Assert.That(stale).DoesNotContain("wrapped_account_keys.wrapped_content_key");
+        await Assert.That(stale).DoesNotContain("wrapped_account_keys.wrapped_private_key");
     }
 
     /// <summary>
@@ -445,8 +445,8 @@ public sealed class KeyMaterialSecrecyTests
         // schema closest to the line — `content_key` and `index_key` are refused outright, and it is
         // one adjacent word that makes each of them legal. If the qualifier mechanism ever breaks,
         // this test reds on the two columns the story just shipped rather than going quiet.
-        await Assert.That(identifiers.Columns).Contains("wrapped_account_keys.wrapped_content_key");
-        await Assert.That(identifiers.Columns).Contains("wrapped_account_keys.wrapped_index_key");
+        await Assert.That(identifiers.Columns).Contains("wrapped_account_keys.wrapped_private_key");
+        await Assert.That(identifiers.Columns).Contains("wrapped_account_keys.encapsulated_account_keys");
 
         // The relation grain likewise: `wrapped_account_keys` reaches the `account_key` rule only in
         // its plural form and is let go only by the qualifier's singular, so it is the one name that
@@ -460,7 +460,7 @@ public sealed class KeyMaterialSecrecyTests
     {
         // Arrange — a throwaway relation whose own name is deliberately innocent, carrying the one
         // column that is not. `content_key` is the sharpest available probe: it differs from the
-        // shipped, legal `wrapped_content_key` by exactly the qualifier, so a control that reports it
+        // shipped, legal `wrapped_private_key` by exactly the qualifier, so a control that reports it
         // proves the vocabulary distinguishes the two rather than waving the pair through together.
         await using RepositoryTestHost host = await StartHostAsync();
         await using NpgsqlConnection admin = new(host.ConnectionString);
@@ -485,7 +485,7 @@ public sealed class KeyMaterialSecrecyTests
         // just refused the bare one. Two facts on one database is what makes this a statement about
         // the qualifier rather than two statements about two vocabularies.
         await Assert.That(offenders)
-            .DoesNotContain("wrapped_account_keys.wrapped_content_key");
+            .DoesNotContain("wrapped_account_keys.wrapped_private_key");
     }
 
     [Test]
@@ -715,7 +715,7 @@ public sealed class KeyMaterialSecrecyTests
             + "ciphertext and tag, produced in the browser under the account's content key",
             "the same argument budgets.name makes, and deliberately not a pointer at it: the content "
             + "key that seals this is generated in the browser and reaches this server only as the "
-            + "wrapped_content_key envelopes, each sealed under a key-encryption key derived from a "
+            + "wrapped_private_key envelopes, each sealed under a key-encryption key derived from a "
             + "recovery factor the operator never holds, so the row and everything that could open it "
             + "are separated by a step that happens on somebody's device. It is CONTENT rather than "
             + "key material, which inverts the wrapped-key argument rather than joining it. The "
@@ -735,7 +735,7 @@ public sealed class KeyMaterialSecrecyTests
             + "is nothing here to open: a blind index is a keyed digest with no version, no nonce and "
             + "no tag. Recovering the name from it means inverting HMAC-SHA-256 or guessing the "
             + "plaintext AND holding the index key, which is generated in the browser beside the "
-            + "content key and reaches this server only as the wrapped_index_key envelopes — so the "
+            + "content key and reaches this server only as the encapsulated_account_keys envelopes — so the "
             + "operator can neither invert it nor recompute a candidate to compare against. It "
             + "unwraps nothing in the second sense too: it is an input to no KDF and no wrapping step, "
             + "so even a recovered index key opens no envelope, it only lets somebody search this "
@@ -758,7 +758,7 @@ public sealed class KeyMaterialSecrecyTests
             "a budget's name sealed as a narrative field — an AEAD envelope of version, nonce, "
             + "ciphertext and tag, produced in the browser under the account's content key",
             "the content key that seals it is generated in the browser and reaches this server only "
-            + "as the wrapped_content_key envelopes next door, each sealed under a key-encryption key "
+            + "as the wrapped_private_key envelopes next door, each sealed under a key-encryption key "
             + "derived from a recovery factor the operator never holds — so the row and everything "
             + "that could open it are separated by a step that happens on somebody's device. This is "
             + "the reverse of the wrapped-key argument rather than a copy of it: those columns are the "
@@ -777,7 +777,7 @@ public sealed class KeyMaterialSecrecyTests
             "the same content-key argument budgets.name, accounts.name, category_groups.name and "
             + "payees.name make, written out again rather than pointed at, because a classification "
             + "that says \"see above\" stops being a per-column argument: the content key is generated "
-            + "in the browser and reaches this server only as the wrapped_content_key envelopes, each "
+            + "in the browser and reaches this server only as the wrapped_private_key envelopes, each "
             + "sealed under a key-encryption key derived from a recovery factor the operator never "
             + "holds. WHAT THIS COLUMN IN PARTICULAR STOPS BEING LEGIBLE sits one level FINER than its "
             + "group's and is the more revealing of the two for exactly that reason: a group called "
@@ -821,7 +821,7 @@ public sealed class KeyMaterialSecrecyTests
             + "two entries up on this same table. There is nothing here to open: a blind index is a "
             + "keyed digest with no version, no nonce and no tag. Recovering the name means inverting "
             + "HMAC-SHA-256, or guessing the plaintext AND holding the index key, which is generated in "
-            + "the browser beside the content key and reaches this server only as the wrapped_index_key "
+            + "the browser beside the content key and reaches this server only as the encapsulated_account_keys "
             + "envelopes. It unwraps nothing in the second sense either: it is an input to no KDF and "
             + "no wrapping step, so even a recovered index key opens no envelope, it only lets somebody "
             + "search this column. WHAT IT LEAKS IS EQUALITY WITHIN ONE BUDGET, and the equality here "
@@ -869,7 +869,7 @@ public sealed class KeyMaterialSecrecyTests
             "the same content-key argument budgets.name, accounts.name and payees.name make, written "
             + "out again rather than pointed at, because a classification that says \"see above\" stops "
             + "being a per-column argument: the content key is generated in the browser and reaches "
-            + "this server only as the wrapped_content_key envelopes, each sealed under a "
+            + "this server only as the wrapped_private_key envelopes, each sealed under a "
             + "key-encryption key derived from a recovery factor the operator never holds, so the row "
             + "and everything that could open it are separated by a step that happens on somebody's "
             + "device. WHAT THIS COLUMN IN PARTICULAR STOPS BEING LEGIBLE is the COARSEST label in a "
@@ -889,7 +889,7 @@ public sealed class KeyMaterialSecrecyTests
             + "narrative column that is nullable after budgets.name",
             "the content-key half is its neighbour's and is restated rather than pointed at for the "
             + "same reason: the key is generated in the browser and reaches this server only as the "
-            + "wrapped_content_key envelopes, each sealed under a key-encryption key derived from a "
+            + "wrapped_private_key envelopes, each sealed under a key-encryption key derived from a "
             + "recovery factor the operator never holds. IT OWES A CONCESSION NO OTHER ENTRY ON THIS "
             + "TABLE MAKES, and pasting the name's paragraph over this one is exactly how it would be "
             + "lost. accounts.name, category_groups.name and payees.name are NOT NULL, so their "
@@ -924,7 +924,7 @@ public sealed class KeyMaterialSecrecyTests
             + "keyed digest with no version, no nonce and no tag. Recovering the name means inverting "
             + "HMAC-SHA-256, or guessing the plaintext AND holding the index key \u2014 which is generated "
             + "in the browser beside the content key and reaches this server only as the "
-            + "wrapped_index_key envelopes, so the operator can neither invert it nor recompute a "
+            + "encapsulated_account_keys envelopes, so the operator can neither invert it nor recompute a "
             + "candidate to compare against. It unwraps nothing in the second sense either: it is an "
             + "input to no KDF and no wrapping step, so even a recovered index key opens no envelope, "
             + "it only lets somebody search this column. WHAT IT LEAKS IS EQUALITY WITHIN ONE BUDGET, "
@@ -951,7 +951,7 @@ public sealed class KeyMaterialSecrecyTests
             "the same content-key argument accounts.name and budgets.name make, written out again "
             + "rather than pointed at, because a classification that says \"see above\" stops being a "
             + "per-column argument: the content key is generated in the browser and reaches this "
-            + "server only as the wrapped_content_key envelopes, each sealed under a key-encryption "
+            + "server only as the wrapped_private_key envelopes, each sealed under a key-encryption "
             + "key derived from a recovery factor the operator never holds, so the row and everything "
             + "that could open it are separated by a step that happens on somebody's device. WHAT THIS "
             + "COLUMN IN PARTICULAR STOPS BEING LEGIBLE IS WORTH NAMING, because it is the strongest "
@@ -974,7 +974,7 @@ public sealed class KeyMaterialSecrecyTests
             + "here to open: a blind index is a keyed digest with no version, no nonce and no tag. "
             + "Recovering the name means inverting HMAC-SHA-256, or guessing the plaintext AND holding "
             + "the index key — which is generated in the browser beside the content key and reaches "
-            + "this server only as the wrapped_index_key envelopes, so the operator can neither invert "
+            + "this server only as the encapsulated_account_keys envelopes, so the operator can neither invert "
             + "it nor recompute a candidate to compare against. It unwraps nothing in the second sense "
             + "either: it is an input to no KDF and no wrapping step, so even a recovered index key "
             + "opens no envelope, it only lets somebody search this column. WHAT IT LEAKS IS EQUALITY "
@@ -995,66 +995,88 @@ public sealed class KeyMaterialSecrecyTests
             + "correlation and no frequency analysis over the population"),
         new(
             "wrapped_account_keys",
-            "wrapped_content_key",
-            "the account's content key sealed under one factor's key-encryption key — the 61-byte "
-            + "envelope of version, nonce, ciphertext and tag",
-            "the key-encryption key it is sealed under is derived in the browser from a recovery "
+            "wrapped_private_key",
+            "the PRIVATE half of one recovery factor's ECDH P-256 key pair, WRAPPED UNDER the "
+            + "key-encryption key that factor derives — 167 bytes of CiphertextEnvelope: version, "
+            + "nonce, ciphertext over a PKCS#8 private key, tag",
+            "the key-encryption key it is wrapped under is derived in the browser from a recovery "
             + "factor and imported non-extractable, so it exists nowhere this row can be read from. "
-            + "AES-GCM without the key yields nothing but the fact that 32 bytes were sealed, which "
-            + "the column's fixed width already says"),
+            + "AES-GCM without that key yields nothing but the fact that a fixed-width plaintext was "
+            + "sealed, which the column's own length already says. IT IS THE MOST VALUABLE bytea ON "
+            + "THIS SCHEMA AND THE ENTRY SHOULD SAY SO RATHER THAN READ LIKE ITS NEIGHBOURS: this is "
+            + "the value that opens encapsulated_account_keys beside it, so an operator holding it in "
+            + "the clear would hold the account\'s content key and index key by two steps and not one. "
+            + "What keeps it shut is that unwrapping it is the FIRST of those two steps and needs the "
+            + "key-encryption key, which is the one value in this design that never crosses the wire "
+            + "in any form. It unwraps nothing in the second sense either while it is wrapped: the "
+            + "bytes here are an input to no KDF on this side, and this server runs no ECDH at all — "
+            + "nothing is typed for a private key and no route accepts one"),
         new(
             "wrapped_account_keys",
-            "wrapped_index_key",
-            "the account's index key in the same envelope, sealed under the same factor",
-            "the same argument, and one more: the two envelopes carry DIFFERENT associated data, so "
-            + "even an operator who obtained one factor's key-encryption key could not move a copy "
-            + "between the two columns without the tag failing to verify"),
+            "encapsulated_account_keys",
+            "the account\'s content key and index key as ONE 64-byte plaintext, content key first, "
+            + "ENCAPSULATED TO the public half of that same factor\'s key pair — 158 bytes of "
+            + "EncapsulatedValueEnvelope: version, ephemeral public key, nonce, ciphertext, tag",
+            "opening it needs the private half, which is the column beside it and is wrapped under a "
+            + "key-encryption key this server has never held — so the two columns are a chain and not "
+            + "a pair, and holding both opens neither. THE VERB IS DIFFERENT FROM ITS NEIGHBOUR\'S AND "
+            + "THE DIFFERENCE IS THE POINT, not a wording preference: that value is WRAPPED UNDER a "
+            + "symmetric key, this one is ENCAPSULATED TO a public key, and the second is what lets a "
+            + "rotation re-key an account without the authenticator being present. It is also why no "
+            + "transposition argument can be inherited from the older shape of this table: the two "
+            + "columns now hold DIFFERENT SUITES AT DIFFERENT WIDTHS — 167 against 158 — so a value "
+            + "filed in the wrong column is refused by that column\'s own check constraints rather "
+            + "than discovered in a browser months later. What remains unguarded is INSIDE this value, "
+            + "one 64-byte plaintext holding two 32-byte keys whose ORDER no check on this side can "
+            + "see; that is a contract between clients and the entity carries the argument in full"),
         new(
             "key_rotations",
-            "wrapped_content_key",
-            "the NEXT generation of the account's content key, staged while a rotation is in flight — "
-            + "the same 61-byte envelope of version, nonce, ciphertext and tag that "
-            + "wrapped_account_keys.wrapped_content_key holds, sealed under one factor's "
-            + "key-encryption key and waiting for a completion step to promote it",
-            "the key-encryption key it is sealed under is derived in the browser from a recovery "
-            + "factor and imported non-extractable, so it exists nowhere this row can be read from — "
-            + "written out rather than pointed at its sibling, because a classification that says "
-            + "\"see above\" stops being a per-column argument. AES-GCM without that key yields "
-            + "nothing but the fact that 32 bytes were sealed, which the column's fixed width and its "
-            + "two check constraints already say out loud. WHAT IS NEW HERE IS NOT THE BYTES BUT THE "
-            + "SIMULTANEITY, and it is the one thing a reader should check rather than assume: for as "
-            + "long as a run is in flight the server holds TWO generations of one account's content "
-            + "key at once, which is a second envelope and not a second chance at the first. Both are "
-            + "sealed under key-encryption keys derived on somebody's device, so holding two opens "
-            + "neither, and holding both does not let one be used against the other — they are "
-            + "independent seals over independent 32-byte keys, not a key and a re-key of it, so "
-            + "there is no relation between the ciphertexts for an operator to exploit. The staging "
-            + "row is also the ONLY copy of the new generation this server ever sees before promotion: "
-            + "if the factor is revoked mid-run the row cascades away with it, which is correct rather "
-            + "than lossy — the envelopes were sealed under that factor's key-encryption key, so once "
-            + "it is gone they are two blobs nothing in the world can open"),
+            "staged_manifest",
+            "the factor manifest a rotation in flight committed to — the same authenticated list of "
+            + "every recovery factor\'s PUBLIC key that factor_manifests.manifest holds, staged beside "
+            + "the generation still in force so that a completion step can tell whether the live set "
+            + "has moved under it",
+            "IT IS NOT AN ENVELOPE AND THE STANDING ARGUMENT EVERY SEALED bytea HERE MAKES DOES NOT "
+            + "APPLY TO IT — written out rather than pointed at factor_manifests.manifest, because a "
+            + "classification that says \"see the other table\" stops being a per-column argument. "
+            + "There is nothing here to open: these are PUBLIC keys, held in the clear on purpose. "
+            + "Reading it yields how many recovery factors the run committed to and each of their ECDH "
+            + "P-256 public keys, and encapsulating to a public key is one-way — the private halves are "
+            + "wrapped under key-encryption keys derived on somebody\'s device, so holding every public "
+            + "key in the account opens not one envelope on this schema. WHAT IS NEW HERE IS THE "
+            + "SIMULTANEITY RATHER THAN THE BYTES, and it is the one thing a reader should check rather "
+            + "than assume: while a run is in flight the server holds TWO manifests for one account. "
+            + "Both are public and neither is a step toward the other, so two is worth exactly what one "
+            + "is. The tag over the set is what this column defends, and it defends integrity rather "
+            + "than secrecy — an operator who added, removed or swapped an entry produces a manifest "
+            + "the client refuses rather than one it believes, which is the whole reason the staged "
+            + "copy is stored rather than re-read"),
         new(
-            "key_rotations",
-            "wrapped_index_key",
-            "the next generation of the account's index key in the same envelope, staged under the "
-            + "same factor as the content key beside it",
-            "the key-encryption key argument is its neighbour's and holds here for the same reason: "
-            + "it is derived on somebody's device from a recovery factor and never reaches this "
-            + "server, so nothing here opens this value. THE SEPARATION ARGUMENT IS THE ONE THIS "
-            + "COLUMN OWES IN ITS OWN WORDS, and it is a sharper claim on this table than on "
-            + "wrapped_account_keys, so it must not be inherited from there. The two envelopes carry "
-            + "DIFFERENT associated data, so an operator who obtained the factor's key-encryption key "
-            + "still could not move a copy between these two columns without the tag failing to "
-            + "verify — that much is the sibling's claim. What this table adds is a SECOND axis the "
-            + "tag has to hold: a staged envelope and a promoted one are two rows for the same factor "
-            + "in two tables, so swapping across tables is a move the associated data refuses as well "
-            + "as swapping across columns, and only that refusal stands between a half-finished "
-            + "rotation and an account sealed under a key the completion step never staged. NOTHING "
-            + "HERE UNWRAPS ANYTHING IN THE SECOND SENSE EITHER: the index key this envelope contains "
-            + "is an input to the client's HMAC over normalised names and to no KDF and no wrapping "
-            + "step on this side, so even a recovered index key would open no envelope — it would only "
-            + "let somebody recompute blind indexes, which is the bound accounts.name_key already "
-            + "states for itself"),
+            "key_rotation_seals",
+            "encapsulated_account_keys",
+            "one surviving factor\'s copy of the NEXT generation of the account\'s content key and index "
+            + "key, encapsulated to that factor\'s public key — the same 158-byte "
+            + "EncapsulatedValueEnvelope, at the same width, that a completion step copies into "
+            + "wrapped_account_keys.encapsulated_account_keys",
+            "opening it needs that factor\'s private half, which lives wrapped under a key-encryption "
+            + "key derived on somebody\'s device and never reaches this server — written out rather "
+            + "than pointed at its sibling, because a classification that says \"see above\" stops "
+            + "being a per-column argument. WHAT IS NEW HERE IS THE SIMULTANEITY, and it is the one "
+            + "thing a reader should check rather than assume: for as long as a run is in flight the "
+            + "server holds TWO generations of one account\'s keys at once, this row and the live one "
+            + "next door. That is a second encapsulation and not a second chance at the first — the two "
+            + "are independent encapsulations of independent 32-byte keys, not a key and a re-key of "
+            + "it, so there is no relation between the ciphertexts for an operator to exploit, and "
+            + "holding both opens neither. THE SEPARATION ARGUMENT IS THE ONE THIS COLUMN OWES IN ITS "
+            + "OWN WORDS. A staged value and a promoted one are two rows for one factor in two tables, "
+            + "and what stops a half-finished run from leaving an account sealed under a generation the "
+            + "completion step never staged is the composite foreign key to "
+            + "wrapped_account_keys(factor_id, user_id) beside the tag — the one makes a seal against "
+            + "another account\'s factor unstorable, the other makes a value moved between rows "
+            + "unopenable. PRODUCING THIS VALUE NEEDS ONLY A PUBLIC KEY, which is the capability the "
+            + "table exists for and is not a weakness: a run can stage a copy for an authenticator in a "
+            + "drawer, and an operator who forged one would produce bytes no client can open, not bytes "
+            + "that open as somebody else\'s"),
         new(
             "factor_manifests",
             "manifest",
@@ -1197,7 +1219,7 @@ public sealed class KeyMaterialSecrecyTests
             + "a keyed digest and not an envelope — nothing to open and no way back to the text — and it "
             + "is what makes uniqueness of names survive a column the database cannot read. Not key "
             + "material: it is an output taken UNDER a key, and the key itself only ever crosses this "
-            + "wire sealed, as AccountKeyEntry.WrappedIndexKey"),
+            + "wire sealed, as AccountKeyEntry.EncapsulatedAccountKeys"),
         new("AccountErasureEndpoints.ErasureRequest", "AuthenticatorData",
             "base64url over the authenticator's signed bytes: a relying-party hash, flags and a counter"),
         new("AccountErasureEndpoints.ErasureRequest", "ClientDataJson",
@@ -1208,23 +1230,24 @@ public sealed class KeyMaterialSecrecyTests
             "base64url over an assertion signature, verified with a published public key"),
         new("AccountErasureEndpoints.ErasureRequest", "UserHandle",
             "base64url over the sixteen bytes of the account id the authenticator kept"),
-        new("AccountKeyEndpoints.AccountKeyEntry", "WrappedContentKey",
-            "a response member: base64url over the 61-byte envelope holding the account's CONTENT key, "
-            + "sealed under the key-encryption key of one factor of the credential that opened this "
-            + "session. It is key material leaving the server, and that is this route rather than a leak: "
-            + "the key that would open it is derived in the browser from a recovery factor — an "
+        new("AccountKeyEndpoints.AccountKeyEntry", "WrappedPrivateKey",
+            "a response member: base64url over the 167-byte AEAD envelope holding the PRIVATE HALF of "
+            + "one factor's ECDH key pair, WRAPPED UNDER the key-encryption key that factor derives. It "
+            + "is key material leaving the server, and that is this route rather than a leak: the key "
+            + "that would unwrap it is derived in the browser from a recovery factor — an "
             + "authenticator's prf output, or a recovery code — and neither of those ever reaches this "
-            + "server, so the operator handing these bytes back cannot unseal them and never could. What "
-            + "the census refuses is an UNSEALED key crossing the wire; a sealed one crossing is the "
+            + "server, so the operator handing these bytes back cannot unwrap them and never could. What "
+            + "the census refuses is an UNWRAPPED key crossing the wire; a wrapped one crossing is the "
             + "design"),
-        new("AccountKeyEndpoints.AccountKeyEntry", "WrappedIndexKey",
-            "a response member: base64url over the same envelope holding the account's INDEX key — the "
-            + "one a blind index over a name is computed under — sealed under the SAME factor's "
-            + "key-encryption key and bound to a different purpose in its associated data. Written out "
-            + "rather than pointed at its neighbour because the two are the same width, carry the same "
-            + "version and are indistinguishable to every check this server owns: one argument covering "
-            + "both would be a single sentence answering for two values nothing here can tell apart, "
-            + "which is the confusion that associated data exists to prevent"),
+        new("AccountKeyEndpoints.AccountKeyEntry", "EncapsulatedAccountKeys",
+            "a response member: base64url over the 158-byte encapsulation holding BOTH account keys as "
+            + "one plaintext, content key first, ENCAPSULATED TO the public half of the same factor's "
+            + "key pair. Written out rather than pointed at its neighbour because it is a value of a "
+            + "DIFFERENT SUITE at a different width, and the verb is the difference: that one is wrapped "
+            + "under a symmetric key, this one is encapsulated to a public key, and the client runs them "
+            + "in that order or gets an authentication failure naming nothing. The two are a CHAIN and "
+            + "not a pair — opening this needs the private half the member beside it carries — so an "
+            + "operator holding both opens neither"),
         new("CategoryEndpoints.UpdateCategoryRequest", "Description",
             "base64url over the AEAD envelope holding a person's own note about one of their categories "
             + "\u2014 or absent, which CLEARS the note, because this route is a PUT and a PUT is a full "
@@ -1242,7 +1265,7 @@ public sealed class KeyMaterialSecrecyTests
             "base64url over the 32-byte blind index the client computed over the SAME name it sealed "
             + "beside this: HMAC-SHA-256 under the account's index key, which lives in a browser. A "
             + "keyed digest and not an envelope, and not key material \u2014 the index key itself "
-            + "crosses this wire only sealed, as AccountKeyEntry.WrappedIndexKey. IT IS REQUIRED RATHER "
+            + "crosses this wire only sealed, as AccountKeyEntry.EncapsulatedAccountKeys. IT IS REQUIRED RATHER "
             + "THAN OPTIONAL, and that is this member's own point: Category.Update writes both halves in "
             + "one statement, so a body carrying a new envelope without a new index would leave the row "
             + "holding ciphertext under the PREVIOUS name's index \u2014 invisible on this side "
@@ -1262,7 +1285,7 @@ public sealed class KeyMaterialSecrecyTests
             "base64url over the 32-byte blind index the client computed over the SAME name it sealed "
             + "beside this, under the account's index key. A keyed digest, not an envelope, and not key "
             + "material \u2014 the index key itself crosses this wire only sealed, as "
-            + "AccountKeyEntry.WrappedIndexKey. It rides the update body because a rename must rewrite "
+            + "AccountKeyEntry.EncapsulatedAccountKeys. It rides the update body because a rename must rewrite "
             + "both halves in one statement: an envelope written without its index leaves the row "
             + "indexed under the name it no longer holds, which nothing on this side can detect"),
         new("CreateAccountCommand", "CurrencyCode",
@@ -1280,7 +1303,7 @@ public sealed class KeyMaterialSecrecyTests
             "base64url over the 32-byte blind index the client computed over the SAME name it sealed "
             + "beside this, under the account's index key. A keyed digest, not an envelope, and not key "
             + "material — the index key itself crosses this wire only sealed, as "
-            + "AccountKeyEntry.WrappedIndexKey"),
+            + "AccountKeyEntry.EncapsulatedAccountKeys"),
         new("CreateCategoryCommand", "Description",
             "base64url over the AEAD envelope holding a person's own note about a category they are "
             + "creating \u2014 or absent, which is a category filing no note. THE TWO ARE DIFFERENT "
@@ -1329,7 +1352,7 @@ public sealed class KeyMaterialSecrecyTests
             "base64url over the 32-byte blind index the client computed over the SAME name it sealed "
             + "beside this, under the account's index key. A keyed digest, not an envelope, and not key "
             + "material \u2014 the index key itself crosses this wire only sealed, as "
-            + "AccountKeyEntry.WrappedIndexKey. What it buys on THIS table is the narrowest of any "
+            + "AccountKeyEntry.EncapsulatedAccountKeys. What it buys on THIS table is the narrowest of any "
             + "blind index the product carries: nothing looks a group up by name, so it exists only to "
             + "refuse a second group under a name this budget already holds"),
         new("CreatePayeeCommand", "Id",
@@ -1351,7 +1374,7 @@ public sealed class KeyMaterialSecrecyTests
             "base64url over the 32-byte blind index the client computed over the SAME name it sealed "
             + "beside this, under the account's index key. A keyed digest, not an envelope, and not key "
             + "material — the index key itself crosses this wire only sealed, as "
-            + "AccountKeyEntry.WrappedIndexKey. On this table it is also what REPLACED a server-side "
+            + "AccountKeyEntry.EncapsulatedAccountKeys. On this table it is also what REPLACED a server-side "
             + "lookup: the server used to fold a payee name's case and re-read the table, and it can do "
             + "neither now, so uniqueness of counterparties rests entirely on this value"),
         new("CreateTransactionCommand", "Id",
@@ -1405,15 +1428,15 @@ public sealed class KeyMaterialSecrecyTests
         new("PasskeyEndpoints.RegistrationRequest", "ClientDataJson",
             "base64url over the JSON the browser signed — type, challenge, origin — a public transcript"),
         new("PasskeyEndpoints.RegistrationRequest", "FactorId",
-            "the client-minted identifier the two envelopes below are bound to as associated data. It is "
+            "the client-minted identifier the two payloads below are bound to as associated data. It is "
             + "written back to every caller that asks, so it is a name rather than a secret"),
-        new("PasskeyEndpoints.RegistrationRequest", "WrappedContentKey",
-            "base64url over a 61-byte envelope. The key-encryption key that sealed it is derived in the "
-            + "browser from the authenticator's prf output and imported non-extractable, so it never "
-            + "reaches this member or any other"),
-        new("PasskeyEndpoints.RegistrationRequest", "WrappedIndexKey",
-            "base64url over the same envelope for the index key, sealed under the same non-extractable "
-            + "key and bound to a different purpose"),
+        new("PasskeyEndpoints.RegistrationRequest", "WrappedPrivateKey",
+            "base64url over a 167-byte AEAD envelope over this factor's PRIVATE key. The key-encryption "
+            + "key it is wrapped under is derived in the browser from the authenticator's prf output and "
+            + "imported non-extractable, so it never reaches this member or any other"),
+        new("PasskeyEndpoints.RegistrationRequest", "EncapsulatedAccountKeys",
+            "base64url over a 158-byte encapsulation of BOTH account keys to this factor's PUBLIC half — "
+            + "a different suite at a different width, and one whose production needs no secret at all"),
         new("PayeeEndpoints.RenamePayeeRequest", "Name",
             "base64url over the AEAD envelope holding the name a person gave one of their payees. It is "
             + "NOT the name as they typed it — it was re-sealed in the browser against the row's "
@@ -1423,7 +1446,8 @@ public sealed class KeyMaterialSecrecyTests
             + "beside this. It is required rather than optional, and the pair is why: a body carrying "
             + "only Name would leave the row indexed under the name it no longer holds, which on this "
             + "table produces a payee the client can neither find nor re-create. Not key material — the "
-            + "index key crosses this wire only sealed, as AccountKeyEntry.WrappedIndexKey"),
+            + "index key crosses this wire only encapsulated, inside "
+            + "AccountKeyEntry.EncapsulatedAccountKeys"),
         new("RecoveryCodeEndpoints.RecoveryCodeGenerationRequest", "AuthenticatorData",
             "base64url over the authenticator's signed bytes: a relying-party hash, flags and a counter"),
         new("RecoveryCodeEndpoints.RecoveryCodeGenerationRequest", "ClientDataJson",
@@ -1443,17 +1467,19 @@ public sealed class KeyMaterialSecrecyTests
         new("RecoveryCodeEndpoints.ReestablishedSessionResponse", "Kind",
             "a response member: the kind of session an issue re-established, as SessionKind spells it"),
         new("RecoveryCodeSubmission", "FactorId",
-            "the client-minted identifier one code's two envelopes are bound to as associated data, and "
+            "the client-minted identifier one code's two payloads are bound to as associated data, and "
             + "a name rather than a secret"),
         new("RecoveryCodeSubmission", "Verifier",
             "base64url over one HKDF branch of one recovery code, the same value a redemption presents "
             + "and a sibling of the key branch that stays in the browser"),
-        new("RecoveryCodeSubmission", "WrappedContentKey",
-            "base64url over a 61-byte envelope sealed under the key that code derives, which is imported "
-            + "non-extractable and never leaves the browser"),
-        new("RecoveryCodeSubmission", "WrappedIndexKey",
-            "base64url over the same envelope for the index key, sealed under the same key and bound to "
-            + "a different purpose"),
+        new("RecoveryCodeSubmission", "WrappedPrivateKey",
+            "base64url over a 167-byte AEAD envelope over this code's own factor PRIVATE key, wrapped "
+            + "under the key that code derives, which is imported non-extractable and never leaves the "
+            + "browser. One code is one factor and one key pair: a set of ten sends ten of these"),
+        new("RecoveryCodeSubmission", "EncapsulatedAccountKeys",
+            "base64url over a 158-byte encapsulation of BOTH account keys to that factor's PUBLIC half — "
+            + "a different suite at a different width, and the value a rotation can replace without the "
+            + "card being in anybody's hand"),
         new("RegistrationEndpoints.EstablishedSessionResponse", "Kind",
             "a response member: the kind of session registration established, as SessionKind spells it"),
         new("RegistrationEndpoints.RegistrationRequest", "AttestationObject",
@@ -1461,14 +1487,15 @@ public sealed class KeyMaterialSecrecyTests
         new("RegistrationEndpoints.RegistrationRequest", "ClientDataJson",
             "base64url over the JSON the browser signed — type, challenge, origin — a public transcript"),
         new("RegistrationEndpoints.RegistrationRequest", "FactorId",
-            "the client-minted identifier the passkey factor's two envelopes are bound to as associated "
+            "the client-minted identifier the passkey factor's two payloads are bound to as associated "
             + "data, and a name rather than a secret"),
-        new("RegistrationEndpoints.RegistrationRequest", "WrappedContentKey",
-            "base64url over a 61-byte envelope sealed under the passkey factor's key-encryption key, "
-            + "which is derived from prf output in the browser and imported non-extractable"),
-        new("RegistrationEndpoints.RegistrationRequest", "WrappedIndexKey",
-            "base64url over the same envelope for the index key, sealed under the same key and bound to "
-            + "a different purpose"),
+        new("RegistrationEndpoints.RegistrationRequest", "WrappedPrivateKey",
+            "base64url over a 167-byte AEAD envelope over the passkey factor's PRIVATE key, wrapped "
+            + "under the key-encryption key derived from prf output in the browser and imported "
+            + "non-extractable"),
+        new("RegistrationEndpoints.RegistrationRequest", "EncapsulatedAccountKeys",
+            "base64url over a 158-byte encapsulation of BOTH account keys to that factor's PUBLIC half — "
+            + "a different suite at a different width, produced from a public key and nothing else"),
         new("TransactionEndpoints.UpdateTransactionRequest", "Description",
             "base64url over the AEAD envelope holding a person's own note about one transaction, wrapped "
             + "in Optional<T> because this route is a PATCH and genuinely has THREE states: absent "
@@ -1992,7 +2019,7 @@ public sealed class KeyMaterialSecrecyTests
     /// probe proves the classification and the recursion at once.
     /// </para>
     /// <para>
-    /// <see cref="WrappedContentKey" /> and <see cref="ProbeNestedResults.Enabled" /> are the
+    /// <see cref="WrappedPrivateKey" /> and <see cref="ProbeNestedResults.Enabled" /> are the
     /// innocent halves, and they are what stop the control passing for the wrong reason: a rule that
     /// fired on everything, or a vocabulary whose qualifier mechanism had collapsed, would report all
     /// four.
@@ -2000,7 +2027,7 @@ public sealed class KeyMaterialSecrecyTests
     /// </remarks>
     private sealed record ProbeRequest(
         string ContentKey,
-        string WrappedContentKey,
+        string WrappedPrivateKey,
         ProbeNestedResults? Extensions);
 
     /// <summary>The nested half of the probe. See <see cref="ProbeRequest" />.</summary>

@@ -42,10 +42,12 @@ namespace Domain.Security;
 /// <em>symmetrically</em>, under a key-encryption key a factor derives — so whoever wraps holds the
 /// same key as whoever unwraps, and re-wrapping under a new key needs every authenticator physically
 /// present. Encapsulating to a factor's public half would need only that public half, so a value could
-/// be encapsulated to a factor nobody is holding. That capability is why the layout is written down
-/// here before anything produces one: no factor has a keypair today and no column stores a value in
-/// this framing, and the numbers a second implementation slices on are worth fixing while there are no
-/// stored bytes to disagree with.
+/// be encapsulated to a factor nobody is holding. That capability is why the layout was written down
+/// here before anything produced one, and it is no longer hypothetical: every recovery factor holds an
+/// ECDH P-256 key pair, and two columns store values in this framing —
+/// <c>wrapped_account_keys.encapsulated_account_keys</c>, which is the live generation, and
+/// <c>key_rotation_seals.encapsulated_account_keys</c>, which is the next one staged beside it. So
+/// there are now stored bytes to disagree with, and the numbers below have stopped being free to move.
 /// </para>
 /// <para>
 /// <b>Framing is the whole of what is checkable here, and that is not a shortcoming.</b> Opening a
@@ -152,11 +154,15 @@ public static class EncapsulatedValueEnvelope
     /// <b>A floor, not a width.</b> AES-GCM ciphertext is exactly the length of its plaintext, so an
     /// empty plaintext comes to exactly this many bytes and anything longer is the same format over a
     /// longer one — which is why <see cref="IsWellFormed"/> compares with <c>&gt;=</c>. How wide the
-    /// plaintext actually is belongs to whatever entity comes to store the value, the split
-    /// <see cref="CiphertextEnvelope.MinimumLength"/> argues for the AEAD framing and
-    /// <see cref="Users.WrappedAccountKeys.EnvelopeLength"/> is the other half of. An implementation
-    /// comparing this for equality would be correct for exactly one consumer and would refuse every
-    /// other.
+    /// plaintext actually is belongs to whatever entity comes to store the value: this floor and
+    /// <see cref="Users.WrappedAccountKeys.EncapsulatedAccountKeysLength"/> are the two halves of that
+    /// split on <em>this</em> framing, which is the same split
+    /// <see cref="CiphertextEnvelope.MinimumLength"/> argues for the AEAD one. The width half is read
+    /// from this suite's own consumer and never from the neighbour's, for the reason
+    /// <see cref="Version"/> gives: 158 and 167 are the same arithmetic over two different formats, so an
+    /// entity width borrowed across the boundary is the cross-suite derivation this file exists to keep
+    /// apart. An implementation comparing this for equality would be correct for exactly one consumer and
+    /// would refuse every other.
     /// </para>
     /// <para>
     /// <b>Const arithmetic over the four components, and it has to stay const and stay arithmetic.</b> A

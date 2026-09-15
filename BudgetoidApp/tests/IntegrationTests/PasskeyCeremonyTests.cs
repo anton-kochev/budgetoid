@@ -995,8 +995,8 @@ public sealed class PasskeyCeremonyTests
     /// </remarks>
     [Test]
     [Arguments(KeyCustodyMember.FactorId)]
-    [Arguments(KeyCustodyMember.WrappedContentKey)]
-    [Arguments(KeyCustodyMember.WrappedIndexKey)]
+    [Arguments(KeyCustodyMember.WrappedPrivateKey)]
+    [Arguments(KeyCustodyMember.EncapsulatedAccountKeys)]
     public async Task Registration_WhoseKeyCustodyMemberIsMalformedAndReportsNoPrfResult_IsRefusedForTheAuthenticatorRatherThanThePayload(
         KeyCustodyMember member)
     {
@@ -1011,7 +1011,8 @@ public sealed class PasskeyCeremonyTests
         // exactly one key-custody member the handler is bound to refuse if it ever looks at it.
         byte[] challenge = await BeginCeremonyAsync(authenticated, RegistrationOptionsPath);
         AttestationResult attestation = authenticator.Register(challenge, ApiFactory.PasskeyOrigin);
-        string malformed = MalformedEnvelopeText(MalformedEnvelope.OneByteShort);
+        string malformed = MalformedEnvelopeText(
+            FactorPayload.PrivateKey, MalformedEnvelope.OneByteShort);
         HttpResponseMessage response = await authenticated.PostAsJsonAsync(RegistrationPath, new
         {
             clientDataJson = attestation.ClientDataJsonBase64Url,
@@ -1022,12 +1023,12 @@ public sealed class PasskeyCeremonyTests
             // actually arrives.
             clientExtensionResults = new { },
             factorId = member is KeyCustodyMember.FactorId ? NotOneCanonicalUuid : keys.FactorId,
-            wrappedContentKey = member is KeyCustodyMember.WrappedContentKey
+            wrappedPrivateKey = member is KeyCustodyMember.WrappedPrivateKey
                 ? malformed
-                : keys.WrappedContentKey,
-            wrappedIndexKey = member is KeyCustodyMember.WrappedIndexKey
+                : keys.WrappedPrivateKey,
+            encapsulatedAccountKeys = member is KeyCustodyMember.EncapsulatedAccountKeys
                 ? malformed
-                : keys.WrappedIndexKey,
+                : keys.EncapsulatedAccountKeys,
         });
 
         // Assert — the sentence is pinned whole rather than by a prefix, because what this test is about
@@ -1237,7 +1238,7 @@ public sealed class PasskeyCeremonyTests
     /// the day somebody needs the keys. One byte over never reaches the width: it clears the
     /// encoded-length gate — 62 bytes is 83 characters against an allowance of 84 — and is then
     /// refused by <c>PasskeyEncoding.TryDecode</c>, which measures the decoded buffer against the
-    /// ceiling the caller named, here <c>PasskeyPayloadLimits.WrappedKeyBytes</c>, the same 61 bytes
+    /// ceiling the caller named, here <c>PasskeyPayloadLimits.WrappedPrivateKeyBytes</c>, the same 167 bytes
     /// the width is. What the width covers instead is the short side, the 29-to-60-byte band that
     /// clears the format's floor and the ceiling alike; both sides are gone before a column sees them.
     /// </para>
@@ -1249,14 +1250,14 @@ public sealed class PasskeyCeremonyTests
     /// </para>
     /// </remarks>
     [Test]
-    [Arguments(WrappedKeyMember.Content, MalformedEnvelope.OneByteShort)]
-    [Arguments(WrappedKeyMember.Content, MalformedEnvelope.OneByteTooWide)]
-    [Arguments(WrappedKeyMember.Content, MalformedEnvelope.OutsideTheAlphabet)]
-    [Arguments(WrappedKeyMember.Index, MalformedEnvelope.OneByteShort)]
-    [Arguments(WrappedKeyMember.Index, MalformedEnvelope.OneByteTooWide)]
-    [Arguments(WrappedKeyMember.Index, MalformedEnvelope.OutsideTheAlphabet)]
-    public async Task PasskeyRegistration_RefusesAWrappedKeyThatIsNotBase64UrlOfExactlySixtyOneBytes(
-        WrappedKeyMember member,
+    [Arguments(FactorPayload.PrivateKey, MalformedEnvelope.OneByteShort)]
+    [Arguments(FactorPayload.PrivateKey, MalformedEnvelope.OneByteTooWide)]
+    [Arguments(FactorPayload.PrivateKey, MalformedEnvelope.OutsideTheAlphabet)]
+    [Arguments(FactorPayload.AccountKeys, MalformedEnvelope.OneByteShort)]
+    [Arguments(FactorPayload.AccountKeys, MalformedEnvelope.OneByteTooWide)]
+    [Arguments(FactorPayload.AccountKeys, MalformedEnvelope.OutsideTheAlphabet)]
+    public async Task PasskeyRegistration_RefusesAPayloadThatIsNotBase64UrlOfItsOwnExactWidth(
+        FactorPayload payload,
         MalformedEnvelope fault)
     {
         // Arrange
@@ -1272,18 +1273,18 @@ public sealed class PasskeyCeremonyTests
             challenge,
             ApiFactory.PasskeyOrigin,
             prfEnabled: true);
-        string malformed = MalformedEnvelopeText(fault);
+        string malformed = MalformedEnvelopeText(payload, fault);
         HttpResponseMessage response = await PostRegistrationAsync(
             authenticated,
             attestation,
             keys.FactorId,
-            member is WrappedKeyMember.Content ? malformed : keys.WrappedContentKey,
-            member is WrappedKeyMember.Index ? malformed : keys.WrappedIndexKey);
+            payload is FactorPayload.PrivateKey ? malformed : keys.WrappedPrivateKey,
+            payload is FactorPayload.AccountKeys ? malformed : keys.EncapsulatedAccountKeys);
 
         // Assert — filed under the key this leg's every other refusal is filed under, because a caller
         // reading one field learns nothing from a refusal written into another.
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
-        await AssertNamesTheMalformedEnvelopeAsync(response, member);
+        await AssertNamesTheMalformedEnvelopeAsync(response, payload);
         await Assert.That(await CountPasskeyCredentialsAsync(host)).IsEqualTo(0L);
         await Assert.That(await CountPasskeyPublicKeysAsync(host)).IsEqualTo(0L);
         await Assert.That(await CountPasskeySignatureCountersAsync(host)).IsEqualTo(0L);
@@ -1301,12 +1302,14 @@ public sealed class PasskeyCeremonyTests
     /// bytes no version of this system could interpret.
     /// </remarks>
     [Test]
-    [Arguments(WrappedKeyMember.Content, (byte)(WrappedAccountKeys.EnvelopeVersion - 1))]
-    [Arguments(WrappedKeyMember.Content, (byte)(WrappedAccountKeys.EnvelopeVersion + 1))]
-    [Arguments(WrappedKeyMember.Index, (byte)(WrappedAccountKeys.EnvelopeVersion - 1))]
-    [Arguments(WrappedKeyMember.Index, (byte)(WrappedAccountKeys.EnvelopeVersion + 1))]
-    public async Task PasskeyRegistration_RefusesAWrappedKeyWhoseEnvelopeVersionIsUnknown(
-        WrappedKeyMember member,
+    [Arguments(FactorPayload.PrivateKey, (byte)(WrappedAccountKeys.WrappedPrivateKeyVersion - 1))]
+    [Arguments(FactorPayload.PrivateKey, (byte)(WrappedAccountKeys.WrappedPrivateKeyVersion + 1))]
+    [Arguments(
+        FactorPayload.AccountKeys, (byte)(WrappedAccountKeys.EncapsulatedAccountKeysVersion - 1))]
+    [Arguments(
+        FactorPayload.AccountKeys, (byte)(WrappedAccountKeys.EncapsulatedAccountKeysVersion + 1))]
+    public async Task PasskeyRegistration_RefusesAPayloadWhoseFramingVersionIsUnknown(
+        FactorPayload payload,
         byte version)
     {
         // Arrange
@@ -1322,17 +1325,17 @@ public sealed class PasskeyCeremonyTests
             challenge,
             ApiFactory.PasskeyOrigin,
             prfEnabled: true);
-        string unknownVersion = EnvelopeText(WrappedAccountKeys.EnvelopeLength, version);
+        string unknownVersion = EnvelopeText(LengthOf(payload), version);
         HttpResponseMessage response = await PostRegistrationAsync(
             authenticated,
             attestation,
             keys.FactorId,
-            member is WrappedKeyMember.Content ? unknownVersion : keys.WrappedContentKey,
-            member is WrappedKeyMember.Index ? unknownVersion : keys.WrappedIndexKey);
+            payload is FactorPayload.PrivateKey ? unknownVersion : keys.WrappedPrivateKey,
+            payload is FactorPayload.AccountKeys ? unknownVersion : keys.EncapsulatedAccountKeys);
 
         // Assert
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
-        await AssertNamesTheMalformedEnvelopeAsync(response, member);
+        await AssertNamesTheMalformedEnvelopeAsync(response, payload);
         await Assert.That(await CountPasskeyCredentialsAsync(host)).IsEqualTo(0L);
         await Assert.That(await CountPasskeyPublicKeysAsync(host)).IsEqualTo(0L);
         await Assert.That(await CountPasskeySignatureCountersAsync(host)).IsEqualTo(0L);
@@ -1400,8 +1403,8 @@ public sealed class PasskeyCeremonyTests
             authenticated,
             attestation,
             factorId,
-            keys.WrappedContentKey,
-            keys.WrappedIndexKey);
+            keys.WrappedPrivateKey,
+            keys.EncapsulatedAccountKeys);
 
         // Assert — the sentence is pinned whole, because it carries no bound that could move and because
         // "some sentence arrived" is satisfied by a refusal about any of the other five members of this
@@ -1468,8 +1471,8 @@ public sealed class PasskeyCeremonyTests
 
         // Re-encoded and compared against the text the request carried, so the comparison is over the
         // exact bytes in their exact order.
-        await Assert.That(Base64UrlText.Encode(row.WrappedContentKey)).IsEqualTo(keys.WrappedContentKey);
-        await Assert.That(Base64UrlText.Encode(row.WrappedIndexKey)).IsEqualTo(keys.WrappedIndexKey);
+        await Assert.That(Base64UrlText.Encode(row.WrappedPrivateKey)).IsEqualTo(keys.WrappedPrivateKey);
+        await Assert.That(Base64UrlText.Encode(row.EncapsulatedAccountKeys)).IsEqualTo(keys.EncapsulatedAccountKeys);
     }
 
     /// <summary>
@@ -1940,8 +1943,8 @@ public sealed class PasskeyCeremonyTests
             attestationObject = result.AttestationObjectBase64Url,
             clientExtensionResults,
             factorId = keys.FactorId,
-            wrappedContentKey = keys.WrappedContentKey,
-            wrappedIndexKey = keys.WrappedIndexKey,
+            wrappedPrivateKey = keys.WrappedPrivateKey,
+            encapsulatedAccountKeys = keys.EncapsulatedAccountKeys,
         });
     }
 
@@ -1959,16 +1962,16 @@ public sealed class PasskeyCeremonyTests
         HttpClient client,
         AttestationResult result,
         string factorId,
-        string wrappedContentKey,
-        string wrappedIndexKey) =>
+        string wrappedPrivateKey,
+        string encapsulatedAccountKeys) =>
         client.PostAsJsonAsync(RegistrationPath, new
         {
             clientDataJson = result.ClientDataJsonBase64Url,
             attestationObject = result.AttestationObjectBase64Url,
             clientExtensionResults = new { prf = new { enabled = result.PrfEnabled } },
             factorId,
-            wrappedContentKey,
-            wrappedIndexKey,
+            wrappedPrivateKey,
+            encapsulatedAccountKeys,
         });
 
     /// <summary>
@@ -1978,10 +1981,10 @@ public sealed class PasskeyCeremonyTests
     /// <remarks>
     /// Public because TUnit builds the parameterised cases from these values.
     /// </remarks>
-    public enum WrappedKeyMember
+    public enum FactorPayload
     {
-        Content,
-        Index,
+        PrivateKey,
+        AccountKeys,
     }
 
     /// <summary>
@@ -1989,7 +1992,7 @@ public sealed class PasskeyCeremonyTests
     /// handler judges <b>after</b> the <c>prf</c> gate.
     /// </summary>
     /// <remarks>
-    /// Separate from <see cref="WrappedKeyMember" /> rather than an extension of it, because the two
+    /// Separate from <see cref="FactorPayload" /> rather than an extension of it, because the two
     /// enumerations answer different questions: that one names the pair a test corrupts one of, this one
     /// names every member whose check could be moved above the gate. Public because TUnit builds the
     /// parameterised cases from these values.
@@ -1997,8 +2000,8 @@ public sealed class PasskeyCeremonyTests
     public enum KeyCustodyMember
     {
         FactorId,
-        WrappedContentKey,
-        WrappedIndexKey,
+        WrappedPrivateKey,
+        EncapsulatedAccountKeys,
     }
 
     /// <summary>
@@ -2022,16 +2025,46 @@ public sealed class PasskeyCeremonyTests
     /// expectation from the type under test agrees with whatever that type later says, including with
     /// the two members swapped.
     /// </remarks>
-    private static string WireNameOf(WrappedKeyMember member) => member switch
+    private static string WireNameOf(FactorPayload payload) => payload switch
     {
-        WrappedKeyMember.Content => "wrappedContentKey",
-        WrappedKeyMember.Index => "wrappedIndexKey",
-        _ => throw new ArgumentOutOfRangeException(nameof(member), member, "No wire name is defined for this member."),
+        FactorPayload.PrivateKey => "wrappedPrivateKey",
+        FactorPayload.AccountKeys => "encapsulatedAccountKeys",
+        _ => throw new ArgumentOutOfRangeException(
+            nameof(payload), payload, "No wire name is defined for this payload."),
     };
 
     /// <summary>The member of the pair that this case left well formed.</summary>
-    private static WrappedKeyMember Other(WrappedKeyMember member) =>
-        member is WrappedKeyMember.Content ? WrappedKeyMember.Index : WrappedKeyMember.Content;
+    private static FactorPayload Other(FactorPayload payload) =>
+        payload is FactorPayload.PrivateKey ? FactorPayload.AccountKeys : FactorPayload.PrivateKey;
+
+    /// <summary>
+    /// The width the named payload's own suite defines, and the version byte it leads with.
+    /// </summary>
+    /// <remarks>
+    /// <b>Two suites, two widths, two version constants, and the pairs may not be crossed.</b>
+    /// <c>wrappedPrivateKey</c> is an AEAD envelope over a PKCS#8 P-256 private key;
+    /// <c>encapsulatedAccountKeys</c> is an ECDH encapsulation over both account keys. Reading one
+    /// payload's width beside the other's version compiles and renders plausible bytes, and the two
+    /// version constants hold the same number today — so a cross-read would go on passing. Each arm
+    /// below reads both numbers off the same suite, which is the only arrangement a later edit cannot
+    /// half-apply.
+    /// </remarks>
+    private static int LengthOf(FactorPayload payload) => payload switch
+    {
+        FactorPayload.PrivateKey => WrappedAccountKeys.WrappedPrivateKeyLength,
+        FactorPayload.AccountKeys => WrappedAccountKeys.EncapsulatedAccountKeysLength,
+        _ => throw new ArgumentOutOfRangeException(
+            nameof(payload), payload, "No width is defined for this payload."),
+    };
+
+    /// <inheritdoc cref="LengthOf" />
+    private static byte VersionOf(FactorPayload payload) => payload switch
+    {
+        FactorPayload.PrivateKey => WrappedAccountKeys.WrappedPrivateKeyVersion,
+        FactorPayload.AccountKeys => WrappedAccountKeys.EncapsulatedAccountKeysVersion,
+        _ => throw new ArgumentOutOfRangeException(
+            nameof(payload), payload, "No version is defined for this payload."),
+    };
 
     /// <summary>
     /// The refusal names the member this case corrupted, states the width and states the version.
@@ -2056,14 +2089,20 @@ public sealed class PasskeyCeremonyTests
     /// </remarks>
     private static async Task AssertNamesTheMalformedEnvelopeAsync(
         HttpResponseMessage response,
-        WrappedKeyMember member)
+        FactorPayload payload)
     {
         string message = await ReadValidationErrorAsync(response);
 
-        await Assert.That(message).StartsWith(WireNameOf(member));
-        await Assert.That(message).DoesNotContain(WireNameOf(Other(member)));
-        await Assert.That(message).Contains($"{WrappedAccountKeys.EnvelopeLength} bytes");
-        await Assert.That(message).Contains($"version {WrappedAccountKeys.EnvelopeVersion}");
+        await Assert.That(message).StartsWith(WireNameOf(payload));
+        await Assert.That(message).DoesNotContain(WireNameOf(Other(payload)));
+        await Assert.That(message).Contains($"{LengthOf(payload)} bytes");
+        await Assert.That(message).Contains($"version {VersionOf(payload)}");
+
+        // The OTHER payload's width must not appear, and this is the assertion the widths diverging
+        // made possible. 167 and 158 are two different sentences now, so a handler that judged the
+        // encapsulated value against the AEAD bound — or built its refusal from the wrong constant —
+        // is caught here rather than on the day a client's decoder meets bytes it cannot slice.
+        await Assert.That(message).DoesNotContain($"{LengthOf(Other(payload))} bytes");
     }
 
     /// <summary>
@@ -2094,23 +2133,25 @@ public sealed class PasskeyCeremonyTests
     /// decoder that skipped the alphabet check reads the text as standard base64, where <c>+</c> is 62,
     /// and gets a leading byte of <b>249</b>. The envelope comes back refused for its version, the case
     /// stays green, and the alphabet has been tested by nothing. At index 4 the damage lands in bytes
-    /// 3-5, which are random filler: the same decoder reads 61 bytes leading with the version byte and
+    /// 3-5, which are random filler: the same decoder reads the right number of bytes leading with the version byte and
     /// would <em>accept</em> them, so a refusal has exactly one source left.
-    /// <c>WrappedKeyEnvelopeTests</c> keeps its own substitution off the leading group for this reason.
+    /// <c>WrappedPrivateKeyEnvelopeTests</c> keeps its own substitution off the leading group for this reason.
     /// </para>
     /// </remarks>
-    private static string MalformedEnvelopeText(MalformedEnvelope fault) => fault switch
-    {
-        MalformedEnvelope.OneByteShort =>
-            EnvelopeText(WrappedAccountKeys.EnvelopeLength - 1, WrappedAccountKeys.EnvelopeVersion),
-        MalformedEnvelope.OneByteTooWide =>
-            EnvelopeText(WrappedAccountKeys.EnvelopeLength + 1, WrappedAccountKeys.EnvelopeVersion),
-        MalformedEnvelope.OutsideTheAlphabet => EnvelopeText(
-                WrappedAccountKeys.EnvelopeLength, WrappedAccountKeys.EnvelopeVersion)
-            .Remove(4, 1)
-            .Insert(4, OutsideTheBase64UrlAlphabet.ToString()),
-        _ => throw new ArgumentOutOfRangeException(nameof(fault), fault, "No text is defined for this fault."),
-    };
+    private static string MalformedEnvelopeText(FactorPayload payload, MalformedEnvelope fault) =>
+        fault switch
+        {
+            MalformedEnvelope.OneByteShort =>
+                EnvelopeText(LengthOf(payload) - 1, VersionOf(payload)),
+            MalformedEnvelope.OneByteTooWide =>
+                EnvelopeText(LengthOf(payload) + 1, VersionOf(payload)),
+            MalformedEnvelope.OutsideTheAlphabet =>
+                EnvelopeText(LengthOf(payload), VersionOf(payload))
+                    .Remove(4, 1)
+                    .Insert(4, OutsideTheBase64UrlAlphabet.ToString()),
+            _ => throw new ArgumentOutOfRangeException(
+                nameof(fault), fault, "No text is defined for this fault."),
+        };
 
     /// <summary>
     /// A character standard base64 defines and base64url does not.
@@ -2439,8 +2480,8 @@ public sealed class PasskeyCeremonyTests
         Guid FactorId,
         Guid UserId,
         string CredentialType,
-        byte[] WrappedContentKey,
-        byte[] WrappedIndexKey);
+        byte[] WrappedPrivateKey,
+        byte[] EncapsulatedAccountKeys);
 
     /// <summary>
     /// Every <c>wrapped_account_keys</c> row, on the container's superuser connection for the reason
@@ -2454,7 +2495,7 @@ public sealed class PasskeyCeremonyTests
         await connection.OpenAsync();
         await using NpgsqlCommand command = new(
             """
-            select credential_id, factor_id, user_id, credential_type, wrapped_content_key, wrapped_index_key
+            select credential_id, factor_id, user_id, credential_type, wrapped_private_key, encapsulated_account_keys
             from wrapped_account_keys
             order by created_at_utc
             """,

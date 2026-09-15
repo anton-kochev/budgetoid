@@ -306,7 +306,7 @@ public sealed class NarrativeEncryptionCoverageTests
         // one large entity type. wrapped_account_keys is the newest table and maps through a value
         // converter; transactions is the largest and the leaf nothing references.
         await Assert.That(storedNames).Contains(RealNarrativeColumn);
-        await Assert.That(storedNames).Contains("wrapped_account_keys.wrapped_content_key");
+        await Assert.That(storedNames).Contains("wrapped_account_keys.wrapped_private_key");
 
         // The columns the pinned walk reaches that the storage walk does not — the eighty-five-column
         // hole, in the direction that leaves FR-057 green while enumerating almost nothing.

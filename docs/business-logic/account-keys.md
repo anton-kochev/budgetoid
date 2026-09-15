@@ -20,7 +20,9 @@ encrypted under; the index key is what a blind index over a name **is** computed
 computes them today, and four columns store them, each under a uniqueness constraint. Neither is
 derived from a credential.
 Every **recovery factor** — a registered passkey, or one
-recovery code — derives its own **key-encryption key** and stores its own **wrapped copy of both**.
+recovery code — derives its own **key-encryption key** and holds an **ECDH P-256 key pair**: its
+private key *wrapped under* that key-encryption key, and the account's two keys *encapsulated to* its
+public half.
 
 That shape is the whole point, and reversing it fails in two different ways. Deriving the content
 key per credential is a recovery problem: text written on one authenticator would be unreadable on
@@ -29,25 +31,46 @@ index keys produce two blind index values for one name, the uniqueness constrain
 and a person signing in from a second device silently accumulates duplicate payees while the
 constraint appears to work.
 
-**What is built today is the cryptography, the three write paths that store its output, the one
-route that reads it back, and the browser that holds what comes out of it.** The client can generate
-the keys, derive a key-encryption key from either kind of factor, wrap both keys under it and unwrap
-them again; the server refuses to register a passkey, issue a set of recovery codes, **or create an
-account** unless the request carries a factor identifier and both wrapped keys for every factor it
-brings into existence, and files them in the same save as the credential.
-`GET /api/me/account-keys` hands a signed-in browser back the envelopes of **every factor the account
-holds** — see [The one route that hands them back](#the-one-route-that-hands-them-back).
+**The key pair is a two-step opening rather than an extra layer, and reading it as belt-and-braces
+is the mistake to avoid.** A factor presented yields a key-encryption key; that unwraps the factor's
+private key; that decapsulates the account's two keys. What the indirection buys is
+**[key rotation](key-rotation.md)**: encapsulating to a public half needs no secret at all, so a run
+can produce a copy for a passkey in a drawer and for a code written on a card. Wrapping the account's
+keys directly under each factor's key-encryption key — which is what this schema used to do — meant
+re-wrapping needed that secret, and for a passkey the secret is a WebAuthn PRF output that exists
+only while the authenticator is being touched. A rotation therefore needed every device present at
+once.
+[ADR 0025](../decisions/0025-give-every-recovery-factor-an-ecdh-key-pair.md) records the decision,
+the widths it fixed and what it refused.
 
-**One table in this chapter's schema has no writer at all, and that is the state it was
-committed in.** `factor_manifests` stands in every database and is empty in all of
-them: no handler, no route, no repository and no read service names it, and the
-application role holds `SELECT` on it and no write privilege of any shape. What the table
-is *for* — every recovery factor holding a key pair, and one authenticated blob naming
-every factor's public key — is design rather than behaviour, and nothing in this chapter
-states it otherwise. See
-[The manifest of factor public keys](#the-manifest-of-factor-public-keys).
+**What is built today is the schema, the three server-side write paths, the one route that reads it
+back — and a browser that has not followed.** Read that sentence at its full width, because the two
+halves disagree. The server refuses to register a passkey, issue a set of recovery codes, **or create
+an account** unless the request carries, for every factor it brings into existence, a factor
+identifier, a wrapped private key of exactly 167 bytes and an encapsulated pair of exactly 158, and
+it files them in the same save as the credential. `GET /api/me/account-keys` hands those two values
+back per factor — see [The one route that hands them back](#the-one-route-that-hands-them-back).
+**The client still produces the arrangement this replaced**: `account-keys.ts` wraps each of the
+account's two keys under the factor's key-encryption key and `registration-api.service.ts` puts
+`wrappedContentKey` and `wrappedIndexKey` on the wire, which no route accepts any more. So no browser
+in this repository can currently register an account or open one, the client sections of this chapter
+describe what that browser does rather than what the server takes, and closing the gap is **work**
+rather than a departure anybody argued for.
 
-**The circle is closed on three paths, and each closes it differently.** `register.service.ts`
+**Two tables in this chapter's schema have no writer at all, and that is the state they were
+committed in.** `factor_manifests` and `key_rotation_seals` stand in every database and are
+empty in all of them: no handler, no route, no repository and no read service names either
+one, and the application role holds `SELECT` on both and no write privilege of any shape.
+What the manifest
+is *for* — one authenticated blob naming every factor's public key — is design rather than
+behaviour, and nothing in this chapter states it otherwise. What the key pair beneath it is for is
+**not** in that category any more: the pair is in the schema, refused by check constraints and
+required by three write paths. See
+[The manifest of factor public keys](#the-manifest-of-factor-public-keys) and
+[key-rotation.md](key-rotation.md).
+
+**The circle is closed on three paths, and each closes it differently** — on the arrangement the
+client still implements, which is the gap named above. `register.service.ts`
 obtains a PRF output from a real authenticator, draws the account's keys, mints the set, derives
 eleven key-encryption keys and posts eleven pairs of envelopes, so an account created there really
 does own a content key and an index key that no server has seen — and on the `201` it hands the pair
@@ -108,11 +131,28 @@ would put the value that unwraps the account's whole keyspace into a variable an
   two buffers per derivation, both zero-filled where the import consumes them. See
   [The two doors](#the-two-doors-and-the-five-decisions-each-holds) and
   [What becomes of the bytes](#what-becomes-of-the-bytes).
-- **Wrapped key** — the versioned envelope below over a 32-byte key. Exactly 61 bytes. The only one
-  of the four that ever reaches the server.
+- **Factor key pair** — an ECDH P-256 key pair one recovery factor owns. **The private half is
+  exportable in exactly one binary form**: measured on Chrome 152, Firefox 156 and WebKit 26.6, 120
+  samples per engine, a PKCS#8 P-256 private key is **138 bytes** on all three, and `raw` import of
+  an EC *private* key is refused by all three — so the bare 32-byte scalar is unreachable from a
+  browser and PKCS#8 is the only thing there is to wrap. A `raw` **public** key is 65 bytes, an
+  uncompressed SEC1 point.
+- **Wrapped private key** — the factor's private half, *wrapped under* the key-encryption key that
+  factor derives, in the AEAD framing. **Exactly 167 bytes** — the framing's 29 over a 138-byte
+  plaintext — which is a width rather than a cap, so both sides of the bound are refused. It is the
+  first step of the two-step opening, and the one value on a factor's row a rotation never rewrites,
+  because a rotation does not change the factor's key-encryption key.
+- **Encapsulated account keys** — the content key and the index key as **one 64-byte plaintext,
+  content key first**, *encapsulated to* the factor's public half. **Exactly 158 bytes**, a width for
+  the same reason. It is smaller than the wrapped private key beside it despite carrying a 65-byte
+  ephemeral point, which is worth noticing before somebody "corrects" one of the two. **The order of
+  the two halves is a contract between clients and is held by nothing on this side, ever**: a client
+  that encapsulated them the other way round produces a value of exactly the right width carrying
+  exactly the right version, which stores, reads back and opens — and yields an index key used to
+  seal narrative text and a content key used to compute blind indexes.
 - **Factor identifier** — the `factor_id` of the `wrapped_account_keys` row, minted by the client
-  and the table's **primary key**. It is the value the associated data binds a wrapped key to.
-  Deliberately **not** the credential id;
+  and the table's **primary key**. It is the value the associated data binds the wrapped private key
+  to. Deliberately **not** the credential id;
   [ADR 0018](../decisions/0018-give-the-wrapped-account-keys-a-policed-table-and-their-own-factor-identifier.md)
   gives the reason.
 - **Recovery factor** — one secret that can derive a key-encryption key, which is **not** the same
@@ -162,8 +202,8 @@ erDiagram
         uuid factor_id PK "client-minted, the associated data"
         uuid credential_id "not unique — a set repeats it ten times"
         uuid user_id "tenancy"
-        bytea wrapped_content_key "61 bytes"
-        bytea wrapped_index_key "61 bytes"
+        bytea wrapped_private_key "167 bytes, AEAD framing, immutable"
+        bytea encapsulated_account_keys "158 bytes, encapsulation framing"
     }
     FACTOR_MANIFEST {
         uuid user_id PK "the account, and the whole of the key"
@@ -206,17 +246,17 @@ erDiagram
     platform boundary before and after the call →
     [What becomes of the bytes](#what-becomes-of-the-bytes).
 
-- **Both keys MUST be wrapped under every recovery factor — every passkey, and every one of a set's
-  ten codes.**
+- **Every recovery factor MUST hold a key pair and a copy of the account's keys — every passkey, and
+  every one of a set's ten codes.**
   - **Why**: a factor that cannot open the account's keys is not a way back in, however well it
     proves identity. At code granularity the failure is worse than useless: nine of ten redemptions
     would open a session that unlocks nothing, and the person would meet that on the day they had
     already lost their authenticator.
-  - **Enforced in**: two mechanisms holding different halves. `wrapped_content_key` and
-    `wrapped_index_key` are both `NOT NULL` on a table keyed on `factor_id`, so "a factor carries
-    both keys or no row at all" is a column definition. **That the row exists at all is not a schema
-    fact** — one-to-optional is not expressible without a trigger, and ADR 0002 forbids pushing
-    procedural logic down.
+  - **Enforced in**: two mechanisms holding different halves. `wrapped_private_key` and
+    `encapsulated_account_keys` are both `NOT NULL` on a table keyed on `factor_id`, so "a factor
+    carries both halves of its opening or no row at all" is a column definition. **That the row
+    exists at all is not a schema fact** — one-to-optional is not expressible without a trigger, and
+    ADR 0002 forbids pushing procedural logic down.
     - **What holds it is a property of the write surface, and the property is the rule rather than
       the count.** *Every* path that can bring a recovery factor into existence demands the members
       and writes the row in the **same `SaveChanges`** as the credential. There are three today, and
@@ -224,12 +264,20 @@ erDiagram
       day the count changed: a **fourth** path that keeps the property costs nothing, and a fourth
       that does not creates a factor holding no share of the keys and **reddens nothing**.
 
-- **A wrapped key MUST be bound to its factor and to which of the two keys it is.**
-  - **Why**: binding only the factor leaves the two copies distinguishable solely by which column
-    they land in, so swapping them gives the account a second index keyspace — the exact failure the
-    single index key exists to prevent.
-  - **Enforced in**: the client, through the associated data below. Nothing beneath the browser can
-    check it; the database cannot tell one 61-byte envelope from another.
+- **A wrapped private key MUST be bound to its factor, and the two account keys MUST travel in one
+  fixed order inside a single encapsulation.**
+  - **Why**: the binding is what makes a copy moved to another factor fail to authenticate rather
+    than decrypt into something. The ordering is the half nothing can check — two keys encapsulated
+    to the same public key under one KDF `info` would be two AES-GCM streams under one derived key,
+    and an implementation that also reused the ephemeral pair across them reuses the keystream
+    outright, so the exclusive-or of the two ciphertexts is the exclusive-or of the two account keys.
+    One plaintext, one encapsulation, one nonce, and the question does not arise — at the price of an
+    order, **content key first**.
+  - **Enforced in**: the client, and by nothing beneath it in either direction. The **column swap**
+    this rule used to be about is closed by the schema now — 167 bytes against 158, two framings and
+    two version constants, each column judged by its own pair of checks, where both values were once
+    61 bytes carrying the same version byte. What replaced it sits a level in, inside the
+    encapsulated plaintext, and no `CHECK` constraint and no test on this side will ever notice it.
 
 - **An account MUST hold at most one manifest, and a stored one MUST name a generation from 1 up.**
   - **Why**: a manifest is authenticated as a **set**, so a second row is a second claim about which
@@ -276,13 +324,14 @@ erDiagram
     key-encryption key on the wire would hand over the account.
   - **Enforced in**: the shape of the request surface — no member of any endpoint's request type can
     hold one — and by there being no server-side type for any of them. What *does* cross is the same
-    three members on each of three routes: a factor identifier and two envelopes, each of which the
-    server can check the shape of and open none of. On `POST /api/registration` that triple arrives
-    eleven times over. The **outbound** direction is held by `KeyMaterialSecrecyTests`, a census over
-    every member of every type a route serialises: what leaves on `GET /api/me/account-keys` is that
-    same triple, sealed, and the census carries a written argument for each of the two envelopes
-    rather than one sentence covering both — the two are the same width, carry the same version, and
-    are indistinguishable to every check this server owns.
+    three members on each of three routes: a factor identifier, a wrapped private key and an
+    encapsulated pair of account keys, each of which the server can check the shape of and open none
+    of. On `POST /api/registration` that triple arrives eleven times over. The **outbound** direction
+    is held by `KeyMaterialSecrecyTests`, a census over every member of every type a route
+    serialises: what leaves on `GET /api/me/account-keys` is that same triple, and the census carries
+    a written argument for each of the two payloads rather than one sentence covering both — they are
+    values of two different cryptographic suites at two different widths, and a sentence about "an
+    envelope" would tell a reader nothing about which of the two this deployment was judging.
 
 - **A factor identifier MUST be one spelling on the wire.** The write paths accept a UUID in the
   **lower-case** 36-character hyphenated form with no surrounding whitespace, and nothing else — not
@@ -362,6 +411,14 @@ erDiagram
 A second client implements from this table. **It is normative here rather than in any client's
 source: a second implementation cannot read another's test files, so anything stated only in code is
 not part of the contract.**
+
+**What this table covers is the derivation, and that half did not move.** A key-encryption key still
+comes off a PRF output or a canonical recovery code by the branches below, and the vectors under
+[Frozen known-answer vectors](#frozen-known-answer-vectors) still hold. What a factor then does with
+that key **did** move — it unwraps a 167-byte private key rather than two 61-byte account keys — and
+the rest of this section, the envelope width, the nonce argument and the associated-data grammar,
+describes the arrangement **the browser in this repository still implements** rather than the one the
+routes accept. That gap is named under [Purpose](#purpose) and is work.
 
 | | Passkey factor | **One** recovery code |
 |---|---|---|
@@ -718,8 +775,14 @@ property of the values this client creates.
 ### The one route that hands them back
 
 `GET /api/me/account-keys` answers a **list**, one entry per factor, each carrying that factor's
-identifier and its two envelopes as unpadded base64url — `factorId`, `wrappedContentKey`,
-`wrappedIndexKey`, and nothing else in either direction. No credential id, no user id and no
+identifier and its two payloads as unpadded base64url — `factorId`, `wrappedPrivateKey`,
+`encapsulatedAccountKeys`, and nothing else in either direction. **The two member names are the
+contract rather than a label**: *wrapped under* names a key over another key and *encapsulated to*
+names a public key, so a client reading the first knows to unwrap it with the key-encryption key it
+just derived, and a client reading the second knows to decapsulate with the private half that unwrap
+produced. Renaming either to the other verb, or to a neutral one covering both, would describe two
+steps as one, and a client that ran them in the wrong order would get an authentication failure
+naming nothing. No credential id, no user id and no
 registration instant: the first is a capability the browser has no use for, since it locates its
 pair by trying each in turn; the second is the value every policy in the database is keyed on; the
 third is **already in the caller's hands**, because every one of these rows carries its credential's
@@ -729,7 +792,9 @@ codes share one instant rather than carrying ten, so there is no sequence of iss
 and the member would only widen a key-material response to repeat a fact the client can already
 read. The identifier goes
 back in the canonical lower-case hyphenated spelling it was stored in, because it **is** the
-associated data both envelopes were sealed with — the rule the write paths already keep.
+associated data the wrapped private key was wrapped with — the rule the write paths already keep.
+Get that spelling wrong and the encapsulated value beside it is unreachable too, because the private
+half that opens it is what the unwrap was for.
 
 **It is keyed on the account, never on a credential, and that is a decision rather than a
 convenience.** The keys belong to the *account*; a credential is only one way into it. An account
@@ -1604,22 +1669,25 @@ database, and an insert would meet `42501` before it met a reviewer — the *MUS
 argues why the read could be granted early and the writes could not. This is the state the
 schema was committed in, not a step somebody left half-finished.
 
-**What the manifest is *for* is design, and stating it in the present tense is the mistake
-this repository's documentation rule exists to stop.** The shape is that every recovery
-factor holds an ECDH P-256 key pair: the factor's private key *wrapped under* the
-key-encryption key that factor already derives, and the account's two keys *encapsulated
-to* the factor's public key — the three verbs at their exact widths, since
-[ciphertext-envelope.md](ciphertext-envelope.md) owns the distinction and the framing an
-encapsulated value would be carried in is defined there and stored nowhere. The manifest
-is to be the **sole authenticated carrier of every factor's public key**, with
-deliberately no per-row public key column beside the envelopes: `wrapped_account_keys`
-carries none, and `passkey_public_keys.public_key_cose` is a different key for a different
+**The key pair the manifest would list is built; the list itself is not, and keeping those
+two apart is what this repository's documentation rule is for.** Every recovery factor
+holds an ECDH P-256 key pair today — the factor's private key *wrapped under* the
+key-encryption key that factor derives, and the account's two keys *encapsulated to* the
+factor's public key, at 167 and 158 bytes, each refused by its own check constraints. What
+is still design is the **carrier of the public halves**. The manifest is to be their
+**sole authenticated carrier**, with deliberately no per-row public key column beside the
+payloads: `wrapped_account_keys` carries none, and
+`passkey_public_keys.public_key_cose` is a different key for a different
 job — the one an assertion's signature is verified against, never one a value is
 encapsulated to. What has to be unforgeable is the **set**. A per-row column is a row at a time, so an
 added, removed or swapped row would each have to carry its own authentication, and a
 client choosing what to encapsulate a value to would have no way to ask whether it was
 looking at all of them. `rotation_epoch` counts the generations that list has been
-through. None of that is behaviour this product has.
+through. So the public half of every factor's pair is, today, held by nobody: a client
+that needs one has to be handed it, and nothing hands it out. That is the gap the manifest
+closes, and it stays in the future tense until something writes one.
+[ciphertext-envelope.md](ciphertext-envelope.md) owns the two framings and the three
+verbs.
 
 **The "exactly one greater" transition is held by no declarative layer, and it is named
 here as a limit rather than left to be assumed.** That a write moving the epoch writes one
@@ -1661,11 +1729,26 @@ discloses is how churned somebody's recovery setup has been.
 
 ### What the database can and cannot hold to account
 
-`wrapped_account_keys` refuses an envelope that is not 61 bytes and one whose leading byte is not
-`0x01`, on both columns, and it refuses a row against a `federated` credential. It **cannot** tell a
-content key from an index key, and cannot notice the two being written to each other's column — both
-are 61 bytes, both carry version 1, both columns are `NOT NULL`. That binding is cryptographic and
-lives in the associated data.
+`wrapped_account_keys` carries **four** checks over its two payload columns and one over the
+credential type. `wrapped_private_key` must be exactly 167 bytes leading with the AEAD framing's
+version; `encapsulated_account_keys` must be exactly 158 bytes leading with the encapsulation
+framing's; and a row against a `federated` credential is refused, because OAuth has no PRF equivalent
+so such a row would be a private key nothing in the world can unwrap, presented as a way back into
+the account.
+
+**A column swap is now refused and the hazard that replaces it sits a level in, where no constraint
+can ever reach it.** The pair used to be two 61-byte AEAD envelopes carrying one version byte, so a
+transposition satisfied every check on either side of the wire; two widths, two framings and two
+version constants close that. What is left unguarded is **inside** `encapsulated_account_keys` — one
+64-byte plaintext holding two 32-byte keys, content key first, which the server never sees. A client
+that encapsulated them the other way round produces a value of exactly the right width carrying
+exactly the right version, which stores, reads back and opens. No `CHECK` and no test on this side
+will notice, because the bytes are ciphertext to everything here.
+
+Note also what the four checks say nothing about: neither leading byte distinguishes the **framing**,
+only the suite version within it. Both framings lead with `0x01` on different cryptography, so the
+**column** is the only discriminator, which is why the two version checks stay two checks rendered
+from two constants even while both constants hold `1`.
 
 `factor_manifests` refuses a manifest that is empty or wider than 4096 bytes, an epoch
 below 1, and a second row for one account. It **cannot** tell a well-formed manifest from
@@ -1693,15 +1776,22 @@ gets back out.
 4. **Unwrapping.** Each wire value is decoded and opened with the same associated data. A copy moved
    to another factor, or to the other purpose, fails to authenticate rather than returning wrong
    bytes.
-5. **Storing.** `POST /api/passkeys/registration` carries one `factorId`, `wrappedContentKey` and
-   `wrappedIndexKey`. `POST /api/me/recovery-codes` carries **ten** submissions, each a code's
-   verifier beside that code's own factor identifier and envelope pair. `POST /api/registration`
+5. **Storing.** `POST /api/passkeys/registration` carries one `factorId`, `wrappedPrivateKey` and
+   `encapsulatedAccountKeys`. `POST /api/me/recovery-codes` carries **ten** submissions, each a
+   code's verifier beside that code's own factor identifier and that pair. `POST /api/registration`
    carries **both shapes at once**, because it brings **eleven** factors into existence in one act.
-   Each handler checks every identifier's spelling, every envelope's width and version, and —
-   wherever a set is presented — that no two identifiers in the set repeat, then writes **in the
-   same `SaveChanges`** as the credential: four rows on the passkey path, twenty-one on the
-   recovery-code path, and roughly thirty on the registration path, of which eleven are wrapped-key
-   rows. There is no partial state in which a factor exists holding no share of the keys.
+   Each handler checks every identifier's spelling, each payload's width and version — judged by its
+   own framing's constants, never by the neighbour's, because a value accepted at 93 bytes has no
+   room for an ephemeral point at all — and, wherever a set is presented, that no two identifiers in
+   the set repeat; then it writes **in the same `SaveChanges`** as the credential: four rows on the
+   passkey path, twenty-one on the recovery-code path, and roughly thirty on the registration path,
+   of which eleven are factor rows. There is no partial state in which a factor exists holding no
+   share of the keys.
+
+   **Steps 3 and 4 describe what the browser does and step 5 describes what the routes take, and
+   today those disagree** — the client wraps both account keys under the key-encryption key and sends
+   `wrappedContentKey` and `wrappedIndexKey`, which no handler here accepts. The server side is the
+   built one; the client side is the work. See [Purpose](#purpose).
 
    The set's ten identifiers must differ, and that rule lives in the handler rather than being left
    to the primary key: as a `23505` it would arrive *after* the previous set had already been
@@ -1711,7 +1801,8 @@ gets back out.
    because those eleven land on one primary key in one save — and projects the set's rows from the
    one validated list rather than zipping them from three. See [registration.md](registration.md).
 
-6. **Handing them back.** `GET /api/me/account-keys` returns the envelopes of every factor the
+6. **Handing them back.** `GET /api/me/account-keys` returns the wrapped private key and the
+   encapsulated account keys of every factor the
    authenticated account holds — one entry per registered passkey, ten per set of recovery codes, so
    eleven for an ordinary account — and an empty array when it holds none. It is the only read of
    `wrapped_account_keys` the application makes, and the browser's one caller is custody. See
@@ -1738,7 +1829,7 @@ very often absent on exactly the requests the gate is for. Judged first, such a 
 told its payload was malformed — sending somebody holding a device that genuinely lacks the
 extension off to debug their client.
 
-**Replacing a set of recovery codes replaces all ten of its wrapped rows by the database's
+**Replacing a set of recovery codes replaces all ten of its factor rows by the database's
 cascade**, never by the application: the role holds no `DELETE` on `wrapped_account_keys` at all, so
 a handler that materialised them would die with `42501` rather than quietly take them. That is the
 same never-materialise rule the recovery-code hashes already carry, binding a second table and
@@ -1746,12 +1837,12 @@ failing the opposite way — loudly. What changes at ten rows is the temptation,
 replaced set's envelopes so we can check we are replacing as many as we found" is a sentence nobody
 could write when there was one.
 
-**Redeeming a code deletes its hash row and leaves its wrapped row standing**, and that asymmetry is
+**Redeeming a code deletes its hash row and leaves its factor row standing**, and that asymmetry is
 deliberate. Consuming a code removes its ability to *authenticate*; it cannot remove its ability to
-*decrypt*, because the secret that opens the envelope is the code itself, written on a card this
-system has never seen. Deleting the row would need a `DELETE` grant this table withholds on purpose.
-Nothing is leaked that was not already reachable: whoever holds a spent code and a copy of the
-database could have decrypted with it before redeeming too.
+*decrypt*, because the secret that unwraps that factor's private key is the code itself, written on a
+card this system has never seen. Deleting the row would need a `DELETE` grant this table withholds on
+purpose. Nothing is leaked that was not already reachable: whoever holds a spent code and a copy of
+the database could have decrypted with it before redeeming too.
 
 ## Decision Trees
 
@@ -1784,14 +1875,20 @@ database could have decrypted with it before redeeming too.
   keeps one
 - **never**: a word about the value being damaged. There is no ciphertext here to fail against
 
-**A wrapped key fails to open. What does that mean?**
+**A factor's row fails to open. What does that mean?**
 
-- the wrong factor's key-encryption key → the associated data disagrees, or the key does
-- the two stored copies were swapped → the purpose in the associated data disagrees
-- the envelope was altered → the tag does not verify
+- the wrong factor's key-encryption key → the wrapped private key's associated data disagrees, or
+  the key does
+- the wrapped private key opened and the encapsulation did not → that pair belongs to another
+  factor's public half
+- either value was altered → the tag does not verify
+- **not** a swap of the two columns: they are 167 and 158 bytes of two different suites, so the
+  database refuses the transposition before it is ever read back
 
-All three are one symptom by design: the client learns the value is not usable and learns nothing
-about why.
+All of them are one symptom by design: the client learns the value is not usable and learns nothing
+about why. **The one failure that produces no symptom at all** is the account keys arriving in the
+wrong order inside the encapsulated plaintext — that opens perfectly and yields two keys used for
+each other's job.
 
 **An unlock did not end in custody. What does the browser say?**
 
@@ -1832,8 +1929,17 @@ about why.
   of a constant. What the wrapped keys buy is narrower and real: a factor holding no share of the
   account keys is unstorable.
 - **[ADR 0018](../decisions/0018-give-the-wrapped-account-keys-a-policed-table-and-their-own-factor-identifier.md)**
-  — where the wrapped copies live, why the factor identifier is its own column, and why the table
-  holds no `UPDATE` or `DELETE` grant.
+  — where a factor's share of the account lives, why the factor identifier is its own column, and
+  why the table holds no `DELETE` grant. Read its amendments for what the `UPDATE` grant became: one
+  column, `encapsulated_account_keys`, because a rotation replaces the account's keys and never the
+  factor's own private key beside them.
+- **[ADR 0025](../decisions/0025-give-every-recovery-factor-an-ecdh-key-pair.md)** — why a factor
+  holds a key pair at all, the three curves and the two shapes that were refused, the measured widths
+  that make both payloads equality checks rather than bands, and the consequences a reader will
+  otherwise reconstruct: two framings leading with the same byte, epoch 0 as an absent row, and an
+  epoch transition no declarative layer holds.
+- **[key-rotation.md](key-rotation.md)** — the one operation the key pair exists for, what a run
+  stages, and the guarantee the begin currently does without.
 - **[data-isolation.md](../engineering/data-isolation.md)** — `wrapped_account_keys` is policed by
   `user_isolation`. Its `SELECT` grant now has two kinds of reader: the route above, and the two
   isolation tests, which do not become redundant beside it — an endpoint answering correctly says

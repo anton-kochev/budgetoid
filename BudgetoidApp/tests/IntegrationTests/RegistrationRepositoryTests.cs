@@ -426,8 +426,8 @@ public sealed class RegistrationRepositoryTests
         return WrappedAccountKeys.For(
             credential,
             envelopes.Factor,
-            envelopes.ContentEnvelope,
-            envelopes.IndexEnvelope,
+            envelopes.PrivateKeyEnvelope,
+            envelopes.AccountKeysEnvelope,
             now);
     }
 

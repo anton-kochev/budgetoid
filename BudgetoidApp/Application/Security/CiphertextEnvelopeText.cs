@@ -17,9 +17,11 @@ namespace Application.Security;
 /// says anything about, whatever their leading byte happens to be. The framing that would be confused
 /// with it is <see cref="EncapsulatedValueEnvelope"/>: it leads with the same <c>0x01</c> and splices a
 /// 65-byte ephemeral point after it, so text carrying an encapsulated value decodes here, clears the
-/// version check, and is accepted by a floor 65 bytes below its own. Nothing hands this member such a
-/// value today, and a decoder for that framing would be a second member beside this one rather than a
-/// rule passed into it.
+/// version check, and is accepted by a floor 65 bytes below its own. That decoder is a second member
+/// beside this one rather than a rule passed into it, and it now exists:
+/// <see cref="EncapsulatedValueEnvelopeText"/>. Nothing about either of them is dispatched on — which
+/// framing a request member carries is decided by the member, at the call site, by naming one of the
+/// two types.
 /// </para>
 /// <para>
 /// A <c>Try</c> shape rather than a throw, for the reason <see cref="PasskeyEncoding.TryDecode"/> gives
@@ -37,10 +39,13 @@ namespace Application.Security;
 /// </para>
 /// <para>
 /// <b>The ceiling is a parameter, and it has to be.</b> Every field carrying this framing has its own
-/// size: a note sealed under the content key is as long as somebody typed, an account key wrapped under
-/// a factor's key-encryption key has exactly one width. A constant here would be
-/// one number pretending to serve all of them, and the first field that did not fit it would be
-/// refused for a limit nobody wrote for it.
+/// size: a note sealed under the content key is as long as somebody typed, a factor's private key
+/// wrapped under the key-encryption key that factor derives has exactly one width. A constant here
+/// would be one number pretending to serve all of them, and the first field that did not fit it would
+/// be refused for a limit nobody wrote for it. <b>The ceiling is not the width</b> — it bounds the wide
+/// side only, and the band between this format's floor and a consumer's exact width is what no shared
+/// rule can see; <see cref="Passkeys.WrappedPrivateKeyEnvelope"/> is what closes that band for the one
+/// fixed-width consumer there is.
 /// </para>
 /// </remarks>
 public static class CiphertextEnvelopeText

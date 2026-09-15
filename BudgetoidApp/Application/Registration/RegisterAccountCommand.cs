@@ -63,8 +63,15 @@ namespace Application.Registration;
 /// The client-minted identifier of the passkey factor, in the lower-case 36-character hyphenated form
 /// and no other spelling — see <see cref="WrappedAccountKeys.FactorId"/>.
 /// </param>
-/// <param name="WrappedContentKey">The account's content key as the passkey factor holds it.</param>
-/// <param name="WrappedIndexKey">The account's index key — the same shape, judged by the same rule.</param>
+/// <param name="WrappedPrivateKey">
+/// The passkey factor's ECDH P-256 private key, <em>wrapped under</em> the key-encryption key this
+/// ceremony's PRF output yields.
+/// </param>
+/// <param name="EncapsulatedAccountKeys">
+/// The account's content key and index key as one 64-byte plaintext, <em>encapsulated to</em> the public
+/// half of that key pair. <b>Not the same shape and not judged by the same rule as the member above</b> —
+/// a different suite, a different floor and a different width.
+/// </param>
 /// <param name="Codes">The card, one whole submission per code.</param>
 public sealed record RegisterAccountCommand(
     string GoogleSubject,
@@ -73,8 +80,8 @@ public sealed record RegisterAccountCommand(
     string AttestationObject,
     PasskeyClientExtensionResults? ClientExtensionResults,
     string FactorId,
-    string WrappedContentKey,
-    string WrappedIndexKey,
+    string WrappedPrivateKey,
+    string EncapsulatedAccountKeys,
     IReadOnlyList<RecoveryCodeSubmission> Codes);
 
 /// <summary>

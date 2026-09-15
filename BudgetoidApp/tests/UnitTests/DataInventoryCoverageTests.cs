@@ -128,11 +128,11 @@ public sealed class DataInventoryCoverageTests
     /// <remarks>
     /// The two are named together wherever a list has to be shown to reach more than one corner of
     /// the model. <c>transactions.description</c> is a sealed narrative column on the largest table;
-    /// <c>wrapped_account_keys.wrapped_content_key</c> is key material on the newest one, mapped
+    /// <c>wrapped_account_keys.wrapped_private_key</c> is key material on the newest one, mapped
     /// through a value converter. A walk that reached only the tables registered first, or only the
     /// properties with simple types, misses exactly one of the two.
     /// </remarks>
-    private const string RealKeyMaterialColumn = "wrapped_account_keys.wrapped_content_key";
+    private const string RealKeyMaterialColumn = "wrapped_account_keys.wrapped_private_key";
 
     /// <summary>
     /// The gate itself: every column the model maps is classified, and every classification names a

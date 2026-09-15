@@ -408,7 +408,7 @@ public sealed class PasskeyRepositoryTests
             PasskeyPublicKey.Register(credential, webAuthnCredentialId, CoseKey, CoseAlgorithm.Es256),
             PasskeySignatureCounter.Start(credential, value: 0),
             WrappedAccountKeys.For(
-                credential, keys.Factor, keys.ContentEnvelope, keys.IndexEnvelope, SeedInstant));
+                credential, keys.Factor, keys.PrivateKeyEnvelope, keys.AccountKeysEnvelope, SeedInstant));
     }
 
     /// <summary>

@@ -568,8 +568,8 @@ public sealed class ErasureAtomicityTests
             attestationObject = attestation.AttestationObjectBase64Url,
             clientExtensionResults = new { prf = new { enabled = true } },
             factorId = keys.FactorId,
-            wrappedContentKey = keys.WrappedContentKey,
-            wrappedIndexKey = keys.WrappedIndexKey,
+            wrappedPrivateKey = keys.WrappedPrivateKey,
+            encapsulatedAccountKeys = keys.EncapsulatedAccountKeys,
         });
         response.EnsureSuccessStatusCode();
     }
@@ -782,12 +782,13 @@ public sealed class ErasureAtomicityTests
         // than per account. Nothing asserts on it, and a fresh one per call is what keeps two seeded
         // accounts from colliding on that key.
         Guid factorId = Guid.CreateVersion7();
-        db.WrappedAccountKeys.Add(WrappedAccountKeys.For(
+        WrappedAccountKeys factor = WrappedAccountKeys.For(
             passkey,
             factorId,
-            Envelope(0xC0),
-            Envelope(0x1D),
-            SeedInstant));
+            WrappedPrivateKeyPayload(0xC0),
+            EncapsulatedAccountKeysPayload(0x1D),
+            SeedInstant);
+        db.WrappedAccountKeys.Add(factor);
 
         // A content-key rotation caught mid-flight, in key_rotations — the newest table the enumeration
         // discovers, and one the non-vacuity guard reports as a zero until something puts a row in it.
@@ -806,26 +807,52 @@ public sealed class ErasureAtomicityTests
         // a federated credential derives no key-encryption key and a set of recovery codes is ten
         // factors with no way to say which one a run began under.
         //
-        // Filed against the factor seeded immediately above, which is the whole point of hoisting that
-        // identifier out of the call: the composite foreign key demands a wrapped_account_keys row for
-        // this (factor_id, user_id) pair, so the staging row is unstorable against a factor this account
-        // does not own. Both rows go in the same SaveChangesAsync below and EF orders the two inserts
-        // from the configured relationship.
+        // It names NO factor, and that is the reshape rather than an omission. The row used to carry a
+        // factor_id and a composite foreign key to wrapped_account_keys; a run now encapsulates the new
+        // account keys to every surviving factor's PUBLIC key, so it commits to a factor SET — the
+        // staged manifest and the epoch it was read at — and the per-factor value moved down to
+        // key_rotation_seals, seeded immediately below. What replaced the composite key is
+        // FK_key_rotations_users, an ON DELETE CASCADE from users, and it is what puts this table back
+        // on the erasure chain the departed key used to carry it along.
         //
-        // The two envelopes carry fillers of their own rather than reusing the pair above, so a failure
-        // message can tell a staged envelope from a promoted one by eye — the same argument the two
-        // fillers beside them already make about content versus index.
-        db.KeyRotations.Add(KeyRotation.Begin(
+        // The staged manifest is distinguishable from the live one seeded further down, so a failure
+        // message can tell a staged generation from a promoted one by eye — the same argument the two
+        // payload fillers beside it already make about the private key versus the account keys.
+        KeyRotation rotation = KeyRotation.Begin(
             passkey,
-            factorId,
 
             // Client-minted in production, and minted fresh here for the same reason the factor is:
             // nothing asserts on it, and a value shared between two seeded accounts would be a value
             // this seeding invented a meaning for.
             Guid.CreateVersion7(),
-            Envelope(0x2E),
-            Envelope(0x3F),
-            SeedInstant));
+            StagedManifestNaming(factorId),
+            FactorManifest.MinimumRotationEpoch + 1,
+            SeedInstant);
+        db.KeyRotations.Add(rotation);
+
+        // That run's copy of the next generation for this factor, in key_rotation_seals — the newest
+        // table the enumeration discovers, and one the non-vacuity guard reports as a zero until
+        // something puts a row in it. Nothing in the product writes it: the app role holds SELECT and no
+        // write grant of any shape, and no route reaches a rotation at all. That is exactly why it is
+        // seeded here, on the container superuser like every other row in this helper — a table that
+        // only ever holds zero rows makes both of this file's claims about it vacuously true, "nothing
+        // moved" and "everything went" alike, and the guard refusing to count an empty relation is that
+        // refusal working rather than an obstacle to route around.
+        //
+        // SEEDING IT IS ALSO WHAT EXERCISES THE CASCADE. This row has TWO cascading parents —
+        // (factor_id, user_id) to wrapped_account_keys and user_id to key_rotations — so an erasure
+        // reaches it down two paths, and a table holding nothing proves neither of them works.
+        //
+        // Through KeyRotationSeal.For rather than raw SQL, for the reason the remarks above give about
+        // every other row here, and it earns more than they do: the factory takes the LOADED ROTATION
+        // and the LOADED FACTOR, reads the owner off the first and the factor id off the second, and
+        // refuses when the two disagree. Three loose ids could file this account's next generation
+        // against somebody else's factor and find out at the insert; this cannot be constructed.
+        //
+        // The payload carries a filler of its own rather than reusing the factor's, so a promotion
+        // copying the wrong direction would be visible by eye.
+        db.KeyRotationSeals.Add(KeyRotationSeal.For(
+            rotation, factor, EncapsulatedAccountKeysPayload(0x3F)));
 
         // The account's manifest of every recovery factor's public key, in factor_manifests — the
         // newest table the enumeration discovers, and one the non-vacuity guard reports as a zero until
@@ -1005,13 +1032,31 @@ public sealed class ErasureAtomicityTests
     /// twin. The four callers pass four different fillers so the columns can be told apart by eye in a
     /// failure message: content from index, and the generation in force from the one staged beside it.
     /// </remarks>
-    private static byte[] Envelope(byte filler)
-    {
-        byte[] envelope = new byte[WrappedAccountKeys.EnvelopeLength];
-        Array.Fill(envelope, filler);
-        envelope[0] = WrappedAccountKeys.EnvelopeVersion;
+    private static byte[] WrappedPrivateKeyPayload(byte filler) =>
+        Payload(
+            WrappedAccountKeys.WrappedPrivateKeyLength,
+            WrappedAccountKeys.WrappedPrivateKeyVersion,
+            filler);
 
-        return envelope;
+    /// <inheritdoc cref="WrappedPrivateKeyPayload" />
+    private static byte[] EncapsulatedAccountKeysPayload(byte filler) =>
+        Payload(
+            WrappedAccountKeys.EncapsulatedAccountKeysLength,
+            WrappedAccountKeys.EncapsulatedAccountKeysVersion,
+            filler);
+
+    /// <summary>
+    /// The shared body of the two above. The width and the version are parameters rather than read
+    /// inside, because the one mistake this helper could make is pairing one suite's width with the
+    /// other's version — the cross-wiring the two pairs of constants exist to keep apart.
+    /// </summary>
+    private static byte[] Payload(int length, byte version, byte filler)
+    {
+        byte[] payload = new byte[length];
+        Array.Fill(payload, filler);
+        payload[0] = version;
+
+        return payload;
     }
 
     /// <summary>
@@ -1029,6 +1074,17 @@ public sealed class ErasureAtomicityTests
     /// which factor the seeded manifest was written for.
     /// </remarks>
     private static byte[] ManifestNaming(Guid factorId) => factorId.ToByteArray();
+
+    /// <summary>
+    /// The same factor named by a <em>staged</em> manifest, distinguishable from the live one.
+    /// </summary>
+    /// <remarks>
+    /// One trailing byte rather than a different encoding, so the two are the same shape and a read-back
+    /// that returned the staged generation where the live one belongs is visible by eye. Nothing on this
+    /// side parses either: a manifest is authenticated client-side material, and what is being seeded
+    /// here is a row of the right shape rather than a generation anything reads.
+    /// </remarks>
+    private static byte[] StagedManifestNaming(Guid factorId) => [.. factorId.ToByteArray(), 0x02];
 
     /// <summary>
     /// A host whose factory leaves the application's own authentication standing, because every request

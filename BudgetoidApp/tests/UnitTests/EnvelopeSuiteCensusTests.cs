@@ -107,7 +107,7 @@ public sealed record EnvelopeSuiteCensus(
 /// <b>The edit this exists to stop.</b> <see cref="CiphertextEnvelope.Version"/> and
 /// <see cref="EncapsulatedValueEnvelope.Version"/> are both the literal <c>1</c>, declared twice. Every
 /// instinct a reader brings to two identical constants in one namespace says to make the second an
-/// alias of the first — which is what <see cref="Domain.Users.WrappedAccountKeys.EnvelopeVersion"/>
+/// alias of the first — which is what <see cref="Domain.Users.WrappedAccountKeys.WrappedPrivateKeyVersion"/>
 /// correctly is, because that <em>is</em> the AEAD format's byte. Here the two bytes are equal by
 /// coincidence of both formats being first, and nothing else. Aliased, a successor to either suite
 /// silently renumbers the other: values written under a suite this deployment implements start being
@@ -416,6 +416,115 @@ public sealed partial class EnvelopeSuiteCensusTests
         // unlike the metadata census above, there is no third bucket here that would fill up instead.
         await Assert.That(scanned).IsEqualTo(Pinned.Length);
         await Assert.That(scanned).IsGreaterThan(0);
+    }
+
+    /// <summary>
+    /// Each of the two version constants on the entity that stores both framings names <b>its own</b>
+    /// suite's format type, and never the neighbour's.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>THIS CLOSES A GAP NOTHING ELSE IN EITHER TEST PROJECT COULD SEE, AND THE GAP WAS MEASURED
+    /// RATHER THAN REASONED.</b> <c>WrappedPrivateKeyVersion</c> is declared as
+    /// <c>CiphertextEnvelope.Version</c> and <c>EncapsulatedAccountKeysVersion</c> as
+    /// <c>EncapsulatedValueEnvelope.Version</c>. Swap the two initialisers and <em>nothing at all goes
+    /// red</em>: both suites hold version 1 today, so every rendered check constraint is byte-identical,
+    /// every fixture builds the same bytes, and both suites stay green. That was run rather than
+    /// inferred — the whole of both projects, zero failures, under exactly that edit — which is why
+    /// this test exists and why it reads source text.
+    /// </para>
+    /// <para>
+    /// <b>These two constants are aliases on purpose, so the scan above cannot hold them.</b>
+    /// <see cref="EveryVersionByte_IsWrittenOutRatherThanAliased"/> refuses an alias, because the two
+    /// <em>format</em> types are the definitions and an alias there would let a bump to one silently
+    /// renumber the other. On the entity an alias is the right shape — it restates no version of its
+    /// own, precisely so the entity and the format cannot disagree — so what has to be checked is not
+    /// <em>whether</em> it aliases but <em>what it aliases to</em>. A rule written as "is it a literal"
+    /// would demand a copy of the number on the entity, which is the drift the alias exists to prevent.
+    /// </para>
+    /// <para>
+    /// <b>What a cross-wire costs, which is what makes it worth a source scan.</b> The two columns hold
+    /// values of two suites at two widths. Crossed, the entity would refuse a correct wrapped private
+    /// key the day the AEAD suite is bumped, and accept one carrying a version the client never agreed
+    /// to — and the check constraint rendered from the same constant would agree with it, because both
+    /// sides read the same wrong symbol. Nothing is detectably wrong until a value produced under one
+    /// suite is opened under the other, which is a browser, months later.
+    /// </para>
+    /// <para>
+    /// <b>Metadata cannot answer this.</b> Measured on the scan above and recorded there:
+    /// <c>FieldInfo.GetRawConstantValue()</c> returns <c>1</c> for an alias exactly as for a literal,
+    /// and here it returns <c>1</c> for <em>either</em> alias. The symbol a constant was written from
+    /// survives only in the source.
+    /// </para>
+    /// <para>
+    /// The expectation is written out per row rather than derived. Derived from the constant's own name
+    /// it would agree with whatever the file says; derived from the value it would agree with both
+    /// spellings for as long as the two suites hold one number, which is exactly the window this test
+    /// is for.
+    /// </para>
+    /// </remarks>
+    [Test]
+    [Arguments("WrappedPrivateKeyVersion", "CiphertextEnvelope.Version")]
+    [Arguments("EncapsulatedAccountKeysVersion", "EncapsulatedValueEnvelope.Version")]
+    public async Task EveryEntityVersionConstant_NamesItsOwnSuite(string constant, string expected)
+    {
+        // Arrange
+        DirectoryInfo root = VersionDeclaration.SolutionRootFrom(AppContext.BaseDirectory);
+        string path = Path.Combine(
+            root.FullName, EntityVersionSource.Replace('/', Path.DirectorySeparatorChar));
+
+        // Act
+        string? initialiser = File.Exists(path)
+            ? VersionDeclaration.ByteConstantIn(File.ReadAllText(path), constant)
+            : null;
+
+        // Assert — the non-null check first, so a scan that read nothing at all fails as the unreadable
+        // source it is rather than passing an equality against a null nobody looked at.
+        await Assert.That(initialiser).IsNotNull();
+        await Assert.That(initialiser).IsEqualTo(expected);
+    }
+
+    /// <summary>
+    /// The entity whose two version constants alias the two format types, relative to the solution root.
+    /// </summary>
+    /// <remarks>
+    /// One named file rather than a discovered set, because there are exactly two such constants and
+    /// they are both on it. A discovery rule would have to decide what makes a constant "a version
+    /// alias", and the honest answer is that a reader decides — so the file is named and the two rows
+    /// are written out above.
+    /// </remarks>
+    private const string EntityVersionSource = "Domain/Users/WrappedAccountKeys.cs";
+
+    /// <summary>
+    /// The scan reads a named byte constant's initialiser, and reads it as a symbol rather than a value.
+    /// </summary>
+    /// <remarks>
+    /// The permanent control for <see cref="EveryEntityVersionConstant_NamesItsOwnSuite"/>, and it is
+    /// the control that matters most there: the census above compares two symbols that evaluate to the
+    /// same number, so a reader who "improved" the scan into something that resolved constants would
+    /// turn it into a test that cannot fail. This says the scan hands back the text.
+    /// </remarks>
+    [Test]
+    public async Task Scan_ReadsANamedByteConstantAsItsSymbol()
+    {
+        // Arrange — two constants in one file, aliasing two different symbols that hold one number.
+        const string source = """
+            public const byte WrappedPrivateKeyVersion = CiphertextEnvelope.Version;
+
+            public const byte EncapsulatedAccountKeysVersion = EncapsulatedValueEnvelope.Version;
+            """;
+
+        // Act
+        string? wrapped = VersionDeclaration.ByteConstantIn(source, "WrappedPrivateKeyVersion");
+        string? encapsulated =
+            VersionDeclaration.ByteConstantIn(source, "EncapsulatedAccountKeysVersion");
+        string? absent = VersionDeclaration.ByteConstantIn(source, "NoSuchVersion");
+
+        // Assert — each names its own, and a constant the file does not declare is null rather than the
+        // other one's value, which is what stops a renamed constant reading as a pass.
+        await Assert.That(wrapped).IsEqualTo("CiphertextEnvelope.Version");
+        await Assert.That(encapsulated).IsEqualTo("EncapsulatedValueEnvelope.Version");
+        await Assert.That(absent).IsNull();
     }
 
     /// <summary>
@@ -940,6 +1049,33 @@ public sealed partial class EnvelopeSuiteCensusTests
             ArgumentNullException.ThrowIfNull(initialiser);
 
             return NumericLiteral().IsMatch(initialiser);
+        }
+
+        /// <summary>
+        /// The initialiser of the one <c>public const byte <paramref name="name"/></c> declaration in
+        /// <paramref name="source"/>, trimmed, or <see langword="null"/> when it holds none or more
+        /// than one.
+        /// </summary>
+        /// <remarks>
+        /// <b>The name is a parameter and the regex is built per call, which is the one place this
+        /// helper departs from its neighbour.</b> <see cref="In"/> answers about a constant every
+        /// format type spells identically, so its pattern is source-generated; this one answers about
+        /// constants whose names differ per subject, and a source generator cannot take a runtime
+        /// string. The name is escaped before it reaches the pattern, so a caller passing a regular
+        /// expression gets a search for that literal text and not a match on something else.
+        /// </remarks>
+        internal static string? ByteConstantIn(string source, string name)
+        {
+            ArgumentNullException.ThrowIfNull(source);
+            ArgumentException.ThrowIfNullOrWhiteSpace(name);
+
+            MatchCollection matches = Regex.Matches(
+                source,
+                @"^[ \t]*public\s+const\s+byte\s+" + Regex.Escape(name) + @"\s*=\s*(?<initialiser>[^;]+);",
+                RegexOptions.Multiline,
+                TimeSpan.FromSeconds(5));
+
+            return matches.Count == 1 ? matches[0].Groups["initialiser"].Value.Trim() : null;
         }
 
         /// <summary>

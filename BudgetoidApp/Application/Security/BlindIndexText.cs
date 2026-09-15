@@ -22,7 +22,7 @@ namespace Application.Security;
 /// </para>
 /// <para>
 /// <b>What is left after the shared decoder is the width, and only the width</b> — the shape
-/// <see cref="WrappedKeyEnvelope"/> holds for its own member. The alphabet and the bound on decoded
+/// <see cref="WrappedPrivateKeyEnvelope"/> holds for its own member. The alphabet and the bound on decoded
 /// bytes are the decoder's, because they are the same rules for every binary member this API accepts
 /// as text; a second spelling of either here would be a way for the two to disagree.
 /// </para>
@@ -33,9 +33,9 @@ namespace Application.Security;
 /// not slip through the padded allowance. What no ceiling can see is the short side, and this member is
 /// where that is closed: a 31-byte value passes every check made above this type and is still not a
 /// blind index. It is not padded or truncated into shape, for the reason
-/// <see cref="WrappedKeyEnvelope"/> gives — either repair stores a well-formed row holding a value that
-/// matches nothing, and the row looks correct until somebody searches for the name it was supposed to
-/// find.
+/// <see cref="WrappedPrivateKeyEnvelope"/> gives — either repair stores a well-formed row holding a
+/// value that matches nothing, and the row looks correct until somebody searches for the name it was
+/// supposed to find.
 /// </para>
 /// <para>
 /// <b>Why the width is worth refusing at all, given the server cannot check anything else.</b> This

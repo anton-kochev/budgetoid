@@ -243,21 +243,37 @@ public sealed class AccountKeysEndpointTests
     }
 
     /// <summary>
-    /// That <c>wrappedContentKey</c> carries the content envelope and <c>wrappedIndexKey</c> the index
-    /// one, on every row.
+    /// That <c>wrappedPrivateKey</c> carries the wrapped private key and <c>encapsulatedAccountKeys</c>
+    /// the encapsulated pair, on every row — and that each member carries its own suite's width.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <b>This assertion cannot be weakened into a shape check, and the reason is that the server has no
-    /// symptom at all.</b> Both columns are exactly
-    /// <c>WrappedAccountKeys.EnvelopeLength</c> bytes, both carry the same leading version byte, and both
-    /// are <c>NOT NULL</c> — so a projection that reads each into the other's member satisfies every
-    /// check constraint the table holds, every width bound the Application ring restates, and every
-    /// assertion that measures a length or a version. Nothing goes red, no row is malformed and no log
-    /// line is written. What separates the two envelopes is the <em>purpose</em> bound into the associated
-    /// data they were sealed under, which lives in the browser and which this server cannot read.
-    /// The failure therefore surfaces months later, in somebody's browser, as an account whose envelopes
-    /// will not open — and by then the swap is in every response the endpoint has ever served.
+    /// <b>The transposition this test is about compiles, is invisible to a fake-backed handler test, and
+    /// used to be invisible here too.</b> Swapping the two members in
+    /// <c>AccountKeyReadService</c>'s projection is a well-typed edit — both are
+    /// <c>ReadOnlyMemory&lt;byte&gt;</c> — and a handler test over a fake reads back whatever the fake
+    /// was handed, so it cannot see the swap at all. Nothing on the server has a symptom: what separates
+    /// the two values is the cryptography, which lives in the browser. The failure surfaces months
+    /// later, in somebody's browser, as an account whose keys will not open — and by then the swap is in
+    /// every response the endpoint has ever served.
+    /// </para>
+    /// <para>
+    /// <b>The widths differing is what makes it cheaply checkable, and that is why the width assertion
+    /// is here rather than folded away as redundant.</b> A wrapped private key is 167 bytes of AEAD
+    /// framing over a PKCS#8 P-256 private key; an encapsulated pair of account keys is 158 bytes of
+    /// encapsulation framing over a 64-byte plaintext. A transposed projection therefore puts a 158-byte
+    /// value in a member the client will slice by the AEAD layout and a 167-byte value in one it will
+    /// slice by the encapsulation layout, and <em>the response says so</em>. Under the arrangement this
+    /// replaced both members were 61 bytes carrying the same version byte, and no assertion over lengths
+    /// could have caught anything.
+    /// </para>
+    /// <para>
+    /// <b>So do not "simplify" the width lines away on the grounds that the byte comparison below
+    /// already covers them.</b> It does today, because the fixture mints distinguishable payloads. The
+    /// width assertion is the one that survives a fixture somebody later makes symmetrical, and it is
+    /// the one whose failure message says which member is which rather than printing two hex strings.
+    /// Both widths are read off <c>WrappedAccountKeys</c>, each from its own suite's constant, so a
+    /// cross-read is a change to this file rather than a drift in it.
     /// </para>
     /// <para>
     /// Asserted per row over the ten-factor arrangement rather than over a single pair, because a
@@ -271,7 +287,7 @@ public sealed class AccountKeysEndpointTests
     /// </para>
     /// </remarks>
     [Test]
-    public async Task AccountKeys_NeverSwapTheContentAndIndexEnvelopes()
+    public async Task AccountKeys_NeverSwapTheWrappedPrivateKeyAndTheEncapsulatedAccountKeys()
     {
         // Arrange
         await using PostgresTestHost host = await StartSignedInHostAsync();
@@ -285,8 +301,8 @@ public sealed class AccountKeysEndpointTests
 
         // The two envelopes of one factor really do differ, or "they were not swapped" is a claim about
         // two values nothing could tell apart.
-        await Assert.That(Convert.ToHexString(own[0].ContentEnvelope))
-            .IsNotEqualTo(Convert.ToHexString(own[0].IndexEnvelope));
+        await Assert.That(Convert.ToHexString(own[0].PrivateKeyEnvelope))
+            .IsNotEqualTo(Convert.ToHexString(own[0].AccountKeysEnvelope));
 
         // Act
         HttpResponseMessage response = await signedIn.Client.GetAsync(AccountKeysPath);
@@ -309,10 +325,19 @@ public sealed class AccountKeysEndpointTests
             JsonObject row = AsObject(entry);
             WrappedKeyFixture factor = seeded[row["factorId"]!.GetValue<string>()];
 
-            await Assert.That(DecodedHex(row, "wrappedContentKey"))
-                .IsEqualTo(Convert.ToHexString(factor.ContentEnvelope));
-            await Assert.That(DecodedHex(row, "wrappedIndexKey"))
-                .IsEqualTo(Convert.ToHexString(factor.IndexEnvelope));
+            await Assert.That(DecodedHex(row, "wrappedPrivateKey"))
+                .IsEqualTo(Convert.ToHexString(factor.PrivateKeyEnvelope));
+            await Assert.That(DecodedHex(row, "encapsulatedAccountKeys"))
+                .IsEqualTo(Convert.ToHexString(factor.AccountKeysEnvelope));
+
+            // Each member carries ITS OWN suite's width. Hex is two characters per byte, so the
+            // comparison is against twice the domain constant — read from each suite's own constant and
+            // never from the neighbour's, because the two numbers are the whole of what makes a
+            // transposition visible on this response.
+            await Assert.That(DecodedHex(row, "wrappedPrivateKey").Length)
+                .IsEqualTo(WrappedAccountKeys.WrappedPrivateKeyLength * 2);
+            await Assert.That(DecodedHex(row, "encapsulatedAccountKeys").Length)
+                .IsEqualTo(WrappedAccountKeys.EncapsulatedAccountKeysLength * 2);
         }
     }
 
@@ -436,10 +461,9 @@ public sealed class AccountKeysEndpointTests
     /// account that cannot be opened by a factor whose stored bytes are perfectly correct.
     /// </para>
     /// <para>
-    /// Padding is the case worth naming: an envelope is
-    /// <c>WrappedAccountKeys.EnvelopeLength</c> bytes, which is not a multiple of three, so the standard
-    /// encoder appends <c>=</c> characters to every one of them — this is not a corner a fixture had to
-    /// be chosen to reach. The two alphabet characters are checked over the payload as a whole rather
+    /// Padding is the case worth naming: the two payloads are 167 and 158 bytes, and neither is a
+    /// multiple of three, so the standard encoder appends <c>=</c> characters to every one of them —
+    /// this is not a corner a fixture had to be chosen to reach. The two alphabet characters are checked over the payload as a whole rather
     /// than per member, because a member is only base64url if nothing anywhere in it says otherwise.
     /// </para>
     /// <para>
@@ -470,7 +494,19 @@ public sealed class AccountKeysEndpointTests
         await Assert.That(entries.Count).IsEqualTo(1);
 
         JsonObject row = AsObject(entries[0]);
-        foreach (string member in EnvelopeMembers)
+
+        // Each member against ITS OWN suite's width, because the two payloads are 167 and 158 bytes and
+        // no single expectation is right about both. One shared length here would pass on a transposed
+        // projection only while both suites agreed, which they no longer do — and which is exactly what
+        // AccountKeys_NeverSwapTheWrappedPrivateKeyAndTheEncapsulatedAccountKeys reads as a rule rather
+        // than as a coincidence.
+        (string Member, int Width)[] members =
+        [
+            ("wrappedPrivateKey", own[0].PrivateKeyEnvelope.Length),
+            ("encapsulatedAccountKeys", own[0].AccountKeysEnvelope.Length),
+        ];
+
+        foreach ((string member, int width) in members)
         {
             string encoded = row[member]!.GetValue<string>();
 
@@ -478,14 +514,14 @@ public sealed class AccountKeysEndpointTests
             await Assert.That(encoded).DoesNotContain("+");
             await Assert.That(encoded).DoesNotContain("/");
 
-            // And it really is the envelope, decoded — which is what stops the three absences above
+            // And it really is the payload, decoded — which is what stops the three absences above
             // passing over a member that carries no base64url at all.
-            await Assert.That(Base64UrlText.Decode(encoded).Length).IsEqualTo(own[0].ContentEnvelope.Length);
+            await Assert.That(Base64UrlText.Decode(encoded).Length).IsEqualTo(width);
         }
     }
 
     /// <summary>
-    /// That a row carries exactly <c>factorId</c>, <c>wrappedContentKey</c> and <c>wrappedIndexKey</c> —
+    /// That a row carries exactly <c>factorId</c>, <c>wrappedPrivateKey</c> and <c>encapsulatedAccountKeys</c> —
     /// no fourth member, and no third.
     /// </summary>
     /// <remarks>
@@ -846,7 +882,7 @@ public sealed class AccountKeysEndpointTests
     }
 
     /// <summary>The two members carrying an envelope, named once so no assertion spells either twice.</summary>
-    private static readonly string[] EnvelopeMembers = ["wrappedContentKey", "wrappedIndexKey"];
+    private static readonly string[] EnvelopeMembers = ["wrappedPrivateKey", "encapsulatedAccountKeys"];
 
     /// <summary>
     /// Every member one row carries, in the order the census joins them. Spread from
@@ -889,8 +925,8 @@ public sealed class AccountKeysEndpointTests
         foreach (WrappedKeyFixture stranger in other)
         {
             await Assert.That(payload).DoesNotContain(stranger.FactorId);
-            await Assert.That(payload).DoesNotContain(stranger.WrappedContentKey);
-            await Assert.That(payload).DoesNotContain(stranger.WrappedIndexKey);
+            await Assert.That(payload).DoesNotContain(stranger.WrappedPrivateKey);
+            await Assert.That(payload).DoesNotContain(stranger.EncapsulatedAccountKeys);
         }
     }
 
@@ -909,13 +945,13 @@ public sealed class AccountKeysEndpointTests
     private static string ArrivedRows(JsonArray entries) =>
         Join(entries.Select(entry => Render(
             AsObject(entry)["factorId"]!.GetValue<string>(),
-            AsObject(entry)["wrappedContentKey"]!.GetValue<string>(),
-            AsObject(entry)["wrappedIndexKey"]!.GetValue<string>())));
+            AsObject(entry)["wrappedPrivateKey"]!.GetValue<string>(),
+            AsObject(entry)["encapsulatedAccountKeys"]!.GetValue<string>())));
 
     /// <summary>The expected half of the same comparison, rendered the same way.</summary>
     private static string ExpectedRows(IEnumerable<WrappedKeyFixture> factors) =>
         Join(factors.Select(factor =>
-            Render(factor.FactorId, factor.WrappedContentKey, factor.WrappedIndexKey)));
+            Render(factor.FactorId, factor.WrappedPrivateKey, factor.EncapsulatedAccountKeys)));
 
     private static string Render(string factorId, string content, string index) =>
         $"{factorId} content={content} index={index}";
@@ -1057,8 +1093,8 @@ public sealed class AccountKeysEndpointTests
             host.ConnectionString,
             credentialId,
             factor.Factor,
-            wrappedContentKey: factor.ContentEnvelope,
-            wrappedIndexKey: factor.IndexEnvelope);
+            wrappedPrivateKey: factor.PrivateKeyEnvelope,
+            encapsulatedAccountKeys: factor.AccountKeysEnvelope);
 
     /// <summary>
     /// Files a second credential on an existing account, with factors of its own — the rows that must

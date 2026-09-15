@@ -141,6 +141,29 @@ public partial class InitialCreate : Migration
             });
 
         migrationBuilder.CreateTable(
+            name: "key_rotations",
+            columns: table => new
+            {
+                user_id = table.Column<Guid>(type: "uuid", nullable: false),
+                rotation_id = table.Column<Guid>(type: "uuid", nullable: false),
+                staged_manifest = table.Column<byte[]>(type: "bytea", nullable: false),
+                staged_rotation_epoch = table.Column<int>(type: "integer", nullable: false),
+                started_at_utc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
+            },
+            constraints: table =>
+            {
+                table.PrimaryKey("PK_key_rotations", x => x.user_id);
+                table.CheckConstraint("CK_key_rotations_staged_manifest_length", "length(staged_manifest) between 1 and 4096");
+                table.CheckConstraint("CK_key_rotations_staged_rotation_epoch", "staged_rotation_epoch >= 1");
+                table.ForeignKey(
+                    name: "FK_key_rotations_users",
+                    column: x => x.user_id,
+                    principalTable: "users",
+                    principalColumn: "id",
+                    onDelete: ReferentialAction.Cascade);
+            });
+
+        migrationBuilder.CreateTable(
             name: "accounts",
             columns: table => new
             {
@@ -341,8 +364,8 @@ public partial class InitialCreate : Migration
                 credential_id = table.Column<Guid>(type: "uuid", nullable: false),
                 user_id = table.Column<Guid>(type: "uuid", nullable: false),
                 credential_type = table.Column<string>(type: "character varying(20)", maxLength: 20, nullable: false),
-                wrapped_content_key = table.Column<byte[]>(type: "bytea", nullable: false),
-                wrapped_index_key = table.Column<byte[]>(type: "bytea", nullable: false),
+                wrapped_private_key = table.Column<byte[]>(type: "bytea", nullable: false),
+                encapsulated_account_keys = table.Column<byte[]>(type: "bytea", nullable: false),
                 created_at_utc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
             },
             constraints: table =>
@@ -350,10 +373,10 @@ public partial class InitialCreate : Migration
                 table.PrimaryKey("PK_wrapped_account_keys", x => x.factor_id);
                 table.UniqueConstraint("AK_wrapped_account_keys_factor_id_user_id", x => new { x.factor_id, x.user_id });
                 table.CheckConstraint("CK_wrapped_account_keys_credential_type", "credential_type in ('passkey', 'recovery_codes')");
-                table.CheckConstraint("CK_wrapped_account_keys_wrapped_content_key_length", "length(wrapped_content_key) = 61");
-                table.CheckConstraint("CK_wrapped_account_keys_wrapped_content_key_version", "get_byte(wrapped_content_key, 0) = 1");
-                table.CheckConstraint("CK_wrapped_account_keys_wrapped_index_key_length", "length(wrapped_index_key) = 61");
-                table.CheckConstraint("CK_wrapped_account_keys_wrapped_index_key_version", "get_byte(wrapped_index_key, 0) = 1");
+                table.CheckConstraint("CK_wrapped_account_keys_encapsulated_account_keys_length", "length(encapsulated_account_keys) = 158");
+                table.CheckConstraint("CK_wrapped_account_keys_encapsulated_account_keys_version", "get_byte(encapsulated_account_keys, 0) = 1");
+                table.CheckConstraint("CK_wrapped_account_keys_wrapped_private_key_length", "length(wrapped_private_key) = 167");
+                table.CheckConstraint("CK_wrapped_account_keys_wrapped_private_key_version", "get_byte(wrapped_private_key, 0) = 1");
                 table.ForeignKey(
                     name: "FK_wrapped_account_keys_credentials",
                     columns: x => new { x.credential_id, x.user_id, x.credential_type },
@@ -421,25 +444,26 @@ public partial class InitialCreate : Migration
             });
 
         migrationBuilder.CreateTable(
-            name: "key_rotations",
+            name: "key_rotation_seals",
             columns: table => new
             {
                 user_id = table.Column<Guid>(type: "uuid", nullable: false),
-                rotation_id = table.Column<Guid>(type: "uuid", nullable: false),
                 factor_id = table.Column<Guid>(type: "uuid", nullable: false),
-                wrapped_content_key = table.Column<byte[]>(type: "bytea", nullable: false),
-                wrapped_index_key = table.Column<byte[]>(type: "bytea", nullable: false),
-                started_at_utc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
+                encapsulated_account_keys = table.Column<byte[]>(type: "bytea", nullable: false)
             },
             constraints: table =>
             {
-                table.PrimaryKey("PK_key_rotations", x => x.user_id);
-                table.CheckConstraint("CK_key_rotations_wrapped_content_key_length", "length(wrapped_content_key) = 61");
-                table.CheckConstraint("CK_key_rotations_wrapped_content_key_version", "get_byte(wrapped_content_key, 0) = 1");
-                table.CheckConstraint("CK_key_rotations_wrapped_index_key_length", "length(wrapped_index_key) = 61");
-                table.CheckConstraint("CK_key_rotations_wrapped_index_key_version", "get_byte(wrapped_index_key, 0) = 1");
+                table.PrimaryKey("PK_key_rotation_seals", x => new { x.user_id, x.factor_id });
+                table.CheckConstraint("CK_key_rotation_seals_encapsulated_account_keys_length", "length(encapsulated_account_keys) = 158");
+                table.CheckConstraint("CK_key_rotation_seals_encapsulated_account_keys_version", "get_byte(encapsulated_account_keys, 0) = 1");
                 table.ForeignKey(
-                    name: "FK_key_rotations_wrapped_account_keys",
+                    name: "FK_key_rotation_seals_key_rotations",
+                    column: x => x.user_id,
+                    principalTable: "key_rotations",
+                    principalColumn: "user_id",
+                    onDelete: ReferentialAction.Cascade);
+                table.ForeignKey(
+                    name: "FK_key_rotation_seals_wrapped_account_keys",
                     columns: x => new { x.factor_id, x.user_id },
                     principalTable: "wrapped_account_keys",
                     principalColumns: new[] { "factor_id", "user_id" },
@@ -590,8 +614,8 @@ public partial class InitialCreate : Migration
             filter: "type = 'recovery_codes'");
 
         migrationBuilder.CreateIndex(
-            name: "IX_key_rotations_factor_id_user_id",
-            table: "key_rotations",
+            name: "IX_key_rotation_seals_factor_id_user_id",
+            table: "key_rotation_seals",
             columns: new[] { "factor_id", "user_id" });
 
         migrationBuilder.CreateIndex(
@@ -697,7 +721,7 @@ public partial class InitialCreate : Migration
             name: "factor_manifests");
 
         migrationBuilder.DropTable(
-            name: "key_rotations");
+            name: "key_rotation_seals");
 
         migrationBuilder.DropTable(
             name: "passkey_public_keys");
@@ -716,6 +740,9 @@ public partial class InitialCreate : Migration
 
         migrationBuilder.DropTable(
             name: "webauthn_challenges");
+
+        migrationBuilder.DropTable(
+            name: "key_rotations");
 
         migrationBuilder.DropTable(
             name: "wrapped_account_keys");

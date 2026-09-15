@@ -5,7 +5,7 @@ Every column of every table carries exactly one classification — **narrative**
 the coverage tests read, so that adding a column is a decision made once rather than a change to be
 remembered in five places.
 
-`Infrastructure/Persistence/Inventory/` holds it: `DataInventory` (the 108 entries and the reader),
+`Infrastructure/Persistence/Inventory/` holds it: `DataInventory` (the 110 entries and the reader),
 `DataInventoryCoverage` (the comparison), `MappedSchema` (the enumerator, in two walks — one over
 what the model says a property holds, one over what the store is handed), and
 `NarrativeEncryptionCoverage` (the gate that demands ciphertext of the narrative half).
@@ -79,7 +79,7 @@ and `""`.
 A length floor is asserted over the reason. **It only makes writing nothing impossible.** No
 assertion can tell a real argument from a fluent one — `KeyMaterialSecrecyTests` writes that limit
 out at its own reason census, and this inventory inherits it rather than pretending otherwise. The
-67 written reasons are the review surface of this story, and nothing mechanises them.
+69 written reasons are the review surface of this story, and nothing mechanises them.
 
 **One reason per column, never one per table.** The saving is obvious and wrong: a reason argued at
 table grain is inherited by columns it was never written about, which is exactly the drift that
@@ -121,14 +121,20 @@ flatten the table away; a storage description bolted onto it would be dead weigh
 put two contradictory answers about one property behind two members of one value.
 
 **The two type checks are a floor, not a ceiling, and reading the pair the other way round is the
-mistake available here.** Measured over this model: 22 of the 108 mapped columns already have an
+mistake available here.** Measured over this model: 22 of the 110 mapped columns already have an
 effective provider type of `byte[]`, and 14 of those are not narrative — the four `name_key` blind
-indexes, `session_tokens.token_hash`, `recovery_code_hashes.verifier_hash`, both of
-`wrapped_account_keys`' envelopes, both of `key_rotations`' staged envelopes,
+indexes, `session_tokens.token_hash`, `recovery_code_hashes.verifier_hash`,
+`wrapped_account_keys.wrapped_private_key` and `wrapped_account_keys.encapsulated_account_keys`,
+`key_rotations.staged_manifest`, `key_rotation_seals.encapsulated_account_keys`,
 `passkey_public_keys`' two columns, `webauthn_challenges.challenge` and
-`factor_manifests.manifest`. Two of the fourteen are *public* key material the server holds in the
-clear rather than anything sealed or hashed — `passkey_public_keys.public_key_cose` and
-`factor_manifests.manifest` — and this pair of checks tells neither of them from a sealed column,
+`factor_manifests.manifest`. **The count held at fourteen while four of them changed**, which is
+worth reading rather than skimming: the two wrapped account keys and the two staged envelopes left,
+and a wrapped private key, an encapsulated pair, a staged manifest and a seal arrived — so a census
+that compared only the number would have reported nothing at all.
+**Three of the fourteen are *public* key material the server holds in the clear** rather than
+anything sealed or hashed — `passkey_public_keys.public_key_cose`, `factor_manifests.manifest` and
+`key_rotations.staged_manifest`, the last two being the same kind of value one generation apart —
+and this pair of checks tells none of them from a sealed column,
 because carrying no version byte and no envelope is a fact about the bytes rather than about the
 type or the store type. Raw bytes carrying no envelope at all satisfy both type checks, so
 a column misclassified as narrative passes half the gate on shape alone. What tells a sealed column
@@ -143,7 +149,7 @@ converters are supplied as objects rather than through the generic overload — 
 complementary, so a reader taking either alone reports every narrative column as storing
 `NarrativeField` — eight defects shaped exactly like a real substitution and belonging entirely to
 the reader, over a schema in which nothing is wrong. Falling
-through to the property's own type covers 75 of the 108 columns, which answer neither accessor, and
+through to the property's own type covers 77 of the 110 columns, which answer neither accessor, and
 it is not a guess dressed as an answer: a property with no converter and no declared provider type
 is handed to the provider as its own type, and that is the whole of the claim.
 

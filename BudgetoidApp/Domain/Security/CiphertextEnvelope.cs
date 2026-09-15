@@ -19,8 +19,8 @@ namespace Domain.Security;
 /// </para>
 /// <para>
 /// <b>In <c>Domain</c> because the numbers already live here.</b>
-/// <see cref="Users.WrappedAccountKeys.EnvelopeLength"/> and
-/// <see cref="Users.WrappedAccountKeys.EnvelopeVersion"/> are what the persistence check constraints
+/// <see cref="Users.WrappedAccountKeys.WrappedPrivateKeyLength"/> and
+/// <see cref="Users.WrappedAccountKeys.WrappedPrivateKeyVersion"/> are what the persistence check constraints
 /// are written from, so a format type sitting one ring out would be a second home for a rule the
 /// innermost ring already owns. In <c>Security</c> rather than <c>Common</c> because that folder holds
 /// exception types: a wire format is a domain concept, not a utility.

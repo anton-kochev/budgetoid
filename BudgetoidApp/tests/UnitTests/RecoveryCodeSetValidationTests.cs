@@ -15,7 +15,7 @@ namespace UnitTests;
 /// <remarks>
 /// <para>
 /// <b>Shared rather than per handler</b>, for the reason <c>CanonicalIdentifier</c> and
-/// <c>WrappedKeyEnvelope</c> already give for the members inside it: two callers accepting a set of
+/// <c>WrappedPrivateKeyEnvelope</c> already give for the members inside it: two callers accepting a set of
 /// recovery codes are not two decisions about what a set is. They write the same rows and the same
 /// key-custody columns, so a rule that drifted on one path would file bytes the other path would have
 /// refused. What stays per caller is the <em>field</em> the refusal is keyed under, which is why that is
@@ -90,9 +90,9 @@ public sealed class RecoveryCodeSetValidationTests
     /// slot visible — the one mistake at this layer that satisfies every width check, every version
     /// check and every database constraint.
     /// </remarks>
-    private const byte ContentKeyPurpose = 0xC0;
+    private const byte PrivateKeyPurpose = 0xC0;
 
-    private const byte IndexKeyPurpose = 0x1D;
+    private const byte AccountKeysPurpose = 0x1D;
 
     /// <summary>
     /// A well-formed set decodes to one <see cref="PresentedCode" /> per submission, in order, carrying
@@ -133,10 +133,10 @@ public sealed class RecoveryCodeSetValidationTests
 
             await Assert.That(code.Verifier).IsEquivalentTo(Base64UrlText.Decode(submission.Verifier));
             await Assert.That(code.FactorId).IsEqualTo(Guid.Parse(submission.FactorId));
-            await Assert.That(code.WrappedContentKey)
-                .IsEquivalentTo(Base64UrlText.Decode(submission.WrappedContentKey));
-            await Assert.That(code.WrappedIndexKey)
-                .IsEquivalentTo(Base64UrlText.Decode(submission.WrappedIndexKey));
+            await Assert.That(code.WrappedPrivateKey)
+                .IsEquivalentTo(Base64UrlText.Decode(submission.WrappedPrivateKey));
+            await Assert.That(code.EncapsulatedAccountKeys)
+                .IsEquivalentTo(Base64UrlText.Decode(submission.EncapsulatedAccountKeys));
         }
     }
 
@@ -324,31 +324,31 @@ public sealed class RecoveryCodeSetValidationTests
     }
 
     /// <summary>
-    /// A malformed wrapped content key is refused, keyed on that code's own content key.
+    /// A malformed wrapped private key is refused, keyed on that code's own private key.
     /// </summary>
     /// <remarks>
     /// <para>
     /// The envelope carries the legal width and an <em>unrecognised version byte</em>, which is the
     /// sharpest single arrangement available: it is not null, not empty, decodes cleanly and is exactly
-    /// the right size, so nothing but a real call through <c>WrappedKeyEnvelope.TryDecode</c> refuses it.
+    /// the right size, so nothing but a real call through <c>WrappedPrivateKeyEnvelope.TryDecode</c> refuses it.
     /// A validation that null-checked the member, or measured its length, is green on this and would file
     /// a client's arbitrary bytes into half of the account's key custody.
     /// </para>
     /// <para>
     /// The two envelopes are judged separately because they are supplied separately —
-    /// <see cref="DecodeAndValidate_WithAMalformedWrappedIndexKey_IsRefused" /> is the same arrangement
+    /// <see cref="DecodeAndValidate_WithAMalformedEncapsulatedAccountKeys_IsRefused" /> is the same arrangement
     /// on the other member, and a validation that decoded one and passed the other through fails exactly
     /// one of the pair.
     /// </para>
     /// </remarks>
     [Test]
-    public async Task DecodeAndValidate_WithAMalformedWrappedContentKey_IsRefused()
+    public async Task DecodeAndValidate_WithAMalformedWrappedPrivateKey_IsRefused()
     {
         // Arrange
         RecoveryCodeSubmission[] presented = WellFormedSet();
         presented[FaultedOrdinal] = presented[FaultedOrdinal] with
         {
-            WrappedContentKey = Base64UrlText.Encode(MisversionedEnvelope(ContentKeyPurpose)),
+            WrappedPrivateKey = Base64UrlText.Encode(MisversionedWrappedPrivateKey(PrivateKeyPurpose)),
         };
 
         // Act
@@ -357,11 +357,11 @@ public sealed class RecoveryCodeSetValidationTests
         // Assert
         await AssertKeyedUnder(
             exception,
-            CodeMember(PrimaryField, FaultedOrdinal, nameof(RecoveryCodeSubmission.WrappedContentKey)));
+            CodeMember(PrimaryField, FaultedOrdinal, nameof(RecoveryCodeSubmission.WrappedPrivateKey)));
     }
 
     /// <summary>
-    /// A malformed wrapped index key is refused, keyed on that code's own index key.
+    /// A malformed set of encapsulated account keys is refused, keyed on that code's own copy.
     /// </summary>
     /// <remarks>
     /// The other half of the pair above. Both members are required and neither may be passed through:
@@ -369,13 +369,13 @@ public sealed class RecoveryCodeSetValidationTests
     /// keys, and not before.
     /// </remarks>
     [Test]
-    public async Task DecodeAndValidate_WithAMalformedWrappedIndexKey_IsRefused()
+    public async Task DecodeAndValidate_WithAMalformedEncapsulatedAccountKeys_IsRefused()
     {
         // Arrange
         RecoveryCodeSubmission[] presented = WellFormedSet();
         presented[FaultedOrdinal] = presented[FaultedOrdinal] with
         {
-            WrappedIndexKey = Base64UrlText.Encode(MisversionedEnvelope(IndexKeyPurpose)),
+            EncapsulatedAccountKeys = Base64UrlText.Encode(MisversionedEncapsulatedAccountKeys(AccountKeysPurpose)),
         };
 
         // Act
@@ -384,7 +384,7 @@ public sealed class RecoveryCodeSetValidationTests
         // Assert
         await AssertKeyedUnder(
             exception,
-            CodeMember(PrimaryField, FaultedOrdinal, nameof(RecoveryCodeSubmission.WrappedIndexKey)));
+            CodeMember(PrimaryField, FaultedOrdinal, nameof(RecoveryCodeSubmission.EncapsulatedAccountKeys)));
     }
 
     /// <summary>
@@ -516,13 +516,13 @@ public sealed class RecoveryCodeSetValidationTests
         RecoveryCodeSubmission[] badContentKey = WellFormedSet();
         badContentKey[FaultedOrdinal] = badContentKey[FaultedOrdinal] with
         {
-            WrappedContentKey = Base64UrlText.Encode(MisversionedEnvelope(ContentKeyPurpose)),
+            WrappedPrivateKey = Base64UrlText.Encode(MisversionedWrappedPrivateKey(PrivateKeyPurpose)),
         };
 
         RecoveryCodeSubmission[] badIndexKey = WellFormedSet();
         badIndexKey[FaultedOrdinal] = badIndexKey[FaultedOrdinal] with
         {
-            WrappedIndexKey = Base64UrlText.Encode(MisversionedEnvelope(IndexKeyPurpose)),
+            EncapsulatedAccountKeys = Base64UrlText.Encode(MisversionedEncapsulatedAccountKeys(AccountKeysPurpose)),
         };
 
         RecoveryCodeSubmission[] duplicateVerifier = WellFormedSet();
@@ -626,8 +626,8 @@ public sealed class RecoveryCodeSetValidationTests
         .. Enumerable.Range(0, count).Select(_ => new RecoveryCodeSubmission(
             Base64UrlText.Encode(RandomNumberGenerator.GetBytes(RecoveryCodeHash.VerifierLength)),
             Guid.CreateVersion7().ToString("D"),
-            Base64UrlText.Encode(Envelope(ContentKeyPurpose)),
-            Base64UrlText.Encode(Envelope(IndexKeyPurpose)))),
+            Base64UrlText.Encode(WrappedPrivateKeyPayload(PrivateKeyPurpose)),
+            Base64UrlText.Encode(EncapsulatedAccountKeysPayload(AccountKeysPurpose)))),
     ];
 
     /// <summary>
@@ -636,17 +636,35 @@ public sealed class RecoveryCodeSetValidationTests
     /// </summary>
     /// <remarks>
     /// The width and the version are read off <see cref="WrappedAccountKeys" /> rather than restated.
-    /// Nothing in this file is about the envelope's shape — <c>WrappedKeyEnvelopeTests</c> owns that — so
+    /// Nothing in this file is about the envelope's shape — <c>WrappedPrivateKeyEnvelopeTests</c> owns that — so
     /// a copy of either bound would turn every test here red on the day it moved, for a reason none of
     /// them is about.
     /// </remarks>
-    private static byte[] Envelope(byte purpose)
-    {
-        byte[] envelope = RandomNumberGenerator.GetBytes(WrappedAccountKeys.EnvelopeLength);
-        envelope[0] = WrappedAccountKeys.EnvelopeVersion;
-        envelope[1] = purpose;
+    private static byte[] WrappedPrivateKeyPayload(byte purpose) =>
+        Payload(
+            WrappedAccountKeys.WrappedPrivateKeyLength,
+            WrappedAccountKeys.WrappedPrivateKeyVersion,
+            purpose);
 
-        return envelope;
+    /// <inheritdoc cref="WrappedPrivateKeyPayload" />
+    private static byte[] EncapsulatedAccountKeysPayload(byte purpose) =>
+        Payload(
+            WrappedAccountKeys.EncapsulatedAccountKeysLength,
+            WrappedAccountKeys.EncapsulatedAccountKeysVersion,
+            purpose);
+
+    /// <summary>
+    /// The shared body of the two above. The width and the version are parameters rather than read
+    /// inside, because the one mistake this helper could make is pairing one suite's width with the
+    /// other's version — the cross-wiring the two pairs of constants exist to keep apart.
+    /// </summary>
+    private static byte[] Payload(int length, byte version, byte purpose)
+    {
+        byte[] payload = RandomNumberGenerator.GetBytes(length);
+        payload[0] = version;
+        payload[1] = purpose;
+
+        return payload;
     }
 
     /// <summary>
@@ -657,11 +675,25 @@ public sealed class RecoveryCodeSetValidationTests
     /// well-formed envelope in one bit of one byte. That is what makes it proof the member was really
     /// decoded rather than merely present.
     /// </remarks>
-    private static byte[] MisversionedEnvelope(byte purpose)
+    private static byte[] MisversionedWrappedPrivateKey(byte purpose)
     {
-        byte[] envelope = Envelope(purpose);
-        envelope[0] = (byte)(WrappedAccountKeys.EnvelopeVersion + 1);
+        byte[] payload = WrappedPrivateKeyPayload(purpose);
+        payload[0] = (byte)(WrappedAccountKeys.WrappedPrivateKeyVersion + 1);
 
-        return envelope;
+        return payload;
+    }
+
+    /// <inheritdoc cref="MisversionedWrappedPrivateKey" />
+    /// <remarks>
+    /// The encapsulation suite's own version, bumped, and not the AEAD one beside it. The two constants
+    /// hold the same number today, so a cross-read renders identical bytes and would go on passing —
+    /// which is why each of these reads the constant belonging to the column its value lands in.
+    /// </remarks>
+    private static byte[] MisversionedEncapsulatedAccountKeys(byte purpose)
+    {
+        byte[] payload = EncapsulatedAccountKeysPayload(purpose);
+        payload[0] = (byte)(WrappedAccountKeys.EncapsulatedAccountKeysVersion + 1);
+
+        return payload;
     }
 }

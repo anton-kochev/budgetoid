@@ -191,8 +191,8 @@ internal static class RegistrationCeremony
             ["attestationObject"] = attestation.AttestationObjectBase64Url,
             ["clientExtensionResults"] = new { prf = new { enabled = true } },
             ["factorId"] = passkeyKeys.FactorId,
-            ["wrappedContentKey"] = passkeyKeys.WrappedContentKey,
-            ["wrappedIndexKey"] = passkeyKeys.WrappedIndexKey,
+            ["wrappedPrivateKey"] = passkeyKeys.WrappedPrivateKey,
+            ["encapsulatedAccountKeys"] = passkeyKeys.EncapsulatedAccountKeys,
             [CodesMember] = SubmissionsOf(card),
         };
     }
@@ -360,8 +360,8 @@ internal sealed record RegistrationCodeSubmission(string Verifier, WrappedKeyFix
     {
         verifier = Verifier,
         factorId = Keys.FactorId,
-        wrappedContentKey = Keys.WrappedContentKey,
-        wrappedIndexKey = Keys.WrappedIndexKey,
+        wrappedPrivateKey = Keys.WrappedPrivateKey,
+        encapsulatedAccountKeys = Keys.EncapsulatedAccountKeys,
     };
 }
 

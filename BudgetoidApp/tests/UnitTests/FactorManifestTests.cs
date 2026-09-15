@@ -28,7 +28,7 @@ namespace UnitTests;
 /// <b>Literals, not the constants under test.</b> <see cref="FactorManifest.MaximumBytes" /> and
 /// <see cref="FactorManifest.MinimumRotationEpoch" /> are never read here — <c>4096</c>, <c>4097</c>,
 /// <c>1</c> and <c>0</c>/<c>-1</c> are written out, the same rule <c>WrappedAccountKeysTests</c> keeps
-/// for <c>EnvelopeLength</c>: a test that reads its bound off the type under test agrees with whatever
+/// for <c>WrappedPrivateKeyLength</c>: a test that reads its bound off the type under test agrees with whatever
 /// that type later decides the bound is, and a future edit to either constant would move both sides of
 /// the comparison together and prove nothing.
 /// </para>

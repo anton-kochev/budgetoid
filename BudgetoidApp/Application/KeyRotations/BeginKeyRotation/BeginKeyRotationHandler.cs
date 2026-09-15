@@ -1,15 +1,20 @@
 using Application.Abstractions;
 using Application.Passkeys.Reauthentication;
 using Domain.Users;
-using DomainValidationException = Domain.Common.ValidationException;
 
 namespace Application.KeyRotations.BeginKeyRotation;
 
 /// <summary>
-/// Opens a content-key rotation on the signed-in account: stages the next generation of its two
-/// wrapped keys and hands the client what it needs to rewrite the rest.
+/// Opens a content-key rotation on the signed-in account: stages the next generation's manifest of
+/// factor public keys and hands the client what it needs to rewrite the rest.
 /// </summary>
 /// <remarks>
+/// <para>
+/// <b>One guarantee this handler used to hold is surrendered in this slice, and the block where it
+/// stood says so in full.</b> Read that comment before adding a route, a member or a test here: the
+/// staged factor set is no longer compared against the account's live passkey factors, because the set
+/// now lives inside a manifest nothing on this side parses.
+/// </para>
 /// <para>
 /// <b>A second begin replaces the first rather than conflicting with it.</b> Begin is the repair path —
 /// when a completion refuses because the account's live factor set moved, the only way forward is a
@@ -66,10 +71,10 @@ public sealed class BeginKeyRotationHandler(
         ArgumentNullException.ThrowIfNull(command);
 
         // THE GATE RUNS TO COMPLETION, AND IT RUNS FIRST — before the owned budget set is read, before
-        // the factor set is judged, before anything is counted. Every refusal below is a real sentence
+        // anything is counted, before the staged row is built. Every refusal below is a real sentence
         // or a named exception, and each of them would answer an UNPROVEN caller with a fact about this
-        // account: that it owns more than one budget, that it holds a second passkey, that the factor
-        // it named is real. The scope refusal is the concrete one — RotationScopeException reaches the
+        // account: that it owns more than one budget, that the manifest it staged was judged at all.
+        // The scope refusal is the concrete one — RotationScopeException reaches the
         // caller as a 500 whose message the Development branch of GlobalExceptionHandler echoes into the
         // body — but the ordering is the rule for all of them, and it is the ordering
         // GenerateRecoveryCodesHandler states for its own validation. Past the gate the same sentences
@@ -86,7 +91,19 @@ public sealed class BeginKeyRotationHandler(
         // Identity is published by AuthenticateSessionHandler while the cookie was authenticated, long
         // before this line, so the connection is configured whenever it opens; the 22P02 ordering
         // CompleteAssertionHandler states for its own gate is not what is going on here.
-        await reauthentication.VerifyAsync(command.Assertion, cancellationToken);
+        // THE CREDENTIAL COMES BACK FROM THE GATE, and that is the strongest thing this handler could
+        // have been given. It is the credential whose signature was just verified against a key looked
+        // up under IUserContext.UserId, so it is by construction a passkey registered to this account —
+        // exactly what KeyRotation.Begin's own refusal restates, established rather than asserted.
+        //
+        // The rejected alternatives, named so nobody reintroduces one. Picking a credential out of
+        // IKeyRotationRepository.ListPasskeyFactorsAsync is arbitrary the day an account holds two
+        // passkeys, and the arbitrariness is invisible: the wrong one is a perfectly good passkey of
+        // the right account, so the row stages, the run completes, and nothing anywhere reports that
+        // the choice was made by iteration order. Giving Begin a Guid userId instead would move the
+        // only refusal of a fabricated KeyRotation out of the Domain and into whichever caller
+        // remembered it.
+        Credential passkey = await reauthentication.VerifyAsync(command.Assertion, cancellationToken);
 
         Guid userId = userContext.UserId;
 
@@ -119,50 +136,37 @@ public sealed class BeginKeyRotationHandler(
                 + "alone, and one that cannot finish is better not begun.");
         }
 
-        // SET EQUALITY AGAIN, AND FOR A DIFFERENT REASON THAT FAILS THE SAME WAY. The staged factor set
-        // must be EXACTLY the account's live passkey factors — not "the factor named is one of them".
+        // A GUARANTEE STOOD HERE AND IS SURRENDERED FOR THIS SLICE. READ THIS BEFORE ADDING ANYTHING.
         //
-        // Today every account holds one passkey, so the two readings are indistinguishable and every
-        // fixture in the suite passes either way. They come apart the day a second passkey becomes
-        // registrable — Story 11.13 — and they come apart silently: under "is one of", a begin naming
-        // one factor out of two succeeds, the rotation runs to completion, the promotion overwrites
-        // wrapped_account_keys, and the second passkey is left holding a wrapped copy of a content key
-        // that no longer opens anything. An authenticator the person still has, still enrolled, that
-        // can no longer unlock the account, with no repair path that does not go through a recovery
-        // code. Under set equality the same begin is refused here, at the start of the run, while the
-        // client can still re-post one carrying both factors.
+        // What it held: the staged factor set must be EXACTLY the account's live passkey factors — set
+        // equality in both directions, never "the factor named is one of them". The weaker reading
+        // fails silently the day a second passkey becomes registrable: a begin naming one factor out of
+        // two succeeds, the rotation runs to completion, the promotion overwrites wrapped_account_keys,
+        // and the second passkey is left holding a copy of a content key that no longer opens
+        // anything — an authenticator the person still has, still enrolled, that can no longer unlock
+        // the account, with no repair that does not go through a recovery code. Under set equality the
+        // same begin is refused here, at the start of the run, while the client can still re-post.
         //
-        // The listing answers passkey factors and nothing else, so a factor identifier naming one of
-        // the account's recovery-code shares is refused by this same comparison — see
-        // IKeyRotationRepository.ListPasskeyFactorsAsync for why a set of codes may not begin a run at
-        // all, and KeyRotation.Begin, which refuses the credential from the other end.
-        IReadOnlyDictionary<Guid, Credential> passkeyFactors =
-            await keyRotations.ListPasskeyFactorsAsync(userId, cancellationToken);
-        HashSet<Guid> live = [.. passkeyFactors.Keys];
+        // Why it cannot hold now: it compared command.FactorId against
+        // IKeyRotationRepository.ListPasskeyFactorsAsync's keys, and there is no longer a factor on the
+        // command to compare. The set a run stages is the set named inside command.StagedManifest,
+        // whose bytes are authenticated as a set by a key this server does not hold — so judging it
+        // means parsing a client's grammar, which this slice does not do and KeyRotation deliberately
+        // does not do either. The staged manifest is therefore accepted unexamined, and a client that
+        // staged a generation omitting one of its own passkeys is not refused by anything.
+        //
+        // Nothing is exposed meanwhile: no route reaches this handler, so no request can begin a run at
+        // all. That is what makes the gap affordable, and it is also what will make it easy to forget —
+        // the day a route is added, this comment is the thing that has to be answered first. The
+        // restoration belongs with whatever comes to read the manifest: it compares the factor ids the
+        // staged manifest names against ListPasskeyFactorsAsync's keys, in both directions, and refuses
+        // as a 400 keyed on the manifest member. That listing is still registered and still answers
+        // passkey factors only; nothing in this handler calls it any more.
+        //
+        // Deleting this comment and calling the slice finished is the failure mode. A guard removed
+        // with no trace is how a temporary gap becomes permanent.
 
-        if (!live.SetEquals([command.FactorId]))
-        {
-            // Keyed on the member the client can correct, and a real sentence rather than the
-            // byte-identical 401 every gate refusal produces — the argument above about what is safe to
-            // say past the gate. It names no factor identifier and no count: neither would tell the
-            // person anything to act on, and the client already holds the account's factor list.
-            //
-            // Domain.Common.ValidationException under the alias every sibling handler uses, and the
-            // choice between the two declarations is not cosmetic: ValidationExceptionHandler catches
-            // that one, so Application.Abstractions.ValidationException would fall through to the
-            // catch-all and answer a correctable 400 as a 500 carrying no member name at all.
-            throw new DomainValidationException(new Dictionary<string, string[]>
-            {
-                [nameof(BeginKeyRotationCommand.FactorId)] =
-                [
-                    "A rotation must be staged under exactly the account's live passkey factors, and "
-                    + "the factor presented is not that set. Re-read the account's keys and begin "
-                    + "again.",
-                ],
-            });
-        }
-
-        // AFTER BOTH REFUSALS, so a begin that will not be staged costs the database six counts it
+        // AFTER THE SCOPE REFUSAL, so a begin that will not be staged costs the database six counts it
         // would only have thrown away. It is also the only read here whose answer is measured over the
         // ambient budget alone, which is what the scope gate above has just established is the whole of
         // what the account owns.
@@ -183,15 +187,15 @@ public sealed class BeginKeyRotationHandler(
         // answered by the port being an upsert over one object rather than by a dependency read for
         // one line.
         //
-        // Every refusal KeyRotation.Begin can raise — a malformed envelope, an empty identifier, a
-        // credential that is not a passkey — therefore also happens before anything is written.
+        // Every refusal KeyRotation.Begin can raise — an absent or over-wide manifest, an epoch below
+        // the floor, an empty identifier, a credential that is not a passkey — therefore also happens
+        // before anything is written.
         DateTime now = timeProvider.GetUtcNow().UtcDateTime;
         KeyRotation rotation = KeyRotation.Begin(
-            passkeyFactors[command.FactorId],
-            command.FactorId,
+            passkey,
             command.RotationId,
-            command.WrappedContentKey,
-            command.WrappedIndexKey,
+            command.StagedManifest,
+            command.StagedRotationEpoch,
             now);
 
         return await transactionalExecutor.ExecuteAsync(

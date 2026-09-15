@@ -609,11 +609,12 @@ public sealed class RepositoryTestHost : IAsyncDisposable
     /// other test wants to meet by accident.
     /// </para>
     /// <para>
-    /// <b>The two envelopes are the caller's to choose as well, and the default pair is only
-    /// distinguishable <em>by column</em>.</b> <see cref="SeededContentKeyFiller" /> and
-    /// <see cref="SeededIndexKeyFiller" /> differ from each other, so a read that returns a row's index
-    /// envelope where its content envelope belongs is visible — but they are the same two values on
-    /// every row this seeder writes, so a read that returns <em>row A's</em> envelope for <em>row B</em>
+    /// <b>The two payloads are the caller's to choose as well, and the default pair is only
+    /// distinguishable <em>by column</em>.</b> <see cref="SeededPrivateKeyFiller" /> and
+    /// <see cref="SeededAccountKeysFiller" /> differ from each other, so a read that returns a row's
+    /// encapsulated account keys where its wrapped private key belongs is visible — and the two widths
+    /// differ besides — but they are the same two values on
+    /// every row this seeder writes, so a read that returns <em>row A's</em> payload for <em>row B</em>
     /// is not. That is invisible for exactly as long as every account holds one factor, and a set of
     /// recovery codes holds ten. A caller seeding more than one row against one credential therefore
     /// has to name envelopes of its own — <c>WrappedKeyFixture</c> mints a pair whose bytes are random
@@ -625,14 +626,14 @@ public sealed class RepositoryTestHost : IAsyncDisposable
     public Task<Guid> SeedWrappedAccountKeysAsync(
         Guid credentialId,
         Guid factorId,
-        byte[]? wrappedContentKey = null,
-        byte[]? wrappedIndexKey = null) =>
+        byte[]? wrappedPrivateKey = null,
+        byte[]? encapsulatedAccountKeys = null) =>
         SeedWrappedAccountKeysOnAsync(
             ConnectionString,
             credentialId,
             factorId,
-            wrappedContentKey: wrappedContentKey,
-            wrappedIndexKey: wrappedIndexKey);
+            wrappedPrivateKey: wrappedPrivateKey,
+            encapsulatedAccountKeys: encapsulatedAccountKeys);
 
     /// <inheritdoc cref="SeedOwnerOnAsync" />
     internal static async Task<Guid> SeedWrappedAccountKeysOnAsync(
@@ -640,8 +641,8 @@ public sealed class RepositoryTestHost : IAsyncDisposable
         Guid credentialId,
         Guid factorId,
         CancellationToken cancellationToken = default,
-        byte[]? wrappedContentKey = null,
-        byte[]? wrappedIndexKey = null)
+        byte[]? wrappedPrivateKey = null,
+        byte[]? encapsulatedAccountKeys = null)
     {
         await using BudgetoidDbContext db = CreateSeedingDbContext(connectionString);
         Credential credential = await db.Credentials
@@ -649,8 +650,8 @@ public sealed class RepositoryTestHost : IAsyncDisposable
         db.WrappedAccountKeys.Add(WrappedAccountKeys.For(
             credential,
             factorId,
-            wrappedContentKey ?? WrappedKeyEnvelope(SeededContentKeyFiller),
-            wrappedIndexKey ?? WrappedKeyEnvelope(SeededIndexKeyFiller),
+            wrappedPrivateKey ?? WrappedPrivateKeyPayload(SeededPrivateKeyFiller),
+            encapsulatedAccountKeys ?? EncapsulatedAccountKeysPayload(SeededAccountKeysFiller),
             SeedInstant));
         await db.SaveChangesAsync(cancellationToken);
 
@@ -658,33 +659,59 @@ public sealed class RepositoryTestHost : IAsyncDisposable
     }
 
     /// <summary>
-    /// The fillers the two seeded envelopes carry when a caller names neither. Different from each other
+    /// The fillers the two seeded payloads carry when a caller names neither. Different from each other
     /// so a read-back naming the wrong <b>column</b> is visible by eye, and neither is the filler a probe
-    /// writes. They are the same on every row, so telling one <b>row</b> from another needs envelopes the
+    /// writes. They are the same on every row, so telling one <b>row</b> from another needs payloads the
     /// caller supplies — see <see cref="SeedWrappedAccountKeysAsync" />.
     /// </summary>
-    public const byte SeededContentKeyFiller = 0xC0;
+    public const byte SeededPrivateKeyFiller = 0xC0;
 
-    public const byte SeededIndexKeyFiller = 0x1D;
+    public const byte SeededAccountKeysFiller = 0x1D;
 
     /// <summary>
-    /// Builds a well-formed wrapped-key envelope: the one version byte the contract defines, then
-    /// <paramref name="filler" /> to the column's exact width.
+    /// Builds a well-formed <c>wrapped_private_key</c>: the AEAD framing's version byte, then
+    /// <paramref name="filler" /> to that column's exact width.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The filler is neither a nonce nor a ciphertext, and nothing in these tests opens either — no
     /// unlock path exists and this server holds no value that could. What a row has to satisfy is the
     /// width and the version, which <see cref="WrappedAccountKeys.For" /> and two check constraints
-    /// per column both refuse to bend; an envelope of any other shape would be refused by one of those
+    /// per column both refuse to bend; a payload of any other shape would be refused by one of those
     /// instead of by the grant or the policy a test is reading.
+    /// </para>
+    /// <para>
+    /// <b>Two builders rather than one taking a width, and that is the point of the pair.</b> The two
+    /// columns hold values of two different cryptographic suites at two different widths, and each
+    /// builder reads the constants belonging to its own. One builder parameterised on a width would
+    /// let a caller pair this suite's length with the other's version — bytes that store, read back,
+    /// and are uninterpretable to the client that needs them.
+    /// </para>
     /// </remarks>
-    public static byte[] WrappedKeyEnvelope(byte filler)
-    {
-        byte[] envelope = new byte[WrappedAccountKeys.EnvelopeLength];
-        Array.Fill(envelope, filler);
-        envelope[0] = WrappedAccountKeys.EnvelopeVersion;
+    public static byte[] WrappedPrivateKeyPayload(byte filler) =>
+        Payload(
+            WrappedAccountKeys.WrappedPrivateKeyLength,
+            WrappedAccountKeys.WrappedPrivateKeyVersion,
+            filler);
 
-        return envelope;
+    /// <summary>
+    /// Builds a well-formed <c>encapsulated_account_keys</c>: the encapsulation framing's version byte,
+    /// then <paramref name="filler" /> to that column's exact width.
+    /// </summary>
+    /// <inheritdoc cref="WrappedPrivateKeyPayload" path="/remarks" />
+    public static byte[] EncapsulatedAccountKeysPayload(byte filler) =>
+        Payload(
+            WrappedAccountKeys.EncapsulatedAccountKeysLength,
+            WrappedAccountKeys.EncapsulatedAccountKeysVersion,
+            filler);
+
+    private static byte[] Payload(int length, byte version, byte filler)
+    {
+        byte[] payload = new byte[length];
+        Array.Fill(payload, filler);
+        payload[0] = version;
+
+        return payload;
     }
 
     /// <summary>

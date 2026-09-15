@@ -56,10 +56,13 @@ because there the word is in the symmetric sense of the first row. And the noun 
 encapsulation framing**, never "the encapsulated framing" — the framing is not the thing that
 gets encapsulated.
 
-**Nothing stores an encapsulated value.** No column is typed for one, no route accepts one, and
-there is no decoder for one on this side. What this chapter owns about that framing is its
-layout, its floor, its version byte and what tells it apart from the framing above; what will
-carry it is not this chapter's to claim until something does.
+**Two columns store an encapsulated value, and two routes accept one.**
+`wrapped_account_keys.encapsulated_account_keys` holds the generation in force and
+`key_rotation_seals.encapsulated_account_keys` holds the next one staged beside it; both are the
+account's content key and index key as **one 64-byte plaintext, content key first**, encapsulated to
+one factor's public key, and both are exactly **158 bytes**. `EncapsulatedAccountKeysEnvelope` is
+the decoder at the edge, beside `WrappedPrivateKeyEnvelope` for the other framing. So the numbers
+below have stopped being free to move: there are stored bytes to disagree with.
 
 **This chapter is normative.** The requirement it serves fixes the binding *property* — a
 ciphertext is bound to where it lives — and not the grammar that expresses it, so somebody
@@ -69,9 +72,9 @@ implementation cannot read another's test files, so anything stated only in code
 of the contract. A client that reproduces the frozen vectors byte for byte agrees with every
 other client; one that does not is the one in the wrong.
 
-Two consumers share the **AEAD** framing. **Wrapped account keys** are a fixed 61-byte payload
-over a 32-byte key, and are described in [account-keys.md](account-keys.md) — this chapter owns
-the framing beneath them and nothing about what they mean. **Narrative fields** — the free text
+Two consumers share the **AEAD** framing. A **wrapped private key** is a fixed 167-byte payload
+over a 138-byte PKCS#8 P-256 private key, and is described in [account-keys.md](account-keys.md) —
+this chapter owns the framing beneath it and nothing about what it means. **Narrative fields** — the free text
 a person types into a ledger — are variable length, because AES-GCM ciphertext is exactly as
 long as its plaintext. **Those two do not get a layout each**, and the encapsulation framing is
 not the exception it looks like: a second layout for one construction would be two places for
@@ -134,12 +137,13 @@ reads a settled contract as an adjustable one and relaxes a clause to make the n
 easier.
 
 **Each consumer of the AEAD framing has a live writer and a live reader, and neither one's traffic
-says anything about the other.** Account keys are wrapped on every registration and **unwrapped on
-every passkey sign-in**; narrative fields are sealed on every write those screens make and opened
-on every read they answer. What either buys the other is nothing at all — a format exercised by one
-consumer is not a format checked for the other, since the two grammars differ and only the frozen
-vectors speak to both. **The encapsulation framing has neither a writer nor a reader**, which is
-the same sentence said about a format with no traffic rather than a gap in this census.
+says anything about the other.** A factor's private key is wrapped on every registration and
+unwrapped whenever a factor is presented; narrative fields are sealed on every write those screens
+make and opened on every read they answer. What either buys the other is nothing at all — a format
+exercised by one consumer is not a format checked for the other, since the two grammars differ and
+only the frozen vectors speak to both. **The encapsulation framing has columns and a decoder and
+still no writer in a browser**, because the client half of the key-pair reshape has not landed — see
+[account-keys.md](account-keys.md), which names that gap as work rather than as a decision.
 
 **The server's format edge now has a column behind it.** Four types stand between a client's bytes
 and storage: `Domain/Security/NarrativeFieldLimits` (the two byte caps),
@@ -215,9 +219,10 @@ and which one applies is decided by whether the column has an index beside it.**
   second place the layout is stated.
 - **Encapsulated value** — the second byte sequence above, carrying an ephemeral public key
   between the version byte and the nonce. A type on the server — `EncapsulatedValueEnvelope`, a
-  floor, a version and a well-formedness rule — and nothing else anywhere: no column holds one,
-  no member accepts one, and nothing opens one. The **encapsulation framing** is the byte layout;
-  an **encapsulated value** is one sequence of bytes in it.
+  floor, a version and a well-formedness rule — with two columns storing values in it and a decoder
+  at the edge, and **nothing anywhere that opens one**: opening takes the private half of the key it
+  was encapsulated to, and this server holds no private key of any kind. The **encapsulation
+  framing** is the byte layout; an **encapsulated value** is one sequence of bytes in it.
 - **Version byte** — the leading byte of either framing, `0x01` in both. **Outside the
   authenticated data on purpose.** GCM has no opinion about it, which is why the reader has to
   check it deliberately. What it answers is *which suite of this framing*, and a reader of a
@@ -328,10 +333,12 @@ the diagram is drawn as one and why no reader may decide between them from bytes
     Nothing observable goes wrong on the way there: both clients still open each other's
     envelopes, and every frozen vector still passes. **Both consumers reach the failure, and
     the counter that looks safest is the one the larger consumer breaks.**
-    - On the **wrapped-key** side a counter per factor repeats on the very next operation,
-      because both of a factor's envelopes are wrapped under the same key-encryption key.
-      That is the loudest case and also the smallest one: an account wraps roughly
-      twenty-two keys in its whole life.
+    - On the **wrapped-key** side a factor now wraps exactly one value under its key-encryption
+      key — its own private half — so the immediate repeat this paragraph used to describe is gone
+      and what is left is quieter: a counter reset to zero by a client that re-derives the
+      key-encryption key and re-wraps under it collides with the first wrap, silently. That is the
+      smallest case in the product either way — an account wraps roughly eleven private keys in its
+      whole life — and the smallness is not the argument; a single repeat under one key is enough.
     - The **narrative** side is the one that dominates. Every field of every row is sealed
       under **one** content key, once per field per save, for the life of the account — so a
       counter scoped per *row* never repeats within that row and collides against every other
@@ -512,10 +519,10 @@ the diagram is drawn as one and why no reader may decide between them from bytes
     stored, so a changed prefix stops every envelope already written from opening — and the
     version byte changed means this deployment stops recognising what it is handed *and* reads
     what is already written under a rule it was not sealed with. A change is a new version
-    minted alongside the old, never an edit in place. The encapsulation framing's byte has no
-    stored value behind it yet and is under the same rule for a different reason: it is pinned in
-    the census beside its sibling, so moving it is a claim about cryptography rather than a
-    tidy-up.
+    minted alongside the old, never an edit in place. The encapsulation framing's byte is under
+    the same rule for the same reason now that two columns store values under it, and under one
+    more besides: it is pinned in the census beside its sibling, so moving it is a claim about
+    cryptography rather than a tidy-up.
 
 - **The two caps MUST NOT be restated as character limits, and MUST NOT be written out per
   column.**
@@ -571,9 +578,9 @@ value — a transaction with no memo, a category note somebody cleared — and i
 exactly 29 bytes, which is why every length rule over this format compares with `>=` and the
 client's refusal is `<` rather than `<=`.
 
-A wrapped account key is **61 bytes**, which is `29 + 32`: the shared framing stretched over
-one AES-256 key. That is a **width**, and it belongs to the entity rather than to the format —
-see [below](#why-the-wrapped-key-entity-keeps-its-own-exact-width).
+A wrapped private key is **167 bytes**, which is `29 + 138`: the shared framing stretched over one
+PKCS#8-encoded P-256 private key. That is a **width**, and it belongs to the entity rather than to
+the format — see [below](#why-the-wrapped-key-entity-keeps-its-own-exact-width).
 
 `EncapsulatedValueEnvelope.MinimumLength` is `1 + 65 + 12 + 16 = 94`, and it is a floor for the
 same reason and with the same comparison. An empty plaintext **produces** a version, a point, a
@@ -582,9 +589,11 @@ verbs**, which is why both paragraphs say *produces*: each verb names what a val
 under or to, and nothing is ever sealed, wrapped or encapsulated *to a number of bytes*. The next
 reader reaches for a verb here, and the two within reach — "seals to 29" and "encapsulates to 94"
 — are both wrong, the second doubly so, since *to* in that verb is already spoken for by a public
-key. Nothing is stored under this floor, so there is no width beside it to confuse it with
-— and none may be folded into it either, for the reason the AEAD floor has none: a width folded
-into a format serves exactly one consumer and refuses every other.
+key. There **is** a width beside this floor now — `WrappedAccountKeys.EncapsulatedAccountKeysLength`,
+158 over a 64-byte plaintext — and it stays where it is rather than being folded in, for the reason
+the AEAD floor keeps none: a width folded into a format serves exactly one consumer and refuses
+every other. 158 and 167 are the same arithmetic over two different formats, which is why an entity
+width borrowed across the boundary is the cross-suite derivation the two types exist to keep apart.
 
 The version byte sits **outside** the authenticated data. GCM ignores it, which is deliberate
 twice over: the reader has to check it on purpose, and a reader of a later version can look at
@@ -631,9 +640,19 @@ and whether the fixed parts have room to exist.
 
 `CiphertextEnvelope.Version` and `EncapsulatedValueEnvelope.Version` are both the literal `1`,
 declared twice, in one namespace. Every instinct a reader brings to that says to make the second
-an alias of the first — which is what `WrappedAccountKeys.EnvelopeVersion` correctly is, because
-that *is* the AEAD format's byte. Here the two are equal by coincidence of both suites being
-first, and by nothing else.
+an alias of the first — which is what `WrappedAccountKeys.WrappedPrivateKeyVersion` correctly is,
+because that *is* the AEAD format's byte, exactly as
+`WrappedAccountKeys.EncapsulatedAccountKeysVersion` correctly aliases the other one. Here the two
+are equal by coincidence of both suites being first, and by nothing else.
+
+**The rule that decides all four of those constants is worth writing out, because its two halves
+read as a contradiction.** A constant may be derived from another constant of the **same**
+cryptographic suite; it may never be derived from one of a **different** suite. So the entity's two
+version constants are legal aliases, its two widths are legal arithmetic over their own framings'
+floors, and every cross-wiring of either pair compiles, holds the same number today and would
+renumber a column the day either suite bumped. Nothing in the build can tell those spellings apart,
+and the source-text census that closes this on the two format types does not reach the entity — the
+prose on it stands in place of the scan.
 
 **Nothing in the build can tell the two spellings apart, and that is measured.** For
 `public const byte Literal = 1;` and `public const byte Alias = One.Version;`,
@@ -710,11 +729,17 @@ separator goes **between** the fields, never around them, and no field is droppe
 empty — dropping one seals two different field lists to the same bytes, which is the one
 ambiguity a separator exists to remove.
 
-**A wrapped account key:**
+**A wrapped account key**, as the browser in this repository still builds it:
 
 ```
 "budgetoid/wrapped-key/v1" || 0x1F || <factor id, lower-case hyphenated> || 0x1F || <"content" | "index">
 ```
+
+The third field made two envelopes under one key-encryption key non-interchangeable. A factor now
+wraps **one** value under that key — its own private half — so the field is a purpose selector over a
+set of one, and what the grammar for the new shape is has not been settled here because no client
+produces one yet. [account-keys.md](account-keys.md) names that gap; do not read this block as the
+contract for a key pair.
 
 **A narrative field:**
 
@@ -885,9 +910,13 @@ in its own section below:
 - **`Application/Security/CiphertextEnvelopeText`** is the edge for the **AEAD** framing:
   base64url within a ceiling the caller names, then that framing's rules. It defines no number
   of its own — the floor and the version come from the domain, the ceiling comes from the
-  caller — which is what keeps the edge and the format from drifting apart. **There is no
-  decoder for an encapsulated value**, at this layer or any other: nothing accepts one as text,
-  so nothing turns text into one.
+  caller — which is what keeps the edge and the format from drifting apart. **It says nothing
+  about encapsulated bytes**, and since both framings lead with `0x01` a caller that handed it one
+  would be told it was well-formed at 29. The encapsulation framing has an edge of its own:
+  `EncapsulatedAccountKeysEnvelope`, beside `WrappedPrivateKeyEnvelope` for the AEAD side. **Two
+  decoders and never one**, because the two members travel together in every request that files a
+  factor and a reader who notices they are both "an envelope over key material" will reach to fold
+  them — at which point whichever one the folded rule was not written for gains nine bytes of slack.
 
 **The ceiling is applied once, and not by that type.** The shared base64url decoder bounds
 the *encoded* text against an allowance computed in the **padded** form, which overshoots the
@@ -911,17 +940,18 @@ decoded buffer meets the AEAD format's *floor* and its *version byte*, in that o
 from the type that owns them, for every member the API accepts as text under that framing. It
 names `CiphertextEnvelope.IsWellFormed` outright rather than taking a rule as an argument, so
 bytes carrying the other framing are outside what it says anything about, whatever their leading
-byte happens to be — and since both framings lead with `0x01`, a caller that handed it
-encapsulated bytes would be told they were well-formed at 29. It still declares no number of its
+byte happens to be. It still declares no number of its
 own. Fold it away and those two rules are restated in each caller that decodes a sealed member,
 which is exactly the drift a shared edge exists to prevent.
 
-**The wrapped-key path never showed the symptom, which is why the slack went unnoticed as
-long as it did.** Its exact 61-byte width sat behind the same decode and refused the one or
+**The key-material path never showed the symptom, which is why the slack went unnoticed as
+long as it did.** Its exact width sat behind the same decode and refused the one or
 two extra bytes the text-side allowance let through, so the only member carrying a
 post-decode rule of its own was also the only one that could not be over-admitted. A member
 holding nothing but a **floor** has nothing behind it. Today the decoder refuses those bytes
-first, so the width never sees them.
+first, so the width never sees them — and there are now two such widths, 167 and 158, each with a
+ceiling in `PasskeyPayloadLimits` declared as the entity's own constant so the ceiling *is* the
+width rather than a second number that happens to agree with it.
 
 ### The two caps, and what they measure
 
@@ -946,7 +976,7 @@ enforces is a comment.
 **Neither number is derived from the other and neither is derived from the format.** They are
 product decisions about how much a person may type into two different kinds of field. Writing them
 as sums over `CiphertextEnvelope.MinimumLength` would dress a choice up as a consequence — unlike
-the wrapped key's 61, where the framing plus one fixed plaintext genuinely *is* the width.
+the wrapped private key's 167, where the framing plus one fixed plaintext genuinely *is* the width.
 
 They live in `Domain` and are `const`, and the type names two call sites as the reason for both: the
 `[Arguments(...)]` that pin them, and the interpolated check constraints a persistence configuration
@@ -983,7 +1013,8 @@ value travel the whole ring and land on that column's `_description_length` chec
 nothing translates.
 
 **The constraint is a band and not a width, and both bounds are inclusive.** Unlike
-`wrapped_account_keys`, whose payload has one legal size — and unlike `accounts.name_key` beside it,
+`wrapped_account_keys`, each of whose two payloads has one legal size — and unlike
+`accounts.name_key` beside it,
 whose 32 bytes come out of `HMAC-SHA-256` and are therefore an **equality** — AES-GCM ciphertext is
 exactly as long as its plaintext, so a name is as long as whatever somebody typed: the floor is the
 format's own `MinimumLength` and the ceiling is the field class's cap, and each names a length that
@@ -1437,22 +1468,29 @@ say so.
 
 ### Why the wrapped-key entity keeps its own exact width
 
-`WrappedAccountKeys` refuses anything that is not **exactly** 61 bytes, on both columns, and
-that rule stays where it is. It is the **entity's** rule, not the format's: substituting the
-shared floor for it would weaken an equality into a lower bound, and what it would stop
-catching is the band the shared rules cannot see — an envelope of 29 to 60 bytes clears the
-format's floor, carries the right version byte, and is still not a wrapped key.
+`WrappedAccountKeys` refuses a wrapped private key that is not **exactly** 167 bytes and an
+encapsulated pair that is not **exactly** 158, each judged by its own framing's constants, and
+those rules stay where they are. They are the **entity's**, not the formats': substituting a shared
+floor for either would weaken an equality into a lower bound, and what it would stop catching is the
+band the shared rules cannot see — an AEAD envelope of 29 to 166 bytes clears that format's floor,
+carries the right version byte, and is still not a wrapped private key.
 
-Only the *short* side of that is reachable today. An envelope **wider** than 61 is refused by
-the shared ceiling before the width is consulted, and the ceiling and the width are the same
-number **by construction**: `PasskeyPayloadLimits.WrappedKeyBytes` is declared as
-`WrappedAccountKeys.EnvelopeLength`, so the ceiling *is* the width rather than a second
-number that happens to agree with it. The upper half of this check is therefore unreachable,
-and it stays written as an inequality against the width rather than as a lower bound of its
-own: it becomes reachable again the day somebody replaces that derivation with a separate
-literal — one silent step, and then a loud one when the two numbers part.
+**The two numbers may not be rendered from each other's format**, which is the easy mistake because
+the wrong expression is the shorter one: an encapsulated width derived from
+`CiphertextEnvelope.MinimumLength` accepts a value 65 bytes too short to hold an ephemeral point,
+and a wrapped-key width derived from `EncapsulatedValueEnvelope.MinimumLength` silently means 65
+bytes more.
 
-Folding the width the other way — into the shared format — would refuse every narrative entry
+Only the *short* side of each is reachable today. A value **wider** than its width is refused by
+the shared ceiling before the width is consulted, and each ceiling and its width are the same
+number **by construction**: `PasskeyPayloadLimits.WrappedPrivateKeyBytes` and
+`EncapsulatedAccountKeysBytes` are declared as the entity's own two constants, so each ceiling *is*
+the width rather than a second number that happens to agree with it. The upper half of each check is
+therefore unreachable, and each stays written as an inequality against its width rather than as a
+lower bound of its own: it becomes reachable again the day somebody replaces that derivation with a
+separate literal — one silent step, and then a loud one when the two numbers part.
+
+Folding either width the other way — into a shared format — would refuse every narrative entry
 longer than an empty one, and the person would find out by not being able to save what they
 typed.
 
@@ -1474,14 +1512,17 @@ What the server asserts over the **AEAD** format is exactly what it **enforces**
 the base64url alphabet, the minimum length, the version byte, and the wrapped path's exact
 width — and nothing more. A check the server does not enforce is a check nothing keeps honest.
 
-**The encapsulation framing is the one place that sentence is bent, and it is bent on purpose
-rather than overlooked.** Its floor, its version and its well-formedness rule are asserted by a
-unit file whose subject no production call site reaches, because nothing stores an encapsulated
-value yet. That is the same order the narrative format was agreed in — a layout is far cheaper to
-settle before a column holds data under it than after, and [Purpose](#purpose) argues why — and it
-carries the same obligation: the day a caller arrives, the rule it enforces is the one already
-written here, not a new one written to fit it. What may not be inferred from the assertions is
-any claim that something on this side is checking encapsulated bytes today. Nothing is.
+**The encapsulation framing was the one place that sentence was bent, and the bend is spent.** Its
+floor, its version and its well-formedness rule were asserted by a unit file whose subject no
+production call site reached, on the same order the narrative format was agreed in — a layout is far
+cheaper to settle before a column holds data under it than after, and [Purpose](#purpose) argues why.
+The caller has arrived: two columns store values in this framing,
+`EncapsulatedAccountKeysEnvelope` decodes them at the edge, and four `CHECK` constraints across two
+tables refuse a value of the wrong width or the wrong version. So the obligation the settling carried
+has been discharged in the direction it was written for — the rules those callers enforce are the
+ones already written here, not new ones written to fit them — and what the server checks is once
+again exactly what it enforces. What still may not be inferred is any claim that something on this
+side can **open** one. Nothing can: that takes a private key, and the server holds none of any kind.
 
 ### The vector index, which is kept in three places
 

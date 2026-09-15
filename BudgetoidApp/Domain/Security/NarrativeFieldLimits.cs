@@ -33,7 +33,7 @@ namespace Domain.Security;
 /// </para>
 /// <para>
 /// <b><see langword="const"/> rather than computed, for the reason
-/// <see cref="Users.WrappedAccountKeys.EnvelopeLength"/> gives about itself.</b> These are read in
+/// <see cref="Users.WrappedAccountKeys.WrappedPrivateKeyLength"/> gives about itself.</b> These are read in
 /// <c>[Arguments(...)]</c> by the specs that pin them and in the interpolated strings that build the
 /// <c>length(...) &lt;= …</c> check constraints, and an attribute argument admits nothing but a
 /// constant expression. A static property would not compile at the first of those call sites and would
@@ -43,7 +43,7 @@ namespace Domain.Security;
 /// <b>Neither number is derived from the other and neither is derived from the format.</b> They are
 /// product decisions about how much a person may type into two different kinds of field, so there is
 /// no arithmetic that would make one follow from anything — unlike
-/// <see cref="Users.WrappedAccountKeys.EnvelopeLength"/>, where the framing plus one fixed plaintext
+/// <see cref="Users.WrappedAccountKeys.WrappedPrivateKeyLength"/>, where the framing plus one fixed plaintext
 /// genuinely is the width. Writing them as sums over
 /// <see cref="CiphertextEnvelope.MinimumLength"/> would dress a choice up as a consequence.
 /// </para>

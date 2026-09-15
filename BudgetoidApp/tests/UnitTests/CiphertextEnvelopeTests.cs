@@ -11,7 +11,7 @@ namespace UnitTests;
 /// <remarks>
 /// <para>
 /// <b>Why this exists as its own type at all.</b> The rule lives today inside
-/// <see cref="Application.Passkeys.WrappedKeyEnvelope"/>, fused to a fixed 61-byte width, where the
+/// <see cref="Application.Passkeys.WrappedPrivateKeyEnvelope"/>, fused to a fixed 167-byte width, where the
 /// version check only ever runs on a buffer that already measured exactly one legal size. Narrative
 /// text is variable-length: the ciphertext is as long as whatever somebody typed, so the width says
 /// nothing about the envelope and the version byte is the only thing left standing between this
@@ -28,7 +28,7 @@ namespace UnitTests;
 /// <para>
 /// <b>Where the numbers come from, which is not one answer.</b> Cases that exercise the bound being
 /// <em>applied</em> read it from the production constant, so the format and its edge cannot drift
-/// apart while staying green — the choice <c>WrappedKeyEnvelopeTests</c> makes for the same reason.
+/// apart while staying green — the choice <c>WrappedPrivateKeyEnvelopeTests</c> makes for the same reason.
 /// The three cases that pin a number <em>itself</em> restate the literal, the choice
 /// <c>WrappedAccountKeysTests</c> makes: a test deriving the number from the same constant it is
 /// checking agrees with any number the type later chooses, which is no pin at all. Each of the three
@@ -155,8 +155,8 @@ public sealed class CiphertextEnvelopeTests
     /// </para>
     /// <para>
     /// That implementation is not hypothetical. It is the line standing in
-    /// <see cref="Application.Passkeys.WrappedKeyEnvelope.TryDecode"/> today —
-    /// <c>decoded.Length != WrappedAccountKeys.EnvelopeLength</c> — where it is correct, because a
+    /// <see cref="Application.Passkeys.WrappedPrivateKeyEnvelope.TryDecode"/> today —
+    /// <c>decoded.Length != WrappedAccountKeys.WrappedPrivateKeyLength</c> — where it is correct, because a
     /// wrapped 32-byte key has exactly one legal size. Carried across into a format that also has to
     /// hold variable-length narrative text, it refuses every entry longer than an empty one, and the
     /// person finds out by not being able to save what they typed.
@@ -351,11 +351,11 @@ public sealed class CiphertextEnvelopeTests
     /// <para>
     /// <b>The rest of the suite is not silent, and the claim above is about this file only.</b>
     /// <c>WrappedAccountKeysConfiguration</c> interpolates
-    /// <see cref="WrappedAccountKeys.EnvelopeVersion"/> — which is defined as
+    /// <see cref="WrappedAccountKeys.WrappedPrivateKeyVersion"/> — which is defined as
     /// <see cref="CiphertextEnvelope.Version"/> — into
-    /// <c>CK_wrapped_account_keys_wrapped_content_key_version</c> and its index-key twin, and
+    /// <c>CK_wrapped_account_keys_wrapped_private_key_version</c> and its index-key twin, and
     /// <c>BudgetoidDbContextConstructionTests</c> pins the rendered constraint as literal text,
-    /// <c>get_byte(wrapped_content_key, 0) = 1</c> included, so the same mutation reddens there. That
+    /// <c>get_byte(wrapped_private_key, 0) = 1</c> included, so the same mutation reddens there. That
     /// is an integration test over a built model; this is a unit test over a constant. The number is
     /// worth a refusal that does not need the model constructed to notice it, and one that names the
     /// version rather than a check constraint.
@@ -377,41 +377,52 @@ public sealed class CiphertextEnvelopeTests
     }
 
     /// <summary>
-    /// The wrapped-key width is this minimum stretched over a 32-byte key, and it is 61.
+    /// The wrapped-private-key width is this minimum stretched over a PKCS#8 P-256 private key, and it
+    /// is 167.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <b>61 is written out deliberately, for a reason the other pin does not have: the number lives in
+    /// <b>167 is written out deliberately, for a reason the other pin does not have: the number lives in
     /// three places and the code owns one of them.</b> The first is
-    /// <see cref="WrappedAccountKeys.EnvelopeLength"/> itself, which
-    /// <c>WrappedAccountKeysConfiguration</c> interpolates into two check constraints —
-    /// <c>CK_wrapped_account_keys_wrapped_content_key_length</c> and its index-key twin. The second is
-    /// the migration that created the table, where the same rule stands as the fixed text
-    /// <c>length(wrapped_content_key) = 61</c>, which follows no constant. The third is
-    /// <c>SchemaConstraintSnapshotTests</c>, which pins those constraints again as rendered text, 61
+    /// <see cref="WrappedAccountKeys.WrappedPrivateKeyLength"/> itself, which
+    /// <c>WrappedAccountKeysConfiguration</c> interpolates into
+    /// <c>CK_wrapped_account_keys_wrapped_private_key_length</c>. The second is the migration that
+    /// created the table, where the same rule stands as the fixed text
+    /// <c>length(wrapped_private_key) = 167</c>, which follows no constant. The third is
+    /// <c>SchemaConstraintSnapshotTests</c>, which pins that constraint again as rendered text, 167
     /// included.
     /// </para>
     /// <para>
     /// So the constant is the only copy an edit here moves, and the other two would sit still and
     /// disagree with it. A test deriving its expectation from
-    /// <see cref="WrappedAccountKeys.EnvelopeLength"/> would follow the edit without a word and leave
-    /// that disagreement to be discovered by a schema comparison; written out, it says the width
+    /// <see cref="WrappedAccountKeys.WrappedPrivateKeyLength"/> would follow the edit without a word and
+    /// leave that disagreement to be discovered by a schema comparison; written out, it says the width
     /// changed at the place the change was made.
     /// </para>
     /// <para>
     /// The relation is asserted beside it, and is the reason this case sits in this file rather than
-    /// with the entity's own tests: pulling the version gate out of the wrapped-key path is only safe
-    /// while the wrapped-key width is genuinely this format over a 32-byte plaintext. If it ever is not,
+    /// with the entity's own tests: pulling the version gate out of the wrapped-private-key path is only
+    /// safe while that width is genuinely <em>this</em> format over its plaintext. If it ever is not,
     /// the two are different formats sharing a leading byte, and that is worth finding out here.
+    /// </para>
+    /// <para>
+    /// <b>The inequality against the sibling suite is the half that is new, and it is the one this file
+    /// is uniquely placed to hold.</b> <c>encapsulated_account_keys</c> is the <em>other</em> framing —
+    /// 94 bytes of fixed parts over a 64-byte plaintext, 158 — and both framings lead with <c>0x01</c>.
+    /// A reader "tidying" the two widths into one shared constant would be asserting that an AEAD
+    /// envelope and an ECDH encapsulation are the same shape, and every case in both envelope suites
+    /// would go on passing, because each reads whichever constant it was given.
     /// </para>
     /// </remarks>
     [Test]
-    public async Task WrappedKeyWidth_IsTheMinimumOverA32ByteKey()
+    public async Task WrappedPrivateKeyWidth_IsTheMinimumOverItsPlaintext()
     {
         // Act, Assert
-        await Assert.That(WrappedAccountKeys.EnvelopeLength).IsEqualTo(61);
-        await Assert.That(WrappedAccountKeys.EnvelopeLength)
-            .IsEqualTo(CiphertextEnvelope.MinimumLength + 32);
+        await Assert.That(WrappedAccountKeys.WrappedPrivateKeyLength).IsEqualTo(167);
+        await Assert.That(WrappedAccountKeys.WrappedPrivateKeyLength)
+            .IsEqualTo(CiphertextEnvelope.MinimumLength + 138);
+        await Assert.That(WrappedAccountKeys.WrappedPrivateKeyLength)
+            .IsNotEqualTo(WrappedAccountKeys.EncapsulatedAccountKeysLength);
     }
 
     /// <summary>

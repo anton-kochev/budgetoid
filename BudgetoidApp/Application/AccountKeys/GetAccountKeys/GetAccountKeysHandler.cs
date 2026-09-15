@@ -3,8 +3,9 @@ using Application.Abstractions;
 namespace Application.AccountKeys.GetAccountKeys;
 
 /// <summary>
-/// Hands the browser the wrapped copies of the account's content key and index key that <b>every factor
-/// the account holds</b> stores — one row per registered passkey, ten per set of recovery codes.
+/// Hands the browser what <b>every factor the account holds</b> stores — that factor's wrapped private
+/// key and the account's two keys encapsulated to its public half, one row per registered passkey and
+/// ten per set of recovery codes.
 /// </summary>
 /// <remarks>
 /// <para>

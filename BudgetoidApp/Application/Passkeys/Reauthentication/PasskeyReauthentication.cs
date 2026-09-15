@@ -75,13 +75,33 @@ public sealed class PasskeyReauthentication(
     /// otherwise identify the credential earlier is one a conforming authenticator may legally omit.
     /// </para>
     /// <para>
-    /// Returns nothing, which is the shape difference from the sign-in handler. The account is already
-    /// known, so there is no answer to hand back — the whole result is that the caller was not turned
-    /// down.
+    /// <b>It hands back the credential it verified, and that does not touch the rule above.</b> The
+    /// argument this class makes at length is about never publishing an <em>account</em> — never
+    /// calling <c>IUserContextWriter</c>, because a publication here clears the ambient budget the
+    /// caller is about to be scoped by. Returning the credential publishes nothing: the value goes to
+    /// the one caller that asked for it and the ambient identity is untouched. What it is <em>not</em>
+    /// is a discovery: the row was found by <see cref="IPasskeyRepository.FindPasskeyCredentialAsync"/>
+    /// under the id the verified public key named and under <see cref="IUserContext.UserId"/>, so it is
+    /// by construction a passkey of the account the request is already authenticated as. The shape
+    /// difference from the sign-in handler stands — that one <em>discovers</em> an account and
+    /// publishes it; this one checks against one already published and reports which credential did the
+    /// checking.
+    /// </para>
+    /// <para>
+    /// <b>Why a credential rather than nothing.</b> <c>BeginKeyRotationHandler</c> needs one, and the
+    /// alternatives are worse in ways that do not announce themselves. Picking one out of the account's
+    /// factor listing is arbitrary the day an account holds two passkeys, and the arbitrariness is
+    /// invisible — the wrong one is a perfectly good credential of the right account and the right
+    /// type. Taking a factor id off the command would put the choice in the caller's hands, and a
+    /// server-verified assertion is strictly stronger than any identifier a client can send.
     /// </para>
     /// </remarks>
+    /// <returns>
+    /// The passkey credential whose signature was verified — always one of
+    /// <see cref="IUserContext.UserId"/>'s own.
+    /// </returns>
     /// <exception cref="PasskeyVerificationException">The assertion was not accepted.</exception>
-    public async Task VerifyAsync(
+    public async Task<Credential> VerifyAsync(
         ReauthenticationAssertion assertion,
         CancellationToken cancellationToken = default)
     {
@@ -211,6 +231,29 @@ public sealed class PasskeyReauthentication(
             // writing an unchanged row would be an UPDATE per ceremony that records nothing.
             await passkeyRepository.SaveCounterAsync(counter, cancellationToken);
         }
+
+        // 8. The credential row behind the key that was just verified, read LAST and never earlier.
+        //    Every step above is a refusal, and the ladder's order is a security property this class
+        //    argues at length — a read inserted before the signature verification would move work in
+        //    front of a refusal and change which refusals are cheap.
+        //
+        //    FindPasskeyCredentialAsync and never a lookup keyed by id alone: credentials is exempt from
+        //    row-level security, so nothing beneath this call narrows it and the owner in the predicate
+        //    is the only thing scoping the read. The owner is IUserContext.UserId — the same value step
+        //    4 scoped the key lookup by — so this cannot answer with another account's row, and the
+        //    type filter inside it cannot answer with a federated or recovery-codes credential.
+        //
+        //    A miss is impossible through the schema — passkey_public_keys.credential_id is a foreign
+        //    key onto the row this is asking for — so it is a broken invariant rather than a caller's
+        //    mistake, and it is refused with the identical sentence every other refusal on this path
+        //    produces, for the reason the counter's own miss gives: a caller able to tell one refusal
+        //    from another is one mapping which handles exist while holding a stolen bearer token.
+        return await passkeyRepository.FindPasskeyCredentialAsync(
+                publicKey.CredentialId,
+                userId,
+                cancellationToken)
+            ?? throw new PasskeyVerificationException(
+                "The passkey has a public key but no credential row.");
     }
 
     /// <summary>

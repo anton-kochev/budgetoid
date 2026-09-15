@@ -102,7 +102,7 @@ because every one of these is something a reader will otherwise simplify away.
   reference of any kind.
 - **Every column carries exactly one classification** — *narrative*, *arithmetic* or *excluded* —
   and the words are about what the product owes the person, not what the column holds. `DataInventory`
-  names all 108; a unit-tier gate fails on one nobody classified. **Narrative is derived** from the
+  names all 110; a unit-tier gate fails on one nobody classified. **Narrative is derived** from the
   `NarrativeField` properties, so a column cannot be re-classified to green a coverage test. The
   schema is enumerated in exactly one place (`MappedSchema`). It replaces none of the ten censuses
   beside it. [data inventory](docs/engineering/data-inventory.md),
@@ -117,11 +117,18 @@ because every one of these is something a reader will otherwise simplify away.
   ADRs [0015](docs/decisions/0015-mint-recovery-codes-on-the-client-and-store-only-a-hash-of-a-verifier.md),
   [0016](docs/decisions/0016-give-recovery-code-hashes-their-own-exempt-table.md),
   [0017](docs/decisions/0017-consume-a-recovery-code-by-deleting-its-row.md)
-- **An account owns one content key and one index key, and every recovery factor stores its own
-  wrapped copy of both.** `wrapped_account_keys` is policed, keyed on **`factor_id`** — a factor is
+- **An account owns one content key and one index key, and every recovery factor holds an ECDH
+  P-256 keypair rather than its own copy of both.** The factor's private key is *wrapped under* the
+  key-encryption key it already derives (`wrapped_private_key`, exactly 167 bytes); the two account
+  keys are *encapsulated to* its public key as one 64-byte plaintext, **content key first**
+  (`encapsulated_account_keys`, exactly 158). A rotation therefore needs the old content key and a
+  set of public keys — **not every authenticator at once**, which is the whole point.
+  `wrapped_account_keys` is policed, keyed on **`factor_id`** — a factor is
   not a credential, so a set of recovery codes is ten. Every path creating a factor requires
-  `factorId` and both envelopes in the credential's own `SaveChanges`; **"every factor has a row" is
-  not a schema fact**, so a path that skipped them would redden nothing.
+  `factorId` and both values in the credential's own `SaveChanges`; **"every factor has a row" is
+  not a schema fact**, so a path that skipped them would redden nothing. **Every factor's public key
+  lives only in `factor_manifests`**, one authenticated blob per account — there is deliberately no
+  per-row public key column, because what must be unforgeable is the *set*.
   `GET /api/me/account-keys` is keyed on the **account**, never on a credential — narrowing it was
   tried and was wrong. [account-keys.md](docs/business-logic/account-keys.md),
   [ADR 0018](docs/decisions/0018-give-the-wrapped-account-keys-a-policed-table-and-their-own-factor-identifier.md)
@@ -135,13 +142,17 @@ because every one of these is something a reader will otherwise simplify away.
   surrendered uniqueness on `budgets.name`; both are decisions, not gaps.
   [ciphertext-envelope.md](docs/business-logic/ciphertext-envelope.md),
   [ADR 0022](docs/decisions/0022-mint-narrative-row-identifiers-on-the-client.md)
-- **A second framing is defined and stored nowhere.** `EncapsulatedValueEnvelope` —
-  `version(1) ‖ ephemeral public key(65) ‖ nonce(12) ‖ ciphertext ‖ tag(16)`, floor 94. Both
+- **A second framing is stored in two columns.** `EncapsulatedValueEnvelope` —
+  `version(1) ‖ ephemeral public key(65) ‖ nonce(12) ‖ ciphertext ‖ tag(16)`, floor 94 — carried by
+  `wrapped_account_keys.encapsulated_account_keys` and `key_rotation_seals.encapsulated_account_keys`,
+  both exactly 158. Both
   framings lead with `0x01` on **different suites** and nothing in the bytes says which, so the
   column is the only discriminator — and **neither version constant may alias the other**, because
   reflection cannot tell a `const` literal from a `const` alias and only a source-text census holds
   it. **Three verbs, and they are not interchangeable**: *sealed under* a key over data, *wrapped
-  under* a key over another key, *encapsulated to* a public key.
+  under* a key over another key, *encapsulated to* a public key. **The two halves inside the 64-byte
+  plaintext — content key first — are held by no server-side check and never can be**: a reversed
+  pair is the right width, the right version, stores, reads back and opens.
   [ciphertext-envelope.md](docs/business-logic/ciphertext-envelope.md)
 - **The schema carries no remnant of an erasure and the route table offers no way back.** Three
   gates each hold a different half. Read [erasure.md](docs/business-logic/erasure.md) before

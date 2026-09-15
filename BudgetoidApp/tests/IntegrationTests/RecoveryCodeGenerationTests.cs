@@ -500,10 +500,10 @@ public sealed class RecoveryCodeGenerationTests
             .Where(row => row.FactorId == issued[0].Factor)];
         await Assert.That(surviving.Length).IsEqualTo(1);
         await Assert.That(surviving[0].CredentialId).IsEqualTo(issuedSetId);
-        await Assert.That(Base64UrlText.Encode(surviving[0].WrappedContentKey))
-            .IsEqualTo(issued[0].WrappedContentKey);
-        await Assert.That(Base64UrlText.Encode(surviving[0].WrappedIndexKey))
-            .IsEqualTo(issued[0].WrappedIndexKey);
+        await Assert.That(Base64UrlText.Encode(surviving[0].WrappedPrivateKey))
+            .IsEqualTo(issued[0].WrappedPrivateKey);
+        await Assert.That(Base64UrlText.Encode(surviving[0].EncapsulatedAccountKeys))
+            .IsEqualTo(issued[0].EncapsulatedAccountKeys);
     }
 
     /// <summary>
@@ -522,7 +522,7 @@ public sealed class RecoveryCodeGenerationTests
     /// </para>
     /// <para>
     /// <b>Which envelope landed in which column is the other half, and no constraint the database holds
-    /// can tell them apart.</b> Both are <see cref="WrappedAccountKeys.EnvelopeLength" /> bytes, both
+    /// can tell them apart.</b> Both are <see cref="WrappedAccountKeys.WrappedPrivateKeyLength" /> bytes, both
     /// carry <see cref="WrappedAccountKeys.EnvelopeVersion" />, both are <c>NOT NULL</c>: a swapped
     /// pair satisfies every check. Only bytes told apart by which column they landed in can catch it,
     /// which is what <see cref="WrappedKeyFixture" /> mints.
@@ -568,8 +568,8 @@ public sealed class RecoveryCodeGenerationTests
 
         // Re-encoded and compared against the text the request carried, so the comparison is over the
         // exact bytes in their exact order.
-        await Assert.That(Base64UrlText.Encode(row.WrappedContentKey)).IsEqualTo(keys[0].WrappedContentKey);
-        await Assert.That(Base64UrlText.Encode(row.WrappedIndexKey)).IsEqualTo(keys[0].WrappedIndexKey);
+        await Assert.That(Base64UrlText.Encode(row.WrappedPrivateKey)).IsEqualTo(keys[0].WrappedPrivateKey);
+        await Assert.That(Base64UrlText.Encode(row.EncapsulatedAccountKeys)).IsEqualTo(keys[0].EncapsulatedAccountKeys);
     }
 
     /// <summary>
@@ -857,8 +857,8 @@ public sealed class RecoveryCodeGenerationTests
         // rather than the ones the refused request wrapped under it.
         WrappedAccountKeysRow[] ofPasskey = [.. rows.Where(row => row.FactorId == claimed.Factor)];
         await Assert.That(ofPasskey.Length).IsEqualTo(1);
-        await Assert.That(Base64UrlText.Encode(ofPasskey[0].WrappedContentKey)).IsEqualTo(claimed.WrappedContentKey);
-        await Assert.That(Base64UrlText.Encode(ofPasskey[0].WrappedIndexKey)).IsEqualTo(claimed.WrappedIndexKey);
+        await Assert.That(Base64UrlText.Encode(ofPasskey[0].WrappedPrivateKey)).IsEqualTo(claimed.WrappedPrivateKey);
+        await Assert.That(Base64UrlText.Encode(ofPasskey[0].EncapsulatedAccountKeys)).IsEqualTo(claimed.EncapsulatedAccountKeys);
 
         // The sweep unwound too: every live session the account had is still live and still the same row,
         // and exactly one of them is over the set the person is holding.
@@ -993,7 +993,7 @@ public sealed class RecoveryCodeGenerationTests
     /// <para>
     /// <b>This route has never had this coverage, and it is the coverage the schema half made ten times
     /// as expensive to miss.</b> The sibling cases on the registration leg are
-    /// <c>PasskeyCeremonyTests.PasskeyRegistration_RefusesAWrappedKeyThatIsNotBase64UrlOfExactlySixtyOneBytes</c>,
+    /// <c>PasskeyCeremonyTests.PasskeyRegistration_RefusesAPayloadThatIsNotBase64UrlOfItsOwnExactWidth</c>,
     /// whose shape this follows; nothing said the generation leg judges an envelope at all.
     /// </para>
     /// <para>
@@ -1002,7 +1002,7 @@ public sealed class RecoveryCodeGenerationTests
     /// the day somebody needs the keys. One byte over never reaches the width: it clears the
     /// encoded-length gate — 62 bytes is 83 characters against an allowance of 84 — and is then
     /// refused by <c>PasskeyEncoding.TryDecode</c>, which measures the decoded buffer against the
-    /// ceiling the caller named, here <c>PasskeyPayloadLimits.WrappedKeyBytes</c>, the same 61 bytes
+    /// ceiling the caller named, here <c>PasskeyPayloadLimits.WrappedPrivateKeyBytes</c>, the same 167 bytes
     /// the width is. What the width covers instead is the short side, the 29-to-60-byte band that
     /// clears the format's floor and the ceiling alike; both sides are gone before a column sees them.
     /// </para>
@@ -1020,14 +1020,14 @@ public sealed class RecoveryCodeGenerationTests
     /// </para>
     /// </remarks>
     [Test]
-    [Arguments(WrappedKeyMember.Content, MalformedEnvelope.OneByteShort)]
-    [Arguments(WrappedKeyMember.Content, MalformedEnvelope.OneByteTooWide)]
-    [Arguments(WrappedKeyMember.Content, MalformedEnvelope.OutsideTheAlphabet)]
-    [Arguments(WrappedKeyMember.Index, MalformedEnvelope.OneByteShort)]
-    [Arguments(WrappedKeyMember.Index, MalformedEnvelope.OneByteTooWide)]
-    [Arguments(WrappedKeyMember.Index, MalformedEnvelope.OutsideTheAlphabet)]
-    public async Task RecoveryCodeGeneration_RefusesAWrappedKeyThatIsNotBase64UrlOfExactlySixtyOneBytes(
-        WrappedKeyMember member,
+    [Arguments(FactorPayload.PrivateKey, MalformedEnvelope.OneByteShort)]
+    [Arguments(FactorPayload.PrivateKey, MalformedEnvelope.OneByteTooWide)]
+    [Arguments(FactorPayload.PrivateKey, MalformedEnvelope.OutsideTheAlphabet)]
+    [Arguments(FactorPayload.AccountKeys, MalformedEnvelope.OneByteShort)]
+    [Arguments(FactorPayload.AccountKeys, MalformedEnvelope.OneByteTooWide)]
+    [Arguments(FactorPayload.AccountKeys, MalformedEnvelope.OutsideTheAlphabet)]
+    public async Task RecoveryCodeGeneration_RefusesAPayloadThatIsNotBase64UrlOfItsOwnExactWidth(
+        FactorPayload payload,
         MalformedEnvelope fault)
     {
         // Arrange — a real first set, so the refusal has something to fail to destroy.
@@ -1048,18 +1048,18 @@ public sealed class RecoveryCodeGenerationTests
 
         // Act — ten well-formed codes with one malformed member on one of them, and everything else
         // about the request genuine.
-        string malformed = MalformedEnvelopeText(fault);
+        string malformed = MalformedEnvelopeText(payload, fault);
         CodeSubmission[] codes = WithFaultedCode(
             SubmissionsOf(Verifiers()),
             FaultedOrdinal,
-            code => member is WrappedKeyMember.Content
-                ? code with { WrappedContentKey = malformed }
-                : code with { WrappedIndexKey = malformed });
+            code => payload is FactorPayload.PrivateKey
+                ? code with { WrappedPrivateKey = malformed }
+                : code with { EncapsulatedAccountKeys = malformed });
         HttpResponseMessage response = await GenerateWithCodesAsync(client, device, userId, codes);
 
         // Assert
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
-        await AssertNamesTheMalformedEnvelopeAsync(response, FaultedOrdinal, member);
+        await AssertNamesTheMalformedEnvelopeAsync(response, FaultedOrdinal, payload);
 
         // And the codes and the envelopes the person is holding are still exactly what they were.
         await Assert.That(await CountSetsAsync(admin, userId)).IsEqualTo(1L);
@@ -1081,12 +1081,14 @@ public sealed class RecoveryCodeGenerationTests
     /// ever defines a successor moves these cases with it instead of leaving two literals behind.
     /// </remarks>
     [Test]
-    [Arguments(WrappedKeyMember.Content, (byte)(WrappedAccountKeys.EnvelopeVersion - 1))]
-    [Arguments(WrappedKeyMember.Content, (byte)(WrappedAccountKeys.EnvelopeVersion + 1))]
-    [Arguments(WrappedKeyMember.Index, (byte)(WrappedAccountKeys.EnvelopeVersion - 1))]
-    [Arguments(WrappedKeyMember.Index, (byte)(WrappedAccountKeys.EnvelopeVersion + 1))]
-    public async Task RecoveryCodeGeneration_RefusesAWrappedKeyWhoseEnvelopeVersionIsUnknown(
-        WrappedKeyMember member,
+    [Arguments(FactorPayload.PrivateKey, (byte)(WrappedAccountKeys.WrappedPrivateKeyVersion - 1))]
+    [Arguments(FactorPayload.PrivateKey, (byte)(WrappedAccountKeys.WrappedPrivateKeyVersion + 1))]
+    [Arguments(
+        FactorPayload.AccountKeys, (byte)(WrappedAccountKeys.EncapsulatedAccountKeysVersion - 1))]
+    [Arguments(
+        FactorPayload.AccountKeys, (byte)(WrappedAccountKeys.EncapsulatedAccountKeysVersion + 1))]
+    public async Task RecoveryCodeGeneration_RefusesAPayloadWhoseFramingVersionIsUnknown(
+        FactorPayload payload,
         byte version)
     {
         // Arrange — a real first set, so the refusal has something to fail to destroy.
@@ -1107,18 +1109,18 @@ public sealed class RecoveryCodeGenerationTests
 
         // Act — the exact width the contract defines, so the version byte is the only fault, and it
         // sits on a code other than the first.
-        string unknownVersion = EnvelopeText(WrappedAccountKeys.EnvelopeLength, version);
+        string unknownVersion = EnvelopeText(LengthOf(payload), version);
         CodeSubmission[] codes = WithFaultedCode(
             SubmissionsOf(Verifiers()),
             FaultedOrdinal,
-            code => member is WrappedKeyMember.Content
-                ? code with { WrappedContentKey = unknownVersion }
-                : code with { WrappedIndexKey = unknownVersion });
+            code => payload is FactorPayload.PrivateKey
+                ? code with { WrappedPrivateKey = unknownVersion }
+                : code with { EncapsulatedAccountKeys = unknownVersion });
         HttpResponseMessage response = await GenerateWithCodesAsync(client, device, userId, codes);
 
         // Assert
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
-        await AssertNamesTheMalformedEnvelopeAsync(response, FaultedOrdinal, member);
+        await AssertNamesTheMalformedEnvelopeAsync(response, FaultedOrdinal, payload);
 
         await Assert.That(await CountSetsAsync(admin, userId)).IsEqualTo(1L);
         await Assert.That(await ResolveSetCredentialIdAsync(admin, userId)).IsEqualTo(issuedSetId);
@@ -2130,8 +2132,8 @@ public sealed class RecoveryCodeGenerationTests
     private sealed record CodeSubmission(
         string Verifier,
         string FactorId,
-        string WrappedContentKey,
-        string WrappedIndexKey);
+        string WrappedPrivateKey,
+        string EncapsulatedAccountKeys);
 
     /// <summary>
     /// One share of the account keys per verifier, paired by ordinal.
@@ -2151,8 +2153,8 @@ public sealed class RecoveryCodeGenerationTests
         return [.. verifiers.Select((verifier, ordinal) => new CodeSubmission(
             verifier,
             keys[ordinal].FactorId,
-            keys[ordinal].WrappedContentKey,
-            keys[ordinal].WrappedIndexKey))];
+            keys[ordinal].WrappedPrivateKey,
+            keys[ordinal].EncapsulatedAccountKeys))];
     }
 
     /// <summary>
@@ -2177,10 +2179,10 @@ public sealed class RecoveryCodeGenerationTests
     /// leg: the two routes are meant to be able to disagree and be caught disagreeing, and a shared
     /// enumeration is one edit away from moving both.
     /// </remarks>
-    public enum WrappedKeyMember
+    public enum FactorPayload
     {
-        Content,
-        Index,
+        PrivateKey,
+        AccountKeys,
     }
 
     /// <summary>
@@ -2206,18 +2208,20 @@ public sealed class RecoveryCodeGenerationTests
     /// byte, and the envelope would then be refused for its version with the alphabet tested by
     /// nothing. <c>PasskeyCeremonyTests.MalformedEnvelopeText</c> carries the arithmetic.
     /// </remarks>
-    private static string MalformedEnvelopeText(MalformedEnvelope fault) => fault switch
-    {
-        MalformedEnvelope.OneByteShort =>
-            EnvelopeText(WrappedAccountKeys.EnvelopeLength - 1, WrappedAccountKeys.EnvelopeVersion),
-        MalformedEnvelope.OneByteTooWide =>
-            EnvelopeText(WrappedAccountKeys.EnvelopeLength + 1, WrappedAccountKeys.EnvelopeVersion),
-        MalformedEnvelope.OutsideTheAlphabet => EnvelopeText(
-                WrappedAccountKeys.EnvelopeLength, WrappedAccountKeys.EnvelopeVersion)
-            .Remove(4, 1)
-            .Insert(4, OutsideTheBase64UrlAlphabet.ToString()),
-        _ => throw new ArgumentOutOfRangeException(nameof(fault), fault, "No text is defined for this fault."),
-    };
+    private static string MalformedEnvelopeText(FactorPayload payload, MalformedEnvelope fault) =>
+        fault switch
+        {
+            MalformedEnvelope.OneByteShort =>
+                EnvelopeText(LengthOf(payload) - 1, VersionOf(payload)),
+            MalformedEnvelope.OneByteTooWide =>
+                EnvelopeText(LengthOf(payload) + 1, VersionOf(payload)),
+            MalformedEnvelope.OutsideTheAlphabet =>
+                EnvelopeText(LengthOf(payload), VersionOf(payload))
+                    .Remove(4, 1)
+                    .Insert(4, OutsideTheBase64UrlAlphabet.ToString()),
+            _ => throw new ArgumentOutOfRangeException(
+                nameof(fault), fault, "No text is defined for this fault."),
+        };
 
     /// <summary>A character standard base64 defines and base64url does not.</summary>
     private const char OutsideTheBase64UrlAlphabet = '+';
@@ -2300,8 +2304,8 @@ public sealed class RecoveryCodeGenerationTests
             attestationObject = attestation.AttestationObjectBase64Url,
             clientExtensionResults = new { prf = new { enabled = true } },
             factorId = keys.FactorId,
-            wrappedContentKey = keys.WrappedContentKey,
-            wrappedIndexKey = keys.WrappedIndexKey,
+            wrappedPrivateKey = keys.WrappedPrivateKey,
+            encapsulatedAccountKeys = keys.EncapsulatedAccountKeys,
         });
         response.EnsureSuccessStatusCode();
     }
@@ -2516,14 +2520,21 @@ public sealed class RecoveryCodeGenerationTests
     private static async Task AssertNamesTheMalformedEnvelopeAsync(
         HttpResponseMessage response,
         int ordinal,
-        WrappedKeyMember member)
+        FactorPayload payload)
     {
-        string message = await ReadValidationErrorAsync(response, CodeMemberKey(ordinal, KeyNameOf(member)));
+        string message =
+            await ReadValidationErrorAsync(response, CodeMemberKey(ordinal, KeyNameOf(payload)));
 
-        await Assert.That(message).Contains(SentenceNameOf(member));
-        await Assert.That(message).DoesNotContain(SentenceNameOf(Other(member)));
-        await Assert.That(message).Contains($"{WrappedAccountKeys.EnvelopeLength} bytes");
-        await Assert.That(message).Contains($"version {WrappedAccountKeys.EnvelopeVersion}");
+        await Assert.That(message).Contains(SentenceNameOf(payload));
+        await Assert.That(message).DoesNotContain(SentenceNameOf(Other(payload)));
+        await Assert.That(message).Contains($"{LengthOf(payload)} bytes");
+        await Assert.That(message).Contains($"version {VersionOf(payload)}");
+
+        // The OTHER payload's width must not appear, and this is the assertion the widths diverging
+        // made possible. 167 and 158 are two different sentences now, so a validation that judged one
+        // payload against the other's bound — or built its refusal from the wrong constant — is caught
+        // here rather than on the day a client's decoder meets bytes it cannot slice.
+        await Assert.That(message).DoesNotContain($"{LengthOf(Other(payload))} bytes");
     }
 
     /// <summary>
@@ -2537,26 +2548,55 @@ public sealed class RecoveryCodeGenerationTests
     private static string CodeMemberKey(int ordinal, string member) => $"Codes[{ordinal}].{member}";
 
     /// <summary>The member of the pair that this case left well formed.</summary>
-    private static WrappedKeyMember Other(WrappedKeyMember member) =>
-        member is WrappedKeyMember.Content ? WrappedKeyMember.Index : WrappedKeyMember.Content;
+    private static FactorPayload Other(FactorPayload payload) =>
+        payload is FactorPayload.PrivateKey ? FactorPayload.AccountKeys : FactorPayload.PrivateKey;
 
     /// <summary>The member as the errors bag keys it — the command's own spelling of the submission.</summary>
-    private static string KeyNameOf(WrappedKeyMember member) => member switch
+    private static string KeyNameOf(FactorPayload payload) => payload switch
     {
-        WrappedKeyMember.Content => "WrappedContentKey",
-        WrappedKeyMember.Index => "WrappedIndexKey",
-        _ => throw new ArgumentOutOfRangeException(nameof(member), member, "No key is defined for this member."),
+        FactorPayload.PrivateKey => "WrappedPrivateKey",
+        FactorPayload.AccountKeys => "EncapsulatedAccountKeys",
+        _ => throw new ArgumentOutOfRangeException(
+            nameof(payload), payload, "No key is defined for this payload."),
     };
 
     /// <summary>
     /// The member as the sentence names it: English rather than an identifier, because the sentence is
     /// read by a person and the key is read by a client.
     /// </summary>
-    private static string SentenceNameOf(WrappedKeyMember member) => member switch
+    private static string SentenceNameOf(FactorPayload payload) => payload switch
     {
-        WrappedKeyMember.Content => "wrapped content key",
-        WrappedKeyMember.Index => "wrapped index key",
-        _ => throw new ArgumentOutOfRangeException(nameof(member), member, "No wording is defined for this member."),
+        FactorPayload.PrivateKey => "wrapped private key",
+        FactorPayload.AccountKeys => "encapsulated account keys",
+        _ => throw new ArgumentOutOfRangeException(
+            nameof(payload), payload, "No wording is defined for this payload."),
+    };
+
+    /// <summary>
+    /// The width the named payload's own suite defines, and the version byte it leads with.
+    /// </summary>
+    /// <remarks>
+    /// <b>Two suites, two widths, two version constants, and the pairs may not be crossed.</b> The
+    /// refusal sentences state the numbers, so a test reading one payload's width beside the other's
+    /// version would assert a sentence nothing produces — or, while the two version constants hold the
+    /// same number, would assert the right sentence for the wrong reason. Each arm reads both numbers
+    /// off one suite.
+    /// </remarks>
+    private static int LengthOf(FactorPayload payload) => payload switch
+    {
+        FactorPayload.PrivateKey => WrappedAccountKeys.WrappedPrivateKeyLength,
+        FactorPayload.AccountKeys => WrappedAccountKeys.EncapsulatedAccountKeysLength,
+        _ => throw new ArgumentOutOfRangeException(
+            nameof(payload), payload, "No width is defined for this payload."),
+    };
+
+    /// <inheritdoc cref="LengthOf" />
+    private static byte VersionOf(FactorPayload payload) => payload switch
+    {
+        FactorPayload.PrivateKey => WrappedAccountKeys.WrappedPrivateKeyVersion,
+        FactorPayload.AccountKeys => WrappedAccountKeys.EncapsulatedAccountKeysVersion,
+        _ => throw new ArgumentOutOfRangeException(
+            nameof(payload), payload, "No version is defined for this payload."),
     };
 
     /// <summary>The member of a submission that carries its factor identifier, as the bag keys it.</summary>
@@ -2644,8 +2684,8 @@ public sealed class RecoveryCodeGenerationTests
         Guid FactorId,
         Guid UserId,
         string CredentialType,
-        byte[] WrappedContentKey,
-        byte[] WrappedIndexKey);
+        byte[] WrappedPrivateKey,
+        byte[] EncapsulatedAccountKeys);
 
     /// <summary>
     /// Every <c>wrapped_account_keys</c> row of one account.
@@ -2672,7 +2712,7 @@ public sealed class RecoveryCodeGenerationTests
     {
         await using NpgsqlCommand command = new(
             """
-            select credential_id, factor_id, user_id, credential_type, wrapped_content_key, wrapped_index_key
+            select credential_id, factor_id, user_id, credential_type, wrapped_private_key, encapsulated_account_keys
             from wrapped_account_keys
             where user_id = @userId
             order by created_at_utc
@@ -2717,8 +2757,8 @@ public sealed class RecoveryCodeGenerationTests
     private static string[] FingerprintsOf(IEnumerable<WrappedAccountKeysRow> rows) =>
     [
         .. rows
-            .Select(row => $"{row.FactorId:D} {Base64UrlText.Encode(row.WrappedContentKey)} "
-                + $"{Base64UrlText.Encode(row.WrappedIndexKey)}")
+            .Select(row => $"{row.FactorId:D} {Base64UrlText.Encode(row.WrappedPrivateKey)} "
+                + $"{Base64UrlText.Encode(row.EncapsulatedAccountKeys)}")
             .Order(StringComparer.Ordinal),
     ];
 
@@ -2726,7 +2766,7 @@ public sealed class RecoveryCodeGenerationTests
     private static string[] FingerprintsOf(IEnumerable<WrappedKeyFixture> keys) =>
     [
         .. keys
-            .Select(key => $"{key.Factor:D} {key.WrappedContentKey} {key.WrappedIndexKey}")
+            .Select(key => $"{key.Factor:D} {key.WrappedPrivateKey} {key.EncapsulatedAccountKeys}")
             .Order(StringComparer.Ordinal),
     ];
 

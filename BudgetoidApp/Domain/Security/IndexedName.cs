@@ -63,8 +63,9 @@ public sealed class IndexedName
     /// </para>
     /// <para>
     /// <see langword="const"/> and public for the reason
-    /// <see cref="Users.WrappedAccountKeys.EnvelopeLength"/> is both: the wire edge and the persistence
-    /// check constraint are written from this number, and it is read in <c>[Arguments(...)]</c>, which
+    /// <see cref="Users.WrappedAccountKeys.WrappedPrivateKeyLength"/> is both: the wire edge and the
+    /// persistence check constraint are written from this number, and it is read in
+    /// <c>[Arguments(...)]</c>, which
     /// admits nothing but a constant expression. A second <c>32</c> spelled out at either of those
     /// sites is a way for a stored column and the text that fills it to disagree.
     /// </para>

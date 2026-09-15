@@ -100,7 +100,7 @@ public sealed class NarrativeFieldTests
     /// <b>The case the type exists for, carrying two claims nothing else here carries.</b> The first is
     /// that the length rule is a floor. Write it as an equality against
     /// <see cref="CiphertextEnvelope.MinimumLength"/> — the shape
-    /// <see cref="Application.Passkeys.WrappedKeyEnvelope"/> uses, correctly, over a key of one legal
+    /// <see cref="Application.Passkeys.WrappedPrivateKeyEnvelope"/> uses, correctly, over a key of one legal
     /// size — and every other accepting case here still passes, over a type that quietly refuses every
     /// entry longer than an empty one. The person finds out by not being able to save what they typed.
     /// </para>

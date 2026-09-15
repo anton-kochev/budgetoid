@@ -263,8 +263,8 @@ public sealed class GenerateRecoveryCodesHandler(
                     .. presented.Select(code => WrappedAccountKeys.For(
                         set,
                         code.FactorId,
-                        code.WrappedContentKey,
-                        code.WrappedIndexKey,
+                        code.WrappedPrivateKey,
+                        code.EncapsulatedAccountKeys,
                         now)),
                 ];
 

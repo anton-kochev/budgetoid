@@ -87,8 +87,8 @@ public static class RegistrationEndpoints
                     request.AttestationObject,
                     request.ClientExtensionResults,
                     request.FactorId,
-                    request.WrappedContentKey,
-                    request.WrappedIndexKey,
+                    request.WrappedPrivateKey,
+                    request.EncapsulatedAccountKeys,
                     request.Codes),
                 cancellationToken);
             RegisteredAccount registered = issued.Value;
@@ -193,8 +193,8 @@ public static class RegistrationEndpoints
         string AttestationObject,
         PasskeyClientExtensionResults? ClientExtensionResults,
         string FactorId,
-        string WrappedContentKey,
-        string WrappedIndexKey,
+        string WrappedPrivateKey,
+        string EncapsulatedAccountKeys,
         IReadOnlyList<RecoveryCodeSubmission> Codes);
 
     /// <summary>

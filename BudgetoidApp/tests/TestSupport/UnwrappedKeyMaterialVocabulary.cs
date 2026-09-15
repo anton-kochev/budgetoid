@@ -7,6 +7,7 @@ namespace TestSupport;
 /// unlock an account.
 /// </summary>
 /// <remarks>
+/// <para>
 /// The four are FR-063's own four nouns, in the requirement's order — "no unwrapped key,
 /// key-encryption key, PRF output or recovery code reaches the server". Derived from the clause
 /// rather than invented, so a reviewer facing a red is handed the exact sentence they tripped instead
@@ -14,10 +15,33 @@ namespace TestSupport;
 /// remedy differs per noun. An unwrapped key is a value that should have been sealed before it left
 /// the browser, and is fixed by wrapping it; a PRF output is a value that should never have been read
 /// out of the ceremony at all, and is fixed by deriving in the browser and sending nothing.
+/// </para>
+/// <para>
+/// <b>There is no fifth member for a factor's private key, and that was decided rather than
+/// overlooked.</b> Every recovery factor now holds an ECDH P-256 key pair, so <c>private_key</c> is a
+/// name this schema can carry — and the obvious move on adding its rule was to add a
+/// <c>PrivateKey</c> member beside these four. It was refused on this enum's own claim: the members
+/// are a requirement's nouns transcribed, so a fifth one invented here would make the sentence above
+/// false and hand the next reviewer a bucket name nobody can look up. It was also refused on the
+/// test the paragraph above sets — <b>does the remedy differ?</b> It does not. A bare
+/// <c>private_key</c> is fixed exactly the way a bare <c>content_key</c> is: wrap it in the browser
+/// before it is sent, and store the envelope. That is <see cref="UnwrappedKey" />'s whole meaning,
+/// and a member whose remedy is identical to an existing one's buys a reviewer nothing but a second
+/// place to argue.
+/// </para>
 /// </remarks>
 public enum UnwrappedKeyMaterialCategory
 {
-    /// <summary>The account's content key or index key, out of its envelope.</summary>
+    /// <summary>
+    /// A key of this account's own, out of its envelope: the content key, the index key, or the
+    /// private half of a recovery factor's key pair.
+    /// </summary>
+    /// <remarks>
+    /// The private key joined the other two rather than getting a member of its own, for the reason
+    /// the enum's remarks give. It belongs here on its own terms too: it is the value the account's
+    /// two keys are encapsulated <em>to</em>, so a server holding it bare opens both — which is the
+    /// same harm, at the same reach, as holding either of them bare.
+    /// </remarks>
     UnwrappedKey,
 
     /// <summary>The key a wrapped envelope opens under, derived from a recovery factor.</summary>
@@ -33,9 +57,9 @@ public enum UnwrappedKeyMaterialCategory
 /// <summary>Which side of a pattern's tokens a permitted qualifier has to sit on.</summary>
 /// <remarks>
 /// Two positions rather than one "adjacent", because the two shipped exemptions sit on opposite
-/// sides and neither argument transfers to the other. <c>wrapped_content_key</c> is sealed by the
+/// sides and neither argument transfers to the other. <c>wrapped_private_key</c> is sealed by the
 /// word in <i>front</i> of it; <c>recovery_code_hashes</c> is made harmless by the word
-/// <i>after</i> it. A single symmetric mechanism would silently permit <c>content_key_wrapped</c>,
+/// <i>after</i> it. A single symmetric mechanism would silently permit <c>private_key_wrapped</c>,
 /// which reads far more like a boolean flag beside the key than like a sealed value, and
 /// <c>hash_recovery_code</c>, which reads like a code somebody is about to hash.
 /// </remarks>
@@ -155,40 +179,56 @@ public sealed record UnwrappedKeyMaterialRule(
 /// tokenized one way for one and another way for another would make the set of verdicts a reviewer
 /// is handed unexplainable. It is read against relation and member names as well as columns, because
 /// this refusal arrives at all three grains — <c>account_keys</c> would be a table,
-/// <c>wrappedContentKey</c> is a request member, <c>content_key</c> would be a column.
+/// <c>wrappedPrivateKey</c> is a request member, <c>private_key</c> would be a column.
 /// </para>
 /// <para>
-/// <b>The hard part of this list is that <c>wrapped_content_key</c> and <c>wrapped_index_key</c> are
-/// columns in the shipped schema and must pass, while <c>content_key</c> and <c>index_key</c> must
-/// not.</b> A pattern alone cannot express that: <see cref="IdentifierTokens.ContainsRun" /> asks
-/// only whether a run occurs, and the run <c>content / key</c> occurs in both. Nor can a narrower
-/// pattern, because there is no token that <c>content_key</c> carries and <c>wrapped_content_key</c>
-/// does not — the offending name is a <i>prefix-free</i> subset of the legal one. So a pattern and a
-/// permitted qualifier are <b>two mechanisms</b> here rather than one: the pattern says which run
-/// names a secret, and <see cref="IdentifierQualifier" /> says which single adjacent word makes that
-/// run not one. A vocabulary that could not tell the two apart would refuse the schema this story
-/// just shipped, and one that permitted both would be worthless.
+/// <b>The hard part of this list is that <c>wrapped_private_key</c> and
+/// <c>encapsulated_account_keys</c> are columns in the shipped schema and must pass, while
+/// <c>private_key</c> and <c>account_key</c> must not.</b> A pattern alone cannot express that:
+/// <see cref="IdentifierTokens.ContainsRun" /> asks only whether a run occurs, and the run
+/// <c>private / key</c> occurs in both. Nor can a narrower pattern, because there is no token that
+/// <c>private_key</c> carries and <c>wrapped_private_key</c> does not — the offending name is a
+/// <i>prefix-free</i> subset of the legal one. So a pattern and a permitted qualifier are <b>two
+/// mechanisms</b> here rather than one: the pattern says which run names a secret, and
+/// <see cref="IdentifierQualifier" /> says which single adjacent word makes that run not one. A
+/// vocabulary that could not tell the two apart would refuse the schema this story just shipped, and
+/// one that permitted both would be worthless.
 /// </para>
 /// <para>
 /// <b>The qualifier is per-rule and never global, and that is where the argument lives.</b>
-/// <c>wrapped</c> excuses <c>content_key</c>, <c>index_key</c> and <c>account_key</c> because those
-/// three are exactly the values this design <i>does</i> store, and stores only in a 61-byte envelope
-/// the server holds no key for. It excuses nothing else: <c>wrapped_key_encryption_key</c>,
-/// <c>wrapped_prf_output</c> and <c>wrapped_recovery_code</c> stay refused, because there is no
-/// design in which any of those exists sealed — a wrapped key-encryption key implies a second
-/// key-encryption key above it, and nobody has proposed one. Symmetrically, <c>hash</c> excuses
-/// <c>recovery_code</c> and nothing else: a hash of a wrapped key is not a thing anybody stores, so
-/// permitting <c>content_key_hash</c> would buy a name for nothing at the cost of a spelling a
-/// reviewer would wave through.
+/// <c>wrapped</c> excuses <c>content_key</c>, <c>index_key</c>, <c>account_key</c> and
+/// <c>private_key</c> because those four are exactly the values this design <i>does</i> store, and
+/// stores only inside an envelope the server holds no key for. It excuses nothing else:
+/// <c>wrapped_key_encryption_key</c>, <c>wrapped_prf_output</c> and <c>wrapped_recovery_code</c>
+/// stay refused, because there is no design in which any of those exists sealed — a wrapped
+/// key-encryption key implies a second key-encryption key above it, and nobody has proposed one.
+/// Symmetrically, <c>hash</c> excuses <c>recovery_code</c> and nothing else: a hash of a wrapped key
+/// is not a thing anybody stores, so permitting <c>content_key_hash</c> would buy a name for nothing
+/// at the cost of a spelling a reviewer would wave through.
+/// </para>
+/// <para>
+/// <b><c>encapsulated</c> is the third qualifier and it excuses exactly one rule.</b> <em>Encapsulated
+/// to</em> is the asymmetric analogue of <em>wrapped under</em>: the value is an
+/// <c>EncapsulatedValueEnvelope</c>, openable only with the private half of an ECDH key pair this
+/// server has never held, so the same argument that lets <c>wrapped_account_keys</c> through lets
+/// <c>encapsulated_account_keys</c> through — and rather more comfortably, because producing one
+/// needs only a public key while opening one needs a value no route accepts. It sits on
+/// <c>account_key</c> and on nothing else. <c>encapsulated_key_encryption_key</c> and
+/// <c>encapsulated_prf_output</c> stay refused for the reason their <c>wrapped</c> spellings do:
+/// there is no design in which either is encapsulated to anything, so the name can only be the secret
+/// itself wearing a word that makes it read as handled. Declaring the qualifier once for the whole
+/// vocabulary would have permitted both, and <c>encapsulated_prf_output</c> is the more persuasive of
+/// the two because the word is newer and fewer readers have an opinion about it yet.
 /// </para>
 /// <para>
 /// <b>Both the pattern and its qualifiers are compiled in the plural as well.</b>
 /// <see cref="IdentifierTokens.ContainsRun" /> compares whole tokens and does not stem, so
 /// <c>account_keys</c> reaches no rule <c>account_key</c> reaches, and <c>hashes</c> excuses nothing
-/// <c>hash</c> excuses. Both halves are load-bearing on one name that exists today:
-/// <c>wrapped_account_keys</c> needs the pattern's plural to be reached at all and the qualifier's
-/// singular to be let go, while <c>recovery_code_hashes</c> needs the pattern's singular and the
-/// qualifier's plural. Back either expansion out and one of the two shipped tables reds.
+/// <c>hash</c> excuses. Both halves are load-bearing on names that exist today:
+/// <c>wrapped_account_keys</c> and <c>encapsulated_account_keys</c> need the pattern's plural to be
+/// reached at all and a qualifier's singular to be let go, while <c>recovery_code_hashes</c> needs
+/// the pattern's singular and the qualifier's plural. Back either expansion out and one of the two
+/// shipped tables reds.
 /// </para>
 /// <para>
 /// <b>The omissions are arguments, not gaps, and every one of them is a name in this schema
@@ -201,9 +241,9 @@ public sealed record UnwrappedKeyMaterialRule(
 /// design, which verify a signature and decrypt nothing; a rule on the bare token <c>key</c> would
 /// take both, and would take <c>key_encryption_key</c>'s own reason with it. <c>challenge</c> is a
 /// 32-byte nonce the server minted for one ceremony and expires — the client signs over it, and
-/// nothing is ever derived from it. And <c>wrapped_content_key</c> and <c>wrapped_index_key</c> are
-/// the envelopes themselves, which are the one of the four key-shaped things the design says may
-/// cross the wire.
+/// nothing is ever derived from it. And <c>wrapped_private_key</c> and
+/// <c>encapsulated_account_keys</c> are the envelopes themselves, which are the one of the four
+/// key-shaped things the design says may cross the wire.
 /// </para>
 /// <para>
 /// <b>Three bare tokens are deliberately left legal, each because a real name needs it.</b>
@@ -290,7 +330,25 @@ public static class UnwrappedKeyMaterialVocabulary
             "is the pair's collective name, and the one the shipped table already carries in its "
             + "sealed form. Refused bare because a column called account_key holds whichever of the "
             + "two keys the author stopped distinguishing between, which is also the moment the "
-            + "content/index binding in the associated data stops being checkable")
+            + "content/index binding in the associated data stops being checkable. Two qualifiers "
+            + "rather than one, because this pair is now stored under two different constructions: "
+            + "'wrapped' is the symmetric one and 'encapsulated' is the asymmetric one — an "
+            + "EncapsulatedValueEnvelope openable only with a private half this server has never "
+            + "held, which is a weaker capability for an operator than the wrapped form, not a "
+            + "stronger one")
+        {
+            PermittedQualifiers = [Preceding("wrapped"), Preceding("encapsulated")],
+        },
+        new(
+            "private_key",
+            UnwrappedKeyMaterialCategory.UnwrappedKey,
+            "names the private half of a recovery factor's ECDH key pair — the value that "
+            + "decapsulates encapsulated_account_keys, so a server holding it bare holds the content "
+            + "key and the index key of every factor it names. Legal only behind 'wrapped': "
+            + "wrapped_private_key is the shipped column, an AEAD envelope under a key-encryption key "
+            + "the browser derives and this server never sees. Bare, it is that private key in the "
+            + "clear, and it reads harmless because the word 'private' is what a public key's "
+            + "neighbour is called")
         {
             PermittedQualifiers = [Preceding("wrapped")],
         },

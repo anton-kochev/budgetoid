@@ -476,8 +476,8 @@ public sealed class AccountErasureEndpointTests
             attestationObject = attestation.AttestationObjectBase64Url,
             clientExtensionResults = new { prf = new { enabled = true } },
             factorId = keys.FactorId,
-            wrappedContentKey = keys.WrappedContentKey,
-            wrappedIndexKey = keys.WrappedIndexKey,
+            wrappedPrivateKey = keys.WrappedPrivateKey,
+            encapsulatedAccountKeys = keys.EncapsulatedAccountKeys,
         });
         response.EnsureSuccessStatusCode();
     }
@@ -714,8 +714,8 @@ public sealed class AccountErasureEndpointTests
             // one per call is what keeps the two accounts of Erase_LeavesAnotherAccountUntouched from
             // colliding on that index.
             Guid.CreateVersion7(),
-            Envelope(0xC0),
-            Envelope(0x1D),
+            WrappedPrivateKeyPayload(0xC0),
+            EncapsulatedAccountKeysPayload(0x1D),
             SeedInstant));
 
         // Established against the passkey rather than the federated credential because
@@ -899,13 +899,31 @@ public sealed class AccountErasureEndpointTests
     /// both refuse to bend. The two callers pass different fillers so the columns can be told apart by
     /// eye in a failure message.
     /// </remarks>
-    private static byte[] Envelope(byte filler)
-    {
-        byte[] envelope = new byte[WrappedAccountKeys.EnvelopeLength];
-        Array.Fill(envelope, filler);
-        envelope[0] = WrappedAccountKeys.EnvelopeVersion;
+    private static byte[] WrappedPrivateKeyPayload(byte filler) =>
+        Payload(
+            WrappedAccountKeys.WrappedPrivateKeyLength,
+            WrappedAccountKeys.WrappedPrivateKeyVersion,
+            filler);
 
-        return envelope;
+    /// <inheritdoc cref="WrappedPrivateKeyPayload" />
+    private static byte[] EncapsulatedAccountKeysPayload(byte filler) =>
+        Payload(
+            WrappedAccountKeys.EncapsulatedAccountKeysLength,
+            WrappedAccountKeys.EncapsulatedAccountKeysVersion,
+            filler);
+
+    /// <summary>
+    /// The shared body of the two above. The width and the version are parameters rather than read
+    /// inside, because the one mistake this helper could make is pairing one suite's width with the
+    /// other's version — the cross-wiring the two pairs of constants exist to keep apart.
+    /// </summary>
+    private static byte[] Payload(int length, byte version, byte filler)
+    {
+        byte[] payload = new byte[length];
+        Array.Fill(payload, filler);
+        payload[0] = version;
+
+        return payload;
     }
 
     private static async Task<PostgresTestHost> StartHostAsync()

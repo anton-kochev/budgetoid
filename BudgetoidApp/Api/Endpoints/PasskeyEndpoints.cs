@@ -51,8 +51,8 @@ public static class PasskeyEndpoints
                     request.AttestationObject,
                     request.ClientExtensionResults,
                     request.FactorId,
-                    request.WrappedContentKey,
-                    request.WrappedIndexKey),
+                    request.WrappedPrivateKey,
+                    request.EncapsulatedAccountKeys),
                 cancellationToken);
 
             // 201 with no Location header and no body: the credential is a fact about the account,
@@ -174,8 +174,8 @@ public static class PasskeyEndpoints
         string AttestationObject,
         PasskeyClientExtensionResults? ClientExtensionResults,
         string FactorId,
-        string WrappedContentKey,
-        string WrappedIndexKey);
+        string WrappedPrivateKey,
+        string EncapsulatedAccountKeys);
 
     private sealed record AssertionRequest(
         string CredentialId,

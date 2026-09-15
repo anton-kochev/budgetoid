@@ -270,8 +270,8 @@ public static class MappedSchema
     /// narrative property's converter refuses the model build outright, so the state this misread
     /// imitates is one no schema reaches. The converter is consulted first
     /// because the converter is what actually runs when both answer. Falling through to
-    /// <see cref="MappedColumn.ClrType" /> is <b>the ordinary case rather than the edge one</b> — 75 of
-    /// the 108 mapped columns answer neither accessor, against 32 carrying a converter and exactly one
+    /// <see cref="MappedColumn.ClrType" /> is <b>the ordinary case rather than the edge one</b> — 77 of
+    /// the 110 mapped columns answer neither accessor, against 32 carrying a converter and exactly one
     /// naming a provider type — and it is not a guess dressed as an answer: a property with no
     /// converter and no declared provider type is handed to the provider as its own type, and that is
     /// the whole of the claim.
@@ -284,7 +284,7 @@ public static class MappedSchema
     /// </para>
     /// <para>
     /// <b>The nullable arm of <see cref="StoredColumn.StoreType" /> is insurance with no known source
-    /// in this schema, and the file should not imply otherwise.</b> Every one of the 108 mapped columns
+    /// in this schema, and the file should not imply otherwise.</b> Every one of the 110 mapped columns
     /// was measured to answer a store type, so nothing here has ever produced the
     /// <see langword="null" />; it has been exercised only by handing a reader a value built by hand.
     /// It is kept because the accessor's own signature admits it and because a gate meeting an absence

@@ -26,7 +26,7 @@ namespace UnitTests;
 /// to prevent. That is the opposite of the choice <c>CiphertextEnvelopeTests</c> makes for its two
 /// pinning cases, and the distinction is deliberate: a test that pins a number <em>itself</em> has to
 /// restate it, because reading the constant it is checking agrees with whatever that constant becomes.
-/// <c>WrappedKeyEnvelopeTests</c> records the same argument for itself.
+/// <c>WrappedPrivateKeyEnvelopeTests</c> records the same argument for itself.
 /// </para>
 /// <para>
 /// <b>The ceiling is a parameter, and that is what makes it testable at all.</b> Story 12.2 names no
@@ -90,7 +90,7 @@ public sealed class CiphertextEnvelopeTextTests
     /// <b>The case the whole type exists for, and it carries two claims no other case here can.</b>
     /// The first is that the length rule is a floor: write it as an equality against
     /// <see cref="CiphertextEnvelope.MinimumLength"/> — the shape
-    /// <see cref="Application.Passkeys.WrappedKeyEnvelope"/> uses, correctly, over a key of one legal
+    /// <see cref="Application.Passkeys.WrappedPrivateKeyEnvelope"/> uses, correctly, over a key of one legal
     /// size — and every other test in this file still passes, over a type that quietly refuses every
     /// entry longer than an empty one. The person finds out by not being able to save what they typed.
     /// </para>
@@ -384,9 +384,9 @@ public sealed class CiphertextEnvelopeTextTests
     /// check the text can carry.
     /// </para>
     /// <para>
-    /// <see cref="Application.Passkeys.WrappedKeyEnvelope"/> meets the same slack and keeps an exact
+    /// <see cref="Application.Passkeys.WrappedPrivateKeyEnvelope"/> meets the same slack and keeps an exact
     /// width, but not for the wide side: its own comment says "the ceiling and the width are the same
-    /// 61 bytes here", so an over-wide envelope is refused for the ceiling and is gone before the width
+    /// 167 bytes here", so an over-wide envelope is refused for the ceiling and is gone before the width
     /// is consulted. What that width earns its place on is the <em>short</em> side — the band its
     /// comment names, where "a 29- to 60-byte envelope clears the floor, clears the ceiling, carries
     /// the right version, and is still not a wrapped key". This type has no width to close such a band

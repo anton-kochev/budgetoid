@@ -7,20 +7,20 @@ using ValidationException = Domain.Common.ValidationException;
 namespace Application.RecoveryCodes;
 
 /// <summary>
-/// What one well-formed code of a set presents: its decoded verifier, the factor it stands for, and the
-/// two envelopes that factor holds the account's keys in.
+/// What one well-formed code of a set presents: its decoded verifier, the factor it stands for, that
+/// factor's wrapped private key, and the account's keys encapsulated to that factor's public key.
 /// </summary>
 /// <remarks>
 /// One value of this type per code, never one per set. The three key-custody members belong to the code
-/// because the key-encryption key that sealed the envelopes was derived from that code, and carrying
-/// them together is what makes pairing one code's verifier with another code's envelopes
+/// because the key-encryption key that wrapped the private key was derived from that code, and carrying
+/// them together is what makes pairing one code's verifier with another code's key material
 /// unrepresentable past this point rather than merely unlikely.
 /// </remarks>
 public readonly record struct PresentedCode(
     byte[] Verifier,
     Guid FactorId,
-    byte[] WrappedContentKey,
-    byte[] WrappedIndexKey);
+    byte[] WrappedPrivateKey,
+    byte[] EncapsulatedAccountKeys);
 
 /// <summary>
 /// The one decode-and-validate step for a presented set of recovery codes, on every write path that
@@ -29,11 +29,11 @@ public readonly record struct PresentedCode(
 /// <remarks>
 /// <para>
 /// <b>One definition rather than one per handler</b>, the shape <see cref="CanonicalIdentifier"/> and
-/// <see cref="WrappedKeyEnvelope"/> already hold for the members inside it, and for the same reason: two
-/// callers accepting a set of recovery codes are not two decisions about what a set is. They write the
-/// same rows and the same key-custody columns, so a rule that drifted on one path would file bytes the
-/// other path would have refused. What stays per caller is the <em>field</em> the refusal is keyed
-/// under, which is why that is a parameter and nothing else is.
+/// <see cref="WrappedPrivateKeyEnvelope"/> already hold for the members inside it, and for the same
+/// reason: two callers accepting a set of recovery codes are not two decisions about what a set is.
+/// They write the same rows and the same key-custody columns, so a rule that drifted on one path would
+/// file bytes the other path would have refused. What stays per caller is the <em>field</em> the
+/// refusal is keyed under, which is why that is a parameter and nothing else is.
 /// </para>
 /// <para>
 /// A throw rather than a <c>Try</c> shape, unlike the two types above: there are eight rules here and a
@@ -169,7 +169,8 @@ public static class RecoveryCodeSetValidation
         {
             throw Refused(
                 CodeAt(field, ordinal),
-                "Each recovery code must carry a verifier, a factor identifier and both wrapped keys.");
+                "Each recovery code must carry a verifier, a factor identifier, a wrapped private key "
+                + "and the encapsulated account keys.");
         }
 
         // One refusal covers "not base64url" and "wrong width" because the sentence states the
@@ -205,29 +206,36 @@ public static class RecoveryCodeSetValidation
 
         // ONE SENTENCE PER MEMBER, STATING THE WHOLE REQUIREMENT, for the reason the verifier refusal
         // above gives about its own: splitting "not base64url" from "wrong width" from "unknown version"
-        // would tell a caller which half of an opaque value it got wrong. The two envelopes are judged
+        // would tell a caller which half of an opaque value it got wrong. The two members are judged
         // separately because they are supplied separately — a caller that decoded one and passed the
         // other through would file whatever a client felt like sending into half of the account's key
         // custody.
         //
+        // TWO DECODERS, NOT ONE CALLED TWICE. The members carry two different cryptographic suites at
+        // two different widths over two different floors, so the near-miss here is routing both through
+        // whichever type the reader opened first: the neighbour would measure an encapsulated value
+        // against a floor 65 bytes below its own, and against a width nine bytes off.
+        //
         // The width and the version are read off the entity that refuses a row against them, never
         // written out here: a message carrying its own copy of either goes on being confident after the
         // real bound has moved.
-        if (!WrappedKeyEnvelope.TryDecode(submission.WrappedContentKey, out byte[]? wrappedContentKey))
+        if (!WrappedPrivateKeyEnvelope.TryDecode(submission.WrappedPrivateKey, out byte[]? wrappedPrivateKey))
         {
             throw Refused(
-                CodeMember(field, ordinal, nameof(RecoveryCodeSubmission.WrappedContentKey)),
-                MalformedEnvelope("wrapped content key"));
+                CodeMember(field, ordinal, nameof(RecoveryCodeSubmission.WrappedPrivateKey)),
+                MalformedWrappedPrivateKey());
         }
 
-        if (!WrappedKeyEnvelope.TryDecode(submission.WrappedIndexKey, out byte[]? wrappedIndexKey))
+        if (!EncapsulatedAccountKeysEnvelope.TryDecode(
+                submission.EncapsulatedAccountKeys,
+                out byte[]? encapsulatedAccountKeys))
         {
             throw Refused(
-                CodeMember(field, ordinal, nameof(RecoveryCodeSubmission.WrappedIndexKey)),
-                MalformedEnvelope("wrapped index key"));
+                CodeMember(field, ordinal, nameof(RecoveryCodeSubmission.EncapsulatedAccountKeys)),
+                MalformedEncapsulatedAccountKeys());
         }
 
-        return new PresentedCode(verifier, factorId, wrappedContentKey, wrappedIndexKey);
+        return new PresentedCode(verifier, factorId, wrappedPrivateKey, encapsulatedAccountKeys);
     }
 
     /// <summary>
@@ -242,13 +250,35 @@ public static class RecoveryCodeSetValidation
         $"{CodeAt(field, ordinal)}.{member}";
 
     /// <summary>
-    /// What is required of <paramref name="member"/>, said whole rather than split into which part of it
-    /// was wrong.
+    /// What is required of a code's wrapped private key, said whole rather than split into which part
+    /// of it was wrong.
     /// </summary>
-    private static string MalformedEnvelope(string member) =>
-        $"The {member} must be base64url text decoding to exactly "
-        + $"{WrappedAccountKeys.EnvelopeLength} bytes carrying envelope version "
-        + $"{WrappedAccountKeys.EnvelopeVersion}.";
+    /// <remarks>
+    /// <b>Two sentences rather than one parameterised by a member name.</b> The shared helper this
+    /// replaced took the member as a string because both members were the same format at the same
+    /// width, and the only thing that differed was which of the two to name. They are now two framings
+    /// at two widths carrying two version constants, so the numbers in the sentence differ as well —
+    /// and a helper that took the member, the width and the version would have nothing of its own left
+    /// but the punctuation. Nothing in the build would notice the borrowed number, because a
+    /// well-formed sentence stating the wrong width is still a 400.
+    /// </remarks>
+    private static string MalformedWrappedPrivateKey() =>
+        "The wrapped private key must be base64url text decoding to exactly "
+        + $"{WrappedAccountKeys.WrappedPrivateKeyLength} bytes carrying AEAD framing version "
+        + $"{WrappedAccountKeys.WrappedPrivateKeyVersion}.";
+
+    /// <summary>
+    /// What is required of a code's encapsulated account keys, said whole rather than split into which
+    /// part of it was wrong.
+    /// </summary>
+    /// <remarks>
+    /// The twin of <see cref="MalformedWrappedPrivateKey"/>, naming its own suite for the reason stated
+    /// there. Every number it reads belongs to the encapsulation framing.
+    /// </remarks>
+    private static string MalformedEncapsulatedAccountKeys() =>
+        "The encapsulated account keys must be base64url text decoding to exactly "
+        + $"{WrappedAccountKeys.EncapsulatedAccountKeysLength} bytes carrying encapsulation framing "
+        + $"version {WrappedAccountKeys.EncapsulatedAccountKeysVersion}.";
 
     // Domain.Common.ValidationException by name, because both layers declare one and only that one is
     // what ValidationExceptionHandler turns into a 400 with the field errors on it.

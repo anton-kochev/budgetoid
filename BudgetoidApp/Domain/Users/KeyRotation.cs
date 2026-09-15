@@ -3,9 +3,9 @@ using Domain.Common;
 namespace Domain.Users;
 
 /// <summary>
-/// The staging row a content-key rotation runs under: the next generation of the account's two
-/// wrapped keys, held beside the generation still in force until a single completion step promotes it
-/// into <see cref="WrappedAccountKeys"/>.
+/// The staging row a content-key rotation runs under: the next generation's manifest of factor public
+/// keys and the epoch it will be filed at, held beside the generation still in force until a single
+/// completion step promotes it into <see cref="FactorManifest"/>.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -13,13 +13,13 @@ namespace Domain.Users;
 /// Re-encrypting every narrative column in an account is not one request's worth of work — the API
 /// caps a request body at 64 KB — so both generations have to be readable for as long as a run is in
 /// flight. Swapping the keys first strands every row not yet rewritten; swapping them last strands
-/// every row already rewritten if the tab closes. Filed here, the new envelopes are readable
-/// throughout and move exactly once, at the end.
+/// every row already rewritten if the tab closes. Filed here, the next generation is readable
+/// throughout and moves exactly once, at the end.
 /// </para>
 /// <para>
 /// <b><see cref="UserId"/> is the primary key, and that is load-bearing rather than convenient.</b>
 /// "At most one rotation in flight per account" is the invariant the chunking depends on: two
-/// concurrent runs would each re-wrap a subset of the same rows under a <em>different</em> new content
+/// concurrent runs would each re-encrypt a subset of the same rows under a <em>different</em> new content
 /// key, and the account would end holding columns sealed under two keys with nothing recording which
 /// got which. Keyed on the user, a second <see cref="Begin"/> for an account that already has one
 /// collides on the primary key and is refused by the database — the lowest layer that can hold the
@@ -30,28 +30,48 @@ namespace Domain.Users;
 /// be deleted rather than marked, because a status column cannot buy back the key.
 /// </para>
 /// <para>
-/// <b>The pair carried here is unstorable against another account's factor</b>, because
-/// <c>key_rotations</c> references <c>wrapped_account_keys</c> by a composite foreign key on
-/// <c>(factor_id, user_id)</c> — the idiom every sibling child table on this schema uses. That is the
-/// persistence half of the same rule the factory keeps by reading the owner off the credential rather
-/// than taking it as an argument: neither half needs a column this type does not already have.
+/// <b>The staged row names no factor, and that absence is the shape of the change rather than a column
+/// somebody forgot.</b> Under a key-encryption key there was exactly one factor a run could have been
+/// begun under, because re-wrapping needed the secret that factor derives; under ECDH there is no such
+/// thing. Encapsulating the next generation's account keys takes public halves only, so a run produces
+/// <em>one value per surviving factor</em> — those are <see cref="KeyRotationSeal"/> rows hanging off
+/// this one — and "the factor this rotation was performed under" has stopped being a question with an
+/// answer. It did not become plural either: a list of factor ids here would be the seals' own key set
+/// restated on the parent, which is the copy that drifts.
 /// </para>
 /// <para>
-/// <b>Every refusal below is <see cref="WrappedAccountKeys"/>'s refusal, restated — and the width and
-/// the version are <em>read</em> from it rather than restated.</b> The two types accept the same
-/// material: two AEAD envelopes over the same two 32-byte keys, under the same factor identifier. A
-/// second copy of <c>61</c> or of the version byte is the copy that drifts, and a rule one type keeps
-/// and the other does not is a hole that opens on the day a rotation is run rather than on the day one
-/// is written. <c>KeyRotationTests</c> writes both values out as literals for the opposite and correct
+/// <b>What the vanished <c>factor_id</c> was doing for security is held, and was always really held,
+/// one layer up.</b> "Only somebody holding a passkey may begin a run" is the re-authentication gate on
+/// the route, which runs a server-verified assertion to completion before anything below it is read —
+/// <see href="../../../docs/business-logic/key-rotation.md">key-rotation.md</see> argues its ordering.
+/// The <see cref="CredentialType.Passkey"/> refusal in <see cref="Begin"/> survives and the factory goes
+/// on taking the loaded <see cref="Credential"/>, but read it for what it now is: <b>a restatement</b>.
+/// It no longer decides anything about the staged material, because no staged value is bound to that
+/// credential; what it still buys is that a caller assembling this type out of a recovery-code or
+/// federated credential is refused at the object rather than at the route it forgot to gate.
+/// </para>
+/// <para>
+/// <b>Every bound below is <see cref="FactorManifest"/>'s bound, <em>read</em> from it rather than
+/// restated.</b> The staged manifest is the manifest a promotion writes into that row, so a width or an
+/// epoch this table accepted and that one refused is a row that stores here and fails at promotion — at
+/// the one moment in the run where the old generation has already gone. It is the rule this type
+/// already kept for the envelope bounds it used to read off <see cref="WrappedAccountKeys"/>, for the
+/// same reason. <c>KeyRotationTests</c> writes the values out as literals for the opposite and correct
 /// reason: it is the only independent statement of them on this path, and a test that read the same
 /// constants would be comparing a constant with itself.
 /// </para>
 /// <para>
-/// <b>Nothing here takes an unwrapped key, a key-encryption key or a PRF output</b>, the rule
-/// <see cref="WrappedAccountKeys"/> states at length. A rotation changes which keys the account is
-/// sealed under; it does not make the server able to open either generation, and a member that
-/// accepted one of those values would hand the operator the whole account's plaintext without
-/// reddening a single test.
+/// <b>The manifest's <em>format</em> is not this type's business.</b> Presence and the cap are checked
+/// and nothing else: the bytes are authenticated by a key this server does not hold, so any structural
+/// reading of them would be a second, unverifiable grammar sitting where a client's is authoritative.
+/// A later slice owns whatever parses them, and it will not be this one.
+/// </para>
+/// <para>
+/// <b>Nothing here takes an unwrapped key, a private key, a key-encryption key or a PRF output</b>, the
+/// rule <see cref="WrappedAccountKeys"/> states at length. A rotation changes which keys the account is
+/// sealed under; it does not make the server able to open either generation, and a member that accepted
+/// one of those values would hand the operator the whole account's plaintext without reddening a single
+/// test.
 /// </para>
 /// </remarks>
 public sealed class KeyRotation
@@ -73,42 +93,50 @@ public sealed class KeyRotation
     public Guid RotationId { get; private set; }
 
     /// <summary>
-    /// The factor the staged envelopes were wrapped under, and their associated data — the same value
-    /// <see cref="WrappedAccountKeys.FactorId"/> carries, which is what the promotion step files the new
-    /// generation against.
+    /// The next generation's manifest of factor public keys, not yet in force — the bytes a promotion
+    /// writes into <see cref="FactorManifest.Manifest"/>.
     /// </summary>
-    public Guid FactorId { get; private set; }
+    /// <remarks>
+    /// Authenticated as a <em>set</em> by a key the client holds, which is why nothing on this side reads
+    /// into it. It is staged rather than written straight through for the reason the whole type exists:
+    /// until the run completes, the manifest in force is still the old one and a client asking which
+    /// factors the account has must get one answer, not two.
+    /// </remarks>
+    public ReadOnlyMemory<byte> StagedManifest { get; private set; }
 
-    /// <summary>The next generation's wrapped content key, not yet in force.</summary>
-    public ReadOnlyMemory<byte> WrappedContentKey { get; private set; }
-
-    /// <summary>The next generation's wrapped index key, not yet in force.</summary>
-    public ReadOnlyMemory<byte> WrappedIndexKey { get; private set; }
+    /// <summary>
+    /// The generation <see cref="StagedManifest"/> will be filed at when the run completes.
+    /// </summary>
+    /// <remarks>
+    /// <b>The epoch is bound in the manifest and nowhere else</b> — not in any encapsulated value's KDF
+    /// <c>info</c> and not in any associated data. Binding it into a value would make every encapsulation
+    /// of a generation unopenable the moment the epoch it was produced under stopped being current, which
+    /// is a property nobody wants and which would turn a resumable run into a disposable one. Carried
+    /// here, it is a number the promotion writes and the client compares.
+    /// </remarks>
+    public int StagedRotationEpoch { get; private set; }
 
     public DateTime StartedAtUtc { get; private set; }
 
     /// <summary>
-    /// Stages the next generation of the account's two keys as <paramref name="passkey"/>'s factor
-    /// wrapped them, opening a rotation for that account.
+    /// Stages the next generation of the account's manifest, opening a rotation for that account.
     /// </summary>
     /// <remarks>
     /// <para>
     /// <b>It takes the loaded credential rather than a loose user id</b>, the argument
     /// <see cref="WrappedAccountKeys.For"/> and <see cref="RecoveryCodeHash.From"/> both make: the
     /// owner is read off the credential, so a factory taking ids is one transposed argument away from
-    /// opening a rotation on somebody else's account.
+    /// opening a rotation on somebody else's account. That is the whole of what the credential buys here
+    /// now — the type refusal beside it is the restatement the type's remarks describe.
     /// </para>
     /// <para>
-    /// <b>The parameter is named <c>passkey</c> because only a passkey may begin a run.</b> A federated
-    /// credential derives no key-encryption key at all — OAuth has no PRF equivalent — so envelopes
-    /// staged under it are two blobs nothing in the world can open, presented as the account's next
-    /// generation. A set of recovery codes is worse than useless rather than useless: it is <em>ten</em>
-    /// factors under one credential, so "the factor this rotation began under" has ten answers and the
-    /// client would have to choose one without proving it holds the matching code. It follows from the
-    /// other end too — beginning is gated on a server-verified passkey assertion, and a set of codes
-    /// produces no assertion to verify. The consequence is deliberate and a reader will file it as a
-    /// bug: somebody who signed in with a recovery code cannot begin a rotation until they register a
-    /// passkey.
+    /// <b>The parameter is still named <c>passkey</c>, because only a passkey may begin a run.</b> A
+    /// federated credential derives no key-encryption key at all — OAuth has no PRF equivalent — so it
+    /// holds no factor key pair and can decapsulate nothing. A set of recovery codes holds ten key pairs
+    /// under one credential, so a begin made under it names a credential and not a factor. It follows from
+    /// the other end too — beginning is gated on a server-verified passkey assertion, and a set of codes
+    /// produces no assertion to verify. The consequence is deliberate and a reader will file it as a bug:
+    /// somebody who signed in with a recovery code cannot begin a rotation until they register a passkey.
     /// </para>
     /// <para>
     /// <b>No <see cref="DateTimeKind"/> check</b>, matching <see cref="WrappedAccountKeys.For"/> and
@@ -120,16 +148,15 @@ public sealed class KeyRotation
     /// </remarks>
     /// <exception cref="ArgumentNullException">No credential was supplied.</exception>
     /// <exception cref="ValidationException">
-    /// The credential is not a passkey, an identifier is empty, or an envelope is not
-    /// <see cref="WrappedAccountKeys.EnvelopeLength"/> bytes carrying version
-    /// <see cref="WrappedAccountKeys.EnvelopeVersion"/>.
+    /// The credential is not a passkey, the rotation identifier is empty, the staged manifest is empty or
+    /// wider than <see cref="FactorManifest.MaximumBytes"/>, or the staged epoch is below
+    /// <see cref="FactorManifest.MinimumRotationEpoch"/>.
     /// </exception>
     public static KeyRotation Begin(
         Credential passkey,
-        Guid factorId,
         Guid rotationId,
-        ReadOnlyMemory<byte> wrappedContentKey,
-        ReadOnlyMemory<byte> wrappedIndexKey,
+        ReadOnlyMemory<byte> stagedManifest,
+        int stagedRotationEpoch,
         DateTime startedAtUtc)
     {
         // The owner is read off the credential, so there is nothing to validate without one. No user
@@ -152,15 +179,6 @@ public sealed class KeyRotation
                 ["A key rotation may only be begun under a passkey credential."];
         }
 
-        // All-zeros is a storable uuid and it is what an unset field sends. Here it is also the
-        // associated data of both staged envelopes and what the completion step reads to decide which
-        // WrappedAccountKeys row the new generation replaces — a zero there does not fail, it points at
-        // no factor.
-        if (factorId == Guid.Empty)
-        {
-            errors[nameof(FactorId)] = ["Factor id is required."];
-        }
-
         // The value a later chunk quotes to say which run it is continuing. All-zeros is what a client
         // that has not begun a run sends, and the one value two accounts reach independently, so
         // accepting it means a chunk cannot be told from a chunk of an abandoned attempt.
@@ -169,15 +187,31 @@ public sealed class KeyRotation
             errors[nameof(RotationId)] = ["Rotation id is required."];
         }
 
-        // Keyed on the property the value ends up in, as WrappedAccountKeys.For keys its own.
-        if (DescribeMalformedEnvelope(wrappedContentKey) is { } contentProblem)
+        // Emptiness before width, and the two are one key because they are one column — the shape
+        // FactorManifest.For keeps over the same bytes. An empty bytea is exactly what an unset member
+        // sends, so a caller that forgot to attach the manifest would otherwise stage a generation naming
+        // no factor at all, and the promotion would file it: an account with no way back in, stored as
+        // though it had one. Written as an else-if because a value cannot be both.
+        if (stagedManifest.IsEmpty)
         {
-            errors[nameof(WrappedContentKey)] = [contentProblem];
+            errors[nameof(StagedManifest)] = ["A staged factor manifest is required."];
+        }
+        else if (stagedManifest.Length > FactorManifest.MaximumBytes)
+        {
+            errors[nameof(StagedManifest)] =
+                [$"A staged factor manifest must be at most {FactorManifest.MaximumBytes} bytes."];
         }
 
-        if (DescribeMalformedEnvelope(wrappedIndexKey) is { } indexProblem)
+        // Below the floor, not merely at zero: a negative epoch names no generation either, and one
+        // comparison refuses both. Epoch 0 is the absence of a manifest row, so staging it would stage a
+        // generation asserting its own absence — FactorManifest.MinimumRotationEpoch carries that
+        // argument, and this is the same rule read off the same constant rather than a second copy of it.
+        if (stagedRotationEpoch < FactorManifest.MinimumRotationEpoch)
         {
-            errors[nameof(WrappedIndexKey)] = [indexProblem];
+            errors[nameof(StagedRotationEpoch)] =
+            [
+                $"A staged rotation epoch must be at least {FactorManifest.MinimumRotationEpoch}.",
+            ];
         }
 
         if (errors.Count > 0)
@@ -189,39 +223,13 @@ public sealed class KeyRotation
         {
             UserId = passkey.UserId,
             RotationId = rotationId,
-            FactorId = factorId,
 
             // Copied, not aliased, the rule WrappedAccountKeys.For and PasskeyPublicKey.Register both
             // keep. A ReadOnlyMemory<byte> is a view over an array the caller still owns, and the
-            // caller on this path is minting a generation of envelopes with every reason to be reusing
-            // one buffer.
-            WrappedContentKey = wrappedContentKey.ToArray(),
-            WrappedIndexKey = wrappedIndexKey.ToArray(),
+            // caller on this path is assembling a generation with every reason to be reusing one buffer.
+            StagedManifest = stagedManifest.ToArray(),
+            StagedRotationEpoch = stagedRotationEpoch,
             StartedAtUtc = startedAtUtc,
         };
     }
-
-    /// <summary>
-    /// Says what is wrong with <paramref name="envelope"/>, or <see langword="null"/> if it is
-    /// well-formed — one definition, so the two columns cannot end up judged by different rules.
-    /// </summary>
-    /// <remarks>
-    /// <b>Both bounds come from <see cref="WrappedAccountKeys"/>.</b> A rotation stages the same two
-    /// wrapped 32-byte keys that type holds, so it has no width and no version of its own to state, and
-    /// a second copy of either number is the copy that drifts. Only the sentences are written here,
-    /// because the sibling's are private to it.
-    /// <para>
-    /// <b>Width before version, and not merely for message quality</b> — the reason the sibling's own
-    /// comment gives: an empty envelope has no leading byte to read, so reading
-    /// <c>Span[0]</c> first throws <see cref="IndexOutOfRangeException"/> out of the Domain and a
-    /// client that sent an unset field is told the server broke rather than that its envelope was
-    /// malformed.
-    /// </para>
-    /// </remarks>
-    private static string? DescribeMalformedEnvelope(ReadOnlyMemory<byte> envelope) =>
-        envelope.Length != WrappedAccountKeys.EnvelopeLength
-            ? $"A wrapped key envelope must be exactly {WrappedAccountKeys.EnvelopeLength} bytes."
-            : envelope.Span[0] != WrappedAccountKeys.EnvelopeVersion
-                ? $"A wrapped key envelope must carry version {WrappedAccountKeys.EnvelopeVersion}."
-                : null;
 }

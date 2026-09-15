@@ -17,19 +17,20 @@ namespace Application.RecoveryCodes.GenerateRecoveryCodes;
 /// a way to destroy a stranger's recovery codes.
 /// </para>
 /// <para>
-/// <b>Ten whole submissions, never ten bare verifiers beside one factor and one pair of envelopes.</b>
+/// <b>Ten whole submissions, never ten bare verifiers beside one factor and one pair of values.</b>
 /// A set is ten separate secrets filed under a single <c>credentials</c> row, and the client derives a
-/// key-encryption key from each <em>code</em> — so ten codes are ten key-encryption keys and ten pairs
-/// of envelopes, no one of which can stand for the others. One factor and one pair for the whole set
-/// would seal the account under whichever code that pair belonged to: the person redeems any one of
-/// the ten, is handed a session, and nine times out of ten unlocks nothing. See
+/// key-encryption key from each <em>code</em> — so ten codes are ten key-encryption keys, ten ECDH key
+/// pairs and ten copies of the account's keys, no one of which can stand for the others. One factor for
+/// the whole set would put the account behind whichever code that key pair belonged to: the person
+/// redeems any one of the ten, is handed a session, and nine times out of ten unlocks nothing. See
 /// <see cref="WrappedAccountKeys"/> and ADR 0018.
 /// </para>
 /// <para>
 /// <b>Verifiers, never codes.</b> The browser mints each code, derives
-/// <c>V = HKDF(canonical(code), …)</c> and sends only <c>V</c>; the key-encryption key that sealed that
-/// same code's envelopes comes off the same code on an independent HKDF branch, so a code arriving here
-/// would hand the operator that key. There is deliberately no member a code could travel in.
+/// <c>V = HKDF(canonical(code), …)</c> and sends only <c>V</c>; the key-encryption key that wrapped that
+/// same code's private key comes off the same code on an independent HKDF branch, so a code arriving
+/// here would hand the operator that key — and through it the private key, and through that the
+/// account's own two keys. There is deliberately no member a code could travel in.
 /// </para>
 /// <para>
 /// <c>canonical</c> sits inside the derivation rather than in the ellipsis, because a derivation is
@@ -52,8 +53,9 @@ public sealed record GenerateRecoveryCodesCommand(
     ReauthenticationAssertion Assertion);
 
 /// <summary>
-/// One code of a set: the verifier derived from it, and the share of the account keys sealed under the
-/// key-encryption key derived from that same code.
+/// One code of a set: the verifier derived from it, the ECDH private key wrapped under the
+/// key-encryption key derived from that same code, and the account's keys encapsulated to that key
+/// pair's public half.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -73,15 +75,16 @@ public sealed record GenerateRecoveryCodesCommand(
 /// framework 400.
 /// </para>
 /// <para>
-/// <b>Neither envelope is a key.</b> Each is a sealed blob the client wrapped under a key-encryption
-/// key derived from the code it minted; the server can open neither and holds no value that could,
-/// which is why they may cross this boundary at all when a recovery code may not.
+/// <b>Neither member is a key in the clear.</b> One is a private key wrapped under a key-encryption key
+/// derived from the code the client minted; the other is ciphertext under a public key. The server can
+/// open neither and holds no value that could, which is why they may cross this boundary at all when a
+/// recovery code may not.
 /// </para>
 /// </remarks>
 /// <param name="Verifier">The verifier derived from this code, as base64url text.</param>
 /// <param name="FactorId">
-/// The client-minted identifier of the factor this code stands for, and the associated data both
-/// envelopes below were sealed with — see <see cref="WrappedAccountKeys.FactorId"/> for why it is
+/// The client-minted identifier of the factor this code stands for, and the associated data of the
+/// wrapped private key below — see <see cref="WrappedAccountKeys.FactorId"/> for why it is
 /// deliberately not <c>credentials.id</c>. One uuid in one spelling: the <b>lower-case</b> 36-character
 /// hyphenated form with no surrounding whitespace, which is what a <see cref="Guid"/> renders as and
 /// therefore what every later read hands back. This contract is cross-client, and a value the browser
@@ -91,15 +94,21 @@ public sealed record GenerateRecoveryCodesCommand(
 /// <c>"D"</c> admits upper-case and mixed-case hex and trims whitespace before it reads the format at
 /// all, so the format alone does not pin a spelling.
 /// </param>
-/// <param name="WrappedContentKey">
-/// The account's content key as this code holds it: one base64url envelope, judged by
-/// <see cref="WrappedKeyEnvelope.TryDecode"/>. It is wrapped under a key-encryption key the client
-/// derived from this code, on an HKDF branch independent of the verifier above — so nothing on this
-/// command lets the server open it, and nothing may be added that would.
+/// <param name="WrappedPrivateKey">
+/// This factor's ECDH P-256 private key as this code holds it: one base64url envelope of the AEAD
+/// framing, judged by <see cref="WrappedPrivateKeyEnvelope.TryDecode"/>. It is <em>wrapped under</em> a
+/// key-encryption key the client derived from this code, on an HKDF branch independent of the verifier
+/// above — so nothing on this command lets the server open it, and nothing may be added that would.
 /// </param>
-/// <param name="WrappedIndexKey">The account's index key — the same shape, judged by the same rule.</param>
+/// <param name="EncapsulatedAccountKeys">
+/// The account's content key and index key as one 64-byte plaintext, <em>encapsulated to</em> the public
+/// half of that key pair: one base64url value of the encapsulation framing, judged by
+/// <see cref="EncapsulatedAccountKeysEnvelope.TryDecode"/>. <b>Not the same shape and not judged by the
+/// same rule as the member above</b> — a different suite, a different floor and a different width — which
+/// is why it names its own decoder rather than borrowing that one's sentence.
+/// </param>
 public sealed record RecoveryCodeSubmission(
     string Verifier,
     string FactorId,
-    string WrappedContentKey,
-    string WrappedIndexKey);
+    string WrappedPrivateKey,
+    string EncapsulatedAccountKeys);

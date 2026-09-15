@@ -81,10 +81,10 @@ public sealed class DataInventoryReconciliationTests
     /// anything moves. <c>cascade</c> because the width and version checks are defined on the column
     /// and go with it.
     /// </remarks>
-    private const string DroppedColumn = "wrapped_account_keys.wrapped_index_key";
+    private const string DroppedColumn = "wrapped_account_keys.encapsulated_account_keys";
 
     /// <summary>The dropped column's surviving sibling, which the same run must not report.</summary>
-    private const string SurvivingSiblingColumn = "wrapped_account_keys.wrapped_content_key";
+    private const string SurvivingSiblingColumn = "wrapped_account_keys.wrapped_private_key";
 
     [Test]
     public async Task Model_AndTheLiveCatalog_DescribeTheSameColumns()
@@ -182,7 +182,7 @@ public sealed class DataInventoryReconciliationTests
         await admin.OpenAsync();
         await ExecuteAsync(
             admin,
-            "alter table wrapped_account_keys drop column wrapped_index_key cascade");
+            "alter table wrapped_account_keys drop column encapsulated_account_keys cascade");
 
         // Act
         IReadOnlyList<string> catalogColumns = await ReadCatalogColumnsAsync(admin);

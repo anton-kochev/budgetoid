@@ -690,8 +690,8 @@ public sealed class CredentialListEndpointTests
             attestationObject = attestation.AttestationObjectBase64Url,
             clientExtensionResults = new { prf = new { enabled = true } },
             factorId = keys.FactorId,
-            wrappedContentKey = keys.WrappedContentKey,
-            wrappedIndexKey = keys.WrappedIndexKey,
+            wrappedPrivateKey = keys.WrappedPrivateKey,
+            encapsulatedAccountKeys = keys.EncapsulatedAccountKeys,
         });
         response.EnsureSuccessStatusCode();
     }

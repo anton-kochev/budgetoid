@@ -15,12 +15,19 @@ namespace Application.AccountKeys;
 /// </para>
 /// <para>
 /// <b>The <c>DELETE</c> is the whole of that premise, and it is the half of it that is left.</b> The
-/// role holds <c>UPDATE (wrapped_content_key, wrapped_index_key)</c> for a content-key rotation, argued
-/// in <c>app-role-grants.sql</c> where it is granted, so an edit to either envelope column on a
-/// materialized row would now <em>commit</em> rather than die with <c>42501</c>. The rule above binds
-/// harder for that, not less: a row this context is holding is a row two mistakes can reach, and only
-/// one of them still announces itself. Nothing assigns either envelope today — the entity exposes no
-/// mutator for them — so what moved is what the mistake would cost, not how near it is.
+/// role holds a column-listed <c>UPDATE</c> over one of this table's two payload columns — the one a
+/// content-key rotation rewrites, carrying the account's content and index keys <em>encapsulated
+/// to</em> the factor's public key — argued in <c>app-role-grants.sql</c> where it is granted, so an
+/// edit to that column on a materialized row would now <em>commit</em> rather than die with
+/// <c>42501</c>. The other payload is the factor's own private key <em>wrapped under</em> the
+/// key-encryption key that factor derives; a rotation re-encapsulates to the same factor public keys
+/// and never touches that key, so there is nothing to rewrite, and the column is left off the list
+/// rather than clawed back afterwards — in this schema an omission from a <c>GRANT UPDATE</c> column
+/// list <em>is</em> the immutability, never a <c>REVOKE</c>. The rule above binds harder for that, not
+/// less: a row this context is holding is a row two mistakes can reach, only one of them still
+/// announces itself, and whether a stray write is the loud kind or the silent one now turns on which
+/// column it lands in. Nothing assigns either payload today — the entity exposes no mutator for them —
+/// so what moved is what the mistake would cost, not how near it is.
 /// </para>
 /// <para>
 /// <b>An implementation therefore projects; it does not load and map.</b> The rows come back through a

@@ -18,6 +18,15 @@ namespace IntegrationTests;
 /// one legal version, and the server can open neither.
 /// </para>
 /// <para>
+/// <b>What this file no longer covers, said so nobody looks for it here.</b> The table used to carry a
+/// <c>factor_id</c> and a composite foreign key to <c>wrapped_account_keys</c>, and this file's probes
+/// carried both. A run now encapsulates the new account keys to every surviving factor's public half
+/// rather than being performed under one factor, so the per-factor value moved to
+/// <c>key_rotation_seals</c> and its rules moved with it —
+/// <see cref="KeyRotationSealSchemaTests" /> owns the composite key, the duplicate and the policy. What
+/// is left here is the one rule this table still holds alone.
+/// </para>
+/// <para>
 /// <b>Keyed on the user rather than guarded in a handler, which is
 /// <see href="../../../docs/decisions/0002-enforce-rules-at-the-lowest-capable-layer.md">ADR 0002</see>
 /// applied literally.</b> A "check whether one is already running, then insert" in the application is
@@ -57,32 +66,29 @@ public sealed class KeyRotationSchemaTests
     [Test]
     public async Task Database_RefusesASecondRotationForOneAccount()
     {
-        // Arrange — one account, TWO registered passkeys, each with its own factor and its own pair of
-        // wrapped keys already filed, and a rotation already in flight under the first. Two passkeys
-        // rather than one is the whole care taken here: the probe row below has to differ from the
+        // Arrange — one account and a rotation already in flight. The probe row below differs from the
         // stored row in every column that could carry a uniqueness rule of its own, so that the only
-        // thing the two rows share is the account. With one passkey, a refusal could be
-        // PK_key_rotations, or an index over rotation_id, or an index over factor_id, and the test would
-        // report whichever the planner happened to evaluate first.
+        // thing the two rows share is the account: a different rotation id, a different staged manifest,
+        // a different epoch, a later instant. With the rows alike, a refusal could be PK_key_rotations
+        // or an index over rotation_id, and the test would report whichever the planner evaluated first.
+        //
+        // NO FACTOR IS SEEDED FOR THIS PROBE ANY MORE, and that is the reshape rather than a
+        // simplification. The table used to name a factor_id and reach wrapped_account_keys through a
+        // composite foreign key, so both rows needed a real factor of their own and the account needed
+        // two passkeys to supply them. A run now stages the factor SET it committed to — the manifest and
+        // the epoch — and the per-factor value lives in key_rotation_seals, so this table's only edge is
+        // FK_key_rotations_users and a user is all a row needs to exist.
         await using RepositoryTestHost host = await StartHostAsync();
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
         Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
-        Guid firstCredentialId = await host.SeedPasskeyAsync(userId, Handle(0x41));
-        Guid secondCredentialId = await host.SeedPasskeyAsync(userId, Handle(0x52));
-        Guid firstFactorId = await host.SeedWrappedAccountKeysAsync(firstCredentialId, FirstFactorId);
-        Guid secondFactorId = await host.SeedWrappedAccountKeysAsync(secondCredentialId, SecondFactorId);
 
-        await using NpgsqlCommand seed = BuildRotationInsert(
-            admin, userId, FirstRotationId, firstFactorId, 0x7C, 0x8D);
+        await using NpgsqlCommand seed = BuildRotationInsert(admin, userId, FirstRotationId, 0x7C);
         await Assert.That(await seed.ExecuteNonQueryAsync()).IsEqualTo(1);
 
-        // Act — a second rotation for the same account. A different rotation id, a different factor, a
-        // different passkey, different envelopes, a later instant: everything about this row is its own
-        // except the account it belongs to. The envelopes are built at the one legal width and version,
-        // so none of the four length and version checks is what answers.
-        await using NpgsqlCommand probe = BuildRotationInsert(
-            admin, userId, SecondRotationId, secondFactorId, 0x9E, 0xAF);
+        // Act — a second rotation for the same account. The manifest is built inside the length band and
+        // the epoch above the floor, so neither of the table's two check constraints is what answers.
+        await using NpgsqlCommand probe = BuildRotationInsert(admin, userId, SecondRotationId, 0x9E);
         PostgresException refusal = await RefusalOfAsync(probe);
 
         // Assert — 23505 from the PRIMARY KEY, which is the executable form of "at most one rotation in
@@ -118,14 +124,10 @@ public sealed class KeyRotationSchemaTests
     private const string PrimaryKeyName = "PK_key_rotations";
 
     /// <summary>
-    /// The two client-minted factor identifiers, and the two rotation identifiers. Fixed rather than
-    /// minted so a failure message names values that can be found in this file, and visibly different
-    /// from each other so a row read back at the wrong ordinal is a failure rather than a coincidence.
+    /// The two rotation identifiers. Fixed rather than minted so a failure message names values that can
+    /// be found in this file, and visibly different from each other so a row read back at the wrong
+    /// ordinal is a failure rather than a coincidence.
     /// </summary>
-    private static readonly Guid FirstFactorId = new("0199f3a1-0000-7000-8000-0000000000f1");
-
-    private static readonly Guid SecondFactorId = new("0199f3a1-0000-7000-8000-0000000000f2");
-
     private static readonly Guid FirstRotationId = new("0199f3a1-0000-7000-8000-0000000000e1");
 
     private static readonly Guid SecondRotationId = new("0199f3a1-0000-7000-8000-0000000000e2");
@@ -144,51 +146,62 @@ public sealed class KeyRotationSchemaTests
     private static readonly DateTime ProbeInstant = new(2026, 6, 12, 14, 15, 16, DateTimeKind.Utc);
 
     /// <summary>
-    /// A WebAuthn credential handle of 32 bytes, every one of them <paramref name="fill" />. The fill
-    /// byte is required rather than defaulted because the column is unique, so two registrations of "a
-    /// passkey" would collide on that index and the seeding would fail before the probe ran.
-    /// </summary>
-    private static byte[] Handle(byte fill) => [.. Enumerable.Repeat(fill, 32)];
-
-    /// <summary>
     /// Builds one well-formed <c>key_rotations</c> INSERT, every column named.
     /// </summary>
     /// <remarks>
-    /// Both envelopes come from <see cref="RepositoryTestHost.WrappedKeyEnvelope" /> at the one legal
-    /// width and version, so no length or version check is ever what answers a probe here — the only
-    /// thing that can refuse a row built by this method is a key, a foreign key or a policy. The two
-    /// fillers are separate parameters because the two columns are otherwise indistinguishable, and a
-    /// row read back is the only place a swapped pair could ever be noticed.
+    /// The staged manifest is built inside the length band and the epoch above the floor, so neither
+    /// check constraint is ever what answers a probe here — the only thing that can refuse a row built
+    /// by this method is a key, a foreign key or a policy. The filler is a parameter so two rows can be
+    /// told apart by eye in a failure message.
     /// </remarks>
     private static NpgsqlCommand BuildRotationInsert(
         NpgsqlConnection connection,
         Guid userId,
         Guid rotationId,
-        Guid factorId,
-        byte contentKeyFiller,
-        byte indexKeyFiller)
+        byte manifestFiller)
     {
         NpgsqlCommand insert = new(
             "insert into key_rotations " +
-            "(user_id, rotation_id, factor_id, wrapped_content_key, wrapped_index_key, started_at_utc) " +
-            "values (@user_id, @rotation_id, @factor_id, " +
-            "@wrapped_content_key, @wrapped_index_key, @started_at_utc)",
+            "(user_id, rotation_id, staged_manifest, staged_rotation_epoch, started_at_utc) " +
+            "values (@user_id, @rotation_id, " +
+            "@staged_manifest, @staged_rotation_epoch, @started_at_utc)",
             connection);
         insert.Parameters.AddWithValue("user_id", userId);
         insert.Parameters.AddWithValue("rotation_id", rotationId);
-        insert.Parameters.AddWithValue("factor_id", factorId);
+        insert.Parameters.AddWithValue("staged_manifest", Manifest(manifestFiller));
         insert.Parameters.AddWithValue(
-            "wrapped_content_key",
-            RepositoryTestHost.WrappedKeyEnvelope(contentKeyFiller));
-        insert.Parameters.AddWithValue(
-            "wrapped_index_key",
-            RepositoryTestHost.WrappedKeyEnvelope(indexKeyFiller));
+            "staged_rotation_epoch",
+            rotationId == FirstRotationId ? FirstEpoch : SecondEpoch);
         insert.Parameters.AddWithValue(
             "started_at_utc",
             rotationId == FirstRotationId ? SeedInstant : ProbeInstant);
 
         return insert;
     }
+
+    /// <summary>
+    /// A staged factor manifest of <see cref="ManifestBytes" /> bytes, every one of them
+    /// <paramref name="fill" />.
+    /// </summary>
+    /// <remarks>
+    /// Nothing on this side parses a manifest — it is authenticated client-side material — so any run of
+    /// bytes inside the band is a well-formed value as far as the schema is concerned.
+    /// </remarks>
+    private static byte[] Manifest(byte fill) => [.. Enumerable.Repeat(fill, ManifestBytes)];
+
+    /// <summary>
+    /// How wide the seeded manifests are. Comfortably inside <c>CK_key_rotations_staged_manifest_length</c>
+    /// from both sides, so that constraint is never what refuses a probe.
+    /// </summary>
+    private const int ManifestBytes = 32;
+
+    /// <summary>
+    /// The two generations the two rows name. Above <c>CK_key_rotations_staged_rotation_epoch</c>'s floor
+    /// and different from each other, so the two rows differ in every column but the account.
+    /// </summary>
+    private const int FirstEpoch = 2;
+
+    private const int SecondEpoch = 3;
 
     private static async Task<long> CountRotationsAsync(NpgsqlConnection connection, Guid userId)
     {

@@ -13,13 +13,21 @@ public sealed class WrappedAccountKeysConfiguration : IEntityTypeConfiguration<W
     // models at all, so the name has to outlive a rename.
     public const string CredentialTypeCheckName = "CK_wrapped_account_keys_credential_type";
 
-    public const string ContentKeyLengthCheckName = "CK_wrapped_account_keys_wrapped_content_key_length";
+    // Four checks over two columns, and the names say which column and which fact, because that is all
+    // PostgreSQL reports. The two columns hold values of DIFFERENT cryptographic suites at DIFFERENT
+    // widths, so no name here may be phrased over "the envelope" — a reader meeting a violation has to
+    // learn from the name alone whether the AEAD side or the encapsulation side refused the row.
+    public const string WrappedPrivateKeyLengthCheckName =
+        "CK_wrapped_account_keys_wrapped_private_key_length";
 
-    public const string ContentKeyVersionCheckName = "CK_wrapped_account_keys_wrapped_content_key_version";
+    public const string WrappedPrivateKeyVersionCheckName =
+        "CK_wrapped_account_keys_wrapped_private_key_version";
 
-    public const string IndexKeyLengthCheckName = "CK_wrapped_account_keys_wrapped_index_key_length";
+    public const string EncapsulatedAccountKeysLengthCheckName =
+        "CK_wrapped_account_keys_encapsulated_account_keys_length";
 
-    public const string IndexKeyVersionCheckName = "CK_wrapped_account_keys_wrapped_index_key_version";
+    public const string EncapsulatedAccountKeysVersionCheckName =
+        "CK_wrapped_account_keys_encapsulated_account_keys_version";
 
     // Public for the reason IX_passkey_public_keys_webauthn_credential_id is public: a 23505 reported
     // under this name is the one duplicate a caller can be told something useful about — the factor id
@@ -43,7 +51,7 @@ public sealed class WrappedAccountKeysConfiguration : IEntityTypeConfiguration<W
 
     // Pinned for the reason every name above it is pinned, and named after the precedent it copies:
     // AK_credentials_id_user_id_type exists solely so another table can reference a tuple as a unit, and
-    // this one exists solely so key_rotations can reference (factor_id, user_id) as a unit. See the
+    // this one exists solely so key_rotation_seals can reference (factor_id, user_id) as a unit. See the
     // alternate key itself, at the bottom of Configure.
     private const string FactorIdUserIdAlternateKeyName = "AK_wrapped_account_keys_factor_id_user_id";
 
@@ -69,11 +77,11 @@ public sealed class WrappedAccountKeysConfiguration : IEntityTypeConfiguration<W
         {
             // Two spellings, not one, and that is what makes this table's vocabulary check different
             // from CK_passkey_public_keys_credential_type: those tables hold rows for exactly one
-            // credential type, while account keys are wrapped under whichever factors have a
+            // credential type, while a factor key pair exists for whichever factors have a
             // key-encryption key — a passkey through its PRF output, a set of recovery codes through
             // the code the client still holds. 'federated' is the value that must not appear: OAuth has
-            // no PRF equivalent, so a row filed against the federated credential would be two envelopes
-            // nothing in the world can open, presented as a way back into the account.
+            // no PRF equivalent, so a row filed against the federated credential would be a private key
+            // nothing in the world can unwrap, presented as a way back into the account.
             //
             // Rendered through CredentialTypeSpelling rather than typed out, because these tokens are a
             // copy of credentials.type that the composite foreign key below compares directly against
@@ -90,55 +98,84 @@ public sealed class WrappedAccountKeysConfiguration : IEntityTypeConfiguration<W
             // column's 32 bytes and the Domain's verifier width are numerically equal and mean two
             // different things — the width of the DIGEST versus the width of the VERIFIER that was
             // digested — so folding them together would let a change to either silently move the
-            // other's check. Here both bounds describe the SAME value: WrappedAccountKeys.For refuses
-            // an envelope that is not exactly EnvelopeLength bytes carrying EnvelopeVersion, and these
-            // constraints refuse the identical row arriving by any other path. A local copy of 61 would
+            // other's check. Here each pair of bounds describes the SAME value the entity judges:
+            // WrappedAccountKeys.For refuses a wrapped private key that is not exactly
+            // WrappedPrivateKeyLength bytes carrying WrappedPrivateKeyVersion, and these constraints
+            // refuse the identical row arriving by any other path. A local copy of 167 or of 158 would
             // not be a second fact, it would be the same fact able to disagree with itself.
             //
+            // FOUR CONSTANTS, AND THE PAIRS MAY NOT BE CROSSED. The two columns carry values of two
+            // cryptographic suites — an AEAD envelope over a PKCS#8 private key, and an encapsulation
+            // over both account keys — so each constraint reads the constant belonging to ITS OWN
+            // column's suite. Rendering the encapsulated column's width from the AEAD constant compiles,
+            // reads plausibly, and accepts a value 65 bytes too short to hold an ephemeral point; the
+            // entity states the rule at length and this is the same rule one layer down.
+            //
             // Exactly equal rather than a range, for the reason the entity gives: AES-GCM ciphertext is
-            // the length of its plaintext and the plaintext is a 32-byte key, so an envelope over a
-            // wrapped account key has one legal size and both sides of the bound are refused. Stated
-            // per column rather than once over both, so a violation names which envelope was malformed;
-            // nothing else can tell them apart, since the two columns are indistinguishable by every
-            // check here.
+            // the length of its plaintext, and each plaintext here is fixed-width — one PKCS#8 P-256
+            // private key, and two 32-byte account keys as one value — so each column has one legal
+            // size and both sides of each bound are refused.
+            //
+            // THE HAZARD THE OLD REMARK HERE NAMED IS GONE, AND THE ONE THAT REPLACES IT SITS A LEVEL
+            // IN, WHERE NO CONSTRAINT CAN EVER REACH IT. What stood here said the two columns were
+            // indistinguishable by every check on this table, so a swapped pair satisfied all four —
+            // true when both held a 61-byte AEAD envelope carrying the same version byte, and false
+            // now: 167 against 158, two framings, two version constants, and a transposition is refused
+            // by each column's own pair. What is left unguarded is INSIDE encapsulated_account_keys —
+            // one 64-byte plaintext holding two 32-byte keys, CONTENT KEY FIRST, which the server never
+            // sees. A client that encapsulated them the other way round produces a value of exactly the
+            // right width carrying exactly the right version, which stores, reads back and opens, and
+            // yields an index key used to seal narrative text and a content key used to compute blind
+            // indexes. No CHECK constraint will ever notice, because the bytes are ciphertext to
+            // everything on this side of the wire. The order is a contract between clients; the entity
+            // carries the argument in full.
             table.HasCheckConstraint(
-                ContentKeyLengthCheckName,
-                $"length(wrapped_content_key) = {WrappedAccountKeys.EnvelopeLength}");
+                WrappedPrivateKeyLengthCheckName,
+                $"length(wrapped_private_key) = {WrappedAccountKeys.WrappedPrivateKeyLength}");
 
             // get_byte rather than substring: the leading byte is a number, and comparing it as one
             // keeps the constraint reading the way the entity does. The version is bounded here and not
             // left to the client because the successor does not exist — a row carrying version 2 is a
             // client claiming a contract this deployment has never implemented, and storing it would
             // file bytes no version of this system can interpret.
+            //
+            // BOTH COLUMNS LEAD WITH 0x01 TODAY AND THEY MEAN DIFFERENT THINGS BY IT. Nothing in the
+            // bytes says which suite a value belongs to, so the COLUMN is the only discriminator, and
+            // the two version checks stay two checks rendered from two constants even while the two
+            // constants hold the same number. Folding them into one predicate over both columns would
+            // make a bump to either suite renumber the other's column.
             table.HasCheckConstraint(
-                ContentKeyVersionCheckName,
-                $"get_byte(wrapped_content_key, 0) = {WrappedAccountKeys.EnvelopeVersion}");
+                WrappedPrivateKeyVersionCheckName,
+                $"get_byte(wrapped_private_key, 0) = {WrappedAccountKeys.WrappedPrivateKeyVersion}");
 
             table.HasCheckConstraint(
-                IndexKeyLengthCheckName,
-                $"length(wrapped_index_key) = {WrappedAccountKeys.EnvelopeLength}");
+                EncapsulatedAccountKeysLengthCheckName,
+                "length(encapsulated_account_keys) = "
+                + $"{WrappedAccountKeys.EncapsulatedAccountKeysLength}");
 
             table.HasCheckConstraint(
-                IndexKeyVersionCheckName,
-                $"get_byte(wrapped_index_key, 0) = {WrappedAccountKeys.EnvelopeVersion}");
+                EncapsulatedAccountKeysVersionCheckName,
+                "get_byte(encapsulated_account_keys, 0) = "
+                + $"{WrappedAccountKeys.EncapsulatedAccountKeysVersion}");
         });
 
         // THE FACTOR IS THE IDENTITY OF THE ROW. The key used to be credential_id, on the argument that
-        // exactly one pair of envelopes exists per recovery factor — true, and it quietly assumed that a
-        // factor IS a credential. A passkey is: one credential, one PRF output, one key-encryption key,
-        // one pair of envelopes. A set of recovery codes is not. A set is ten separate secrets filed
-        // under a single credentials row, because a set is issued, counted and revoked as a unit — and
-        // the client derives a key-encryption key from each CODE. Ten codes are ten key-encryption keys
-        // and ten pairs of envelopes, no one of which can stand for the others. Keyed on the credential
-        // the table stored the first pair and refused the other nine, so nine codes of every set opened
-        // nothing at all, and the holder would learn it by redeeming one, being handed a session, and
-        // finding the account still locked. So credential_id is now an ordinary, NON-UNIQUE column and a
-        // credential carries as many rows as it has factors.
+        // exactly one share of the account exists per recovery factor — true, and it quietly assumed
+        // that a factor IS a credential. A passkey is: one credential, one PRF output, one
+        // key-encryption key, one key pair. A set of recovery codes is not. A set is ten separate
+        // secrets filed under a single credentials row, because a set is issued, counted and revoked as
+        // a unit — and the client derives a key-encryption key from each CODE. Ten codes are ten
+        // key-encryption keys and ten key pairs, no one of which can stand for the others. Keyed on the
+        // credential the table stored the first and refused the other nine, so nine codes of every set
+        // opened nothing at all, and the holder would learn it by redeeming one, being handed a session,
+        // and finding the account still locked. So credential_id is now an ordinary, NON-UNIQUE column
+        // and a credential carries as many rows as it has factors.
         //
         // Being client-minted is the reason factor_id NEEDS this key, not a reason it cannot hold it.
         // Nothing else in the system stops two rows claiming one factor identifier, and it is the
-        // associated data both of a row's envelopes were sealed with — so a shared value would let one
-        // factor's keys be opened against another's, and the second registration is the only place
+        // associated data the row's wrapped private key was wrapped with — so a shared value would let
+        // one factor's private key be unwrapped against another's, and the second registration is the
+        // only place
         // anybody would ever learn of the collision. What a client-minted value needs is therefore a
         // constraint whose violation a repository can NAME, and the key is that constraint; it carries
         // the uniqueness alone, with no second unique index over the same column. Table-wide rather than
@@ -162,7 +199,7 @@ public sealed class WrappedAccountKeysConfiguration : IEntityTypeConfiguration<W
             .IsRequired();
 
         // Client-minted, so NOT NULL is the least of what it needs; see the key above. It is
-        // also the associated data both envelopes were sealed with, which is why it is stored rather
+        // also the associated data of the wrapped private key, which is why it is stored rather
         // than derived: the browser needs back the exact value it bound, and credentials.id is
         // deliberately not that value — WrappedAccountKeys.FactorId records why.
         builder.Property(wrappedAccountKeys => wrappedAccountKeys.FactorId)
@@ -186,21 +223,29 @@ public sealed class WrappedAccountKeysConfiguration : IEntityTypeConfiguration<W
         // ReadOnlyMemory<byte> is not a type the provider knows, so it is converted to the array bytea
         // maps to. The comparer is not optional decoration — see the field above for what change
         // tracking does without it.
-        builder.Property(wrappedAccountKeys => wrappedAccountKeys.WrappedContentKey)
+        //
+        // THE FACTOR'S PRIVATE KEY, WRAPPED UNDER the key-encryption key that factor derives. It is the
+        // first step of a two-step opening — a factor presented gives a key-encryption key, that unwraps
+        // this, and this decapsulates the column below — and the one value on this row a rotation never
+        // rewrites, because the factor's key-encryption key does not change when the account's keys do.
+        builder.Property(wrappedAccountKeys => wrappedAccountKeys.WrappedPrivateKey)
             .HasConversion(
                 memory => memory.ToArray(),
                 bytes => new ReadOnlyMemory<byte>(bytes),
                 ByteContentComparer)
-            .HasColumnName("wrapped_content_key")
+            .HasColumnName("wrapped_private_key")
             .HasColumnType("bytea")
             .IsRequired();
 
-        builder.Property(wrappedAccountKeys => wrappedAccountKeys.WrappedIndexKey)
+        // The account's content key and index key as one 64-byte plaintext, ENCAPSULATED TO this
+        // factor's public key — a value of the other suite, at another width, and the column a rotation
+        // rewrites in place. The two are not interchangeable and the checks above say so per column.
+        builder.Property(wrappedAccountKeys => wrappedAccountKeys.EncapsulatedAccountKeys)
             .HasConversion(
                 memory => memory.ToArray(),
                 bytes => new ReadOnlyMemory<byte>(bytes),
                 ByteContentComparer)
-            .HasColumnName("wrapped_index_key")
+            .HasColumnName("encapsulated_account_keys")
             .HasColumnType("bytea")
             .IsRequired();
 
@@ -223,7 +268,7 @@ public sealed class WrappedAccountKeysConfiguration : IEntityTypeConfiguration<W
         //
         // Non-unique, and deliberately so: uniqueness over credential_id is the exact rule the key move
         // removed, and restoring it here in any form would put every set of recovery codes back to one
-        // stored pair of envelopes and nine codes that open nothing.
+        // stored key pair and nine codes that open nothing.
         builder.HasIndex(wrappedAccountKeys => new
         {
             wrappedAccountKeys.CredentialId,
@@ -269,12 +314,20 @@ public sealed class WrappedAccountKeysConfiguration : IEntityTypeConfiguration<W
             .HasConstraintName(CredentialForeignKeyName)
             .OnDelete(DeleteBehavior.Cascade);
 
-        // Exists so key_rotations can reference (factor_id, user_id) as a unit, which is the same job
-        // AK_credentials_id_user_id_type does for sessions, passkey_public_keys and this very table.
+        // Exists so key_rotation_seals can reference (factor_id, user_id) as a unit, which is the same
+        // job AK_credentials_id_user_id_type does for sessions, passkey_public_keys and this very table.
         // PostgreSQL will only let a foreign key name columns a unique constraint already covers, and
         // the primary key here covers factor_id alone — so without this the composite key over there
-        // cannot exist, and "a rotation is staged against this account's own factor" would go back to
+        // cannot exist, and "a seal is staged against this account's own factor" would go back to
         // being an application habit.
+        //
+        // IT WAS CREATED FOR AN EDGE THIS CHANGE REMOVED AND IS IMMEDIATELY REUSED BY THE ONE IT ADDS.
+        // key_rotations used to carry factor_id and a composite key through here; it no longer names a
+        // factor at all, because a rotation encapsulates to every surviving factor rather than being
+        // performed under one. The per-factor value moved down to key_rotation_seals, and that table
+        // needs exactly the tuple this alternate key already publishes. Deleting it as orphaned between
+        // the two edits would have been the natural tidy and would have taken the seal's owner check
+        // with it.
         //
         // This adds an INDEX, not a column, which matters for two neighbours. The data inventory keys on
         // columns, so it is untouched. And the uniqueness is not a NEW rule: factor_id is already unique
@@ -326,7 +379,7 @@ public sealed class WrappedAccountKeysConfiguration : IEntityTypeConfiguration<W
 
     // The same restriction on the way back, and it is not redundant with the one above: this direction
     // reads whatever the column holds, so a 'federated' row — which the credential_type check and the
-    // foreign key should both have refused — must not materialize as a pair of envelopes that looks
+    // foreign key should both have refused — must not materialize as a usable factor row that looks
     // fine. Looking fine is the specific danger here: the row would be presented as a way back into the
     // account, and the discovery that it is not happens in the browser, on the day somebody needs it.
     private static CredentialType FromCredentialTypeColumnValue(string value) =>

@@ -9,8 +9,8 @@ namespace Application.Security;
 /// <remarks>
 /// <para>
 /// <b>One definition rather than one per handler</b>, the shape
-/// <see cref="Application.Passkeys.WrappedKeyEnvelope"/> already holds for the members beside it and for
-/// the same reason: the paths that accept a client-minted identifier are not that many separate
+/// <see cref="Application.Passkeys.WrappedPrivateKeyEnvelope"/> already holds for the members beside it
+/// and for the same reason: the paths that accept a client-minted identifier are not that many separate
 /// decisions about what an identifier is. A factor identifier and a narrative row identifier are minted
 /// by different screens and land in different columns, but each is a uuid a client chose and then sent
 /// as text, and a rule that drifted on one of them would accept a spelling the others cannot reproduce.

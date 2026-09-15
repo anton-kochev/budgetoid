@@ -56,8 +56,9 @@ public static class PasskeyPayloadLimits
     /// The product verifies two algorithms and nothing else. An ES256 signature is DER-encoded and
     /// tops out near 72 bytes; an RS256 signature is exactly the modulus length, so 256 bytes for the
     /// 2048-bit keys authenticators actually issue. 512 bytes is the 4096-bit RSA key this product
-    /// accepts at its largest — which makes this one of the two bounds here with no slack in it, the
-    /// other being <see cref="WrappedKeyBytes"/>: it is 1.0x the longest signature that can
+    /// accepts at its largest — which makes this one of the three bounds here with no slack in it, the
+    /// others being <see cref="WrappedPrivateKeyBytes"/> and
+    /// <see cref="EncapsulatedAccountKeysBytes"/>: it is 1.0x the longest signature that can
     /// legitimately arrive, not several times it. There is nothing to reclaim by lowering it; a smaller
     /// number refuses a real key. And nothing to lose by trusting it, either — a signature of 513 bytes
     /// is refused, because the decoded length is compared and not only the text it arrived as.
@@ -109,21 +110,42 @@ public static class PasskeyPayloadLimits
     public const int AttestationObjectBytes = 4096;
 
     /// <summary>
-    /// A wrapped account key envelope, on the one width the domain will store.
+    /// A factor's wrapped ECDH private key, on the one width the domain will store.
     /// </summary>
     /// <remarks>
     /// Deliberately the same constant <see cref="WrappedAccountKeys"/> refuses a row against, for the
     /// reason <see cref="CredentialIdBytes"/> gives: a member the wire accepted but the entity could
     /// never store is text decoded for nothing, and a separate number here would only be a way for this
-    /// ceiling and the column's <c>CHECK length(...) = 61</c> to disagree.
+    /// ceiling and the column's own <c>CHECK length(...)</c> to disagree.
     /// <para>
-    /// A <b>width</b> and not a padded ceiling — the only other member here that is exact is
-    /// <see cref="SignatureBytes"/>. AES-GCM ciphertext is the length of its plaintext and the plaintext
-    /// is a 32-byte key, so an envelope over a wrapped key has exactly one legal size and there is no
-    /// slack to leave. Applied as a ceiling it now refuses the wide side exactly, 62 bytes included;
-    /// what it cannot say is that 61 is also a floor, which is why
-    /// <see cref="WrappedKeyEnvelope"/> keeps an equality of its own.
+    /// A <b>width</b> and not a padded ceiling — the other two exact members here are
+    /// <see cref="SignatureBytes"/> and <see cref="EncapsulatedAccountKeysBytes"/>. AES-GCM ciphertext
+    /// is the length of its plaintext and the plaintext is a fixed-width PKCS#8 P-256 private key, so a
+    /// wrapped private key has exactly one legal size and there is no slack to leave. Applied as a
+    /// ceiling it refuses the wide side exactly, 168 bytes included; what it cannot say is that 167 is
+    /// also a floor, which is why <see cref="WrappedPrivateKeyEnvelope"/> keeps an equality of its own.
     /// </para>
     /// </remarks>
-    public const int WrappedKeyBytes = WrappedAccountKeys.EnvelopeLength;
+    public const int WrappedPrivateKeyBytes = WrappedAccountKeys.WrappedPrivateKeyLength;
+
+    /// <summary>
+    /// The account's two keys encapsulated to a factor's public key, on the one width the domain will
+    /// store.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The twin of <see cref="WrappedPrivateKeyBytes"/> and deliberately <b>not</b> a second name for
+    /// it. The two members travel together in every request that files a factor, so the reader who
+    /// notices they are both "an envelope over key material" will reach to fold them into one ceiling —
+    /// and they are 167 and 158 bytes of two different cryptographic suites. One number serving both
+    /// would admit nine bytes of slack on whichever it was not written for, which is precisely the band
+    /// <see cref="EncapsulatedAccountKeysEnvelope"/> and <see cref="WrappedPrivateKeyEnvelope"/> exist
+    /// to close.
+    /// </para>
+    /// <para>
+    /// A <b>width</b> and not a padded ceiling, for the reason its twin gives: the plaintext is the two
+    /// account keys as one 64-byte value, so there is exactly one legal size.
+    /// </para>
+    /// </remarks>
+    public const int EncapsulatedAccountKeysBytes = WrappedAccountKeys.EncapsulatedAccountKeysLength;
 }

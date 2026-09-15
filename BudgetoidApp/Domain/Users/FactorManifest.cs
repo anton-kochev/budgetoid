@@ -61,7 +61,7 @@ namespace Domain.Users;
 /// A <see langword="const"/> because each is a fixed fact about its column rather than anything
 /// computed, and because a constant expression is what an <c>[Arguments(...)]</c> argument, a default
 /// parameter value and a persistence check constraint can be written from — the positions
-/// <see cref="WrappedAccountKeys.EnvelopeLength"/> is already read from. <c>FactorManifestTests</c>
+/// <see cref="WrappedAccountKeys.WrappedPrivateKeyLength"/> is already read from. <c>FactorManifestTests</c>
 /// writes <c>4096</c>, <c>4097</c>, <c>1</c>, <c>0</c> and <c>-1</c> out as literals of its own instead,
 /// which is the only reason a drift in either constant is catchable: a test that read the constant it
 /// checks would move with an edit to it and compare a constant with itself.
@@ -76,7 +76,7 @@ public sealed class FactorManifest
     /// factor fell past it. That factor stops being encapsulatable-to, the person loses a way back into
     /// the account, and nothing about the stored row says so — the manifest is well-formed, the epoch
     /// is plausible, and the loss surfaces on the day somebody reaches for the factor that is gone. A
-    /// cap rather than a width, unlike <see cref="WrappedAccountKeys.EnvelopeLength"/>: a manifest
+    /// cap rather than a width, unlike <see cref="WrappedAccountKeys.WrappedPrivateKeyLength"/>: a manifest
     /// grows with the number of factors an account has, so only the upper bound is a fact about it.
     /// </remarks>
     public const int MaximumBytes = 4096;

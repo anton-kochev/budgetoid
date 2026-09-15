@@ -11,7 +11,7 @@ Enforced today:
 - **Row-level security, on both axes.** A `budget_isolation` policy on `accounts`,
   `category_groups`, `categories`, `payees` and `transactions` compares `budget_id` against the
   session's ambient budget, and a `user_isolation` policy on `users`, `budgets`, `sessions`,
-  `passkey_signature_counters`, `wrapped_account_keys`, `key_rotations` and
+  `passkey_signature_counters`, `wrapped_account_keys`, `key_rotations`, `key_rotation_seals` and
   `factor_manifests`
   compares `id` and `user_id` against the session's authenticated user — each in both `USING` and
   `WITH CHECK`, so the connection every request is served by reaches no other tenant's rows and can insert into
@@ -78,8 +78,13 @@ Enforced today:
   *mutable* per-user state accumulating, which is real but is not the threat: a recovery-code hash is
   written once and never updated, so it would satisfy any append-only rule while being precisely what
   must not sit on a table every session reads in full. A wrapped key was the second example here
-  until content-key rotation took `UPDATE (wrapped_content_key, wrapped_index_key)` on its own table;
-  it now fails an append-only screen while being not one column safer on this one. **Neither of those
+  until content-key rotation took an `UPDATE` on its own table — today that grant names one column,
+  `wrapped_account_keys.encapsulated_account_keys`, because a promotion replaces the account's keys
+  and never the factor's own private key beside them, which is why `wrapped_private_key` stays
+  immutable by omission. So one of that table's two payload columns fails an append-only screen and
+  the other passes it, and neither is one column safer on *this* one — which sharpens the paragraph
+  rather than weakening it: a screen a later `GRANT` can revoke was never what was deciding.
+  **Neither of those
   two is hypothetical any more, and both landed on tables of their own** — the recovery-code hash on
   `recovery_code_hashes`, and the wrapped key on `wrapped_account_keys`, which carries `user_id` and
   is policed by `user_isolation` with no rule added. The example stays because both arrived exactly
@@ -210,8 +215,8 @@ Enforced today:
   filter's and `IBudgetContext`'s job alone.
 - **None of the user-owned entities carries a query filter** — `Budget`, `User`,
   `Credential`, `Session`, `PasskeyPublicKey`, `PasskeySignatureCounter`,
-  `RecoveryCodeHash`, `WrappedAccountKeys`, `KeyRotation`, `FactorManifest`, and the
-  challenge row. A read of one that is not a discovery lookup therefore names its owner in
+  `RecoveryCodeHash`, `WrappedAccountKeys`, `KeyRotation`, `KeyRotationSeal`, `FactorManifest`,
+  and the challenge row. A read of one that is not a discovery lookup therefore names its owner in
   the statement: `AccountKeyReadService.ListForAccountAsync` filters on `user_id` — its
   only predicate — even though `user_isolation` appends the same comparison underneath it,
   for the reason `ExportReadService.ListOwnedBudgetsAsync` below does the same — a policy
@@ -224,8 +229,8 @@ Enforced today:
   the two that exist today and which a third must join rather than assume it is covered; a session and
   a passkey name no budget at all, so there is none to filter them by. That is a statement about the
   *read-side filter* only, and it no longer travels with the coverage exemption: `users`, `budgets`,
-  `sessions`, `passkey_signature_counters`, `wrapped_account_keys`, `key_rotations` and
-  `factor_manifests` are
+  `sessions`, `passkey_signature_counters`, `wrapped_account_keys`, `key_rotations`,
+  `key_rotation_seals` and `factor_manifests` are
   policed on the user, while `credentials`, `passkey_public_keys`, `recovery_code_hashes`,
   `session_tokens` and `webauthn_challenges` are
   exempt. The first four have to be — reading them is how a request discovers who is asking and
@@ -253,7 +258,7 @@ the policies instead, and a cross-budget read comes back empty rather than popul
 Still do not introduce them on budget-scoped data: an empty result where the code expects
 a row is a bug, and a connection that names no ambient budget — or no ambient user, for
 `users`, `budgets`, `sessions`, `passkey_signature_counters`, `wrapped_account_keys`,
-`key_rotations` and `factor_manifests` — fails
+`key_rotations`, `key_rotation_seals` and `factor_manifests` — fails
 with `22P02` rather than answering. The build enforces this list: `BannedSymbols.txt` (referenced by
 `Infrastructure` and `Api`, the only projects with an EF reference) turns each API below
 into an RS0030 compile error.
@@ -289,12 +294,17 @@ adding `user_isolation` to `credentials` leaves `RlsCoverageTests` entirely gree
 every passkey sign-in failing to find the credential it just verified. `currencies` and `__EFMigrationsHistory` need no such control —
 their exemption rests on belonging to no tenant rather than on being read before an identity exists, so
 a policy landing on either fails loudly on a session that names somebody. `wrapped_account_keys` is
-the newest policed table, and its `SELECT` grant now answers to two kinds of reader:
+the one policed table with a production reader, and its `SELECT` grant answers to two kinds of
+reader:
 `AccountKeyReadService.ListForAccountAsync`, behind `GET /api/me/account-keys`, and the two
 isolation tests — `Database_HidesAnotherAccountsWrappedKeys_FromASessionNamingThisUser` and
 `Database_RefusesAWrappedKeyReadOnASessionNamingNobody` — which the endpoint does not make
 redundant, because they remain the only statements that have watched the policy *refuse* anything
-here. `app-role-grants.sql` names both kinds where it justifies granting `SELECT` at all),
+here. `app-role-grants.sql` names both kinds where it justifies granting `SELECT` at all.
+`key_rotations`, `key_rotation_seals` and `factor_manifests` are policed on the same argument and
+have a reader of neither kind: their `SELECT` is granted so the tables can be read **at all**, an
+absence that would otherwise turn the plaintext scan behind `NarrativeSecrecyTests` into a skip and
+let two secrecy gates pass while covering fewer tables than the schema holds),
 `tests/IntegrationTests/RlsCoverageTests.cs` (schema-derived, so any
 new table without the policy its ownership calls for, or without a stated exemption, fails —
 including one carrying neither ownership column, and one that is a view or materialized view),

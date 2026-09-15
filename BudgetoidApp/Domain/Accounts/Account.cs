@@ -56,7 +56,7 @@ public sealed class Account
     /// </para>
     /// <para>
     /// <b><see cref="ReadOnlyMemory{T}"/> and not <see cref="byte"/><c>[]</c>, following
-    /// <see cref="Users.WrappedAccountKeys.WrappedContentKey"/>.</b> The window handed over by
+    /// <see cref="Users.WrappedAccountKeys.WrappedPrivateKey"/>.</b> The window handed over by
     /// <see cref="IndexedName.BlindIndex"/> is onto a buffer that value owns outright — the copy its
     /// factory took — so aliasing it here shares nothing with any caller. Nothing about the type
     /// guarantees a width: <c>default</c> is a zero-length buffer, which is why

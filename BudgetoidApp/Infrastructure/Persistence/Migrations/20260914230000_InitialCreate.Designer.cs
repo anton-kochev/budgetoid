@@ -12,7 +12,7 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(BudgetoidDbContext))]
-    [Migration("20260914212557_InitialCreate")]
+    [Migration("20260914230000_InitialCreate")]
     partial class InitialCreate
     {
         /// <inheritdoc />
@@ -689,43 +689,59 @@ namespace Infrastructure.Persistence.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("user_id");
 
-                    b.Property<Guid>("FactorId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("factor_id");
-
                     b.Property<Guid>("RotationId")
                         .HasColumnType("uuid")
                         .HasColumnName("rotation_id");
+
+                    b.Property<byte[]>("StagedManifest")
+                        .IsRequired()
+                        .HasColumnType("bytea")
+                        .HasColumnName("staged_manifest");
+
+                    b.Property<int>("StagedRotationEpoch")
+                        .HasColumnType("integer")
+                        .HasColumnName("staged_rotation_epoch");
 
                     b.Property<DateTime>("StartedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("started_at_utc");
 
-                    b.Property<byte[]>("WrappedContentKey")
-                        .IsRequired()
-                        .HasColumnType("bytea")
-                        .HasColumnName("wrapped_content_key");
-
-                    b.Property<byte[]>("WrappedIndexKey")
-                        .IsRequired()
-                        .HasColumnType("bytea")
-                        .HasColumnName("wrapped_index_key");
-
                     b.HasKey("UserId")
                         .HasName("PK_key_rotations");
 
-                    b.HasIndex("FactorId", "UserId")
-                        .HasDatabaseName("IX_key_rotations_factor_id_user_id");
-
                     b.ToTable("key_rotations", null, t =>
                         {
-                            t.HasCheckConstraint("CK_key_rotations_wrapped_content_key_length", "length(wrapped_content_key) = 61");
+                            t.HasCheckConstraint("CK_key_rotations_staged_manifest_length", "length(staged_manifest) between 1 and 4096");
 
-                            t.HasCheckConstraint("CK_key_rotations_wrapped_content_key_version", "get_byte(wrapped_content_key, 0) = 1");
+                            t.HasCheckConstraint("CK_key_rotations_staged_rotation_epoch", "staged_rotation_epoch >= 1");
+                        });
+                });
 
-                            t.HasCheckConstraint("CK_key_rotations_wrapped_index_key_length", "length(wrapped_index_key) = 61");
+            modelBuilder.Entity("Domain.Users.KeyRotationSeal", b =>
+                {
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
 
-                            t.HasCheckConstraint("CK_key_rotations_wrapped_index_key_version", "get_byte(wrapped_index_key, 0) = 1");
+                    b.Property<Guid>("FactorId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("factor_id");
+
+                    b.Property<byte[]>("EncapsulatedAccountKeys")
+                        .IsRequired()
+                        .HasColumnType("bytea")
+                        .HasColumnName("encapsulated_account_keys");
+
+                    b.HasKey("UserId", "FactorId")
+                        .HasName("PK_key_rotation_seals");
+
+                    b.HasIndex("FactorId", "UserId");
+
+                    b.ToTable("key_rotation_seals", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_key_rotation_seals_encapsulated_account_keys_length", "length(encapsulated_account_keys) = 158");
+
+                            t.HasCheckConstraint("CK_key_rotation_seals_encapsulated_account_keys_version", "get_byte(encapsulated_account_keys, 0) = 1");
                         });
                 });
 
@@ -901,19 +917,19 @@ namespace Infrastructure.Persistence.Migrations
                         .HasColumnType("character varying(20)")
                         .HasColumnName("credential_type");
 
+                    b.Property<byte[]>("EncapsulatedAccountKeys")
+                        .IsRequired()
+                        .HasColumnType("bytea")
+                        .HasColumnName("encapsulated_account_keys");
+
                     b.Property<Guid>("UserId")
                         .HasColumnType("uuid")
                         .HasColumnName("user_id");
 
-                    b.Property<byte[]>("WrappedContentKey")
+                    b.Property<byte[]>("WrappedPrivateKey")
                         .IsRequired()
                         .HasColumnType("bytea")
-                        .HasColumnName("wrapped_content_key");
-
-                    b.Property<byte[]>("WrappedIndexKey")
-                        .IsRequired()
-                        .HasColumnType("bytea")
-                        .HasColumnName("wrapped_index_key");
+                        .HasColumnName("wrapped_private_key");
 
                     b.HasKey("FactorId")
                         .HasName("PK_wrapped_account_keys");
@@ -931,13 +947,13 @@ namespace Infrastructure.Persistence.Migrations
                         {
                             t.HasCheckConstraint("CK_wrapped_account_keys_credential_type", "credential_type in ('passkey', 'recovery_codes')");
 
-                            t.HasCheckConstraint("CK_wrapped_account_keys_wrapped_content_key_length", "length(wrapped_content_key) = 61");
+                            t.HasCheckConstraint("CK_wrapped_account_keys_encapsulated_account_keys_length", "length(encapsulated_account_keys) = 158");
 
-                            t.HasCheckConstraint("CK_wrapped_account_keys_wrapped_content_key_version", "get_byte(wrapped_content_key, 0) = 1");
+                            t.HasCheckConstraint("CK_wrapped_account_keys_encapsulated_account_keys_version", "get_byte(encapsulated_account_keys, 0) = 1");
 
-                            t.HasCheckConstraint("CK_wrapped_account_keys_wrapped_index_key_length", "length(wrapped_index_key) = 61");
+                            t.HasCheckConstraint("CK_wrapped_account_keys_wrapped_private_key_length", "length(wrapped_private_key) = 167");
 
-                            t.HasCheckConstraint("CK_wrapped_account_keys_wrapped_index_key_version", "get_byte(wrapped_index_key, 0) = 1");
+                            t.HasCheckConstraint("CK_wrapped_account_keys_wrapped_private_key_version", "get_byte(wrapped_private_key, 0) = 1");
                         });
                 });
 
@@ -1122,13 +1138,30 @@ namespace Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("Domain.Users.KeyRotation", b =>
                 {
+                    b.HasOne("Domain.Users.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("FK_key_rotations_users");
+                });
+
+            modelBuilder.Entity("Domain.Users.KeyRotationSeal", b =>
+                {
+                    b.HasOne("Domain.Users.KeyRotation", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("FK_key_rotation_seals_key_rotations");
+
                     b.HasOne("Domain.Users.WrappedAccountKeys", null)
                         .WithMany()
                         .HasForeignKey("FactorId", "UserId")
                         .HasPrincipalKey("FactorId", "UserId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
-                        .HasConstraintName("FK_key_rotations_wrapped_account_keys");
+                        .HasConstraintName("FK_key_rotation_seals_wrapped_account_keys");
                 });
 
             modelBuilder.Entity("Domain.Users.PasskeyPublicKey", b =>

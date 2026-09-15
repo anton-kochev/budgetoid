@@ -831,8 +831,8 @@ public sealed class SessionCookieIssuanceTests
             {
                 verifier,
                 factorId = keys.FactorId,
-                wrappedContentKey = keys.WrappedContentKey,
-                wrappedIndexKey = keys.WrappedIndexKey,
+                wrappedPrivateKey = keys.WrappedPrivateKey,
+                encapsulatedAccountKeys = keys.EncapsulatedAccountKeys,
             };
         }),
     ];
@@ -861,8 +861,8 @@ public sealed class SessionCookieIssuanceTests
             attestationObject = attestation.AttestationObjectBase64Url,
             clientExtensionResults = new { prf = new { enabled = true } },
             factorId = keys.FactorId,
-            wrappedContentKey = keys.WrappedContentKey,
-            wrappedIndexKey = keys.WrappedIndexKey,
+            wrappedPrivateKey = keys.WrappedPrivateKey,
+            encapsulatedAccountKeys = keys.EncapsulatedAccountKeys,
         }));
     }
 

@@ -24,6 +24,19 @@ because the production database holds no data, and because the schema changes st
 worth landing as one initial migration rather than as a chain of migrations no database ever replays
 step by step.
 
+The baseline is **`20260914230000_InitialCreate`** today, and
+`Migrations_KeepTheBaselineFrozen` pins that exact id.
+
+**The most recent regeneration dropped columns, which is the case this window exists for and not
+merely a case it permits.** `wrapped_account_keys` lost both of its wrapped account-key columns and
+`key_rotations` lost a factor and both of its staged envelopes, so there is no additive migration
+that expresses the change: an `ALTER TABLE … DROP COLUMN` against a populated database destroys the
+rows' contents, and against this one it destroys nothing because there are no rows. Every earlier
+rebaseline collapsed additions; this one removed columns that a database holding data could not have
+given up. That difference is worth carrying, because it is the argument for keeping the window open
+until the schema settles and the argument for closing it the moment the database starts collecting
+anything.
+
 The window makes a regenerated baseline *permitted*, not *free*. The new baseline carries a new id,
 so production's history no longer matches anything the pipeline is about to apply. Whoever
 regenerates the baseline resets that history in the same deploy — `DEPLOYMENT.md`, Step 3, holds

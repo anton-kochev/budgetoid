@@ -97,9 +97,9 @@ public sealed class RegisterAccountHandlerTests
     /// <c>IntegrationTests.WrappedKeyFixture</c>'s choice, spelled here because the two projects share no
     /// fixture.
     /// </remarks>
-    private const byte ContentKeyPurpose = 0xC0;
+    private const byte PrivateKeyPurpose = 0xC0;
 
-    private const byte IndexKeyPurpose = 0x1D;
+    private const byte AccountKeysPurpose = 0x1D;
 
     /// <summary>
     /// Rung 4 runs before rung 5: a spent challenge is reported as a spent challenge, whatever else is
@@ -467,8 +467,8 @@ public sealed class RegisterAccountHandlerTests
                 ? new PasskeyClientExtensionResults(new PasskeyPrfResults(Enabled: true))
                 : null,
             factorId ?? Guid.CreateVersion7().ToString("D"),
-            Base64UrlText.Encode(Envelope(ContentKeyPurpose)),
-            Base64UrlText.Encode(Envelope(IndexKeyPurpose)),
+            Base64UrlText.Encode(WrappedPrivateKeyPayload(PrivateKeyPurpose)),
+            Base64UrlText.Encode(EncapsulatedAccountKeysPayload(AccountKeysPurpose)),
             codes ?? Card());
 
     /// <summary>
@@ -484,8 +484,8 @@ public sealed class RegisterAccountHandlerTests
         .. Enumerable.Range(0, count).Select(_ => new RecoveryCodeSubmission(
             Base64UrlText.Encode(RandomNumberGenerator.GetBytes(VerifierLength)),
             Guid.CreateVersion7().ToString("D"),
-            Base64UrlText.Encode(Envelope(ContentKeyPurpose)),
-            Base64UrlText.Encode(Envelope(IndexKeyPurpose)))),
+            Base64UrlText.Encode(WrappedPrivateKeyPayload(PrivateKeyPurpose)),
+            Base64UrlText.Encode(EncapsulatedAccountKeysPayload(AccountKeysPurpose)))),
     ];
 
     /// <summary>
@@ -497,13 +497,31 @@ public sealed class RegisterAccountHandlerTests
     /// nothing in this file is about the envelope's shape, and a copy of either bound would turn every
     /// test here red on the day it moved, for a reason none of them is about.
     /// </remarks>
-    private static byte[] Envelope(byte purpose)
-    {
-        byte[] envelope = RandomNumberGenerator.GetBytes(WrappedAccountKeys.EnvelopeLength);
-        envelope[0] = WrappedAccountKeys.EnvelopeVersion;
-        envelope[1] = purpose;
+    private static byte[] WrappedPrivateKeyPayload(byte purpose) =>
+        Payload(
+            WrappedAccountKeys.WrappedPrivateKeyLength,
+            WrappedAccountKeys.WrappedPrivateKeyVersion,
+            purpose);
 
-        return envelope;
+    /// <inheritdoc cref="WrappedPrivateKeyPayload" />
+    private static byte[] EncapsulatedAccountKeysPayload(byte purpose) =>
+        Payload(
+            WrappedAccountKeys.EncapsulatedAccountKeysLength,
+            WrappedAccountKeys.EncapsulatedAccountKeysVersion,
+            purpose);
+
+    /// <summary>
+    /// The shared body of the two above. The width and the version are parameters rather than read
+    /// inside, because the one mistake this helper could make is pairing one suite's width with the
+    /// other's version — the cross-wiring the two pairs of constants exist to keep apart.
+    /// </summary>
+    private static byte[] Payload(int length, byte version, byte purpose)
+    {
+        byte[] payload = RandomNumberGenerator.GetBytes(length);
+        payload[0] = version;
+        payload[1] = purpose;
+
+        return payload;
     }
 
     /// <summary>

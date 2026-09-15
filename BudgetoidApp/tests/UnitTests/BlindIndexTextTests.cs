@@ -23,7 +23,7 @@ namespace UnitTests;
 /// <c>32</c> here would let the edge and the column drift apart while staying green, which is exactly
 /// the failure the arrangement exists to prevent. That is the opposite of the choice
 /// <c>CiphertextEnvelopeTests</c> makes for its pinning cases, and the distinction is the one
-/// <c>WrappedKeyEnvelopeTests</c> and <c>CiphertextEnvelopeTextTests</c> both record: a test that pins
+/// <c>WrappedPrivateKeyEnvelopeTests</c> and <c>CiphertextEnvelopeTextTests</c> both record: a test that pins
 /// a number <em>itself</em> has to restate it, because reading the constant it is checking agrees with
 /// whatever that constant becomes.
 /// </para>
@@ -50,7 +50,7 @@ namespace UnitTests;
 /// ceiling of 32 is also 44, so the value clears every check the text can carry and is refused after
 /// decoding. The case is kept because that is the behaviour the docblock promises a caller — "33 bytes
 /// does not slip through the padded allowance" — but a reviewer should know that mutating this type's
-/// width check catches nothing here, exactly as <c>WrappedKeyEnvelopeTests</c> records for its own
+/// width check catches nothing here, exactly as <c>WrappedPrivateKeyEnvelopeTests</c> records for its own
 /// upper bound.
 /// </item>
 /// <item>
@@ -123,7 +123,7 @@ public sealed class BlindIndexTextTests
     /// allowance for a ceiling of 32 is 44, and the post-decode comparison is a <c>&gt;</c>, so the
     /// value clears every gate below and arrives with 31 bytes in hand. A ceiling of any tightness is
     /// blind to the short side. It is refused rather than padded into shape, for the reason
-    /// <see cref="Application.Passkeys.WrappedKeyEnvelope"/> gives about its own repair: a padded index
+    /// <see cref="Application.Passkeys.WrappedPrivateKeyEnvelope"/> gives about its own repair: a padded index
     /// stores a well-formed row holding a value that matches nothing, and the row looks correct until
     /// somebody searches for the name it was supposed to find.
     /// </remarks>
@@ -343,7 +343,7 @@ public sealed class BlindIndexTextTests
     /// Text that is not an encoding at all is refused.
     /// </summary>
     /// <remarks>
-    /// The blunt case its sibling <c>WrappedKeyEnvelopeTests</c> also keeps: a member that was never
+    /// The blunt case its sibling <c>WrappedPrivateKeyEnvelopeTests</c> also keeps: a member that was never
     /// encoded, as opposed to one encoded in the wrong alphabet. Its length is well inside the
     /// allowance, so the refusal is the alphabet's and not the ceiling's.
     /// </remarks>

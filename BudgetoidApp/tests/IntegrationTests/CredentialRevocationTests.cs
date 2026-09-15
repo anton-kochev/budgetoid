@@ -825,10 +825,10 @@ public sealed class CredentialRevocationTests
         WrappedAccountKeysRow[] surviving = [.. rows.Where(row => row.CredentialId == provingCredentialId)];
         await Assert.That(surviving.Length).IsEqualTo(1);
         await Assert.That(surviving[0].FactorId).IsEqualTo(survivingKeys.Factor);
-        await Assert.That(Base64UrlText.Encode(surviving[0].WrappedContentKey))
-            .IsEqualTo(survivingKeys.WrappedContentKey);
-        await Assert.That(Base64UrlText.Encode(surviving[0].WrappedIndexKey))
-            .IsEqualTo(survivingKeys.WrappedIndexKey);
+        await Assert.That(Base64UrlText.Encode(surviving[0].WrappedPrivateKey))
+            .IsEqualTo(survivingKeys.WrappedPrivateKey);
+        await Assert.That(Base64UrlText.Encode(surviving[0].EncapsulatedAccountKeys))
+            .IsEqualTo(survivingKeys.EncapsulatedAccountKeys);
     }
 
     /// <summary>
@@ -1146,8 +1146,8 @@ public sealed class CredentialRevocationTests
         Guid FactorId,
         Guid UserId,
         string CredentialType,
-        byte[] WrappedContentKey,
-        byte[] WrappedIndexKey);
+        byte[] WrappedPrivateKey,
+        byte[] EncapsulatedAccountKeys);
 
     /// <summary>
     /// The route the revocation is posted to. The <c>{credentialId}</c> segment is a
@@ -1221,8 +1221,8 @@ public sealed class CredentialRevocationTests
             attestationObject = attestation.AttestationObjectBase64Url,
             clientExtensionResults = new { prf = new { enabled = true } },
             factorId = keys.FactorId,
-            wrappedContentKey = keys.WrappedContentKey,
-            wrappedIndexKey = keys.WrappedIndexKey,
+            wrappedPrivateKey = keys.WrappedPrivateKey,
+            encapsulatedAccountKeys = keys.EncapsulatedAccountKeys,
         });
         response.EnsureSuccessStatusCode();
     }
@@ -1519,7 +1519,7 @@ public sealed class CredentialRevocationTests
     {
         await using NpgsqlCommand command = new(
             """
-            select credential_id, factor_id, user_id, credential_type, wrapped_content_key, wrapped_index_key
+            select credential_id, factor_id, user_id, credential_type, wrapped_private_key, encapsulated_account_keys
             from wrapped_account_keys
             where user_id = @userId
             order by created_at_utc

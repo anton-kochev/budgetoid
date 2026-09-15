@@ -227,18 +227,25 @@ public sealed class RegisterAccountHandler(
         // The two are judged separately because they are supplied separately: a handler that decoded one
         // and passed the other through would file whatever a client felt like sending into half of the
         // account's key custody.
-        if (!WrappedKeyEnvelope.TryDecode(command.WrappedContentKey, out byte[]? wrappedContentKey))
+        //
+        // TWO DECODERS, NOT ONE CALLED TWICE. The members carry two cryptographic suites at two widths
+        // over two floors, and the leading byte is 1 in both — so routing them through one type compiles,
+        // passes every version case, and judges the encapsulated value against a floor 65 bytes below its
+        // own.
+        if (!WrappedPrivateKeyEnvelope.TryDecode(command.WrappedPrivateKey, out byte[]? wrappedPrivateKey))
         {
             throw Refused(
-                nameof(RegisterAccountCommand.WrappedContentKey),
-                MalformedEnvelope("wrappedContentKey"));
+                nameof(RegisterAccountCommand.WrappedPrivateKey),
+                MalformedWrappedPrivateKey());
         }
 
-        if (!WrappedKeyEnvelope.TryDecode(command.WrappedIndexKey, out byte[]? wrappedIndexKey))
+        if (!EncapsulatedAccountKeysEnvelope.TryDecode(
+                command.EncapsulatedAccountKeys,
+                out byte[]? encapsulatedAccountKeys))
         {
             throw Refused(
-                nameof(RegisterAccountCommand.WrappedIndexKey),
-                MalformedEnvelope("wrappedIndexKey"));
+                nameof(RegisterAccountCommand.EncapsulatedAccountKeys),
+                MalformedEncapsulatedAccountKeys());
         }
 
         // The card, judged by the one definition every write path that accepts a set shares — how many
@@ -339,12 +346,12 @@ public sealed class RegisterAccountHandler(
         // here.
         IReadOnlyList<WrappedAccountKeys> wrappedAccountKeys =
         [
-            WrappedAccountKeys.For(passkey, factorId, wrappedContentKey, wrappedIndexKey, now),
+            WrappedAccountKeys.For(passkey, factorId, wrappedPrivateKey, encapsulatedAccountKeys, now),
             .. presented.Select(code => WrappedAccountKeys.For(
                 recoveryCodes,
                 code.FactorId,
-                code.WrappedContentKey,
-                code.WrappedIndexKey,
+                code.WrappedPrivateKey,
+                code.EncapsulatedAccountKeys,
                 now)),
         ];
 
@@ -470,12 +477,33 @@ public sealed class RegisterAccountHandler(
     }
 
     /// <summary>
-    /// What is required of <paramref name="member"/>, said whole rather than split into which part of it
+    /// What is required of <c>wrappedPrivateKey</c>, said whole rather than split into which part of it
     /// was wrong.
     /// </summary>
-    private static string MalformedEnvelope(string member) =>
-        $"{member} must be base64url text decoding to exactly {WrappedAccountKeys.EnvelopeLength} bytes "
-        + $"carrying envelope version {WrappedAccountKeys.EnvelopeVersion}.";
+    /// <remarks>
+    /// <b>Two sentences rather than one taking the member's name.</b> The helper this replaced was
+    /// parameterised because both members were the same framing at the same width and only the name
+    /// differed; the numbers differ now as well, so a parameterised sentence would either carry two more
+    /// arguments or quietly state one suite's width against the other's member. Nothing in the build
+    /// would notice the second, because a well-formed sentence stating the wrong width is still a 400.
+    /// </remarks>
+    private static string MalformedWrappedPrivateKey() =>
+        "wrappedPrivateKey must be base64url text decoding to exactly "
+        + $"{WrappedAccountKeys.WrappedPrivateKeyLength} bytes carrying AEAD framing version "
+        + $"{WrappedAccountKeys.WrappedPrivateKeyVersion}.";
+
+    /// <summary>
+    /// What is required of <c>encapsulatedAccountKeys</c>, said whole rather than split into which part
+    /// of it was wrong.
+    /// </summary>
+    /// <remarks>
+    /// The twin of <see cref="MalformedWrappedPrivateKey"/>, naming its own suite for the reason stated
+    /// there. Every number it reads belongs to the encapsulation framing.
+    /// </remarks>
+    private static string MalformedEncapsulatedAccountKeys() =>
+        "encapsulatedAccountKeys must be base64url text decoding to exactly "
+        + $"{WrappedAccountKeys.EncapsulatedAccountKeysLength} bytes carrying encapsulation framing "
+        + $"version {WrappedAccountKeys.EncapsulatedAccountKeysVersion}.";
 
     // Domain.Common.ValidationException by name, because both layers declare one and only that one is
     // what ValidationExceptionHandler turns into a 400 with the field errors on it.

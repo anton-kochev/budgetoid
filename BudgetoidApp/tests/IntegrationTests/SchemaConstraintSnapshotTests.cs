@@ -62,35 +62,61 @@ public sealed class SchemaConstraintSnapshotTests
             "budgets.FK_budgets_currencies_base_currency_code: FOREIGN KEY (base_currency_code) REFERENCES currencies(code) ON DELETE RESTRICT",
             "budgets.FK_budgets_users_user_id: FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE",
             "categories.FK_categories_budgets_budget_id: FOREIGN KEY (budget_id) REFERENCES budgets(id) ON DELETE CASCADE",
-            // THE ONLY EDGE ON THIS SCHEMA THAT REFERENCES A TABLE OTHER THAN credentials, budgets,
-            // users, sessions, accounts, categories or payees — it points at wrapped_account_keys, and
-            // which table it points at is the decision this line pins. A rotation is staged under a
-            // FACTOR, and a set of recovery codes is ten factors under one credentials row, so a key to
-            // the credential would have left "which factor" a value nothing checks; pointed here, the
-            // row this rotation will overwrite exists by construction.
+            // TWO EDGES OUT OF key_rotation_seals, AND IT IS THE ONLY TABLE ON THIS SCHEMA WITH TWO
+            // CASCADING PARENTS. They are not redundant and neither may be dropped as "covered by the
+            // other".
             //
-            // Composite, and the composite is what the owner half buys: user_isolation on key_rotations
-            // reads user_id and never looks at the factor, so shortened to factor_id alone the database
-            // would accept envelopes staged against another account's factor — and the factor id is the
-            // associated data both staged envelopes were sealed with, so the completion step would
-            // promote them over somebody else's keys. Referencing (factor_id, user_id) through
-            // AK_wrapped_account_keys_factor_id_user_id is what makes the two columns agree by
-            // construction rather than by a rule somebody remembers. That alternate key is why the
-            // unique-index snapshot below grew a row in the same change.
+            // The composite one is the rule the table exists for. A seal is one surviving factor's copy
+            // of the next generation of the account's two keys, and a set of recovery codes is ten
+            // factors under one credentials row — so a key to the credential would have left "which
+            // factor" a value nothing checks. Pointed at (factor_id, user_id), the row a promotion will
+            // copy this value into exists by construction. The OWNER half is what the composite buys:
+            // user_isolation on this table reads user_id and never looks at the factor, so shortened to
+            // factor_id alone the database would accept a seal staged against another account's factor,
+            // and a promotion would file this account's next generation over somebody else's keys. It
+            // reaches AK_wrapped_account_keys_factor_id_user_id, which is why that alternate key
+            // survived the reshape that removed its first consumer — see the unique-index snapshot.
             //
-            // Cascade, and on this table it is the only answer that is not actively harmful. Restrict
-            // would let an unfinished staging row hold up the revocation of a passkey, and through the
-            // credentials cascade an account erasure — bookkeeping for an abandoned run outranking a
-            // person's request to be forgotten, which is the refusal the credentials -> users row above
-            // records. It is right on its own terms too: the staged envelopes were sealed under the
-            // key-encryption key that factor derives, so once the factor is gone they are two blobs
-            // nothing in the world can open, and a rotation that cannot be completed must not be
-            // resumable either. This edge is also the last link of the chain an erasure runs through —
-            // users -> credentials -> wrapped_account_keys -> key_rotations — so turning it to Restrict
-            // would leave a remnant of an erasure in the schema, which docs/business-logic/erasure.md
-            // forbids outright.
-            "key_rotations.FK_key_rotations_wrapped_account_keys: FOREIGN KEY (factor_id, user_id) REFERENCES wrapped_account_keys(factor_id, user_id) ON DELETE CASCADE",
-            // SINGLE-COLUMN, AND ON THIS SCHEMA THAT IS THE DECISION RATHER THAN THE DEFAULT. Every
+            // The single-column one to key_rotations is what makes a seal die with its run. A second
+            // begin replaces the staging row, and key_rotations holds no DELETE grant of any shape, so
+            // this cascade is the ONLY thing that clears the previous run's seals — without it a
+            // completion would find seals from two generations under one account and no column saying
+            // which. It is also the only write of any kind that removes a row from this table.
+            //
+            // Cascade on both, and on this table it is the only answer that is not actively harmful.
+            // Restrict on either would let an abandoned run hold up the revocation of a passkey, and
+            // through the credentials cascade an account erasure — bookkeeping for a run nobody
+            // finished outranking a person's request to be forgotten, which is the refusal the
+            // credentials -> users row above records. It is right on its own terms too: a seal is
+            // encapsulated to a factor's public key, so once that factor is gone it is a blob nothing in
+            // the world can open. These two edges are the last links of the two chains an erasure runs
+            // through — users -> credentials -> wrapped_account_keys -> key_rotation_seals, and
+            // users -> key_rotations -> key_rotation_seals — so turning either to Restrict would leave a
+            // remnant of an erasure in the schema, which docs/business-logic/erasure.md forbids outright.
+            """key_rotation_seals.FK_key_rotation_seals_key_rotations: FOREIGN KEY (user_id) REFERENCES key_rotations(user_id) ON DELETE CASCADE""",
+            """key_rotation_seals.FK_key_rotation_seals_wrapped_account_keys: FOREIGN KEY (factor_id, user_id) REFERENCES wrapped_account_keys(factor_id, user_id) ON DELETE CASCADE""",
+            // SINGLE-COLUMN AND STRAIGHT TO users, AND IT REPLACED A COMPOSITE RATHER THAN BEING ADDED
+            // BESIDE ONE. key_rotations used to carry a factor_id and a composite key to
+            // wrapped_account_keys; it no longer names a factor at all, because a run encapsulates the
+            // new account keys to every surviving factor's PUBLIC half rather than being performed under
+            // one factor that has to be present. What left with that column was the table's ONLY EDGE,
+            // and with it the table's place on the erasure chain: users -> credentials ->
+            // wrapped_account_keys -> key_rotations. THIS ROW IS WHAT PUT IT BACK.
+            //
+            // So the delete rule is the whole of what this line is for. Flip it to Restrict and an
+            // account holding a staged rotation cannot be erased at all — the delete from users is
+            // refused, the erasure route answers a 500, and a person's request to be forgotten is held
+            // up by bookkeeping for a run nobody finished. That is the refusal the credentials -> users
+            // row above records, and docs/business-logic/erasure.md forbids the remnant outright.
+            // Nothing else reaches this table: the app role holds no DELETE on it, so a Restrict here
+            // would make the row unreachable by any path at all.
+            //
+            // Nothing WIDER is available and nothing narrower would do. A manifest names every factor at
+            // once, so a key to any single credential would be a claim that the whole staged set belongs
+            // to one of them; users is the grain the row is keyed at, and user_id is the whole of
+            // PK_key_rotations.
+            """key_rotations.FK_key_rotations_users: FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE""",
+            // SINGLE-COLUMN, AND ON THIS SCHEMA THAT IS THE DECISION RATHER THAN THE DEFAULT. Every            // SINGLE-COLUMN, AND ON THIS SCHEMA THAT IS THE DECISION RATHER THAN THE DEFAULT. Every
             // other key-material edge here is a composite reaching a credential, because those rows
             // belong to one factor and the extra columns are what stop a copy disagreeing with its
             // source. This one names users DIRECTLY and has nothing to widen: a manifest lists EVERY
@@ -371,7 +397,27 @@ public sealed class SchemaConstraintSnapshotTests
             // per attempt with a status column, so an abandoned run has to be DELETED rather than marked,
             // or the account can never begin another.
             """CREATE UNIQUE INDEX "PK_key_rotations" ON public.key_rotations USING btree (user_id)""",
-            // THE FOURTH PRIMARY KEY IN THIS SET THAT IS NOT A SURROGATE ID, and the second keyed on the
+            // COMPOSITE, AND THE ORDER OF THE TWO COLUMNS IS THE DECISION THIS LINE PINS. A run produces
+            // one seal per surviving factor, so "one copy per factor per account" is the rule, and a
+            // composite key is what makes a second copy for one factor unstorable rather than a
+            // duplicate a promotion would have to choose between — with both well-formed, both the right
+            // width, and nothing on this side able to open either.
+            //
+            // user_id LEADS, and that is not alphabetical accident. Every read of this table is an
+            // account's whole set — a promotion walks every seal of the run it is finishing — and
+            // user_isolation appends a predicate over user_id to all of them, so the leading column is
+            // both the policy's column and the seek's. Reversed to (factor_id, user_id) the key would
+            // still refuse the same duplicates and would answer none of those reads, and the table would
+            // need a second index over user_id to get them back.
+            //
+            // A surrogate id added beside the pair would demote this to an ordinary index and make the
+            // duplicate storable, which is the shape every other table in this schema has and therefore
+            // the shape somebody tidying reaches for first. The cost of keying it this way is the one
+            // key_rotations already pays: a seal cannot be modelled as one row per attempt, so a second
+            // begin has to REMOVE the previous run's seals — which is what the cascade from
+            // key_rotations does, and the only reason this table needs no DELETE grant.
+            """CREATE UNIQUE INDEX "PK_key_rotation_seals" ON public.key_rotation_seals USING btree (user_id, factor_id)""",
+            // THE FIFTH PRIMARY KEY IN THIS SET THAT IS NOT A SURROGATE ID, and the second keyed on the
             // owner — it borrows PK_key_rotations' shape and argues its own reason for it. "One manifest
             // per account" is what the design depends on: the manifest is authenticated as a SET, so a
             // second row would be a second claim about which factors exist, and a client deciding what
@@ -644,21 +690,23 @@ public sealed class SchemaConstraintSnapshotTests
             """CK_credentials_type_shape: credentials CHECK (((((type)::text = 'federated'::text) AND (provider IS NOT NULL) AND (subject IS NOT NULL) AND (length((subject)::text) > 0)) OR (((type)::text = 'passkey'::text) AND (provider IS NULL) AND (subject IS NULL)) OR (((type)::text = 'recovery_codes'::text) AND (provider IS NULL) AND (subject IS NULL))))""",
             """CK_currencies_code: currencies CHECK (((code)::text ~ '^[A-Z]{3}$'::text))""",
             """CK_currencies_minor_unit: currencies CHECK (((minor_unit >= 0) AND (minor_unit <= 4)))""",
-            // FOUR ROWS THAT ARE BYTE-FOR-BYTE THE FOUR CK_wrapped_account_keys_wrapped_* ROWS AT THE
+            // TWO ROWS THAT ARE BYTE-FOR-BYTE THE TWO CK_wrapped_account_keys_encapsulated_* ROWS AT THE
             // FOOT OF THIS LIST, over a second table, and the identity is the assertion rather than a
-            // paste somebody should tidy. key_rotations stages the NEXT generation of exactly the
-            // envelopes wrapped_account_keys holds — the same AEAD framing over the same two 32-byte
-            // keys, under the same factor — and one completion step moves them from here to there. A
-            // width or a version this table accepted and its sibling refused is a row that stores here
-            // and fails on promotion, at the one moment in an account's life when the old generation has
-            // already been overwritten and neither is readable. Both configurations render all four from
-            // WrappedAccountKeys.EnvelopeLength and WrappedAccountKeys.EnvelopeVersion, so the 61 and
-            // the 1 rendered below are one fact printed twice rather than two facts that happen to
-            // agree; moving either constant moves eight lines in this file and that is the wanted
-            // failure.
+            // paste somebody should tidy. key_rotation_seals holds one surviving factor's copy of the
+            // NEXT generation of the account's two keys — the same encapsulation framing, at the same
+            // width — and one completion step copies it from here to there. A width or a version this
+            // table accepted and its sibling refused is a row that stores here and fails on promotion,
+            // at the one moment in an account's life when the old generation has already been
+            // overwritten and neither is readable. Both configurations render both from
+            // WrappedAccountKeys.EncapsulatedAccountKeysLength and
+            // WrappedAccountKeys.EncapsulatedAccountKeysVersion, so the 158 and the 1 rendered below are
+            // one fact printed twice rather than two facts that happen to agree; moving either constant
+            // moves four lines in this file and that is the wanted failure.
             //
-            // Per column rather than once over both, and the reason is the sibling's: a violation has to
-            // say WHICH envelope was malformed, and no other check on the row can tell the two apart.
+            // TWO ROWS AND NOT FOUR, which is the shape difference from the table at the foot of this
+            // list and not an omission: a seal carries no wrapped private key. A factor's key pair
+            // survives a rotation untouched, because the key-encryption key that factor derives does not
+            // change when the account's keys do.
             //
             // get_byte and not SUBSTRING, matching the sibling and departing from every narrative
             // version check above. Recorded rather than defended: get_byte raises 2202E on a
@@ -667,10 +715,22 @@ public sealed class SchemaConstraintSnapshotTests
             // is now duplicated onto a second table, which makes the fix larger rather than the risk
             // higher — the two tables must stay spelled alike, so re-spelling belongs to the hardening
             // item that owns both, not to an edit that fixes one and leaves the pair disagreeing.
-            """CK_key_rotations_wrapped_content_key_length: key_rotations CHECK ((length(wrapped_content_key) = 61))""",
-            """CK_key_rotations_wrapped_content_key_version: key_rotations CHECK ((get_byte(wrapped_content_key, 0) = 1))""",
-            """CK_key_rotations_wrapped_index_key_length: key_rotations CHECK ((length(wrapped_index_key) = 61))""",
-            """CK_key_rotations_wrapped_index_key_version: key_rotations CHECK ((get_byte(wrapped_index_key, 0) = 1))""",
+            """CK_key_rotation_seals_encapsulated_account_keys_length: key_rotation_seals CHECK ((length(encapsulated_account_keys) = 158))""",
+            """CK_key_rotation_seals_encapsulated_account_keys_version: key_rotation_seals CHECK ((get_byte(encapsulated_account_keys, 0) = 1))""",
+            // THE MANIFEST BOUNDS, OVER A SECOND TABLE, and they are the whole of what key_rotations
+            // bounds now. Four envelope checks stood here until the table stopped carrying envelopes: a
+            // run stages the factor SET it committed to rather than a per-factor value, and the
+            // per-factor value moved to key_rotation_seals above. Both are byte-for-byte the
+            // factor_manifests rows further down, rendered from FactorManifest.MaximumBytes and
+            // FactorManifest.MinimumRotationEpoch, because a staged manifest IS a manifest — a bound
+            // this table accepted and that one refused would be a generation that stages and cannot be
+            // promoted.
+            //
+            // The band is rendered as a pair of comparisons rather than as BETWEEN, which is
+            // pg_get_constraintdef's doing and not the configuration's; "fixing" it to read like the
+            // source is how this test starts failing for no reason.
+            """CK_key_rotations_staged_manifest_length: key_rotations CHECK (((length(staged_manifest) >= 1) AND (length(staged_manifest) <= 4096)))""",
+            """CK_key_rotations_staged_rotation_epoch: key_rotations CHECK ((staged_rotation_epoch >= 1))""",
             // THE ONLY CHECK IN THIS SET WHOSE BOUND IS DECIDED BY WHAT AN ABSENT ROW MEANS. Epoch 0 is
             // the absence of a manifest — an account with no row answers 0, which is the state of every
             // account that exists today and is not an error — so a stored row claiming epoch 0 would
@@ -844,21 +904,23 @@ public sealed class SchemaConstraintSnapshotTests
             // PRF equivalent, so a row filed against the federated credential would be two envelopes
             // nothing in the world can open, presented as a way back into the account.
             """CK_wrapped_account_keys_credential_type: wrapped_account_keys CHECK (((credential_type)::text = ANY ((ARRAY['passkey'::character varying, 'recovery_codes'::character varying])::text[])))""",
-            // Exactly 61 bytes, not a range, and stated once per column. AES-GCM ciphertext is the length
+            // Exactly one width per column, not a range, and stated once per column — 167 for the AEAD
+            // envelope over a private key, 158 for the encapsulation over both account keys. AES-GCM
+            // ciphertext is the length
             // of its plaintext and the plaintext is a 32-byte key, so an envelope over a wrapped account
             // key has one legal size — 1 version + 12 nonce + 32 ciphertext + 16 tag — and both sides of
             // the bound are refused. Padding or truncating either one would store a well-formed row
             // holding an envelope whose tag cannot verify, and the account would look registered until
             // the day somebody needed the keys. Per column rather than once over both, so a violation
             // names which envelope was malformed; nothing else here can tell the two apart.
-            """CK_wrapped_account_keys_wrapped_content_key_length: wrapped_account_keys CHECK ((length(wrapped_content_key) = 61))""",
+            """CK_wrapped_account_keys_wrapped_private_key_length: wrapped_account_keys CHECK ((length(wrapped_private_key) = 167))""",
             // The one envelope version this deployment implements (IFR-007): AES-256-GCM, 96-bit nonce,
             // 128-bit tag. Bounded here rather than left to the client because the successor does not
             // exist — a row carrying version 2 is a client claiming a contract nothing has implemented,
             // and storing it would file bytes no version of this system can interpret.
-            """CK_wrapped_account_keys_wrapped_content_key_version: wrapped_account_keys CHECK ((get_byte(wrapped_content_key, 0) = 1))""",
-            """CK_wrapped_account_keys_wrapped_index_key_length: wrapped_account_keys CHECK ((length(wrapped_index_key) = 61))""",
-            """CK_wrapped_account_keys_wrapped_index_key_version: wrapped_account_keys CHECK ((get_byte(wrapped_index_key, 0) = 1))""",
+            """CK_wrapped_account_keys_wrapped_private_key_version: wrapped_account_keys CHECK ((get_byte(wrapped_private_key, 0) = 1))""",
+            """CK_wrapped_account_keys_encapsulated_account_keys_length: wrapped_account_keys CHECK ((length(encapsulated_account_keys) = 158))""",
+            """CK_wrapped_account_keys_encapsulated_account_keys_version: wrapped_account_keys CHECK ((get_byte(encapsulated_account_keys, 0) = 1))""",
         ];
         await Assert.That(checkConstraints).IsEquivalentTo(expected);
     }

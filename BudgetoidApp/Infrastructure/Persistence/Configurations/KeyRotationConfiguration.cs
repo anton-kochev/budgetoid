@@ -19,17 +19,19 @@ public sealed class KeyRotationConfiguration : IEntityTypeConfiguration<KeyRotat
 
     // Pinned for the reason the sibling configurations pin theirs: a constraint name is what PostgreSQL
     // reports on a violation, so it has to outlive a property rename.
-    public const string ContentKeyLengthCheckName = "CK_key_rotations_wrapped_content_key_length";
+    public const string StagedManifestLengthCheckName = "CK_key_rotations_staged_manifest_length";
 
-    public const string ContentKeyVersionCheckName = "CK_key_rotations_wrapped_content_key_version";
+    public const string StagedRotationEpochCheckName = "CK_key_rotations_staged_rotation_epoch";
 
-    public const string IndexKeyLengthCheckName = "CK_key_rotations_wrapped_index_key_length";
-
-    public const string IndexKeyVersionCheckName = "CK_key_rotations_wrapped_index_key_version";
-
-    private const string FactorForeignKeyName = "FK_key_rotations_wrapped_account_keys";
-
-    private const string FactorIndexName = "IX_key_rotations_factor_id_user_id";
+    // THIS TABLE'S ONLY FOREIGN KEY, AND IT IS THE LAST LINK OF THE ERASURE CHAIN. The edge that used
+    // to hold this row on the graph was the composite key to wrapped_account_keys, which went with
+    // factor_id when a rotation stopped being performed under one factor. Nothing replaced it
+    // structurally, and a table on no edge at all is a table the cascade from users never reaches: an
+    // erased account would leave its staging row behind, holding its account identifier, which
+    // docs/business-logic/erasure.md forbids outright — no row in any table may reference the erased
+    // user. So the edge is restated where the row's own column already points, at users, and the
+    // erasure argument the old edge carried moves here rather than vanishing with it.
+    private const string UserForeignKeyName = "FK_key_rotations_users";
 
     // The comparer WrappedAccountKeysConfiguration declares, for the reason it declares one: change
     // tracking compares a property against the snapshot taken at load, and for a ReadOnlyMemory<byte>
@@ -48,40 +50,41 @@ public sealed class KeyRotationConfiguration : IEntityTypeConfiguration<KeyRotat
     {
         builder.ToTable("key_rotations", table =>
         {
-            // The four checks are wrapped_account_keys' four, restated over this table's two columns and
-            // rendered from the same two constants rather than from literals. That is deliberate and it
-            // is the same argument the sibling makes about its own: both tables hold the SAME kind of
-            // value — an AEAD envelope over one 32-byte key — so a local copy of 61 or of the version
-            // byte would not be a second fact, it would be one fact able to disagree with itself. The
-            // staged generation is the generation the completion step promotes, so a width this table
-            // accepted and the other refused would be a row that stores here and fails there, after the
-            // old keys have already been overwritten.
+            // BOTH BOUNDS ARE factor_manifests' BOUNDS, READ OFF FactorManifest RATHER THAN RESTATED.
+            // The staged manifest is the manifest a promotion writes into that row, so a width or an
+            // epoch this table accepted and that one refused is a row that stores here and fails at
+            // promotion — at the one moment in the run where the old generation has already gone. It is
+            // the rule this table already kept for the envelope bounds it read off WrappedAccountKeys,
+            // and it is the same argument the sibling configurations make about their own: a local copy
+            // of 4096 or of 1 would not be a second fact, it would be one fact able to disagree with
+            // itself.
             //
-            // Exactly equal rather than a range, for the reason the entity gives: AES-GCM ciphertext is
-            // the length of its plaintext and the plaintext is a 32-byte key, so an envelope over a
-            // wrapped account key has one legal size and both sides of the bound are refused. Stated per
-            // column rather than once over both, so a violation names which envelope was malformed;
-            // nothing else can tell them apart, since the two columns are indistinguishable by every
-            // check here.
+            // Both sides of the length band, because the entity refuses both and the database restates
+            // both, and the empty side is the one worth reading twice. An empty bytea is exactly what an
+            // unset member sends, and a manifest is the sole carrier of every factor's public key — so a
+            // caller that forgot to attach one would stage a generation naming no factor at all, and the
+            // promotion would file it: an account with no way back in, stored as though it had one. The
+            // wide side is refused rather than truncated, because cutting the blob at the line silently
+            // drops whichever factor fell past it. The lower bound is written as 1, as
+            // FactorManifestConfiguration writes its own, because "not empty" is a fact about bytea
+            // rather than a fact about a manifest that could ever be tuned.
+            //
+            // NOTHING HERE READS INTO THE BYTES, AND THAT IS A DECISION. The manifest is authenticated
+            // as a SET by a key this server does not hold, so any structural check would be a second,
+            // unverifiable grammar sitting where a client's is authoritative. Presence and the cap are
+            // the whole of what this side may say about it.
             table.HasCheckConstraint(
-                ContentKeyLengthCheckName,
-                $"length(wrapped_content_key) = {WrappedAccountKeys.EnvelopeLength}");
+                StagedManifestLengthCheckName,
+                $"length(staged_manifest) between 1 and {FactorManifest.MaximumBytes}");
 
-            // get_byte rather than substring: the leading byte is a number, and comparing it as one
-            // keeps the constraint reading the way the entity does. The version is bounded here and not
-            // left to the client because the successor does not exist — a row carrying version 2 is a
-            // client claiming a contract this deployment has never implemented.
+            // A floor and not a ceiling: generations have no last one. The floor is where it is because
+            // epoch 0 is the ABSENCE of a manifest row — an account with no manifest answers 0, which is
+            // the state of every account that exists today and is not an error — so a staged row
+            // claiming epoch 0 would stage a generation asserting its own absence. The negative side is
+            // refused with it because no generation has a number below the first.
             table.HasCheckConstraint(
-                ContentKeyVersionCheckName,
-                $"get_byte(wrapped_content_key, 0) = {WrappedAccountKeys.EnvelopeVersion}");
-
-            table.HasCheckConstraint(
-                IndexKeyLengthCheckName,
-                $"length(wrapped_index_key) = {WrappedAccountKeys.EnvelopeLength}");
-
-            table.HasCheckConstraint(
-                IndexKeyVersionCheckName,
-                $"get_byte(wrapped_index_key, 0) = {WrappedAccountKeys.EnvelopeVersion}");
+                StagedRotationEpochCheckName,
+                $"staged_rotation_epoch >= {FactorManifest.MinimumRotationEpoch}");
         });
 
         // THE ACCOUNT IS THE IDENTITY OF THE ROW, and this is the whole reason the table has the shape
@@ -126,32 +129,40 @@ public sealed class KeyRotationConfiguration : IEntityTypeConfiguration<KeyRotat
             .HasColumnName("rotation_id")
             .IsRequired();
 
-        // The factor the staged envelopes were wrapped under, which is also their associated data. Not
-        // unique here for the same reason rotation_id is not: the primary key already allows only one
-        // row per account, and this column's real guard is the composite foreign key below.
-        builder.Property(keyRotation => keyRotation.FactorId)
-            .HasColumnName("factor_id")
-            .IsRequired();
-
+        // NO factor_id, AND THE ABSENCE IS THE SHAPE OF THE TABLE RATHER THAN A COLUMN SOMEBODY FORGOT.
+        // Under a key-encryption key there was exactly one factor a run could have been begun under,
+        // because re-wrapping the account's keys needed the secret that factor derives. Under ECDH there
+        // is no such thing: encapsulating the next generation takes public halves only, so a run
+        // produces ONE VALUE PER SURVIVING FACTOR — those are key_rotation_seals rows hanging off this
+        // one — and "the factor this rotation was performed under" has stopped being a question with an
+        // answer. It did not become plural either: a factor id array here would be the seals' own key
+        // set restated on the parent, which is the copy that drifts.
+        //
         // ReadOnlyMemory<byte> is not a type the provider knows, so it is converted to the array bytea
         // maps to. The comparer is not optional decoration — see the field above for what change
         // tracking does without it.
-        builder.Property(keyRotation => keyRotation.WrappedContentKey)
+        //
+        // bytea and nothing else, the call FactorManifestConfiguration makes over the same bytes: this
+        // blob is authenticated by a key the client holds and its tag covers every byte exactly as
+        // written, so a text type would invite PostgreSQL to collate, fold or validate an encoding over
+        // it.
+        builder.Property(keyRotation => keyRotation.StagedManifest)
             .HasConversion(
                 memory => memory.ToArray(),
                 bytes => new ReadOnlyMemory<byte>(bytes),
                 ByteContentComparer)
-            .HasColumnName("wrapped_content_key")
+            .HasColumnName("staged_manifest")
             .HasColumnType("bytea")
             .IsRequired();
 
-        builder.Property(keyRotation => keyRotation.WrappedIndexKey)
-            .HasConversion(
-                memory => memory.ToArray(),
-                bytes => new ReadOnlyMemory<byte>(bytes),
-                ByteContentComparer)
-            .HasColumnName("wrapped_index_key")
-            .HasColumnType("bytea")
+        // The generation the staged manifest will be filed at when the run completes. The epoch is bound
+        // in the manifest and nowhere else — not in any encapsulated value's KDF info and not in any
+        // associated data — because binding it into a value would make every encapsulation of a
+        // generation unopenable the moment the epoch it was produced under stopped being current, which
+        // turns a resumable run into a disposable one.
+        builder.Property(keyRotation => keyRotation.StagedRotationEpoch)
+            .HasColumnName("staged_rotation_epoch")
+            .HasColumnType("integer")
             .IsRequired();
 
         builder.Property(keyRotation => keyRotation.StartedAtUtc)
@@ -159,60 +170,43 @@ public sealed class KeyRotationConfiguration : IEntityTypeConfiguration<KeyRotat
             .HasColumnType("timestamp with time zone")
             .IsRequired();
 
+        // No index declaration at all, and both halves of that are decisions.
+        //
         // No user_id index, unlike wrapped_account_keys next door, and the difference is not a
         // preference. That table needs one because its primary key is factor_id, so nothing on it leads
         // with the column user_isolation appends a predicate over. Here user_id IS the primary key, so
         // the key's own index already answers every policed read of this table. A second index over the
-        // same leading column would be write amplification for a seek that already exists.
+        // same leading column would be write amplification for a seek that already exists — and the
+        // foreign key below names that same column, so EF's convention generates nothing either.
         //
-        // This index covers the composite foreign key below instead. EF's convention would generate one
-        // over those columns anyway — the primary key leads with user_id, not factor_id, so nothing else
-        // here starts with the pair — and declaring it pins the name. It is the index the ON DELETE
-        // CASCADE uses when a factor is revoked mid-rotation.
-        //
-        // Non-unique, deliberately. A factor belongs to exactly one account and a row exists per
-        // account, so the pair happens to be unique; saying so here would be a third constraint
-        // restating what the primary key and the foreign key already decide between them.
-        builder.HasIndex(keyRotation => new
-        {
-            keyRotation.FactorId,
-            keyRotation.UserId,
-        })
-            .HasDatabaseName(FactorIndexName);
+        // No (factor_id, user_id) index, because there is no such pair on this table any more. The one
+        // that stood here covered the composite key to wrapped_account_keys and was the index that
+        // key's ON DELETE CASCADE used; both left with factor_id.
 
-        // One composite foreign key, and the composite is the point, exactly as on wrapped_account_keys,
-        // sessions and passkey_public_keys: both columns must agree with the referenced row.
-        // Referencing wrapped_account_keys(factor_id, user_id) through the
-        // AK_wrapped_account_keys_factor_id_user_id alternate key makes a rotation staged against
-        // another account's factor unstorable rather than merely unlikely. The owner half is what
-        // user_isolation cannot check for itself — the policy reads user_id and never looks at the
-        // factor — and it is the half that decides whose envelopes the completion step overwrites.
+        // ONE FOREIGN KEY, AND IT IS WHAT KEEPS THIS TABLE ON THE ERASURE GRAPH. Dropping factor_id
+        // dropped the composite key to wrapped_account_keys, which was this table's ONLY edge and the
+        // last link of users → credentials → wrapped_account_keys → key_rotations. Without a
+        // replacement an erased account leaves a staging row behind carrying its own user id — a row
+        // referencing the erased user, which docs/business-logic/erasure.md forbids outright, and which
+        // no grant could clean up either, because this role holds no DELETE here of any shape.
         //
-        // Referencing wrapped_account_keys rather than credentials is the narrower of the two available
-        // choices and the correct one: a rotation is staged under a FACTOR, and a set of recovery codes
-        // is ten factors under one credential, so a key to the credential would leave "which factor" a
-        // value nothing checks. It also makes the promotion target exist by construction — the row this
-        // rotation will overwrite is the row the key points at.
+        // It names users directly rather than reaching the account through a credential, which is the
+        // call FactorManifestConfiguration makes for the same reason: a rotation belongs to the ACCOUNT
+        // — it is keyed on the account, and it stages a generation for every factor the account holds —
+        // so a key to any one credential would be a claim that the run belongs to one member of the set.
+        // The chain that reaches it is now users → key_rotations, one edge shorter than the one it
+        // replaced, and app-role-grants.sql's cascade rendering is updated to say so.
         //
-        // Cascade rather than Restrict, and on this table it is the only answer that is not actively
-        // harmful. Restrict would let a staging row hold up the revocation of a passkey, and through it
-        // an account erasure — bookkeeping for an unfinished run outranking a person's request to be
-        // forgotten. Cascade is right on its own terms too: the staged envelopes were sealed under the
-        // key-encryption key that factor derives, so once the factor is gone they are two blobs nothing
-        // in the world can open, and a rotation that cannot be completed must not be resumable either.
-        builder.HasOne<WrappedAccountKeys>()
+        // Cascade rather than Restrict, the argument the credentials → users, wrapped_account_keys →
+        // credentials and factor_manifests → users keys all record. Restrict would let bookkeeping for
+        // an unfinished run hold up an account erasure — a person's request to be forgotten refused by a
+        // rotation they abandoned. Cascade is right on its own terms too: the staged manifest lists the
+        // public keys of factors that hang off the same account, so once the account is gone it is a
+        // list of public keys for factors that no longer exist, kept against nobody.
+        builder.HasOne<User>()
             .WithMany()
-            .HasForeignKey(keyRotation => new
-            {
-                keyRotation.FactorId,
-                keyRotation.UserId,
-            })
-            .HasPrincipalKey(wrappedAccountKeys => new
-            {
-                wrappedAccountKeys.FactorId,
-                wrappedAccountKeys.UserId,
-            })
-            .HasConstraintName(FactorForeignKeyName)
+            .HasForeignKey(keyRotation => keyRotation.UserId)
+            .HasConstraintName(UserForeignKeyName)
             .OnDelete(DeleteBehavior.Cascade);
     }
 

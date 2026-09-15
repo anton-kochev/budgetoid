@@ -176,16 +176,22 @@ public sealed class GetAccountKeysHandlerTests
         // Assert
         await Assert.That(returned.Length).IsEqualTo(1);
         await Assert.That(returned[0].FactorId).IsEqualTo(stored.FactorId);
-        await Assert.That(returned[0].WrappedContentKey.ToArray())
-            .IsEquivalentTo(stored.WrappedContentKey.ToArray());
-        await Assert.That(returned[0].WrappedIndexKey.ToArray())
-            .IsEquivalentTo(stored.WrappedIndexKey.ToArray());
+        await Assert.That(returned[0].WrappedPrivateKey.ToArray())
+            .IsEquivalentTo(stored.WrappedPrivateKey.ToArray());
+        await Assert.That(returned[0].EncapsulatedAccountKeys.ToArray())
+            .IsEquivalentTo(stored.EncapsulatedAccountKeys.ToArray());
 
-        // The version byte, cast because IsEqualTo(1) against a byte compiles and then throws.
-        await Assert.That(returned[0].WrappedContentKey.Span[0])
-            .IsEqualTo(WrappedAccountKeys.EnvelopeVersion);
-        await Assert.That(returned[0].WrappedContentKey.Length)
-            .IsEqualTo(WrappedAccountKeys.EnvelopeLength);
+        // Each member's own suite's version byte and each member's own suite's width. The two pairs are
+        // read separately and never crossed: the two version constants hold the same number today, so a
+        // cross-read would pass while asserting the wrong contract, and only the widths would catch it.
+        await Assert.That(returned[0].WrappedPrivateKey.Span[0])
+            .IsEqualTo(WrappedAccountKeys.WrappedPrivateKeyVersion);
+        await Assert.That(returned[0].WrappedPrivateKey.Length)
+            .IsEqualTo(WrappedAccountKeys.WrappedPrivateKeyLength);
+        await Assert.That(returned[0].EncapsulatedAccountKeys.Span[0])
+            .IsEqualTo(WrappedAccountKeys.EncapsulatedAccountKeysVersion);
+        await Assert.That(returned[0].EncapsulatedAccountKeys.Length)
+            .IsEqualTo(WrappedAccountKeys.EncapsulatedAccountKeysLength);
     }
 
     /// <summary>
@@ -297,10 +303,10 @@ public sealed class GetAccountKeysHandlerTests
         {
             FactorEnvelopes actual = returned.Single(factor => factor.FactorId == expected.FactorId);
 
-            await Assert.That(actual.WrappedContentKey.ToArray())
-                .IsEquivalentTo(expected.WrappedContentKey.ToArray());
-            await Assert.That(actual.WrappedIndexKey.ToArray())
-                .IsEquivalentTo(expected.WrappedIndexKey.ToArray());
+            await Assert.That(actual.WrappedPrivateKey.ToArray())
+                .IsEquivalentTo(expected.WrappedPrivateKey.ToArray());
+            await Assert.That(actual.EncapsulatedAccountKeys.ToArray())
+                .IsEquivalentTo(expected.EncapsulatedAccountKeys.ToArray());
         }
     }
 
@@ -332,18 +338,38 @@ public sealed class GetAccountKeysHandlerTests
     /// </remarks>
     private static FactorEnvelopes Factor(int ordinal) => new(
         Guid.NewGuid(),
-        Envelope((byte)(0x10 + ordinal)),
-        Envelope((byte)(0xA0 + ordinal)));
+        WrappedPrivateKeyPayload((byte)(0x10 + ordinal)),
+        EncapsulatedAccountKeysPayload((byte)(0xA0 + ordinal)));
 
     /// <summary>
-    /// A wrapped-key envelope of the width and version the schema refuses a row for breaking, marked
+    /// A wrapped private key of the width and version the schema refuses a row for breaking, marked
     /// with <paramref name="marker" /> so two of them can be told apart.
     /// </summary>
-    private static byte[] Envelope(byte marker)
-    {
-        byte[] bytes = new byte[WrappedAccountKeys.EnvelopeLength];
+    /// <remarks>
+    /// <b>Two builders rather than one, because the two members are values of two different suites at
+    /// two different widths.</b> One builder with a width parameter would let a caller pair this
+    /// suite's length with the other's version, which renders bytes that store, read back and are
+    /// uninterpretable to the client that needs them — and while both version constants hold the same
+    /// number, nothing in the build would say so.
+    /// </remarks>
+    private static byte[] WrappedPrivateKeyPayload(byte marker) =>
+        Payload(
+            WrappedAccountKeys.WrappedPrivateKeyLength,
+            WrappedAccountKeys.WrappedPrivateKeyVersion,
+            marker);
 
-        bytes[0] = WrappedAccountKeys.EnvelopeVersion;
+    /// <inheritdoc cref="WrappedPrivateKeyPayload" />
+    private static byte[] EncapsulatedAccountKeysPayload(byte marker) =>
+        Payload(
+            WrappedAccountKeys.EncapsulatedAccountKeysLength,
+            WrappedAccountKeys.EncapsulatedAccountKeysVersion,
+            marker);
+
+    private static byte[] Payload(int length, byte version, byte marker)
+    {
+        byte[] bytes = new byte[length];
+
+        bytes[0] = version;
         bytes[^1] = marker;
 
         return bytes;

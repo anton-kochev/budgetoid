@@ -269,7 +269,7 @@ public sealed class FactorManifestSchemaTests
     /// </summary>
     /// <remarks>
     /// Deliberately not an envelope and deliberately not built by
-    /// <c>RepositoryTestHost.WrappedKeyEnvelope</c>: a manifest is authenticated PUBLIC material the
+    /// <c>RepositoryTestHost.WrappedPrivateKeyPayload</c>: a manifest is authenticated PUBLIC material the
     /// server holds in the clear, so a value carrying the wrapped-key version byte would misstate what
     /// this column holds to anybody reading these probes for an example. Nothing here verifies the
     /// authentication — the tag is checkable only by a client holding the account's keys, and no such

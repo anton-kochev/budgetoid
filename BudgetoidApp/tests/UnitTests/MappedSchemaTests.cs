@@ -68,11 +68,11 @@ public sealed class MappedSchemaTests
         await Assert.That(columns.Count).IsGreaterThanOrEqualTo(MappedColumnFloor);
 
         // Two named columns, one from each end of the schema. `transactions.description` is a
-        // narrative column on the largest table, `wrapped_account_keys.wrapped_content_key` is key
+        // narrative column on the largest table, `wrapped_account_keys.wrapped_private_key` is key
         // material on the newest one — an enumerator that reached only the tables registered first,
         // or only the ones with simple property types, misses one of the two.
         await Assert.That(qualified).Contains("transactions.description");
-        await Assert.That(qualified).Contains("wrapped_account_keys.wrapped_content_key");
+        await Assert.That(qualified).Contains("wrapped_account_keys.wrapped_private_key");
 
         // The table is KEPT, which is the one thing this enumerator does that its two ancestors do
         // not. `accounts.name` and `payees.name` are one column name on two tables: an enumerator

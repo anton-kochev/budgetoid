@@ -152,15 +152,24 @@ public sealed class OwnershipKeyImmutabilityTests
             // the same decision every other factory on this list makes. What a settable UserId would
             // cost is specific to this row: it names the factor whose envelopes the completion step
             // overwrites in place — wrapped_account_keys already grants
-            // UPDATE (wrapped_content_key, wrapped_index_key) for exactly that — so re-filing this row
+            // UPDATE (wrapped_private_key, encapsulated_account_keys) for exactly that — so re-filing this row
             // against another account would point a destructive UPDATE at somebody else's wrapped
             // keys. That is worse than a mis-owned row, and it is the concrete reason the property has
-            // no setter. The persistence half of the same rule is designed and not yet built:
-            // key_rotations is to carry a composite foreign key on (factor_id, user_id) referencing
-            // wrapped_account_keys, which makes a rotation staged against another account's factor
-            // unstorable underneath as well. The table does not exist today, so until it does this
-            // literal and the factory are the whole of it.
+            // no setter. The persistence half is FK_key_rotations_users, an ON DELETE CASCADE from
+            // users — which is also what puts the table back on the erasure chain now that the
+            // composite key to wrapped_account_keys has gone with factor_id.
             "KeyRotation.UserId",
+            // The newest entry, and the one whose factory earns the idiom more than any other on this
+            // list. KeyRotationSeal.For takes the loaded KeyRotation and the loaded WrappedAccountKeys,
+            // reads UserId off the first and FactorId off the second, and REFUSES WHEN THE TWO
+            // DISAGREE — two independent statements of an owner from two sources, which no signature
+            // taking loose ids can compare at all. A settable UserId would hand back exactly what that
+            // comparison exists to refuse: this account's next generation of keys staged against
+            // somebody else's factor, formed after the check has already run. The persistence half is
+            // the composite foreign key to wrapped_account_keys(factor_id, user_id), which makes the
+            // same row unstorable — the entity makes it unconstructable, which is one 23503 earlier,
+            // before a partially-staged run exists.
+            "KeyRotationSeal.UserId",
             "PasskeyPublicKey.UserId",
             "PasskeySignatureCounter.UserId",
             "Payee.BudgetId",
@@ -188,7 +197,7 @@ public sealed class OwnershipKeyImmutabilityTests
             "Transaction.BudgetId",
             // Held at two layers now, and each catches a different thing. The database half is in
             // place: wrapped_account_keys is a real table, granted SELECT, INSERT and
-            // UPDATE (wrapped_content_key, wrapped_index_key), policed by user_isolation, with
+            // UPDATE (wrapped_private_key, encapsulated_account_keys), policed by user_isolation, with
             // AppRoleGrantMatrixTests pinning both the table's verb set and that column list. user_id
             // is absent from the list, which is how this schema spells an immutable column, so an
             // UPDATE naming it is refused by Postgres with 42501 however it was built. What a grant

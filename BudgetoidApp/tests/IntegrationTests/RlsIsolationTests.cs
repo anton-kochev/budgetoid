@@ -1484,19 +1484,19 @@ public sealed class RlsIsolationTests
         NpgsqlCommand command = new(
             "insert into wrapped_account_keys " +
             "(credential_id, user_id, factor_id, credential_type, " +
-            "wrapped_content_key, wrapped_index_key, created_at_utc) " +
+            "wrapped_private_key, encapsulated_account_keys, created_at_utc) " +
             "values (@credential_id, @user_id, @factor_id, 'passkey', " +
-            "@wrapped_content_key, @wrapped_index_key, @created_at_utc)",
+            "@wrapped_private_key, @encapsulated_account_keys, @created_at_utc)",
             connection);
         command.Parameters.AddWithValue("credential_id", credentialId);
         command.Parameters.AddWithValue("user_id", ownerId);
         command.Parameters.AddWithValue("factor_id", factorId);
         command.Parameters.AddWithValue(
-            "wrapped_content_key",
-            RepositoryTestHost.WrappedKeyEnvelope(RepositoryTestHost.SeededContentKeyFiller));
+            "wrapped_private_key",
+            RepositoryTestHost.WrappedPrivateKeyPayload(RepositoryTestHost.SeededPrivateKeyFiller));
         command.Parameters.AddWithValue(
-            "wrapped_index_key",
-            RepositoryTestHost.WrappedKeyEnvelope(RepositoryTestHost.SeededIndexKeyFiller));
+            "encapsulated_account_keys",
+            RepositoryTestHost.EncapsulatedAccountKeysPayload(RepositoryTestHost.SeededAccountKeysFiller));
         command.Parameters.AddWithValue("created_at_utc", SeedInstant);
         return command;
     }

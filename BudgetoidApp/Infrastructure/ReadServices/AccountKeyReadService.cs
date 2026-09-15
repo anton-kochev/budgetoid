@@ -25,13 +25,15 @@ public sealed class AccountKeyReadService(BudgetoidDbContext dbContext) : IAccou
         // through this context.
         //
         // THE DELETE IS THE WHOLE OF THAT PREMISE NOW. The role does hold
-        // UPDATE (wrapped_content_key, wrapped_index_key), granted for a content-key rotation, so a
-        // tracked row whose envelope something assigned would be committed by the next SaveChanges on
-        // this context with no SQLSTATE to say it happened — the silent half of the same mistake, on the
-        // two columns that carry the material. factor_id, credential_id, user_id, credential_type and
-        // created_at_utc are still absent from that list and still answer 42501. Nothing assigns an
-        // envelope today either — the entity exposes no mutator for one — so this is what a materialized
-        // row would cost, not a path the product has. Projecting keeps this read out of both halves.
+        // UPDATE (encapsulated_account_keys), granted for a content-key rotation's promotion, so a
+        // tracked row whose encapsulated value something assigned would be committed by the next
+        // SaveChanges on this context with no SQLSTATE to say it happened — the silent half of the same
+        // mistake, on the one column a promotion rewrites. wrapped_private_key, factor_id,
+        // credential_id, user_id, credential_type and created_at_utc are all absent from that list and
+        // still answer 42501; the private key is immutable by that omission, because a rotation changes
+        // the account's keys and never the factor's key-encryption key. Nothing assigns either value
+        // today — the entity exposes no mutator — so this is what a materialized row would cost, not a
+        // path the product has. Projecting keeps this read out of both halves.
         //
         // ONE PREDICATE, ON THE OWNER, AND IT IS UNOBSERVABLE — no test can hold it.
         // wrapped_account_keys is policed by user_isolation, so PostgreSQL appends
@@ -59,7 +61,7 @@ public sealed class AccountKeyReadService(BudgetoidDbContext dbContext) : IAccou
             .OrderBy(keys => keys.FactorId)
             .Select(keys => new FactorEnvelopes(
                 keys.FactorId,
-                keys.WrappedContentKey,
-                keys.WrappedIndexKey))
+                keys.WrappedPrivateKey,
+                keys.EncapsulatedAccountKeys))
             .ToListAsync(cancellationToken);
 }

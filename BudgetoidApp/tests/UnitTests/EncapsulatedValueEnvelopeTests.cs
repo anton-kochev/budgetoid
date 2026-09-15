@@ -164,7 +164,7 @@ public sealed class EncapsulatedValueEnvelopeTests
     /// </para>
     /// <para>
     /// That implementation is not hypothetical — it is the shape
-    /// <see cref="Application.Passkeys.WrappedKeyEnvelope"/> uses, correctly, over a wrapped key of one
+    /// <see cref="Application.Passkeys.WrappedPrivateKeyEnvelope"/> uses, correctly, over a wrapped key of one
     /// legal size. This format has to carry whatever plaintext a factor is handed, so the equality is
     /// the edit to expect and this is the case that catches it.
     /// </para>
@@ -438,7 +438,7 @@ public sealed class EncapsulatedValueEnvelopeTests
     /// <see cref="EncapsulatedValueEnvelope.MinimumLength"/> out as a hand-written <c>94</c> instead of the
     /// const arithmetic passes this test and every other one in the solution — nothing in the build
     /// derives one of these numbers from the other, exactly as
-    /// <see cref="Domain.Users.WrappedAccountKeys.EnvelopeLength"/> records about its own arithmetic.
+    /// <see cref="Domain.Users.WrappedAccountKeys.WrappedPrivateKeyLength"/> records about its own arithmetic.
     /// The answer this repository has already settled on is not a stronger single assertion, which
     /// cannot exist: a test that read the sum from the parts would agree with any four numbers, and one
     /// that read the parts from the sum would agree with any sum. It is two pins that do not follow an

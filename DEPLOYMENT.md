@@ -202,10 +202,22 @@ the old one, so the pipeline finds nothing applied and runs the new baseline aga
 already exists — the deploy dies on the first `CREATE TABLE`. The fix is to hand the database back
 its empty state so the new baseline is true: **drop the schema, then migrate from scratch.**
 
+The baseline is **`20260914230000_InitialCreate`** today. That is the id a reset has to leave the
+history agreeing with, and it is the literal `Migrations_KeepTheBaselineFrozen` pins — so a
+regeneration edits that test in the same commit.
+
 This is destructive and unconditional. It is available only because the production database holds no
 data, and it belongs in the same deploy that ships the regenerated baseline — never as a follow-up.
 Whether the rebaseline is permitted at all is recorded in the `migrations-guard` CI job
 (`REBASELINE_WINDOW`); [migrations](docs/engineering/migrations.md) explains when that window closes.
+
+**The most recent regeneration dropped columns, and that is worth stating plainly rather than
+filing under "a rebaseline happened".** Earlier ones collapsed a chain of additions, which an
+additive migration could in principle have expressed; this one removed `wrapped_account_keys`' two
+wrapped account-key columns and `key_rotations`' factor and both staged envelopes. Against a
+database holding rows that is data loss with no repair, so it is genuinely not expressible as an
+additive migration — it is exactly the case the open window exists for, and exactly the case that
+stops being available the day this database holds anything anybody wants back.
 
 Set up `$HOST` and `$TOKEN` exactly as in the break-glass recipe above, including the firewall rule,
 then, as an Entra administrator of the server:
@@ -249,10 +261,15 @@ it is far longer than `psql` accepts interactively.
 `name: budgetoid_app=w/…` under **Column privileges** (UPDATE on that column alone). `budget_id`
 must not appear anywhere in that row — its absence from the column list is what makes it immutable,
 since PostgreSQL column privileges are additive and a `REVOKE` could not express it. The
-`pg_policies` query should return five rows, one `budget_isolation` policy each on `accounts`,
-`categories`, `category_groups`, `payees` and `transactions`. Fewer means the role can read every
+`pg_policies` query should return **thirteen** rows: one `budget_isolation` policy each on
+`accounts`, `categories`, `category_groups`, `payees` and `transactions`, and one `user_isolation`
+policy each on `users`, `budgets`, `sessions`, `passkey_signature_counters`, `wrapped_account_keys`,
+`key_rotations`, `key_rotation_seals` and `factor_manifests`. Fewer means the role can read every
 tenant's rows in whichever table is missing one — and it means the tool's verification would have
-failed, so seeing this by hand should be impossible after a green deploy.
+failed, so seeing this by hand should be impossible after a green deploy. **Read the count as a
+consequence of the two lists rather than as the thing to check**: what decides whether a table owes
+a policy is `RowLevelSecurityCoverage`, which classifies from the live catalog, so a number here is
+only ever a restatement of what it already refuses.
 
 ### Troubleshooting
 

@@ -94,16 +94,21 @@ public static class AccountKeyEndpoints
             //
             // Base64url is applied at this edge and nowhere below it: the Application ring carries an
             // envelope as bytes and the wire spelling is the API's business, which is the mirror of
-            // WrappedKeyEnvelope.TryDecode on the write side. PasskeyEncoding.Encode emits the
-            // unpadded alphabet the client's decoder is stricter about than this one — it refuses
-            // padding and refuses the standard alphabet outright, so a Convert.ToBase64String here
-            // would hand a browser a value it will not decode at all, over stored bytes that are
-            // perfectly correct.
+            // WrappedPrivateKeyEnvelope.TryDecode and EncapsulatedAccountKeysEnvelope.TryDecode on
+            // the write side. PasskeyEncoding.Encode emits the unpadded alphabet the client's decoder
+            // is stricter about than this one — it refuses padding and refuses the standard alphabet
+            // outright, so a Convert.ToBase64String here would hand a browser a value it will not
+            // decode at all, over stored bytes that are perfectly correct.
+            //
+            // One encoder over both members and that is not the flattening the vocabulary warns
+            // about: base64url is the transport, and it is the same transport for two framings the
+            // decoders on the write side keep apart by naming two types. What must never be shared is
+            // the judging, not the spelling.
             return TypedResults.Ok(factors
                 .Select(factor => new AccountKeyEntry(
                     factor.FactorId,
-                    PasskeyEncoding.Encode(factor.WrappedContentKey.Span),
-                    PasskeyEncoding.Encode(factor.WrappedIndexKey.Span)))
+                    PasskeyEncoding.Encode(factor.WrappedPrivateKey.Span),
+                    PasskeyEncoding.Encode(factor.EncapsulatedAccountKeys.Span)))
                 .ToArray());
         });
 
@@ -111,13 +116,22 @@ public static class AccountKeyEndpoints
     }
 
     /// <summary>
-    /// One factor's row on the wire: <c>factorId</c>, <c>wrappedContentKey</c>, <c>wrappedIndexKey</c>
-    /// — and nothing else, in either direction.
+    /// One factor's row on the wire: <c>factorId</c>, <c>wrappedPrivateKey</c>,
+    /// <c>encapsulatedAccountKeys</c> — and nothing else, in either direction.
     /// </summary>
     /// <remarks>
     /// <para>
     /// A response record of its own rather than <see cref="FactorEnvelopes" /> serialized directly,
-    /// because the two envelopes leave as base64url text and that ring holds them as bytes.
+    /// because both payloads leave as base64url text and that ring holds them as bytes.
+    /// </para>
+    /// <para>
+    /// <b>The two member names are the contract, not a label.</b> <em>Wrapped under</em> names a key
+    /// over another key and <em>encapsulated to</em> names a public key; a client reading
+    /// <c>wrappedPrivateKey</c> knows to unwrap it with the key-encryption key it just derived, and a
+    /// client reading <c>encapsulatedAccountKeys</c> knows to decapsulate with the private half that
+    /// unwrapping produced. Renaming either to the other verb — or to a neutral one covering both —
+    /// would describe two steps as one, and the client that ran them in the wrong order would get an
+    /// authentication failure naming nothing.
     /// </para>
     /// <para>
     /// <b>No fourth member may be added, and each obvious candidate is refused for its own reason.</b>
@@ -149,13 +163,14 @@ public static class AccountKeyEndpoints
     /// <para>
     /// <see cref="FactorId" /> leaves as a <see cref="Guid" /> so the serializer renders the canonical
     /// lower-case hyphenated spelling. That spelling is the contract rather than a formatting habit:
-    /// both of a factor's envelopes were sealed against these exact bytes, and a client that rebuilds
-    /// the associated data from a different rendering of the same UUID opens neither of them —
-    /// permanently, for that factor, with no error naming the cause.
+    /// the wrapped private key was wrapped against these exact bytes as its associated data, and a
+    /// client that rebuilds them from a different rendering of the same UUID unwraps nothing —
+    /// permanently, for that factor, with no error naming the cause. The encapsulated value is then
+    /// unreachable too, because the private half that opens it is what the unwrap was for.
     /// </para>
     /// </remarks>
     private sealed record AccountKeyEntry(
         Guid FactorId,
-        string WrappedContentKey,
-        string WrappedIndexKey);
+        string WrappedPrivateKey,
+        string EncapsulatedAccountKeys);
 }

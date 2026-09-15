@@ -98,7 +98,7 @@ public static class DataInventory
     /// </para>
     /// <para>
     /// <b>One entry per column, and never a reason written at table grain for its columns to
-    /// inherit.</b> Sixty-seven written reasons is a real cost and the obvious saving is the wrong one:
+    /// inherit.</b> Sixty-nine written reasons is a real cost and the obvious saving is the wrong one:
     /// a reason argued about a table drifts the moment a column arrives that it was not about, which
     /// is exactly why <see cref="Provisioning.TableExemption" /> had to grow
     /// <see cref="Provisioning.TableExemption.ColumnsTheReasonCovers" />, and why the rule there is
@@ -579,20 +579,26 @@ public static class DataInventory
             + "never a reader of a file"),
         ColumnClassificationEntry.Excluded(
             "wrapped_account_keys",
-            "wrapped_content_key",
-            "the account's content key sealed under one factor's key-encryption key. Only that factor "
-            + "opens it, and a browser holding the factor is handed the envelope over a live session "
-            + "by GET /api/me/account-keys — so putting every factor's copy in a durable file adds an "
-            + "offline target against the weakest of them and gives the person nothing the route does "
-            + "not already give"),
+            "wrapped_private_key",
+            "the factor's own ECDH private key, wrapped under the key-encryption key that factor "
+            + "derives. It is not a copy of anything the person wrote and it is not the account's key "
+            + "either — it is the first step of a two-step opening, useless without the encapsulated "
+            + "value beside it and unopenable without the factor itself. A browser presenting the "
+            + "factor is handed it over a live session by GET /api/me/account-keys, so a durable file "
+            + "would add an offline target against the weakest factor the account holds while giving "
+            + "the person nothing that route does not already give"),
         ColumnClassificationEntry.Excluded(
             "wrapped_account_keys",
-            "wrapped_index_key",
-            "the account's index key sealed the same way, and the more damaging of the pair to "
-            + "publish: opening it regenerates every blind index in the budget, which turns a stolen "
-            + "export from a pile of ciphertext into an oracle that confirms guesses at names. The "
-            + "factor that opens it is what the person holds, and the route that serves it is where "
-            + "it belongs"),
+            "encapsulated_account_keys",
+            "the account's content key and index key as one value, encapsulated to this factor's "
+            + "public key — and the reason it is withheld is one word different from every other "
+            + "payload column here, which is why it gets its own sentence rather than the standing "
+            + "one. The standing reason is that the server has never held the key that opens the "
+            + "value; the truthful version here is that the server has never held the PRIVATE HALF. "
+            + "It holds the public half in the clear, in factor_manifests, and a public key is enough "
+            + "to PRODUCE one of these. What withholding buys is therefore about the index key inside "
+            + "it: opening the pair regenerates every blind index in the budget, turning a stolen "
+            + "export from a pile of ciphertext into an oracle that confirms guesses at names"),
         ColumnClassificationEntry.Excluded(
             "wrapped_account_keys",
             "created_at_utc",
@@ -620,29 +626,24 @@ public static class DataInventory
             + "way to resume a rotation is the browser that began it, never a value typed in"),
         ColumnClassificationEntry.Excluded(
             "key_rotations",
-            "factor_id",
-            "the client-minted identifier the staged envelopes were sealed against — associated data "
-            + "rather than content, exactly as on wrapped_account_keys. It opens nothing on its own "
-            + "and is meaningless without the envelopes it binds, and those are excluded here too, "
-            + "so it would arrive as a bare identifier for something the file deliberately does not "
-            + "carry"),
+            "staged_manifest",
+            "the NEXT generation's list of every factor's public key, authenticated as one blob and "
+            + "not yet in force. It is the same kind of value factor_manifests.manifest holds, and "
+            + "that entry's concession applies here unchanged — this is not ciphertext, the server "
+            + "holds it in the clear, and publishing it gives up how many ways back into the account "
+            + "there will be and what their public keys are. What is different is that this copy is "
+            + "provisional: it names the factor set a run intends to end with, so a file carrying it "
+            + "would state a person's future security setup as though it were their current one, and "
+            + "the row is rewritten or destroyed the moment the run is replaced or finishes"),
         ColumnClassificationEntry.Excluded(
             "key_rotations",
-            "wrapped_content_key",
-            "the account's NEXT content key, sealed under one factor's key-encryption key and not "
-            + "yet in force. It is the same kind of value wrapped_account_keys holds and the same "
-            + "answer applies — only the factor opens it, and a browser holding the factor is served "
-            + "it over a live session — with one thing on top: while a run is in flight this is the "
-            + "only copy of a key half the account's rows are already sealed under, so a file "
-            + "holding it is an offline target against material that has no second home"),
-        ColumnClassificationEntry.Excluded(
-            "key_rotations",
-            "wrapped_index_key",
-            "the next index key, sealed the same way, and the more damaging of the pair for the "
-            + "reason its counterpart next door gives: opening it regenerates every blind index in "
-            + "the budget, turning a stolen export from a pile of ciphertext into an oracle that "
-            + "confirms guesses at names. That it is the incoming generation rather than the current "
-            + "one changes nothing about what opening it would yield"),
+            "staged_rotation_epoch",
+            "the generation number the staged manifest will be filed at when the run completes. It "
+            + "is a bare integer that means nothing away from the live factor_manifests row it will "
+            + "replace — it only ever answers 'is this the generation I read' — and a downloadable "
+            + "file has no read to compare it with. What a published one would say is how many times "
+            + "the person has re-minted their way back into their own account, which is "
+            + "security-maintenance history rather than anything they recorded"),
         ColumnClassificationEntry.Excluded(
             "key_rotations",
             "started_at_utc",
@@ -651,6 +652,37 @@ public static class DataInventory
             + "long a run has been sitting unfinished — how long the account has been half-way "
             + "between two keys — which is the one fact here an attacker would rather have than the "
             + "person would"),
+
+        // key_rotation_seals — one row per surviving factor per run, holding the next generation of
+        // the account's two keys encapsulated to that factor's public key. Every column is excluded,
+        // and the three arguments differ because the columns do.
+        ColumnClassificationEntry.Excluded(
+            "key_rotation_seals",
+            "user_id",
+            "repeats the account already named by the exported user, here on a row that exists only "
+            + "while a re-seal of that account's own content is part-way through. The repetition is "
+            + "not the objection — the row is: its presence says a rotation is in flight and how many "
+            + "factors it is staging for, and the row is deleted the moment the run is replaced or "
+            + "completed, so a copy would be stale before anybody opened the file"),
+        ColumnClassificationEntry.Excluded(
+            "key_rotation_seals",
+            "factor_id",
+            "names the wrapped_account_keys row a promotion will copy this value into. It is a "
+            + "pointer into key custody rather than content: it opens nothing, it is meaningless "
+            + "without the row it points at, and that row's columns are excluded too — so it would "
+            + "arrive in the file as a bare identifier for something the file deliberately does not "
+            + "carry. Read beside the staged manifest it would also say which of the account's "
+            + "factors a run has reached and which it has not"),
+        ColumnClassificationEntry.Excluded(
+            "key_rotation_seals",
+            "encapsulated_account_keys",
+            "the account's NEXT content key and index key as one value, encapsulated to one factor's "
+            + "public key. It is the same value wrapped_account_keys.encapsulated_account_keys will "
+            + "hold once the run promotes it, so that entry's argument applies whole — the server has "
+            + "never held the private half, and opening the pair regenerates every blind index in the "
+            + "budget. One thing sits on top of it here: while a run is in flight these rows are the "
+            + "ONLY copies of the incoming generation anywhere, so a durable file holding them is an "
+            + "offline target against key material that has no second home"),
 
         // factor_manifests — one row per account, listing every recovery factor's public key. Every
         // column is excluded, and one of the three has to concede what it discloses before it can

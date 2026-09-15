@@ -105,6 +105,20 @@ by the client — and deliberately not `credentials.id`. That column is the tabl
    which is what keeps an EF cascade loud with `42501` instead of silent. The prediction in this item
    stands as written because it was right; what follows it is what it predicted.
 
+   **Amended further: the grant is one column now, and the sentence above has stopped being true of
+   the live system.** Both columns it names are gone. A factor's row carries its own ECDH P-256
+   private key, wrapped under the key-encryption key that factor derives, and the account's two keys
+   encapsulated to that factor's public half
+   ([ADR 0025](0025-give-every-recovery-factor-an-ecdh-key-pair.md)) — and a rotation replaces the
+   *account's* keys while leaving the *factor's* untouched, so only the second of the two moves.
+   `GRANT UPDATE (encapsulated_account_keys)` is what the role holds, and `wrapped_private_key` is
+   immutable by omission from that list, which is the mechanism ADR 0004 already owns. **"One row per
+   rotation" is false in a second and more consequential way**: encapsulating needs a public half and
+   no secret, so a promotion rewrites **one column on every surviving factor's row**, plus the
+   account's own manifest row — never one row under whichever factor the person happened to present.
+   The paragraphs above are left exactly as written, because they record what was decided when
+   rotation arrived; this one records what the schema holds.
+
    **`SELECT` was granted to a reader that was not production code, and that was a real tension
    worth naming rather than glossing.** The paragraph above argues that withholding a privilege until
    something uses it costs nothing while granting an unused one leaves a standing capability with no
@@ -140,6 +154,18 @@ from an index key, and it cannot notice the two envelopes being written to each 
 are 61 bytes, both carry version 1, both columns are `NOT NULL`. That binding is cryptographic and
 lives in the associated data of each envelope, checkable only by a client holding the key-encryption
 key. The database's part is that one account's row is unreachable from another's session.
+
+**Amended: the column swap is refused now, and the hazard that replaced it is one no constraint will
+ever reach.** The two columns hold values of two cryptographic suites at two widths — 167 bytes of
+the AEAD framing over a PKCS#8 P-256 private key, and 158 of the encapsulation framing over both
+account keys as one plaintext — so a transposition is refused by each column's own pair of checks,
+where both values were once 61 bytes carrying one version byte. What is left unguarded sits a level
+in, inside the encapsulated plaintext: one 64-byte value holding two 32-byte keys, **content key
+first**, which this server never sees. A client that encapsulated them the other way round produces a
+value of exactly the right width carrying exactly the right version, which stores, reads back and
+opens — and yields an index key used to seal narrative text and a content key used to compute blind
+indexes. Every field correct, every check green, and every row on the account unreadable. The
+paragraph above is left as written; this one is what is true of the schema today.
 
 ## Alternatives considered
 
@@ -192,6 +218,18 @@ that proves identity and unlocks nothing.
   this grant from one covering half of it. `factor_id`, `credential_id`, `user_id`, `credential_type`
   and `created_at_utc` remain immutable by omission. The grant is forced rather than chosen —
   `app-role-grants.sql` argues why each alternative way of retiring the row is closed.
+  - **Amended: one column accepts an `UPDATE`, and no test names two.** `wrapped_content_key` and
+    `wrapped_index_key` no longer exist. The row carries `wrapped_private_key` — a factor's own ECDH
+    private key, which a rotation never rewrites because it does not change the factor's
+    key-encryption key, so it joins the five columns above as immutable by omission — and
+    `encapsulated_account_keys`, which a promotion replaces with the staged value from that factor's
+    `key_rotation_seals` row. **That is a genuine narrowing rather than a rename**, and it is the
+    column whose loss would leave a factor able to prove itself and unable to open anything, so the
+    omission is doing real work. The clause about naming both **in one statement** was a fact about a
+    pair EF assigned together; it is retired by the shape rather than by a decision, since there is
+    one column left to name. What survives it is the measurement rule the pairing was written to
+    serve: a probe must assert the permitted write **and** the refused one, or nothing can tell a
+    one-column grant from a table-wide one.
 - **The missing `DELETE` is safe rather than merely narrow, and one test says why.**
   `Database_RefusesADeleteOnAWrappedAccountKey_WhileTheCascadeFromItsCredentialStillTakesIt` refuses
   the direct delete and then proves the row leaves anyway when its credential does.

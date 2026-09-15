@@ -321,14 +321,14 @@ public sealed class EstablishedSessionLifetimeTests
         .. Verifiers().Select(verifier => new RecoveryCodeSubmission(
             Base64UrlText.Encode(verifier),
             Guid.CreateVersion7().ToString("D"),
-            Base64UrlText.Encode(Envelope(ContentKeyPurpose)),
-            Base64UrlText.Encode(Envelope(IndexKeyPurpose)))),
+            Base64UrlText.Encode(WrappedPrivateKeyPayload(PrivateKeyPurpose)),
+            Base64UrlText.Encode(EncapsulatedAccountKeysPayload(AccountKeysPurpose)))),
     ];
 
     /// <summary>The byte that says which of the two envelopes a reader is looking at.</summary>
-    private const byte ContentKeyPurpose = 0xC0;
+    private const byte PrivateKeyPurpose = 0xC0;
 
-    private const byte IndexKeyPurpose = 0x1D;
+    private const byte AccountKeysPurpose = 0x1D;
 
     /// <summary>
     /// A well-formed wrapped-key envelope: the one version the contract defines, the byte saying which
@@ -340,12 +340,30 @@ public sealed class EstablishedSessionLifetimeTests
     /// numbers this file's independence argument is about, and these are not the subject here at all —
     /// a copy of either bound would redden a lifetime test on the day the envelope's shape moved.
     /// </remarks>
-    private static byte[] Envelope(byte purpose)
-    {
-        byte[] envelope = RandomNumberGenerator.GetBytes(WrappedAccountKeys.EnvelopeLength);
-        envelope[0] = WrappedAccountKeys.EnvelopeVersion;
-        envelope[1] = purpose;
+    private static byte[] WrappedPrivateKeyPayload(byte purpose) =>
+        Payload(
+            WrappedAccountKeys.WrappedPrivateKeyLength,
+            WrappedAccountKeys.WrappedPrivateKeyVersion,
+            purpose);
 
-        return envelope;
+    /// <inheritdoc cref="WrappedPrivateKeyPayload" />
+    private static byte[] EncapsulatedAccountKeysPayload(byte purpose) =>
+        Payload(
+            WrappedAccountKeys.EncapsulatedAccountKeysLength,
+            WrappedAccountKeys.EncapsulatedAccountKeysVersion,
+            purpose);
+
+    /// <summary>
+    /// The shared body of the two above. The width and the version are parameters rather than read
+    /// inside, because the one mistake this helper could make is pairing one suite's width with the
+    /// other's version — the cross-wiring the two pairs of constants exist to keep apart.
+    /// </summary>
+    private static byte[] Payload(int length, byte version, byte purpose)
+    {
+        byte[] payload = RandomNumberGenerator.GetBytes(length);
+        payload[0] = version;
+        payload[1] = purpose;
+
+        return payload;
     }
 }

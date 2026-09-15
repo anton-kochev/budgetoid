@@ -58,7 +58,8 @@ GRANT SELECT ON currencies TO budgetoid_app;
 -- decision rather than an oversight. Every owned table hangs off this row by ON DELETE CASCADE —
 -- users → budgets → {payees, accounts, category_groups → categories}, users → credentials →
 -- {sessions → session_tokens, passkey_public_keys, passkey_signature_counters,
--- recovery_code_hashes, wrapped_account_keys → key_rotations}, and users → factor_manifests — and
+-- recovery_code_hashes, wrapped_account_keys → key_rotation_seals}, users → key_rotations →
+-- key_rotation_seals, and users → factor_manifests — and
 -- PostgreSQL performs a
 -- referential action through internal triggers that run with the privileges of the REFERENCING
 -- table's owner, not of the role that issued the statement. So this one grant empties the
@@ -77,6 +78,14 @@ GRANT SELECT ON currencies TO budgetoid_app;
 -- the same rule read the other way: its one foreign key names users, because a manifest lists every
 -- factor's public key at once and so belongs to the account rather than to any one credential, and
 -- filing it under credentials would misstate what a DELETE FROM credentials takes with it.
+-- key_rotation_seals appears TWICE in that rendering, and the repetition is the rule applied rather
+-- than a slip: it carries two foreign keys — (factor_id, user_id) → wrapped_account_keys and user_id →
+-- key_rotations — so both a DELETE FROM wrapped_account_keys and a DELETE FROM key_rotations take its
+-- rows with them, and a rendering naming only one of the two would misstate what each statement does.
+-- key_rotations itself moved up a level in this rendering when it stopped carrying factor_id: its one
+-- remaining foreign key names users, so an account erasure reaches it in one hop rather than through
+-- the wrapped keys. PostgreSQL permits the two cascading paths into key_rotation_seals that this
+-- creates; the multiple-cascade-path restriction is SQL Server's, not this server's.
 --
 -- IT IS NOT SUFFICIENT ON ITS OWN, and reading it that way is the mistake this paragraph exists to
 -- stop. Five edges in the owned graph are Restrict rather than Cascade, and transactions is the
@@ -94,15 +103,17 @@ GRANT SELECT ON currencies TO budgetoid_app;
 -- and the budget for budget_isolation.
 --
 -- The children holding no DELETE of any shape are budgets, payees, sessions, session_tokens,
--- passkey_public_keys, passkey_signature_counters, wrapped_account_keys, key_rotations and
--- factor_manifests. Two of them are the ones to read carefully, and they sit at opposite ends of the
--- same list. key_rotations holds SELECT, INSERT and a column-listed UPDATE and still no DELETE of
--- any shape, so it belongs here rather than being mistaken for a write-free table; ITS OWN block
--- argues why staging needs the insert and the update together and why the delete waits for the
--- completion step that clears the staging. factor_manifests holds SELECT and nothing else, because
--- nothing writes a manifest yet — no insert, no update, no delete and no staging to wait on — and it
--- belongs here for the same reason the first one does: this is a list of absent DELETEs, not a list
--- of read-only tables. That is a list of the
+-- passkey_public_keys, passkey_signature_counters, wrapped_account_keys, key_rotations,
+-- key_rotation_seals and factor_manifests. Two of them are the ones to read carefully, and they sit at
+-- opposite ends of the same list. key_rotations holds SELECT, INSERT and a column-listed UPDATE and
+-- still no DELETE of any shape, so it belongs here rather than being mistaken for a write-free table;
+-- ITS OWN block argues why staging needs the insert and the update together and why the delete waits
+-- for the completion step that clears the staging. factor_manifests holds SELECT and nothing else,
+-- because nothing writes a manifest yet — no insert, no update, no delete and no staging to wait on —
+-- and it belongs here for the same reason the first one does: this is a list of absent DELETEs, not a
+-- list of read-only tables. key_rotation_seals holds SELECT and nothing else on the same reasoning and
+-- is the newest arrival; its own block says which write it expects and which caller has to bring it.
+-- That is a list of the
 -- same kind as the cascade rendering above and carries the same obligation — it is exhaustive or it
 -- is misleading, and this is the list somebody consults to decide whether a child needs a grant.
 -- Two of those absences would cost something real to fill.
@@ -272,11 +283,11 @@ GRANT SELECT, INSERT ON session_tokens TO budgetoid_app;
 -- one. The pin is what turns a new column red; the answer to that red is to MOVE THE COLUMN to a
 -- table carrying user_id, never to widen the pin.
 --
--- A wrapped key used to stand beside the hash in that sentence and no longer does: this role took
--- UPDATE (wrapped_content_key, wrapped_index_key) on wrapped_account_keys for a content-key rotation,
--- so one of the two secrets stopped being write-once. That SHARPENS the paragraph rather than
--- weakening it. A screen a later GRANT can revoke was never what was deciding, and an append-only
--- test would now admit the hash and reject the wrapped key — catching one of them, for a reason
+-- An account-key secret used to stand beside the hash in that sentence and no longer does: this role
+-- took UPDATE (encapsulated_account_keys) on wrapped_account_keys for a content-key rotation's
+-- promotion, so one of the two secrets stopped being write-once. That SHARPENS the paragraph rather
+-- than weakening it. A screen a later GRANT can revoke was never what was deciding, and an append-only
+-- test would now admit the hash and reject the encapsulated value — catching one of them, for a reason
 -- unrelated to why either is dangerous here.
 --
 -- The grants are the corollary, and worth having because they are checkable in one line: no UPDATE of
@@ -416,9 +427,9 @@ GRANT SELECT, INSERT, DELETE ON recovery_code_hashes TO budgetoid_app;
 -- the other redundant, and withdrawing the grant takes both down together.
 --
 -- The application reader is GET /api/me/account-keys, which hands a signed-in browser the wrapped
--- content key and wrapped index key of EVERY FACTOR THE AUTHENTICATED ACCOUNT HOLDS — one pair per
--- registered passkey and ten per set of recovery codes, so eleven for an ordinary account, because a
--- factor is not a credential. It reaches the table through AccountKeyReadService.ListForAccountAsync,
+-- private key and the encapsulated account keys of EVERY FACTOR THE AUTHENTICATED ACCOUNT HOLDS — one
+-- row per registered passkey and ten per set of recovery codes, so eleven for an ordinary account,
+-- because a factor is not a credential. It reaches the table through AccountKeyReadService.ListForAccountAsync,
 -- which PROJECTS and materialises no entity, for the reason the NO DELETE block below gives.
 -- The statement's only predicate is the owner, which is also the seek: IX_wrapped_account_keys_user_id
 -- exists for exactly it.
@@ -450,26 +461,39 @@ GRANT SELECT, INSERT, DELETE ON recovery_code_hashes TO budgetoid_app;
 -- withdrawn and the day the policy is, which is what makes this paragraph a claim about the
 -- repository rather than a plan for one.
 --
--- ONE UPDATE, TWO COLUMNS, ONE CALLER — AND THE SHAPE IS FORCED RATHER THAN CHOSEN. Registering or
--- revoking a recovery factor rewrites wrapped keys only and is not a key rotation (FR-101), so those
+-- ONE UPDATE, ONE COLUMN, ONE CALLER — AND THE SHAPE IS FORCED RATHER THAN CHOSEN. Registering or
+-- revoking a recovery factor rewrites a factor's own row and is not a key rotation (FR-101), so those
 -- paths still write a new row rather than editing one. A content-key rotation (FR-080) is the single
--- operation that rewrites an envelope in place, and it rewrites exactly one row: the passkey the
--- person presented to begin the rotation.
+-- operation that rewrites a stored value in place, and its promotion rewrites one row per surviving
+-- factor, copying that factor's staged key_rotation_seals value into this column.
 --
 -- Every other way of retiring that row is closed, which is what makes this a forced shape rather than
 -- a convenience. Deleting its credentials row would destroy the passkey registration itself. Inserting
 -- a replacement under a new factor_id and deleting the old needs a DELETE this table must never hold,
 -- for the reason the next paragraph gives. Inserting a replacement and leaving the old row behind is
 -- permanent litter on GET /api/me/account-keys — one dead entry per rotation, on the one route a
--- browser uses to find the pair it can open, every entry of which it must try in turn. The in-place
--- UPDATE is what is left, and it is narrowed to the two envelope columns: factor_id, credential_id,
--- user_id, credential_type and created_at_utc stay immutable by their absence from this list.
+-- browser uses to find the row it can open, every entry of which it must try in turn. The in-place
+-- UPDATE is what is left, and it is narrowed to the ONE column a promotion writes: factor_id,
+-- credential_id, user_id, credential_type and created_at_utc stay immutable by their absence from this
+-- list, as they always did.
 --
--- BOTH COLUMNS OR NEITHER, and that is why the list names two rather than one. A rotation assigns both
--- properties of one row together and EF emits one UPDATE naming both columns, so a grant covering only
--- one of them fails that whole statement with 42501 — it would forbid the operation both columns exist
--- to serve. It is also why AppRoleGrantsTests measures the permitted write in ONE statement naming
--- both: a pair of single-column probes cannot tell a two-column grant from a one-column grant.
+-- THE LIST LOST A COLUMN AND THAT IS A GENUINE NARROWING RATHER THAN A RENAME. It used to name both of
+-- this table's payload columns, because both held an account key wrapped under the factor's
+-- key-encryption key and a rotation re-wrapped both. The row now holds two values of two different
+-- kinds, and only one of them moves: encapsulated_account_keys carries the account's content and index
+-- keys encapsulated TO the factor's public key, so a new generation replaces it; wrapped_private_key
+-- carries the factor's OWN private key wrapped UNDER the key-encryption key that factor derives, and a
+-- rotation changes neither of those, so the value is byte-for-byte what it was. WRAPPED_PRIVATE_KEY IS
+-- THEREFORE IMMUTABLE BY OMISSION — rule B2 at the head of this file, the same mechanism holding
+-- users.email's four siblings — and the omission is doing real work: it is the column whose loss would
+-- leave a factor able to prove itself and unable to open anything, and no path in the product has any
+-- reason to write it twice.
+--
+-- ONE COLUMN, SO THE PROBE IS ONE STATEMENT. The pairing argument that stood here — a rotation assigns
+-- both properties together, EF emits one UPDATE naming both columns, so a one-column grant would fail
+-- the whole statement with 42501 — is retired by the shape rather than by a decision, because there is
+-- only one column left to name. What survives it is the measurement rule: a probe must assert the
+-- permitted write AND the refused one, or a test cannot tell a one-column grant from a table-wide one.
 --
 -- The ten wrapped rows of a REPLACED RECOVERY-CODE SET are not this grant's business and never become
 -- it. A rotation mints a fresh set rather than re-wrapping the old codes — the browser has never seen
@@ -490,7 +514,7 @@ GRANT SELECT, INSERT, DELETE ON recovery_code_hashes TO budgetoid_app;
 -- document the identical mechanism for their own tables.
 REVOKE ALL ON wrapped_account_keys FROM budgetoid_app;
 GRANT SELECT, INSERT ON wrapped_account_keys TO budgetoid_app;
-GRANT UPDATE (wrapped_content_key, wrapped_index_key) ON wrapped_account_keys TO budgetoid_app;
+GRANT UPDATE (encapsulated_account_keys) ON wrapped_account_keys TO budgetoid_app;
 
 -- key_rotations: SELECT and INSERT, plus an UPDATE over every column BUT the primary key. This block
 -- used to say the write privileges were waiting for their callers; the caller arrived, so the
@@ -513,6 +537,12 @@ GRANT UPDATE (wrapped_content_key, wrapped_index_key) ON wrapped_account_keys TO
 -- means rewriting the row that is already there. KeyRotationRepository.StageAsync finds and updates
 -- for exactly this reason and says so at its own call site.
 --
+-- THE LIST NAMES WHAT A SECOND BEGIN REWRITES, AND THE COLUMNS IT NAMES MOVED WITH THE TABLE. It used
+-- to cover factor_id and the two wrapped envelopes; a rotation is no longer performed under one factor
+-- and no longer stages a wrapped key here, so the staged material is now the next generation's factor
+-- manifest and the epoch it will be filed at. The per-factor values of a run live on
+-- key_rotation_seals, whose own block below explains why it holds no write privilege yet.
+--
 -- THE COLUMN LIST OMITS user_id, AND THAT OMISSION IS THE IMMUTABILITY. PostgreSQL column privileges
 -- are additive and REVOKE UPDATE (col) cannot subtract from a table-wide grant, so the only spelling
 -- that makes a column unwritable is leaving it out of the list — rule B2 at the head of this file,
@@ -529,10 +559,62 @@ GRANT UPDATE (wrapped_content_key, wrapped_index_key) ON wrapped_account_keys TO
 --
 -- The table is POLICED rather than exempt: it carries user_id, so user_isolation appends the owner
 -- to every statement against it. See the policy at the foot of this file.
+--
+-- IT NOW HANGS OFF users DIRECTLY, WHICH IS WHAT KEEPS AN ERASURE ABLE TO REACH IT. Its only foreign
+-- key used to be the composite one to wrapped_account_keys, and that left with factor_id; a table on
+-- no edge at all is a table the cascade from users never reaches, so an erased account would have left
+-- a staging row behind carrying its own user id. Since this role holds no DELETE here, nothing in the
+-- application could have cleaned it up either.
 REVOKE ALL ON key_rotations FROM budgetoid_app;
 GRANT SELECT, INSERT ON key_rotations TO budgetoid_app;
-GRANT UPDATE (rotation_id, factor_id, wrapped_content_key, wrapped_index_key, started_at_utc)
+GRANT UPDATE (rotation_id, staged_manifest, staged_rotation_epoch, started_at_utc)
     ON key_rotations TO budgetoid_app;
+
+-- key_rotation_seals: SELECT AND NOTHING ELSE. One row per surviving factor per run, holding the next
+-- generation's content key and index key as one value, encapsulated TO that factor's public key — the
+-- value a promotion copies into wrapped_account_keys.encapsulated_account_keys. The verb matters and
+-- is not interchangeable with the two beside it: nothing here is wrapped, because the factor's private
+-- key is not the run's to touch, and nothing here is sealed, because the plaintext is keys rather than
+-- content.
+--
+-- SELECT FIRST, BECAUSE AN UNGRANTED SELECT IS THE ONE ABSENCE THAT HIDES SOMETHING. Measured on
+-- key_rotations rather than argued from precedent: with no SELECT, NarrativeSecrecyTests' plaintext
+-- scan runs over the catalog on the app-role connection, meets 42501 on the table, and reports it as
+-- UNSCANNABLE. Two secrecy gates then pass while covering one table fewer than the schema holds, which
+-- is the same defect as a census that reads as complete and is not. A table nothing can read is a table
+-- nothing can check — and this one holds key material, which is the last place to accept a silent gap.
+--
+-- NO INSERT, NO UPDATE, NO DELETE, BECAUSE NOTHING WRITES A SEAL YET, AND THE ASYMMETRY WITH THE SELECT
+-- ABOVE IS THE WHOLE ARGUMENT. An ungranted write leaves nothing unobservable: it fails loud on the
+-- first reach — 42501, on the statement that wanted it, in the test that exercises the path — where an
+-- ungranted read fails quiet by turning a scan into a skip. Withholding a write therefore costs
+-- nothing, and granting one ahead of its caller buys nothing but reach. THE TABLE EXISTS TO BE WRITTEN,
+-- and by a path this repository does not have: the continue leg of a rotation, which encapsulates the
+-- new generation to every public key the staged manifest names and files one of these rows per factor.
+-- Whoever brings that leg brings INSERT, and brings it with the sentence saying which operation needs
+-- it — not now, by whoever is in a hurry. A DELETE is not obviously owed at all: a superseded run's
+-- seals leave by the ON DELETE CASCADE from key_rotations when a second begin replaces the staging row,
+-- which runs with the referencing table owner's privileges rather than this role's, so the rows go
+-- while this role still cannot issue the statement. That asymmetry is the one ADR 0017 argues for, and
+-- it is why an EF cascade into rows the change tracker happens to be holding dies loudly here with
+-- 42501 instead of succeeding in silence.
+--
+-- THERE IS NO GRANT UPDATE OF ANY SHAPE HERE, SO THERE IS NO COLUMN LIST EITHER, AND THAT IS WORTH
+-- SAYING RATHER THAN LEAVING AS AN ABSENCE. Immutability in this file is expressed by OMISSION FROM A
+-- GRANT UPDATE COLUMN LIST — never by REVOKE, which cannot subtract from a table-wide grant, and never
+-- by widening a list to table-wide (rule B2 at the head of this file). Today every column of this table
+-- is immutable in the strongest available way, because no UPDATE exists to name one — and a seal has no
+-- edit that means anything: a run that wants a different value for a factor has staged the wrong one
+-- and is replaced whole. If an UPDATE is ever wanted it takes encapsulated_account_keys alone; user_id
+-- and factor_id stay off it, or one statement could re-file an account's staged generation against
+-- another account's factor.
+--
+-- The table is POLICED rather than exempt: it carries user_id, so the coverage classifier reaches that
+-- verdict from the columns without being told, and user_isolation appends the owner to every statement
+-- against it. Nothing here is read before the request has an identity. See the policy at the foot of
+-- this file.
+REVOKE ALL ON key_rotation_seals FROM budgetoid_app;
+GRANT SELECT ON key_rotation_seals TO budgetoid_app;
 
 -- factor_manifests: SELECT AND NOTHING ELSE, which is the standing rule this file already applied
 -- to key_rotations and to wrapped_account_keys before it, arriving here in its plainest form. The
@@ -958,21 +1040,22 @@ CREATE POLICY user_isolation ON passkey_signature_counters FOR ALL TO budgetoid_
 -- inventing an isolation axis beside the two this file carries.
 --
 -- What this policy does NOT protect against is worth stating, because the absence of a claim is
--- easier to misread than a claim. It scopes which rows the app role may see and write; it cannot tell
--- a content key from an index key, and it cannot notice the two envelopes being written to each
--- other's column. That binding lives in the associated data of each envelope — the factor identifier
--- and the key's purpose — and it is checkable only by a client holding the key-encryption key. The
--- database's part is that a row of one account is unreachable from another's session; the rest is
--- cryptographic and deliberately not here.
+-- easier to misread than a claim. It scopes which rows the app role may see and write; it cannot look
+-- inside either payload, and in particular it cannot tell which half of the 64-byte plaintext inside
+-- encapsulated_account_keys is the content key and which is the index key. That ordering is a contract
+-- between clients — content key first — checkable only by something holding the private half, which
+-- this database has never stored in any form. The database's part is that a row of one account is
+-- unreachable from another's session; the rest is cryptographic and deliberately not here.
 ALTER TABLE wrapped_account_keys ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS user_isolation ON wrapped_account_keys;
 CREATE POLICY user_isolation ON wrapped_account_keys FOR ALL TO budgetoid_app
     USING      (user_id = COALESCE(current_setting('app.current_user_id', true), '')::uuid)
     WITH CHECK (user_id = COALESCE(current_setting('app.current_user_id', true), '')::uuid);
 
--- key_rotations is the staging row of an unfinished content-key rotation: the next generation of an
--- account's two wrapped keys, held beside the generation still in force until one completion step
--- promotes it. It sits on the same side of the same boundary as wrapped_account_keys directly above,
+-- key_rotations is the staging row of an unfinished content-key rotation: the next generation of the
+-- account's factor manifest and the epoch it will be filed at, held beside the generation still in
+-- force until one completion step promotes it. It sits on the same side of the same boundary as
+-- wrapped_account_keys directly above,
 -- for the same reason — a rotation is begun under a passkey assertion that has already verified, so
 -- an identity is on the connection before this policy is ever evaluated.
 --
@@ -994,21 +1077,50 @@ CREATE POLICY user_isolation ON wrapped_account_keys FOR ALL TO budgetoid_app
 -- safe to do early rather than a widening: the policy was already standing when it landed.
 --
 -- The policy reads only the ownership column, like the three above it. It says nothing about
--- rotation_id or factor_id: whether a chunk may continue a given run is decided by the handler above
--- this layer, and a predicate here consulting either would be inventing an isolation axis beside the
--- two this file carries. What it cannot do is worth stating, because it is the same shape as the
--- sibling's limit: it scopes which rows the app role may see and write, and it cannot tell a content
--- key from an index key, nor notice the staged envelopes being written to each other's column. That
--- binding lives in each envelope's associated data and is checkable only by a client holding the
--- key-encryption key.
+-- rotation_id and nothing about the staged epoch: whether a chunk may continue a given run is decided
+-- by the handler above this layer, and a predicate here consulting either would be inventing an
+-- isolation axis beside the two this file carries. What it cannot do is worth stating, because it is
+-- the same shape as the sibling's limit: it scopes which rows the app role may see and write, and it
+-- cannot tell a well-formed staged manifest from a forged one. That binding is the manifest's own
+-- authentication tag, checkable only by a client holding the key.
 ALTER TABLE key_rotations ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS user_isolation ON key_rotations;
 CREATE POLICY user_isolation ON key_rotations FOR ALL TO budgetoid_app
     USING      (user_id = COALESCE(current_setting('app.current_user_id', true), '')::uuid)
     WITH CHECK (user_id = COALESCE(current_setting('app.current_user_id', true), '')::uuid);
 
+-- key_rotation_seals is one surviving factor's copy of the next generation of the account's two keys,
+-- encapsulated to that factor's public key and staged beside the run that produced it. It sits on the
+-- same side of the same boundary as the two tables above it, and the test is the one the header states:
+-- not "is this sensitive" but "is this reachable before the request has an identity". It is not — a run
+-- is begun under a passkey assertion that has already verified — so a policy costs nothing and the
+-- table is policed rather than exempt.
+--
+-- THE GRANT ABOVE IS SELECT ALONE AND THE POLICY IS STILL FOR ALL, which is not an oversight and not
+-- a widening, exactly as on factor_manifests. A policy is not a privilege: FOR ALL says which ROWS each
+-- command may reach if the role ever holds that command, and holding none of the write commands means
+-- the write arms are unreachable today. Writing it narrower would mean the day INSERT is granted — and
+-- this table exists to take one — the rows it may write are decided by nobody. The two halves fail in
+-- opposite directions, as the header says at length: a table nobody grants fails loudly with 42501, a
+-- table nobody polices is silently readable and writable across every tenant. Writing the policy first
+-- is the ordering with no silent failure in it.
+--
+-- The policy reads only the ownership column, like the four above it. It says nothing about factor_id,
+-- and it does not need to: that a seal names a factor of this same account is held one layer down by
+-- the composite foreign key to wrapped_account_keys(factor_id, user_id), which is a stronger statement
+-- than a predicate here could make — it refuses the row outright rather than hiding it. What this
+-- policy cannot do is the same shape as its siblings' limit: it scopes which rows the app role may see,
+-- and it cannot look inside the payload, so it cannot tell which half of the 64-byte plaintext is the
+-- content key and which is the index key. That ordering is a client contract, checkable only by
+-- something holding the private half, which this database has never stored.
+ALTER TABLE key_rotation_seals ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS user_isolation ON key_rotation_seals;
+CREATE POLICY user_isolation ON key_rotation_seals FOR ALL TO budgetoid_app
+    USING      (user_id = COALESCE(current_setting('app.current_user_id', true), '')::uuid)
+    WITH CHECK (user_id = COALESCE(current_setting('app.current_user_id', true), '')::uuid);
+
 -- factor_manifests is the account's list of every recovery factor's public key, one row per account.
--- It sits on the same side of the same boundary as the three tables above it, and the test is the one
+-- It sits on the same side of the same boundary as the four tables above it, and the test is the one
 -- the header states: not "is this sensitive" but "is this reachable before the request has an
 -- identity". It is not — a client asks what to encapsulate to once it already knows whose account it
 -- is — so a policy costs nothing and the table is policed rather than exempt.
@@ -1022,7 +1134,7 @@ CREATE POLICY user_isolation ON key_rotations FOR ALL TO budgetoid_app
 -- and writable across every tenant. Writing the policy first is the ordering with no silent failure
 -- in it, and it is the same ordering key_rotations landed under.
 --
--- The policy reads only the ownership column, like the four above it. It says nothing about
+-- The policy reads only the ownership column, like the five above it. It says nothing about
 -- rotation_epoch and nothing about the manifest bytes: whether a generation may be promoted is a
 -- question for the handler that will write one, above this layer, and a predicate here consulting the
 -- epoch would be inventing an isolation axis beside the two this file carries. What it cannot do is

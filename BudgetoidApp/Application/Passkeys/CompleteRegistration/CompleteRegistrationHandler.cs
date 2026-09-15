@@ -38,13 +38,14 @@ namespace Application.Passkeys.CompleteRegistration;
 /// check — never on this flag, and never on the fact that this endpoint refuses without it.
 /// </para>
 /// <para>
-/// <b>The wrapped account keys are that value, and it is worth saying exactly how far they go.</b> They
-/// are <em>not</em> the check the paragraph above asks for: the server cannot verify that the
-/// key-encryption key they were sealed under came out of an authenticator's PRF evaluation rather than
-/// out of a constant a client chose, and no member it could be handed would let it. What they do buy is
-/// the half that is enforceable here — a factor cannot exist without a wrapped copy of both account
-/// keys. <see cref="Domain.Users.WrappedAccountKeys"/>'s two <c>NOT NULL</c> columns and the single
-/// save below make "registered, but holding no share of the keys" unstorable rather than merely
+/// <b>The factor's key material is that value, and it is worth saying exactly how far it goes.</b> It
+/// is <em>not</em> the check the paragraph above asks for: the server cannot verify that the
+/// key-encryption key the private key was wrapped under came out of an authenticator's PRF evaluation
+/// rather than out of a constant a client chose, and no member it could be handed would let it. What it
+/// does buy is the half that is enforceable here — a factor cannot exist without a wrapped private key
+/// and a copy of the account's keys encapsulated to it.
+/// <see cref="Domain.Users.WrappedAccountKeys"/>'s two <c>NOT NULL</c> columns and the single save
+/// below make "registered, but holding no share of the account" unstorable rather than merely
 /// uncustomary, so the failure the prf gate is a product guess about is at least no longer reachable by
 /// a client that simply omitted the members.
 /// </para>
@@ -175,14 +176,20 @@ public sealed class CompleteRegistrationHandler(
         // The width and the version are read off the entity that refuses a row against them, never
         // written out here: a message carrying its own copy of either goes on being confident after the
         // real bound has moved.
-        if (!WrappedKeyEnvelope.TryDecode(command.WrappedContentKey, out byte[]? wrappedContentKey))
+        //
+        // TWO DECODERS, NOT ONE CALLED TWICE. Two cryptographic suites, two widths, two floors, and the
+        // same leading byte — so one type used for both compiles, clears every version case, and
+        // measures the encapsulated value against a floor 65 bytes below its own.
+        if (!WrappedPrivateKeyEnvelope.TryDecode(command.WrappedPrivateKey, out byte[]? wrappedPrivateKey))
         {
-            throw Refused(MalformedEnvelope("wrappedContentKey"));
+            throw Refused(MalformedWrappedPrivateKey());
         }
 
-        if (!WrappedKeyEnvelope.TryDecode(command.WrappedIndexKey, out byte[]? wrappedIndexKey))
+        if (!EncapsulatedAccountKeysEnvelope.TryDecode(
+                command.EncapsulatedAccountKeys,
+                out byte[]? encapsulatedAccountKeys))
         {
-            throw Refused(MalformedEnvelope("wrappedIndexKey"));
+            throw Refused(MalformedEncapsulatedAccountKeys());
         }
 
         DateTime now = timeProvider.GetUtcNow().UtcDateTime;
@@ -200,8 +207,8 @@ public sealed class CompleteRegistrationHandler(
         WrappedAccountKeys wrappedAccountKeys = WrappedAccountKeys.For(
             credential,
             factorId,
-            wrappedContentKey,
-            wrappedIndexKey,
+            wrappedPrivateKey,
+            encapsulatedAccountKeys,
             now);
 
         if (!await passkeyRepository.TryAddAsync(
@@ -221,12 +228,33 @@ public sealed class CompleteRegistrationHandler(
     }
 
     /// <summary>
-    /// What is required of <paramref name="member"/>, said whole rather than split into which part of it
+    /// What is required of <c>wrappedPrivateKey</c>, said whole rather than split into which part of it
     /// was wrong.
     /// </summary>
-    private static string MalformedEnvelope(string member) =>
-        $"{member} must be base64url text decoding to exactly {WrappedAccountKeys.EnvelopeLength} bytes "
-        + $"carrying envelope version {WrappedAccountKeys.EnvelopeVersion}.";
+    /// <remarks>
+    /// <b>Two sentences rather than one taking the member's name.</b> The helper this replaced was
+    /// parameterised because both members were one framing at one width; they are now two suites at two
+    /// widths, so the numbers differ too and a shared sentence could only be right about one of them.
+    /// A borrowed width reddens nothing — a well-formed sentence stating the wrong number is still a
+    /// 400, and the person it misdirects is holding the device.
+    /// </remarks>
+    private static string MalformedWrappedPrivateKey() =>
+        "wrappedPrivateKey must be base64url text decoding to exactly "
+        + $"{WrappedAccountKeys.WrappedPrivateKeyLength} bytes carrying AEAD framing version "
+        + $"{WrappedAccountKeys.WrappedPrivateKeyVersion}.";
+
+    /// <summary>
+    /// What is required of <c>encapsulatedAccountKeys</c>, said whole rather than split into which part
+    /// of it was wrong.
+    /// </summary>
+    /// <remarks>
+    /// The twin of <see cref="MalformedWrappedPrivateKey"/>, naming its own suite for the reason stated
+    /// there. Every number it reads belongs to the encapsulation framing.
+    /// </remarks>
+    private static string MalformedEncapsulatedAccountKeys() =>
+        "encapsulatedAccountKeys must be base64url text decoding to exactly "
+        + $"{WrappedAccountKeys.EncapsulatedAccountKeysLength} bytes carrying encapsulation framing "
+        + $"version {WrappedAccountKeys.EncapsulatedAccountKeysVersion}.";
 
     // Domain.Common.ValidationException by name, because both layers declare one and only that one is
     // what ValidationExceptionHandler turns into a 400 with the field errors on it.

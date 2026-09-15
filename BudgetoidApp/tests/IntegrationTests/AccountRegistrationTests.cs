@@ -1824,8 +1824,8 @@ public sealed class AccountRegistrationTests
             attestationObject = addDevice.AttestationObjectBase64Url,
             clientExtensionResults = new { prf = new { enabled = true } },
             factorId = addedDeviceKeys.FactorId,
-            wrappedContentKey = addedDeviceKeys.WrappedContentKey,
-            wrappedIndexKey = addedDeviceKeys.WrappedIndexKey,
+            wrappedPrivateKey = addedDeviceKeys.WrappedPrivateKey,
+            encapsulatedAccountKeys = addedDeviceKeys.EncapsulatedAccountKeys,
         });
 
         AssertionResult reauthentication = device.Authenticate(
@@ -2092,8 +2092,10 @@ public sealed class AccountRegistrationTests
     /// <b>Real envelopes, and that is the whole of what makes the first half catchable.</b>
     /// <see cref="WrappedKeyFixture" /> mints well-formed random bytes, which is right for every other
     /// test here and says nothing about which factor an envelope belongs to. This test seals the same two
-    /// account keys eleven times under eleven different keys, each bound to its own factor identifier as
-    /// associated data, and then opens what the database handed back — see
+    /// account keys eleven times to eleven different factor key pairs, each bound to its own factor
+    /// identifier as associated data, and then opens what the database handed back by running the real
+    /// two-step: unwrap the private key under the key-encryption key, decapsulate with what that
+    /// produced — see
     /// <see cref="ClientKeyCustody" /> for what a second implementation of the client's format does and
     /// does not buy. The ten codes are real too, so the verifier the server hashed and the key that
     /// unwraps the account are sibling branches of one secret, exactly as they are in a browser.
@@ -2107,16 +2109,17 @@ public sealed class AccountRegistrationTests
     /// </para>
     /// <para>
     /// <b>The cross-open at the end is what stops the whole test being vacuous.</b> Every assertion above
-    /// it would also pass if <see cref="ClientKeyCustody.TryOpen" /> ignored its associated data, or if
-    /// the eleven key-encryption keys had silently collapsed to one. Opening a row under its
-    /// <em>neighbour's</em> key has to fail, and that failure is the tag doing the work the shift
-    /// mutation would defeat.
+    /// it would also pass if <see cref="ClientKeyCustody.TryOpen" /> ignored its associated data, if the
+    /// eleven key-encryption keys had silently collapsed to one, or if every factor had been given the
+    /// same key pair. Opening a row under its <em>neighbour's</em> key has to fail, and that failure is
+    /// the tag doing the work the shift mutation would defeat — at the FIRST of the two steps, since a
+    /// neighbour's key-encryption key unwraps no private key here.
     /// </para>
     /// </remarks>
     [Test]
     public async Task Registration_SealsEachFactorsEnvelopesUnderThatFactorsOwnKey()
     {
-        // Arrange — one pair of account keys, drawn once, wrapped eleven times. Fresh per factor would
+        // Arrange — one pair of account keys, drawn once, encapsulated eleven times. Fresh per factor would
         // pass every round trip below and lose the account's history the first time a second factor was
         // used, which is the mistake ADR 0018 is written against.
         await using PostgresTestHost host = await StartHostAsync();
@@ -2205,9 +2208,9 @@ public sealed class AccountRegistrationTests
         {
             SealedFactor factor = minted[row.FactorId];
 
-            await Assert.That(OpenedUnder(factor.KeyEncryptionKey, row, ClientKeyCustody.ContentPurpose))
+            await Assert.That(OpenedUnder(factor.KeyEncryptionKey, row, AccountKey.Content))
                 .IsEqualTo(expectedContent);
-            await Assert.That(OpenedUnder(factor.KeyEncryptionKey, row, ClientKeyCustody.IndexPurpose))
+            await Assert.That(OpenedUnder(factor.KeyEncryptionKey, row, AccountKey.Index))
                 .IsEqualTo(expectedIndex);
         }
 
@@ -2219,7 +2222,7 @@ public sealed class AccountRegistrationTests
             SealedFactor neighbour = minted[cardRows[(index + 1) % cardRows.Count].FactorId];
 
             await Assert.That(
-                    OpenedUnder(neighbour.KeyEncryptionKey, cardRows[index], ClientKeyCustody.ContentPurpose))
+                    OpenedUnder(neighbour.KeyEncryptionKey, cardRows[index], AccountKey.Content))
                 .IsEqualTo(Unopenable);
         }
     }
@@ -2950,8 +2953,8 @@ public sealed class AccountRegistrationTests
         Guid FactorId,
         Guid CredentialId,
         string CredentialType,
-        byte[] ContentEnvelope,
-        byte[] IndexEnvelope);
+        byte[] PrivateKeyEnvelope,
+        byte[] AccountKeysEnvelope);
 
     /// <summary>
     /// One recovery factor as a client mints it: the identifier, the key it wraps under, and the two
@@ -2988,19 +2991,20 @@ public sealed class AccountRegistrationTests
     {
         Guid factor = Guid.CreateVersion7();
 
+        // A key pair per factor, which is what the two stored values now are about: the private half
+        // wrapped under the key-encryption key this factor derives, and the account's two keys
+        // encapsulated to the public half. A pair shared between factors would make every cross-open in
+        // the control below succeed, which is the vacuity that shape exists to rule out.
+        using ECDiffieHellman keyPair = ClientKeyCustody.CreateFactorKeyPair();
+
         return new SealedFactor(
             factor,
             keyEncryptionKey,
             new WrappedKeyFixture(
                 factor,
-                ClientKeyCustody.Seal(
-                    keyEncryptionKey,
-                    contentKey,
-                    ClientKeyCustody.AssociatedData(factor, ClientKeyCustody.ContentPurpose)),
-                ClientKeyCustody.Seal(
-                    keyEncryptionKey,
-                    indexKey,
-                    ClientKeyCustody.AssociatedData(factor, ClientKeyCustody.IndexPurpose))));
+                ClientKeyCustody.WrapPrivateKey(keyEncryptionKey, keyPair, factor),
+                ClientKeyCustody.EncapsulateAccountKeys(
+                    keyPair.PublicKey, contentKey, indexKey, factor)));
     }
 
     /// <summary>
@@ -3016,19 +3020,35 @@ public sealed class AccountRegistrationTests
     private static string OpenedUnder(
         byte[] keyEncryptionKey,
         WrappedAccountKeysRow row,
-        string purpose)
+        AccountKey which)
     {
-        byte[] envelope = purpose == ClientKeyCustody.ContentPurpose
-            ? row.ContentEnvelope
-            : row.IndexEnvelope;
+        if (!ClientKeyCustody.TryOpenAccountKeys(
+                keyEncryptionKey,
+                row.PrivateKeyEnvelope,
+                row.AccountKeysEnvelope,
+                row.FactorId,
+                out byte[] contentKey,
+                out byte[] indexKey))
+        {
+            return Unopenable;
+        }
 
-        return ClientKeyCustody.TryOpen(
-            keyEncryptionKey,
-            envelope,
-            ClientKeyCustody.AssociatedData(row.FactorId, purpose),
-            out byte[] opened)
-            ? Convert.ToHexString(opened)
-            : Unopenable;
+        return Convert.ToHexString(which is AccountKey.Content ? contentKey : indexKey);
+    }
+
+    /// <summary>
+    /// Which of the two keys inside one factor's encapsulated plaintext a caller wants back.
+    /// </summary>
+    /// <remarks>
+    /// An enumeration rather than the purpose string it replaced, because the two keys are no longer two
+    /// separately sealed values with two associated-data labels — they are one 64-byte plaintext, content
+    /// key first, and this names a HALF of it rather than a value with an identity of its own. A string
+    /// here would read like an associated-data purpose and would be nothing of the kind.
+    /// </remarks>
+    private enum AccountKey
+    {
+        Content,
+        Index,
     }
 
     /// <summary>
@@ -3045,7 +3065,7 @@ public sealed class AccountRegistrationTests
         await using NpgsqlConnection connection = new(host.ConnectionString);
         await connection.OpenAsync();
         await using NpgsqlCommand command = new(
-            "select factor_id, credential_id, credential_type, wrapped_content_key, wrapped_index_key "
+            "select factor_id, credential_id, credential_type, wrapped_private_key, encapsulated_account_keys "
             + "from wrapped_account_keys",
             connection);
         await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
