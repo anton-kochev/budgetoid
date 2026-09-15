@@ -46,10 +46,35 @@ namespace UnitTests.Fakes;
 /// invite a test whose expectation is a sequence. Rows come back in the order they were seeded, so a
 /// handler is measured on whether it hands back everything it was given.
 /// </para>
+/// <para>
+/// <b>The manifest is seeded per account and is absent until a caller seeds one</b>, which is the state
+/// every account in every database is actually in: nothing writes a <c>factor_manifests</c> row. The
+/// absent answer is <see langword="null" /> at epoch <see cref="NoManifestRotationEpoch" />, because
+/// epoch 0 is the <em>absence</em> of a row rather than a generation — the floor a stored row may claim
+/// is <c>FactorManifest.MinimumRotationEpoch</c>, which is 1, so the two can never be confused.
+/// <c>AccountKeyCustody</c> argues both halves.
+/// </para>
+/// <para>
+/// <b>Seeding a manifest is separate from seeding a factor, and deliberately so.</b> They are two
+/// tables keyed on two different things — <c>factor_manifests</c> on the account, <c>wrapped_account_keys</c>
+/// on the factor — and one seeding call taking both would make "an account with factors and no manifest"
+/// awkward to arrange, which is the state this fake most often has to be in.
+/// </para>
 /// </remarks>
 public sealed class InMemoryAccountKeyReadService : IAccountKeyReadService
 {
+    /// <summary>
+    /// The epoch an account with no manifest row is answered at.
+    /// </summary>
+    /// <remarks>
+    /// Written out as a literal rather than read off <c>FactorManifest.MinimumRotationEpoch - 1</c>: a
+    /// drift in the domain's floor must not silently drag the absent answer along with it, which is the
+    /// same arrangement <c>FactorManifestTests</c> keeps for the bounds it checks.
+    /// </remarks>
+    public const int NoManifestRotationEpoch = 0;
+
     private readonly List<(Guid UserId, Guid CredentialId, FactorEnvelopes Envelopes)> _rows = [];
+    private readonly Dictionary<Guid, (ReadOnlyMemory<byte> Manifest, int RotationEpoch)> _manifests = [];
     private readonly List<Guid> _asked = [];
 
     /// <summary>
@@ -69,7 +94,18 @@ public sealed class InMemoryAccountKeyReadService : IAccountKeyReadService
     public void Seed(Guid userId, Guid credentialId, FactorEnvelopes envelopes) =>
         _rows.Add((userId, credentialId, envelopes));
 
-    public Task<IReadOnlyList<FactorEnvelopes>> ListForAccountAsync(
+    /// <summary>
+    /// Files the one <c>factor_manifests</c> row <paramref name="userId" /> holds.
+    /// </summary>
+    /// <remarks>
+    /// An indexer rather than an add, because <c>PK_factor_manifests</c> is <c>user_id</c> and nothing
+    /// else: an account holds at most one manifest, so a fake that accumulated two would offer an
+    /// arrangement the schema refuses.
+    /// </remarks>
+    public void SeedManifest(Guid userId, ReadOnlyMemory<byte> manifest, int rotationEpoch) =>
+        _manifests[userId] = (manifest, rotationEpoch);
+
+    public Task<AccountKeyCustody> ListForAccountAsync(
         Guid userId,
         CancellationToken cancellationToken = default)
     {
@@ -82,6 +118,8 @@ public sealed class InMemoryAccountKeyReadService : IAccountKeyReadService
                 .Select(row => row.Envelopes),
         ];
 
-        return Task.FromResult(rows);
+        return Task.FromResult(_manifests.TryGetValue(userId, out (ReadOnlyMemory<byte> Manifest, int RotationEpoch) held)
+            ? new AccountKeyCustody(held.Manifest, held.RotationEpoch, rows)
+            : new AccountKeyCustody(null, NoManifestRotationEpoch, rows));
     }
 }

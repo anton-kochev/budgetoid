@@ -217,8 +217,10 @@ Enforced today:
   `Credential`, `Session`, `PasskeyPublicKey`, `PasskeySignatureCounter`,
   `RecoveryCodeHash`, `WrappedAccountKeys`, `KeyRotation`, `KeyRotationSeal`, `FactorManifest`,
   and the challenge row. A read of one that is not a discovery lookup therefore names its owner in
-  the statement: `AccountKeyReadService.ListForAccountAsync` filters on `user_id` — its
-  only predicate — even though `user_isolation` appends the same comparison underneath it,
+  the statement: `AccountKeyReadService.ListForAccountAsync` filters on `user_id` on
+  **every arm** of the one statement it issues — the account it is rooted on, the factor rows and
+  the manifest beside them, and no other predicate anywhere in
+  it — even though `user_isolation` appends the same comparison underneath it,
   for the reason `ExportReadService.ListOwnedBudgetsAsync` below does the same — a policy
   makes a wrong query answer *empty*, not *correct*, so the copy in the statement is the
   one that survives a policy missed on a table added later. The discovery lookups are the
@@ -293,18 +295,29 @@ cannot supply it: an exemption says a policy is *not required*, never that one i
 adding `user_isolation` to `credentials` leaves `RlsCoverageTests` entirely green and surfaces only as
 every passkey sign-in failing to find the credential it just verified. `currencies` and `__EFMigrationsHistory` need no such control —
 their exemption rests on belonging to no tenant rather than on being read before an identity exists, so
-a policy landing on either fails loudly on a session that names somebody. `wrapped_account_keys` is
-the one policed table with a production reader, and its `SELECT` grant answers to two kinds of
-reader:
-`AccountKeyReadService.ListForAccountAsync`, behind `GET /api/me/account-keys`, and the two
-isolation tests — `Database_HidesAnotherAccountsWrappedKeys_FromASessionNamingThisUser` and
+a policy landing on either fails loudly on a session that names somebody. **Two policed tables have
+a production reader, and it is one member over both of them**:
+`AccountKeyReadService.ListForAccountAsync`, behind `GET /api/me/account-keys`, takes the factor
+rows off `wrapped_account_keys` and the account's manifest and rotation epoch off `factor_manifests`
+in a **single statement**, naming the owner on each arm. So the number worth writing here is a
+number of tables and never of reads, and a sentence about "the one table a route reads" is the shape
+this page must not go back to. On `wrapped_account_keys` that `SELECT` grant answers to a second
+kind of reader as well — the two
+isolation tests, `Database_HidesAnotherAccountsWrappedKeys_FromASessionNamingThisUser` and
 `Database_RefusesAWrappedKeyReadOnASessionNamingNobody` — which the endpoint does not make
 redundant, because they remain the only statements that have watched the policy *refuse* anything
 here. `app-role-grants.sql` names both kinds where it justifies granting `SELECT` at all.
-`key_rotations`, `key_rotation_seals` and `factor_manifests` are policed on the same argument and
-have a reader of neither kind: their `SELECT` is granted so the tables can be read **at all**, an
-absence that would otherwise turn the plaintext scan behind `NarrativeSecrecyTests` into a skip and
-let two secrecy gates pass while covering fewer tables than the schema holds),
+**`factor_manifests` has the first kind of reader and not the second**, and that gap is named rather
+than counted: nothing has watched `user_isolation` refuse a manifest, and the route cannot stand in
+for a statement that would, because nothing writes a manifest — the read answers an absent one
+either way, so a policy doing its work and a policy doing nothing are indistinguishable from the
+outside. What scopes that arm is the policy and the explicit `user_id` predicate the lateral
+carries — the same two layers as everywhere else on this page, with the difference that only one of
+them here has ever been watched doing anything. Its `SELECT` was granted before that reader
+existed, for the reason `key_rotations` and `key_rotation_seals` — policed on the same argument, and
+with a reader of neither kind — still rest on: the grant is what lets the tables be read **at all**,
+an absence that would otherwise turn the plaintext scan behind `NarrativeSecrecyTests` into a skip
+and let two secrecy gates pass while covering fewer tables than the schema holds),
 `tests/IntegrationTests/RlsCoverageTests.cs` (schema-derived, so any
 new table without the policy its ownership calls for, or without a stated exemption, fails —
 including one carrying neither ownership column, and one that is a view or materialized view),

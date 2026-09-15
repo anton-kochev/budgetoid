@@ -114,6 +114,68 @@ public sealed class AccountKeysEndpointTests
     /// </summary>
     private static readonly Guid LetteredFactorId = new("c1d2e3f4-5a6b-7c8d-9e0f-a1b2c3d4e5f6");
 
+    /// <summary>The member of the response body the factors arrive on.</summary>
+    /// <remarks>
+    /// A wire spelling written out here rather than read off the response record, which is deliberate
+    /// and is the rule this whole file keeps: no test here names a type belonging to this endpoint, so
+    /// renaming the member on the record reddens these tests instead of moving them along with it.
+    /// </remarks>
+    private const string FactorsMember = "factors";
+
+    /// <summary>The member the account's authenticated list of factor public keys arrives on.</summary>
+    private const string ManifestMember = "manifest";
+
+    /// <summary>The member carrying which generation the manifest beside it belongs to.</summary>
+    private const string RotationEpochMember = "rotationEpoch";
+
+    /// <summary>
+    /// The generation a seeded manifest claims, and the one number in this file chosen against two
+    /// wrong implementations rather than one.
+    /// </summary>
+    /// <remarks>
+    /// <b>Neither 0 nor 1, and both exclusions are the point.</b> 0 is the absence of a manifest row —
+    /// the state of every account in the product — so a response hard-wiring it is correct everywhere
+    /// today and would be green against a seed of 0. 1 is <c>FactorManifest.MinimumRotationEpoch</c>,
+    /// the floor a stored row may claim, so an implementation returning a hard-coded floor is green
+    /// against a seed of 1. Seven is neither, and it is small enough that a failure message reads.
+    /// </remarks>
+    private const int SeededRotationEpoch = 7;
+
+    /// <summary>
+    /// The manifest bytes a seeded account's row carries.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Chosen so the standard base64 alphabet and base64url disagree about them</b>, which is what
+    /// makes the alphabet claim a claim: the first three bytes render as four <c>+</c> under one
+    /// alphabet and four <c>-</c> under the other, the next three render as four <c>/</c> against four
+    /// <c>_</c>, and ten bytes is deliberately not a multiple of three so a padded encoder emits
+    /// <c>==</c>.
+    /// <see cref="AccountKeys_ManifestIsUnpaddedBase64UrlInTheSameAlphabetAsTheEnvelopes" /> asserts
+    /// that disagreement about these exact bytes before it reads the body, so the probe is proven to
+    /// discriminate rather than assumed to.
+    /// </para>
+    /// <para>
+    /// Not an AEAD envelope and not an encapsulation: a manifest is an authenticated list of public
+    /// keys under a framing this repository does not ship, and the column refuses only emptiness and a
+    /// width above <c>FactorManifest.MaximumBytes</c>. Bytes of any shape inside that are a legal row,
+    /// which is why nothing here builds one to a version-and-width recipe the way the two envelope
+    /// payloads are built.
+    /// </para>
+    /// </remarks>
+    private static readonly byte[] SeededManifest =
+        [0xFB, 0xEF, 0xBE, 0xFF, 0xFF, 0xFF, 0x4D, 0x41, 0x4E, 0x7C];
+
+    /// <summary>
+    /// A second account's manifest, sharing not one byte with <see cref="SeededManifest" />.
+    /// </summary>
+    /// <remarks>
+    /// Distinguishable at every position rather than merely unequal, so a body carrying a prefix of the
+    /// wrong account's manifest is as visible as one carrying the whole of it.
+    /// </remarks>
+    private static readonly byte[] BystanderManifest =
+        [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A];
+
     /// <summary>
     /// A passkey session is handed the account's factors, including the one filed under a credential
     /// that did not open it.
@@ -169,7 +231,7 @@ public sealed class AccountKeysEndpointTests
         // "exactly these factors carrying exactly these envelopes" — so a dropped row, a duplicated row,
         // a stranger's row and a swapped envelope each arrive named in the failure message. Both
         // credentials' factors are on the expected side, which is the whole retarget.
-        await Assert.That(ArrivedRows(await ReadArrayAsync(response)))
+        await Assert.That(ArrivedRows(await ReadFactorsAsync(response)))
             .IsEqualTo(ExpectedRows([.. own, .. bystander]));
     }
 
@@ -237,7 +299,7 @@ public sealed class AccountKeysEndpointTests
 
         // The count on its own line, so a read that dropped the credential it was not opened on names
         // the number rather than printing eleven rendered rows against ten.
-        JsonArray entries = await ReadArrayAsync(response);
+        JsonArray entries = await ReadFactorsAsync(response);
         await Assert.That(entries.Count).IsEqualTo(FactorsPerAccount);
         await Assert.That(ArrivedRows(entries)).IsEqualTo(ExpectedRows(own));
     }
@@ -311,7 +373,7 @@ public sealed class AccountKeysEndpointTests
         // failure it is rather than as an empty row set nobody would recognise as a 404.
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
 
-        JsonArray entries = await ReadArrayAsync(response);
+        JsonArray entries = await ReadFactorsAsync(response);
         Dictionary<string, WrappedKeyFixture> seeded =
             own.ToDictionary(factor => factor.FactorId, StringComparer.Ordinal);
 
@@ -490,7 +552,7 @@ public sealed class AccountKeysEndpointTests
         // Assert
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
 
-        JsonArray entries = await ReadArrayAsync(response);
+        JsonArray entries = await ReadFactorsAsync(response);
         await Assert.That(entries.Count).IsEqualTo(1);
 
         JsonObject row = AsObject(entries[0]);
@@ -604,7 +666,7 @@ public sealed class AccountKeysEndpointTests
         // failure it is rather than as a member list nobody would recognise as a 404.
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
 
-        JsonArray entries = await ReadArrayAsync(response);
+        JsonArray entries = await ReadFactorsAsync(response);
         await Assert.That(entries.Count).IsEqualTo(RequiredCodeCount);
 
         // Each row's members ordered before joining, so a fourth member produces the same message
@@ -678,7 +740,374 @@ public sealed class AccountKeysEndpointTests
         await Assert.That(response.StatusCode).IsNotEqualTo(HttpStatusCode.NotFound);
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
         await Assert.That(response.Content.Headers.ContentType!.MediaType).IsEqualTo("application/json");
-        await Assert.That((await ReadArrayAsync(response)).Count).IsEqualTo(0);
+        await Assert.That((await ReadFactorsAsync(response)).Count).IsEqualTo(0);
+    }
+
+    /// <summary>
+    /// An account holding a manifest is handed that manifest — base64url decoding to exactly the stored
+    /// bytes.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This test is expected to be RED, and the red is the deliverable.</b>
+    /// <c>AccountKeyReadService</c> does not read <c>factor_manifests</c> at all: no join, no
+    /// <c>DbSet</c> read, no second statement. It hard-wires <see langword="null" /> at epoch 0 and says
+    /// so in its own remarks, which is today's correct answer for every account in every database
+    /// because nothing writes a manifest — and is the wrong answer for the row this test seeds behind
+    /// its back. Nothing else in the suite can tell the two apart, which is what this is for.
+    /// </para>
+    /// <para>
+    /// <b>The comparison is over the decoded bytes, not over the encoded text.</b> Comparing base64url
+    /// against base64url would pass on an implementation that read the right row and spelled it with the
+    /// wrong alphabet, and fail on one that read the right row and spelled it correctly if the
+    /// expectation here were built by a second encoder. Hex on both sides of one decode is the
+    /// comparison this file already makes about the two envelopes.
+    /// </para>
+    /// <para>
+    /// A factor is seeded beside the manifest, so the two levels of the body are both populated and
+    /// neither claim can be satisfied by the other being empty.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task AccountKeys_ForAnAccountHoldingAManifest_CarryItsExactBytes()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        ApiFactory.SignedInClient signedIn = await host.Factory.CreateSignedInClientAsync(Subject);
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await SeedFactorsAsync(host, await SessionCredentialIdAsync(admin, signedIn.UserId), count: 1);
+        await SeedManifestAsync(host, signedIn.UserId, SeededManifest, SeededRotationEpoch);
+
+        // Act
+        HttpResponseMessage response = await signedIn.Client.GetAsync(AccountKeysPath);
+
+        // Assert — the status first, so a body that is missing because the request failed reads as the
+        // failure it is rather than as an absent manifest.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+
+        JsonObject body = await ReadBodyAsync(response);
+
+        // Served at all before decoded, so "no manifest came back" and "the wrong bytes came back"
+        // arrive as two different messages rather than as one decode blowing up on a null. Indexing a
+        // JsonObject answers a C# null both for a member that is absent and for one that is explicitly
+        // null, so this single line refuses both — which is exactly what is wanted here and exactly what
+        // AccountKeys_AbsentManifest_IsNullAndNeverAnEmptyString has to work around to tell them apart.
+        await Assert.That(body[ManifestMember]).IsNotNull();
+        await Assert.That(Convert.ToHexString(
+                Base64UrlText.Decode(body[ManifestMember]!.GetValue<string>())))
+            .IsEqualTo(Convert.ToHexString(SeededManifest));
+    }
+
+    /// <summary>
+    /// That account is handed its stored generation, and never the absent answer.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Expected RED for the same reason as the case above</b>, and kept beside it rather than folded
+    /// into it because the two refuse different implementations. That one refuses a read that never
+    /// looks at the bytes; this one refuses a read that answers a <em>number</em> from nowhere. An
+    /// implementation could plausibly grow one and not the other — a join that projected the manifest
+    /// column and left the epoch hard-wired is a one-line omission with no symptom on this side.
+    /// </para>
+    /// <para>
+    /// <b>The seeded generation is neither 0 nor 1</b>, so both of the two answers a hard-coded
+    /// implementation would reach for are caught. <see cref="SeededRotationEpoch" /> carries that
+    /// argument in full.
+    /// </para>
+    /// <para>
+    /// No factor is seeded here, and that is deliberate: a manifest is keyed on the account and a
+    /// wrapped row on the factor, so the epoch must arrive for an account holding no factors at all.
+    /// An implementation deriving the generation from the factor rows — counting them, or reading it
+    /// off the first — is red on an empty set rather than green on a populated one.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task AccountKeys_ForAnAccountHoldingAManifest_CarryItsStoredRotationEpoch()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        ApiFactory.SignedInClient signedIn = await host.Factory.CreateSignedInClientAsync(Subject);
+        await SeedManifestAsync(host, signedIn.UserId, SeededManifest, SeededRotationEpoch);
+
+        // Act
+        HttpResponseMessage response = await signedIn.Client.GetAsync(AccountKeysPath);
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        await Assert.That((await ReadBodyAsync(response))[RotationEpochMember]!.GetValue<int>())
+            .IsEqualTo(SeededRotationEpoch);
+    }
+
+    /// <summary>
+    /// An account holding no manifest row is answered <c>null</c> at generation 0, with a 200 and never a
+    /// 404.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The state of every account in the product, and a decision rather than a gap.</b> Epoch 0 is
+    /// the <em>absence</em> of a row — <c>CK_factor_manifests_rotation_epoch</c> refuses anything below
+    /// 1, so 0 can never collide with a stored generation — and nothing writes a manifest, so this is
+    /// the answer the whole product gets today. The 404 is the thing to refuse by name: it is the right
+    /// instinct almost everywhere else, and here it would give a client the one instruction that can
+    /// never work, because <c>AccountKeyCustodyService</c> reads a failed read as "try the same factor
+    /// again in a minute".
+    /// </para>
+    /// <para>
+    /// The factors array is asserted to arrive populated on the same body, so this cannot pass on a
+    /// response that failed to carry anything at all.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task AccountKeys_ForAnAccountWithNoManifest_AreNullAtEpochZeroAndNeverANotFound()
+    {
+        // Arrange — a signed-in account with a factor and no factor_manifests row, which is the state
+        // every account is in without anything having to be deleted to reach it.
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        ApiFactory.SignedInClient signedIn = await host.Factory.CreateSignedInClientAsync(Subject);
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await SeedFactorsAsync(host, await SessionCredentialIdAsync(admin, signedIn.UserId), count: 1);
+
+        // Act
+        HttpResponseMessage response = await signedIn.Client.GetAsync(AccountKeysPath);
+
+        // Assert — both halves of the status, so the answer this refuses is named rather than excluded.
+        await Assert.That(response.StatusCode).IsNotEqualTo(HttpStatusCode.NotFound);
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+
+        // The member is declared and carries no value. Indexing answers a C# null for a JSON null, so
+        // the presence half is ContainsKey and the value half is the index — two lines because
+        // JsonNode spells the two states identically, which is the whole subject of the case below.
+        JsonObject body = await ReadBodyAsync(response);
+        await Assert.That(body.ContainsKey(ManifestMember)).IsTrue();
+        await Assert.That(body[ManifestMember]).IsNull();
+
+        // Present before read, so a renamed member reddens by name instead of dying as a bare
+        // NullReferenceException on the index below it.
+        await Assert.That(body.ContainsKey(RotationEpochMember)).IsTrue();
+        await Assert.That(body[RotationEpochMember]!.GetValue<int>()).IsEqualTo(0);
+        await Assert.That(FactorsOf(body).Count).IsEqualTo(1);
+    }
+
+    /// <summary>
+    /// The absent manifest is <c>null</c> on the wire and never <c>""</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The empty string is legal base64url for zero bytes, and that is the whole of the argument.</b>
+    /// A client handed <c>""</c> cannot tell "this account has no manifest" from "this account has a
+    /// manifest and it names nobody" — two states that call for two different next steps, one of them
+    /// being to go and enrol a factor. <c>null</c> is the only spelling on this wire that keeps them
+    /// apart, and a serializer setting or a projection that reached for
+    /// <c>string.Empty</c> instead would satisfy every other assertion in this file.
+    /// </para>
+    /// <para>
+    /// <b>The raw payload is read beside the parsed node because the parsed node cannot answer this
+    /// question on its own.</b> Indexing a <see cref="JsonObject" /> answers a C# <see langword="null" />
+    /// for a member that is explicitly <c>null</c> <em>and</em> for one that is not there at all, so a
+    /// check written only that way passes on a body carrying no <c>manifest</c> member — which is a
+    /// third spelling, and a client reading <c>undefined</c>. <see cref="JsonObject.ContainsKey" />
+    /// separates those two, and the substring check is a claim about the bytes rather than about what
+    /// a parser made of them, which is what refuses <c>"manifest":""</c>.
+    /// </para>
+    /// <para>
+    /// All three assertions are needed and none of them is a restatement: presence, absence of a value,
+    /// and the exact spelling that absence went over the wire in.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task AccountKeys_AbsentManifest_IsNullAndNeverAnEmptyString()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        ApiFactory.SignedInClient signedIn = await host.Factory.CreateSignedInClientAsync(Subject);
+
+        // Act
+        HttpResponseMessage response = await signedIn.Client.GetAsync(AccountKeysPath);
+        string payload = await response.Content.ReadAsStringAsync();
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+
+        JsonObject body = JsonNode.Parse(payload) as JsonObject
+            ?? throw new InvalidOperationException("The endpoint answered something other than a JSON object.");
+
+        await Assert.That(body.ContainsKey(ManifestMember)).IsTrue();
+        await Assert.That(body[ManifestMember]).IsNull();
+        await Assert.That(payload).Contains($"\"{ManifestMember}\":null");
+        await Assert.That(payload).DoesNotContain($"\"{ManifestMember}\":\"\"");
+    }
+
+    /// <summary>
+    /// A second account's manifest is never served, in either direction.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The negative half only, and the omission is deliberate rather than an oversight.</b> That a
+    /// caller is handed <em>its own</em> bytes is
+    /// <see cref="AccountKeys_ForAnAccountHoldingAManifest_CarryItsExactBytes" />'s claim and is red
+    /// today; restating it here would add a second red saying nothing the first does not, and two reds
+    /// with one cause is how a suite teaches people to skim its failures. What this adds is the half
+    /// that case cannot make with one account in the fixture: that neither body carries the
+    /// <em>other</em> account's manifest.
+    /// </para>
+    /// <para>
+    /// <b>It passes today for a reason worth stating: both bodies carry <c>null</c>.</b> A pin that is
+    /// green because the feature does not exist yet is still the pin that reddens the day a read is
+    /// written without an owner predicate — <c>factor_manifests</c> is policed by <c>user_isolation</c>
+    /// on <c>user_id</c>, so a missing predicate answers empty rather than wrong on this table, but a
+    /// read keyed on the wrong account, or one that read the table through a context the policy never
+    /// saw, arrives here.
+    /// </para>
+    /// <para>
+    /// Searched over the raw payload rather than over a parsed member, so a manifest that arrived
+    /// nested inside some later container is found too — the same reason
+    /// <see cref="AccountKeys_RowCarriesTheFactorAndTheTwoEnvelopesAndNothingElse" /> searches the
+    /// payload beside its member census. The two seeded manifests are asserted distinct first, or the
+    /// search is over one value wearing two names.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task AccountKeys_ForASecondAccount_NeverCarryTheFirstsManifest()
+    {
+        // Arrange — A first, so an unscoped read hands B the row that was written first.
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        ApiFactory.SignedInClient first = await host.Factory.CreateSignedInClientAsync(Subject);
+        await SeedManifestAsync(host, first.UserId, SeededManifest, SeededRotationEpoch);
+
+        ApiFactory.SignedInClient second = await host.Factory.CreateSignedInClientAsync(OtherSubject);
+        await SeedManifestAsync(host, second.UserId, BystanderManifest, SeededRotationEpoch + 1);
+
+        string firstEncoded = Base64UrlText.Encode(SeededManifest);
+        string secondEncoded = Base64UrlText.Encode(BystanderManifest);
+        await Assert.That(firstEncoded).IsNotEqualTo(secondEncoded);
+
+        // Act — B first, since it is the caller the ordering above was arranged to trap.
+        string secondPayload = await (await second.Client.GetAsync(AccountKeysPath))
+            .Content.ReadAsStringAsync();
+        string firstPayload = await (await first.Client.GetAsync(AccountKeysPath))
+            .Content.ReadAsStringAsync();
+
+        // Assert
+        await Assert.That(secondPayload).DoesNotContain(firstEncoded);
+        await Assert.That(firstPayload).DoesNotContain(secondEncoded);
+    }
+
+    /// <summary>
+    /// The body carries the manifest, the generation and the factors, and no fourth member.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The sibling of the per-row census, at the level the row census cannot see.</b>
+    /// <see cref="AccountKeys_RowCarriesTheFactorAndTheTwoEnvelopesAndNothingElse" /> reads the members
+    /// of a <em>factor</em> and is blind to everything above it — the body could grow a
+    /// <c>nextCursor</c>, a <c>userId</c> or a second copy of the account's keys and that census would
+    /// stay green. Until this case, the only thing holding the top level was that a rename of
+    /// <c>factors</c> made six other tests die on a lookup, which names the helper rather than the
+    /// member.
+    /// </para>
+    /// <para>
+    /// <b>Rendered as an ordered, joined string rather than compared as a set</b>, so a fourth member
+    /// arrives in the failure message by name and the message reads the same however the serializer
+    /// ordered the body. The expectation is ordered on this side too, so a later rename cannot make the
+    /// comparison depend on which member happens to sort first.
+    /// </para>
+    /// <para>
+    /// The account holds a factor, so this is read off a populated body: a member that only appears
+    /// when something came back is still a member.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task AccountKeys_BodyCarriesTheManifestTheEpochAndTheFactorsAndNothingElse()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        ApiFactory.SignedInClient signedIn = await host.Factory.CreateSignedInClientAsync(Subject);
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await SeedFactorsAsync(host, await SessionCredentialIdAsync(admin, signedIn.UserId), count: 1);
+
+        // Act
+        HttpResponseMessage response = await signedIn.Client.GetAsync(AccountKeysPath);
+
+        // Assert — the status first, so a problem-details body does not pass for a shape census.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+
+        JsonObject body = await ReadBodyAsync(response);
+
+        await Assert.That(string.Join(
+                ", ",
+                body.Select(member => member.Key).Order(StringComparer.Ordinal)))
+            .IsEqualTo(string.Join(", ", BodyMembers.Order(StringComparer.Ordinal)));
+    }
+
+    /// <summary>
+    /// The manifest crosses in the same alphabet the two envelopes do: base64url, unpadded, with no
+    /// <c>+</c> and no <c>/</c> anywhere in the body.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Written beside <see cref="AccountKeys_EnvelopesAreUnpaddedBase64Url" /> rather than as a row
+    /// added to its table, and the reason is which red each would produce.</b> That test iterates a
+    /// written member list and decodes each member to its own suite's width; a <c>manifest</c> row
+    /// added to it would go red <em>today</em> on a member that is legitimately <c>null</c> for every
+    /// account, which is the stub's red already reported by
+    /// <see cref="AccountKeys_ForAnAccountHoldingAManifest_CarryItsExactBytes" /> wearing a second name.
+    /// This case asks the alphabet question of the <b>whole body</b> instead, which is answerable today
+    /// and stays answerable when the manifest arrives.
+    /// </para>
+    /// <para>
+    /// <b>It is honest about being vacuous on one of its two subjects.</b> The two envelopes are seeded
+    /// and really do cross this body, so the three absences are a real claim about them. The manifest
+    /// does not cross it yet, so for that member this is a pin rather than a measurement — it becomes a
+    /// measurement on the commit that serves one, with no edit here.
+    /// </para>
+    /// <para>
+    /// <b>The probe proves itself before it is used.</b> The seeded manifest's bytes are asserted to
+    /// render with <c>+</c>, <c>/</c> and <c>=</c> under the standard alphabet, so "the body carries
+    /// none of the three" is a statement about the encoder rather than about bytes that could never
+    /// have produced them. <see cref="SeededManifest" /> carries that argument.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task AccountKeys_ManifestIsUnpaddedBase64UrlInTheSameAlphabetAsTheEnvelopes()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        ApiFactory.SignedInClient signedIn = await host.Factory.CreateSignedInClientAsync(Subject);
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await SeedFactorsAsync(host, await SessionCredentialIdAsync(admin, signedIn.UserId), count: 1);
+        await SeedManifestAsync(host, signedIn.UserId, SeededManifest, SeededRotationEpoch);
+
+        // The probe really does distinguish the two alphabets, or the three absences below are a claim
+        // about bytes that could not have spent either character in the first place.
+        string standard = Convert.ToBase64String(SeededManifest);
+        await Assert.That(standard).Contains("+");
+        await Assert.That(standard).Contains("/");
+        await Assert.That(standard).Contains("=");
+
+        // Act
+        HttpResponseMessage response = await signedIn.Client.GetAsync(AccountKeysPath);
+        string payload = await response.Content.ReadAsStringAsync();
+
+        // Assert — the status first, so an error body carrying none of the three cannot pass for a
+        // correctly encoded one.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+
+        // The member exists on the body, so a manifest that vanished rather than being encoded wrongly
+        // is not what makes the three absences below true.
+        await Assert.That((await ReadBodyAsync(response)).ContainsKey(ManifestMember)).IsTrue();
+
+        foreach (string refused in StandardAlphabetOnly)
+        {
+            await Assert.That(payload).DoesNotContain(refused);
+        }
     }
 
     /// <summary>
@@ -898,6 +1327,28 @@ public sealed class AccountKeysEndpointTests
     private static readonly string[] MembersNoRowMayCarry = ["credentialId", "userId", "createdAtUtc"];
 
     /// <summary>
+    /// The three characters that belong to the standard base64 alphabet and its padding, and to
+    /// base64url's neither.
+    /// </summary>
+    /// <remarks>
+    /// Listed rather than written into each assertion so the three cannot drift apart between the two
+    /// tests that read them, and named for what they are: <c>+</c> and <c>/</c> are indexes 62 and 63
+    /// under the alphabet this API does not use, and <c>=</c> is padding the client's decoder refuses
+    /// outright rather than tolerates.
+    /// </remarks>
+    private static readonly string[] StandardAlphabetOnly = ["+", "/", "="];
+
+    /// <summary>
+    /// The three members the response body carries, and no fourth.
+    /// </summary>
+    /// <remarks>
+    /// Built from the three constants the rest of this file reads rather than spelled out again, so a
+    /// rename lands in one place and the census cannot end up agreeing with a stale copy of itself —
+    /// the arrangement <see cref="RowMembers" /> keeps one level down.
+    /// </remarks>
+    private static readonly string[] BodyMembers = [ManifestMember, RotationEpochMember, FactorsMember];
+
+    /// <summary>
     /// Asserts both directions of one caller's answer: that the rows are exactly the factors that
     /// credential holds, and that no identifier or envelope of the other account appears in the body it
     /// was sent.
@@ -917,10 +1368,10 @@ public sealed class AccountKeysEndpointTests
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
 
         string payload = await response.Content.ReadAsStringAsync();
-        JsonArray entries = JsonNode.Parse(payload) as JsonArray
-            ?? throw new InvalidOperationException("The endpoint answered something other than a JSON array.");
+        JsonObject body = JsonNode.Parse(payload) as JsonObject
+            ?? throw new InvalidOperationException("The endpoint answered something other than a JSON object.");
 
-        await Assert.That(ArrivedRows(entries)).IsEqualTo(ExpectedRows(own));
+        await Assert.That(ArrivedRows(FactorsOf(body))).IsEqualTo(ExpectedRows(own));
 
         foreach (WrappedKeyFixture stranger in other)
         {
@@ -1097,6 +1548,32 @@ public sealed class AccountKeysEndpointTests
             encapsulatedAccountKeys: factor.AccountKeysEnvelope);
 
     /// <summary>
+    /// Files the one <c>factor_manifests</c> row an account may hold.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>On <see cref="PostgresTestHost.ConnectionString" />, which is the elevated connection, and
+    /// that is not a convenience.</b> The application role holds <c>SELECT</c> on this table and no
+    /// write privilege of any shape, so there is no path through the API that can bring this row into
+    /// existence and no seeding call over the app connection that would not meet <c>42501</c>. Every
+    /// other arrangement in this file already uses the same connection for the same reason: the
+    /// fixture writes what the product cannot.
+    /// </para>
+    /// <para>
+    /// Through the entity factory, the way the wrapped-key rows beside it are seeded — so the row is
+    /// one the application could really have written if it had the grant, rather than one whose column
+    /// list a test typed out.
+    /// </para>
+    /// </remarks>
+    private static Task SeedManifestAsync(
+        PostgresTestHost host,
+        Guid userId,
+        byte[] manifest,
+        int rotationEpoch) =>
+        RepositoryTestHost.SeedFactorManifestOnAsync(
+            host.ConnectionString, userId, manifest, rotationEpoch);
+
+    /// <summary>
     /// Files a second credential on an existing account, with factors of its own — the rows that must
     /// arrive beside the session credential's, and whose absence is the defect this file was retargeted
     /// to catch.
@@ -1123,16 +1600,47 @@ public sealed class AccountKeysEndpointTests
         await (await client.GetAsync(AccountKeysPath)).Content.ReadAsStringAsync();
 
     /// <summary>
-    /// The response body as a JSON <b>array</b>, refusing anything that is not one.
+    /// The response body as a JSON <b>object</b>, refusing anything that is not one.
     /// </summary>
     /// <remarks>
-    /// The contract is an array rather than an envelope carrying one, and a lenient read would let an
-    /// object with an <c>items</c> member pass as "no rows arrived" — which reads as a projection bug
-    /// rather than as the shape change it is.
+    /// <para>
+    /// <b>The body used to be the factors array itself, and the refusal moved up a level with it rather
+    /// than being relaxed.</b> The contract is now one object carrying the account's manifest, the
+    /// generation that manifest belongs to, and the factors — so a lenient read here would let a bare
+    /// array, a <c>null</c> body or a problem-details document pass as "no rows arrived", which reads as
+    /// a projection bug rather than as the shape change it is.
+    /// </para>
+    /// <para>
+    /// <b>The descent lives in the helper rather than in the seven callers, and that is the decision.</b>
+    /// Every one of those callers wants the factors and nothing else, so putting the two-step parse in
+    /// each of them would be the same four lines written seven times — and the fourth or fifth copy is
+    /// where somebody writes <c>body["factors"] as JsonArray ?? []</c> and turns a body that stopped
+    /// carrying factors at all into an empty list nobody notices. One place to be strict is one place to
+    /// stay strict. What it costs is that a caller can no longer say anything about the body's top level
+    /// through this helper, which is why <see cref="ReadBodyAsync" /> is public to the file beside it and
+    /// is what the manifest cases read.
+    /// </para>
     /// </remarks>
-    private static async Task<JsonArray> ReadArrayAsync(HttpResponseMessage response) =>
-        await JsonNode.ParseAsync(await response.Content.ReadAsStreamAsync()) as JsonArray
-        ?? throw new InvalidOperationException("The endpoint answered something other than a JSON array.");
+    private static async Task<JsonObject> ReadBodyAsync(HttpResponseMessage response) =>
+        await JsonNode.ParseAsync(await response.Content.ReadAsStreamAsync()) as JsonObject
+        ?? throw new InvalidOperationException("The endpoint answered something other than a JSON object.");
+
+    /// <summary>
+    /// The factors of a response body, refusing a body carrying no <c>factors</c> array.
+    /// </summary>
+    /// <remarks>
+    /// A missing member and a member that is not an array are one failure with one message: in both
+    /// cases the response stopped offering the list this endpoint exists to hand back, and telling the
+    /// two apart would buy a reader nothing they cannot see in the body the message is about.
+    /// </remarks>
+    private static JsonArray FactorsOf(JsonObject body) =>
+        body[FactorsMember] as JsonArray
+        ?? throw new InvalidOperationException(
+            $"The response body carries no '{FactorsMember}' array.");
+
+    /// <summary>The factors of the response, read one level down from its top-level object.</summary>
+    private static async Task<JsonArray> ReadFactorsAsync(HttpResponseMessage response) =>
+        FactorsOf(await ReadBodyAsync(response));
 
     /// <summary>
     /// One array element as an object, refusing anything that is not one.

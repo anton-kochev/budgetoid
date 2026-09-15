@@ -3,15 +3,33 @@ using Application.Abstractions;
 namespace Application.AccountKeys.GetAccountKeys;
 
 /// <summary>
-/// Hands the browser what <b>every factor the account holds</b> stores — that factor's wrapped private
-/// key and the account's two keys encapsulated to its public half, one row per registered passkey and
-/// ten per set of recovery codes.
+/// Hands the browser the account's key custody at both of its levels: the manifest naming every recovery
+/// factor's public key and the generation that manifest is in, and what <b>every factor the account
+/// holds</b> stores — that factor's wrapped private key and the account's two keys encapsulated to its
+/// public half, one row per registered passkey and ten per set of recovery codes.
 /// </summary>
 /// <remarks>
 /// <para>
 /// <b>One read, and its only input is <see cref="IUserContext.UserId" />.</b> The account is the unit the
 /// keys belong to, so the account is what the read is keyed on; nothing about the request narrows it
 /// further, and there is no second identifier for anything to disagree about.
+/// </para>
+/// <para>
+/// <b>Two levels in one answer, and the handler adds nothing to either.</b> The manifest and the epoch
+/// are facts about the <em>account</em> — true once, however many factors it holds — and the envelopes
+/// are facts about a <em>factor</em>. <see cref="AccountKeyCustody" /> holds both because the client's
+/// job is to compare them: it refuses a rotation when there is no manifest, and refuses one where the
+/// served factor set and the set the manifest names disagree. Splitting them across two calls from here
+/// would put a concurrent enrolment between two correct halves and report the result to a person as
+/// tampering, so the handler makes one call and forwards what it gets.
+/// </para>
+/// <para>
+/// <b>The read of <c>factor_manifests</c> lives in the read service, and this handler is not where a
+/// second one may land.</b> The shipped read service takes both levels off one statement — the argument
+/// for why one statement rather than two is written there and on <see cref="AccountKeyCustody" /> — and
+/// every account still answers <see langword="null" /> at epoch <c>0</c>, because nothing writes a
+/// manifest. A reader must not reach for the table here: the port already returns the pair, and a lookup
+/// beside this call would reintroduce exactly the two-snapshot gap the single statement exists to close.
 /// </para>
 /// <para>
 /// <b>It used to be narrowed by the credential that opened the session, and that was wrong.</b> The
@@ -68,6 +86,16 @@ namespace Application.AccountKeys.GetAccountKeys;
 /// revoked session on this route, which nothing did while the rule was only a paragraph.
 /// </para>
 /// <para>
+/// <b>An account holding no manifest answers epoch <c>0</c> and no manifest, not a refusal.</b>
+/// <see cref="Domain.Users.FactorManifest.MinimumRotationEpoch" /> is 1 and the column refuses anything
+/// below it, so <c>0</c> is a number no stored row can hold and therefore an unambiguous spelling of
+/// "there is no row". That is the pre-registration state and the state of <em>every</em> account in
+/// every database, because nothing writes a manifest — so the empty answer here is the only answer this
+/// product currently produces, and a handler treating it as an error would refuse every request on the
+/// route. It is also independent of the list below it: a full factor list beside a missing manifest is
+/// the normal shape today, not a contradiction.
+/// </para>
+/// <para>
 /// <b>An account holding no factor rows answers an empty list, not a throw</b>, for the reason
 /// <c>ListCredentialsHandler</c> gives about its own: an empty collection is the honest shape of "nothing
 /// came back", and this read is taken for display. There are four ways to reach it, and the fourth is one
@@ -89,8 +117,10 @@ namespace Application.AccountKeys.GetAccountKeys;
 /// impossible would be wrong about its own domain.</item>
 /// </list>
 /// <para>
-/// <b>Empty is still answered as <c>200 []</c> and never a <c>404</c>, but not for the reason it used to
-/// be.</b> The old argument was an enumeration oracle: a 404 would have told a caller that a guessed
+/// <b>Empty is still answered as a <c>200</c> carrying an empty <c>factors</c> array and never a
+/// <c>404</c>, but not for the reason it used to be.</b> The array moved down a level when the response
+/// grew the account's manifest beside it; nothing about this argument moved with it, and an account
+/// holding no factor and no manifest is still a <c>200</c>. The old argument was an enumeration oracle: a 404 would have told a caller that a guessed
 /// session id named a real row. That argument does <em>not</em> survive the widening — nothing is
 /// narrowed by an identifier a caller could guess, and an authenticated request can only ever ask about
 /// its own account. What holds now is the client. <c>AccountKeyCustodyService</c> reads an empty list as
@@ -147,13 +177,14 @@ namespace Application.AccountKeys.GetAccountKeys;
 public sealed class GetAccountKeysHandler(
     IUserContext userContext,
     IAccountKeyReadService readService)
-    : IQueryHandler<GetAccountKeysQuery, IReadOnlyList<FactorEnvelopes>>
+    : IQueryHandler<GetAccountKeysQuery, AccountKeyCustody>
 {
-    public Task<IReadOnlyList<FactorEnvelopes>> HandleAsync(
+    public Task<AccountKeyCustody> HandleAsync(
         GetAccountKeysQuery query,
         CancellationToken cancellationToken = default) =>
         // The owner from the context the policy is keyed on, and nothing else. Every factor the account
         // holds — one row per passkey, ten per set of codes — because a ceremony can present any of
-        // them and the authenticator, not this request, decides which.
+        // them and the authenticator, not this request, decides which. The manifest and its epoch come
+        // back on the same answer rather than from a second call, so the two levels describe one instant.
         readService.ListForAccountAsync(userContext.UserId, cancellationToken);
 }

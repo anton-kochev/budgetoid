@@ -99,7 +99,8 @@ public sealed class GetAccountKeysHandlerTests
         GetAccountKeysHandler handler = new(new StubUserContext(userId), readService);
 
         // Act
-        FactorEnvelopes[] returned = [.. await handler.HandleAsync(new GetAccountKeysQuery())];
+        FactorEnvelopes[] returned =
+            [.. (await handler.HandleAsync(new GetAccountKeysQuery())).Factors];
 
         // Assert — the count first, because narrowing to either credential is what this refuses and
         // both wrong answers are a number.
@@ -137,7 +138,8 @@ public sealed class GetAccountKeysHandlerTests
         GetAccountKeysHandler handler = new(new StubUserContext(userId), readService);
 
         // Act
-        FactorEnvelopes[] returned = [.. await handler.HandleAsync(new GetAccountKeysQuery())];
+        FactorEnvelopes[] returned =
+            [.. (await handler.HandleAsync(new GetAccountKeysQuery())).Factors];
 
         // Assert — the count first, because it is the whole defect: SingleOrDefault, FirstOrDefault
         // and a nullable return each answer one here and are correct for every passkey.
@@ -171,7 +173,8 @@ public sealed class GetAccountKeysHandlerTests
         GetAccountKeysHandler handler = new(new StubUserContext(userId), readService);
 
         // Act
-        FactorEnvelopes[] returned = [.. await handler.HandleAsync(new GetAccountKeysQuery())];
+        FactorEnvelopes[] returned =
+            [.. (await handler.HandleAsync(new GetAccountKeysQuery())).Factors];
 
         // Assert
         await Assert.That(returned.Length).IsEqualTo(1);
@@ -231,10 +234,92 @@ public sealed class GetAccountKeysHandlerTests
         GetAccountKeysHandler handler = new(new StubUserContext(userId), readService);
 
         // Act — awaiting is itself the "never a throw" half of the claim.
-        IReadOnlyList<FactorEnvelopes> returned = await handler.HandleAsync(new GetAccountKeysQuery());
+        IReadOnlyList<FactorEnvelopes> returned =
+            (await handler.HandleAsync(new GetAccountKeysQuery())).Factors;
 
         // Assert
         await Assert.That(returned).IsEmpty();
+    }
+
+    /// <summary>
+    /// The manifest and its generation arrive on the same answer as the factors, unchanged.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>A pass-through is exactly what has to be pinned here, because a pass-through is what is easy
+    /// to lose.</b> The handler holds the two new members only by handing back what the read service
+    /// gave it, so a body rewritten to project the factors into a fresh
+    /// <c>AccountKeyCustody(null, 0, factors)</c> would compile, keep every counting case above green,
+    /// and answer every account in the product correctly — because every account in the product has no
+    /// manifest. This is the only case in this file that would notice.
+    /// </para>
+    /// <para>
+    /// The epoch is seeded at a value that is neither the absent answer nor the floor a stored row may
+    /// claim, so an implementation returning a hard-coded 0 <em>or</em> a hard-coded 1 is red on the
+    /// number rather than green on one of them.
+    /// </para>
+    /// <para>
+    /// The bytes are compared through <c>ToArray()</c> rather than by comparing two
+    /// <see cref="ReadOnlyMemory{T}" /> values, for the reason this file's remarks give about
+    /// <see cref="FactorEnvelopes" />: the struct's own equality is about a buffer, an offset and a
+    /// length, so two arrays holding identical bytes compare unequal.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task HandleAsync_WhenTheAccountHoldsAManifest_HandsBackItsBytesAndItsEpoch()
+    {
+        // Arrange — one factor beside the manifest, so the two levels of the answer are both populated
+        // and neither can be satisfied by the other being empty.
+        Guid userId = Guid.CreateVersion7();
+        byte[] manifest = [0x4D, 0x41, 0x4E, 0x00, 0xFF, 0x7C];
+
+        InMemoryAccountKeyReadService readService = new();
+        readService.Seed(userId, Credential.CreatePasskey(userId, UtcNow).Id, Factor(0));
+        readService.SeedManifest(userId, manifest, SeededRotationEpoch);
+
+        GetAccountKeysHandler handler = new(new StubUserContext(userId), readService);
+
+        // Act
+        AccountKeyCustody custody = await handler.HandleAsync(new GetAccountKeysQuery());
+
+        // Assert
+        await Assert.That(custody.Manifest.HasValue).IsTrue();
+        await Assert.That(custody.Manifest!.Value.ToArray()).IsEquivalentTo(manifest);
+        await Assert.That(custody.RotationEpoch).IsEqualTo(SeededRotationEpoch);
+        await Assert.That(custody.Factors.Count).IsEqualTo(1);
+    }
+
+    /// <summary>
+    /// An account holding no manifest row is answered <see langword="null" /> at epoch 0, never a throw.
+    /// </summary>
+    /// <remarks>
+    /// The state every account in every database is in, because nothing writes a
+    /// <c>factor_manifests</c> row. Kept beside the populated case rather than folded into it: without
+    /// the populated one this would be a decoration a handler that answered <see langword="null" />
+    /// unconditionally satisfies, and without this one nothing says the absent answer is a legal answer
+    /// at all. A <b>bystander</b> account holds a manifest, so a handler that answered whichever
+    /// manifest it had is red here rather than green on an empty store.
+    /// </remarks>
+    [Test]
+    public async Task HandleAsync_WhenTheAccountHoldsNoManifest_IsNullAtEpochZero()
+    {
+        // Arrange
+        Guid userId = Guid.CreateVersion7();
+        Guid bystanderId = Guid.CreateVersion7();
+
+        InMemoryAccountKeyReadService readService = new();
+        readService.Seed(userId, Credential.CreatePasskey(userId, UtcNow).Id, Factor(0));
+        readService.SeedManifest(bystanderId, new byte[] { 0x42, 0x59, 0x53 }, SeededRotationEpoch);
+
+        GetAccountKeysHandler handler = new(new StubUserContext(userId), readService);
+
+        // Act
+        AccountKeyCustody custody = await handler.HandleAsync(new GetAccountKeysQuery());
+
+        // Assert
+        await Assert.That(custody.Manifest.HasValue).IsFalse();
+        await Assert.That(custody.RotationEpoch).IsEqualTo(0);
+        await Assert.That(custody.Factors.Count).IsEqualTo(1);
     }
 
     /// <summary>
@@ -315,6 +400,18 @@ public sealed class GetAccountKeysHandlerTests
     /// a person redeems whichever code they still have.
     /// </summary>
     private const int FactorsPerRecoveryCodeSet = 10;
+
+    /// <summary>
+    /// The generation a seeded manifest claims: neither 0, which is the absence of a row, nor 1, which
+    /// is the floor a stored row may claim.
+    /// </summary>
+    /// <remarks>
+    /// Both neighbours are values a hard-coded implementation would plausibly return, and a seed equal
+    /// to either would make one of them green. A literal rather than
+    /// <c>FactorManifest.MinimumRotationEpoch + n</c>, so a drift in the domain's floor cannot drag this
+    /// expectation along with it.
+    /// </remarks>
+    private const int SeededRotationEpoch = 7;
 
     private static readonly DateTime UtcNow = new(2026, 8, 26, 11, 12, 13, DateTimeKind.Utc);
 

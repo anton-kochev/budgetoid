@@ -1,9 +1,28 @@
 namespace Application.AccountKeys;
 
 /// <summary>
-/// The read side of <c>wrapped_account_keys</c>: which envelopes an account's factors hold.
+/// The read side of an account's key custody: which envelopes its factors hold, and which generation of
+/// which manifest names that set.
 /// </summary>
 /// <remarks>
+/// <para>
+/// <b>It answers at two levels, and the member returns both because its consumer's job is to compare
+/// them.</b> The factor rows come from <c>wrapped_account_keys</c>; the manifest and its epoch are one
+/// row of <c>factor_manifests</c>, or the absence of one. <see cref="AccountKeyCustody" /> carries the
+/// argument for why they arrive together rather than through two members a concurrent write can sit
+/// between, and for why an absent manifest is <see langword="null" /> at epoch <c>0</c> rather than an
+/// error. <b>One member is necessary for that and does not achieve it</b>: what makes the two halves
+/// describe one instant is that an implementation reads them in <b>one statement</b>, which the shipped
+/// one does and which this signature cannot compel. <b>Every account still answers
+/// <see langword="null" /> at <c>0</c> in every database</b>, because nothing writes a manifest — the
+/// read exists, the writer does not.
+/// </para>
+/// <para>
+/// <b>The member is still called <c>ListForAccountAsync</c> although it no longer returns a bare
+/// list.</b> Renaming it is the honest move and is deliberately not made here: four documentation
+/// chapters name this member by that spelling, and this repository's rule is that a doc changes in the
+/// commit that invalidates it. A rename belongs in the commit that can carry them.
+/// </para>
 /// <para>
 /// A read service rather than a member on a repository, the split <c>ICredentialReadService</c> and
 /// <c>IUserAccountReadService</c> both state: a repository loads entities that rules are applied to, and
@@ -62,10 +81,12 @@ namespace Application.AccountKeys;
 public interface IAccountKeyReadService
 {
     /// <summary>
-    /// Every wrapped-key row filed on the account <paramref name="userId" /> names, across all of its
-    /// credentials — <b>one</b> row per registered passkey and <b>ten</b> per set of recovery codes —
-    /// ordered by <see cref="FactorEnvelopes.FactorId" />. Empty when the account holds none this
-    /// request can see.
+    /// What the account <paramref name="userId" /> names holds: its manifest of factor public keys and
+    /// that manifest's generation, and every wrapped-key row filed across all of its credentials —
+    /// <b>one</b> row per registered passkey and <b>ten</b> per set of recovery codes — ordered by
+    /// <see cref="FactorEnvelopes.FactorId" />. The list is empty when the account holds no factor row
+    /// this request can see; the manifest is <see langword="null" /> at epoch <c>0</c> when it has no
+    /// manifest row, which is every account today.
     /// </summary>
     /// <param name="userId">The account whose rows may be read.</param>
     /// <param name="cancellationToken">Cancels the read.</param>
@@ -103,10 +124,21 @@ public interface IAccountKeyReadService
     /// </para>
     /// <para>
     /// <b>An empty answer is a normal answer</b> — see <c>GetAccountKeysHandler</c>, which is where the
-    /// argument for not turning it into a refusal belongs, and where the causes are enumerated.
+    /// argument for not turning it into a refusal belongs, and where the causes are enumerated. The same
+    /// holds one level up: an account with no manifest is answered, not refused, and the two absences are
+    /// independent — a factor list can be full while the manifest is missing, which is the state every
+    /// account in every database is in today.
+    /// </para>
+    /// <para>
+    /// <b>The owner argument scopes both halves, and the second half is policed by the same policy.</b>
+    /// <c>factor_manifests</c> is policed by <c>user_isolation</c> on <c>user_id</c> exactly as
+    /// <c>wrapped_account_keys</c> is, so the paragraph above about a policy answering <em>empty</em>
+    /// rather than <em>correct</em> covers the manifest read as well as the factor read, and the
+    /// shipped implementation names the owner on both arms; there is no second owner and nothing here
+    /// takes one.
     /// </para>
     /// </remarks>
-    Task<IReadOnlyList<FactorEnvelopes>> ListForAccountAsync(
+    Task<AccountKeyCustody> ListForAccountAsync(
         Guid userId,
         CancellationToken cancellationToken = default);
 }

@@ -24,6 +24,15 @@ namespace Application.AccountKeys;
 /// </param>
 /// <remarks>
 /// <para>
+/// <b>This is the per-<em>factor</em> level of a two-level answer, and the level above it is
+/// <see cref="AccountKeyCustody" />.</b> A fact that is true once per account — the manifest naming the
+/// whole factor set, the generation that manifest is in — belongs up there, where it is stored once and
+/// cannot disagree with itself. A fact that varies per factor belongs here. The distinction is what
+/// keeps this type at three members: the account-level facts now have a place, so the reader who would
+/// have hung one off every row has somewhere better to put it, and a row that carried eleven copies of
+/// one value would be eleven chances for a later two-statement write to make them differ.
+/// </para>
+/// <para>
 /// <b>The two members can no longer be swapped into one another, and the hazard that replaces that one
 /// sits a level in.</b> The pair this type used to carry were two AEAD envelopes of identical width
 /// carrying an identical version byte, distinguished by nothing the schema could check, so the

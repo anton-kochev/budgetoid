@@ -407,7 +407,13 @@ public sealed class WholeListDeliveryTests
             + "their account, and the set is bounded by how many factors one account can hold rather "
             + "than by anybody's data volume. Repeating that here as a shape assertion would put a "
             + "weaker sentence on top of the stronger one, and the weaker one is what a later reader "
-            + "quotes.",
+            + "quotes. THE ONE READ WHOSE LIST IS NESTED, and the row stayed rather than being "
+            + "restated: it answers Task<AccountKeyCustody> so the account's factor manifest and "
+            + "rotation epoch travel on the same answer as the factors, which is a fact about what "
+            + "one instant looks like and not about how much of the list comes back. Discovery was "
+            + "taught to follow a record one level in rather than let this read walk out of the "
+            + "census, because the alternative makes 'wrap the list in a record' a one-line escape "
+            + "from this gate that reddens nothing. See ReturnsAList.",
             Surface: null),
         new(
             typeof(IExportReadService),
@@ -455,9 +461,17 @@ public sealed class WholeListDeliveryTests
         IReadOnlyList<string> discovered = WholeListDelivery.Discovered();
 
         // Assert — pinning the set is what catches a list read that changes SHAPE rather than
-        // arriving. Give one an owner parameter, or return a Task<PagedResult<T>>, and it leaves
-        // discovery entirely: the census below would go on passing forever having found one fewer
-        // subject, while this line goes red and a person has to say what the change meant.
+        // arriving. Return a Task<IAsyncEnumerable<T>>, or move the list two records deep, or hang a
+        // second list beside it, and the read leaves discovery entirely: the census below would go on
+        // passing forever having found one fewer subject, while this line goes red and a person has to
+        // say what the change meant.
+        //
+        // ONE LEVEL OF NESTING NO LONGER COUNTS AS LEAVING, and that is the decision this line records.
+        // IAccountKeyReadService.ListForAccountAsync now answers Task<AccountKeyCustody> — a record
+        // carrying the factors beside the account's manifest and its rotation epoch — and it is
+        // delivered exactly as whole as it was before. ReturnsAList follows a record one level in, so
+        // the read stays in the census rather than escaping it for a reason that has nothing to do with
+        // paging. The argument, and what that widening gives up, is on ReturnsAList.
         string[] expected =
         [
             "IAccountKeyReadService.ListForAccountAsync",
@@ -784,6 +798,54 @@ public sealed class WholeListDeliveryTests
             .IsNull();
     }
 
+    /// <summary>
+    /// Discovery follows a record one level in, and stops where following stops being unambiguous.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The control for the widening, shipped permanently rather than run once.</b> The nested arm of
+    /// <c>ReturnsAList</c> exists because <c>IAccountKeyReadService.ListForAccountAsync</c> moved its
+    /// list one level down into a record, and without this the arm would be held only by that one real
+    /// read — so the day that read changes again, nothing would say whether the arm still works or had
+    /// silently started matching everything.
+    /// </para>
+    /// <para>
+    /// <b>Three refusals beside the one acceptance, and each refuses a different thing.</b> Two lists is
+    /// ambiguous; no list is an aggregate read; a plain class carrying one list is the entity-graph
+    /// case, where a navigation collection would otherwise make every aggregate read look like a list
+    /// read. All three going red at once would be a rule that fires on everything, and the acceptance
+    /// alone cannot tell that apart.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Discovery_FollowsARecordOneLevelInAndNoFurther()
+    {
+        // Arrange — synthetic ports, so this proof does not depend on a real read being shaped a
+        // particular way today.
+        Type[] types = [typeof(INestedProbeReadService)];
+
+        // Act
+        IReadOnlyList<string> found = [.. WholeListDelivery.MembersIn(types).Select(WholeListDelivery.KeyOf)];
+
+        // Assert — one member found, named, and the other three absent. CollectionOrdering.Matching is
+        // named explicitly because IsEquivalentTo defaults to CollectionOrdering.Any.
+        await Assert.That(found)
+            .IsEquivalentTo(
+                new[] { "INestedProbeReadService.CustodyAsync" },
+                CollectionOrdering.Matching);
+
+        // The three refusals read one at a time off the predicate itself, so a failure names which
+        // shape stopped being refused rather than printing a set difference.
+        await Assert.That(WholeListDelivery.ReturnsAList(typeof(Task<ProbeCustody>))).IsTrue();
+        await Assert.That(WholeListDelivery.ReturnsAList(typeof(Task<ProbeTwoLists>))).IsFalse();
+        await Assert.That(WholeListDelivery.ReturnsAList(typeof(Task<ProbeNoList>))).IsFalse();
+        await Assert.That(WholeListDelivery.ReturnsAList(typeof(Task<ProbeClassCarrier>))).IsFalse();
+
+        // The first arm still answers, or the widening replaced the rule it was meant to extend.
+        await Assert.That(WholeListDelivery.ReturnsAList(typeof(Task<IReadOnlyList<string>>))).IsTrue();
+        await Assert.That(WholeListDelivery.ReturnsAList(typeof(Task<string>))).IsFalse();
+    }
+
     [Test]
     public async Task Census_ReportsADiscoveredReadInNoRow()
     {
@@ -980,6 +1042,42 @@ public sealed class WholeListDeliveryTests
         Task<IReadOnlyList<string>> PagedAsync(int page, CancellationToken cancellationToken = default);
     }
 
+    /// <summary>
+    /// A read service whose members answer with records rather than with bare lists, for the control
+    /// over the nested arm of discovery.
+    /// </summary>
+    /// <remarks>
+    /// Four members and every one of them a different verdict: a record carrying one list beside two
+    /// members that are not lists, which is exactly <c>AccountKeyCustody</c>'s shape and is found; a
+    /// record carrying two lists, which is ambiguous and is not; a record carrying none, which is an
+    /// aggregate read and is not; and a plain class carrying one list, which is not a record and is not.
+    /// </remarks>
+    private interface INestedProbeReadService
+    {
+        Task<ProbeCustody> CustodyAsync(Guid userId, CancellationToken cancellationToken = default);
+
+        Task<ProbeTwoLists> TwoListsAsync(CancellationToken cancellationToken = default);
+
+        Task<ProbeNoList> NoListAsync(CancellationToken cancellationToken = default);
+
+        Task<ProbeClassCarrier> ClassCarrierAsync(CancellationToken cancellationToken = default);
+    }
+
+    /// <summary>A record carrying one list beside two members that are not lists.</summary>
+    private sealed record ProbeCustody(string? Manifest, int RotationEpoch, IReadOnlyList<string> Factors);
+
+    /// <summary>A record carrying two lists, which names no single list to be a read about.</summary>
+    private sealed record ProbeTwoLists(IReadOnlyList<string> Left, IReadOnlyList<string> Right);
+
+    /// <summary>A record carrying no list at all.</summary>
+    private sealed record ProbeNoList(string Name, int Count);
+
+    /// <summary>A plain class carrying one list — not a record, and so not followed into.</summary>
+    private sealed class ProbeClassCarrier
+    {
+        public IReadOnlyList<string> Rows { get; } = [];
+    }
+
     /// <summary>Two paging knobs inside a struct, for the <c>[AsParameters]</c> control.</summary>
     public readonly record struct PagingWindow(int Page, int PageSize);
 
@@ -1124,13 +1222,16 @@ public sealed class WholeListDeliveryTests
         /// synthetic input. Which interfaces are swept is <see cref="ReadSurface" />'s question.
         /// </summary>
         /// <remarks>
-        /// <b>The filter is the return shape</b> — <c>Task&lt;IReadOnlyList&lt;T&gt;&gt;</c> — and
-        /// never the member name, because the transaction list is called <c>GetAllWithPayeeAsync</c>
-        /// and a <c>GetAll</c> filter would already be missing it today. A list read called
-        /// <c>FeedAsync</c> is found by this and by no name rule anybody would think to write. The
-        /// honest limit, stated rather than fixed by widening: a read that stops returning that shape
-        /// leaves discovery entirely and the census would go on passing with one fewer subject.
-        /// Widening only moves the boundary; what covers it is the pinned key set, which reddens.
+        /// <b>The filter is the return shape</b> — and never the member name, because the transaction
+        /// list is called <c>GetAllWithPayeeAsync</c> and a <c>GetAll</c> filter would already be
+        /// missing it today. A list read called <c>FeedAsync</c> is found by this and by no name rule
+        /// anybody would think to write. What counts as that shape is
+        /// <see cref="ReturnsAList" />'s question, and it is two arms rather than one: the bare
+        /// <c>Task&lt;IReadOnlyList&lt;T&gt;&gt;</c>, and a <c>Task</c> of a record carrying exactly one
+        /// list. The honest limit, stated rather than fixed by widening again: a read that stops
+        /// returning either leaves discovery entirely and the census would go on passing with one fewer
+        /// subject. Widening only moves the boundary; what covers it is the pinned key set, which
+        /// reddens.
         /// </remarks>
         internal static IReadOnlyList<MethodInfo> MembersIn(IEnumerable<Type> types)
         {
@@ -1400,10 +1501,73 @@ public sealed class WholeListDeliveryTests
             ", ",
             parameters.Select(parameter => $"{parameter.ParameterType.Name} {parameter.Name}"));
 
-        /// <summary>Whether a member returns <c>Task&lt;IReadOnlyList&lt;T&gt;&gt;</c> exactly.</summary>
-        private static bool ReturnsAList(Type returnType) =>
-            returnType.IsGenericType
-            && returnType.GetGenericTypeDefinition() == typeof(Task<>)
-            && IsReadOnlyList(returnType.GetGenericArguments()[0]);
+        /// <summary>
+        /// Whether a member answers with a list: <c>Task&lt;IReadOnlyList&lt;T&gt;&gt;</c>, or a
+        /// <c>Task</c> of a <b>record</b> carrying exactly one.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// <b>The second arm is a decision this file's own remarks predicted, and it is here because the
+        /// alternative was a silent exit.</b> The text beside the pinned key set used to say that a read
+        /// returning something other than <c>Task&lt;IReadOnlyList&lt;T&gt;&gt;</c> "leaves discovery
+        /// entirely" — and then <c>IAccountKeyReadService.ListForAccountAsync</c> became the first read
+        /// to do exactly that, by moving its list one level down inside
+        /// <c>AccountKeyCustody</c> so the account's factor manifest and rotation epoch could travel
+        /// beside it. Nothing about how that list is <em>delivered</em> changed: it is still every
+        /// factor, no page, no cursor. Had discovery been left as it was, the escape from this gate
+        /// would have become "wrap the list in a record", which costs one line, reads as tidying, and
+        /// takes a read out of the census with nothing red.
+        /// </para>
+        /// <para>
+        /// <b>Exactly one list, and the record test, are both narrowing on purpose.</b> A record
+        /// answering with two lists is two reads in a trench coat and this file would have no way to say
+        /// which one a row is about — it leaves discovery, and the pinned key set is what reddens. The
+        /// record test keeps the walk off entity graphs and framework types, where a navigation
+        /// collection typed <c>IReadOnlyList&lt;T&gt;</c> would otherwise make an aggregate read look
+        /// like a list read.
+        /// </para>
+        /// <para>
+        /// <b>What this arm gives up is worth naming: <c>Task&lt;PagedResult&lt;T&gt;&gt;</c> is now
+        /// DISCOVERED rather than invisible</b>, since a paged result is a record carrying one list and a
+        /// cursor. That is the fail-closed direction — such a read arrives in the census and has to be
+        /// claimed by a written row, where its disposition is a sentence somebody signs rather than an
+        /// absence nobody sees. The gated shape assertion refuses it on its own terms a layer further
+        /// on, by reading the handler's response.
+        /// </para>
+        /// <para>
+        /// <b>The honest limit, unchanged in kind and moved by one level:</b> a read whose list sits two
+        /// records deep, or beside a second list, or behind an <c>IAsyncEnumerable&lt;T&gt;</c>, still
+        /// leaves discovery. Widening again would only move the boundary; what covers it is the pinned
+        /// key set, which reddens and names the read that went missing.
+        /// </para>
+        /// </remarks>
+        internal static bool ReturnsAList(Type returnType)
+        {
+            ArgumentNullException.ThrowIfNull(returnType);
+
+            if (!returnType.IsGenericType || returnType.GetGenericTypeDefinition() != typeof(Task<>))
+            {
+                return false;
+            }
+
+            Type answered = returnType.GetGenericArguments()[0];
+
+            return IsReadOnlyList(answered) || CarriesExactlyOneList(answered);
+        }
+
+        /// <summary>
+        /// Whether <paramref name="answered" /> is a record whose public properties include exactly one
+        /// <see cref="IReadOnlyList{T}" />.
+        /// </summary>
+        /// <remarks>
+        /// A record is recognised by the <c>&lt;Clone&gt;$</c> member the compiler emits for one, which
+        /// is the same structural test <see cref="KeyMaterialSecrecyTests" /> uses rather than a naming
+        /// convention somebody can decline to follow.
+        /// </remarks>
+        private static bool CarriesExactlyOneList(Type answered) =>
+            answered.GetMethod(
+                "<Clone>$",
+                BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance) is not null
+            && PublicPropertiesOf(answered).Count(property => IsReadOnlyList(property.PropertyType)) == 1;
     }
 }

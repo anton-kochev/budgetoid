@@ -1248,6 +1248,23 @@ public sealed class KeyMaterialSecrecyTests
             + "in that order or gets an authentication failure naming nothing. The two are a CHAIN and "
             + "not a pair — opening this needs the private half the member beside it carries — so an "
             + "operator holding both opens neither"),
+        new("AccountKeyEndpoints.AccountKeysResponse", "Manifest",
+            "a response member, and THE ONE MEMBER ON THIS SURFACE WHOSE ARGUMENT RUNS THE OTHER WAY: "
+            + "base64url over the account's authenticated list of its recovery factors' PUBLIC keys, or "
+            + "null for an account holding no such row, which is every account in the product today. The "
+            + "two members above it are key material, and what licenses them is that the key which would "
+            + "open them never reaches this server. THIS IS NOT KEY MATERIAL AND NOT CIPHERTEXT AT ALL — "
+            + "the server holds these bytes in the clear, an operator can read them, and reading them "
+            + "opens nothing, because a public half is the thing a value is ENCAPSULATED TO and the "
+            + "private half it pairs with is wrapped under a key-encryption key derived in a browser "
+            + "from a factor this server has never seen. So the reason it may cross is not that it is "
+            + "sealed; it is that there is nothing in it to unseal. What it does disclose is stated "
+            + "rather than waved away, and is why DataInventory classifies the column EXCLUDED rather "
+            + "than harmless: how many recovery factors the account holds, and which public keys they "
+            + "are. It is authenticated as a SET — a per-row public key column would be unforgeable one "
+            + "row at a time and would leave a client no way to ask whether it was looking at all of "
+            + "them — which is also why this member sits on the response beside RotationEpoch and not "
+            + "inside AccountKeyEntry"),
         new("CategoryEndpoints.UpdateCategoryRequest", "Description",
             "base64url over the AEAD envelope holding a person's own note about one of their categories "
             + "\u2014 or absent, which CLEARS the note, because this route is a PUT and a PUT is a full "

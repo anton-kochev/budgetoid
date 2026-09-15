@@ -92,17 +92,26 @@ rather than per disposition: the transaction read declares that it takes nothing
 added to it reddens like a parameter added to a gated row. Paging it means editing that column,
 which is the visible cost.
 
-## Two reads are held by a stronger rule
+## Three reads are held by a stronger rule
 
-`IAccountKeyReadService.ListForAccountAsync` and `IExportReadService.ListOwnedBudgetsAsync` are
-whole today and are held somewhere stronger than a shape assertion in this file could hold them.
+`IAccountKeyReadService.ListForAccountAsync`, `IExportReadService.ListOwnedBudgetsAsync` and
+`IRotationInventoryReadService.ListOwnedBudgetIdsAsync` are whole today and are held somewhere
+stronger than a shape assertion in this file could hold them.
 The account-key read says in its own remarks that paging it would hand somebody nine of their ten
 ways back into their account. The export **refuses rather than truncates**
 ([export](../business-logic/export.md)), which is a claim running in the opposite direction from
-this one. Restating either here would put a weaker sentence on top of a stronger one, and the
-weaker one is what a later reader quotes.
+this one, and the rotation inventory refuses on the same set equality before a rotation begins —
+the same rule over a different destination, which its row says in its own words rather than
+manufacturing a difference from the export's. Restating any of them here would put a weaker
+sentence on top of a stronger one, and the weaker one is what a later reader quotes.
 
-**Being keyed on an owner is not what puts a read outside the gate.** Four rows in the table take
+**The account-key read is the one whose list is nested, and nesting is not a claim about how much
+of it comes back.** It answers a record so that the account's factor manifest and its rotation
+epoch arrive beside the factors, because the two levels have to be compared against each other and
+two answers could describe two different moments. Every factor still comes back, with no page, no
+cursor and no filter; its row stayed exactly where it was, and what moved is discovery, below.
+
+**Being keyed on an owner is not what puts a read outside the gate.** Five rows in the table take
 an owner key and two of them are gated: `ICredentialReadService.ListForUserAsync` and the passkey
 handles both name the account whose rows they are, and both are held whole. Scoping and pageability
 are different questions, and an owner argument answers only the first — the credential row says so
@@ -115,9 +124,30 @@ Two layers, both container-free. The contract layer is pure reflection. The rout
 API in `Production` over a connection string nothing answers on and reads the route table without
 making a request, the way `CompositionBoundaryTests` does.
 
-**The census.** Every list read the swept ports declare is discovered **structurally** — a member
-returning `Task<IReadOnlyList<T>>` — and each must be claimed by exactly one row of a written
-table. **Discovery finds ten**: seven delivered whole, one pageable-later, two held elsewhere.
+**The census.** Every list read the swept ports declare is discovered **structurally**, by return
+shape and never by member name, and each must be claimed by exactly one row of a written table. The
+shape is **two arms**: a member answering `Task<IReadOnlyList<T>>`, and a member answering a `Task`
+of a **record carrying exactly one** `IReadOnlyList<T>`. **Discovery finds eleven**: seven delivered
+whole, one pageable-later, three held elsewhere.
+
+**The second arm is a decision rather than a convenience, and the read that forced it is the
+account-key one.** That read moved its list one level down inside a record so the account's manifest
+and rotation epoch could travel beside it, and nothing about how the list is *delivered* moved with
+it. Keyed on the bare shape alone, discovery would simply have lost it — and "wrap the list in a
+record" would have become a one-line exit from this gate that reads as tidying, costs nobody a
+written reason, and reddens nothing. Following a record one level in is what keeps that edit
+visible. It also fails closed in the other direction: `Task<PagedResult<T>>` is a record carrying
+one list and a cursor, so such a read is now **discovered** rather than invisible, arrives in the
+census, and has to be claimed by a row whose disposition somebody signs — and the gated shape
+assertion refuses it a layer further on, by reading the handler's response.
+
+**The limit moved one level and did not close.** A list two records deep, a list sitting beside a
+second one — two reads in a trench coat, with nothing to say which of them a row would be about —
+or a list behind an `IAsyncEnumerable<T>` all still leave discovery entirely. Widening again would
+only move the boundary; what covers it is the pinned key set, which reddens and names the read that
+went missing. `Discovery_FollowsARecordOneLevelInAndNoFurther` ships the acceptance and all three
+refusals over synthetic ports, so the arm cannot quietly start matching everything on the day the
+one real nested read changes again.
 
 **What is swept is two naming conventions and one port named individually**, the shape
 `CompositionBoundaryTests` uses against the identical weakness. `ReadService` is what this codebase
@@ -128,11 +158,11 @@ hole is a port conforming to neither; what covers it is listing such a port by n
 `IWebAuthnChallengeStore` is the one there is, it holds no list read today, and that line is what
 makes the day it grows one audible. A second such port costs a line, and that is the intended cost.
 
-A written list of names alone fails open the day an eleventh read arrives; a **name** filter fails
+A written list of names alone fails open the day a twelfth read arrives; a **name** filter fails
 open too, and this codebase already proves it, since the transaction list is called
 `GetAllWithPayeeAsync` and a `GetAll` filter would be missing it today. A read that changes *shape*
-— an `IAsyncEnumerable<T>`, a `Task<PagedResult<T>>`, a port whose name loses the suffix — leaves
-discovery entirely, which is why the ten keys are additionally pinned by name.
+past both arms — an `IAsyncEnumerable<T>`, a list two records deep, a port whose name loses the
+suffix — leaves discovery entirely, which is why the eleven keys are additionally pinned by name.
 
 **What a gated read offers a caller.** Its query record declares no properties, and its response is
 **exactly one** list — stronger than "carries one list", because a response holding `Items` and
@@ -187,7 +217,7 @@ chapter.** Both layers read declarations, so:
    read service.
 2. **A `Where(...)` narrowing that is not caller-supplied passes — and must.** The tenancy filter
    is exactly that shape ([data isolation](data-isolation.md)), and so is the owner predicate on
-   every one of the four owner-keyed rows.
+   every one of the five owner-keyed rows.
 3. **Paging read out of the request's query collection inside a delegate body passes**, as does
    anything resolved from request services there. This is the same limitation
    `CompositionBoundaryTests` records about reading signatures rather than bodies.
@@ -233,12 +263,12 @@ the red: the person clearing it edits the pinned set and that row in one diff.
 
 ## What holds it
 
-`BudgetoidApp/tests/IntegrationTests/WholeListDeliveryTests.cs`, in **twelve tests** across two
+`BudgetoidApp/tests/IntegrationTests/WholeListDeliveryTests.cs`, in **thirteen tests** across two
 layers, with synthetic controls shipped permanently beside the live assertions rather than run once
 and reverted — a reflection query that silently came back empty would satisfy every emptiness
 assertion while inspecting nothing.
 
-- `Discovery_FindsExactlyTheListReadsTheSweptPortsDeclare` pins the ten keys, so a read that
+- `Discovery_FindsExactlyTheListReadsTheSweptPortsDeclare` pins the eleven keys, so a read that
   changes shape goes red rather than quietly leaving.
 - `EveryListRead_IsClaimedByExactlyOneRow` reports a read no row claims, a read two rows claim, and
   a row naming no member.
@@ -256,6 +286,13 @@ assertion while inspecting nothing.
   on one member and a `Guid` cursor on another, proves both are refused on a row declaring
   `TakesNothing`, and then proves the cursor **passes** on a row declaring `KeyedOnAnAccount` —
   the limit demonstrated rather than described.
+- `Discovery_FollowsARecordOneLevelInAndNoFurther` is the control for the nested arm, over synthetic
+  ports rather than over the one real read that is shaped that way today. One acceptance — a record
+  carrying one list beside two members that are not lists — and **three** refusals that each refuse
+  something different: two lists is ambiguous, no list is an aggregate read, and a plain class
+  carrying one list is the entity-graph case, where a navigation collection would otherwise make
+  every aggregate read look like a list read. All three reddening at once would be an arm that fires
+  on everything, which the acceptance alone cannot tell apart.
 - `Census_ReportsADiscoveredReadInNoRow` and `Census_ReportsARowNoMemberAnswersTo` prove both
   failure directions of the census over synthetic names, so neither proof depends on a real row
   being wrong.

@@ -49,21 +49,31 @@ halves disagree. The server refuses to register a passkey, issue a set of recove
 an account** unless the request carries, for every factor it brings into existence, a factor
 identifier, a wrapped private key of exactly 167 bytes and an encapsulated pair of exactly 158, and
 it files them in the same save as the credential. `GET /api/me/account-keys` hands those two values
-back per factor — see [The one route that hands them back](#the-one-route-that-hands-them-back).
+back per factor, one level down inside an answer that also carries the account's manifest and the
+generation that manifest is in — see
+[The one route that hands them back](#the-one-route-that-hands-them-back).
 **The client still produces the arrangement this replaced**: `account-keys.ts` wraps each of the
 account's two keys under the factor's key-encryption key and `registration-api.service.ts` puts
-`wrappedContentKey` and `wrappedIndexKey` on the wire, which no route accepts any more. So no browser
+`wrappedContentKey` and `wrappedIndexKey` on the wire, which no route accepts any more. **It reads
+the old shape as well as writing it**, and now refuses this route's answer twice over:
+`MeApiService.getAccountKeys` throws on a body that is not an array, and then demands
+`wrappedContentKey` and `wrappedIndexKey` on every entry. So no browser
 in this repository can currently register an account or open one, the client sections of this chapter
 describe what that browser does rather than what the server takes, and closing the gap is **work**
 rather than a departure anybody argued for.
 
 **Two tables in this chapter's schema have no writer at all, and that is the state they were
 committed in.** `factor_manifests` and `key_rotation_seals` stand in every database and are
-empty in all of them: no handler, no route, no repository and no read service names either
+empty in all of them: no handler, no route and no repository writes either
 one, and the application role holds `SELECT` on both and no write privilege of any shape.
-What the manifest
-is *for* — one authenticated blob naming every factor's public key — is design rather than
-behaviour, and nothing in this chapter states it otherwise. What the key pair beneath it is for is
+**One of the two has a reader now, and the two halves must not be folded back together.**
+`AccountKeyReadService` takes an account's manifest and its rotation epoch off the same statement as
+its factor rows, so `GET /api/me/account-keys` carries them — and carries nothing, at epoch `0`, for
+every account there is, because the read exists and the writer does not. No handler, no route, no
+repository and no read service names `key_rotation_seals` at all. What the manifest
+is *for* — one authenticated blob naming every factor's public key — is therefore still design
+rather than behaviour, and a route serving an absent value has not made the value exist. What the
+key pair beneath it is for is
 **not** in that category any more: the pair is in the schema, refused by check constraints and
 required by three write paths. See
 [The manifest of factor public keys](#the-manifest-of-factor-public-keys) and
@@ -167,7 +177,12 @@ would put the value that unwraps the account's whole keyspace into a variable an
   `FactorManifest.For` is the only way to build one and refuses
   an empty manifest, one wider than `MaximumBytes`, and an epoch below
   `MinimumRotationEpoch`. **Nothing writes one**, so the table is empty in every database
-  and the entity has no caller outside its own tests — see
+  and `FactorManifest.For` has no caller outside its own tests. What does reach the row is a
+  **read**: `GET /api/me/account-keys` projects both columns beside the account's factor rows, and
+  therefore answers no manifest at epoch `0` for every account in the product. **Epoch 0 is the
+  absence of the row** and not a generation any row can hold, since the floor is 1 in the entity and
+  again in the column's check — which is what lets one integer say "there is nothing stored" with no
+  second member to disambiguate it. See
   [The manifest of factor public keys](#the-manifest-of-factor-public-keys).
 - **Locked account** — not a stored thing at all: an account whose **browser** does not hold the
   content key. Every tab starts in it, because nothing about the keys survives a page load, and
@@ -328,10 +343,18 @@ erDiagram
     encapsulated pair of account keys, each of which the server can check the shape of and open none
     of. On `POST /api/registration` that triple arrives eleven times over. The **outbound** direction
     is held by `KeyMaterialSecrecyTests`, a census over every member of every type a route
-    serialises: what leaves on `GET /api/me/account-keys` is that same triple, and the census carries
+    serialises: what leaves on `GET /api/me/account-keys` is that same triple per factor, and the
+    census carries
     a written argument for each of the two payloads rather than one sentence covering both — they are
     values of two different cryptographic suites at two different widths, and a sentence about "an
     envelope" would tell a reader nothing about which of the two this deployment was judging.
+    **The response's `manifest` member owes a third argument, and it runs the other way.** Those two
+    payloads may cross because the key that would open them never reaches this server; the manifest
+    may cross because there is **nothing in it to open** — public halves a value is *encapsulated
+    to*, held in the clear, and an operator reading them opens no envelope and derives no key. Either
+    argument pasted over the other is false, which is why the census makes the entry write its own:
+    what it concedes is how many recovery factors the account holds and which public keys they are,
+    and that concession is why `DataInventory` classifies the column *excluded* rather than harmless.
 
 - **A factor identifier MUST be one spelling on the wire.** The write paths accept a UUID in the
   **lower-case** 36-character hyphenated form with no surrounding whitespace, and nothing else — not
@@ -774,8 +797,9 @@ property of the values this client creates.
 
 ### The one route that hands them back
 
-`GET /api/me/account-keys` answers a **list**, one entry per factor, each carrying that factor's
-identifier and its two payloads as unpadded base64url — `factorId`, `wrappedPrivateKey`,
+`GET /api/me/account-keys` answers an **object carrying three members**: the account's `manifest`,
+as unpadded base64url or `null`; its `rotationEpoch`, an integer; and `factors`, one entry per
+factor. An entry is unchanged at three members of its own — `factorId`, `wrappedPrivateKey`,
 `encapsulatedAccountKeys`, and nothing else in either direction. **The two member names are the
 contract rather than a label**: *wrapped under* names a key over another key and *encapsulated to*
 names a public key, so a client reading the first knows to unwrap it with the key-encryption key it
@@ -796,11 +820,60 @@ associated data the wrapped private key was wrapped with — the rule the write 
 Get that spelling wrong and the encapsulated value beside it is unreachable too, because the private
 half that opens it is what the unwrap was for.
 
+**Two levels, and which level a member belongs on is the test a proposed one has to pass.** A
+manifest names the whole factor **set** and an epoch numbers the generation of that set: both are
+true once per account, however many factors it holds, so both sit at the top. The shape a reader
+reaches for while the body is only an array is to repeat them on every row — eleven copies of one
+value on an ordinary account, kept consistent by nothing, inviting a client to read row zero's copy
+and call it the account's. A *per-factor* spelling of the manifest is refused for a second reason on
+top of that one: it is authenticated as a set, so a row-level slice of it is a fragment nothing can
+verify, which is the same argument that keeps a public key column off `wrapped_account_keys`
+altogether. **The wrapper is not permission to widen the entry — it is what lets the entry stay at
+three**, because every account-level member a reader used to have nowhere to put now has somewhere
+better, and the three refusals above lose nothing.
+
+**Both levels come off one read because the comparison is what the pair is for.** A client that
+rotates the account's keys has to refuse when the server returns no manifest, and refuse when the
+served factor set and the set the manifest names disagree — and that comparison means nothing
+unless both halves describe one instant. **No such client exists**; the route is shaped for it now
+because two routes would let a factor be enrolled between them and hand somebody two correct
+answers to report to a person as tampering, and a shape settled after the first client ships is one
+that has to be corrected in two places. The cost is stated rather than waved past: every caller of
+this route carries the manifest whether it will compare anything or not, and today none of them
+will.
+
+**One member is necessary for that and does not achieve it, and the difference is the kind a later
+reader takes for a guarantee.** Two awaited queries behind one port member are two autocommitted
+statements on one connection, each taking its own `READ COMMITTED` snapshot — the same window, moved
+a layer down and out of sight — and wrapping them in a transaction closes nothing, because
+`READ COMMITTED` takes a fresh snapshot per statement and no read on this path opens a transaction
+of any kind. What holds the claim is that `AccountKeyReadService` reads both levels in **one SQL
+statement**: rooted on `users`, with the manifest and the factors each hanging off it as a lateral,
+because an account holding neither is the state every account is in and so neither of the two tables
+the read is really about can be the root. Splitting that back into two awaits satisfies the port,
+compiles, and reddens nothing. Reasoned rather than run — nothing writes a manifest, so the race is
+not reproducible yet, which is exactly why the shape has to refuse it before the writer arrives.
+**One arm takes a first row and the other takes every row, and that asymmetry is the schema's**:
+`factor_manifests` is keyed on `user_id` alone, so an account has one manifest or none and taking
+the first truncates nothing, while `wrapped_account_keys` is keyed on `factor_id`, where taking a
+first would be right for every passkey in the product and would drop nine of every ten
+recovery-code envelopes.
+
+**An absent manifest is `null` and never `""`.** An empty string is a legal base64url rendering of
+zero bytes, so encoding an absent value would make *there is no manifest* and *there is one and it
+names nobody* the same answer on the wire. The ring below keeps the same distinction for the same
+reason — `FactorManifest.For` refuses an empty manifest, so an empty buffer would spend a spelling
+the domain has declared impossible on the one state that is normal. `rotationEpoch` answers `0`
+beside it, a number no stored row can hold. Neither is an error and neither is a `404`: that pair is
+the pre-registration state and the state of **every** account that exists, because nothing writes a
+manifest. The two absences are also independent — a full factor list beside a missing manifest is
+the normal shape today rather than a contradiction.
+
 **It is keyed on the account, never on a credential, and that is a decision rather than a
 convenience.** The keys belong to the *account*; a credential is only one way into it. An account
 holding a passkey and a set of recovery codes has **eleven** rows across two credentials, and all
 eleven come back — the count is the entry-per-factor distinction under
-[Key Entities](#key-entities), which is what makes the answer a list at all rather than a pair.
+[Key Entities](#key-entities), which is what makes `factors` a list at all rather than a pair.
 
 **The reason is that a ceremony can present any of the account's factors, and the client cannot know
 in advance which one it will be.** Re-authentication looks a passkey up **by account**:
@@ -834,9 +907,12 @@ no claim to read and no id to parse, so `GetAccountKeysQuery` declares no member
 and for the same reason: the thing they are scoped to is the account, which comes from `IUserContext`.
 No `ClaimsPrincipal` crosses into the Application ring. `GetAccountKeysHandler` asks
 `IAccountKeyReadService.ListForAccountAsync` — a port the Application ring declares and
-`AccountKeyReadService` implements one ring out — for that account's rows, naming the owner explicitly
+`AccountKeyReadService` implements one ring out — for that account's custody at both levels, naming
+the owner explicitly on each arm
 even though `user_isolation` would scope the read anyway, because a policy makes a wrong query answer
-*empty* rather than *correct*.
+*empty* rather than *correct*. The member is still spelled for the bare list it no longer returns:
+renaming it is the honest move and is deliberately deferred to a commit that can carry the chapters
+naming it, this one included, because a doc changes in the commit that invalidates it.
 
 **The route reads no session, which also means it can hold no liveness rule.** Whether a session is
 live is the authentication pipeline's answer, applied before any handler is reached. That used to be a
@@ -851,7 +927,7 @@ it is the one that answers for itself. It is a direct header write rather than a
 throw, so a second one would both overwrite this header and put the four security headers behind its
 own failure.
 
-**An empty array, never a `404` — but not for the reason the narrowed route gave.** The old argument
+**An empty `factors` array, never a `404` — but not for the reason the narrowed route gave.** The old argument
 was an enumeration oracle: a `404` would have told a caller that a guessed session id named a real
 row. That argument does **not** survive the widening, because nothing is narrowed by an identifier a
 caller could guess and an authenticated request can only ever ask about its own account. What holds now
@@ -859,7 +935,11 @@ is the client. `AccountKeyCustodyService` reads an empty list as `unopened` — 
 — and reads a `404` as `unreachable`, whose advice is "try the same factor again in a minute". A
 `404` would hand somebody whose account holds nothing openable the one instruction that can never
 work. The refusals the client *does* tell apart are `401` and `403`, which are `unauthenticated`;
-a `404` is not among them precisely because it says nothing about this browser's session.
+a `404` is not among them precisely because it says nothing about this browser's session. **The
+array moving down a level changed none of that, and neither does the manifest arriving beside it**:
+an account holding no factor and no manifest is a `200` carrying no manifest, epoch `0` and an empty
+`factors`, and a `404` for the missing manifest would be the same mistake wearing a newer member's
+clothes.
 
 **Four ways to reach an empty answer, and the fourth is one this chapter used to deny.** The account
 holds no recovery factor at all — a state no path reaches today, since registration creates eleven
@@ -883,7 +963,12 @@ account holding a passkey **and** a set of recovery codes, signed in with one of
 eleven factors.
 
 **The browser reads it in one place**, `MeApiService.getAccountKeys`, whose only caller is
-`AccountKeyCustodyService`. Two refusals guard the body rather than one, and both matter here more
+`AccountKeyCustodyService` — **and what it reads is the shape this route stopped answering**, so
+both of its refusals now fire on every call: the collection check against an object that is not an
+array, and the per-entry check against members the write side stopped sending. That is the same gap
+[Purpose](#purpose) names, arriving from the reading end, and the rest of this paragraph describes
+what that client does rather than what the route gives it.
+Two refusals guard the body rather than one, and both matter here more
 than on the neighbouring reads: a body that is not a list is a route or a proxy answering something
 else entirely, while an **entry** missing its identifier or one of its two envelopes is a version
 skew on the right route. The per-entry check is what stops the second from being read as the first
@@ -1632,8 +1717,10 @@ nothing distinguishing the assertion that is thrown away from the one that autho
 
 ### The manifest of factor public keys
 
-**`factor_manifests` is in the schema, and nothing reaches it from either
-direction.** One row per account: `user_id` is the whole of the primary key, `manifest`
+**`factor_manifests` is in the schema, and exactly one direction reaches it.** A read
+does and a write does not, and the two halves are argued apart below, because a table
+described as *reached* is one a later reader remembers as written to.
+One row per account: `user_id` is the whole of the primary key, `manifest`
 holds the authenticated bytes naming every recovery factor's public key, and
 `rotation_epoch` numbers the generation of that list. Three columns and no fourth, and the
 fourth a reader reaches for is an `updated_at_utc`: nothing writes one, no requirement
@@ -1662,12 +1749,25 @@ three verbs at three exact widths, and a separate name for each kind of key — 
 name is where the refusal is worth most, because a name is read far more often than the
 chapter correcting it.
 
-**Nothing writes one, and a reader who finds a table with no writer is owed the reason.**
-There is no handler, no route, no repository and no read service, and the only caller of
+**Nothing writes one, and a reader who finds a table read by a route and written by
+nothing is owed the reason.** There is no handler, no route and no repository that writes a
+manifest, and the only caller of
 `FactorManifest.For` is `FactorManifestTests`. The table is therefore empty in every
 database, and an insert would meet `42501` before it met a reviewer — the *MUST NOT* above
 argues why the read could be granted early and the writes could not. This is the state the
 schema was committed in, not a step somebody left half-finished.
+
+**The read is one statement and one member.**
+`AccountKeyReadService.ListForAccountAsync` projects `manifest` and `rotation_epoch`
+through a lateral on the very statement that reads the account's factor rows, and
+`GET /api/me/account-keys` is where the pair comes out — argued at
+[The one route that hands them back](#the-one-route-that-hands-them-back), which is where
+the reason for *one* statement rather than two belongs. It names the owner in the statement
+even though `user_isolation` polices this table, for the reason every policed read here
+does: a policy makes a wrong query answer *empty* rather than *correct*. What that read
+answers for every account in the product is no manifest at epoch 0. So the `SELECT` the
+*MUST NOT* above granted ahead of a caller now has one, and the write privileges it
+withheld still have none.
 
 **The key pair the manifest would list is built; the list itself is not, and keeping those
 two apart is what this repository's documentation rule is for.** Every recovery factor
@@ -1684,8 +1784,10 @@ added, removed or swapped row would each have to carry its own authentication, a
 client choosing what to encapsulate a value to would have no way to ask whether it was
 looking at all of them. `rotation_epoch` counts the generations that list has been
 through. So the public half of every factor's pair is, today, held by nobody: a client
-that needs one has to be handed it, and nothing hands it out. That is the gap the manifest
-closes, and it stays in the future tense until something writes one.
+that needs one has to be handed it, and nothing hands it out — the route carries the
+member and the member is empty on every account, so what a client is handed is the
+absence rather than the list. That is the gap the manifest closes, and it stays in the
+future tense until something writes one; a served `null` is not a carrier.
 [ciphertext-envelope.md](ciphertext-envelope.md) owns the two framings and the three
 verbs.
 
@@ -1801,11 +1903,15 @@ gets back out.
    because those eleven land on one primary key in one save — and projects the set's rows from the
    one validated list rather than zipping them from three. See [registration.md](registration.md).
 
-6. **Handing them back.** `GET /api/me/account-keys` returns the wrapped private key and the
+6. **Handing them back.** `GET /api/me/account-keys` answers an object: the account's manifest and
+   the generation that manifest is in, and beneath `factors` the wrapped private key and the
    encapsulated account keys of every factor the
    authenticated account holds — one entry per registered passkey, ten per set of recovery codes, so
-   eleven for an ordinary account — and an empty array when it holds none. It is the only read of
-   `wrapped_account_keys` the application makes, and the browser's one caller is custody. See
+   eleven for an ordinary account — with an empty `factors` when it holds none, and no manifest at
+   epoch 0, which is every account there is. Both levels come off **one** statement, so what a
+   caller compares describes one instant. It is the only read of
+   `wrapped_account_keys` the application makes, and the browser's one caller is custody — still
+   written against the bare array this route used to answer. See
    [The one route that hands them back](#the-one-route-that-hands-them-back).
 
 7. **Holding them, and spending them.** Both keys are imported through their own door and kept as
@@ -1944,8 +2050,12 @@ each other's job.
   `user_isolation`. Its `SELECT` grant now has two kinds of reader: the route above, and the two
   isolation tests, which do not become redundant beside it — an endpoint answering correctly says
   nothing about what the policy refused. `factor_manifests` is policed by the same policy on the
-  same argument and has a reader of neither kind: its `SELECT` is granted so that the table can be
-  read at all, an absence that would otherwise turn a plaintext scan into a skip.
+  same argument and is reached by the **same member on the same statement**, so it has the first
+  kind of reader and not the second: nothing anywhere has watched that policy refuse a manifest, and
+  the route cannot stand in for a statement that would, because nothing writes one and an absent row
+  answers alike whether the policy is working or not. Its `SELECT` was granted before that reader
+  existed, so that the table could be read at all — an absence that would otherwise turn a plaintext
+  scan into a skip.
 - **[sessions.md](sessions.md)** — where custody begins and ends. A session opening does **not**
   unlock an account: the paths that know which factor was presented hand the keys over themselves,
   and `SessionService.established()` clears nothing. The third of those paths is not a session event

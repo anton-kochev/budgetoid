@@ -659,6 +659,52 @@ public sealed class RepositoryTestHost : IAsyncDisposable
     }
 
     /// <summary>
+    /// Files the one <c>factor_manifests</c> row an account may hold — the authenticated bytes naming
+    /// every recovery factor's public key, and the generation that list belongs to.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Nothing in the product writes one, and that is why a seeder exists at all.</b> There is no
+    /// handler, no route, no repository and no read service on the write side, and the application role
+    /// holds <c>SELECT</c> on this table and no <c>INSERT</c>, <c>UPDATE</c> or <c>DELETE</c> of any
+    /// shape — so a row can only be brought into existence on the <b>elevated</b> connection the
+    /// integration fixture already uses for arrangement. A caller that handed this the app connection
+    /// string would meet <c>42501</c> on the insert rather than a silent no-op, which is the loud half
+    /// of the grant asymmetry <c>account-keys.md</c> argues.
+    /// </para>
+    /// <para>
+    /// Through <see cref="FactorManifest.For" /> rather than raw SQL, for the reason
+    /// <see cref="SeedPasskeyAsync" /> gives: the factory refuses an empty manifest, one wider than
+    /// <see cref="FactorManifest.MaximumBytes" /> and an epoch below
+    /// <see cref="FactorManifest.MinimumRotationEpoch" />, so a seeded row is one the application could
+    /// really have written and a test reading it is measured against production's own shape rather than
+    /// against whatever an <c>insert</c> statement happened to type out. The factory takes the loaded
+    /// <see cref="User" />, so this reads the account back rather than accepting a loose id.
+    /// </para>
+    /// <para>
+    /// <paramref name="rotationEpoch" /> is required and has no default. Every value in its legal range
+    /// is a different claim about which generation is in force, and the two a defaulted seeder would
+    /// reach for — 1, the floor, and 0, which is the absence of a row and which the factory refuses —
+    /// are exactly the two a wrong implementation is most likely to hard-wire.
+    /// </para>
+    /// </remarks>
+    internal static async Task SeedFactorManifestOnAsync(
+        string connectionString,
+        Guid userId,
+        byte[] manifest,
+        int rotationEpoch,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(manifest);
+
+        await using BudgetoidDbContext db = CreateSeedingDbContext(connectionString);
+        User user = await db.Users
+            .SingleAsync(candidate => candidate.Id == userId, cancellationToken);
+        db.FactorManifests.Add(FactorManifest.For(user, manifest, rotationEpoch));
+        await db.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>
     /// The fillers the two seeded payloads carry when a caller names neither. Different from each other
     /// so a read-back naming the wrong <b>column</b> is visible by eye, and neither is the filler a probe
     /// writes. They are the same on every row, so telling one <b>row</b> from another needs payloads the
