@@ -217,10 +217,12 @@ Enforced today:
   `Credential`, `Session`, `PasskeyPublicKey`, `PasskeySignatureCounter`,
   `RecoveryCodeHash`, `WrappedAccountKeys`, `KeyRotation`, `KeyRotationSeal`, `FactorManifest`,
   and the challenge row. A read of one that is not a discovery lookup therefore names its owner in
-  the statement: `AccountKeyReadService.ListForAccountAsync` filters on `user_id` on
-  **every arm** of the one statement it issues — the account it is rooted on, the factor rows and
-  the manifest beside them, and no other predicate anywhere in
-  it — even though `user_isolation` appends the same comparison underneath it,
+  the statement: `AccountKeyReadService.ListForAccountAsync` names the account on
+  **every arm** of the one statement it issues — `users.id` on the root it is rooted on, `user_id`
+  on the factor lateral and `user_id` on the manifest lateral beside it, and no other predicate
+  anywhere in it. The column is not the same word on all three, and the point is not the word: it is
+  that no arm leaves the owner to the policy. That holds even though `user_isolation` appends the
+  same comparison underneath each of them,
   for the reason `ExportReadService.ListOwnedBudgetsAsync` below does the same — a policy
   makes a wrong query answer *empty*, not *correct*, so the copy in the statement is the
   one that survives a policy missed on a table added later. The discovery lookups are the
@@ -295,14 +297,21 @@ cannot supply it: an exemption says a policy is *not required*, never that one i
 adding `user_isolation` to `credentials` leaves `RlsCoverageTests` entirely green and surfaces only as
 every passkey sign-in failing to find the credential it just verified. `currencies` and `__EFMigrationsHistory` need no such control —
 their exemption rests on belonging to no tenant rather than on being read before an identity exists, so
-a policy landing on either fails loudly on a session that names somebody. **Two policed tables have
-a production reader, and it is one member over both of them**:
-`AccountKeyReadService.ListForAccountAsync`, behind `GET /api/me/account-keys`, takes the factor
-rows off `wrapped_account_keys` and the account's manifest and rotation epoch off `factor_manifests`
-in a **single statement**, naming the owner on each arm. So the number worth writing here is a
-number of tables and never of reads, and a sentence about "the one table a route reads" is the shape
-this page must not go back to. On `wrapped_account_keys` that `SELECT` grant answers to a second
-kind of reader as well — the two
+a policy landing on either fails loudly on a session that names somebody. **What is worth writing
+here is the shape of the owner predicate, and never a count of the tables or the readers it appears
+on**: `AccountKeyReadService.ListForAccountAsync`, behind `GET /api/me/account-keys`, takes the
+factor rows off `wrapped_account_keys` and the account's manifest and rotation epoch off
+`factor_manifests` in a **single statement** rooted on `users`, and names the account on all three
+arms rather than leaving any of them to the policy. That is the same predicate
+`UserAccountReadService.FindEmailAsync`, `ExportReadService.FindUserAsync`,
+`RotationInventoryReadService.ListOwnedBudgetIdsAsync` and
+`KeyRotationRepository.ListPasskeyFactorsAsync` each write by hand on their own policed sets, and
+each writes it for the reason stated above — a policy makes a wrong query answer *empty* rather than
+*correct*. **Every count this paragraph has carried has gone stale inside a slice while the
+predicate has not moved**, so a sentence of the form "the one policed table with a reader", or the
+same sentence with a bigger number in it, is the shape this page must not go back to.
+That endpoint is the **production** kind of reader, and on `wrapped_account_keys` the same `SELECT`
+grant answers to a second kind as well — the two
 isolation tests, `Database_HidesAnotherAccountsWrappedKeys_FromASessionNamingThisUser` and
 `Database_RefusesAWrappedKeyReadOnASessionNamingNobody` — which the endpoint does not make
 redundant, because they remain the only statements that have watched the policy *refuse* anything
@@ -315,7 +324,10 @@ outside. What scopes that arm is the policy and the explicit `user_id` predicate
 carries — the same two layers as everywhere else on this page, with the difference that only one of
 them here has ever been watched doing anything. Its `SELECT` was granted before that reader
 existed, for the reason `key_rotations` and `key_rotation_seals` — policed on the same argument, and
-with a reader of neither kind — still rest on: the grant is what lets the tables be read **at all**,
+with no reader of the second kind at all — still rest on: `KeyRotationRepository` does issue two
+statements over `key_rotations`, both naming the owner, and the route table offers no way to reach
+either, while nothing anywhere names `key_rotation_seals`. The grant is what lets the tables be
+read **at all**,
 an absence that would otherwise turn the plaintext scan behind `NarrativeSecrecyTests` into a skip
 and let two secrecy gates pass while covering fewer tables than the schema holds),
 `tests/IntegrationTests/RlsCoverageTests.cs` (schema-derived, so any

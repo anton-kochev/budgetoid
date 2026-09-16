@@ -149,11 +149,23 @@ public sealed class AccountKeysEndpointTests
     /// <b>Chosen so the standard base64 alphabet and base64url disagree about them</b>, which is what
     /// makes the alphabet claim a claim: the first three bytes render as four <c>+</c> under one
     /// alphabet and four <c>-</c> under the other, the next three render as four <c>/</c> against four
-    /// <c>_</c>, and ten bytes is deliberately not a multiple of three so a padded encoder emits
+    /// <c>_</c>, and the length is deliberately not a multiple of three so a padded encoder emits
     /// <c>==</c>.
     /// <see cref="AccountKeys_ManifestIsUnpaddedBase64UrlInTheSameAlphabetAsTheEnvelopes" /> asserts
     /// that disagreement about these exact bytes before it reads the body, so the probe is proven to
     /// discriminate rather than assumed to.
+    /// </para>
+    /// <para>
+    /// <b>Thirty-seven bytes, and the width is the second thing chosen rather than a leftover.</b> This
+    /// fixture and the one below it were both exactly <b>ten</b> bytes, which made a whole class of
+    /// defect unmeasurable: a projection narrowing the column — <c>substring(manifest, 1, 10)</c>, a
+    /// <c>varchar(10)</c>-shaped read, a buffer sized to a constant somebody assumed — is the identity
+    /// function on a ten-byte value, so every assertion in this file stayed green over a truncating
+    /// read. Thirty-seven is past every round number a truncation is likely to be written to (8, 10,
+    /// 16, 20, 32) and is not itself round, so a cut at any of them is visible in the decoded bytes;
+    /// it is also ≡ 1 (mod 3), which is what keeps the padding half of the alphabet probe alive.
+    /// <see cref="AccountKeys_ForAManifestAtTheMaximumWidth_CarryEveryByteOfIt" /> holds the other end
+    /// of the same question, at the cap.
     /// </para>
     /// <para>
     /// Not an AEAD envelope and not an encapsulation: a manifest is an authenticated list of public
@@ -164,17 +176,36 @@ public sealed class AccountKeysEndpointTests
     /// </para>
     /// </remarks>
     private static readonly byte[] SeededManifest =
-        [0xFB, 0xEF, 0xBE, 0xFF, 0xFF, 0xFF, 0x4D, 0x41, 0x4E, 0x7C];
+    [
+        // The alphabet probe's own bytes, first and unchanged: four '+', then four '/', then the
+        // leftover that forces '=='.
+        0xFB, 0xEF, 0xBE, 0xFF, 0xFF, 0xFF, 0x4D, 0x41, 0x4E, 0x7C,
+
+        // The tail that makes a truncation visible. Ascending and distinct, so a cut, a rotation and a
+        // repeated block each read differently in the failure message — and every value is at or above
+        // 0x80, which is what keeps this array disjoint from the bystander's below.
+        0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88,
+        0x89, 0x8A, 0x8B, 0x8C, 0x8D, 0x8E, 0x8F, 0x90, 0x91,
+        0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9A,
+    ];
 
     /// <summary>
     /// A second account's manifest, sharing not one byte with <see cref="SeededManifest" />.
     /// </summary>
     /// <remarks>
     /// Distinguishable at every position rather than merely unequal, so a body carrying a prefix of the
-    /// wrong account's manifest is as visible as one carrying the whole of it.
+    /// wrong account's manifest is as visible as one carrying the whole of it. The same width as
+    /// <see cref="SeededManifest" />, for the reason argued there: at ten bytes each, a truncating read
+    /// served both accounts a value that was still whole. Every byte is below 0x26 and every byte of
+    /// the other array is above it, so the two share none.
     /// </remarks>
     private static readonly byte[] BystanderManifest =
-        [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A];
+    [
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A,
+        0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14,
+        0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E,
+        0x1F, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25,
+    ];
 
     /// <summary>
     /// A passkey session is handed the account's factors, including the one filed under a credential
@@ -302,6 +333,71 @@ public sealed class AccountKeysEndpointTests
         JsonArray entries = await ReadFactorsAsync(response);
         await Assert.That(entries.Count).IsEqualTo(FactorsPerAccount);
         await Assert.That(ArrivedRows(entries)).IsEqualTo(ExpectedRows(own));
+    }
+
+    /// <summary>
+    /// Two reads of unchanged rows hand the factors back in <b>the same sequence</b> — whatever that
+    /// sequence is.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This is the contract, written down for the first time.</b> <c>GetAccountKeysHandler</c> spends
+    /// a paragraph on determinism and the read service orders by the primary key to buy it, and until
+    /// this case nothing in the suite read the promise at all: every other comparison in this file
+    /// sorts both sides before comparing, which is the correct thing for them to do and is exactly why
+    /// they are blind here. A response whose row order varied between two reads of one unchanged
+    /// account satisfies all of them.
+    /// </para>
+    /// <para>
+    /// <b>It deliberately does not pin <em>which</em> sequence.</b> <c>uuid</c> collation is
+    /// provider-defined, an in-memory implementation and PostgreSQL may disagree about which of two
+    /// rows comes first with neither being wrong, and the port promises determinism and nothing about
+    /// the particular order. An expectation naming a sorted sequence would therefore be a claim the
+    /// product has not made and would redden on a correct change of provider. The endpoint is compared
+    /// against itself instead, which is the shape of the promise.
+    /// </para>
+    /// <para>
+    /// <b>What this catches, stated narrowly so nobody credits it with more.</b> It reddens on a read
+    /// whose order genuinely varies between requests — rows collected through a set or a dictionary,
+    /// a projection assembled per request from an unordered lookup, a plan the server is free to
+    /// parallelise differently. It does <em>not</em> redden merely because <c>.OrderBy</c> was deleted:
+    /// an unordered scan of an unchanged, unvacuumed table hands the same rows back in the same
+    /// physical order twice, and a test cannot make PostgreSQL choose otherwise on demand. Holding that
+    /// would take pinning the sequence, which is the thing the paragraph above refuses to do.
+    /// </para>
+    /// <para>
+    /// Ten factors rather than two, because a sequence of two agrees with its own reversal half the
+    /// time by luck and a run that flakes one time in two teaches people to re-run rather than to look.
+    /// The identifiers are minted with <see cref="Guid.CreateVersion7" /> by the seeder, so seed order
+    /// and ascending order are the same sequence here — which is a further reason this case compares
+    /// two responses rather than a response against an expectation somebody typed out.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task AccountKeys_ReadTwice_CarryTheFactorsInTheSameSequence()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        ApiFactory.SignedInClient signedIn = await host.Factory.CreateSignedInClientAsync(
+            Subject, opensWith: CredentialType.RecoveryCodes);
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        Guid setCredentialId = await SessionCredentialIdAsync(admin, signedIn.UserId);
+        await SeedFactorsAsync(host, setCredentialId, RequiredCodeCount);
+
+        // Act — the same client, the same route, nothing written in between.
+        JsonArray firstRead = await ReadFactorsAsync(await signedIn.Client.GetAsync(AccountKeysPath));
+        JsonArray secondRead = await ReadFactorsAsync(await signedIn.Client.GetAsync(AccountKeysPath));
+
+        // Assert — both reads really carried the rows, or the comparison below is two empty strings
+        // agreeing with each other.
+        await Assert.That(firstRead.Count).IsEqualTo(RequiredCodeCount);
+        await Assert.That(secondRead.Count).IsEqualTo(RequiredCodeCount);
+
+        // In arrival order, unsorted on both sides — which is the whole difference between this case
+        // and every other comparison in this file.
+        await Assert.That(ArrivalSequence(secondRead)).IsEqualTo(ArrivalSequence(firstRead));
     }
 
     /// <summary>
@@ -749,12 +845,19 @@ public sealed class AccountKeysEndpointTests
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <b>This test is expected to be RED, and the red is the deliverable.</b>
-    /// <c>AccountKeyReadService</c> does not read <c>factor_manifests</c> at all: no join, no
-    /// <c>DbSet</c> read, no second statement. It hard-wires <see langword="null" /> at epoch 0 and says
-    /// so in its own remarks, which is today's correct answer for every account in every database
-    /// because nothing writes a manifest — and is the wrong answer for the row this test seeds behind
-    /// its back. Nothing else in the suite can tell the two apart, which is what this is for.
+    /// <b>The only test in the suite that can tell a served manifest from a hard-wired
+    /// <see langword="null" />.</b> Nothing in the product writes a <c>factor_manifests</c> row, so
+    /// every account in every real database answers <see langword="null" /> at epoch 0 — which means a
+    /// read service that never looked at the table would be <em>correct everywhere</em> and would
+    /// satisfy every other case in this file. This one seeds the row behind the product's back, on the
+    /// elevated connection, and is therefore the single place the endpoint has to have read it.
+    /// </para>
+    /// <para>
+    /// <b>What it holds is the whole path, not a projection.</b> The bytes cross a lateral in the one
+    /// statement the read issues, a <c>ReadOnlyMemory&lt;byte&gt;?</c> on <c>AccountKeyCustody</c>, and
+    /// a base64url encoder at the edge; a break anywhere along it — a predicate on the wrong column, a
+    /// value truncated by the projection, an encoder swapped for the standard alphabet — arrives here
+    /// as a hex mismatch naming the bytes.
     /// </para>
     /// <para>
     /// <b>The comparison is over the decoded bytes, not over the encoded text.</b> Comparing base64url
@@ -801,15 +904,85 @@ public sealed class AccountKeysEndpointTests
     }
 
     /// <summary>
+    /// A manifest at the widest width the column will hold arrives whole — every byte of it, in
+    /// position.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The case that makes "the bytes arrive" a claim about a blob rather than about a handful of
+    /// bytes.</b> Every other manifest in this file is tens of bytes wide, and a read that narrows the
+    /// column — a <c>substring</c>, a buffer sized to a constant, a parameter typed to a width somebody
+    /// guessed — is invisible at that size and catastrophic at this one. A manifest is the sole
+    /// authenticated carrier of every factor's public key, so a value cut at any line stops naming
+    /// whichever factor sat past it: the account is stored as though it still had a way back in, the
+    /// row is well-formed, and the loss surfaces on the day somebody reaches for the factor that is
+    /// gone. <c>FactorManifest</c> argues at length that this is refused and never truncated on the way
+    /// in; this is the read-back end of the same rule.
+    /// </para>
+    /// <para>
+    /// <b>Seeded at <see cref="FactorManifest.MaximumBytes" /> rather than at a literal <c>4096</c>, and
+    /// that departs from <c>FactorManifestTests</c> deliberately.</b> That file writes the bound out so
+    /// a drift in the constant cannot move both sides of its comparison; here the constant is not the
+    /// subject at all — the claim is "the widest row this schema permits survives the read", whatever
+    /// that width is, and the seeder validates against the same constant in any case, so a literal
+    /// would only offer a second number to fall out of step.
+    /// </para>
+    /// <para>
+    /// <b>The bytes are compared by position and reported as the first disagreement, not as two hex
+    /// strings.</b> Eight thousand hex characters on each side of an <c>IsEqualTo</c> produce a failure
+    /// message an assertion library truncates and nobody reads; the first differing index and the two
+    /// bytes at it say where a cut, a shift or a repeated block began. Measured on a deliberately
+    /// broken run of this case, the message reads
+    /// <c>byte 2000: expected 0xC1, arrived 0x3E</c> for a flipped byte and
+    /// <c>length: expected 4096 bytes, arrived 10</c> for a truncation.
+    /// <see cref="FirstDifference" /> carries the rest of that argument.
+    /// </para>
+    /// <para>
+    /// The pattern is not a constant fill. A run of one repeated byte is its own truncation for every
+    /// length that survives a length check, so a cut would only be visible in the width — which is
+    /// asserted, but is the weaker half. The bytes cycle over a stride coprime with 256, so any
+    /// window of the value is distinguishable from any other.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task AccountKeys_ForAManifestAtTheMaximumWidth_CarryEveryByteOfIt()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        ApiFactory.SignedInClient signedIn = await host.Factory.CreateSignedInClientAsync(Subject);
+
+        byte[] manifest = WidestManifest();
+        await SeedManifestAsync(host, signedIn.UserId, manifest, SeededRotationEpoch);
+
+        // Act
+        HttpResponseMessage response = await signedIn.Client.GetAsync(AccountKeysPath);
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+
+        JsonObject body = await ReadBodyAsync(response);
+        await Assert.That(body[ManifestMember]).IsNotNull();
+
+        byte[] decoded = Base64UrlText.Decode(body[ManifestMember]!.GetValue<string>());
+
+        // The width first, so a truncation reads as the number it is rather than as a byte mismatch
+        // several thousand positions in.
+        await Assert.That(decoded.Length).IsEqualTo(FactorManifest.MaximumBytes);
+
+        // And every byte, reported as the first position that disagrees.
+        await Assert.That(FirstDifference(decoded, manifest)).IsEqualTo(string.Empty);
+    }
+
+    /// <summary>
     /// That account is handed its stored generation, and never the absent answer.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <b>Expected RED for the same reason as the case above</b>, and kept beside it rather than folded
-    /// into it because the two refuse different implementations. That one refuses a read that never
-    /// looks at the bytes; this one refuses a read that answers a <em>number</em> from nowhere. An
-    /// implementation could plausibly grow one and not the other — a join that projected the manifest
-    /// column and left the epoch hard-wired is a one-line omission with no symptom on this side.
+    /// <b>Kept beside the case above rather than folded into it, because the two refuse different
+    /// implementations.</b> That one refuses a read that never looks at the bytes; this one refuses a
+    /// read that answers a <em>number</em> from nowhere. An implementation could plausibly grow one and
+    /// not the other — a join that projected the manifest column and left the epoch hard-wired is a
+    /// one-line omission with no symptom on this side.
     /// </para>
     /// <para>
     /// <b>The seeded generation is neither 0 nor 1</b>, so both of the two answers a hard-coded
@@ -821,6 +994,15 @@ public sealed class AccountKeysEndpointTests
     /// wrapped row on the factor, so the epoch must arrive for an account holding no factors at all.
     /// An implementation deriving the generation from the factor rows — counting them, or reading it
     /// off the first — is red on an empty set rather than green on a populated one.
+    /// </para>
+    /// <para>
+    /// <b>The bytes are asserted here too, and that is not a restatement of the case above.</b> That
+    /// one seeds a factor beside the manifest; this one seeds none. Between them they refuse an
+    /// implementation that serves the manifest only when the factor list came back non-empty — a read
+    /// rooted on <c>wrapped_account_keys</c> rather than on <c>users</c> does exactly that, answers
+    /// both levels correctly for every populated account, and drops the manifest of the account this
+    /// case describes. Without this line that implementation is green in both places: correct there,
+    /// and here judged only on a number it reads off the same lost row's neighbour.
     /// </para>
     /// </remarks>
     [Test]
@@ -836,8 +1018,21 @@ public sealed class AccountKeysEndpointTests
 
         // Assert
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
-        await Assert.That((await ReadBodyAsync(response))[RotationEpochMember]!.GetValue<int>())
-            .IsEqualTo(SeededRotationEpoch);
+
+        JsonObject body = await ReadBodyAsync(response);
+        await Assert.That(body[RotationEpochMember]!.GetValue<int>()).IsEqualTo(SeededRotationEpoch);
+
+        // Served at all before decoded, so "no manifest came back for an account holding no factors"
+        // and "the wrong bytes came back" arrive as two messages rather than as one decode blowing up
+        // on a null.
+        await Assert.That(body[ManifestMember]).IsNotNull();
+        await Assert.That(Convert.ToHexString(
+                Base64UrlText.Decode(body[ManifestMember]!.GetValue<string>())))
+            .IsEqualTo(Convert.ToHexString(SeededManifest));
+
+        // And the empty factor list really is what this account is in, or the paragraph above is
+        // describing an arrangement that did not happen.
+        await Assert.That(FactorsOf(body).Count).IsEqualTo(0);
     }
 
     /// <summary>
@@ -948,19 +1143,30 @@ public sealed class AccountKeysEndpointTests
     /// <para>
     /// <b>The negative half only, and the omission is deliberate rather than an oversight.</b> That a
     /// caller is handed <em>its own</em> bytes is
-    /// <see cref="AccountKeys_ForAnAccountHoldingAManifest_CarryItsExactBytes" />'s claim and is red
-    /// today; restating it here would add a second red saying nothing the first does not, and two reds
-    /// with one cause is how a suite teaches people to skim its failures. What this adds is the half
-    /// that case cannot make with one account in the fixture: that neither body carries the
-    /// <em>other</em> account's manifest.
+    /// <see cref="AccountKeys_ForAnAccountHoldingAManifest_CarryItsExactBytes" />'s claim; restating it
+    /// here would add a second failure saying nothing the first does not, and two reds with one cause
+    /// is how a suite teaches people to skim its failures. What this adds is the half that case cannot
+    /// make with one account in the fixture: that neither body carries the <em>other</em> account's
+    /// manifest.
     /// </para>
     /// <para>
-    /// <b>It passes today for a reason worth stating: both bodies carry <c>null</c>.</b> A pin that is
-    /// green because the feature does not exist yet is still the pin that reddens the day a read is
-    /// written without an owner predicate — <c>factor_manifests</c> is policed by <c>user_isolation</c>
-    /// on <c>user_id</c>, so a missing predicate answers empty rather than wrong on this table, but a
-    /// read keyed on the wrong account, or one that read the table through a context the policy never
-    /// saw, arrives here.
+    /// <b>Both accounts hold a manifest of their own, which is what makes this a measurement rather
+    /// than a pin.</b> Two seeded rows and two served bodies mean the two searches run over payloads
+    /// that really do carry a manifest each — so an absence here is the endpoint having scoped the
+    /// read, not the feature having nothing to disclose. A version of this case with one seeded row,
+    /// or written before anything served a manifest at all, would pass over two bodies both carrying
+    /// <c>null</c> and would be green for a reason that has nothing to do with the owner predicate.
+    /// <c>factor_manifests</c> is policed by <c>user_isolation</c> on <c>user_id</c>, so a predicate
+    /// dropped altogether answers empty rather than wrong on this table; what arrives here is the
+    /// failure the policy cannot catch — a read keyed on the <em>wrong</em> account, or one that read
+    /// the table through a context the policy never saw.
+    /// </para>
+    /// <para>
+    /// <b>The two epochs differ by one, and both are read.</b> The bytes and the generation are two
+    /// columns of the one row, and an implementation can lose them separately: a read that fetched the
+    /// right row's bytes beside the wrong row's epoch passes every search over the payload. Off-by-one
+    /// neighbours rather than distant numbers, because the failure worth catching is a row taken from
+    /// the account next door, not a number invented from nothing.
     /// </para>
     /// <para>
     /// Searched over the raw payload rather than over a parsed member, so a manifest that arrived
@@ -994,6 +1200,17 @@ public sealed class AccountKeysEndpointTests
         // Assert
         await Assert.That(secondPayload).DoesNotContain(firstEncoded);
         await Assert.That(firstPayload).DoesNotContain(secondEncoded);
+
+        // Each body carries its own manifest, which is what makes the two absences above a claim about
+        // scoping rather than about an endpoint with nothing to disclose.
+        await Assert.That(secondPayload).Contains(secondEncoded);
+        await Assert.That(firstPayload).Contains(firstEncoded);
+
+        // And its own generation. The two epochs differ by one, so a body that fetched the stranger's
+        // row and its own bytes — or its own row through somebody else's key — is visible on the
+        // number as well as in the search.
+        await Assert.That(EpochOf(secondPayload)).IsEqualTo(SeededRotationEpoch + 1);
+        await Assert.That(EpochOf(firstPayload)).IsEqualTo(SeededRotationEpoch);
     }
 
     /// <summary>
@@ -1054,17 +1271,17 @@ public sealed class AccountKeysEndpointTests
     /// <b>Written beside <see cref="AccountKeys_EnvelopesAreUnpaddedBase64Url" /> rather than as a row
     /// added to its table, and the reason is which red each would produce.</b> That test iterates a
     /// written member list and decodes each member to its own suite's width; a <c>manifest</c> row
-    /// added to it would go red <em>today</em> on a member that is legitimately <c>null</c> for every
-    /// account, which is the stub's red already reported by
-    /// <see cref="AccountKeys_ForAnAccountHoldingAManifest_CarryItsExactBytes" /> wearing a second name.
-    /// This case asks the alphabet question of the <b>whole body</b> instead, which is answerable today
-    /// and stays answerable when the manifest arrives.
+    /// added to it would decode a member that is legitimately <c>null</c> for every account holding no
+    /// manifest row — which is every account in the product — so the row would have to carry a
+    /// condition, and a member list with a condition in it stops being a list. This case asks the
+    /// alphabet question of the <b>whole body</b> instead, which needs no such branch: whatever is in
+    /// the payload is in the payload.
     /// </para>
     /// <para>
-    /// <b>It is honest about being vacuous on one of its two subjects.</b> The two envelopes are seeded
-    /// and really do cross this body, so the three absences are a real claim about them. The manifest
-    /// does not cross it yet, so for that member this is a pin rather than a measurement — it becomes a
-    /// measurement on the commit that serves one, with no edit here.
+    /// <b>All three subjects are seeded, so none of the three absences is vacuous.</b> A factor is
+    /// filed and a manifest is filed, so the two envelopes and the manifest all really cross this body
+    /// — and the manifest's presence is asserted on the parsed body before the payload is searched, so
+    /// a member that vanished cannot be what makes the three characters absent.
     /// </para>
     /// <para>
     /// <b>The probe proves itself before it is used.</b> The seeded manifest's bytes are asserted to
@@ -1100,9 +1317,11 @@ public sealed class AccountKeysEndpointTests
         // correctly encoded one.
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
 
-        // The member exists on the body, so a manifest that vanished rather than being encoded wrongly
-        // is not what makes the three absences below true.
-        await Assert.That((await ReadBodyAsync(response)).ContainsKey(ManifestMember)).IsTrue();
+        // The member carries a VALUE, not merely a name. ContainsKey alone is true of the JSON null
+        // every account without a manifest row answers with, so a read that lost the row entirely
+        // would satisfy it — and the three absences below are true of a null as well. IsNotNull is
+        // what makes them a claim about an encoder rather than about a body with nothing in it.
+        await Assert.That((await ReadBodyAsync(response))[ManifestMember]).IsNotNull();
 
         foreach (string refused in StandardAlphabetOnly)
         {
@@ -1399,6 +1618,23 @@ public sealed class AccountKeysEndpointTests
             AsObject(entry)["wrappedPrivateKey"]!.GetValue<string>(),
             AsObject(entry)["encapsulatedAccountKeys"]!.GetValue<string>())));
 
+    /// <summary>
+    /// The factor identifiers of a response body <b>in the order they arrived</b>, joined.
+    /// </summary>
+    /// <remarks>
+    /// <b>The deliberate opposite of <see cref="ArrivedRows" />, and the two must not be merged.</b>
+    /// That one sorts, because every comparison against a written-out expectation has to be a set
+    /// comparison — the endpoint promises no particular sequence and an expectation naming one would
+    /// pin a claim the product has not made. This one preserves arrival order, because the single case
+    /// that reads it compares two responses against each other rather than against an expectation, and
+    /// order is the only thing it is about. Sorting here would make that case pass on any response at
+    /// all.
+    /// </remarks>
+    private static string ArrivalSequence(JsonArray entries) =>
+        string.Join(
+            "\n",
+            entries.Select(entry => AsObject(entry)["factorId"]!.GetValue<string>()));
+
     /// <summary>The expected half of the same comparison, rendered the same way.</summary>
     private static string ExpectedRows(IEnumerable<WrappedKeyFixture> factors) =>
         Join(factors.Select(factor =>
@@ -1452,6 +1688,70 @@ public sealed class AccountKeysEndpointTests
 
         return await command.ExecuteNonQueryAsync();
     }
+
+    /// <summary>
+    /// A manifest of exactly <see cref="FactorManifest.MaximumBytes" /> bytes, no two neighbouring
+    /// windows of which are alike.
+    /// </summary>
+    /// <remarks>
+    /// The stride is odd and therefore coprime with 256, so the sequence runs the whole byte range
+    /// before it repeats and every 256-byte window is a rotation of a different one. The offset keeps
+    /// index 0 off value 0, so a value that arrived shifted by a position is visible at the very first
+    /// byte rather than only deep inside.
+    /// </remarks>
+    private static byte[] WidestManifest()
+    {
+        byte[] manifest = new byte[FactorManifest.MaximumBytes];
+
+        for (int index = 0; index < manifest.Length; index++)
+        {
+            manifest[index] = (byte)(0x11 + (index * 7));
+        }
+
+        return manifest;
+    }
+
+    /// <summary>
+    /// The first position at which two byte sequences disagree, rendered for a human — or the empty
+    /// string when they are identical.
+    /// </summary>
+    /// <remarks>
+    /// <b>A rendered difference rather than a whole-value comparison, because the value under test is
+    /// four kilobytes.</b> Comparing two 8192-character hex strings, or two 4096-element collections,
+    /// produces a failure message the assertion library truncates — so the reader is shown the opening
+    /// bytes of two values that are identical there and is told nothing about where they parted. One
+    /// index and two bytes says whether a value was cut, shifted or rebuilt, and it says it in a line.
+    /// <b>The caller compares against <c>string.Empty</c> rather than calling <c>IsEmpty()</c>, and the
+    /// difference was measured rather than assumed:</b> TUnit's <c>IsEmpty()</c> reports only
+    /// <c>Expected to be empty</c> and throws the description away, while <c>IsEqualTo(string.Empty)</c>
+    /// prints it — which is the entire reason this helper returns a sentence instead of a
+    /// <see langword="bool" />.
+    /// </remarks>
+    private static string FirstDifference(
+        IReadOnlyList<byte> arrived,
+        IReadOnlyList<byte> expected)
+    {
+        for (int index = 0; index < Math.Min(arrived.Count, expected.Count); index++)
+        {
+            if (arrived[index] != expected[index])
+            {
+                return $"byte {index}: expected 0x{expected[index]:X2}, arrived 0x{arrived[index]:X2}";
+            }
+        }
+
+        return arrived.Count == expected.Count
+            ? string.Empty
+            : $"length: expected {expected.Count} bytes, arrived {arrived.Count}";
+    }
+
+    /// <summary>
+    /// The <c>rotationEpoch</c> of a response body read from its raw payload, for the cases that hold
+    /// the payload as text.
+    /// </summary>
+    private static int EpochOf(string payload) =>
+        (JsonNode.Parse(payload) as JsonObject
+         ?? throw new InvalidOperationException("The endpoint answered something other than a JSON object."))
+        [RotationEpochMember]!.GetValue<int>();
 
     /// <summary>One envelope member, decoded and rendered as hex so a failure prints the bytes.</summary>
     private static string DecodedHex(JsonObject row, string member) =>

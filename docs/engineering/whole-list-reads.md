@@ -135,8 +135,16 @@ account-key one.** That read moved its list one level down inside a record so th
 and rotation epoch could travel beside it, and nothing about how the list is *delivered* moved with
 it. Keyed on the bare shape alone, discovery would simply have lost it — and "wrap the list in a
 record" would have become a one-line exit from this gate that reads as tidying, costs nobody a
-written reason, and reddens nothing. Following a record one level in is what keeps that edit
-visible. It also fails closed in the other direction: `Task<PagedResult<T>>` is a record carrying
+written reason, and reddens nothing. **Following a record one level in moved that exit rather than
+closing it, and reading it as closed is the mistake this sentence exists to stop.** The arm matches
+a record carrying **exactly one** list, so the same edit still works with a second list member
+beside the first — still one line, still reading as tidying.
+`Discovery_FollowsARecordOneLevelInAndNoFurther` pins that refusal on purpose, because a record
+carrying two lists is two reads with nothing to say which of them a row would be about; the price of
+refusing it is that the shape stays a way out. **What would actually close it is nothing in this
+arm** — it is the pinned key set below, which reddens and names the read that went missing whatever
+shape it left through, and which is why that pin is not redundant with the census. It also fails
+closed in the other direction: `Task<PagedResult<T>>` is a record carrying
 one list and a cursor, so such a read is now **discovered** rather than invisible, arrives in the
 census, and has to be claimed by a row whose disposition somebody signs — and the gated shape
 assertion refuses it a layer further on, by reading the handler's response.

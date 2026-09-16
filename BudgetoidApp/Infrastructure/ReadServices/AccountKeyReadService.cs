@@ -67,6 +67,22 @@ public sealed class AccountKeyReadService(BudgetoidDbContext dbContext) : IAccou
         // LEFT JOIN LATERALs — the manifest lateral carrying LIMIT 1 and a marker column, the factors
         // lateral carrying none — with no query splitting configured anywhere in this solution.
         //
+        // AsSingleQuery DEFENDS THAT AGAINST A GLOBAL SETTING, AND THE SPLIT WAS OBSERVED RATHER THAN
+        // FEARED. Adding UseQuerySplittingBehavior(QuerySplittingBehavior.SplitQuery) to the options
+        // this context is built from — one line on the AddDbContext in Api/Program.cs, the ordinary way
+        // a solution adopts split queries — makes EF 10 issue this read as TWO commands against a
+        // seeded account: the first carrying users and the manifest lateral, the second re-selecting
+        // the same user row and joining wrapped_account_keys laterally. That is two autocommitted
+        // statements taking two READ COMMITTED snapshots, which is exactly the window the paragraph
+        // above says the single statement closes. AsSingleQuery is the per-query override that survives
+        // the global setting; deleting it puts the guarantee back at the mercy of a line in Program.cs.
+        //
+        // WHAT THE ONE STATEMENT COSTS, WHICH THE ARGUMENT ABOVE HAD NOT NAMED: the manifest is in the
+        // OUTER projection, so PostgreSQL repeats it once per factor row — an account holding eleven
+        // factors and a manifest near the 4096-byte cap transfers roughly 45 KB where two statements
+        // would transfer roughly 4 KB. That cartesian cost is accepted deliberately, because the
+        // snapshot the second statement would lose is the thing the client's mismatch check is about.
+        //
         // ROOTED ON users, AND THE ROOT IS FORCED. The statement has to answer for an account holding
         // no manifest AND no factor — the state of every account in the product — so neither of the
         // two tables it is really about can be the root: rooted on factor_manifests the epoch case
@@ -95,6 +111,7 @@ public sealed class AccountKeyReadService(BudgetoidDbContext dbContext) : IAccou
         // promised is that determinism and nothing about the particular sequence — see the port.
         var custody = await dbContext.Users
             .AsNoTracking()
+            .AsSingleQuery()
             .Where(user => user.Id == userId)
             .Select(user => new
             {
@@ -125,18 +142,27 @@ public sealed class AccountKeyReadService(BudgetoidDbContext dbContext) : IAccou
         // FactorManifest.For refuses an empty manifest, so an empty buffer would spend a spelling the
         // domain has declared impossible on the one state that is normal. AccountKeyCustody argues both.
         //
-        // THE ABSENT MANIFEST IS SPELLED WITH ?. OR WITH A BARE null ARGUMENT, AND NEVER WITH A
-        // CONDITIONAL. `custody.Manifest is null ? null : custody.Manifest.Manifest` looks identical
-        // and is not: ReadOnlyMemory<byte> carries an implicit conversion from byte[], so the null
-        // literal converts THROUGH it and the conditional's natural type becomes the non-nullable
-        // memory. Lifted, that is HasValue = true over ZERO bytes — the empty buffer the paragraph
-        // above refuses — and it compiles with no warning. Measured, not reasoned: written that way,
-        // the two absent-manifest cases fail on a manifest of "" rather than null.
-        return custody is null
-            ? new AccountKeyCustody(null, 0, [])
-            : new AccountKeyCustody(
-                custody.Manifest?.Manifest,
-                custody.Manifest?.RotationEpoch ?? 0,
-                custody.Factors);
+        // THE ABSENT MANIFEST IS SPELLED WithNoManifest AND NEVER WITH A CONDITIONAL.
+        // `custody.Manifest is null ? null : custody.Manifest.Manifest` looks identical to a ?. and is
+        // not: ReadOnlyMemory<byte> carries an implicit conversion from byte[], so the null literal
+        // converts THROUGH it and the conditional's natural type becomes the non-nullable memory.
+        // Lifted, that is HasValue = true over ZERO bytes — the empty buffer the paragraph above
+        // refuses — and it compiles with no warning. Measured, not reasoned: written that way, the two
+        // absent-manifest cases fail on a manifest of "" rather than null. The factory removes the
+        // second half of the same hazard, the literal 0 that used to be written out here twice: it is
+        // the only thing that decides what epoch an absent manifest answers, and the record's guard
+        // refuses the pairing rather than leaving it to whoever edits these lines next.
+        if (custody is null)
+        {
+            return AccountKeyCustody.WithNoManifest([]);
+        }
+
+        // Read into a local first: the null test and the two reads then run against one value the
+        // compiler can track, rather than three accesses to a property it may re-evaluate.
+        var manifest = custody.Manifest;
+
+        return manifest is null
+            ? AccountKeyCustody.WithNoManifest(custody.Factors)
+            : new AccountKeyCustody(manifest.Manifest, manifest.RotationEpoch, custody.Factors);
     }
 }

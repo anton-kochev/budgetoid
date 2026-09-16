@@ -55,9 +55,10 @@ generation that manifest is in — see
 **The client still produces the arrangement this replaced**: `account-keys.ts` wraps each of the
 account's two keys under the factor's key-encryption key and `registration-api.service.ts` puts
 `wrappedContentKey` and `wrappedIndexKey` on the wire, which no route accepts any more. **It reads
-the old shape as well as writing it**, and now refuses this route's answer twice over:
-`MeApiService.getAccountKeys` throws on a body that is not an array, and then demands
-`wrappedContentKey` and `wrappedIndexKey` on every entry. So no browser
+the old shape as well as writing it**, and carries two refusals for this route's answer of which
+only the first can fire: `MeApiService.getAccountKeys` throws on a body that is not an array, and
+then — behind that throw, so nothing from this route reaches it — demands `wrappedContentKey` and
+`wrappedIndexKey` on every entry. So no browser
 in this repository can currently register an account or open one, the client sections of this chapter
 describe what that browser does rather than what the server takes, and closing the gap is **work**
 rather than a departure anybody argued for.
@@ -505,11 +506,20 @@ width at all.
 
 **Nonce freshness is a rule of the format and is argued in
 [ciphertext-envelope.md](ciphertext-envelope.md).** What this document owns is why a repeat is
-especially cheap to reach here: **both of a factor's envelopes are sealed under the same
-key-encryption key**, so a counter starting at zero per factor repeats on the very next
+especially cheap to reach in the arrangement this section describes: there **both of a factor's
+envelopes are *wrapped under* the same key-encryption key** — key over key, which is the verb that
+construction takes — so a counter starting at zero per factor repeats on the very next
 operation, and two GCM ciphertexts under one (key, nonce) give
 `C_content ⊕ C_index = contentKey ⊕ indexKey` — which destroys the independence of the two
 account keys that this design's whole correctness argument rests on.
+
+**The arrangement the routes take narrows that and does not retire the rule.** There a factor puts
+exactly **one** value under its key-encryption key, `wrapped_private_key`; its
+`encapsulated_account_keys` is *encapsulated to* the public half, and the encapsulation framing
+carries its own ephemeral public key, so the AEAD beneath it runs under a key agreed per
+encapsulation rather than under the key-encryption key at all. One value under that key leaves no
+second ciphertext beside it to XOR against. What does not change is the requirement: freshness is
+held per (key, nonce) by the format, wherever the key came from.
 
 **Associated data** of a wrapped key:
 
@@ -859,6 +869,24 @@ the first truncates nothing, while `wrapped_account_keys` is keyed on `factor_id
 first would be right for every passkey in the product and would drop nine of every ten
 recovery-code envelopes.
 
+**The one statement has a price, and it is paid deliberately.** The manifest sits in the **outer**
+projection, so PostgreSQL repeats it once per factor row — an account holding eleven
+factors and a manifest near the 4096-byte cap moves roughly 45 KB where two statements would move
+roughly 4 KB. That is the ordinary cartesian cost of refusing a split query, and the snapshot the
+second statement would give up is worth more than the bytes.
+
+**One read is only half of one snapshot, and the other half is owed by a writer that does not exist
+yet.** A single statement makes the two levels self-consistent only if the enrolment that brings a
+factor into existence writes its `wrapped_account_keys` row and the `factor_manifests` update in
+**one transaction**. Landed in two, this read observes the state between them perfectly correctly —
+the factor present, the manifest not yet naming it — and hands a client one true snapshot of a
+database that was briefly inconsistent, which the client compares and reports to a person as
+**tampering** while somebody was merely enrolling an authenticator. Reshaping the response buys
+nothing at all against a split write. The constraint therefore belongs to every future path that
+creates or removes a factor, and it is written here because the path is unbuilt: the factor row and
+the manifest naming it move together in one transaction, or the read beneath them cannot be trusted
+however few statements it takes.
+
 **An absent manifest is `null` and never `""`.** An empty string is a legal base64url rendering of
 zero bytes, so encoding an absent value would make *there is no manifest* and *there is one and it
 names nobody* the same answer on the wire. The ring below keeps the same distinction for the same
@@ -894,9 +922,11 @@ status code is a `200`, and nothing on the server sees it happen.
 **What widening costs is real and is accepted.** A caller now receives envelopes it holds nothing to
 open — material travelling further than the request needs it. Two things make that acceptable. The
 operator already holds every one of these rows, so nothing is disclosed to the party this design
-defends against. And a factor's envelopes open **only** under a key-encryption key derived from that
-factor — a PRF output inside an authenticator, or a code written on a card — so an entry the caller
-cannot open is ciphertext bound to associated data it cannot reproduce. What is genuinely new is the
+defends against. And a factor's entry opens only by starting from a key-encryption key derived from
+that factor — a PRF output inside an authenticator, or a code written on a card — which unwraps that
+factor's private key, which is what the encapsulated pair beside it opens to. Neither value is
+reachable without the first step, so an entry the caller cannot open is ciphertext bound to
+associated data it cannot reproduce. What is genuinely new is the
 *count*: the answer now says how many factors the account holds, which the same principal can already
 assemble from `GET /api/me/credentials` and `GET /api/me/recovery-codes`.
 
@@ -930,11 +960,17 @@ own failure.
 **An empty `factors` array, never a `404` — but not for the reason the narrowed route gave.** The old argument
 was an enumeration oracle: a `404` would have told a caller that a guessed session id named a real
 row. That argument does **not** survive the widening, because nothing is narrowed by an identifier a
-caller could guess and an authenticated request can only ever ask about its own account. What holds now
-is the client. `AccountKeyCustodyService` reads an empty list as `unopened` — "present another factor"
-— and reads a `404` as `unreachable`, whose advice is "try the same factor again in a minute". A
-`404` would hand somebody whose account holds nothing openable the one instruction that can never
-work. The refusals the client *does* tell apart are `401` and `403`, which are `unauthenticated`;
+caller could guess and an authenticated request can only ever ask about its own account. What holds
+it now is the client — the one this repository intends to have, because the one it ships cannot
+reach the question. `AccountKeyCustodyService` is written to read an empty list as `unopened` —
+"present another factor" — and to read a `404` as `unreachable`, whose advice is "try the same
+factor again in a minute". A `404` would hand somebody whose account holds nothing openable the one
+instruction that can never work. **Neither branch runs on this route's answer today**:
+`MeApiService.getAccountKeys` throws on a body that is not an array, so the object this route hands
+back never reaches custody at all, and the shipped browser is broken end to end against it — it
+expects the bare array and the member names the write side stopped sending. What is argued here is
+the shape the route is held to and what the repaired client owes; it is not a path that runs.
+The refusals the client *does* tell apart are `401` and `403`, which are `unauthenticated`;
 a `404` is not among them precisely because it says nothing about this browser's session. **The
 array moving down a level changed none of that, and neither does the manifest arriving beside it**:
 an account holding no factor and no manifest is a `200` carrying no manifest, epoch `0` and an empty
@@ -963,12 +999,15 @@ account holding a passkey **and** a set of recovery codes, signed in with one of
 eleven factors.
 
 **The browser reads it in one place**, `MeApiService.getAccountKeys`, whose only caller is
-`AccountKeyCustodyService` — **and what it reads is the shape this route stopped answering**, so
-both of its refusals now fire on every call: the collection check against an object that is not an
-array, and the per-entry check against members the write side stopped sending. That is the same gap
-[Purpose](#purpose) names, arriving from the reading end, and the rest of this paragraph describes
+`AccountKeyCustodyService` — **and what it reads is the shape this route stopped answering**, so its
+**first** refusal now fires on every call: the collection check, against an object that is not an
+array. The per-entry check against members the write side stopped sending is **unreachable behind
+it**, because the collection check throws rather than falling through, so no body from this route
+ever reaches the entries. The capability to refuse twice is real and is what the rest of this
+paragraph argues for; the second refusal is dead code until the collection check stops firing. That
+is the same gap [Purpose](#purpose) names, arriving from the reading end, and what follows describes
 what that client does rather than what the route gives it.
-Two refusals guard the body rather than one, and both matter here more
+Two refusals are written rather than one, and both matter here more
 than on the neighbouring reads: a body that is not a list is a route or a proxy answering something
 else entirely, while an **entry** missing its identifier or one of its two envelopes is a version
 skew on the right route. The per-entry check is what stops the second from being read as the first
@@ -1909,8 +1948,12 @@ gets back out.
    authenticated account holds — one entry per registered passkey, ten per set of recovery codes, so
    eleven for an ordinary account — with an empty `factors` when it holds none, and no manifest at
    epoch 0, which is every account there is. Both levels come off **one** statement, so what a
-   caller compares describes one instant. It is the only read of
-   `wrapped_account_keys` the application makes, and the browser's one caller is custody — still
+   caller compares describes one instant. It is the only read of `wrapped_account_keys` any route
+   in the product can reach, which is not the same as the only one written down:
+   `KeyRotationRepository.ListPasskeyFactorsAsync` reads that table too — joined to `credentials`,
+   filtered on `user_id` and on `credential_type` — and is registered like every other port, with no
+   caller today, because `BeginKeyRotationHandler` stopped calling it and no route reaches that
+   handler either. The browser's one caller is custody — still
    written against the bare array this route used to answer. See
    [The one route that hands them back](#the-one-route-that-hands-them-back).
 
