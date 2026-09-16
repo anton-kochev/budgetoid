@@ -121,4 +121,35 @@ public enum ConflictKind
     /// is never chance.
     /// </remarks>
     RecoveryCodesReplaced,
+
+    /// <summary>
+    /// Another change to the account's recovery factors landed first, so the manifest the request's
+    /// rotation epoch was computed from is no longer the current generation.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The caller sent nothing wrong, and the sentence this kind travels with must not suggest they
+    /// did.</b> Their epoch was the stored generation plus one at the moment they read it; a concurrent
+    /// registration or recovery-code issue committed in between and took that generation. The remedy is
+    /// to read the account's keys back, seal a manifest over the generation it now reports, and run the
+    /// ceremony again — the same fact reached from the two routes that change a factor set, which is why
+    /// they share this member.
+    /// </para>
+    /// <para>
+    /// <b>Deliberately not the 400 the same rule raises one layer up, and the two must never be merged.</b>
+    /// <c>FactorManifest.Promote</c> refuses an epoch that was never one greater than the stored
+    /// generation, keyed on the member the caller can correct — that caller's arithmetic was wrong.
+    /// This member is the optimistic concurrency token firing on a request whose arithmetic was
+    /// <em>right</em> and has since been overtaken. One rule, two different facts about the caller, and a
+    /// reader who folds them tells somebody who did everything correctly to go and fix their request.
+    /// </para>
+    /// <para>
+    /// <b>Deliberately not <see cref="RecoveryCodesReplaced"/> either</b>, though both are facts about
+    /// timing and one of the two routes can raise both. That one says the account's <em>set of recovery
+    /// codes</em> was replaced, so the codes this caller has already shown a person will never redeem and
+    /// nothing short of issuing again helps. This one says the manifest generation moved: the request is
+    /// otherwise intact, and what has to be rebuilt is the manifest and its epoch.
+    /// </para>
+    /// </remarks>
+    FactorSetMoved,
 }

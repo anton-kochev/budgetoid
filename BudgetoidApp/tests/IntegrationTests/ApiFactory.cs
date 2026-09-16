@@ -338,13 +338,28 @@ public sealed class ApiFactory(
     /// or the session is judged against that instant and answers 401 for a reason no assertion names —
     /// see <c>RepositoryTestHost.SeedSignedInOwnerOnAsync</c>, which argues it.
     /// </param>
+    /// <param name="withFactorManifest">
+    /// Whether the seeded account holds the one <c>factor_manifests</c> row every account the product
+    /// creates has. Declared last, and optional, so every existing call site keeps compiling and keeps
+    /// seeding exactly what it seeds today.
+    /// <para>
+    /// <b>There is one reason to pass <see langword="false" /> and it is to reach a 500.</b> Both routes
+    /// that change an account's factor set load the manifest and raise rather than branch when they find
+    /// none, because registration has written one for every account since the table existed — so
+    /// "authenticated, and no manifest" is an integrity failure and not a refusal. The test that pins
+    /// that answer needs an account in that state, and nothing else does: an account seeded this way
+    /// answers a fault to a passkey registration and to a recovery-code issue alike, for a reason no
+    /// other test in the suite is about.
+    /// </para>
+    /// </param>
     public async Task<SignedInClient> CreateSignedInClientAsync(
         string? subject = null,
         string? email = null,
         SessionKind kind = SessionKind.Full,
         CancellationToken cancellationToken = default,
         CredentialType? opensWith = null,
-        DateTime? issuedAtUtc = null)
+        DateTime? issuedAtUtc = null,
+        bool withFactorManifest = true)
     {
         RequireApplicationAuthentication(nameof(CreateSignedInClientAsync));
 
@@ -356,7 +371,8 @@ public sealed class ApiFactory(
             kind,
             cancellationToken,
             opensWith,
-            issuedAtUtc);
+            issuedAtUtc,
+            withFactorManifest);
 
         return new SignedInClient(
             CreateCookieClient(Base64UrlText.Encode(owner.SessionToken)),

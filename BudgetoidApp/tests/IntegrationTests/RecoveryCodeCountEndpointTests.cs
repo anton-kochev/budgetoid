@@ -497,6 +497,13 @@ public sealed class RecoveryCodeCountEndpointTests
             PasskeyEncoding.ToUserHandle(userId),
             signCount: 0);
 
+        // The generation this issue promotes the account's factor manifest to. Ten factors leave and
+        // ten arrive, so the one authenticated statement of what the set contains has to move with
+        // them. Read off the running API rather than written out, because a file that issues twice has
+        // to send a different number the second time and this helper does not know which call it is
+        // on — see FactorGeneration.
+        int rotationEpoch = await FactorGeneration.NextAsync(client);
+
         HttpResponseMessage response = await client.PostAsJsonAsync(RecoveryCodesPath, new
         {
             codes = SubmissionsOf(verifiers),
@@ -505,6 +512,13 @@ public sealed class RecoveryCodeCountEndpointTests
             authenticatorData = assertion.AuthenticatorDataBase64Url,
             signature = assertion.SignatureBase64Url,
             userHandle = assertion.UserHandleBase64Url,
+
+            // TEN FACTORS LEAVE AND TEN ARRIVE, which is a different factor set, so the manifest and
+            // its generation travel beside the codes. The bytes are minted per call and nothing below
+            // the wire opens them — a manifest is sealed under the account's content key, which no
+            // server here has ever held — so what has to be right is the framing and the generation.
+            manifest = ManifestFixture.Mint().Text,
+            rotationEpoch,
         });
 
         // Fails loudly, or every count below is a number read from an arrangement that never happened.
@@ -567,6 +581,14 @@ public sealed class RecoveryCodeCountEndpointTests
             signCount: 0,
             prfEnabled: true);
         WrappedKeyFixture keys = WrappedKeyFixture.Mint();
+
+        // The generation this registration promotes the account's factor manifest to. Read off the
+        // running API rather than written out, because a file that registers a second passkey has to
+        // send a different number from the first and this helper does not know which call it is on —
+        // an epoch that is not exactly one greater than the stored one is a 400 naming rotationEpoch,
+        // which reads as the ceremony being broken. See FactorGeneration.
+        int rotationEpoch = await FactorGeneration.NextAsync(client);
+
         HttpResponseMessage response = await client.PostAsJsonAsync(RegistrationPath, new
         {
             clientDataJson = attestation.ClientDataJsonBase64Url,
@@ -575,6 +597,13 @@ public sealed class RecoveryCodeCountEndpointTests
             factorId = keys.FactorId,
             wrappedPrivateKey = keys.WrappedPrivateKey,
             encapsulatedAccountKeys = keys.EncapsulatedAccountKeys,
+
+            // ONE FACTOR JOINS THE SET HERE, so the account's one authenticated statement of what the
+            // set contains moves with it. The bytes are minted per call and are never opened by
+            // anything below the wire — a manifest is sealed under the account's content key, which no
+            // server here has ever held — so what has to be right is the framing and the generation.
+            manifest = ManifestFixture.Mint().Text,
+            rotationEpoch,
         });
         response.EnsureSuccessStatusCode();
     }

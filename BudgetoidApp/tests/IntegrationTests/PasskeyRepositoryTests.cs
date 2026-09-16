@@ -5,6 +5,7 @@ using Infrastructure.Persistence.Configurations;
 using Infrastructure.Repositories;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
+using TUnit.Assertions.Enums;
 
 namespace IntegrationTests;
 
@@ -220,8 +221,15 @@ public sealed class PasskeyRepositoryTests
         (Credential credential, PasskeyPublicKey publicKey, PasskeySignatureCounter counter,
             WrappedAccountKeys wrappedAccountKeys) = NewPasskeyFor(userId, WebAuthnCredentialId);
 
+        // The account's manifest, read through the repository so it is tracked, and promoted to the
+        // generation this registration claims. Loaded before the act because that is the order the
+        // handler works in — and because the concurrency token only means anything on an instance whose
+        // original values came back from the database.
+        FactorManifest manifest = await PromotedManifestAsync(repository, userId);
+
         // Act
-        bool added = await repository.TryAddAsync(credential, publicKey, counter, wrappedAccountKeys);
+        bool added = await repository.TryAddAsync(
+            credential, publicKey, counter, wrappedAccountKeys, manifest);
 
         // Assert — refused, and the winner is still the account's.
         await Assert.That(added).IsFalse();
@@ -249,6 +257,16 @@ public sealed class PasskeyRepositoryTests
                 .AnyAsync(row => row.FactorId == wrappedAccountKeys.FactorId))
             .IsFalse();
         await Assert.That(await verify.Credentials.AnyAsync(row => row.Id == winnerId)).IsTrue();
+
+        // AND THE GENERATION DID NOT MOVE, which is a fifth row and the only one that was UPDATEd
+        // rather than inserted. The refusal detaches it rather than reloading it, so nothing here
+        // emitted the statement — but the entity was mutated in place before the save, and a
+        // registration that left it Modified would have any later save through this scoped context
+        // commit a promotion for a ceremony that wrote nothing. Read on a context of its own, because
+        // the one under test is still holding that entity.
+        await Assert.That(
+                (await verify.FactorManifests.SingleAsync(row => row.UserId == userId)).RotationEpoch)
+            .IsEqualTo(SeededRotationEpoch);
     }
 
     /// <summary>
@@ -302,10 +320,12 @@ public sealed class PasskeyRepositoryTests
         // identifier freshly minted.
         (Credential credential, PasskeyPublicKey publicKey, PasskeySignatureCounter counter,
             WrappedAccountKeys wrappedAccountKeys) = NewPasskeyFor(userId, UnregisteredWebAuthnCredentialId);
+        FactorManifest manifest = await PromotedManifestAsync(repository, userId);
 
         // Act
         Exception? escaped = await CaptureAsync(
-            () => repository.TryAddAsync(credential, publicKey, counter, wrappedAccountKeys));
+            () => repository.TryAddAsync(
+                credential, publicKey, counter, wrappedAccountKeys, manifest));
 
         // Assert — something escaped, which is already the claim: a swallowed violation would have
         // returned false and left this null.
@@ -409,6 +429,229 @@ public sealed class PasskeyRepositoryTests
             PasskeySignatureCounter.Start(credential, value: 0),
             WrappedAccountKeys.For(
                 credential, keys.Factor, keys.PrivateKeyEnvelope, keys.AccountKeysEnvelope, SeedInstant));
+    }
+
+    /// <summary>
+    /// A registration whose manifest promotion was overtaken is refused as a conflict naming the moved
+    /// factor set, and writes nothing.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The first execution of that <c>catch</c>, not a regression guard for it.</b>
+    /// <c>PasskeyRepository.IsManifestPromotionLost</c> narrows on
+    /// <c>entry.Entity is FactorManifest &amp;&amp; entry.State == EntityState.Modified</c>, and until
+    /// this case nothing in either suite had ever raised a <c>DbUpdateConcurrencyException</c> on this
+    /// save — so the predicate was held by reading it. What it is being asked here is a question only a
+    /// real batch can answer: <c>TryAddAsync</c> emits four INSERTs and one UPDATE together, and the
+    /// filter demands that <em>every</em> entry EF attributes the conflict to is the manifest. A
+    /// provider that attributed the whole batch would leave the raw EF exception escaping as a 500, and
+    /// the assertion below is the difference between the two.
+    /// </para>
+    /// <para>
+    /// <b>It is also the only thing in the repository that would redden deleting
+    /// <c>.IsConcurrencyToken()</c> from <c>FactorManifestConfiguration</c>.</b> That call has no
+    /// relational artifact — no column, no constraint, nothing a schema census can read — so without
+    /// this case removing it changes no test in either direction. With it gone the loser's UPDATE
+    /// carries no <c>WHERE rotation_epoch = @original</c>, matches the winner's row, and quietly
+    /// overwrites the winner's manifest under the winner's generation: two factor sets, one row, and
+    /// whichever list lost is a set of factors no client can learn exists.
+    /// </para>
+    /// <para>
+    /// <b>The winner commits through a context of its own</b>, which is the arrangement every race in
+    /// this file uses and for the reason
+    /// <see cref="TryAddAsync_WhenTheHandleIsAlreadyRegistered_ReturnsFalse" /> gives: written through
+    /// the context under test it would travel inside the same unit of work, where the loser's UPDATE
+    /// could not fail to see it. The winner promotes and saves nothing else, because a promotion alone
+    /// is what "another change to the factor set landed first" is at the row level — which of the two
+    /// routes committed it is a fact this repository cannot see and must not depend on.
+    /// </para>
+    /// <para>
+    /// <b>The answer is asserted as the translated conflict AND as its kind.</b> The type alone would
+    /// be satisfied by the neighbouring <c>FactorAlreadyRegistered</c> catch, whose remedy is the
+    /// opposite work — mint a fresh factor identifier and re-wrap the account keys, against re-seal a
+    /// manifest over a generation that moved. A caller told the wrong one re-does work that was never
+    /// wrong and leaves the thing that was.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task TryAddAsync_WhenTheManifestGenerationMovedFirst_ThrowsFactorSetMovedAndWritesNothing()
+    {
+        // Arrange — one account at the generation the seeding left it at.
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
+
+        // The loser: a whole registration, and a manifest read and promoted before the winner exists.
+        // Read FIRST, so the entity's original values really are the generation this attempt started
+        // from — the order is the arrangement rather than tidiness.
+        await using BudgetoidDbContext loserDb = CreateDb(host);
+        var loser = new PasskeyRepository(loserDb);
+        (Credential credential, PasskeyPublicKey publicKey, PasskeySignatureCounter counter,
+            WrappedAccountKeys wrappedAccountKeys) = NewPasskeyFor(userId, UnregisteredWebAuthnCredentialId);
+        FactorManifest losersManifest = await PromotedManifestAsync(loser, userId);
+
+        // The winner: the same row, promoted and committed by another session. Its bytes are its own,
+        // so the read-back below can say WHOSE generation survived rather than only that one did.
+        ManifestFixture winnersManifest = ManifestFixture.Mint();
+        await using (BudgetoidDbContext winnerDb = CreateDb(host))
+        {
+            var winner = new PasskeyRepository(winnerDb);
+            FactorManifest stored = await winner.FindFactorManifestAsync(userId)
+                ?? throw new InvalidOperationException("The seeded account holds no factor manifest.");
+            stored.Promote(winnersManifest.Manifest, stored.RotationEpoch + 1);
+            await winnerDb.SaveChangesAsync();
+        }
+
+        // Act
+        Exception? escaped = await CaptureAsync(
+            () => loser.TryAddAsync(credential, publicKey, counter, wrappedAccountKeys, losersManifest));
+
+        // Assert — the premise first: the two attempts really did claim the same generation, or the
+        // token had nothing to refuse and everything below is about a race that did not happen.
+        await Assert.That(losersManifest.RotationEpoch).IsEqualTo(SeededRotationEpoch + 1);
+
+        // Translated, not raw. A DbUpdateConcurrencyException reaching the pipeline is a 500 telling a
+        // caller whose arithmetic was right that the server broke.
+        await Assert.That(escaped).IsNotNull();
+        await Assert.That(escaped).IsTypeOf<ConflictException>();
+        await Assert.That(((ConflictException)escaped!).Kind).IsEqualTo(ConflictKind.FactorSetMoved);
+
+        // And it says something, because a 409 with no detail leaves a client with no idea whether to
+        // retry — and this caller has real work to do before they can.
+        await Assert.That(string.IsNullOrWhiteSpace(escaped.Message)).IsFalse();
+
+        // Nothing of the loser's survives. All four rows, each by the loser's own id rather than by a
+        // count, because the promise of the one save is that the factor and the generation land
+        // together or not at all.
+        await using BudgetoidDbContext verify = CreateDb(host);
+        await Assert.That(await verify.Credentials.AnyAsync(row => row.Id == credential.Id)).IsFalse();
+        await Assert.That(await verify.PasskeyPublicKeys.AnyAsync(row => row.CredentialId == credential.Id))
+            .IsFalse();
+        await Assert.That(await verify.PasskeySignatureCounters.AnyAsync(row => row.CredentialId == credential.Id))
+            .IsFalse();
+        await Assert.That(await verify.WrappedAccountKeys.AnyAsync(row => row.CredentialId == credential.Id))
+            .IsFalse();
+
+        // And the row still holds the WINNER'S generation — both halves of it. The epoch alone would be
+        // satisfied by a loser whose UPDATE landed anyway, because both attempts computed the same
+        // number: it is the BYTES that say which of the two factor sets the account is now claiming.
+        FactorManifest survivor = await verify.FactorManifests.SingleAsync(row => row.UserId == userId);
+        await Assert.That(survivor.RotationEpoch).IsEqualTo(SeededRotationEpoch + 1);
+        await Assert.That(survivor.Manifest.ToArray())
+            .IsEquivalentTo(winnersManifest.Manifest, CollectionOrdering.Matching);
+    }
+
+    /// <summary>
+    /// A concurrency conflict over some other tracked row is not dressed up as a moved factor set.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The narrowing half of the case above, and without it that one is satisfied by a
+    /// <c>catch (DbUpdateConcurrencyException)</c> with no <c>when</c> clause at all.</b> The two
+    /// belong together for the reason this class already pairs
+    /// <see cref="TryAddAsync_WhenTheHandleIsAlreadyRegistered_ReturnsFalse" /> with
+    /// <see cref="TryAddAsync_WhenATrackedRowBreaksAnotherUniqueIndex_LetsTheViolationEscape" />: a
+    /// translation with no narrowing is a repository speaking for rules that are not its own.
+    /// </para>
+    /// <para>
+    /// <b>The mis-attribution mechanism is the one that file's remarks describe.</b>
+    /// <c>SaveChangesAsync</c> flushes everything the scoped context is tracking, not only what the
+    /// repository was handed — so a conflict reaching that <c>catch</c> says only that <em>some</em>
+    /// tracked row went out from under this unit of work. Here the row is a <b>bystander's signature
+    /// counter</b>, removed out of band and then removed again through the tracker, which is a
+    /// zero-row DELETE EF raises on; the registration itself is beyond reproach, its handle is one no
+    /// row carries, and its manifest promotion is from the generation the seeding left. So the only
+    /// thing that can decide the answer is whether the filter reads the entries.
+    /// </para>
+    /// <para>
+    /// <b>The expected behaviour is that it PROPAGATES.</b> A 500 naming a conflict this method does
+    /// not model beats a 409 telling a caller that the account's factor set moved — work they would
+    /// then do, correctly, to a request that was never refused for that.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task TryAddAsync_WhenAnotherTrackedRowConflicts_LetsTheConflictEscape()
+    {
+        // Arrange — an account and a bystander passkey whose counter this context will track.
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
+        Guid bystanderId = await host.SeedPasskeyAsync(userId, WebAuthnCredentialId);
+
+        await using BudgetoidDbContext db = CreateDb(host);
+        var repository = new PasskeyRepository(db);
+
+        PasskeySignatureCounter counter = await db.PasskeySignatureCounters
+            .SingleAsync(tracked => tracked.CredentialId == bystanderId);
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        int removedOutOfBand = await DeleteSignatureCounterAsync(admin, bystanderId);
+        db.PasskeySignatureCounters.Remove(counter);
+
+        // The registration is flawless: a handle nothing holds, a freshly minted factor, and a manifest
+        // promoted from the generation the seeding left.
+        (Credential credential, PasskeyPublicKey publicKey, PasskeySignatureCounter newCounter,
+            WrappedAccountKeys wrappedAccountKeys) = NewPasskeyFor(userId, UnregisteredWebAuthnCredentialId);
+        FactorManifest manifest = await PromotedManifestAsync(repository, userId);
+
+        // Act
+        Exception? escaped = await CaptureAsync(
+            () => repository.TryAddAsync(credential, publicKey, newCounter, wrappedAccountKeys, manifest));
+
+        // Assert — the premise first, or the exception below was raised by something this test did not
+        // arrange.
+        await Assert.That(removedOutOfBand).IsEqualTo(1);
+
+        // Raw, not translated. A ConflictException here is this repository claiming a rule it does not
+        // hold, and the kind it would claim is the one whose remedy is real work.
+        await Assert.That(escaped).IsNotNull();
+        await Assert.That(escaped).IsTypeOf<DbUpdateConcurrencyException>();
+    }
+
+    /// <summary>
+    /// The generation <c>RepositoryTestHost.SeedUserAsync</c> files an account's first manifest at,
+    /// which is where every account in this file starts.
+    /// </summary>
+    /// <remarks>
+    /// Read off <see cref="FactorManifest.MinimumRotationEpoch" /> rather than written out as
+    /// <c>1</c>, and the difference is which claim is being made. <c>FactorManifestTests</c> writes the
+    /// floor out because it is <em>about</em> the floor, and a test that read the constant it checks
+    /// would compare a constant with itself. Nothing here is about the floor: these cases need the
+    /// generation the seeding actually left, and a literal would silently become the wrong arrangement
+    /// the day that moved — the assertions would then be reading a number nobody stored.
+    /// </remarks>
+    private static int SeededRotationEpoch => FactorManifest.MinimumRotationEpoch;
+
+    /// <summary>
+    /// Reads the account's manifest through the repository and promotes it to the next generation —
+    /// the two steps every caller of <see cref="PasskeyRepository.TryAddAsync" /> performs, in the
+    /// order the handler performs them.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Through <see cref="PasskeyRepository.FindFactorManifestAsync" /> and never through a context
+    /// query of its own, because the tracking is the point.</b> The step is checked against the
+    /// generation the instance was loaded at, and EF builds <c>WHERE rotation_epoch = @original</c>
+    /// from the value snapshotted at that load — so a helper that built a detached instance with
+    /// <see cref="FactorManifest.For" /> would hand every case here an entity whose original values are
+    /// its current ones, and the save under test would carry a predicate guarding nothing.
+    /// </para>
+    /// <para>
+    /// It throws rather than returning null on a miss, so an account seeded without a manifest fails at
+    /// the arrangement instead of somewhere inside the act — which is the same distinction production
+    /// draws by raising rather than branching.
+    /// </para>
+    /// </remarks>
+    private static async Task<FactorManifest> PromotedManifestAsync(
+        PasskeyRepository repository,
+        Guid userId)
+    {
+        FactorManifest manifest = await repository.FindFactorManifestAsync(userId)
+            ?? throw new InvalidOperationException(
+                "The seeded account holds no factor manifest, so there is no generation to promote.");
+
+        manifest.Promote(ManifestFixture.Mint().Manifest, manifest.RotationEpoch + 1);
+
+        return manifest;
     }
 
     /// <summary>

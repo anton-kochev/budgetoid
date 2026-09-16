@@ -65,6 +65,7 @@ public sealed class InMemoryRecoveryCodeRepository(Action<Credential>? cascadeFr
     private readonly List<Set> _committed = [];
     private readonly List<Set> _pending = [];
     private readonly List<Guid> _ownerScopedLookups = [];
+    private readonly InMemoryFactorManifests _manifests = new();
 
     /// <summary>
     /// Every set the database would hold if this unit of work committed now — the rows already there
@@ -188,12 +189,50 @@ public sealed class InMemoryRecoveryCodeRepository(Action<Credential>? cascadeFr
         _committed.Add(new Set(credential, [.. hashes], WrappedAccountKeys: []));
     }
 
+    /// <summary>Files the account's one manifest row, the way registration left it.</summary>
+    public void SeedFactorManifest(Guid userId, byte[] manifest, int rotationEpoch) =>
+        _manifests.Seed(userId, manifest, rotationEpoch);
+
     /// <summary>
-    /// Forgets every set queued for insert, which is what clearing the change tracker does to rows a
-    /// save has not written yet. Committed rows are untouched, because a discard is not a rollback of
-    /// the database.
+    /// The manifest the account would hold if this unit of work committed now, or
+    /// <see langword="null" /> when it holds none — so a test can read back the bytes and the
+    /// generation a promotion left rather than only that a call succeeded.
     /// </summary>
-    public void DiscardTrackedEntities() => _pending.Clear();
+    public (byte[] Manifest, int RotationEpoch)? FactorManifestOf(Guid userId) =>
+        _manifests.Current(userId);
+
+    /// <summary>
+    /// Forgets every set queued for insert — and every manifest instance materialised beside them —
+    /// which is what clearing the change tracker does to rows a save has not written yet. Committed
+    /// rows are untouched, because a discard is not a rollback of the database.
+    /// </summary>
+    /// <remarks>
+    /// The manifest is the one row here that is <em>updated</em> rather than inserted, so what a
+    /// discard undoes is the promotion on the tracked instance and not a row leaving a list. An
+    /// abandoned attempt's UPDATE went back with its transaction: the row still holds <c>N</c>, and the
+    /// surviving attempt reads it fresh and promotes it to <c>N + 1</c> exactly once, which is the
+    /// convergence the replay tests in <c>GenerateRecoveryCodesHandlerTests</c> assert.
+    /// <see cref="InMemoryFactorManifests" /> carries the argument.
+    /// </remarks>
+    public void DiscardTrackedEntities()
+    {
+        _pending.Clear();
+        _manifests.Discard();
+    }
+
+    /// <summary>
+    /// The account's manifest row as the tracker holds it, or <see langword="null" /> when the account
+    /// holds none — which the handler above turns into an integrity failure rather than a refusal.
+    /// </summary>
+    /// <remarks>
+    /// The same instance on every call within one attempt, which is what makes a promotion visible to
+    /// the <see cref="AddSetAsync" /> that follows it, and a fresh one after every discard, which is
+    /// what makes a replay converge. <see cref="InMemoryFactorManifests" /> carries both halves.
+    /// </remarks>
+    public Task<FactorManifest?> FindFactorManifestAsync(
+        Guid userId,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(_manifests.Find(userId));
 
     /// <summary>
     /// The account's set, if it holds one — with the type predicate the real query carries.
@@ -375,16 +414,26 @@ public sealed class InMemoryRecoveryCodeRepository(Action<Credential>? cascadeFr
     /// argument is the whole set's share; kept as the caller's own collection it would be a queued
     /// insert a later mutation could rewrite, which is a state no change tracker produces.
     /// </para>
+    /// <para>
+    /// <paramref name="factorManifest" /> is required and is queued nowhere, and that is not the
+    /// omission the paragraph above refuses. The promotion already happened on the instance
+    /// <see cref="FindFactorManifestAsync" /> handed out, so <see cref="FactorManifestOf" /> reports it
+    /// before this call and <see cref="DiscardTrackedEntities" /> is what takes it away again. The
+    /// argument is taken and null-checked anyway, because a handler reaching this line without one is a
+    /// handler that skipped the load — the state the real signature exists to refuse.
+    /// </para>
     /// </remarks>
     public Task AddSetAsync(
         Credential credential,
         IReadOnlyList<RecoveryCodeHash> hashes,
         IReadOnlyList<WrappedAccountKeys> wrappedAccountKeys,
+        FactorManifest factorManifest,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(credential);
         ArgumentNullException.ThrowIfNull(hashes);
         ArgumentNullException.ThrowIfNull(wrappedAccountKeys);
+        ArgumentNullException.ThrowIfNull(factorManifest);
 
         _pending.Add(new Set(credential, [.. hashes], [.. wrappedAccountKeys]));
 

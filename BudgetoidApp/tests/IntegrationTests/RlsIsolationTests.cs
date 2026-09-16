@@ -7,6 +7,7 @@ using Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 using TestSupport;
+using TUnit.Assertions.Enums;
 
 namespace IntegrationTests;
 
@@ -997,9 +998,14 @@ public sealed class RlsIsolationTests
         // account's first and PK_factor_manifests cannot be what refuses anything. No credential is
         // needed: this table hangs off users directly, which is the point of it — a manifest belongs to
         // the ACCOUNT and names every factor at once.
+        //
+        // The flag is what buys that, and it is the only call in this file that names it: the seeding
+        // helper files an account's first manifest by default, because registration does — and a row
+        // already standing would answer both probes with a 23505 from the primary key, which reads as
+        // the policy refusing a statement it never saw.
         await using RepositoryTestHost host = await StartHostAsync();
         (RepositoryTestHost.SeededOwner session, RepositoryTestHost.SeededOwner other) =
-            await SeedTwoOwnersAsync(host);
+            await SeedTwoOwnersAsync(host, withFactorManifest: false);
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
         await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(session.UserId);
@@ -1039,6 +1045,139 @@ public sealed class RlsIsolationTests
             .IsEqualTo(0L);
         await Assert.That(await CountKeyedRowsAsync(admin, "factor_manifests", "user_id", session.UserId))
             .IsEqualTo(1L);
+    }
+
+    /// <summary>
+    /// One account's session cannot promote another account's factor manifest.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The <c>UPDATE</c> arm of <c>factor_manifests</c>' policy, and it is the arm whose failure a
+    /// caller could never see.</b> Row-level security refuses a cross-account <c>UPDATE</c>
+    /// <em>silently</em> — the row is not in reach, so the statement succeeds having matched nothing.
+    /// There is no error, no SQLSTATE and nothing to catch, which is why the observation is the
+    /// affected count and why this test cannot be written as an assertion about a response.
+    /// </para>
+    /// <para>
+    /// <b>And the response it would have to assert on is the most dangerous one in the product to lean
+    /// on.</b> A manifest promotion whose UPDATE matches zero rows is exactly what EF's concurrency
+    /// token on <c>rotation_epoch</c> reports as a lost race, and both repositories translate that into
+    /// <c>409 factor_set_moved</c> — a sentence that deliberately does not blame the caller and tells
+    /// them to read the account's keys back and try again. So an isolation failure and an ordinary
+    /// concurrent registration arrive at a client as the same status, the same kind and the same
+    /// reassuring words, for causes that could not be further apart. Nothing above this line can tell
+    /// them apart, which is why this probe reads rows back rather than reading an answer.
+    /// </para>
+    /// <para>
+    /// <b>It was unreachable until this slice and is live now.</b> The role held <c>SELECT</c> and
+    /// <c>INSERT</c> on this table and no <c>UPDATE</c> of any shape, so a probe like this one would
+    /// have been refused by the grant matrix with <c>42501</c> before a policy was consulted — a green
+    /// run measuring nothing. <c>GRANT UPDATE (manifest, rotation_epoch)</c> arrived with the promotion
+    /// path, and the arm it exposed was watched by nothing: the <c>USING</c> arm's <em>read</em> half is
+    /// held by <c>FactorManifestSchemaTests</c>, the <c>WITH CHECK</c> arm's refusal by the insert probe
+    /// above, and neither of those statements can be silently filtered the way this one is.
+    /// </para>
+    /// <para>
+    /// <b>The positive control is the whole discriminator, exactly as the <c>42501</c> ambiguity was on
+    /// the insert side.</b> Zero rows affected is what a statement matching nothing produces for
+    /// <em>any</em> reason — a predicate naming a row that is not there, an account that never had a
+    /// manifest, a seeding that silently did not run — and none of those is the policy. The identical
+    /// statement against this session's <b>own</b> row, on the same connection, affecting exactly one
+    /// and leaving behind the values it wrote, is what says the statement was capable of landing and
+    /// that isolation is the only thing that stopped the other one.
+    /// </para>
+    /// <para>
+    /// <b>Both accounts are seeded on the elevated path</b>, which is the rule the two probes beside
+    /// this one keep: arranging the bystander through the arm under test would make a green here mean
+    /// "whatever the policy does, it does consistently", and that is true of a policy that does nothing.
+    /// The seeding files each account's first manifest at the floor with bytes of its own, so the
+    /// read-back below compares against what was really stored rather than against a number this file
+    /// chose.
+    /// </para>
+    /// <para>
+    /// The probe's epoch is above the column's floor and its manifest is inside the band, so
+    /// <c>CK_factor_manifests_rotation_epoch</c> and <c>CK_factor_manifests_manifest_length</c> refuse
+    /// nothing and the owner is the only thing that can be wrong. The statement names exactly the two
+    /// columns <c>GRANT UPDATE (manifest, rotation_epoch)</c> covers — a third would answer
+    /// <c>42501</c> from the grant and this probe would be reading the column list instead of the
+    /// policy.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Database_RefusesToUpdateAnotherAccountsManifest_WhileStillAllowingItsOwn()
+    {
+        // Arrange — two owners, each holding the manifest the seeding files for every account. Unlike
+        // the insert probe next door this one WANTS those rows: there has to be a row on the far side
+        // for the policy to hide, and a row on this side for the control to move.
+        await using RepositoryTestHost host = await StartHostAsync();
+        (RepositoryTestHost.SeededOwner session, RepositoryTestHost.SeededOwner other) =
+            await SeedTwoOwnersAsync(host);
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+
+        // What the far account really holds, read before anything runs. Read rather than assumed,
+        // because the seeding mints each account's bytes per call — so the comparison afterwards is
+        // against the row that was actually there rather than against a value this file wrote down.
+        StoredFactorManifest otherBefore = await ReadManifestAsync(admin, other.UserId);
+
+        await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(session.UserId);
+
+        // Act — the foreign promotion first, then the identical statement aimed at this session's own
+        // row. Same connection, same session, same two columns; the owner in the predicate is the only
+        // difference between them.
+        int foreignAffected = await PromoteManifestAsync(app, other.UserId);
+        int ownAffected = await PromoteManifestAsync(app, session.UserId);
+
+        // Assert — the counts first. Zero rows affected and NOT a 42501 is the whole content of the
+        // first line: a refusal would say the grant matrix stopped the statement, an affected count of
+        // zero says the POLICY did, because the row was never in reach for there to be anything to
+        // update.
+        await Assert.That(foreignAffected).IsEqualTo(0);
+
+        // The control, without which the line above passes against a role that holds no UPDATE here at
+        // all and against a statement that matched nothing for a reason no policy is involved in.
+        await Assert.That(ownAffected).IsEqualTo(1);
+
+        // And what actually survived. An affected count of zero and a statement silently filtered are
+        // indistinguishable from the count alone — and on THIS table the difference between them
+        // reaches a caller as one 409 wearing one kind, so the read-back is the only place the two
+        // answers are ever separable. On the superuser connection, which row-level security does not
+        // apply to: no policed session could ask this question about another account.
+        StoredFactorManifest otherAfter = await ReadManifestAsync(admin, other.UserId);
+        await Assert.That(otherAfter.RotationEpoch).IsEqualTo(otherBefore.RotationEpoch);
+        await Assert.That(otherAfter.Manifest)
+            .IsEquivalentTo(otherBefore.Manifest, CollectionOrdering.Matching);
+
+        // BOTH HALVES OF THE FAR ROW, because they fail separately and a promotion writes both: an
+        // epoch that moved over the old blob leaves that account claiming a generation whose factor
+        // list is not the one it holds, and bytes that landed under the old number hand that account a
+        // set of factors this session chose. The second is the forgery the insert probe describes,
+        // arriving by the other arm.
+        //
+        // And the control's row really did take what the statement wrote, which is what makes "affected
+        // one row" a claim about this statement rather than about some row it happened to touch.
+        StoredFactorManifest ownAfter = await ReadManifestAsync(admin, session.UserId);
+        await Assert.That(ownAfter.RotationEpoch).IsEqualTo(ProbeRotationEpoch);
+        await Assert.That(ownAfter.Manifest).IsEquivalentTo(ProbeManifest(), CollectionOrdering.Matching);
+
+        // The premise, and it reads as an assertion but is really a guard: the probe has to write
+        // something the seeding did not, or "the far row did not move" and "the near row did" are both
+        // true of a statement that wrote the values back unchanged.
+        await Assert.That(otherBefore.Manifest).IsNotEquivalentTo(ProbeManifest());
+
+        // AND THE SHARPEST CONTROL, LAST BECAUSE IT MOVES THE FAR ROW. The own-row control above says
+        // the statement can land, but it says it against a DIFFERENT predicate value — so a zero on the
+        // foreign half could still be a predicate that matches nothing for a reason no session is
+        // involved in. This runs the IDENTICAL statement, same columns, same values, same owner in the
+        // predicate, on the superuser connection that row-level security does not apply to. One row
+        // affected there and zero on the app connection leaves exactly one difference between the two
+        // runs: which account the session declares.
+        //
+        // It is destructive to the far row and every assertion about that row has already been made, so
+        // it sits at the end rather than in the arrangement — read as the closing argument, not as an
+        // act.
+        await Assert.That(await PromoteManifestAsync(admin, other.UserId)).IsEqualTo(1);
     }
 
     [Test]
@@ -1292,13 +1431,19 @@ public sealed class RlsIsolationTests
     /// nameless default budget, which is legal because <c>IX_budgets_user_id_name</c> keys on
     /// <c>user_id</c> too.
     /// </remarks>
+    /// <param name="withFactorManifest">
+    /// Whether each owner gets the <c>factor_manifests</c> row every account the product creates holds.
+    /// Default, because that is the state a probe should find the database in — and
+    /// <see langword="false" /> for the one probe that writes a manifest itself, where a row already
+    /// standing would be refused by <c>PK_factor_manifests</c> instead of by the policy under test.
+    /// </param>
     private static async Task<(RepositoryTestHost.SeededOwner Session, RepositoryTestHost.SeededOwner Other)>
-        SeedTwoOwnersAsync(RepositoryTestHost host)
+        SeedTwoOwnersAsync(RepositoryTestHost host, bool withFactorManifest = true)
     {
         RepositoryTestHost.SeededOwner session =
-            await host.SeedOwnerAsync("google-1", "person@example.com");
+            await host.SeedOwnerAsync("google-1", "person@example.com", withFactorManifest);
         RepositoryTestHost.SeededOwner other =
-            await host.SeedOwnerAsync("google-2", "other@example.com");
+            await host.SeedOwnerAsync("google-2", "other@example.com", withFactorManifest);
         return (session, other);
     }
 
@@ -1650,12 +1795,83 @@ public sealed class RlsIsolationTests
             "values (@user_id, @manifest, @rotation_epoch)",
             connection);
         command.Parameters.AddWithValue("user_id", ownerId);
-        command.Parameters.AddWithValue(
-            "manifest",
-            Enumerable.Repeat(ProbeManifestFiller, ProbeManifestLength).ToArray());
+        command.Parameters.AddWithValue("manifest", ProbeManifest());
         command.Parameters.AddWithValue("rotation_epoch", ProbeRotationEpoch);
         return command;
     }
+
+    /// <summary>
+    /// Promotes <paramref name="ownerId" />'s manifest through the two columns the role's
+    /// <c>GRANT UPDATE (manifest, rotation_epoch)</c> covers, and returns the rows affected.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The affected count is the answer and there is nothing to catch.</b> A cross-account UPDATE is
+    /// filtered by <c>user_isolation</c>'s <c>USING</c> arm rather than refused by it, so the statement
+    /// succeeds having matched no row. The count is the only thing the server says about it.
+    /// </para>
+    /// <para>
+    /// <b>Exactly two columns, and naming a third would change what this measures.</b> The grant is
+    /// column-listed; a statement touching <c>user_id</c> would answer <c>42501</c> from the grant
+    /// matrix before any policy was consulted, and the probe would be reading the column list instead
+    /// of the isolation rule. The values are the shared probe shape, so neither check constraint is
+    /// what answers.
+    /// </para>
+    /// </remarks>
+    private static async Task<int> PromoteManifestAsync(NpgsqlConnection connection, Guid ownerId)
+    {
+        await using NpgsqlCommand command = new(
+            "update factor_manifests set manifest = @manifest, rotation_epoch = @rotation_epoch " +
+            "where user_id = @user_id",
+            connection);
+        command.Parameters.AddWithValue("user_id", ownerId);
+        command.Parameters.AddWithValue("manifest", ProbeManifest());
+        command.Parameters.AddWithValue("rotation_epoch", ProbeRotationEpoch);
+
+        return await command.ExecuteNonQueryAsync();
+    }
+
+    /// <summary>What one account's manifest row holds.</summary>
+    /// <remarks>
+    /// Both columns together, because a promotion writes both and they fail separately: the pair is
+    /// what an account's generation actually is, and reading either alone would call a half-written row
+    /// unchanged.
+    /// </remarks>
+    private readonly record struct StoredFactorManifest(byte[] Manifest, int RotationEpoch);
+
+    /// <summary>
+    /// Reads one account's manifest row, keyed on the owner because <c>user_id</c> is the whole primary
+    /// key of this table.
+    /// </summary>
+    /// <remarks>
+    /// Written out rather than routed through <see cref="ReadColumnAsync" />, which keys on <c>id</c> —
+    /// a column this table does not have, and deliberately: one manifest per account is what makes the
+    /// list of factors a <em>set</em> rather than a claim among several.
+    /// </remarks>
+    private static async Task<StoredFactorManifest> ReadManifestAsync(
+        NpgsqlConnection connection,
+        Guid ownerId)
+    {
+        await using NpgsqlCommand command = new(
+            "select manifest, rotation_epoch from factor_manifests where user_id = @user_id",
+            connection);
+        command.Parameters.AddWithValue("user_id", ownerId);
+
+        await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
+        if (!await reader.ReadAsync())
+        {
+            throw new InvalidOperationException("That account holds no factor manifest row.");
+        }
+
+        return new StoredFactorManifest((byte[])reader[0], reader.GetInt32(1));
+    }
+
+    /// <summary>
+    /// The manifest bytes every probe in this file writes — a fresh array per call, because a shared
+    /// one handed to two commands is a buffer two statements could reuse.
+    /// </summary>
+    private static byte[] ProbeManifest() =>
+        [.. Enumerable.Repeat(ProbeManifestFiller, ProbeManifestLength)];
 
     /// <summary>
     /// The shape of the manifest both probes above carry: a width comfortably inside the column's band

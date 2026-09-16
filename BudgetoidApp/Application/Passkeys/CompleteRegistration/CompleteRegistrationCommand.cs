@@ -60,13 +60,42 @@ namespace Application.Passkeys.CompleteRegistration;
 /// <see cref="EncapsulatedAccountKeysEnvelope.TryDecode"/>. <b>Not the same shape and not judged by the
 /// same rule as the member above</b> — a different suite, a different floor and a different width.
 /// </param>
+/// <param name="Manifest">
+/// The account's factor manifest as it stands <em>after</em> this passkey joins the set: every factor's
+/// public key, <em>sealed under</em> the account's content key, as one base64url envelope of the AEAD
+/// framing, judged by <see cref="FactorManifestEnvelope.TryDecode"/>. <b>A factor change unaccompanied
+/// by one is refused</b>, because <see cref="FactorManifest"/> is the sole carrier of every factor's
+/// public key and a rotation encapsulates to what it names: a passkey registered while the manifest
+/// still described the previous set would be a factor no client could learn exists. Nothing on this side
+/// can check that the blob names this passkey — it is sealed under a key this server has never held —
+/// so what is enforced is presence, framing and the epoch below.
+/// </param>
+/// <param name="RotationEpoch">
+/// The generation the manifest above is being written under, which the client sets to one greater than
+/// the epoch the server last reported and binds into the manifest's associated data.
+/// <b>The server stores the client's number and never one it computes.</b> Its own job is to refuse
+/// anything that is not the stored generation plus one, which is
+/// <see cref="FactorManifest.Promote"/>'s arithmetic and is checked against the loaded row.
+/// <para>
+/// <b>An <see cref="int"/> where every other member here is a <see cref="string"/>, and the difference
+/// is the wire and not a style.</b> The string members are text standing for bytes or for one chosen
+/// spelling of a uuid, which the framework would widen or refuse in front of the prf gate; a generation
+/// is a JSON number with one spelling and nothing for a parse to be lenient about. Not <c>required</c>,
+/// like every member here: an omitted one binds to <c>0</c>, which is the value
+/// <see cref="FactorManifest.MinimumRotationEpoch"/> keeps free to mean <em>no manifest row</em>, so it
+/// reaches <see cref="FactorManifest.Promote"/> and is refused there with a sentence naming the
+/// generation the account is actually at.
+/// </para>
+/// </param>
 public sealed record CompleteRegistrationCommand(
     string ClientDataJson,
     string AttestationObject,
     PasskeyClientExtensionResults? ClientExtensionResults,
     string FactorId,
     string WrappedPrivateKey,
-    string EncapsulatedAccountKeys);
+    string EncapsulatedAccountKeys,
+    string Manifest,
+    int RotationEpoch);
 
 /// <summary>The client extension results a registration response may carry.</summary>
 public sealed record PasskeyClientExtensionResults(PasskeyPrfResults? Prf);

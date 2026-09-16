@@ -76,6 +76,16 @@ namespace IntegrationTests;
 /// </remarks>
 public sealed class AccountKeysEndpointTests
 {
+    // EVERY ACCOUNT HERE IS SEEDED WITHOUT A MANIFEST, AND THAT IS THIS FILE ASSERTING OWNERSHIP RATHER
+    // THAN OPTING OUT OF THE PRODUCT'S SHAPE. RepositoryTestHost files an account's first manifest by
+    // default, because that is what registration does. This file is the one that reads the manifest
+    // back, so the row it reads has to be the row it wrote: a seeded one collides with SeedManifestAsync
+    // on PK_factor_manifests, and — worse, because it is silent — it turns the two cases about an ABSENT
+    // manifest into cases about a present one carrying bytes nobody chose.
+    //
+    // What is lost by the flag is nothing these cases measured. GET /api/me/account-keys is keyed on the
+    // account and reads one row or none, so an account with no manifest is a state the read is written
+    // to answer rather than one it is spared.
     private const string AccountKeysPath = "/api/me/account-keys";
 
     /// <summary>
@@ -241,7 +251,7 @@ public sealed class AccountKeysEndpointTests
         // Arrange — a session opened by a passkey, one factor under that passkey, and a second
         // credential on the same account carrying a factor that must arrive with it.
         await using PostgresTestHost host = await StartSignedInHostAsync();
-        ApiFactory.SignedInClient signedIn = await host.Factory.CreateSignedInClientAsync(Subject);
+        ApiFactory.SignedInClient signedIn = await host.Factory.CreateSignedInClientAsync(Subject, withFactorManifest: false);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
@@ -306,7 +316,7 @@ public sealed class AccountKeysEndpointTests
         // passkey beside it carries the eleventh.
         await using PostgresTestHost host = await StartSignedInHostAsync();
         ApiFactory.SignedInClient signedIn = await host.Factory.CreateSignedInClientAsync(
-            Subject, opensWith: CredentialType.RecoveryCodes);
+            Subject, opensWith: CredentialType.RecoveryCodes, withFactorManifest: false);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
@@ -379,7 +389,7 @@ public sealed class AccountKeysEndpointTests
         // Arrange
         await using PostgresTestHost host = await StartSignedInHostAsync();
         ApiFactory.SignedInClient signedIn = await host.Factory.CreateSignedInClientAsync(
-            Subject, opensWith: CredentialType.RecoveryCodes);
+            Subject, opensWith: CredentialType.RecoveryCodes, withFactorManifest: false);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
@@ -450,7 +460,7 @@ public sealed class AccountKeysEndpointTests
         // Arrange
         await using PostgresTestHost host = await StartSignedInHostAsync();
         ApiFactory.SignedInClient signedIn = await host.Factory.CreateSignedInClientAsync(
-            Subject, opensWith: CredentialType.RecoveryCodes);
+            Subject, opensWith: CredentialType.RecoveryCodes, withFactorManifest: false);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
@@ -537,11 +547,11 @@ public sealed class AccountKeysEndpointTests
         await admin.OpenAsync();
 
         ApiFactory.SignedInClient first = await host.Factory.CreateSignedInClientAsync(
-            Subject, opensWith: CredentialType.RecoveryCodes);
+            Subject, opensWith: CredentialType.RecoveryCodes, withFactorManifest: false);
         WrappedKeyFixture[] firstFactors = await SeedFactorsAsync(
             host, await SessionCredentialIdAsync(admin, first.UserId), RequiredCodeCount);
 
-        ApiFactory.SignedInClient second = await host.Factory.CreateSignedInClientAsync(OtherSubject);
+        ApiFactory.SignedInClient second = await host.Factory.CreateSignedInClientAsync(OtherSubject, withFactorManifest: false);
         WrappedKeyFixture[] secondFactors = await SeedFactorsAsync(
             host, await SessionCredentialIdAsync(admin, second.UserId), count: 1);
 
@@ -585,7 +595,7 @@ public sealed class AccountKeysEndpointTests
         // Arrange — a factor identifier with hex letters in every group, so a case fold has something to
         // change.
         await using PostgresTestHost host = await StartSignedInHostAsync();
-        ApiFactory.SignedInClient signedIn = await host.Factory.CreateSignedInClientAsync(Subject);
+        ApiFactory.SignedInClient signedIn = await host.Factory.CreateSignedInClientAsync(Subject, withFactorManifest: false);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
@@ -635,7 +645,7 @@ public sealed class AccountKeysEndpointTests
     {
         // Arrange
         await using PostgresTestHost host = await StartSignedInHostAsync();
-        ApiFactory.SignedInClient signedIn = await host.Factory.CreateSignedInClientAsync(Subject);
+        ApiFactory.SignedInClient signedIn = await host.Factory.CreateSignedInClientAsync(Subject, withFactorManifest: false);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
@@ -748,7 +758,7 @@ public sealed class AccountKeysEndpointTests
         // Arrange — ten rows, so a widening that landed on one of them is still inspected.
         await using PostgresTestHost host = await StartSignedInHostAsync();
         ApiFactory.SignedInClient signedIn = await host.Factory.CreateSignedInClientAsync(
-            Subject, opensWith: CredentialType.RecoveryCodes);
+            Subject, opensWith: CredentialType.RecoveryCodes, withFactorManifest: false);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
@@ -827,7 +837,7 @@ public sealed class AccountKeysEndpointTests
         // state without anything having to be deleted to reach it.
         await using PostgresTestHost host = await StartSignedInHostAsync();
         ApiFactory.SignedInClient signedIn = await host.Factory.CreateSignedInClientAsync(
-            Subject, opensWith: CredentialType.RecoveryCodes);
+            Subject, opensWith: CredentialType.RecoveryCodes, withFactorManifest: false);
 
         // Act
         HttpResponseMessage response = await signedIn.Client.GetAsync(AccountKeysPath);
@@ -878,7 +888,7 @@ public sealed class AccountKeysEndpointTests
     {
         // Arrange
         await using PostgresTestHost host = await StartSignedInHostAsync();
-        ApiFactory.SignedInClient signedIn = await host.Factory.CreateSignedInClientAsync(Subject);
+        ApiFactory.SignedInClient signedIn = await host.Factory.CreateSignedInClientAsync(Subject, withFactorManifest: false);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
@@ -951,7 +961,7 @@ public sealed class AccountKeysEndpointTests
     {
         // Arrange
         await using PostgresTestHost host = await StartSignedInHostAsync();
-        ApiFactory.SignedInClient signedIn = await host.Factory.CreateSignedInClientAsync(Subject);
+        ApiFactory.SignedInClient signedIn = await host.Factory.CreateSignedInClientAsync(Subject, withFactorManifest: false);
 
         byte[] manifest = WidestManifest();
         await SeedManifestAsync(host, signedIn.UserId, manifest, SeededRotationEpoch);
@@ -1012,7 +1022,7 @@ public sealed class AccountKeysEndpointTests
     {
         // Arrange
         await using PostgresTestHost host = await StartSignedInHostAsync();
-        ApiFactory.SignedInClient signedIn = await host.Factory.CreateSignedInClientAsync(Subject);
+        ApiFactory.SignedInClient signedIn = await host.Factory.CreateSignedInClientAsync(Subject, withFactorManifest: false);
         await SeedManifestAsync(host, signedIn.UserId, SeededManifest, SeededRotationEpoch);
 
         // Act
@@ -1064,7 +1074,7 @@ public sealed class AccountKeysEndpointTests
         // Arrange — a signed-in account with a factor and no factor_manifests row, which is the state
         // every account is in without anything having to be deleted to reach it.
         await using PostgresTestHost host = await StartSignedInHostAsync();
-        ApiFactory.SignedInClient signedIn = await host.Factory.CreateSignedInClientAsync(Subject);
+        ApiFactory.SignedInClient signedIn = await host.Factory.CreateSignedInClientAsync(Subject, withFactorManifest: false);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
@@ -1122,7 +1132,7 @@ public sealed class AccountKeysEndpointTests
     {
         // Arrange
         await using PostgresTestHost host = await StartSignedInHostAsync();
-        ApiFactory.SignedInClient signedIn = await host.Factory.CreateSignedInClientAsync(Subject);
+        ApiFactory.SignedInClient signedIn = await host.Factory.CreateSignedInClientAsync(Subject, withFactorManifest: false);
 
         // Act
         HttpResponseMessage response = await signedIn.Client.GetAsync(AccountKeysPath);
@@ -1185,10 +1195,10 @@ public sealed class AccountKeysEndpointTests
     {
         // Arrange — A first, so an unscoped read hands B the row that was written first.
         await using PostgresTestHost host = await StartSignedInHostAsync();
-        ApiFactory.SignedInClient first = await host.Factory.CreateSignedInClientAsync(Subject);
+        ApiFactory.SignedInClient first = await host.Factory.CreateSignedInClientAsync(Subject, withFactorManifest: false);
         await SeedManifestAsync(host, first.UserId, SeededManifest, SeededRotationEpoch);
 
-        ApiFactory.SignedInClient second = await host.Factory.CreateSignedInClientAsync(OtherSubject);
+        ApiFactory.SignedInClient second = await host.Factory.CreateSignedInClientAsync(OtherSubject, withFactorManifest: false);
         await SeedManifestAsync(host, second.UserId, BystanderManifest, SeededRotationEpoch + 1);
 
         string firstEncoded = Base64UrlText.Encode(SeededManifest);
@@ -1246,7 +1256,7 @@ public sealed class AccountKeysEndpointTests
     {
         // Arrange
         await using PostgresTestHost host = await StartSignedInHostAsync();
-        ApiFactory.SignedInClient signedIn = await host.Factory.CreateSignedInClientAsync(Subject);
+        ApiFactory.SignedInClient signedIn = await host.Factory.CreateSignedInClientAsync(Subject, withFactorManifest: false);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
@@ -1299,7 +1309,7 @@ public sealed class AccountKeysEndpointTests
     {
         // Arrange
         await using PostgresTestHost host = await StartSignedInHostAsync();
-        ApiFactory.SignedInClient signedIn = await host.Factory.CreateSignedInClientAsync(Subject);
+        ApiFactory.SignedInClient signedIn = await host.Factory.CreateSignedInClientAsync(Subject, withFactorManifest: false);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
@@ -1368,7 +1378,7 @@ public sealed class AccountKeysEndpointTests
         // Arrange — a populated answer, so the header is read off a response that really carried key
         // material rather than off an empty array.
         await using PostgresTestHost host = await StartSignedInHostAsync();
-        ApiFactory.SignedInClient signedIn = await host.Factory.CreateSignedInClientAsync(Subject);
+        ApiFactory.SignedInClient signedIn = await host.Factory.CreateSignedInClientAsync(Subject, withFactorManifest: false);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
@@ -1422,7 +1432,7 @@ public sealed class AccountKeysEndpointTests
     {
         // Arrange — a signed-in account with a factor to hand back, so the control has a body.
         await using PostgresTestHost host = await StartSignedInHostAsync();
-        ApiFactory.SignedInClient signedIn = await host.Factory.CreateSignedInClientAsync(Subject);
+        ApiFactory.SignedInClient signedIn = await host.Factory.CreateSignedInClientAsync(Subject, withFactorManifest: false);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
@@ -1473,8 +1483,8 @@ public sealed class AccountKeysEndpointTests
         // answers somebody at all.
         await using PostgresTestHost host = await StartSignedInHostAsync();
         ApiFactory.SignedInClient locked = await host.Factory.CreateSignedInClientAsync(
-            Subject, kind: SessionKind.Locked);
-        ApiFactory.SignedInClient full = await host.Factory.CreateSignedInClientAsync(OtherSubject);
+            Subject, kind: SessionKind.Locked, withFactorManifest: false);
+        ApiFactory.SignedInClient full = await host.Factory.CreateSignedInClientAsync(OtherSubject, withFactorManifest: false);
 
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();

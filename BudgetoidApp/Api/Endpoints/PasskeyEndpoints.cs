@@ -52,7 +52,9 @@ public static class PasskeyEndpoints
                     request.ClientExtensionResults,
                     request.FactorId,
                     request.WrappedPrivateKey,
-                    request.EncapsulatedAccountKeys),
+                    request.EncapsulatedAccountKeys,
+                    request.Manifest,
+                    request.RotationEpoch),
                 cancellationToken);
 
             // 201 with no Location header and no body: the credential is a fact about the account,
@@ -168,6 +170,15 @@ public static class PasskeyEndpoints
     /// token resurrect an erased account as a shell holding a passkey <em>and</em> a copy of the
     /// account keys, which is a working way back in rather than an empty row.
     /// </para>
+    /// <para>
+    /// <b>The manifest and its generation travel together and are passed straight through too.</b> One
+    /// factor joins the set here, so the set is a different set and the one authenticated statement of
+    /// what it contains has to move with it — see <see cref="CompleteRegistrationCommand"/> for both
+    /// members and for why the epoch is the client's number rather than one the server adds. The epoch
+    /// is the only non-string member on this record and is not <c>required</c> either: an omitted one
+    /// binds to <c>0</c>, which the domain keeps free to mean "no manifest row", and is refused past the
+    /// prf gate with a sentence naming the generation the account is at.
+    /// </para>
     /// </remarks>
     private sealed record RegistrationRequest(
         string ClientDataJson,
@@ -175,7 +186,9 @@ public static class PasskeyEndpoints
         PasskeyClientExtensionResults? ClientExtensionResults,
         string FactorId,
         string WrappedPrivateKey,
-        string EncapsulatedAccountKeys);
+        string EncapsulatedAccountKeys,
+        string Manifest,
+        int RotationEpoch);
 
     private sealed record AssertionRequest(
         string CredentialId,

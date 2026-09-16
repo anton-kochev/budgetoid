@@ -108,11 +108,12 @@ GRANT SELECT ON currencies TO budgetoid_app;
 -- the whole width of the list. key_rotations holds SELECT, INSERT and a column-listed UPDATE and
 -- still no DELETE of any shape, so it belongs here rather than being mistaken for a write-free table;
 -- ITS OWN block argues why staging needs the insert and the update together and why the delete waits
--- for the completion step that clears the staging. factor_manifests holds SELECT and INSERT — the
--- insert is registration writing the account's first manifest in the same save as the account — and no
--- UPDATE, because nothing promotes a generation yet, and no DELETE at all, because a manifest leaves
--- only by the cascade from users. It belongs here for the same reason the first one does: this is a
--- list of absent DELETEs, not a list of read-only tables and not a list of write-free ones.
+-- for the completion step that clears the staging. factor_manifests holds SELECT, INSERT and a
+-- column-listed UPDATE (manifest, rotation_epoch) — the insert is registration writing the account's
+-- first manifest in the same save as the account, the update is a promotion rewriting that one row in
+-- place — and still no DELETE at all, because a manifest leaves only by the cascade from users. It
+-- belongs here for the same reason the first one does: this is a list of absent DELETEs, not a list of
+-- read-only tables and not a list of write-free ones.
 -- key_rotation_seals holds SELECT and nothing else on the same reasoning and
 -- is the newest arrival; its own block says which write it expects and which caller has to bring it.
 -- That is a list of the
@@ -618,10 +619,9 @@ GRANT UPDATE (rotation_id, staged_manifest, staged_rotation_epoch, started_at_ut
 REVOKE ALL ON key_rotation_seals FROM budgetoid_app;
 GRANT SELECT ON key_rotation_seals TO budgetoid_app;
 
--- factor_manifests: SELECT AND INSERT, AND THE INSERT ARRIVED WITH ITS CALLER — which is the rule the
--- block below used to state as an absence and is now stating as an addition. The table is one row per
--- account holding the authenticated list of every recovery factor's public key — the value a client
--- reads to learn which factors exist and what to encapsulate the account's keys to.
+-- factor_manifests: SELECT, INSERT AND A TWO-COLUMN UPDATE. The table is one row per account holding
+-- the authenticated list of every recovery factor's public key — the value a client reads to learn
+-- which factors exist and what to encapsulate the account's keys to.
 --
 -- SELECT FIRST, BECAUSE AN UNGRANTED SELECT IS THE ONE ABSENCE THAT HIDES SOMETHING. Measured on
 -- key_rotations rather than argued from precedent: with no SELECT, NarrativeSecrecyTests' plaintext
@@ -640,22 +640,33 @@ GRANT SELECT ON key_rotation_seals TO budgetoid_app;
 -- quietly. The statement is policed: user_isolation's WITH CHECK compares user_id against
 -- app.current_user_id, which that handler publishes before the save opens the connection.
 --
--- STILL NO UPDATE AND STILL NO DELETE, and the two absences have different reasons. Nothing promotes a
--- generation yet: promotion is the step that rewrites this row in place, and it is not built, so an
--- UPDATE today would be a privilege with no statement behind it. DELETE has no caller in view at all —
--- a manifest leaves by FK_factor_manifests_users cascading from an account erasure, and a referential
--- action runs with the referencing table's owner's privileges rather than this role's, so the row goes
--- without the role ever holding the command.
+-- UPDATE (manifest, rotation_epoch), BECAUSE PROMOTION REWRITES THIS ROW IN PLACE. The table is keyed
+-- on user_id alone, so a generation cannot be modelled as one row per epoch with the newest winning —
+-- the newer manifest replaces the older one in the row that already exists, and that statement is an
+-- UPDATE or it is nothing.
 --
--- THERE IS NO GRANT UPDATE OF ANY SHAPE HERE, SO THERE IS NO COLUMN LIST EITHER, AND THAT IS WORTH
--- SAYING RATHER THAN LEAVING AS AN ABSENCE. Immutability in this file is expressed by OMISSION FROM A
--- GRANT UPDATE COLUMN LIST — never by REVOKE, which cannot subtract from a table-wide grant, and never
--- by widening a list to table-wide (rule B2 at the head of this file). Today every column of this table
--- is immutable in the strongest available way, because no UPDATE exists to name one — an inserted
--- manifest stays the generation it was written as. When promotion
--- lands it will want rotation_epoch and manifest and must take them as an explicit two-column list:
--- user_id stays off it, or a promotion could re-file an account's whole factor set against another
--- account in one statement.
+-- THE COLUMN LIST IS THE ENFORCEMENT, AND user_id IS OFF IT DELIBERATELY. Immutability in this file is
+-- expressed by OMISSION FROM A GRANT UPDATE COLUMN LIST — never by REVOKE, which cannot subtract from a
+-- table-wide grant, and never by widening a list to table-wide (rule B2 at the head of this file). A
+-- table-wide GRANT UPDATE ON factor_manifests would let ONE statement re-file an account's whole factor
+-- set against another account: the owner column is the primary key and the tenancy column at once, so
+-- moving it moves every public key on the row and nothing else on the row would look wrong afterwards.
+-- user_isolation's WITH CHECK refuses that row today, and leaning on it would still be the wrong call:
+-- grants fail CLOSED and row-level security fails OPEN, so a policy dropped, disabled or bypassed
+-- leaves nothing in the way, while an ungranted column answers 42501 whatever else has gone missing.
+-- Two independent halves, and this is the one that does not depend on the other being there.
+--
+-- THE GRANT IS AHEAD OF ITS CALLER AND THAT IS ON PURPOSE, the same call budgets' one-column UPDATE
+-- makes further down. FactorManifest.Promote is the domain step — it refuses an epoch that is not
+-- exactly one greater than the loaded row's, and EF's concurrency token on rotation_epoch refuses a
+-- second promotion started from the same generation — but no handler calls it yet. A privilege added at
+-- the moment its first caller appears is a privilege added by whoever is in a hurry; this one is
+-- decided here, in the file that is the only place a privilege may be decided.
+--
+-- STILL NO DELETE, and that absence has a different reason from the UPDATE's arrival rather than the
+-- same one. DELETE has no caller in view at all — a manifest leaves by FK_factor_manifests_users
+-- cascading from an account erasure, and a referential action runs with the referencing table's owner's
+-- privileges rather than this role's, so the row goes without the role ever holding the command.
 --
 -- The table is POLICED rather than exempt: it carries user_id, so the coverage classifier reaches that
 -- verdict from the columns without being told, and user_isolation appends the owner to every statement
@@ -663,6 +674,7 @@ GRANT SELECT ON key_rotation_seals TO budgetoid_app;
 -- this file.
 REVOKE ALL ON factor_manifests FROM budgetoid_app;
 GRANT SELECT, INSERT ON factor_manifests TO budgetoid_app;
+GRANT UPDATE (manifest, rotation_epoch) ON factor_manifests TO budgetoid_app;
 
 -- budgets: ONE UPDATE, ONE COLUMN, and it is the exception ASM-004 names rather than a softening of
 -- rule B2. No command may change a budget's name: it is sealed once, at creation, and no route accepts
@@ -1111,8 +1123,8 @@ CREATE POLICY user_isolation ON key_rotations FOR ALL TO budgetoid_app
 -- THE GRANT ABOVE IS SELECT ALONE AND THE POLICY IS STILL FOR ALL, which is not an oversight and not
 -- a widening. factor_manifests was the precedent and is now the worked example rather than the
 -- parallel: its policy was written FOR ALL while its grant was SELECT alone, registration arrived and
--- took the INSERT, and the rows that statement may write were already decided. A policy is not a
--- privilege: FOR ALL says which ROWS each
+-- took the INSERT, the promotion path then took a column-listed UPDATE, and the rows each of those
+-- statements may touch were already decided. A policy is not a privilege: FOR ALL says which ROWS each
 -- command may reach if the role ever holds that command, and holding none of the write commands means
 -- the write arms are unreachable today. Writing it narrower would mean the day INSERT is granted — and
 -- this table exists to take one — the rows it may write are decided by nobody. The two halves fail in
@@ -1140,20 +1152,22 @@ CREATE POLICY user_isolation ON key_rotation_seals FOR ALL TO budgetoid_app
 -- identity". It is not — a client asks what to encapsulate to once it already knows whose account it
 -- is — so a policy costs nothing and the table is policed rather than exempt.
 --
--- THE GRANT ABOVE IS NOW SELECT AND INSERT, AND THE POLICY WAS ALREADY FOR ALL. That ordering is the
--- point, and this table is where it paid: the policy was written before any write privilege existed,
--- so when registration came to write the first manifest the rows its INSERT may write were already
--- decided — by user_isolation's WITH CHECK, which refuses a row whose user_id is not the one
--- app.current_user_id names. Had the policy been written narrower, that day would have been the day
--- somebody decided the write arms in a hurry. The two halves fail in opposite directions, as the
--- header says at length: a table nobody grants fails loudly with 42501, a table nobody polices is
--- silently readable and writable across every tenant. It is the same ordering key_rotations landed
--- under.
+-- THE GRANT ABOVE IS NOW SELECT, INSERT AND A TWO-COLUMN UPDATE, AND THE POLICY WAS FOR ALL BEFORE
+-- ANY OF THEM. That ordering is the point, and this table is where it has now paid twice: the policy
+-- was written before any write privilege existed, so when registration came to write the first
+-- manifest and when the promotion path took its UPDATE, the rows each statement may touch were already
+-- decided — by user_isolation's USING for which row an UPDATE may find, and by its WITH CHECK for
+-- which owner either statement may leave behind. Had the policy been written narrower, each of those
+-- days would have been a day somebody decided a write arm in a hurry. The two halves fail in opposite
+-- directions, as the header says at length: a table nobody grants fails loudly with 42501, a table
+-- nobody polices is silently readable and writable across every tenant. It is the same ordering
+-- key_rotations landed under.
 --
--- The UPDATE arm is still unreachable, because the grant names no UPDATE and nothing promotes a
--- generation yet; the DELETE arm is unreachable for good, because a manifest leaves only by the
--- cascade from users, which runs with the referencing table owner's privileges rather than this
--- role's and is not subject to this policy at all.
+-- The UPDATE arm is now reachable and the column list above is what bounds it: WITH CHECK refuses a
+-- row leaving under another owner, and user_id is off the grant so no statement can propose one in the
+-- first place. The DELETE arm is unreachable for good, because a manifest leaves only by the cascade
+-- from users, which runs with the referencing table owner's privileges rather than this role's and is
+-- not subject to this policy at all.
 --
 -- The policy reads only the ownership column, like the five above it. It says nothing about
 -- rotation_epoch and nothing about the manifest bytes: whether a generation may be promoted is a

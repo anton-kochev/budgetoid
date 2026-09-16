@@ -1454,6 +1454,16 @@ public sealed class KeyMaterialSecrecyTests
         new("PasskeyEndpoints.RegistrationRequest", "EncapsulatedAccountKeys",
             "base64url over a 158-byte encapsulation of BOTH account keys to this factor's PUBLIC half — "
             + "a different suite at a different width, and one whose production needs no secret at all"),
+        new("PasskeyEndpoints.RegistrationRequest", "Manifest",
+            "base64url over an AEAD envelope of 29 to 4096 bytes SEALED UNDER the account's content key, "
+            + "listing every recovery factor and its PUBLIC half, resealed here because this request "
+            + "adds one to the set. RegistrationEndpoints.RegistrationRequest.Manifest is the same value "
+            + "on the route that writes the FIRST one, and the argument is the same: this server cannot "
+            + "open it and never will, so what the list contains is held by the authentication tag and "
+            + "by the client that can verify it. Nothing private is inside — the private half of every "
+            + "factor named here is wrapped under a key-encryption key derived in a browser, and a "
+            + "private key arriving in this member would be a secret the operator could reach with "
+            + "nothing able to notice"),
         new("PayeeEndpoints.RenamePayeeRequest", "Name",
             "base64url over the AEAD envelope holding the name a person gave one of their payees. It is "
             + "NOT the name as they typed it — it was re-sealed in the browser against the row's "
@@ -1471,6 +1481,14 @@ public sealed class KeyMaterialSecrecyTests
             "base64url over the JSON the browser signed — type, challenge, origin — a public transcript"),
         new("RecoveryCodeEndpoints.RecoveryCodeGenerationRequest", "CredentialId",
             "base64url over the authenticator's opaque handle, which selects a key and is not one"),
+        new("RecoveryCodeEndpoints.RecoveryCodeGenerationRequest", "Manifest",
+            "base64url over an AEAD envelope of 29 to 4096 bytes SEALED UNDER the account's content key, "
+            + "listing every recovery factor and its PUBLIC half, resealed here because this request "
+            + "takes ten factors out of the set and puts ten in. The same value and the same argument as "
+            + "PasskeyEndpoints.RegistrationRequest.Manifest — this server cannot open it, so what the "
+            + "list contains is held by the authentication tag, and the private half of every factor it "
+            + "names is wrapped under a key-encryption key derived in a browser from a recovery code "
+            + "that never crosses this wire at all"),
         new("RecoveryCodeEndpoints.RecoveryCodeGenerationRequest", "Signature",
             "base64url over an assertion signature, verified with a published public key"),
         new("RecoveryCodeEndpoints.RecoveryCodeGenerationRequest", "UserHandle",

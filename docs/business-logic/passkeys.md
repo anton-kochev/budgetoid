@@ -136,9 +136,9 @@ erDiagram
     the discovery lookup's index, and `PasskeyRepository.TryAddAsync`, which turns its `23505` into
     a 409 by filtering on the **constraint name** rather than the SQLSTATE alone.
 
-- **A registration MUST NOT complete unless it carries a factor identifier and both wrapped account
-  keys.** The finish leg takes `factorId`, `wrappedContentKey` and `wrappedIndexKey` beside the
-  ceremony response.
+- **A registration MUST NOT complete unless it carries a factor identifier and the factor's share of
+  the account keys.** The finish leg takes `factorId`, `wrappedPrivateKey` and
+  `encapsulatedAccountKeys` beside the ceremony response.
   - **Why**: a passkey that cannot open the account's keys is not a way back in, however well it
     proves identity. Every passkey has exactly one wrapped-key row by construction, which is what a
     later completion gate can be keyed on. **Not the table's own row count**: a set of recovery
@@ -146,7 +146,7 @@ erDiagram
     account holds two passkeys and a set. What it wants is the rows filed against `passkey`
     credentials.
   - **Enforced in**: `CompleteRegistrationHandler` for the shape, and
-    `PasskeyRepository.TryAddAsync` writing all four rows in **one** save. `RegisterAccountHandler`
+    `PasskeyRepository.TryAddAsync` writing every row in **one** save. `RegisterAccountHandler`
     demands the same three members on the account-registration leg. Read what each half holds: the
     two envelope columns are `NOT NULL` on a table keyed on `factor_id`, so "a row carries both keys
     or neither" is a schema fact — but **"a passkey has a row" is not one**, because one-to-optional
@@ -159,6 +159,29 @@ erDiagram
       than here, because it is a cross-client contract. What this route adds: the identifier is the
       table's primary key, so a second registration reusing one is a 409 whose sentence is
       deliberately different from the "this authenticator is already registered" 409 beside it.
+
+- **A registration MUST NOT complete unless it also carries the account's new factor manifest and
+  the epoch that manifest was sealed under**, and both MUST land in the same save as the credential.
+  The finish leg takes `manifest` and `rotationEpoch` beside the three members above.
+  - **Why**: this request adds a factor, so the account's factor set is a different set the moment
+    it commits — and the manifest is the only authenticated statement of what that set is. Landed a
+    statement later, or on a second request, the read beneath it hands a client one true snapshot of
+    a database in which the new passkey exists and the list naming the factors does not, which a
+    client comparing the two reports as **tampering** while somebody was merely enrolling a device.
+    The epoch is supplied by the client rather than computed here because it is bound into the
+    manifest's own associated data: a number this server chose for itself would, the first time the
+    two diverged, store a blob the account can never open again.
+  - **Enforced in**: `CompleteRegistrationHandler`, which loads the account's tracked
+    `FactorManifest` and calls `Promote` on it, and `PasskeyRepository.TryAddAsync`, which flushes
+    that promotion in the **same `SaveChanges`** as the credential, the public key, the signature
+    counter and the wrapped keys — with no transaction on the path, exactly as registration has
+    none. An epoch that is not one greater than the stored one is a `400`; an epoch that *was* one
+    greater when this request read it and has since moved is a `409 factor_set_moved`, refused by
+    the concurrency token on `rotation_epoch`. A missing manifest row is a `500` and never a
+    first-manifest repair. The `UPDATE (manifest, rotation_epoch)` grant this statement needs is in
+    `app-role-grants.sql`, named column by column with `user_id` left off, and
+    [account-keys.md](account-keys.md) owns every one of those rules — including why `Promote` is an
+    instance method on a tracked row rather than a fresh `For` beside an `Update`.
 
 - **A registration MUST NOT complete unless the client reports a `prf` extension result of true.**
   Both registering legs carry it, at the same position in their own ladders. → the PRF rule below.
@@ -567,7 +590,7 @@ stateDiagram-v2
     [*] --> ChallengeIssued : options leg, a nonce is written
     ChallengeIssued --> Consumed : finish leg, the nonce is deleted before anything is checked
     Consumed --> Verified : format, origin, relying party, flags, signature
-    Verified --> Registered : registration — credential, key, counter and wrapped keys in one save
+    Verified --> Registered : registration — credential, key, counter, wrapped keys and the promoted manifest in one save
     Verified --> AccountRegistered : account registration — the whole account in one save
     Verified --> SignedIn : assertion — counter accepted, then a Full session
     Verified --> Proved : re-authentication — counter accepted, nothing returned
@@ -582,7 +605,7 @@ stateDiagram-v2
 | → ChallengeIssued | `POST /api/passkeys/{registration,assertion,reauthentication}/options`, and `POST /api/registration/options` | registration and re-authentication require a live full session, through the fallback policy; assertion is anonymous; account registration requires a provider bearer on the **named** provider scheme and is the only leg reachable by a caller with no account |
 | ChallengeIssued → Consumed | any finish leg | the nonce must exist, be unexpired, and name the right ceremony |
 | Consumed → Verified | the verifier | client-data type; origin by **equality**; not cross-origin; `SHA-256(rpId)`; user present **and** verified; the signature |
-| Verified → Registered | `TryAddAsync` | attestation `none`; algorithm offered and supported; key strength; credential id 16–1023 bytes; the authenticator credential not already registered |
+| Verified → Registered | `TryAddAsync` | attestation `none`; algorithm offered and supported; key strength; credential id 16–1023 bytes; the authenticator credential not already registered; the `manifest` framed and the `rotationEpoch` exactly one greater than the stored one — promoted in the same save |
 | Verified → AccountRegistered | `IRegistrationRepository.RegisterAsync` | the same verification, then the `prf` gate, the factor identifier, both envelopes and the ten submissions — and then roughly thirty rows in one save. See [registration.md](registration.md) |
 | Verified → SignedIn | `Session.Establish` | the counter must advance, or both sides be zero |
 | Verified → Proved | `PasskeyReauthentication.VerifyAsync` returning | the key must be registered to the account the **request** is authenticated as; the counter must advance, or both sides be zero |
@@ -617,9 +640,13 @@ ELSE consume the row — from here every outcome has burnt the nonce
 
 The registration, account-registration and re-authentication finish legs walk the same ladder with
 their own pools and their own final arms; the PRF gate is the extra check both registering legs
-carry, after everything else about the response has passed. Only the account-registration leg goes
-further, and what it adds is a set of recovery codes, an eleventh factor, and an account identifier
-derived from the challenge it just spent — [registration.md](registration.md) owns all three.
+carry, after everything else about the response has passed. Both registering legs then judge the
+key-custody payload and the manifest, in that order, and the manifest last of all — it is one
+statement about the whole factor set the rungs above have just established, so refusing it while a
+factor above it is still known to be wrong would key the refusal on the wrong member. Only the
+account-registration leg goes further, and what it adds is a set of recovery codes, an eleventh
+factor, and an account identifier derived from the challenge it just spent —
+[registration.md](registration.md) owns all three.
 
 ## Integration Points
 
@@ -764,6 +791,11 @@ derived from the challenge it just spent — [registration.md](registration.md) 
   set refuses a new column, and a revoked-but-present credential is a row a bug can bring back.
   **The statement is scoped by the application alone**, because `credentials` keeps its exemption —
   see [ADR 0014](../decisions/0014-scope-the-credential-delete-in-the-application.md).
+  - **Revocation is the one path that moves an account's factor set and writes no manifest.** The
+    two that add factors — this file's registration leg and the recovery-code generation — each
+    promote the list in the unit of work that changed the set; a revocation takes a factor away and
+    leaves the stored list naming the set as it was, with nothing on the server able to notice,
+    because nothing on the server can read it. See [account-keys.md](account-keys.md).
 - **An account's last passkey cannot be revoked, and that rule cannot live in the database.** It is
   a cross-row claim, and the two mechanisms that could reach it are a trigger, which ADR 0002
   refuses, and a materialized counter column on `users`, which has to be kept in step with the table

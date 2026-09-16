@@ -2,6 +2,7 @@ using Application.Abstractions;
 using Application.Passkeys.Verification;
 using Application.Security;
 using Domain.Common;
+using Domain.Security;
 using Domain.Users;
 
 namespace Application.Passkeys.CompleteRegistration;
@@ -192,6 +193,28 @@ public sealed class CompleteRegistrationHandler(
             throw Refused(MalformedEncapsulatedAccountKeys());
         }
 
+        // LAST OF THE PAYLOAD REFUSALS, the position RegisterAccountHandler's rung 12 argues for and for
+        // its reasons rather than new ones. It is after the prf gate because a client that cannot do PRF
+        // has no account keys, so it has no factor key pairs and nothing to seal a manifest with — an
+        // absent manifest is very often exactly what a request that gate is for carries, and judged
+        // first such a caller would be told their payload was malformed. It is after the three members
+        // above because this one value is a statement about the whole factor set they establish.
+        //
+        // A THIRD FRAMING AND A THIRD DECODER, NOT ONE OF THE TWO ABOVE CALLED AGAIN. A manifest is
+        // sealed under the account's content key with no key agreement in front of it, so it carries
+        // CiphertextEnvelope where the encapsulated value carries a 65-byte ephemeral point — and both
+        // lead with 0x01, so routing it through the neighbour would clear the version case and measure
+        // it against a floor 65 bytes above its own.
+        //
+        // WHAT IS JUDGED IS THE FRAMING AND NOTHING ELSE. The blob is sealed under a key this server has
+        // never held, so a manifest naming this passkey, one naming none and 4096 bytes of noise are the
+        // same value here. Presence, framing and the epoch are the enforceable half; the set itself is
+        // held by the authentication tag and by the client that can verify it.
+        if (!FactorManifestEnvelope.TryDecode(command.Manifest, out byte[]? manifestBytes))
+        {
+            throw Refused(MalformedManifest());
+        }
+
         DateTime now = timeProvider.GetUtcNow().UtcDateTime;
 
         // One credential, its key, its counter and its share of the account keys, all derived from the
@@ -211,11 +234,49 @@ public sealed class CompleteRegistrationHandler(
             encapsulatedAccountKeys,
             now);
 
+        // LOADED, MUTATED, SAVED — and the shape is the rule rather than a habit.
+        // FactorManifest.For(user, bytes, epoch + 1) followed by an Update is the shape a reader reaches
+        // for first, and it is the one FactorManifest's own remarks spend a paragraph refusing: a
+        // detached instance hands EF original values that are its current ones, so the UPDATE carries
+        // WHERE rotation_epoch = <the new value> — which matches nothing against the row it was computed
+        // from, and DOES match against a row a racing promotion has already moved to N + 1. That is
+        // precisely the statement the concurrency token exists to refuse.
+        //
+        // A MISS IS AN INTEGRITY VIOLATION AND IS RAISED, NEVER BRANCHED ON AND NEVER REPAIRED HERE.
+        // Registration has written a manifest for every account since the table existed and no
+        // production environment has ever held a row, so there is no account this can legitimately find
+        // nothing for. The two repairs a reader might reach for are both worse than the throw: filing a
+        // first manifest would let this route write the account's factor set under an epoch and a blob
+        // nothing upstream established, and skipping the promotion would register a factor the manifest
+        // does not name — the silent half of the very state this whole path exists to make unreachable.
+        // It is not a ValidationException either: nothing the caller sent is wrong, so there is no
+        // member to key a 400 on and nothing they could correct.
+        FactorManifest factorManifest =
+            await passkeyRepository.FindFactorManifestAsync(userId, cancellationToken)
+            ?? throw new InvalidOperationException(
+                "The account holds no factor manifest, so there is no generation to promote.");
+
+        // Promoted BEFORE the save and NOT inside the repository: the step is a domain rule, and the
+        // entity is the only thing that can check it — the successor is measured against the generation
+        // this instance was loaded at. The epoch stored is the client's own number, because it is bound
+        // into the manifest's associated data; what the server owes is the refusal of anything that is
+        // not stored + 1, and that refusal is Promote's.
+        factorManifest.Promote(manifestBytes, command.RotationEpoch);
+
+        // The five rows in ONE save. A concurrent promotion that moved the generation between the load
+        // above and this line loses on the concurrency token, and the repository answers it as a
+        // FactorSetMoved conflict — a 409 telling this caller to re-read the generation and run the
+        // ceremony again. That is a DIFFERENT answer from Promote's refusal two lines above, and the
+        // difference is the caller: Promote refuses an epoch that was never one greater than stored, so
+        // it is a 400 keyed on the member; the token fires on an epoch that WAS right when it was read.
+        // The translation lives in the repository because DbUpdateConcurrencyException is EF's and this
+        // layer has never heard of it.
         if (!await passkeyRepository.TryAddAsync(
                 credential,
                 publicKey,
                 counter,
                 wrappedAccountKeys,
+                factorManifest,
                 cancellationToken))
         {
             // RegisterAccountHandler's sentence and kind for the same refusal, reached from the other
@@ -255,6 +316,23 @@ public sealed class CompleteRegistrationHandler(
         "encapsulatedAccountKeys must be base64url text decoding to exactly "
         + $"{WrappedAccountKeys.EncapsulatedAccountKeysLength} bytes carrying encapsulation framing "
         + $"version {WrappedAccountKeys.EncapsulatedAccountKeysVersion}.";
+
+    /// <summary>
+    /// What is required of <c>manifest</c>, said whole rather than split into which part of it was
+    /// wrong.
+    /// </summary>
+    /// <remarks>
+    /// <b>A range where its two neighbours state a width, and the sentence has to say so.</b> Those two
+    /// name one legal size each because their plaintexts are fixed-width keys; a manifest's plaintext
+    /// grows with the number of factors it names, so the only bounds that exist are the framing's floor
+    /// and the column's cap. <c>RegisterAccountHandler.MalformedManifest</c> is this sentence on the
+    /// other path that accepts a manifest, and every number in both is read off the type that refuses a
+    /// row against it rather than written out.
+    /// </remarks>
+    private static string MalformedManifest() =>
+        "manifest must be base64url text decoding to between "
+        + $"{CiphertextEnvelope.MinimumLength} and {FactorManifest.MaximumBytes} bytes carrying AEAD "
+        + $"framing version {CiphertextEnvelope.Version}.";
 
     // Domain.Common.ValidationException by name, because both layers declare one and only that one is
     // what ValidationExceptionHandler turns into a 400 with the field errors on it.

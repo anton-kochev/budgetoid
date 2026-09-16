@@ -1406,6 +1406,18 @@ public sealed class GenerateRecoveryCodesHandlerTests
                 previousSet = previous;
             }
 
+            // THE ONE factor_manifests ROW, SEEDED UNCONDITIONALLY, because every account has held one
+            // since registration started writing them and the handler treats its absence as an
+            // integrity violation rather than a refusal. Filed whether or not the account holds a
+            // previous SET, which is the distinction the two arrangements do not share: a first issue
+            // promotes the generation exactly as a regeneration does, so an arrangement that seeded the
+            // manifest only beside a previous set would answer the first-issue family a 500 for a
+            // reason none of their names mention.
+            recoveryCodes.SeedFactorManifest(
+                userId,
+                FactorManifestFixture.Mint().Manifest,
+                FactorManifestFixture.SeededRotationEpoch);
+
             // The passkey is filed under whoever owns the device, which is the request's own account
             // unless a test says otherwise. Nothing else about the ceremony changes with it.
             Guid passkeyOwnerId = passkeyBelongsToAnotherAccount ? Guid.CreateVersion7() : userId;
@@ -1495,6 +1507,18 @@ public sealed class GenerateRecoveryCodesHandlerTests
                     // name gives rather than for a malformed envelope they never meant to send. See
                     // SubmissionsOf.
                     SubmissionsOf(presented),
+
+                    // A WELL-FORMED MANIFEST AND THE GENERATION EXACTLY ONE ABOVE THE SEEDED ONE, for
+                    // the reason every submission above is well formed: every test in this file is
+                    // about something else — the gate, the set, the sweep, the replay — so a request
+                    // refused for its manifest or for its epoch would stop short of the behaviour its
+                    // own name claims. The seeding it promotes from is a few lines up.
+                    //
+                    // Minted once per fixture rather than per attempt, which is what a real client
+                    // sends: the blob is sealed with its epoch as associated data, so a replayed unit
+                    // of work carries the same two values and the surviving attempt files them.
+                    FactorManifestFixture.Mint().Text,
+                    FactorManifestFixture.PromotedRotationEpoch,
                     new ReauthenticationAssertion(
                         assertion.CredentialIdBase64Url,
                         assertion.ClientDataJsonBase64Url,

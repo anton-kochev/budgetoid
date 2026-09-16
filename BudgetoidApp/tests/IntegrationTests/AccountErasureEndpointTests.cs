@@ -470,6 +470,14 @@ public sealed class AccountErasureEndpointTests
         byte[] challenge = await BeginCeremonyAsync(client, RegistrationOptionsPath);
         AttestationResult attestation = device.Register(challenge, ApiFactory.PasskeyOrigin, prfEnabled: true);
         WrappedKeyFixture keys = WrappedKeyFixture.Mint();
+
+        // The generation this registration promotes the account's factor manifest to. Read off the
+        // running API rather than written out, because a file that registers a second passkey has to
+        // send a different number from the first and this helper does not know which call it is on —
+        // an epoch that is not exactly one greater than the stored one is a 400 naming rotationEpoch,
+        // which reads as the ceremony being broken. See FactorGeneration.
+        int rotationEpoch = await FactorGeneration.NextAsync(client);
+
         HttpResponseMessage response = await client.PostAsJsonAsync(RegistrationPath, new
         {
             clientDataJson = attestation.ClientDataJsonBase64Url,
@@ -478,6 +486,13 @@ public sealed class AccountErasureEndpointTests
             factorId = keys.FactorId,
             wrappedPrivateKey = keys.WrappedPrivateKey,
             encapsulatedAccountKeys = keys.EncapsulatedAccountKeys,
+
+            // ONE FACTOR JOINS THE SET HERE, so the account's one authenticated statement of what the
+            // set contains moves with it. The bytes are minted per call and are never opened by
+            // anything below the wire — a manifest is sealed under the account's content key, which no
+            // server here has ever held — so what has to be right is the framing and the generation.
+            manifest = ManifestFixture.Mint().Text,
+            rotationEpoch,
         });
         response.EnsureSuccessStatusCode();
     }

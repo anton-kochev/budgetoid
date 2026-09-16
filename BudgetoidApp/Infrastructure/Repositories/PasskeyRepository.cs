@@ -24,6 +24,25 @@ public sealed class PasskeyRepository(BudgetoidDbContext dbContext) : IPasskeyRe
         "That factor identifier is already registered. Mint a fresh one, wrap the account keys under it, "
         + "and run the ceremony again.";
 
+    // ONE FACT ABOUT ONE ROW, REACHED FROM TWO ROUTES, and the identical sentence lives on
+    // RecoveryCodeRepository.AddSetAsync — the other path that changes an account's factor set and so
+    // the other path that promotes its manifest. Change one message and change both.
+    //
+    // IT DOES NOT BLAME THE CALLER, AND THAT IS THE WHOLE CARE THIS SENTENCE NEEDS. Their rotation epoch
+    // was the stored generation plus one when they read it; a concurrent registration or issue committed
+    // in between and took that generation. A sentence implying a malformed request would send somebody
+    // whose arithmetic was right off to correct it — which is the 400 FactorManifest.Promote raises for
+    // the caller whose arithmetic was wrong, and the two are deliberately different answers.
+    //
+    // It says what to do next, because a 409 with no detail leaves a client with no idea whether to
+    // retry. Re-reading is not optional advice: the manifest is sealed with its epoch as associated
+    // data, so it has to be resealed over the new generation rather than re-sent. And the ceremony has
+    // to run again either way, because this attempt's nonce is already spent.
+    private const string FactorSetMovedMessage =
+        "Another change to this account's recovery factors landed first, so its manifest is now at a "
+        + "later generation and nothing here was written. Read the account's keys back, seal a manifest "
+        + "over the generation it reports, and run the ceremony again.";
+
     /// <inheritdoc />
     public Task<PasskeyPublicKey?> FindByWebAuthnCredentialIdAsync(
         ReadOnlyMemory<byte> webAuthnCredentialId,
@@ -93,25 +112,53 @@ public sealed class PasskeyRepository(BudgetoidDbContext dbContext) : IPasskeyRe
             .ToListAsync(cancellationToken);
 
     /// <inheritdoc />
+    public Task<FactorManifest?> FindFactorManifestAsync(
+        Guid userId,
+        CancellationToken cancellationToken = default) =>
+        // TRACKED, AND NO AsNoTracking MAY BE ADDED HERE. FactorManifest.Promote checks the step
+        // against the stored generation and EF builds WHERE rotation_epoch = @original from the value
+        // snapshotted at load, so a no-tracking instance would satisfy the C# guard against a number it
+        // read a moment ago and emit an UPDATE guarded by nothing. AccountKeyReadService reads the same
+        // row with AsNoTracking because it only shows it; this one is read to be promoted.
+        //
+        // SingleOrDefault because user_id is the primary key: an account has one manifest row or none,
+        // and a second would mean that key has been lost. The predicate names the row rather than
+        // scoping the statement — factor_manifests carries the user_isolation policy, so another
+        // account's manifest is not reachable from this connection at all.
+        dbContext.FactorManifests
+            .SingleOrDefaultAsync(manifest => manifest.UserId == userId, cancellationToken);
+
+    /// <inheritdoc />
     public async Task<bool> TryAddAsync(
         Credential credential,
         PasskeyPublicKey publicKey,
         PasskeySignatureCounter counter,
         WrappedAccountKeys wrappedAccountKeys,
+        FactorManifest factorManifest,
         CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(factorManifest);
+
         dbContext.Credentials.Add(credential);
         dbContext.PasskeyPublicKeys.Add(publicKey);
         dbContext.PasskeySignatureCounters.Add(counter);
         dbContext.WrappedAccountKeys.Add(wrappedAccountKeys);
 
+        // NOT Add AND NOT Update. The manifest arrived from FindFactorManifestAsync, so it is already
+        // tracked as Unchanged-then-Modified and its original values are the ones the row held when it
+        // was read — which is the whole of what makes the concurrency token on rotation_epoch mean
+        // anything. Update on it would be harmless and Add would be an INSERT of a row that exists;
+        // the promotion is picked up by the save below because the tracker already knows about it.
+
         try
         {
-            // One save, so the four rows land together or not at all. A credential without its public
+            // One save, so the five rows land together or not at all. A credential without its public
             // key would be a passkey nothing can verify a signature against, a key without its counter
-            // would be a passkey whose clone detection silently never runs, and either of them without
+            // would be a passkey whose clone detection silently never runs, either of them without
             // the wrapped keys would be a factor that looks registered to every screen in the product
-            // and opens nothing — discovered on the day somebody needs it.
+            // and opens nothing — discovered on the day somebody needs it — and all four without the
+            // promoted manifest would be a factor no client can learn exists, since the manifest is the
+            // sole carrier of every factor's public key and a rotation encapsulates to what it names.
             await dbContext.SaveChangesAsync(cancellationToken);
             return true;
         }
@@ -134,6 +181,13 @@ public sealed class PasskeyRepository(BudgetoidDbContext dbContext) : IPasskeyRe
             dbContext.Entry(publicKey).State = EntityState.Detached;
             dbContext.Entry(counter).State = EntityState.Detached;
             dbContext.Entry(wrappedAccountKeys).State = EntityState.Detached;
+
+            // AND THE MANIFEST WITH THEM, THOUGH THIS CALL DID NOT QUEUE IT. It is the one entity here
+            // the tracker already held, and the promotion mutated it in place: left Modified, it is a
+            // pending UPDATE moving the account's generation for a registration that wrote nothing, and
+            // any later save through this scoped context would commit it. Detached rather than reloaded
+            // because the caller is about to raise a conflict and nothing downstream reads it again.
+            dbContext.Entry(factorManifest).State = EntityState.Detached;
 
             return false;
         }
@@ -163,7 +217,45 @@ public sealed class PasskeyRepository(BudgetoidDbContext dbContext) : IPasskeyRe
             // sentence is: one fact about one table, and one thing the caller does about it.
             throw new ConflictException(FactorAlreadyRegisteredMessage, ConflictKind.FactorAlreadyRegistered);
         }
+        // THE THIRD RACE ON THIS SAVE, AND THE ONLY ONE THAT IS NOT A UNIQUE VIOLATION. Two requests
+        // adding a passkey to one account both read the manifest at generation N and both compute N + 1;
+        // the loser's UPDATE carries WHERE rotation_epoch = N, matches nothing, and EF raises. Left
+        // alone it is a 500 telling a caller who did everything right that the server broke, on a
+        // request their retry could have completed.
+        //
+        // NARROWED BY THE ENTRIES, the shape DeletePasskeyAsync and UserRepository.DeleteAsync use for
+        // their own: a concurrency conflict carries no SQLSTATE and no constraint name, so "every
+        // conflicting row is the manifest this call promoted" is this catch's equivalent of the
+        // constraint-name filters above. SaveChangesAsync flushes everything the scoped context is
+        // tracking, so a conflict over some other entity riding along must propagate — a 500 naming the
+        // real failure beats a confident, specific, false "the factor set moved".
+        //
+        // No detach on the way out, unlike the handle race: that one swallows and returns false, while
+        // this throws and the unit of work unwinds. Nothing replays a ConflictException.
+        catch (DbUpdateConcurrencyException exception) when (IsManifestPromotionLost(exception))
+        {
+            // Deliberately not FactorAlreadyRegistered, though the same save can raise both: that one is
+            // a value the client chose and has to mint again, this one is a generation the account moved
+            // to without them. And deliberately not the 400 FactorManifest.Promote raises over the same
+            // rule — that caller's epoch was never one greater than stored, this caller's was.
+            throw new ConflictException(FactorSetMovedMessage, ConflictKind.FactorSetMoved);
+        }
     }
+
+    /// <summary>
+    /// True when the conflict is only about the <see cref="FactorManifest"/> this call promoted. The
+    /// count test is not redundant: an exception EF could not attribute to any entry would otherwise
+    /// satisfy the predicate vacuously.
+    /// </summary>
+    /// <remarks>
+    /// <b>The state is half of the filter.</b> The manifest is the one entity in this save that is
+    /// <see cref="EntityState.Modified"/> — the other four are inserts — so a conflict attributed to a
+    /// row in any other state is not the lost promotion this models, whatever its type.
+    /// </remarks>
+    private static bool IsManifestPromotionLost(DbUpdateConcurrencyException exception) =>
+        exception.Entries.Count > 0
+        && exception.Entries.All(entry =>
+            entry.Entity is FactorManifest && entry.State == EntityState.Modified);
 
     /// <inheritdoc />
     public Task<Credential?> FindPasskeyCredentialAsync(

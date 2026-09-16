@@ -2072,8 +2072,10 @@ public sealed class RecoveryCodeGenerationTests
         HttpClient client,
         AssertionResult assertion,
         IReadOnlyList<string> verifiers,
-        IReadOnlyList<WrappedKeyFixture>? wrappedKeys = null) =>
-        PostCodesAsync(client, assertion, SubmissionsOf(verifiers, wrappedKeys));
+        IReadOnlyList<WrappedKeyFixture>? wrappedKeys = null,
+        string? manifest = null,
+        int? rotationEpoch = null) =>
+        PostCodesAsync(client, assertion, SubmissionsOf(verifiers, wrappedKeys), manifest, rotationEpoch);
 
     /// <summary>
     /// Posts a generation body: the <c>codes</c> the caller supplied, and the five assertion members.
@@ -2086,19 +2088,43 @@ public sealed class RecoveryCodeGenerationTests
     /// code's key. Ten verifiers beside one factor and one pair would seal the account under whichever
     /// code that pair belonged to, and the other nine would open nothing.
     /// </remarks>
-    private static Task<HttpResponseMessage> PostCodesAsync(
+    /// <param name="manifest">
+    /// The account's next factor manifest, as text on the wire. Null mints a fresh well-formed one,
+    /// which is what every test that is not about the manifest wants. A <see cref="string" /> rather
+    /// than a <see cref="ManifestFixture" /> so a caller can post a spelling no fixture can produce.
+    /// </param>
+    /// <param name="rotationEpoch">
+    /// The generation the request claims. Null reads the account's current one and adds one, which is
+    /// the only value the route accepts. Named by the cases that are about the epoch.
+    /// </param>
+    private static async Task<HttpResponseMessage> PostCodesAsync(
         HttpClient client,
         AssertionResult assertion,
-        object codes) =>
-        client.PostAsJsonAsync(RecoveryCodesPath, new
+        object codes,
+        string? manifest = null,
+        int? rotationEpoch = null)
+    {
+        // Read off the running API unless the caller named one: a file that issues twice on one account
+        // has to send a different number the second time, and this helper does not know which call it
+        // is on. See FactorGeneration.
+        int epoch = rotationEpoch ?? await FactorGeneration.NextAsync(client);
+
+        return await client.PostAsJsonAsync(RecoveryCodesPath, new
         {
             codes,
+
+            // TEN FACTORS LEAVE AND TEN ARRIVE, which is a different factor set — so the account's one
+            // authenticated statement of what the set contains travels beside the codes, under the
+            // generation above.
+            manifest = manifest ?? ManifestFixture.Mint().Text,
+            rotationEpoch = epoch,
             credentialId = assertion.CredentialIdBase64Url,
             clientDataJson = assertion.ClientDataJsonBase64Url,
             authenticatorData = assertion.AuthenticatorDataBase64Url,
             signature = assertion.SignatureBase64Url,
             userHandle = assertion.UserHandleBase64Url,
         });
+    }
 
     /// <summary>
     /// The whole issuing ceremony again, with the three key-custody members left off every code
@@ -2298,6 +2324,13 @@ public sealed class RecoveryCodeGenerationTests
             signCount: 0,
             prfEnabled: true);
         WrappedKeyFixture keys = wrappedKeys ?? WrappedKeyFixture.Mint();
+
+        // The generation this registration promotes the account's factor manifest to, read off the
+        // running API rather than written out — this file registers a passkey on every account it
+        // establishes and some of them twice, so the helper does not know which call it is on. See
+        // FactorGeneration.
+        int rotationEpoch = await FactorGeneration.NextAsync(client);
+
         HttpResponseMessage response = await client.PostAsJsonAsync(RegistrationPath, new
         {
             clientDataJson = attestation.ClientDataJsonBase64Url,
@@ -2306,6 +2339,8 @@ public sealed class RecoveryCodeGenerationTests
             factorId = keys.FactorId,
             wrappedPrivateKey = keys.WrappedPrivateKey,
             encapsulatedAccountKeys = keys.EncapsulatedAccountKeys,
+            manifest = ManifestFixture.Mint().Text,
+            rotationEpoch,
         });
         response.EnsureSuccessStatusCode();
     }

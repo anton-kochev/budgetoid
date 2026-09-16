@@ -1,7 +1,9 @@
 using Application.Abstractions;
+using Application.Passkeys;
 using Application.Passkeys.Reauthentication;
 using Application.Sessions;
 using Application.Sessions.RevokeSessionsForCredential;
+using Domain.Security;
 using Domain.Sessions;
 using Domain.Users;
 
@@ -94,6 +96,29 @@ public sealed class GenerateRecoveryCodesHandler(
         IReadOnlyList<PresentedCode> presented = RecoveryCodeSetValidation.DecodeAndValidate(
             command.Codes,
             nameof(GenerateRecoveryCodesCommand.Codes));
+
+        // AFTER THE SET AND STILL OUTSIDE THE TRANSACTION, and both halves of that are decisions.
+        //
+        // After the set, because this one value is a statement about the whole factor set the codes
+        // above establish: refusing it while two of those codes were still known to collide would key a
+        // refusal on the manifest for a request whose codes were the thing that was wrong. It inherits
+        // the gate-before-validation ordering whole — a caller holding nothing but a bearer token learns
+        // neither that this account has a manifest nor what shape one takes.
+        //
+        // Outside the transaction, because it judges the payload and nothing else. The delegate below is
+        // replayed by the execution strategy, and a decode inside it would be the same pure work done
+        // again per attempt; nothing here reads the database and nothing here can go stale.
+        //
+        // WHAT IS JUDGED IS THE FRAMING AND NOTHING ELSE. The blob is sealed under the account's content
+        // key, which this server has never held, so a manifest naming these ten codes, one naming the
+        // ten this request is deleting, and 4096 bytes of noise are the same value here. Presence,
+        // framing and the epoch are the enforceable half. FactorManifestEnvelope carries the argument,
+        // including why it is neither of the two decoders RecoveryCodeSetValidation already runs over
+        // every submission — three framings, and all three lead with 0x01.
+        if (!FactorManifestEnvelope.TryDecode(command.Manifest, out byte[]? manifestBytes))
+        {
+            throw Refused(nameof(GenerateRecoveryCodesCommand.Manifest), MalformedManifest());
+        }
 
         // Read before the transaction, so a replayed attempt stamps the set with one instant rather
         // than with whenever the surviving attempt happened to run.
@@ -227,6 +252,47 @@ public sealed class GenerateRecoveryCodesHandler(
                     await recoveryCodes.DeleteSetAsync(previousSet, token);
                 }
 
+                // READ HERE AND NOWHERE ABOVE, AND THE POSITION IS THE WHOLE OF WHAT MAKES IT SURVIVE A
+                // REPLAY. Two things reach back and empty the tracker before this line: the discard at
+                // the top of the delegate, which the execution strategy's replay needs, and the second
+                // one inside the branch above, which the sweep needs. ChangeTracker.Clear detaches
+                // everything, so a manifest loaded in front of either is an instance nothing will save —
+                // the promotion would be a mutation of a detached object, the UPDATE would never be
+                // emitted, and the request would answer 200 having moved no generation at all. Loaded
+                // outside ExecuteAsync it is worse than silent: the row it snapshotted was read before
+                // the abandoned attempt rolled back, so a replay would compute its successor from a
+                // generation the database may never have held.
+                //
+                // Read fresh on every attempt, which is also what makes the replay converge: an
+                // abandoned attempt's UPDATE went back with its transaction, so the row still holds N
+                // and the surviving attempt promotes it to N + 1 exactly once.
+                //
+                // A MISS IS AN INTEGRITY VIOLATION AND IS RAISED, NEVER BRANCHED ON AND NEVER REPAIRED
+                // HERE. Registration has written a manifest for every account since the table existed,
+                // so there is no account this can legitimately find nothing for. Filing a first one here
+                // would let this route establish the account's factor set under an epoch and a blob
+                // nothing upstream agreed to, and skipping the promotion would leave the account's only
+                // statement of its factor set naming ten key pairs this very request deleted — the
+                // silent half of the state this path exists to make unreachable. It is not a
+                // ValidationException: nothing the caller sent is wrong, so there is no member to key a
+                // 400 on.
+                FactorManifest factorManifest =
+                    await recoveryCodes.FindFactorManifestAsync(userContext.UserId, token)
+                    ?? throw new InvalidOperationException(
+                        "The account holds no factor manifest, so there is no generation to promote.");
+
+                // Loaded, mutated, saved — never FactorManifest.For(user, bytes, epoch + 1) and an
+                // Update. That shape hands EF a detached row whose original values are its current ones,
+                // so the statement carries WHERE rotation_epoch = <the new value>: it matches nothing
+                // against the row it was computed from, and it MATCHES against a row a racing promotion
+                // has already moved to N + 1 — the one statement the concurrency token exists to refuse.
+                // FactorManifest's own remarks spend a paragraph on it.
+                //
+                // The epoch stored is the client's number, because it is bound into the manifest's
+                // associated data; what the server owes is the refusal of anything that is not stored
+                // plus one, and that refusal is Promote's.
+                factorManifest.Promote(manifestBytes, command.RotationEpoch);
+
                 // One credential for the whole set, minted from the request's own identity — no
                 // account is named on the command.
                 Credential set = Credential.CreateRecoveryCodes(userContext.UserId, now);
@@ -268,10 +334,23 @@ public sealed class GenerateRecoveryCodesHandler(
                         now)),
                 ];
 
-                // One save for the credential, its codes and every one of their shares of the account
-                // keys: a set that counts as issued and holds no code can never be redeemed, and a code
-                // holding no envelopes is a line on a card that unlocks nothing.
-                await recoveryCodes.AddSetAsync(set, hashes, wrappedAccountKeys, token);
+                // One save for the credential, its codes, every one of their shares of the account keys
+                // and the promoted manifest: a set that counts as issued and holds no code can never be
+                // redeemed, a code holding no envelopes is a line on a card that unlocks nothing, and a
+                // set filed under a manifest still naming the replaced ten is ten factors no client can
+                // learn exist and ten a rotation would encapsulate to that nobody holds.
+                //
+                // The manifest is named although EF would flush it either way — it is tracked and
+                // Modified, so the UPDATE joins whichever save runs next — because "the factor change
+                // and the manifest moved together" must be visible in a signature rather than be a fact
+                // about the change tracker. A concurrent promotion that moved the generation between the
+                // load above and this save loses on the concurrency token, and the repository answers it
+                // as a FactorSetMoved conflict — a different remedy from RecoveryCodesReplaced, which
+                // the same method can also raise: that one says this card's codes will never redeem,
+                // this one says the ten codes are fine and the manifest has to be resealed. It is also a
+                // different answer from Promote's refusal above, which is a 400 for a caller whose epoch
+                // was never one greater than stored.
+                await recoveryCodes.AddSetAsync(set, hashes, wrappedAccountKeys, factorManifest, token);
 
                 // THE REPLACED SET'S SESSIONS WERE THE PERSON'S WAY IN, AND THE SWEEP ABOVE TOOK THEM.
                 // Somebody who lost their authenticator, redeemed a code, registered a replacement
@@ -374,4 +453,29 @@ public sealed class GenerateRecoveryCodesHandler(
             },
             cancellationToken);
     }
+
+    /// <summary>
+    /// What is required of <c>manifest</c>, said whole rather than split into which part of it was
+    /// wrong.
+    /// </summary>
+    /// <remarks>
+    /// <b>A range where the two envelope sentences on every submission state a width, and this one has
+    /// to say so.</b> Those name one legal size each because their plaintexts are fixed-width keys; a
+    /// manifest's plaintext grows with the number of factors it names, so the only bounds that exist are
+    /// the framing's floor and the column's cap. The same sentence stands on the other two paths that
+    /// accept a manifest, and every number in all three is read off the type that refuses a row against
+    /// it rather than written out — a message carrying its own copy goes on being confident after the
+    /// real bound has moved.
+    /// </remarks>
+    private static string MalformedManifest() =>
+        "manifest must be base64url text decoding to between "
+        + $"{CiphertextEnvelope.MinimumLength} and {FactorManifest.MaximumBytes} bytes carrying AEAD "
+        + $"framing version {CiphertextEnvelope.Version}.";
+
+    // Domain.Common.ValidationException by name, because both layers declare one and only that one is
+    // what ValidationExceptionHandler turns into a 400 with the field errors on it. The shape
+    // RecoveryCodeSetValidation raises its eight refusals through, so the manifest's refusal reaches a
+    // client as the same kind of answer keyed on the same kind of member.
+    private static Domain.Common.ValidationException Refused(string field, string message) =>
+        new(new Dictionary<string, string[]> { [field] = [message] });
 }

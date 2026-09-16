@@ -7,6 +7,7 @@ using Infrastructure.Persistence.Configurations;
 using Infrastructure.Repositories;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
+using TUnit.Assertions.Enums;
 
 namespace IntegrationTests;
 
@@ -166,10 +167,11 @@ public sealed class RecoveryCodeRepositoryTests
         RecoveryCodeRepository repository = new(db);
         (Credential set, RecoveryCodeHash[] hashes) = NewSetFor(userId, Verifiers());
         WrappedAccountKeys[] wrappedAccountKeys = NewWrappedKeysFor(set);
+        FactorManifest manifest = await PromotedManifestAsync(repository, userId);
 
         // Act
         Exception? escaped = await CaptureAsync(
-            () => repository.AddSetAsync(set, hashes, wrappedAccountKeys));
+            () => repository.AddSetAsync(set, hashes, wrappedAccountKeys, manifest));
 
         // Assert — the premise first: the winner really did leave a set behind.
         await Assert.That(setsTheWinnerLeft).IsEqualTo(1L);
@@ -192,6 +194,13 @@ public sealed class RecoveryCodeRepositoryTests
         await Assert.That(await CountSetsOfUserAsync(admin, userId)).IsEqualTo(1L);
         await Assert.That(await CountCodesOfUserAsync(admin, userId)).IsEqualTo((long)SeededCodeCount);
         await Assert.That(await CountWrappedAccountKeysOfUserAsync(admin, userId)).IsEqualTo(0L);
+
+        // AND THE FOURTH, which is the only row of the four this save UPDATEs rather than inserts. The
+        // entity was promoted in memory before the act, so a save that committed part of its work would
+        // leave the account claiming a generation whose factor set was rolled back — a manifest naming
+        // ten key pairs that do not exist, which is the one state nothing else in either suite reads.
+        // Read on the admin connection, because the context under test is still holding the entity.
+        await Assert.That(await RotationEpochOfAsync(admin, userId)).IsEqualTo((long)SeededRotationEpoch);
     }
 
     /// <summary>
@@ -225,6 +234,11 @@ public sealed class RecoveryCodeRepositoryTests
         (Credential set, RecoveryCodeHash[] hashes) = NewSetFor(userId, Verifiers());
         WrappedAccountKeys[] wrappedAccountKeys = NewWrappedKeysFor(set);
 
+        // The manifest this generation claims, minted here rather than inside the helper so the
+        // read-back below can compare the stored bytes against the ones that were posted.
+        ManifestFixture promotedManifest = ManifestFixture.Mint();
+        FactorManifest manifest = await PromotedManifestAsync(repository, userId, promotedManifest);
+
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
 
@@ -233,7 +247,7 @@ public sealed class RecoveryCodeRepositoryTests
 
         // Act
         Exception? escaped = await CaptureAsync(
-            () => repository.AddSetAsync(set, hashes, wrappedAccountKeys));
+            () => repository.AddSetAsync(set, hashes, wrappedAccountKeys, manifest));
 
         // Assert
         await Assert.That(escaped).IsNull();
@@ -256,6 +270,19 @@ public sealed class RecoveryCodeRepositoryTests
         // claim is which factors the rows carry rather than which order they came back in.
         await Assert.That(await FactorIdsOfAsync(admin, set.Id))
             .IsEquivalentTo(Ordered(wrappedAccountKeys.Select(keys => keys.FactorId)));
+
+        // AND THE PROMOTED MANIFEST, WHICH IS THE ONE ROW THIS SAVE UPDATES. Read back as bytes and as
+        // a number, because the two fail separately and each failure is silent on its own: an epoch
+        // that moved over the old blob leaves the account claiming a generation whose factor list does
+        // not name the ten factors this request just filed, and bytes that landed under the old epoch
+        // leave the next promotion computing its successor from a generation nobody is at. Compared
+        // against the payload that was posted rather than merely for non-emptiness, because the
+        // manifest is the sole carrier of every factor's public key and a truncation, a re-encode or a
+        // row read back for the wrong account all satisfy "something is stored".
+        await Assert.That(await RotationEpochOfAsync(admin, userId))
+            .IsEqualTo((long)SeededRotationEpoch + 1);
+        await Assert.That(await ManifestOfAsync(admin, userId))
+            .IsEquivalentTo(promotedManifest.Manifest, CollectionOrdering.Matching);
     }
 
     /// <summary>
@@ -308,6 +335,11 @@ public sealed class RecoveryCodeRepositoryTests
         // Freshly minted, so the factor identifier is not a second rule this insert could break.
         WrappedAccountKeys[] wrappedAccountKeys = NewWrappedKeysFor(set);
 
+        // Promoted from the generation the seeding left, so the manifest is not a third rule this save
+        // could break — a stale epoch would lose on the concurrency token and be translated into a
+        // conflict, which is the one answer this test is written to say did not happen.
+        FactorManifest manifest = await PromotedManifestAsync(repository, userId);
+
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
 
@@ -316,7 +348,7 @@ public sealed class RecoveryCodeRepositoryTests
 
         // Act
         Exception? escaped = await CaptureAsync(
-            () => repository.AddSetAsync(set, hashes, wrappedAccountKeys));
+            () => repository.AddSetAsync(set, hashes, wrappedAccountKeys, manifest));
 
         // Assert
         await Assert.That(escaped).IsNotNull();
@@ -682,6 +714,7 @@ public sealed class RecoveryCodeRepositoryTests
         RecoveryCodeRepository inserting = new(insertingDb);
         (Credential set, RecoveryCodeHash[] hashes) = NewSetFor(loserOnTheInsert, Verifiers());
         WrappedAccountKeys[] wrappedAccountKeys = NewWrappedKeysFor(set);
+        FactorManifest manifest = await PromotedManifestAsync(inserting, loserOnTheInsert);
 
         await using BudgetoidDbContext deletingDb = CreateDb(host);
         RecoveryCodeRepository deleting = new(deletingDb);
@@ -695,7 +728,7 @@ public sealed class RecoveryCodeRepositoryTests
 
         // Act
         Exception? onTheInsert = await CaptureAsync(
-            () => inserting.AddSetAsync(set, hashes, wrappedAccountKeys));
+            () => inserting.AddSetAsync(set, hashes, wrappedAccountKeys, manifest));
         Exception? onTheDelete = await CaptureAsync(() => deleting.DeleteSetAsync(doomed));
 
         // Assert — the premise first: the delete half really did lose its row.
@@ -902,6 +935,260 @@ public sealed class RecoveryCodeRepositoryTests
     /// </summary>
     private static async Task<long> CountWrappedAccountKeysOfUserAsync(NpgsqlConnection admin, Guid userId) =>
         await CountAsync(admin, "select count(*) from wrapped_account_keys where user_id = @id", userId);
+
+    /// <summary>
+    /// An issue whose manifest promotion was overtaken is refused as a conflict naming the moved factor
+    /// set, and writes nothing.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The first execution of that <c>catch</c> on this route, not a regression guard for it.</b>
+    /// <c>RecoveryCodeRepository.IsManifestPromotionLost</c> narrows on
+    /// <c>entry.Entity is FactorManifest &amp;&amp; entry.State == EntityState.Modified</c> and until
+    /// this case nothing had ever raised a <c>DbUpdateConcurrencyException</c> on this save. The
+    /// question only a real batch answers is the same one the passkey twin asks and is sharper here:
+    /// this call emits an INSERT for the credential, ten for the hashes, ten for the wrapped keys and
+    /// one UPDATE, and the filter demands that <em>every</em> entry EF attributes the conflict to is the
+    /// manifest — the one entity in the save that is <c>Modified</c> rather than <c>Added</c>.
+    /// </para>
+    /// <para>
+    /// <b>A THIRD ANSWER FROM ONE METHOD, and the assertion names which.</b> <c>AddSetAsync</c> can
+    /// refuse with <c>RecoveryCodesReplaced</c>, with <c>FactorAlreadyRegistered</c> and with this —
+    /// three facts about a caller and three different pieces of work. Asserting only the exception type
+    /// would be satisfied by any of them: told their codes were replaced this caller reissues material
+    /// that was never the problem, told their factor identifier was taken they re-wrap envelopes that
+    /// are already correct, and in both cases the manifest they have to reseal stays stale.
+    /// </para>
+    /// <para>
+    /// <b>The account deliberately holds no previous set</b>, so the only rule this save can break is
+    /// the concurrency token. With one standing, <c>IX_credentials_user_id_recovery_codes</c> would
+    /// refuse the credential insert first and the case would report a lost race it never staged.
+    /// </para>
+    /// <para>
+    /// <b>The honest limit: this is the race, not the replay.</b> <c>GenerateRecoveryCodesHandler</c>
+    /// runs this call inside a retried <c>ExecuteAsync</c>, and what a <em>transient</em> failure does
+    /// to a promoted manifest — the abandoned attempt's UPDATE going back with its transaction, the
+    /// surviving attempt re-reading at the old generation and promoting once — is unreachable from
+    /// here: it needs fault injection into the Npgsql execution strategy that this suite does not have,
+    /// and a <see cref="ConflictException" /> is deliberately not replayed. Nothing below claims to
+    /// cover it.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task AddSetAsync_WhenTheManifestGenerationMovedFirst_ThrowsFactorSetMovedAndWritesNothing()
+    {
+        // Arrange — one account, no previous set, at the generation the seeding left it at.
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
+
+        // The loser: a whole set, and a manifest read and promoted before the winner exists. Read
+        // FIRST, so the entity's original values really are the generation this attempt started from.
+        await using BudgetoidDbContext loserDb = CreateDb(host);
+        RecoveryCodeRepository loser = new(loserDb);
+        (Credential set, RecoveryCodeHash[] hashes) = NewSetFor(userId, Verifiers());
+        WrappedAccountKeys[] wrappedAccountKeys = NewWrappedKeysFor(set);
+        FactorManifest losersManifest = await PromotedManifestAsync(loser, userId);
+
+        // The winner: the same row, promoted and committed by another session, carrying bytes of its
+        // own so the read-back can say WHOSE generation survived.
+        ManifestFixture winnersManifest = ManifestFixture.Mint();
+        await using (BudgetoidDbContext winnerDb = CreateDb(host))
+        {
+            RecoveryCodeRepository winner = new(winnerDb);
+            FactorManifest stored = await winner.FindFactorManifestAsync(userId)
+                ?? throw new InvalidOperationException("The seeded account holds no factor manifest.");
+            stored.Promote(winnersManifest.Manifest, stored.RotationEpoch + 1);
+            await winnerDb.SaveChangesAsync();
+        }
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+
+        // Act
+        Exception? escaped = await CaptureAsync(
+            () => loser.AddSetAsync(set, hashes, wrappedAccountKeys, losersManifest));
+
+        // Assert — the premise first: both attempts claimed the same generation, or the token had
+        // nothing to refuse and everything below is about a race that did not happen.
+        await Assert.That(losersManifest.RotationEpoch).IsEqualTo(SeededRotationEpoch + 1);
+
+        // Translated, and translated to the RIGHT one of this method's three kinds.
+        await Assert.That(escaped).IsNotNull();
+        await Assert.That(escaped).IsTypeOf<ConflictException>();
+        await Assert.That(((ConflictException)escaped!).Kind).IsEqualTo(ConflictKind.FactorSetMoved);
+        await Assert.That(((ConflictException)escaped).Kind).IsNotEqualTo(ConflictKind.RecoveryCodesReplaced);
+        await Assert.That(string.IsNullOrWhiteSpace(escaped.Message)).IsFalse();
+
+        // Nothing of the loser's survives — the credential, its ten codes and its ten shares of the
+        // account keys, all three counted, because the promise of the one save is that they land
+        // together with the generation or not at all.
+        await Assert.That(await CountSetsOfUserAsync(admin, userId)).IsEqualTo(0L);
+        await Assert.That(await CountCodesOfUserAsync(admin, userId)).IsEqualTo(0L);
+        await Assert.That(await CountWrappedAccountKeysOfUserAsync(admin, userId)).IsEqualTo(0L);
+
+        // And the row still holds the WINNER'S generation, both halves of it. The epoch alone would be
+        // satisfied by a loser whose UPDATE landed anyway, because both attempts computed the same
+        // number: the BYTES are what say which factor set the account is now claiming.
+        await Assert.That(await RotationEpochOfAsync(admin, userId))
+            .IsEqualTo((long)SeededRotationEpoch + 1);
+        await Assert.That(await ManifestOfAsync(admin, userId))
+            .IsEquivalentTo(winnersManifest.Manifest, CollectionOrdering.Matching);
+    }
+
+    /// <summary>
+    /// A concurrency conflict over some other tracked row is not dressed up as a moved factor set.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The narrowing half of the case above, and without it that one is satisfied by a
+    /// <c>catch (DbUpdateConcurrencyException)</c> with no <c>when</c> clause at all.</b> It is written
+    /// out here rather than shared with <c>PasskeyRepositoryTests</c>' twin, for the reason
+    /// <see cref="IsAlreadyConsumed" />'s own remarks give about the predicates: each repository owns
+    /// the filters its own catches read, so each owes its own control.
+    /// </para>
+    /// <para>
+    /// <b>The bystander is a code of ANOTHER account's set</b>, removed out of band and then removed
+    /// again through the tracker — a zero-row DELETE EF raises on. Another account's rather than this
+    /// one's, because this account must hold no set for the insert to be legal at all, and because a
+    /// conflict over a row belonging to a stranger is the sharpest form of the mistake: nothing about
+    /// this caller's factor set moved, and telling them it did sends them to re-seal a manifest that
+    /// was correct.
+    /// </para>
+    /// <para>
+    /// <b>The expected behaviour is that it PROPAGATES</b> — a 500 naming a conflict this method does
+    /// not model beats a 409 asking for work nobody needed to do.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task AddSetAsync_WhenAnotherTrackedRowConflicts_LetsTheConflictEscape()
+    {
+        // Arrange — a bystander holding a set, and the account under test holding none.
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
+        Guid bystanderId = await host.SeedUserAsync("google-2", "bystander@example.com");
+        byte[][] bystandersVerifiers = await SeedRecoveryCodeSetAsync(host, bystanderId);
+
+        await using BudgetoidDbContext db = CreateDb(host);
+        RecoveryCodeRepository repository = new(db);
+
+        // Equals rather than ==, because ReadOnlyMemory<byte> declares no equality operator. What
+        // reaches PostgreSQL through the property's value converter is a bytea comparison of the bytes,
+        // which is the same predicate PasskeyRepository's own lookups are written with.
+        ReadOnlyMemory<byte> bystandersHash = SHA256.HashData(bystandersVerifiers[0]);
+        RecoveryCodeHash tracked = await db.RecoveryCodeHashes.SingleAsync(
+            candidate => candidate.VerifierHash.Equals(bystandersHash));
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        int removedOutOfBand = await DeleteCodeAsync(admin, bystandersVerifiers[0]);
+        db.RecoveryCodeHashes.Remove(tracked);
+
+        // The set being written is flawless: ten distinct verifiers, ten freshly minted factors, and a
+        // manifest promoted from the generation the seeding left.
+        (Credential set, RecoveryCodeHash[] hashes) = NewSetFor(userId, Verifiers());
+        WrappedAccountKeys[] wrappedAccountKeys = NewWrappedKeysFor(set);
+        FactorManifest manifest = await PromotedManifestAsync(repository, userId);
+
+        // Act
+        Exception? escaped = await CaptureAsync(
+            () => repository.AddSetAsync(set, hashes, wrappedAccountKeys, manifest));
+
+        // Assert — the premise first, or the exception below was raised by something this test did not
+        // arrange.
+        await Assert.That(removedOutOfBand).IsEqualTo(1);
+
+        // Raw, not translated into any of this method's three kinds.
+        await Assert.That(escaped).IsNotNull();
+        await Assert.That(escaped).IsTypeOf<DbUpdateConcurrencyException>();
+    }
+
+    /// <summary>
+    /// The generation <c>RepositoryTestHost.SeedUserAsync</c> files an account's first manifest at,
+    /// which is where every account in this file starts.
+    /// </summary>
+    /// <remarks>
+    /// Read off <see cref="FactorManifest.MinimumRotationEpoch" /> rather than written out as <c>1</c>,
+    /// unlike <c>FactorManifestTests</c>, and the difference is which claim is being made. That file is
+    /// <em>about</em> the floor, so reading the constant it checks would compare a constant with itself.
+    /// Nothing here is about the floor: these cases need the generation the seeding actually left, and a
+    /// literal would silently become the wrong arrangement the day it moved.
+    /// </remarks>
+    private static int SeededRotationEpoch => FactorManifest.MinimumRotationEpoch;
+
+    /// <summary>
+    /// Reads the account's manifest through the repository and promotes it to the next generation —
+    /// the two steps every caller of <see cref="RecoveryCodeRepository.AddSetAsync" /> performs, in the
+    /// order the handler performs them.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Through <see cref="RecoveryCodeRepository.FindFactorManifestAsync" /> and never through a
+    /// query of the test's own, because the tracking is the point.</b> The step is checked against the
+    /// generation the instance was loaded at, and EF builds <c>WHERE rotation_epoch = @original</c> from
+    /// the value snapshotted at that load — so a helper building a detached instance with
+    /// <see cref="FactorManifest.For" /> would hand every case here an entity whose original values are
+    /// its current ones, and the save under test would carry a predicate guarding nothing.
+    /// </para>
+    /// <para>
+    /// <paramref name="manifest" /> is the caller's to name, because a case reading the stored bytes
+    /// back has to hold the bytes it posted. Omitted, a fresh one is minted: the blob is sealed under a
+    /// key no server here has ever held, so any payload of a legal framing is the same value to every
+    /// layer below the wire.
+    /// </para>
+    /// </remarks>
+    private static async Task<FactorManifest> PromotedManifestAsync(
+        RecoveryCodeRepository repository,
+        Guid userId,
+        ManifestFixture? manifest = null)
+    {
+        FactorManifest stored = await repository.FindFactorManifestAsync(userId)
+            ?? throw new InvalidOperationException(
+                "The seeded account holds no factor manifest, so there is no generation to promote.");
+
+        stored.Promote((manifest ?? ManifestFixture.Mint()).Manifest, stored.RotationEpoch + 1);
+
+        return stored;
+    }
+
+    /// <summary>The generation the account's stored manifest row is at.</summary>
+    /// <remarks>
+    /// On the admin connection rather than through the context under test, which is what makes it an
+    /// answer about the <em>row</em>: a read through that context would be resolved by the identity map
+    /// to the very entity the act promoted, so an assertion over it would pass whether or not a single
+    /// statement reached the database.
+    /// </remarks>
+    private static async Task<long> RotationEpochOfAsync(NpgsqlConnection admin, Guid userId)
+    {
+        await using NpgsqlCommand command = new(
+            "select rotation_epoch from factor_manifests where user_id = @id",
+            admin);
+        command.Parameters.AddWithValue("id", userId);
+
+        return await command.ExecuteScalarAsync() switch
+        {
+            int epoch => epoch,
+            long epoch => epoch,
+            _ => throw new InvalidOperationException("The account holds no factor manifest row."),
+        };
+    }
+
+    /// <summary>The bytes the account's stored manifest row carries.</summary>
+    /// <remarks>
+    /// On the admin connection for the reason <see cref="RotationEpochOfAsync" /> gives, and read as
+    /// raw <c>bytea</c> rather than through the entity's value converter — what a client will be handed
+    /// is what the column holds, so a converter that re-encoded on the way out would be invisible to a
+    /// comparison made on the other side of it.
+    /// </remarks>
+    private static async Task<byte[]> ManifestOfAsync(NpgsqlConnection admin, Guid userId)
+    {
+        await using NpgsqlCommand command = new(
+            "select manifest from factor_manifests where user_id = @id",
+            admin);
+        command.Parameters.AddWithValue("id", userId);
+
+        return await command.ExecuteScalarAsync() as byte[]
+               ?? throw new InvalidOperationException("The account holds no factor manifest row.");
+    }
 
     /// <summary>
     /// Every factor identifier the account keys of <paramref name="credentialId" /> are bound to,

@@ -47,9 +47,39 @@ namespace Application.RecoveryCodes.GenerateRecoveryCodes;
 /// </para>
 /// </remarks>
 /// <param name="Codes">The set, one whole submission per code.</param>
+/// <param name="Manifest">
+/// The account's factor manifest as it stands <em>after</em> this set replaces the previous one: every
+/// factor's public key, <em>sealed under</em> the account's content key, as one base64url envelope of
+/// the AEAD framing, judged by <see cref="Application.Passkeys.FactorManifestEnvelope.TryDecode"/>.
+/// <b>A factor change unaccompanied by one is refused.</b> Ten factors leave here and ten arrive, so the
+/// manifest the account held names ten key pairs that no longer exist and none of the ten that do —
+/// and it is the sole carrier of every factor's public key, so a rotation would encapsulate the
+/// account's keys to a set of authenticators the person has thrown away. Nothing on this side can check
+/// that the blob names these ten codes: it is sealed under a key this server has never held, so what is
+/// enforced is presence, framing and the epoch below.
+/// </param>
+/// <param name="RotationEpoch">
+/// The generation the manifest above is written under, which the client sets to one greater than the
+/// epoch the server last reported and binds into the manifest's associated data. <b>The server stores
+/// the client's number and never one it computes</b>; its job is to refuse anything that is not the
+/// stored generation plus one, which is <see cref="FactorManifest.Promote"/>'s arithmetic against the
+/// loaded row.
+/// <para>
+/// <b>An <see cref="int"/> where <see cref="RecoveryCodeSubmission"/>'s members are all
+/// <see cref="string"/>, and the difference is the wire rather than a departure.</b> Those are text
+/// standing for bytes or for one chosen spelling of a uuid, and a typed member there would let the
+/// framework widen the format or refuse it in front of the re-authentication gate; a generation is a
+/// JSON number with one spelling and nothing for a parse to be lenient about. Not <c>required</c>, like
+/// every other member: an omitted one binds to <c>0</c>, which
+/// <see cref="FactorManifest.MinimumRotationEpoch"/> keeps free to mean <em>no manifest row</em>, so it
+/// reaches <see cref="FactorManifest.Promote"/> past the gate and is refused there.
+/// </para>
+/// </param>
 /// <param name="Assertion">The fresh re-authentication the issue is authorized by.</param>
 public sealed record GenerateRecoveryCodesCommand(
     IReadOnlyList<RecoveryCodeSubmission> Codes,
+    string Manifest,
+    int RotationEpoch,
     ReauthenticationAssertion Assertion);
 
 /// <summary>

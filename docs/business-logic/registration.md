@@ -449,7 +449,8 @@ the *set*, so it is authenticated once.
 ---
 
 - **Rule**: **One manifest against those eleven rows, at epoch 1, in the same save** — and this is
-  the **first and only path in the product that writes a `factor_manifests` row**.
+  the one path in the product that **files** a `factor_manifests` row rather than promoting one that
+  already stands.
 - **Why**: the eleven rows are each one factor's share of the account keys; the manifest is the
   single authenticated statement of *which factors exist* and what a later rotation may encapsulate
   to. The asymmetry follows from what must be unforgeable: a per-row public key column is a row at a
@@ -462,15 +463,19 @@ the *set*, so it is authenticated once.
   - **Epoch 1 is `FactorManifest.MinimumRotationEpoch` and never a literal.** Epoch 0 is the
     *absence* of a row, so the first generation is one — and the constant is where that argument
     lives rather than in the eleven places a literal would end up.
-  - **An account registered before this rung existed answers no manifest, at epoch 0, forever.**
-    Nothing can backfill a blob sealed under a content key this server has never held. Both answers
-    are correct and neither is an error; [account-keys.md](account-keys.md) owns the two classes.
+  - **Because this path is the only way an account comes to exist, `manifest: null` is unreachable
+    through the API.** The read that serves it answers `null` at epoch 0 for an account holding no
+    row, and no route can produce one — a session exists only after a registration, and a
+    registration files the manifest in the same save as the session. That answer is the read's
+    defensive shape, reached by an account a test seeded by hand and by nothing else;
+    [account-keys.md](account-keys.md) owns it, including why nothing could repair a real one.
 - **Enforced in**: `RegisterAccountHandler` building the `FactorManifest` beside the eleven rows,
   `Domain.Users.Registration` carrying it as a required member so a registration without one does
-  not compile, and `GRANT SELECT, INSERT ON factor_manifests` in `app-role-grants.sql` — an
+  not compile, and the `INSERT` in `app-role-grants.sql` — an
   ungranted insert here would turn the whole registration into a `42501` rather than losing a row
-  quietly. There is still no `UPDATE` (nothing promotes a generation) and no `DELETE` (a manifest
-  leaves by `FK_factor_manifests_users` cascading from an account erasure).
+  quietly. The grant beside it is `UPDATE (manifest, rotation_epoch)`, which this path never spends:
+  it belongs to the two routes that **promote** a generation. There is still no `DELETE` — a
+  manifest leaves by `FK_factor_manifests_users` cascading from an account erasure.
 - **Source**: `[SOURCE: discussion]`
 
 ---
@@ -803,10 +808,11 @@ ELSE consume the nonce — from here every outcome has burnt it
   the second write path that accepts a set; it sweeps nothing, replaces nothing, and reports no
   `sessionsEnded`.
 - **[Account Keys](account-keys.md)** — the eleven pairs of envelopes and the one spelling of a
-  factor identifier. This is the **third** path that writes `wrapped_account_keys`, and the **first**
-  that writes `factor_manifests` — three paths still owe a manifest and write none: adding a passkey,
-  regenerating the card, and revoking a passkey. That chapter owns what an account registered before
-  this rung existed answers, and why nothing can repair it.
+  factor identifier. This is the **third** path that writes `wrapped_account_keys`, and the one that
+  **files** a `factor_manifests` row; adding a passkey and regenerating the card each **promote**
+  the one this path laid down, in the unit of work that changed the factor set. Revoking a passkey
+  still owes a manifest and writes none. That chapter owns the promotion rule, the epoch, and why
+  `manifest: null` survives in the read's shape without being a state anybody reaches.
 - **[Sessions](sessions.md)** — the **fourth** thing that establishes a session, and like the other
   three it mints a handle and sets the cookie.
 - **[Users & Ownership](users-and-ownership.md)** — the account, its credentials, and the invariant

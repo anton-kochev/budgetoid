@@ -238,20 +238,16 @@ public sealed class AppRoleGrantMatrixTests
         // fewer than the schema holds. A table nothing can read is a table nothing can check, and this
         // is the one place the account's whole set of factor public keys is written down.
         //
-        // STILL NO UPDATE AND STILL NO DELETE, and the two absences have different reasons. Nothing
-        // promotes a generation yet — promotion is the step that rewrites this row in place and it is
-        // not built, so an UPDATE today would be a privilege with no statement behind it. DELETE has no
-        // caller in view at all.
-        //
-        // NO TABLE-WIDE UPDATE AND NO COLUMN LIST EITHER, which is an absence rather than a
-        // simplification: immutability in this project is expressed by omission FROM a GRANT UPDATE
-        // column list, so today every column here is immutable in the strongest available way because
-        // no UPDATE exists to name one — an inserted manifest stays the generation it was written as.
-        // When promotion lands it wants rotation_epoch and manifest as an explicit two-column list, and
-        // user_id stays off it — a table-wide grant would let one statement re-file an account's whole
-        // factor set against another account. That widening would show up here as an unexpected
-        // table-wide UPDATE with nothing in ExpectedUpdateColumnGrants to match it, which is the
+        // A COLUMN-LISTED UPDATE ARRIVED WITH ITS OWN CALLER, AND IT IS NOT ON THIS LINE. GRANT UPDATE
+        // (manifest, rotation_epoch) is a column privilege, so it does not appear in the table-level
+        // command list this array pins — users carries SELECT, INSERT and DELETE here while holding a
+        // one-column UPDATE on email, and that asymmetry is the shape rather than an inconsistency. The
+        // two-column list is pinned in ExpectedUpdateColumnGrants instead, and a TABLE-WIDE UPDATE
+        // would show up here as an unexpected command with nothing in that array to match it — the
         // two-directional failure the class remarks describe.
+        //
+        // STILL NO DELETE, and that absence has a reason of its own rather than being the same one
+        // waiting: DELETE has no caller in view at all.
         //
         // Rows still leave without DELETE. FK_factor_manifests_users cascades from users, and a
         // referential action runs with the referencing table owner's privileges rather than this
@@ -398,6 +394,29 @@ public sealed class AppRoleGrantMatrixTests
         // from app-role-grants.sql's rule B2 or from an older test name is reading a rule that moved
         // rather than a list that drifted.
         ("budgets", ["name"]),
+        // TWO columns, and the entry is as much about the THIRD that is not on it. user_id is the whole
+        // of PK_factor_manifests and it is the column user_isolation appends its predicate over, so one
+        // statement able to move it would re-file an account's entire factor set against another
+        // account — every recovery factor's public key on one row, and nothing else on that row looking
+        // wrong afterwards. Leaving it out of the list is the only spelling that makes it unwritable:
+        // column privileges are additive, and REVOKE UPDATE (user_id) cannot subtract from a table-wide
+        // grant. user_isolation's WITH CHECK refuses that row today and leaning on it would still be
+        // the wrong call — grants fail closed with 42501, row-level security fails open.
+        //
+        // THE TWO THAT ARE ON THE LIST ARE ON IT BECAUSE A PROMOTION REWRITES BOTH, and the pairing is
+        // the rule rather than two facts sitting beside each other. FactorManifest.Promote assigns the
+        // blob and the generation together and offers no spelling for half of one: the manifest is
+        // sealed with its epoch as associated data, so bytes stored under the old number are bytes no
+        // client can open and a number moved over the old bytes is a generation whose factor list does
+        // not name the factor the same request just registered. Grant one without the other and EF's
+        // two-column UPDATE answers 42501 — the whole promotion, not the half it was allowed — so both
+        // routes that change an account's factor set stop working for this role.
+        //
+        // There is still NO DELETE of any shape, and that is not an omission waiting to be filled: a
+        // manifest leaves by FK_factor_manifests_users cascading from an account erasure, and a
+        // referential action runs with the referencing table owner's privileges rather than this
+        // role's.
+        ("factor_manifests", ["manifest", "rotation_epoch"]),
         // name_key joins name, and the two are ONE entry on this line rather than two facts that
         // happen to sit beside each other. A rename writes the sealed envelope and the blind index
         // over the same text in one UPDATE, because Account.Update takes an IndexedName and offers

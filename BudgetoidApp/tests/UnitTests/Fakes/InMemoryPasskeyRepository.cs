@@ -18,12 +18,20 @@ namespace UnitTests.Fakes;
 /// was, because every save a test drives through this fake happens inside a transaction whose commit
 /// the test never reaches — a rolled-back attempt's UPDATE is not what the next read sees.
 /// </para>
+/// <para>
+/// <see cref="FindFactorManifestAsync"/> models the same identity map over the account's one
+/// <c>factor_manifests</c> row, delegated to <see cref="InMemoryFactorManifests"/> so the two fakes
+/// that answer this member do not each model a tracked promotion in their own words. A manifest is not
+/// seeded by <see cref="Register"/>: an account's first one is written by registration, and a test that
+/// drives the passkey-registration path arranges it with <see cref="SeedFactorManifest"/>.
+/// </para>
 /// </remarks>
 public sealed class InMemoryPasskeyRepository : IPasskeyRepository
 {
     private readonly List<Entry> _entries = [];
     private readonly Dictionary<Guid, PasskeySignatureCounter> _trackedCounters = [];
     private readonly List<uint> _savedCounterValues = [];
+    private readonly InMemoryFactorManifests _manifests = new();
 
     /// <summary>Every counter value a save was asked to write, oldest first.</summary>
     public IReadOnlyList<uint> SavedCounterValues => _savedCounterValues;
@@ -78,11 +86,42 @@ public sealed class InMemoryPasskeyRepository : IPasskeyRepository
         _entries.Add(new Entry(credential, publicKey, signatureCounter, WrappedAccountKeys: null));
     }
 
+    /// <summary>Files the account's one manifest row, the way registration left it.</summary>
+    public void SeedFactorManifest(Guid userId, byte[] manifest, int rotationEpoch) =>
+        _manifests.Seed(userId, manifest, rotationEpoch);
+
     /// <summary>
-    /// Forgets every counter materialised so far, which is what clearing the change tracker does to
-    /// them. Wired to the fake <see cref="Application.Abstractions.IPersistenceState"/> by the test.
+    /// The manifest the account would hold if this unit of work committed now, or
+    /// <see langword="null" /> when it holds none — so a test can read back the bytes and the
+    /// generation a promotion left rather than only that a call succeeded.
     /// </summary>
-    public void DiscardTrackedEntities() => _trackedCounters.Clear();
+    public (byte[] Manifest, int RotationEpoch)? FactorManifestOf(Guid userId) =>
+        _manifests.Current(userId);
+
+    /// <summary>
+    /// Forgets every counter materialised so far — and every manifest instance with them — which is
+    /// what clearing the change tracker does to them. Wired to the fake
+    /// <see cref="Application.Abstractions.IPersistenceState"/> by the test.
+    /// </summary>
+    public void DiscardTrackedEntities()
+    {
+        _trackedCounters.Clear();
+        _manifests.Discard();
+    }
+
+    /// <summary>
+    /// The account's manifest row as the tracker holds it, or <see langword="null" /> when the account
+    /// holds none — which the handler above turns into an integrity failure rather than a refusal.
+    /// </summary>
+    /// <remarks>
+    /// The same instance on every call within one unit of work, which is what makes a promotion visible
+    /// to the <see cref="TryAddAsync" /> that follows it. <see cref="InMemoryFactorManifests" /> carries
+    /// the argument.
+    /// </remarks>
+    public Task<FactorManifest?> FindFactorManifestAsync(
+        Guid userId,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(_manifests.Find(userId));
 
     public Task<PasskeyPublicKey?> FindByWebAuthnCredentialIdAsync(
         ReadOnlyMemory<byte> webAuthnCredentialId,
@@ -143,18 +182,29 @@ public sealed class InMemoryPasskeyRepository : IPasskeyRepository
     /// that a factor cannot exist without its share of the account keys, and a fake that took the
     /// argument and forgot it would let a handler filing the envelopes against the wrong credential —
     /// or filing none at all — look correct from every assertion a unit test can make.
+    /// <para>
+    /// <paramref name="factorManifest" /> is required and is not filed anywhere here, which is not the
+    /// same omission the paragraph above refuses. The promotion happened on the instance
+    /// <see cref="FindFactorManifestAsync" /> handed out, so it is already visible through
+    /// <see cref="FactorManifestOf" /> before this call — what a save does in production is commit it,
+    /// and nothing in this fake commits. The argument is still taken and still null-checked, because a
+    /// handler reaching this line with no manifest is one that skipped the load, and that is the
+    /// failure the real signature exists to make impossible.
+    /// </para>
     /// </remarks>
     public Task<bool> TryAddAsync(
         Credential credential,
         PasskeyPublicKey publicKey,
         PasskeySignatureCounter counter,
         WrappedAccountKeys wrappedAccountKeys,
+        FactorManifest factorManifest,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(credential);
         ArgumentNullException.ThrowIfNull(publicKey);
         ArgumentNullException.ThrowIfNull(counter);
         ArgumentNullException.ThrowIfNull(wrappedAccountKeys);
+        ArgumentNullException.ThrowIfNull(factorManifest);
 
         bool taken = _entries.Exists(entry =>
             entry.PublicKey.WebAuthnCredentialId.Span.SequenceEqual(publicKey.WebAuthnCredentialId.Span));

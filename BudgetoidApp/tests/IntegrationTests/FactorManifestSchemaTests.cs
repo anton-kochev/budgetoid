@@ -76,6 +76,18 @@ namespace IntegrationTests;
 /// </remarks>
 public sealed class FactorManifestSchemaTests
 {
+    // EVERY ACCOUNT HERE IS SEEDED WITHOUT A MANIFEST, and the flag is the whole reason this file still
+    // measures the schema. RepositoryTestHost.SeedUserAsync files an account's first manifest by
+    // default, because that is what registration does and every suite driving a route needs the account
+    // to be in the state the product leaves it in. This file is about the TABLE: it writes its own rows
+    // with raw INSERTs so it can offer the column values a domain factory refuses, and a row already
+    // standing would turn every one of those probes into a primary-key violation — a green SQLSTATE
+    // assertion for a constraint nobody was testing, and a count that never returns to zero.
+    //
+    // It is not a workaround for the seeding either. An account with no manifest is a state the schema
+    // permits and the application refuses, which is exactly the boundary a schema test is written on
+    // the far side of.
+
     [Test]
     public async Task Database_RefusesAnEpochBelowTheFloor()
     {
@@ -84,7 +96,7 @@ public sealed class FactorManifestSchemaTests
         // epoch is the only thing left that can answer.
         await using RepositoryTestHost host = await StartHostAsync();
         await using NpgsqlConnection admin = await OpenAdminAsync(host);
-        Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
+        Guid userId = await host.SeedUserAsync("google-1", "person@example.com", withFactorManifest: false);
 
         // Act — epoch 0, which is not merely a small number. Epoch 0 is the ABSENCE of a manifest: an
         // account with no row answers 0, which is the state of every account that exists today, so a
@@ -112,7 +124,7 @@ public sealed class FactorManifestSchemaTests
         // comparison rather than one written with the wrong number.
         await using RepositoryTestHost host = await StartHostAsync();
         await using NpgsqlConnection admin = await OpenAdminAsync(host);
-        Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
+        Guid userId = await host.SeedUserAsync("google-1", "person@example.com", withFactorManifest: false);
 
         // Act
         await using NpgsqlCommand probe = BuildManifestInsert(
@@ -139,7 +151,7 @@ public sealed class FactorManifestSchemaTests
         // overflowing, and a band whose lower bound was dropped would still refuse the wide probe.
         await using RepositoryTestHost host = await StartHostAsync();
         await using NpgsqlConnection admin = await OpenAdminAsync(host);
-        Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
+        Guid userId = await host.SeedUserAsync("google-1", "person@example.com", withFactorManifest: false);
 
         // Act
         await using NpgsqlCommand probe = BuildManifestInsert(
@@ -163,7 +175,7 @@ public sealed class FactorManifestSchemaTests
         // primary key can be what refuses the second.
         await using RepositoryTestHost host = await StartHostAsync();
         await using NpgsqlConnection admin = await OpenAdminAsync(host);
-        Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
+        Guid userId = await host.SeedUserAsync("google-1", "person@example.com", withFactorManifest: false);
 
         await using NpgsqlCommand seed = BuildManifestInsert(
             admin, userId, Manifest(length: 64, filler: StoredFiller), rotationEpoch: 1);
@@ -198,7 +210,7 @@ public sealed class FactorManifestSchemaTests
         // one.
         await using RepositoryTestHost host = await StartHostAsync();
         await using NpgsqlConnection admin = await OpenAdminAsync(host);
-        await host.SeedUserAsync("google-1", "person@example.com");
+        await host.SeedUserAsync("google-1", "person@example.com", withFactorManifest: false);
 
         // Act — an owner nobody minted. Every other column is well-formed, so the key is the only thing
         // that can answer.
@@ -233,8 +245,8 @@ public sealed class FactorManifestSchemaTests
         // nothing.
         await using RepositoryTestHost host = await StartHostAsync();
         await using NpgsqlConnection admin = await OpenAdminAsync(host);
-        Guid sessionUserId = await host.SeedUserAsync("google-1", "person@example.com");
-        Guid otherUserId = await host.SeedUserAsync("google-2", "other@example.com");
+        Guid sessionUserId = await host.SeedUserAsync("google-1", "person@example.com", withFactorManifest: false);
+        Guid otherUserId = await host.SeedUserAsync("google-2", "other@example.com", withFactorManifest: false);
 
         await using (NpgsqlCommand seedOwn = BuildManifestInsert(
             admin, sessionUserId, Manifest(length: 64, filler: StoredFiller), rotationEpoch: 1))

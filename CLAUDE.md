@@ -128,12 +128,20 @@ because every one of these is something a reader will otherwise simplify away.
   `factorId` and both values in the credential's own `SaveChanges`; **"every factor has a row" is
   not a schema fact**, so a path that skipped them would redden nothing. **Every factor's public key
   lives only in `factor_manifests`**, one authenticated blob per account — there is deliberately no
-  per-row public key column, because what must be unforgeable is the *set*. **Registration is the
-  one path that writes a manifest**, at epoch 1, in the same single `SaveChanges` as the account —
-  the other three that move the factor set still owe one. A manifest is *sealed under* the content
-  key, so the server enforces **presence, framing (29–4096) and epoch, never contents**: a manifest
-  naming nobody stores and reads back. Epoch 0 is the **absence** of the row, which every account
-  registered before that write answers forever — nothing can backfill it.
+  per-row public key column, because what must be unforgeable is the *set*. **Four paths move a
+  factor set and three now carry a manifest** — registration inserts the first at epoch 1,
+  adding a passkey and regenerating the code card each *promote* it; revocation still owes one.
+  A manifest is *sealed under* the content key, so the server enforces **presence, framing
+  (29–4096) and epoch, never contents**: a manifest naming nobody stores and reads back.
+  **The client supplies the epoch**, because it is the manifest's associated data — the server
+  only refuses anything that is not stored + 1. That refusal is `FactorManifest.Promote`, an
+  **instance** method on a *loaded* entity: `For(...)` is detached, so `For(...) + Update()` emits
+  `WHERE rotation_epoch = <the new value>`, which matches nothing against the row it came from and
+  **matches** a row a racing promotion already moved. `rotation_epoch` is a concurrency token with
+  **no relational artifact** (measured), and it holds only atomicity — `N + 17` satisfies it as
+  `N + 1` does. **Two refusals that must not collapse**: `Promote` throwing is a 400 (the epoch was
+  never stored + 1); the token firing is a 409 `factor_set_moved` (it was, at read time). A missing
+  manifest row is a **500 on purpose** — no account can exist without one.
   `GET /api/me/account-keys` is keyed on the **account**, never on a credential — narrowing it was
   tried and was wrong. [account-keys.md](docs/business-logic/account-keys.md),
   [ADR 0018](docs/decisions/0018-give-the-wrapped-account-keys-a-policed-table-and-their-own-factor-identifier.md)

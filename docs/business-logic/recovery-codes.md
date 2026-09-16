@@ -157,6 +157,34 @@ erDiagram
     owned by one route is a count another copies, and a copy drifts. Same shape `CanonicalFactorId`
     holds for the factor identifier's spelling.
 
+- **An issue on `POST /api/me/recovery-codes` MUST carry the account's new factor manifest and the
+  epoch it was sealed under, and both MUST land in the same unit of work as the set.** The request
+  carries `manifest` and `rotationEpoch` beside the ten submissions.
+  - **Why**: this route moves twenty factor rows in one request — **ten factors leave and ten
+    arrive** — so the account's list of factor public keys is stale from
+    the instant that transaction commits unless the manifest moves with it. Landed a request later,
+    the read beneath it hands a client one true snapshot of a database whose factor rows and whose
+    manifest describe two different sets, which the client compares and reports as tampering. The
+    epoch is the client's number rather than one this server computes, because it is bound into the
+    manifest's own associated data; a server-chosen value that ever diverged would store a blob the
+    account can never open. See [account-keys.md](account-keys.md), which owns every rule about the
+    promotion.
+  - **Where it sits is not incidental**: the manifest is loaded and promoted **inside** the
+    handler's retried `ExecuteAsync` delegate, below both `ChangeTracker.Clear()` calls. Loaded
+    above either of them, the entity is **detached** by the time the promotion is applied, so EF
+    emits no update at all — the set is replaced, the manifest is not, the response is a `200` and
+    no SQLSTATE says a thing. It is the same never-materialise-across-a-discard hazard the previous
+    set's hash rows carry, arriving from the opposite direction: there the danger is holding an
+    entity the discard should have taken, here it is holding one the discard already took.
+  - **Enforced in**: `GenerateRecoveryCodesHandler` calling `FactorManifest.Promote` on the loaded
+    row inside the delegate, and the `UPDATE (manifest, rotation_epoch)` grant that arrived in
+    `app-role-grants.sql` with it. An epoch that is not one greater than the stored one is a `400`;
+    one that *was* one greater when this request read it and has since moved is a
+    `409 factor_set_moved`, refused by the concurrency token on `rotation_epoch` and telling the
+    caller to re-read and **re-seal** rather than re-send. A missing manifest row is a `500` — an
+    integrity violation, never a first-manifest repair, because filing one here would let this route
+    establish the account's whole factor set under a blob nothing upstream agreed to.
+
 - **An account MUST hold at most one set.**
   - **Why**: two sets are two remaining-counts with nothing saying which binds. "You have three
     codes left" stops being answerable, "revoke the set" stops naming anything, and reissuing can
@@ -674,9 +702,9 @@ grant matrix's argument and of the change-tracker gotcha below.
 
 | Transition | Triggered by | Validations |
 |---|---|---|
-| → Issued | `POST /api/me/recovery-codes` | a fresh `reauthentication` assertion for a passkey registered to **this** account; then exactly ten submissions — each a verifier decoding to exactly 32 bytes, that code's own factor identifier, and its own pair of wrapped account keys — with every verifier distinct and every factor identifier distinct |
+| → Issued | `POST /api/me/recovery-codes` | a fresh `reauthentication` assertion for a passkey registered to **this** account; then exactly ten submissions — each a verifier decoding to exactly 32 bytes, that code's own factor identifier, and its own pair of wrapped account keys — with every verifier distinct and every factor identifier distinct; and a `manifest` between 29 and 4096 bytes beside a `rotationEpoch` exactly one greater than the stored one |
 | → Issued | `POST /api/registration` | the account's **first** set, in the same save as the account. A verified `account_registration` ceremony stands in for the gate; then the same ten submissions judged by the same `RecoveryCodeSetValidation`, plus one rule this path alone has — the passkey's own factor identifier must differ from all ten. See [registration.md](registration.md) |
-| Issued → Replaced | `POST /api/me/recovery-codes` on an account that already holds a set | the same gate and validation; the previous set's sessions are revoked, then its credential is deleted and these rows cascade away |
+| Issued → Replaced | `POST /api/me/recovery-codes` on an account that already holds a set | the same gate and validation; the previous set's sessions are revoked, then its credential is deleted and these rows cascade away — ten factors leaving and ten arriving in one unit of work, with the factor manifest promoted inside it |
 | Issued → Redeemed | `POST /api/recovery-codes/redemption` | the presented verifier is base64url text decoding to exactly 32 bytes, and `SHA-256` of it names a row that is still there — and still that account's — when the transaction re-reads it. Nothing else is validated, because nothing else was presented |
 
 The request that issues a set:
@@ -692,11 +720,12 @@ sequenceDiagram
 
     Note over C: ten codes minted; for each, V = HKDF(canonical(code), …) and a key-encryption key on the other branch
     Note over C: the account keys wrapped ten times over, once under each code, each bound to its own factor id
+    Note over C: a manifest naming the account's new factor set, sealed under the content key at the next epoch
     C->>O: authenticated
     O->>D: issue a reauthentication challenge (lives 5 minutes)
     O-->>C: challenge
     Note over C: the authenticator signs it
-    C->>A: ten submissions + the assertion
+    C->>A: ten submissions + the manifest and its epoch + the assertion
     A->>H: GenerateRecoveryCodesCommand
     H->>G: VerifyAsync — OUTSIDE the transaction
     G->>D: consume the nonce, find the key by handle AND owner, verify, accept the counter
@@ -704,7 +733,8 @@ sequenceDiagram
     H->>D: BEGIN
     H->>D: revoke the previous set's sessions (explicitly) — n of them
     H->>D: delete the previous set's credential — hashes and wrapped keys cascade away
-    H->>D: insert the new credential, its ten hashes and its ten wrapped-key rows in ONE save
+    H->>D: read the account's factor manifest — INSIDE the retried region, below both discards
+    H->>D: insert the new credential, its ten hashes and its ten wrapped-key rows, and promote the manifest, in ONE save
     H->>D: insert a full session over the NEW set — only when n > 0
     H->>D: COMMIT
     A-->>C: 200 {"sessionsEnded": n, "session": … or null}
@@ -789,6 +819,10 @@ ELSE                                                               ← first iss
   `GenerateRecoveryCodesHandler` calls `RevokeSessionsForCredentialHandler` as
   `RevokePasskeyHandler` does; the redemption is not among that handler's callers and must not
   become one, because spending one code says nothing about the sessions the others opened.
+- **[Account keys](account-keys.md)** — the ten wrapped pairs, and the factor manifest this route
+  promotes. That chapter owns the epoch rule, why `FactorManifest.Promote` is an instance method on
+  a tracked row, what the concurrency token on `rotation_epoch` does and does not hold, and the
+  `400`/`409` split between an epoch that was never right and one that stopped being right.
 - **[Users & ownership](users-and-ownership.md)** — the set is a `credentials` row, so it inherits
   that table's exemption, its immutability, and the `DELETE` that revocation introduced.
 - **[Data isolation](../engineering/data-isolation.md)** — `recovery_code_hashes` is exempt from
@@ -820,6 +854,14 @@ ELSE                                                               ← first iss
     nothing references one — so there is no cascade for EF to imitate. It needs only the one replay
     discard at the top of its transaction, and the *second* discard `GenerateRecoveryCodesHandler`
     needs is deliberately absent rather than forgotten.
+  - **Those same two discards make *where* the factor manifest is read load-bearing, and this
+    hazard runs the other way.** The manifest is loaded inside the retried delegate and below both
+    `ChangeTracker.Clear()` calls; read above either of them, the entity is detached by the time
+    `Promote` is applied to it, EF emits no `UPDATE`, and the request answers `200` having replaced
+    ten factors and left the list naming them exactly as it was. No SQLSTATE, no failed assertion on
+    the response, and nothing in the schema afterwards that looks wrong — the server cannot read a
+    manifest, so it cannot tell a current one from a stale one. See
+    [account-keys.md](account-keys.md).
 - **The largest limitation in the feature is a sequencing one, and it is not a defect of the gate.**
   Generating a set needs a fresh passkey assertion, so somebody who has **already** lost their
   authenticator can never generate one. The gate is nevertheless right: with a stolen bearer token,
@@ -894,8 +936,9 @@ ELSE                                                               ← first iss
     [registration.md](registration.md) and [account-keys.md](account-keys.md).
   - **What has none, and what actually blocks it.** `POST /api/me/recovery-codes` is uncalled, and
     **not** for want of an assertion: this client runs one on `/welcome`. What blocks it is the
-    sixth member — ten whole submissions, each carrying its own wrapped copy of the account's
-    content key and index key. Wrapping them needs them unwrapped, and while
+    payload — ten whole submissions, each carrying its own factor key pair and the account's two
+    keys encapsulated to it, and a factor manifest sealed under the content key beside them.
+    Producing any of that needs the account's keys as bytes, and while
     `GET /api/me/account-keys` now hands back every factor's envelopes and `AccountKeyCustodyService`
     opens them — on a passkey sign-in, and from the settings screen's own Unlock control — **what it
     holds afterwards is two non-extractable key objects behind no accessor**, and a wrap takes

@@ -41,23 +41,34 @@ namespace Domain.Users;
 /// between two, and a trigger is the procedural logic
 /// <see href="../../../docs/decisions/0002-enforce-rules-at-the-lowest-capable-layer.md">ADR 0002</see>
 /// forbids pushing down to buy the phrase "the database enforces it". The arithmetic is application
-/// code and nothing below it will notice if it goes wrong — so the application-side check is not a
-/// restatement of a database rule and deleting it does not fall back on one.
+/// code — <see cref="Promote"/> and nowhere else — and nothing below it will notice if it goes wrong,
+/// so that check is not a restatement of a database rule and deleting it does not fall back on one.
 /// </para>
 /// <para>
 /// <b>The <em>atomicity</em> half — that nobody moved the epoch between the read and the write — is
-/// held by nothing either, and that is deliberate until this table has a <em>promoting</em> writer.</b>
-/// EF optimistic concurrency on <see cref="RotationEpoch"/> is what will hold it, and it is not
-/// configured yet. Registration now writes the first manifest, at
-/// <see cref="MinimumRotationEpoch"/>, in the same save as the account — but that is an INSERT of a row
-/// keyed on an account identifier this server has just derived, so there is no epoch to have moved and
-/// nothing for a token to compare. The app role holds INSERT and no UPDATE of any shape, so a token
-/// today would still guard a statement nobody can issue. It is also the wrong shape ahead
-/// of its caller — <see cref="For"/> returns a detached instance, so the obvious promotion
-/// (<c>For(user, bytes, epoch + 1)</c> then <c>Update</c>) hands EF a row whose original values are its
-/// current ones, and the predicate compares the new epoch against itself. Adding it later is free: a
-/// token on an <see langword="int"/> has no relational artifact, so it belongs in the commit that
-/// brings the handler catching <c>DbUpdateConcurrencyException</c> and the test reproducing the race.
+/// held by EF optimistic concurrency on <see cref="RotationEpoch"/>, which is now configured.</b>
+/// <c>SaveChanges</c> appends <c>WHERE rotation_epoch = @original</c> to the UPDATE and raises
+/// <c>DbUpdateConcurrencyException</c> when it matches nothing, so two promotions started from the same
+/// generation cannot both land. It holds <em>only</em> that half: <c>N + 17</c> satisfies the predicate
+/// exactly as <c>N + 1</c> does, which is why the step itself is <see cref="Promote"/>'s arithmetic and
+/// not the token's. Registration is untouched by it — the first manifest, at
+/// <see cref="MinimumRotationEpoch"/>, is an INSERT of a row keyed on an account identifier this server
+/// has just derived, so there is no epoch to have moved and nothing for the token to compare.
+/// </para>
+/// <para>
+/// <b>The token only means something on a <em>loaded</em> row, and that is why promotion is
+/// <see cref="Promote"/> rather than a second factory.</b> Original values are the ones EF snapshotted
+/// at load, so the predicate is only a comparison against the stored generation when the instance being
+/// saved is the one that came back from the database. <see cref="For"/> returns a <em>detached</em>
+/// instance, so the shape a reader simplifying this reaches for first —
+/// <c>For(user, bytes, epoch + 1)</c> then <c>Update</c> — hands EF a row whose original values are its
+/// current ones and emits <c>WHERE rotation_epoch = &lt;the new value&gt;</c> — the epoch compared
+/// against itself. Read what that predicate selects: against the row it was computed from, holding
+/// <c>N</c>, it matches nothing and every promotion raises the concurrency exception; against a row a
+/// <em>racing</em> promotion has already moved to <c>N + 1</c>, it matches — so the one statement the
+/// token exists to refuse is the one this shape lets through, and it overwrites the winner's manifest
+/// under the winner's epoch. That hazard did not go away with the token; the token is what makes it
+/// worth naming.
 /// </para>
 /// <para>
 /// <b>Both constants stay <see langword="const"/>, and the tests deliberately do not read them.</b>
@@ -178,5 +189,86 @@ public sealed class FactorManifest
             Manifest = manifest.ToArray(),
             RotationEpoch = rotationEpoch,
         };
+    }
+
+    /// <summary>
+    /// Replaces this account's manifest with the next generation of it, refusing any
+    /// <paramref name="rotationEpoch"/> that is not exactly one greater than the one the row holds.
+    /// </summary>
+    /// <param name="manifest">The new authenticated manifest bytes, as the client wrote them.</param>
+    /// <param name="rotationEpoch">
+    /// The generation being written, which must be <see cref="RotationEpoch"/> plus one.
+    /// </param>
+    /// <remarks>
+    /// <para>
+    /// <b>Call this only on an instance loaded through the tracker, never on one built by
+    /// <see cref="For"/>.</b> Both halves of the promotion rule depend on it. The <em>step</em> — an
+    /// epoch exactly one greater — is checked against <see cref="RotationEpoch"/>, which is the stored
+    /// generation only when the instance came back from the database; on a freshly built one it is
+    /// whatever the caller just typed, so the guard would compare the caller's arithmetic with itself.
+    /// And the <em>atomicity</em> — that nobody moved the epoch between that read and this write — is
+    /// EF's concurrency token on the same property, whose predicate is built from the value snapshotted
+    /// at load, so a detached instance handed to <c>Update</c> emits
+    /// <c>WHERE rotation_epoch = &lt;the new value&gt;</c> and guards nothing. The remarks on this type
+    /// spell out which racing statement that lets through.
+    /// </para>
+    /// <para>
+    /// <b>There is deliberately no static <c>Promote</c> beside <see cref="For"/>.</b> A factory cannot
+    /// see the stored generation, so a second one would be exactly the
+    /// <c>For(user, bytes, epoch + 1)</c> shape this member exists to replace — and it would redden
+    /// nothing, because every check it skipped is a check about a value it never had.
+    /// </para>
+    /// <para>
+    /// <b>The floor is not restated here and does not need to be.</b> A stored row satisfies
+    /// <see cref="MinimumRotationEpoch"/> — the entity refuses a lower one on the way in and the
+    /// database's check constraint refuses it by any other path — so the only epoch this member accepts
+    /// is already at least one above the floor.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ValidationException">
+    /// The manifest is empty or wider than <see cref="MaximumBytes"/>, or the epoch is not exactly one
+    /// greater than <see cref="RotationEpoch"/>.
+    /// </exception>
+    public void Promote(ReadOnlyMemory<byte> manifest, int rotationEpoch)
+    {
+        // Collected and keyed on the landing property, as For does, so a caller that got both wrong is
+        // told both.
+        Dictionary<string, string[]> errors = new();
+
+        // Emptiness before width, one key because it is one column, and an else-if because a value
+        // cannot be both — the ordering For keeps, for the reason it gives: an empty bytea is exactly
+        // what an unset member sends, so this would file a row naming no factor at all, and a wide one
+        // is refused rather than cut because cutting drops whichever factor fell past the line.
+        if (manifest.IsEmpty)
+        {
+            errors[nameof(Manifest)] = ["A factor manifest is required."];
+        }
+        else if (manifest.Length > MaximumBytes)
+        {
+            errors[nameof(Manifest)] =
+                [$"A factor manifest must be at most {MaximumBytes} bytes."];
+        }
+
+        // The successor is widened to long before the comparison, so the arithmetic cannot wrap: at
+        // int.MaxValue the successor is no int at all and every candidate is refused, which is the
+        // right answer. Left as ints it would wrap to int.MinValue and admit that as the next
+        // generation, leaving the CHECK constraint to catch a value the entity had already blessed.
+        if (rotationEpoch != (long)RotationEpoch + 1)
+        {
+            errors[nameof(RotationEpoch)] =
+                ["A manifest's rotation epoch must be exactly one greater than the stored value "
+                 + $"({RotationEpoch})."];
+        }
+
+        if (errors.Count > 0)
+        {
+            throw new ValidationException(errors);
+        }
+
+        // Copied, not aliased, for the reason For copies: a ReadOnlyMemory<byte> is a view over a
+        // buffer the caller still owns, and a buffer reused for the next write would rewrite a manifest
+        // that has already been accepted.
+        Manifest = manifest.ToArray();
+        RotationEpoch = rotationEpoch;
     }
 }

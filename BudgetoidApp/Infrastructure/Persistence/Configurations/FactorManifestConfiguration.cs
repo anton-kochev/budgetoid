@@ -134,30 +134,32 @@ public sealed class FactorManifestConfiguration : IEntityTypeConfiguration<Facto
             .HasColumnType("bytea")
             .IsRequired();
 
-        // NO CONCURRENCY TOKEN HERE YET, AND THE ABSENCE IS THE DECISION — this is the property
-        // somebody adds IsConcurrencyToken to, so what it would and would not buy is written down
-        // rather than left to be rediscovered.
+        // THE CONCURRENCY TOKEN HOLDS THE ATOMICITY HALF OF THE EPOCH RULE AND NOTHING ELSE, and the
+        // line between the two halves is what a reader must not lose. SaveChanges appends
+        // `WHERE rotation_epoch = @original` to every UPDATE of this row and raises
+        // DbUpdateConcurrencyException when it matches nothing, which is what stops two promotions
+        // started from the same generation from both landing. It does NOT hold "a promotion writes an
+        // epoch exactly one greater than the one it read" — N + 17 satisfies the predicate exactly as
+        // N + 1 does, and the CHECK above holds only the floor. That step is FactorManifest.Promote's
+        // arithmetic, and deleting it falls back on nothing.
         //
-        // What it would buy is the ATOMICITY half of the epoch rule: SaveChanges would emit
-        // `WHERE rotation_epoch = @expected` on every UPDATE of this row and refuse a statement that
-        // matched nothing, which is what stops two promotions started from the same generation from
-        // both landing. It would NOT buy "a promotion writes an epoch exactly one greater than the one
-        // it read" — N + 17 satisfies the predicate exactly as N + 1 does, and the CHECK above holds
-        // only the floor.
+        // IT IS ONLY A PREDICATE ABOUT THE STORED ROW WHEN THE INSTANCE CAME FROM THE TRACKER, because
+        // @original is the value snapshotted at load. FactorManifest.For returns a DETACHED instance,
+        // so the simplification to reach for first — `For(user, bytes, epoch + 1)` then Update() —
+        // gives EF original values taken from the current ones and emits
+        // `WHERE rotation_epoch = <the new value>`. Against the row it was computed from, holding N,
+        // that matches nothing and every promotion throws; against a row a racing promotion has already
+        // moved to N + 1, it matches — so the one statement this token exists to refuse is the one that
+        // shape lets through. Promote is an instance method for exactly this reason.
         //
-        // It is not here because the only writer is registration's INSERT — one row keyed on a freshly
-        // derived account identifier, with no prior epoch to compare — and the app role holds INSERT and
-        // no UPDATE of any shape, so the predicate would guard a statement nobody can issue. And because
-        // the natural
-        // promotion defeats it: FactorManifest.For returns a DETACHED instance, so
-        // `For(user, bytes, epoch + 1)` followed by Update() gives EF original values taken from the
-        // current ones and the predicate compares the new epoch against itself. Adding it costs nothing
-        // later: a concurrency token on an int has no relational artifact, so it lands with the handler
-        // that catches DbUpdateConcurrencyException and the test that reproduces the race, where both
-        // its shape and its effect can be checked.
+        // It has NO RELATIONAL ARTIFACT — measured, not assumed: with this call in place,
+        // `dotnet ef migrations has-pending-model-changes` answers "No changes have been made to the
+        // model", so it needs no migration and the frozen baseline is untouched. The model-only nature
+        // cuts both ways: removing it would be equally invisible to every schema census in the suite.
         builder.Property(manifest => manifest.RotationEpoch)
             .HasColumnName("rotation_epoch")
             .HasColumnType("integer")
+            .IsConcurrencyToken()
             .IsRequired();
 
         // No user_id index, unlike wrapped_account_keys, and the difference is not a preference — it is

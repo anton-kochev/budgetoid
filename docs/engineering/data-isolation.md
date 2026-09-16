@@ -335,14 +335,39 @@ no `INSERT` at all. That was this table's grant until registration widened it, s
 against the state the table was actually in rather than an imagined one. The endpoint stands in for
 neither arm and never could: the lateral names `user_id` itself, so it answers correctly whether the
 policy is doing its work or doing nothing, which is true of every policed read on this page.
-**The unobserved arm moved rather than closed, and it moved when the grant did.** While the role held
-`SELECT` alone the `WITH CHECK` arm was unreachable, and unreachable-and-unobserved costs nothing;
-`INSERT` made it live and unobserved in the same moment, which is the worse of the two states and is
-why that statement was written then rather than earlier. What is unobserved now is the **`UPDATE`
-arm**, unreachable today because the role holds no `UPDATE` of any shape — and worth naming here,
-because it will not fail the way the insert does: RLS refuses a cross-account update **silently**,
-zero rows affected and no error, so whoever brings the promotion path brings the statement that
-watches it. Its `SELECT` was granted before
+**Each widening of this grant makes another arm live, and every arm has needed a statement of its
+own.** While the role held `SELECT` alone the `WITH CHECK` arm was unreachable, and
+unreachable-and-unobserved costs nothing; `INSERT` made it live and unobserved in the same moment,
+which is the worse of the two states and is why that statement was written then rather than earlier.
+The grant is now `SELECT, INSERT, UPDATE (manifest, rotation_epoch)`, widened by the two routes that
+promote an account's factor manifest in the same unit of work as the factor change. **The `UPDATE`
+arm does not fail the way the insert does, and that is the whole reason it needs a statement of its
+own.** An `INSERT` refused by `WITH CHECK` raises `42501` on the statement that wanted it; RLS
+refuses a cross-account `UPDATE` **silently** — zero rows affected, no error. On this table that
+silence is worse than usual, because a promotion already answers a zero-row update as a `409`
+through the concurrency token on `rotation_epoch`, so a policy refusal and an ordinary lost race
+reach the caller as the same status with the same sentence. A statement watching that arm therefore
+has to read rows, and can never be an assertion about a response. It is
+`RlsIsolationTests.Database_RefusesToUpdateAnotherAccountsManifest_WhileStillAllowingItsOwn`: two
+accounts seeded on the elevated path, each holding a manifest, and on the **application** connection
+in a session naming account A an `UPDATE` against account B's row affects **zero rows** — the count
+is the entire observation, because there is no exception and no SQLSTATE to read. B's row is then
+read back and proved unmoved on **bytes and epoch separately**, since a promotion writes both and
+they fail separately. **Two controls, and the second is what makes it conclusive**: the same
+statement against **A's own** row affects exactly one row, without which the case would pass against
+a role holding no `UPDATE` at all; and then the **identical** statement — same columns, same values,
+same owner in the predicate — run on the **superuser** connection also affects one row. One there
+and zero on the application connection leaves exactly one difference between the two runs, which is
+which account the session declares. The statement names **exactly the two columns the grant
+covers**, because a third would answer `42501` from the grant before any policy spoke and the probe
+would be measuring the column list instead of the isolation rule.
+**What no statement here can reach is that `UPDATE`'s own `WITH CHECK` arm, and it is a limit rather
+than a gap somebody left.** The probe proves a session cannot *reach* another account's row; it
+never tries to *move* a row to another owner, because `user_id` is deliberately off the grant's
+column list and a statement naming it dies on `42501` before a policy speaks. That arm is held by
+the column list rather than by an observed refusal, and a widening of the grant to table-wide is
+caught by `AppRoleGrantMatrixTests` rather than by anything on this page.
+`factor_manifests`' `SELECT` was granted before
 any reader existed, for the reason `key_rotations` and `key_rotation_seals` — policed on the same
 argument, and with no reader of the second kind at all — still rest on: `KeyRotationRepository` does issue two
 statements over `key_rotations`, both naming the owner, and the route table offers no way to reach

@@ -59,6 +59,8 @@ public static class RecoveryCodeEndpoints
             Issued<RecoveryCodesGeneration> issued = await handler.HandleAsync(
                 new GenerateRecoveryCodesCommand(
                     request.Codes,
+                    request.Manifest,
+                    request.RotationEpoch,
                     new ReauthenticationAssertion(
                         request.CredentialId,
                         request.ClientDataJson,
@@ -319,9 +321,20 @@ public static class RecoveryCodeEndpoints
     /// that signed the assertion — this route addresses no credential of its own, so unlike the
     /// revocation there is no second id space for it to be confused with.
     /// </para>
+    /// <para>
+    /// <b><see cref="Manifest" /> and <see cref="RotationEpoch" /> travel beside the set because
+    /// replacing it replaces ten factors.</b> The manifest the account held names ten key pairs that
+    /// stop existing in this request and none of the ten that start, and it is the sole carrier of every
+    /// factor's public key — see <see cref="GenerateRecoveryCodesCommand" /> for both members and for
+    /// why the epoch is the client's number rather than one the server adds. The epoch is the only
+    /// non-string member on this record and is not <c>required</c> either: an omitted one binds to
+    /// <c>0</c>, which the domain keeps free to mean "no manifest row", and is refused past the gate.
+    /// </para>
     /// </remarks>
     private sealed record RecoveryCodeGenerationRequest(
         IReadOnlyList<RecoveryCodeSubmission> Codes,
+        string Manifest,
+        int RotationEpoch,
         string CredentialId,
         string ClientDataJson,
         string AuthenticatorData,

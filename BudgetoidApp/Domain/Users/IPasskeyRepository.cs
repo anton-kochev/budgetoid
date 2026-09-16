@@ -55,10 +55,44 @@ public interface IPasskeyRepository
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Inserts the credential, its public key, its signature counter and its share of the account keys.
-    /// All four rows are written in one save, so a refusal leaves none of them behind. Returns
-    /// <see langword="false"/> when the insert lost to an existing row on the WebAuthn credential id,
-    /// meaning that handle is already registered.
+    /// The account's <see cref="FactorManifest"/> row as the tracker holds it, or
+    /// <see langword="null"/> when the account has none.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The instance has to be the tracked one, which is why this is a port member and not a
+    /// projection on a read service.</b> <see cref="FactorManifest.Promote"/> checks the step against
+    /// the <em>stored</em> generation and EF builds <c>WHERE rotation_epoch = @original</c> from the
+    /// value snapshotted at load, so both halves of the promotion rule mean nothing on a detached or
+    /// no-tracking instance. <c>IAccountKeyReadService</c> reads the same row for showing and is
+    /// deliberately not reused here: it projects, and a projection cannot be promoted.
+    /// </para>
+    /// <para>
+    /// <b>Declared on this port and on <see cref="IRecoveryCodeRepository"/> both</b>, rather than on a
+    /// manifest port of its own. Every path that changes the account's factor set owes a promotion in
+    /// the <em>same save</em> as the factor rows, and the save is this port's — a manifest loaded
+    /// through some third collaborator would be tracked by whatever unit of work that collaborator
+    /// happened to share, which is a property no signature here states and no reader can check.
+    /// </para>
+    /// <para>
+    /// The owner is a parameter because it is the primary key of the row being named, not because the
+    /// statement would otherwise be unscoped: <c>factor_manifests</c> carries the
+    /// <c>user_isolation</c> policy, so another account's manifest is not reachable from this
+    /// connection at all. A miss therefore means the account genuinely holds no manifest, which is an
+    /// integrity violation rather than a state any caller may branch on — registration has written one
+    /// since the table existed.
+    /// </para>
+    /// </remarks>
+    Task<FactorManifest?> FindFactorManifestAsync(
+        Guid userId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Inserts the credential, its public key, its signature counter and its share of the account keys,
+    /// and writes the promoted <paramref name="factorManifest"/> beside them. All five rows are written
+    /// in one save, so a refusal leaves none of them behind. Returns <see langword="false"/> when the
+    /// insert lost to an existing row on the WebAuthn credential id, meaning that handle is already
+    /// registered.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -80,12 +114,31 @@ public interface IPasskeyRepository
     /// request, and answering it with "that authenticator is already registered" would be a confident,
     /// specific, false sentence about a device that has never been seen here.
     /// </para>
+    /// <para>
+    /// <b>The manifest is a parameter although EF would flush it either way, and that is the whole
+    /// reason it is one.</b> The caller promoted an instance this port handed it, so the UPDATE rides
+    /// the same <c>SaveChanges</c> whether or not anybody passes it — which means "a factor joined the
+    /// set and the manifest naming the set moved with it" would be a fact about the change tracker,
+    /// invisible in every signature on the path. Named here, the atomicity this member promises is the
+    /// atomicity a reader can see, and the losing half of the handle race has something to detach.
+    /// </para>
+    /// <para>
+    /// <b>A third race, and it answers differently from both of the above.</b> A concurrent change to the
+    /// account's factors can move the manifest's generation between the caller's read and this save, in
+    /// which case the optimistic concurrency token refuses the UPDATE and this raises
+    /// <see cref="Domain.Common.ConflictException"/> under
+    /// <see cref="Domain.Common.ConflictKind.FactorSetMoved"/>. It is not the 400
+    /// <see cref="FactorManifest.Promote"/> raises over the same rule: that one refuses an epoch that was
+    /// never one greater than the stored generation, and this one fires on an epoch that was right when
+    /// it was read.
+    /// </para>
     /// </remarks>
     Task<bool> TryAddAsync(
         Credential credential,
         PasskeyPublicKey publicKey,
         PasskeySignatureCounter counter,
         WrappedAccountKeys wrappedAccountKeys,
+        FactorManifest factorManifest,
         CancellationToken cancellationToken = default);
 
     /// <summary>

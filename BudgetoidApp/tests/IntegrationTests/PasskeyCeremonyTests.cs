@@ -1217,6 +1217,13 @@ public sealed class PasskeyCeremonyTests
             clientDataJson = attestation.ClientDataJsonBase64Url,
             attestationObject = attestation.AttestationObjectBase64Url,
             clientExtensionResults = new { prf = new { enabled = true } },
+
+            // The manifest and its generation ARE sent, and only the three key-custody members are
+            // missing. Without them this request would be refused by the manifest's own gate as well,
+            // and the case would stay green on a route whose key-custody checks had been deleted
+            // outright — which is exactly what its name says it is measuring.
+            manifest = ManifestFixture.Mint().Text,
+            rotationEpoch = await FactorGeneration.NextAsync(authenticated),
         });
 
         // Assert
@@ -1924,10 +1931,25 @@ public sealed class PasskeyCeremonyTests
     /// <c>factor_id</c> is the table's primary key — <c>PK_wrapped_account_keys</c> — so it is unique
     /// table-wide, and several tests here register twice to measure something else.
     /// </param>
-    private static Task<HttpResponseMessage> PostRegistrationAsync(
+    /// <param name="manifest">
+    /// The account's next factor manifest, as text on the wire. Null mints a fresh well-formed one,
+    /// which is what every test that is not about the manifest wants. It is a <see cref="string" />
+    /// rather than a <see cref="ManifestFixture" /> so a caller can post a spelling no fixture can
+    /// produce — malformed text, or the empty string — and a caller that needs to compare the stored
+    /// bytes against what it sent passes <c>fixture.Text</c> and keeps the fixture.
+    /// </param>
+    /// <param name="rotationEpoch">
+    /// The generation the request claims. Null reads the account's current one and adds one, which is
+    /// the only value the route accepts and the only one a test not about the epoch wants. Named by the
+    /// cases that are about it — an epoch two generations on, or one already spent — which is the whole
+    /// of what tells a server validating the client's number from one computing its own.
+    /// </param>
+    private static async Task<HttpResponseMessage> PostRegistrationAsync(
         HttpClient client,
         AttestationResult result,
-        WrappedKeyFixture? wrappedKeys = null)
+        WrappedKeyFixture? wrappedKeys = null,
+        string? manifest = null,
+        int? rotationEpoch = null)
     {
         // JSON null rather than a present object carrying false when the device reported nothing about
         // the extension: the two are different claims, and collapsing them here would hide the
@@ -1937,7 +1959,12 @@ public sealed class PasskeyCeremonyTests
             : null;
         WrappedKeyFixture keys = wrappedKeys ?? WrappedKeyFixture.Mint();
 
-        return client.PostAsJsonAsync(RegistrationPath, new
+        // Read off the running API unless the caller named one, because a file that registers a second
+        // passkey has to send a different number from the first and this helper does not know which
+        // call it is on. See FactorGeneration.
+        int epoch = rotationEpoch ?? await FactorGeneration.NextAsync(client);
+
+        return await client.PostAsJsonAsync(RegistrationPath, new
         {
             clientDataJson = result.ClientDataJsonBase64Url,
             attestationObject = result.AttestationObjectBase64Url,
@@ -1945,6 +1972,11 @@ public sealed class PasskeyCeremonyTests
             factorId = keys.FactorId,
             wrappedPrivateKey = keys.WrappedPrivateKey,
             encapsulatedAccountKeys = keys.EncapsulatedAccountKeys,
+
+            // ONE FACTOR JOINS THE SET HERE, so the account's one authenticated statement of what the
+            // set contains moves with it, under the generation above.
+            manifest = manifest ?? ManifestFixture.Mint().Text,
+            rotationEpoch = epoch,
         });
     }
 
@@ -1958,13 +1990,21 @@ public sealed class PasskeyCeremonyTests
     /// decide the response. The two envelopes are supplied separately rather than as a pair, because
     /// what several of these tests measure is a handler judging one of them and not the other.
     /// </remarks>
-    private static Task<HttpResponseMessage> PostRegistrationAsync(
+    private static async Task<HttpResponseMessage> PostRegistrationAsync(
         HttpClient client,
         AttestationResult result,
         string factorId,
         string wrappedPrivateKey,
-        string encapsulatedAccountKeys) =>
-        client.PostAsJsonAsync(RegistrationPath, new
+        string encapsulatedAccountKeys)
+    {
+        // WELL FORMED, AND THAT IS WHAT KEEPS THESE CASES ATTRIBUTABLE. The manifest is judged AFTER
+        // the three members above it, so a request sending none would still be refused — by the
+        // manifest's own sentence, on a route whose key-custody checks had all been deleted. Sending a
+        // legal one leaves the member the caller corrupted as the only thing that can decide the
+        // answer, which is what each of these tests claims to be measuring.
+        int rotationEpoch = await FactorGeneration.NextAsync(client);
+
+        return await client.PostAsJsonAsync(RegistrationPath, new
         {
             clientDataJson = result.ClientDataJsonBase64Url,
             attestationObject = result.AttestationObjectBase64Url,
@@ -1972,7 +2012,10 @@ public sealed class PasskeyCeremonyTests
             factorId,
             wrappedPrivateKey,
             encapsulatedAccountKeys,
+            manifest = ManifestFixture.Mint().Text,
+            rotationEpoch,
         });
+    }
 
     /// <summary>
     /// The two columns a wrapped account key crosses the wire in, named so a failing case says which

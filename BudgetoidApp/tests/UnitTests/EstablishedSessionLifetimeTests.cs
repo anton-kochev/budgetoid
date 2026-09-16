@@ -272,6 +272,14 @@ public sealed class EstablishedSessionLifetimeTests
             // refused for its wrapped keys would never reach the establishment this method reads. See
             // Submissions.
             Submissions(),
+
+            // A well-formed manifest and the generation exactly one above the account's, for the reason
+            // the submissions above are well formed: this file is about the session's expiry, so a
+            // request refused for its manifest or its epoch would never reach the establishment this
+            // method reads. The seeding that puts the account at the generation this promotes from is in
+            // SeedSet.
+            FactorManifestFixture.Mint().Text,
+            FactorManifestFixture.PromotedRotationEpoch,
             new ReauthenticationAssertion(
                 assertion.CredentialIdBase64Url,
                 assertion.ClientDataJsonBase64Url,
@@ -295,6 +303,14 @@ public sealed class EstablishedSessionLifetimeTests
         recoveryCodes.Seed(
             set,
             [.. verifiers.Select(verifier => RecoveryCodeHash.From(set, verifier, IssuedEarlier))]);
+
+        // The one factor_manifests row every account has held since registration started writing one.
+        // The handler raises rather than branching when it finds none, so an account seeded without it
+        // answers a 500 and every test in this file would be measuring that instead of an expiry.
+        recoveryCodes.SeedFactorManifest(
+            userId,
+            FactorManifestFixture.Mint().Manifest,
+            FactorManifestFixture.SeededRotationEpoch);
 
         return (set, verifiers);
     }

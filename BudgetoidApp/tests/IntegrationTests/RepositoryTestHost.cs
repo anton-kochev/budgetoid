@@ -184,8 +184,12 @@ public sealed class RepositoryTestHost : IAsyncDisposable
     /// <c>Budget</c> deliberately carries no global query filter — its owner scoping is explicit at
     /// every call site instead.
     /// </remarks>
-    public Task<SeededOwner> SeedOwnerAsync(string googleSubject, string email) =>
-        SeedOwnerOnAsync(ConnectionString, googleSubject, email);
+    public Task<SeededOwner> SeedOwnerAsync(
+        string googleSubject,
+        string email,
+        bool withFactorManifest = true) =>
+        SeedOwnerOnAsync(
+            ConnectionString, googleSubject, email, withFactorManifest: withFactorManifest);
 
     /// <summary>
     /// The seeding itself, over a connection string rather than over a host.
@@ -201,9 +205,11 @@ public sealed class RepositoryTestHost : IAsyncDisposable
         string connectionString,
         string googleSubject,
         string email,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool withFactorManifest = true)
     {
-        Guid userId = await SeedUserOnAsync(connectionString, googleSubject, email, cancellationToken);
+        Guid userId = await SeedUserOnAsync(
+            connectionString, googleSubject, email, cancellationToken, withFactorManifest);
         await using BudgetoidDbContext db = CreateSeedingDbContext(connectionString);
         Budget budget = Budget.CreateDefault(Guid.CreateVersion7(), userId, SeedInstant);
         db.Budgets.Add(budget);
@@ -365,10 +371,11 @@ public sealed class RepositoryTestHost : IAsyncDisposable
         SessionKind kind = SessionKind.Full,
         CancellationToken cancellationToken = default,
         CredentialType? opensWith = null,
-        DateTime? issuedAtUtc = null)
+        DateTime? issuedAtUtc = null,
+        bool withFactorManifest = true)
     {
-        SeededOwner owner =
-            await SeedOwnerOnAsync(connectionString, googleSubject, email, cancellationToken);
+        SeededOwner owner = await SeedOwnerOnAsync(
+            connectionString, googleSubject, email, cancellationToken, withFactorManifest);
 
         CredentialType credentialType = opensWith ?? kind switch
         {
@@ -500,21 +507,49 @@ public sealed class RepositoryTestHost : IAsyncDisposable
     /// <see cref="SeedBudgetAsync"/>.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Both rows go in one <c>SaveChangesAsync</c>, mirroring the shape <c>UserRepository</c>
     /// inserts them in: a seeded user without its credential would be a state production can never
     /// produce, so tests written against it would be testing a schema nobody ships.
     /// <paramref name="googleSubject"/> is still the caller's handle on the identity, which is why
     /// this signature outlived the column it used to write.
+    /// </para>
+    /// <para>
+    /// <b>A third row goes with them, in a save of its own: the account's <c>factor_manifests</c>
+    /// row.</b> Registration writes one for every account it creates, so an account without one is a
+    /// state the product stopped producing — and the two routes that change a factor set now treat its
+    /// absence as an integrity violation and answer 500 rather than branching on it. Seeding it is
+    /// therefore not a convenience: without it every suite that seeds an account and then registers a
+    /// passkey or issues a card measures a 500 instead of whatever its own name claims.
+    /// </para>
+    /// <para>
+    /// <b>In a second save rather than beside the other two, and that is forced.</b>
+    /// <see cref="FactorManifest.For" /> takes the loaded <see cref="User" />, which exists here — but
+    /// <see cref="SeedFactorManifestOnAsync" /> is the one place that knows how the row is built, and
+    /// routing through it keeps a single shape rather than a second inline one that could drift. The
+    /// account is not observable to anything between the two saves, so the split costs nothing a test
+    /// can see.
+    /// </para>
+    /// <para>
+    /// <b><paramref name="withFactorManifest" /> exists for exactly one arrangement and must not be
+    /// used for any other.</b> "This account has no manifest" is a state the product cannot reach and
+    /// deliberately answers 500 on — so the test that pins that answer needs an account in it, and
+    /// removing the possibility would make the refusal untestable. Every other caller wants the
+    /// default: an account seeded without a manifest is an account whose passkey registration and
+    /// recovery-code issue both fail with a fault, for a reason no other test is about.
+    /// </para>
     /// </remarks>
-    public Task<Guid> SeedUserAsync(string googleSubject, string email) =>
-        SeedUserOnAsync(ConnectionString, googleSubject, email);
+    public Task<Guid> SeedUserAsync(string googleSubject, string email, bool withFactorManifest = true) =>
+        SeedUserOnAsync(
+            ConnectionString, googleSubject, email, withFactorManifest: withFactorManifest);
 
     /// <inheritdoc cref="SeedOwnerOnAsync" />
     internal static async Task<Guid> SeedUserOnAsync(
         string connectionString,
         string googleSubject,
         string email,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool withFactorManifest = true)
     {
         await using BudgetoidDbContext db = CreateSeedingDbContext(connectionString);
         User user = User.CreateWithId(Guid.CreateVersion7(), email, SeedInstant);
@@ -522,6 +557,21 @@ public sealed class RepositoryTestHost : IAsyncDisposable
         db.Credentials.Add(Credential.CreateFederated(
             user.Id, Credential.GoogleProvider, googleSubject, SeedInstant));
         await db.SaveChangesAsync(cancellationToken);
+
+        if (withFactorManifest)
+        {
+            // At the floor, which is where registration files an account's first one, and carrying
+            // bytes minted per call rather than a shared constant: two accounts seeded in one test hold
+            // two different manifests, so a read-back that answered with the wrong account's row cannot
+            // pass on bytes nobody wrote for it.
+            await SeedFactorManifestOnAsync(
+                connectionString,
+                user.Id,
+                ManifestFixture.Mint().Manifest,
+                FactorManifest.MinimumRotationEpoch,
+                cancellationToken);
+        }
+
         return user.Id;
     }
 

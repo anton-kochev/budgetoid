@@ -236,8 +236,11 @@ public sealed class AccountKeySnapshotTests
         RepositoryTestHost host,
         string googleSubject)
     {
-        RepositoryTestHost.SeededOwner owner =
-            await host.SeedOwnerAsync(googleSubject, $"{googleSubject}@example.com");
+        // Seeded WITHOUT the default manifest, because the one this method files a few lines down is
+        // the row these tests read: SeededManifest is a value this file chose, and user_id is the
+        // primary key, so a default row would refuse the insert below with a 23505.
+        RepositoryTestHost.SeededOwner owner = await host.SeedOwnerAsync(
+            googleSubject, $"{googleSubject}@example.com", withFactorManifest: false);
         Guid credentialId = await host.SeedPasskeyAsync(owner.UserId, WebAuthnCredentialId);
 
         for (int index = 0; index < SeededFactorCount; index++)

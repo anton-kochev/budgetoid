@@ -52,7 +52,7 @@ public sealed record ConflictSitePin(string File, IReadOnlyList<string> Raises, 
 /// Every discovered file sorted by what the pins say about it.
 /// </summary>
 /// <param name="Unpinned">
-/// Files naming a conflict kind that no pin claims. This is the bucket a nineteenth throw site in a new
+/// Files naming a conflict kind that no pin claims. This is the bucket a twenty-first throw site in a new
 /// file lands in, and it is red rather than derived: there is nothing to compute for a site nobody has
 /// decided the remedy of.
 /// </param>
@@ -104,7 +104,7 @@ public sealed record ConflictDispositionCensus(
 /// <para>
 /// <b>Why it reads source text, and why nothing else could.</b> Reflection cannot see a throw site: the
 /// kind is an argument at a construction, so by the time an assembly is loaded there is nothing left to
-/// enumerate. The alternatives are staging all eighteen conflicts over HTTP — eighteen containers for a
+/// enumerate. The alternatives are staging all twenty conflicts over HTTP — twenty containers for a
 /// property that is decided in one argument — or reading the <c>.cs</c>. The repository already has the
 /// second shape in <c>ProjectReferenceGraphTests</c>, which walks up to <c>BudgetoidApp.sln</c> and
 /// parses every build file from disk; this follows it, including the walker's habit of throwing rather
@@ -116,17 +116,17 @@ public sealed record ConflictDispositionCensus(
 /// <b>The subject is discovered and only the disposition is written down.</b> What is discovered is
 /// every <i>code</i> occurrence of <c>ConflictKind.&lt;Member&gt;</c> in every project that does not
 /// declare <c>&lt;IsTestProject&gt;true&lt;/IsTestProject&gt;</c> — which is wider than the throw sites
-/// on purpose. A census keyed on <c>new ConflictException(</c> would have found eight of the eighteen:
-/// five of the repositories build theirs through a target-typed <c>new(</c> in a factory method, where
-/// the type name appears only on the return type, and every one of the four sites in the measured
-/// mutation is one of those. Keying on the enum reference instead means the census does not care how the
+/// on purpose. A census keyed on <c>new ConflictException(</c> would have found fourteen of the twenty:
+/// the other six are built through a target-typed <c>new(</c> in a factory method on five of the
+/// repositories — <c>PayeeRepository</c> has two — where the type name appears only on the return type,
+/// and every one of the four sites in the measured mutation is one of those. Keying on the enum reference instead means the census does not care how the
 /// exception is constructed, or whether it is constructed at that line at all — a kind assigned to a
 /// field, passed through a helper, or read in a <c>switch</c> is a row like any other, and a person has
 /// to say what it is.
 /// </para>
 /// <para>
 /// <b>One of the twelve rows is not a throw site, and that is the widening working rather than a
-/// mis-fit.</b> <c>Domain/Common/ConflictKindSpelling.cs</c> names all eight members in its
+/// mis-fit.</b> <c>Domain/Common/ConflictKindSpelling.cs</c> names all nine members in its
 /// <c>switch</c>; it is pinned like the rest and its note says what it is. The value of keeping it in is
 /// that a ninth place naming a kind — a branch on the kind in <c>ConflictExceptionHandler</c>, say,
 /// which would make the API's rendering depend on the remedy — cannot land without somebody writing a
@@ -232,6 +232,7 @@ public sealed partial class ConflictKindDispositionCensusTests
                 nameof(ConflictKind.FactorAlreadyRegistered),
                 nameof(ConflictKind.LastPasskey),
                 nameof(ConflictKind.RecoveryCodesReplaced),
+                nameof(ConflictKind.FactorSetMoved),
             ],
             "NOT A THROW SITE. This is the spelling table's switch, in declaration order, and it is "
             + "pinned for the same reason the scan is keyed on the enum reference rather than on a "
@@ -257,10 +258,18 @@ public sealed partial class ConflictKindDispositionCensusTests
             "PK_categories, with the same 400-not-409 split on the name rule as its group above"),
         new(
             "Infrastructure/Repositories/PasskeyRepository.cs",
-            [nameof(ConflictKind.FactorAlreadyRegistered)],
-            "PK_wrapped_account_keys on a client-minted factor id. Not AuthenticatorAlreadyRegistered, "
+            [nameof(ConflictKind.FactorAlreadyRegistered), nameof(ConflictKind.FactorSetMoved)],
+            "PK_wrapped_account_keys on a client-minted factor id, and then the account's factor "
+            + "generation moving under the same save. Not AuthenticatorAlreadyRegistered, "
             + "though the same TryAddAsync also filters the WebAuthn credential index — that arm "
-            + "answers false rather than throwing, so it reaches no conflict and appears in no row"),
+            + "answers false rather than throwing, so it reaches no conflict and appears in no row. "
+            + "THE SECOND MEMBER ASKS FOR DIFFERENT WORK FROM THE FIRST, which is the whole reason it "
+            + "is not the neighbour: FactorAlreadyRegistered says the identifier this client chose is "
+            + "spoken for, so mint a fresh one and re-WRAP the account keys under it, while "
+            + "FactorSetMoved says the identifier was fine and the MANIFEST is stale, so read the "
+            + "account's keys back and re-SEAL a manifest over the generation it now reports. It is "
+            + "also not the 400 FactorManifest.Promote raises over the same rule — that caller's "
+            + "arithmetic was wrong, this caller's was right and was overtaken"),
         new(
             "Infrastructure/Repositories/PayeeRepository.cs",
             [nameof(ConflictKind.DuplicateName), nameof(ConflictKind.DuplicateIdentifier)],
@@ -275,12 +284,23 @@ public sealed partial class ConflictKindDispositionCensusTests
             [
                 nameof(ConflictKind.RecoveryCodesReplaced),
                 nameof(ConflictKind.FactorAlreadyRegistered),
+                nameof(ConflictKind.FactorSetMoved),
                 nameof(ConflictKind.RecoveryCodesReplaced),
             ],
-            "AddSetAsync loses a race (twice — the delete leg and the insert leg) and meets a factor id "
-            + "already standing. The two members are deliberately unalike: a replaced set is a fact "
-            + "about timing whose remedy is a fresh re-authentication, and a standing factor id at 122 "
-            + "random bits is never chance"),
+            "AddSetAsync loses a race (twice — the delete leg and the insert leg), meets a factor id "
+            + "already standing, and loses the manifest promotion on the concurrency token. The three "
+            + "members are deliberately unalike: a replaced set is a fact about timing whose remedy is "
+            + "a fresh re-authentication, a standing factor id at 122 random bits is never chance, and "
+            + "a moved factor generation asks for neither of those. THE THIRD ONE'S REMEDY IS THE ONE "
+            + "WORTH STATING because it is the narrowest: nothing this caller sent was wrong and "
+            + "nothing here was written, so what has to be rebuilt is the manifest and its epoch — read "
+            + "the account's keys back, seal a manifest over the generation it now reports, and run the "
+            + "ceremony again. Telling them their CODES were replaced would send them to reissue "
+            + "material that was never the problem; telling them their FACTOR IDENTIFIER was taken "
+            + "would send them re-wrapping envelopes that are already correct. THE MIDDLE ROW MOVED "
+            + "AND THE ORDER IS THE POINT: FactorSetMoved's throw site sits between the factor-id "
+            + "catch and the delete leg's, so a pin listing it last would still count three "
+            + "RecoveryCodesReplaced-and-friends and read as agreement"),
         new(
             "Infrastructure/Repositories/TransactionRepository.cs",
             [nameof(ConflictKind.DuplicateIdentifier)],
@@ -453,7 +473,7 @@ public sealed partial class ConflictKindDispositionCensusTests
     [Test]
     public async Task Scan_FindsAKindPassedToATargetTypedConstruction()
     {
-        // Arrange — the spelling five of the eighteen sites use, and the reason this census is keyed on
+        // Arrange — the spelling six of the twenty sites use, and the reason this census is keyed on
         // the enum reference rather than on `new ConflictException(`: the type name appears only on the
         // return type, so a scan looking for the constructor finds nothing here.
         const string source = """

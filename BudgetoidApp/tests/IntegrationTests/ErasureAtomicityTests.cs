@@ -122,7 +122,7 @@ public sealed class ErasureAtomicityTests
         await using PostgresTestHost host = await StartHostAsync();
         DeleteAttempts attempts = new();
         await using ApiFactory factory = host.CreateFactory(configureServices: FailTheUserDelete(attempts));
-        (HttpClient client, Guid userId, _) = await factory.CreateSignedInClientAsync(Subject);
+        (HttpClient client, Guid userId, _) = await factory.CreateSignedInClientAsync(Subject, withFactorManifest: false);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await FurnishAccountAsync(host, client, Subject);
         await RegisterPasskeyAsync(client, device);
@@ -199,7 +199,7 @@ public sealed class ErasureAtomicityTests
         // Arrange — no decorator here; this is the ordinary path through the real repository, on the
         // host's own factory.
         await using PostgresTestHost host = await StartHostAsync();
-        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject, withFactorManifest: false);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await FurnishAccountAsync(host, client, Subject);
         await RegisterPasskeyAsync(client, device);
@@ -275,7 +275,7 @@ public sealed class ErasureAtomicityTests
         await using PostgresTestHost host = await StartHostAsync();
         DeleteAttempts attempts = new();
         await using ApiFactory factory = host.CreateFactory(configureServices: FailTheUserDelete(attempts));
-        (HttpClient client, Guid userId, _) = await factory.CreateSignedInClientAsync(Subject);
+        (HttpClient client, Guid userId, _) = await factory.CreateSignedInClientAsync(Subject, withFactorManifest: false);
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         await FurnishAccountAsync(host, client, Subject);
         await RegisterPasskeyAsync(client, device);
@@ -562,6 +562,14 @@ public sealed class ErasureAtomicityTests
         byte[] challenge = await BeginCeremonyAsync(client, RegistrationOptionsPath);
         AttestationResult attestation = device.Register(challenge, ApiFactory.PasskeyOrigin, prfEnabled: true);
         WrappedKeyFixture keys = WrappedKeyFixture.Mint();
+
+        // The generation this registration promotes the account's factor manifest to. Read off the
+        // running API rather than written out, because a file that registers a second passkey has to
+        // send a different number from the first and this helper does not know which call it is on —
+        // an epoch that is not exactly one greater than the stored one is a 400 naming rotationEpoch,
+        // which reads as the ceremony being broken. See FactorGeneration.
+        int rotationEpoch = await FactorGeneration.NextAsync(client);
+
         HttpResponseMessage response = await client.PostAsJsonAsync(RegistrationPath, new
         {
             clientDataJson = attestation.ClientDataJsonBase64Url,
@@ -570,6 +578,13 @@ public sealed class ErasureAtomicityTests
             factorId = keys.FactorId,
             wrappedPrivateKey = keys.WrappedPrivateKey,
             encapsulatedAccountKeys = keys.EncapsulatedAccountKeys,
+
+            // ONE FACTOR JOINS THE SET HERE, so the account's one authenticated statement of what the
+            // set contains moves with it. The bytes are minted per call and are never opened by
+            // anything below the wire — a manifest is sealed under the account's content key, which no
+            // server here has ever held — so what has to be right is the framing and the generation.
+            manifest = ManifestFixture.Mint().Text,
+            rotationEpoch,
         });
         response.EnsureSuccessStatusCode();
     }
@@ -854,16 +869,21 @@ public sealed class ErasureAtomicityTests
         db.KeyRotationSeals.Add(KeyRotationSeal.For(
             rotation, factor, EncapsulatedAccountKeysPayload(0x3F)));
 
-        // The account's manifest of every recovery factor's public key, in factor_manifests — the
-        // newest table the enumeration discovers, and one the non-vacuity guard reports as a zero until
-        // something puts a row in it. Nothing in the product writes it: the app role holds SELECT and
-        // no write grant of any shape, so there is no route to reach it through and no INSERT this
-        // application could issue if there were. That is exactly why it is seeded here, on the
-        // container superuser like every other row in this helper — a table that only ever holds zero
-        // rows makes both of this file's claims about it vacuously true, "nothing moved" and
-        // "everything went" alike, and excluding it instead would hide the one edge this row exists to
-        // exercise: FK_factor_manifests_users cascades from users, which is how an erasure reaches
-        // a table the role cannot delete from.
+        // The account's manifest of every recovery factor's public key, in factor_manifests — a table
+        // the enumeration discovers and the non-vacuity guard reports as a zero until something puts a
+        // row in it. The product DOES write it now: registration files an account's first manifest, and
+        // both routes that change a factor set promote it. It is still seeded here rather than left to
+        // the seeding helper, and the reason is the same one every other row in this method has — this
+        // file needs to know WHICH row it is looking at. ManifestNaming(factorId) below carries the
+        // account's own factor id inside the blob, so a "nothing moved" assertion is about this
+        // account's manifest rather than about whatever bytes a default seeding happened to mint. The
+        // client above is therefore created with withFactorManifest: false, or this insert would
+        // collide with PK_factor_manifests.
+        //
+        // The row exists at all because a table that only ever holds zero rows makes both of this
+        // file's claims about it vacuously true, "nothing moved" and "everything went" alike — and
+        // because excluding it would hide the edge it exercises: FK_factor_manifests_users cascades
+        // from users, which is how an erasure reaches a table the role holds no DELETE on.
         //
         // Through FactorManifest.For rather than raw SQL, for the reason the remarks above give
         // about every other row here: the factory is what keeps a seeded row the shape production will

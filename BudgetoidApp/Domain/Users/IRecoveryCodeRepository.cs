@@ -160,9 +160,35 @@ public interface IRecoveryCodeRepository
     Task ConsumeAsync(RecoveryCodeHash hash, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// The account's <see cref="FactorManifest"/> row as the tracker holds it, or
+    /// <see langword="null"/> when the account has none.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The same member as <see cref="IPasskeyRepository.FindFactorManifestAsync"/>, declared twice on
+    /// purpose.</b> A promotion has to ride the same save as the factor rows it describes, and the save
+    /// is the writing port's — so the read belongs beside the write it is going to travel with rather
+    /// than on a manifest port whose unit of work nothing in a signature ties to this one. That port's
+    /// remarks carry the rest of the argument: the instance must be the tracked one, because
+    /// <see cref="FactorManifest.Promote"/> and EF's concurrency token both read the generation
+    /// snapshotted at load.
+    /// </para>
+    /// <para>
+    /// <b>On this route it must be called inside the transactional delegate</b>, after every
+    /// <c>DiscardTrackedEntities</c>. A replayed attempt runs against a database that rolled the
+    /// abandoned one back and a tracker that was emptied, so a manifest read before either is an
+    /// instance holding a generation the database never committed — promoted from it, the UPDATE would
+    /// carry the wrong original value and the wrong successor.
+    /// </para>
+    /// </remarks>
+    Task<FactorManifest?> FindFactorManifestAsync(
+        Guid userId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Writes a set: the credential standing for it, one <see cref="RecoveryCodeHash"/> per code, and
     /// one <see cref="WrappedAccountKeys"/> per code — in one save, so a refusal leaves none of them
-    /// behind.
+    /// behind — and the promoted <paramref name="factorManifest"/> with them.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -196,11 +222,32 @@ public interface IRecoveryCodeRepository
     /// would arrive here as the same conflict, which is why the caller refuses a set repeating an
     /// identifier before it reaches this call — by then the previous set is already gone.
     /// </para>
+    /// <para>
+    /// <b>The manifest is a parameter although EF would flush it either way</b>, for the reason
+    /// <see cref="IPasskeyRepository.TryAddAsync"/> gives about its own: the caller promoted an instance
+    /// this port handed it, so the UPDATE rides this save whether or not anybody names it — and "ten
+    /// factors left, ten arrived, and the manifest naming the set moved with them" would otherwise be a
+    /// fact about the change tracker rather than about any signature on the path. It bites harder here
+    /// than there, because this route already sits inside a transaction: a reader could conclude the
+    /// promotion is atomic wherever it is written and move it out of this save, which is true of the
+    /// commit and false of the statement order.
+    /// </para>
+    /// <para>
+    /// <b>A third conflict on this one member, and none of the three is either of the others.</b> A
+    /// concurrent change to the account's factors can move the manifest's generation between the
+    /// caller's read and this save, in which case the concurrency token refuses the UPDATE and this
+    /// raises <see cref="Domain.Common.ConflictKind.FactorSetMoved"/>: the ten codes in the request are
+    /// intact and what has to be rebuilt is the manifest and its epoch, where a lost race on the set
+    /// itself means this client's codes will never redeem. It is also not the 400
+    /// <see cref="FactorManifest.Promote"/> raises over the same rule, which is for a caller whose epoch
+    /// was never one greater than the stored generation.
+    /// </para>
     /// </remarks>
     Task AddSetAsync(
         Credential credential,
         IReadOnlyList<RecoveryCodeHash> hashes,
         IReadOnlyList<WrappedAccountKeys> wrappedAccountKeys,
+        FactorManifest factorManifest,
         CancellationToken cancellationToken = default);
 
     /// <summary>

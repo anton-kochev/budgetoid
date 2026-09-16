@@ -75,23 +75,23 @@ public sealed record ConflictKindCensus(
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>What this covers that no integration case can.</b> Three of the eight tokens are asserted on the
+/// <b>What this covers that no integration case can.</b> Three of the nine tokens are asserted on the
 /// wire — <c>duplicate_name</c> and <c>duplicate_identifier</c> in <c>PayeeIntegrationTests</c>,
-/// <c>last_passkey</c> in <c>CredentialRevocationTests</c> — and the other five were held by review
+/// <c>last_passkey</c> in <c>CredentialRevocationTests</c> — and the other six were held by review
 /// alone, which is to say a one-character typo in the spelling table shipped a contract no client could
-/// branch on and nothing went red. Covering the remaining five the same way is the wrong shape twice
+/// branch on and nothing went red. Covering the remaining six the same way is the wrong shape twice
 /// over: each costs a container, and the argument those cases carry — that a test asserting a wire
 /// contract must transcribe the word rather than read it from the code under test — does not scale to
-/// eight. <b>This file is the one place the words are allowed to be transcribed, because it is the
+/// nine. <b>This file is the one place the words are allowed to be transcribed, because it is the
 /// place that owns them.</b>
 /// </para>
 /// <para>
-/// <b>It is a census and not eight asserts, for the reason
-/// <c>RepositoryAttributionCensusTests</c> is one.</b> Eight asserts pass forever after a ninth member
+/// <b>It is a census and not nine asserts, for the reason
+/// <c>RepositoryAttributionCensusTests</c> is one.</b> Nine asserts pass forever after a tenth member
 /// arrives: the subject would be written down, so the member nobody added to the list is the one day
 /// the file matters and the one day it says nothing. Here the subject is <i>discovered</i> —
-/// <c>Enum.GetValues</c> off the live type — and only the disposition is written down, so a ninth
-/// member is claimed by nobody and stays red until a person chooses a word for it beside the seven it
+/// <c>Enum.GetValues</c> off the live type — and only the disposition is written down, so a tenth
+/// member is claimed by nobody and stays red until a person chooses a word for it beside the nine it
 /// has to be unlike. Do not "simplify" this into a switch over the members or a comparison against
 /// <see cref="ConflictKindSpelling" />'s own output; the first is a written-down subject wearing a
 /// loop, and the second asserts only that the code agrees with itself.
@@ -114,8 +114,8 @@ public sealed record ConflictKindCensus(
 public sealed class ConflictKindSpellingTests
 {
     /// <summary>
-    /// The eight tokens, transcribed. A ninth member of <see cref="ConflictKind" /> is red until it has
-    /// a line here, and the line is where somebody chooses a word unlike the eight above it.
+    /// The nine tokens, transcribed. A tenth member of <see cref="ConflictKind" /> is red until it has
+    /// a line here, and the line is where somebody chooses a word unlike the nine above it.
     /// </summary>
     private static readonly ConflictKindPin[] Pinned =
     [
@@ -127,6 +127,7 @@ public sealed class ConflictKindSpellingTests
         new(ConflictKind.FactorAlreadyRegistered, "factor_already_registered"),
         new(ConflictKind.LastPasskey, "last_passkey"),
         new(ConflictKind.RecoveryCodesReplaced, "recovery_codes_replaced"),
+        new(ConflictKind.FactorSetMoved, "factor_set_moved"),
     ];
 
     [Test]
@@ -157,7 +158,7 @@ public sealed class ConflictKindSpellingTests
     [Test]
     public async Task Census_ReportsAMemberNobodyPinned()
     {
-        // Arrange — the case this census exists for: a ninth kind lands in the enum, somebody spells
+        // Arrange — the case this census exists for: a tenth kind lands in the enum, somebody spells
         // it in the table, and nobody decides here what a client is going to read. Synthetic, so the
         // proof survives the day the real vocabulary is complete.
         ConflictKind[] declared = [ConflictKind.LastPasskey, ConflictKind.DuplicateName];
