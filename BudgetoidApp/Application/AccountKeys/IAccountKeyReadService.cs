@@ -13,9 +13,11 @@ namespace Application.AccountKeys;
 /// between, and for why an absent manifest is <see langword="null" /> at epoch <c>0</c> rather than an
 /// error. <b>One member is necessary for that and does not achieve it</b>: what makes the two halves
 /// describe one instant is that an implementation reads them in <b>one statement</b>, which the shipped
-/// one does and which this signature cannot compel. <b>Every account still answers
-/// <see langword="null" /> at <c>0</c> in every database</b>, because nothing writes a manifest — the
-/// read exists, the writer does not.
+/// one does and which this signature cannot compel. <b>An account registered before the writer existed
+/// still answers <see langword="null" /> at <c>0</c>, and that is not an error</b>: registration now
+/// writes the first manifest at epoch 1 in the same save as the account, so an account created since
+/// answers bytes at 1 — but nothing backfills the accounts created before it, and no migration can,
+/// because a manifest is sealed under a content key this server has never held.
 /// </para>
 /// <para>
 /// <b>The member is still called <c>ListForAccountAsync</c> although it no longer returns a bare
@@ -86,7 +88,7 @@ public interface IAccountKeyReadService
     /// <b>one</b> row per registered passkey and <b>ten</b> per set of recovery codes — ordered by
     /// <see cref="FactorEnvelopes.FactorId" />. The list is empty when the account holds no factor row
     /// this request can see; the manifest is <see langword="null" /> at epoch <c>0</c> when it has no
-    /// manifest row, which is every account today.
+    /// manifest row, which is every account registered before registration began writing one.
     /// </summary>
     /// <param name="userId">The account whose rows may be read.</param>
     /// <param name="cancellationToken">Cancels the read.</param>

@@ -27,8 +27,11 @@ namespace Application.AccountKeys.GetAccountKeys;
 /// <b>The read of <c>factor_manifests</c> lives in the read service, and this handler is not where a
 /// second one may land.</b> The shipped read service takes both levels off one statement — the argument
 /// for why one statement rather than two is written there and on <see cref="AccountKeyCustody" /> — and
-/// every account still answers <see langword="null" /> at epoch <c>0</c>, because nothing writes a
-/// manifest. A reader must not reach for the table here: the port already returns the pair, and a lookup
+/// which answer an account gets is decided by when it registered: registration writes the first manifest
+/// at epoch 1 in the same save as the account, so an account created since answers bytes, and one that
+/// existed before answers <see langword="null" /> at epoch <c>0</c> forever, because nothing can backfill
+/// a blob sealed under a content key this server has never held.
+/// A reader must not reach for the table here: the port already returns the pair, and a lookup
 /// beside this call would reintroduce exactly the two-snapshot gap the single statement exists to close.
 /// </para>
 /// <para>
@@ -89,11 +92,13 @@ namespace Application.AccountKeys.GetAccountKeys;
 /// <b>An account holding no manifest answers epoch <c>0</c> and no manifest, not a refusal.</b>
 /// <see cref="Domain.Users.FactorManifest.MinimumRotationEpoch" /> is 1 and the column refuses anything
 /// below it, so <c>0</c> is a number no stored row can hold and therefore an unambiguous spelling of
-/// "there is no row". That is the pre-registration state and the state of <em>every</em> account in
-/// every database, because nothing writes a manifest — so the empty answer here is the only answer this
-/// product currently produces, and a handler treating it as an error would refuse every request on the
-/// route. It is also independent of the list below it: a full factor list beside a missing manifest is
-/// the normal shape today, not a contradiction.
+/// "there is no row". That is the state of every account registered before registration began writing a
+/// manifest — it writes one at epoch 1 in the same save as the account, so an account created since
+/// answers bytes at 1, and nothing backfills the older ones because the blob is sealed under a content
+/// key this server has never held. A handler treating the empty answer as an error would therefore
+/// refuse every request from the accounts that most need the route. It is also independent of the list
+/// below it: a full factor list beside a missing manifest is exactly what one of those accounts looks
+/// like, not a contradiction.
 /// </para>
 /// <para>
 /// <b>An account holding no factor rows answers an empty list, not a throw</b>, for the reason

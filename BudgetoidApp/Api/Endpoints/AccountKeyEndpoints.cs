@@ -135,9 +135,11 @@ public static class AccountKeyEndpoints
     /// </summary>
     /// <param name="Manifest">
     /// The account's authenticated manifest of every factor's public key, unpadded base64url, or
-    /// <see langword="null" /> when the account has no manifest row. <b>It is <see langword="null" /> for
-    /// every account today</b> — the read that would find one is wired up, and nothing writes a manifest
-    /// for it to find.
+    /// <see langword="null" /> when the account has no manifest row. <b>Which answer an account gets is
+    /// decided by when it registered</b>: registration writes the first manifest at epoch 1 in the same
+    /// save as the account, so an account created since that landed answers bytes, and one created
+    /// before it answers <see langword="null" /> forever — nothing can backfill a blob sealed under a
+    /// content key this server has never held.
     /// </param>
     /// <param name="RotationEpoch">
     /// Which generation of the manifest is in force, or <c>0</c> when there is no manifest row.

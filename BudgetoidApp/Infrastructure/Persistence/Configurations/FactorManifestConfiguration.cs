@@ -15,9 +15,11 @@ public sealed class FactorManifestConfiguration : IEntityTypeConfiguration<Facto
     // Public for the reason CredentialConfiguration's index names are public: a 23505 under this name
     // is the one collision a caller could be told something useful about — "this account already has a
     // manifest" — which is a different answer from every other unique violation the same INSERT could
-    // raise, and a `catch ... when` can only filter on a name. Nothing filters on it yet, because
-    // nothing writes a manifest yet; whatever comes to will have to tell it apart from the others by
-    // name rather than by shape.
+    // raise, and a `catch ... when` can only filter on a name. Nothing filters on it yet, and the one
+    // writer there is deliberately does not: RegistrationRepository writes this row under an account
+    // identifier derived from a challenge it has just spent, so a collision here would be a collision on
+    // PK_users first — its catch chain says so by name. A promotion is what will need the filter, and it
+    // will have to tell this violation apart from the others by this name rather than by shape.
     public const string PrimaryKeyName = "PK_factor_manifests";
 
     // Pinned for the reason above, and public for the reason the sibling configurations' check names
@@ -143,8 +145,10 @@ public sealed class FactorManifestConfiguration : IEntityTypeConfiguration<Facto
         // it read" — N + 17 satisfies the predicate exactly as N + 1 does, and the CHECK above holds
         // only the floor.
         //
-        // It is not here because nothing writes this table and the app role holds no write privilege on
-        // it, so the predicate would guard a statement nobody can issue — and because the natural
+        // It is not here because the only writer is registration's INSERT — one row keyed on a freshly
+        // derived account identifier, with no prior epoch to compare — and the app role holds INSERT and
+        // no UPDATE of any shape, so the predicate would guard a statement nobody can issue. And because
+        // the natural
         // promotion defeats it: FactorManifest.For returns a DETACHED instance, so
         // `For(user, bytes, epoch + 1)` followed by Update() gives EF original values taken from the
         // current ones and the predicate compares the new epoch against itself. Adding it costs nothing

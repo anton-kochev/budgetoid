@@ -46,10 +46,13 @@ namespace Domain.Users;
 /// </para>
 /// <para>
 /// <b>The <em>atomicity</em> half — that nobody moved the epoch between the read and the write — is
-/// held by nothing either, and that is deliberate until this table has a writer.</b> EF optimistic
-/// concurrency on <see cref="RotationEpoch"/> is what will hold it, and it is not configured yet: no
-/// route, handler or repository writes a manifest and the app role holds no write privilege on the
-/// table, so a token today would guard a statement nobody can issue. It is also the wrong shape ahead
+/// held by nothing either, and that is deliberate until this table has a <em>promoting</em> writer.</b>
+/// EF optimistic concurrency on <see cref="RotationEpoch"/> is what will hold it, and it is not
+/// configured yet. Registration now writes the first manifest, at
+/// <see cref="MinimumRotationEpoch"/>, in the same save as the account — but that is an INSERT of a row
+/// keyed on an account identifier this server has just derived, so there is no epoch to have moved and
+/// nothing for a token to compare. The app role holds INSERT and no UPDATE of any shape, so a token
+/// today would still guard a statement nobody can issue. It is also the wrong shape ahead
 /// of its caller — <see cref="For"/> returns a detached instance, so the obvious promotion
 /// (<c>For(user, bytes, epoch + 1)</c> then <c>Update</c>) hands EF a row whose original values are its
 /// current ones, and the predicate compares the new epoch against itself. Adding it later is free: a

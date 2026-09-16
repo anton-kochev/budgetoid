@@ -89,7 +89,8 @@ public static class RegistrationEndpoints
                     request.FactorId,
                     request.WrappedPrivateKey,
                     request.EncapsulatedAccountKeys,
-                    request.Codes),
+                    request.Codes,
+                    request.Manifest),
                 cancellationToken);
             RegisteredAccount registered = issued.Value;
 
@@ -187,6 +188,15 @@ public static class RegistrationEndpoints
     /// that with a <c>JsonPropertyName</c> on a differently-named property is the evasion the census
     /// exists to catch — it hides the word from the census while still shipping it.
     /// </para>
+    /// <para>
+    /// <b><c>Manifest</c> is a <see cref="string"/> and not <c>required</c> for the same reason as every
+    /// member beside it, and it bites here in a way worth naming.</b> An absent manifest is exactly what
+    /// a client that never implemented the account-key half sends, and that is the client the prf gate is
+    /// written for — so the refusal has to be the handler's sentence about a missing manifest, raised
+    /// past that gate, rather than a framework 400 about a payload. It is last for the reason
+    /// <see cref="RegisterAccountCommand"/> gives: it is the statement about all eleven factors the rest
+    /// of this body files, so it is read after them rather than beside any one of them.
+    /// </para>
     /// </remarks>
     private sealed record RegistrationRequest(
         string ClientDataJson,
@@ -195,7 +205,8 @@ public static class RegistrationEndpoints
         string FactorId,
         string WrappedPrivateKey,
         string EncapsulatedAccountKeys,
-        IReadOnlyList<RecoveryCodeSubmission> Codes);
+        IReadOnlyList<RecoveryCodeSubmission> Codes,
+        string Manifest);
 
     /// <summary>
     /// Everything a completed registration says: one member, and it describes the sign-in.

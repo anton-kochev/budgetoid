@@ -664,13 +664,22 @@ public sealed class RepositoryTestHost : IAsyncDisposable
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <b>Nothing in the product writes one, and that is why a seeder exists at all.</b> There is no
-    /// handler, no route, no repository and no read service on the write side, and the application role
-    /// holds <c>SELECT</c> on this table and no <c>INSERT</c>, <c>UPDATE</c> or <c>DELETE</c> of any
-    /// shape — so a row can only be brought into existence on the <b>elevated</b> connection the
-    /// integration fixture already uses for arrangement. A caller that handed this the app connection
-    /// string would meet <c>42501</c> on the insert rather than a silent no-op, which is the loud half
-    /// of the grant asymmetry <c>account-keys.md</c> argues.
+    /// <b>The product writes exactly one shape of this row, and that is why a seeder still exists.</b>
+    /// <c>RegisterAccountHandler</c> files an account's first manifest at
+    /// <see cref="FactorManifest.MinimumRotationEpoch" />, in the account's own save, and that is the
+    /// whole of the write side: no route promotes a generation, no repository updates one, and an account
+    /// created before that line has no row at all. So every arrangement this suite needs that is not "a
+    /// brand-new account at generation one" — a later generation, a width at either bound, a manifest
+    /// beside a factor set the registration route could not have produced — can only be reached by
+    /// seeding.
+    /// </para>
+    /// <para>
+    /// <b>On the elevated connection, and the role's grants are why.</b> The application role holds
+    /// <c>SELECT</c> and <c>INSERT</c> here and no <c>UPDATE</c> or <c>DELETE</c> of any shape, and its
+    /// <c>INSERT</c> is policed by <c>user_isolation</c> against <c>app.current_user_id</c> — a value no
+    /// seeder publishes. A caller that handed this the app connection string would meet a refusal on the
+    /// insert rather than a silent no-op, which is the loud half of the grant asymmetry
+    /// <c>account-keys.md</c> argues.
     /// </para>
     /// <para>
     /// Through <see cref="FactorManifest.For" /> rather than raw SQL, for the reason

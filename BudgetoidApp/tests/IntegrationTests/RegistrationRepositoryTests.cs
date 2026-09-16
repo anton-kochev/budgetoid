@@ -98,6 +98,19 @@ public sealed class RegistrationRepositoryTests
     /// on one context — the winner, the loser, the newcomer — so the refusal sits between two saves that
     /// must both behave.
     /// </para>
+    /// <para>
+    /// <b>It is also the one place a member missing from <c>RegistrationRepository.Entities</c> is
+    /// reachable, and that mirror is hand-maintained.</b> <see cref="Registration" /> is a record with a
+    /// dozen members and <c>Entities</c> lists them again by hand; an added member left off the list
+    /// compiles, is added to the context by the method above it, and is never detached. Nothing on the
+    /// happy path notices, because a save that commits leaves a tracked entity in a harmless
+    /// <c>Unchanged</c> state. Here it is not harmless: the forgotten entity stays <c>Added</c> across a
+    /// refusal and is flushed by the <em>next</em> save, against a <c>users</c> row that was detached and
+    /// never written — so the newcomer's registration dies on somebody else's foreign key. Every relation
+    /// this record writes is therefore asked for by the loser's own owner id below, one line each, so the
+    /// forgotten member is named rather than being reported as an exception from a call that had nothing
+    /// wrong with it.
+    /// </para>
     /// </remarks>
     [Test]
     public async Task RegisterAsync_AfterARefusedRegistration_LeavesTheContextUsable()
@@ -129,6 +142,14 @@ public sealed class RegistrationRepositoryTests
         await Assert.That(await verify.Users.AnyAsync(user => user.Id == newcomerId)).IsTrue();
         await Assert.That(await verify.Users.AnyAsync(user => user.Id == winnerId)).IsTrue();
 
+        // The newcomer's manifest landed with the rest of it. Asserted beside the user row rather than
+        // left to the count, because the absence assertion below it is satisfied by a save that wrote no
+        // manifest for anybody — which is precisely the state a manifest dropped from the repository's
+        // Add list would produce.
+        await Assert.That(await verify.FactorManifests
+                .AnyAsync(manifest => manifest.UserId == newcomerId))
+            .IsTrue();
+
         // And the refused account is still nowhere, one save later. Looked for by the loser's own handle
         // rather than by a count: the winner's rows and the newcomer's are both there, so a count would
         // be answering a question about them instead. Every relation the registration writes is asked,
@@ -144,6 +165,8 @@ public sealed class RegistrationRepositoryTests
         await Assert.That(await verify.RecoveryCodeHashes.AnyAsync(hash => hash.UserId == loserId))
             .IsFalse();
         await Assert.That(await verify.WrappedAccountKeys.AnyAsync(keys => keys.UserId == loserId))
+            .IsFalse();
+        await Assert.That(await verify.FactorManifests.AnyAsync(manifest => manifest.UserId == loserId))
             .IsFalse();
         await Assert.That(await verify.Sessions.AnyAsync(session => session.UserId == loserId)).IsFalse();
         await Assert.That(await verify.SessionTokens.AnyAsync(token => token.UserId == loserId)).IsFalse();
@@ -294,6 +317,9 @@ public sealed class RegistrationRepositoryTests
             .IsFalse();
         await Assert.That(await verify.WrappedAccountKeys.AnyAsync(keys => keys.UserId == collidingId))
             .IsFalse();
+        await Assert.That(await verify.FactorManifests
+                .AnyAsync(manifest => manifest.UserId == collidingId))
+            .IsFalse();
         await Assert.That(await verify.Sessions.AnyAsync(session => session.UserId == collidingId))
             .IsFalse();
         await Assert.That(await verify.SessionTokens.AnyAsync(token => token.UserId == collidingId))
@@ -371,6 +397,15 @@ public sealed class RegistrationRepositoryTests
             .. Enumerable.Range(0, RecoveryCodeSetSize).Select(_ => SharedFor(recoveryCodes, now)),
         ];
 
+        // ONE ROW NAMING ALL ELEVEN, AT THE FLOOR, because that is what the handler builds. The epoch is
+        // read off the constant rather than written as 1: a registration that filed its first manifest at
+        // some other generation would still satisfy a literal, and this helper is what every test in this
+        // file measures a save against.
+        FactorManifest factorManifest = FactorManifest.For(
+            user,
+            ManifestFixture.Mint().Manifest,
+            FactorManifest.MinimumRotationEpoch);
+
         Session session = Session.Establish(passkey, now, now + SessionPolicy.Lifetime);
         SessionHandle handle = SessionHandle.Mint();
 
@@ -384,6 +419,7 @@ public sealed class RegistrationRepositoryTests
             counter,
             hashes,
             wrappedAccountKeys,
+            factorManifest,
             session,
             handle.TokenFor(session));
     }

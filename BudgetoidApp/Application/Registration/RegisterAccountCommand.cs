@@ -73,6 +73,14 @@ namespace Application.Registration;
 /// a different suite, a different floor and a different width.
 /// </param>
 /// <param name="Codes">The card, one whole submission per code.</param>
+/// <param name="Manifest">
+/// The account's first factor manifest — every one of the eleven factors this request files, named
+/// beside its public key, <em>sealed under</em> the account's content key. <b>Last because it is the
+/// statement about all of them</b>: the ten submissions above it and the passkey's own three members
+/// are what it names, so it is read after them rather than beside any one of them. The server cannot
+/// open it and therefore cannot check that it names eleven, or two, or none — see
+/// <see cref="Application.Passkeys.FactorManifestEnvelope"/> for what is and is not judged here.
+/// </param>
 public sealed record RegisterAccountCommand(
     string GoogleSubject,
     string Email,
@@ -82,7 +90,8 @@ public sealed record RegisterAccountCommand(
     string FactorId,
     string WrappedPrivateKey,
     string EncapsulatedAccountKeys,
-    IReadOnlyList<RecoveryCodeSubmission> Codes);
+    IReadOnlyList<RecoveryCodeSubmission> Codes,
+    string Manifest);
 
 /// <summary>
 /// What a completed registration has to say for itself: how much of the account the session it opened

@@ -926,6 +926,121 @@ public sealed class RlsIsolationTests
             .IsEqualTo(1L);
     }
 
+    /// <summary>
+    /// One account's session cannot file a factor manifest in another account's name.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The <c>WITH CHECK</c> arm of <c>factor_manifests</c>' policy, and until this test nothing
+    /// anywhere had watched it refuse anything.</b> The table's three claims are held in three
+    /// different places and it is worth naming which is which, because two of them look like this one
+    /// and are not. The <c>USING</c> arm is held by
+    /// <c>FactorManifestSchemaTests.Database_HidesAnotherAccountsManifest_FromASessionNamingThisUser</c>,
+    /// which reads and therefore says only what a session may <em>see</em>. The <b>accept</b> direction
+    /// of this arm is held incidentally, by the whole registration suite: <c>AccountRegistrationTests</c>
+    /// drives the real least-privilege connection, <c>RegisterAccountHandler</c> publishes
+    /// <c>app.current_user_id</c> before the save, and every manifest one green registration writes
+    /// passes through this same predicate on its way in. The <b>refuse</b> direction — a row named for
+    /// somebody else — was held by nothing.
+    /// </para>
+    /// <para>
+    /// <b>It was not a gap last week, and the grant is what changed.</b> The app role held <c>SELECT</c>
+    /// on this table and no write command of any shape, so the <c>WITH CHECK</c> arm was unreachable: a
+    /// probe like this one could not get past the privilege check to be judged by a policy at all.
+    /// Registration took the <c>INSERT</c>, and an unreachable arm became a live, unobserved rule
+    /// guarding the one place an account's whole set of recovery factors is written down.
+    /// </para>
+    /// <para>
+    /// <b>What a leak costs here is the write-side mirror of what the read test describes, and it is the
+    /// worse half.</b> A manifest is the single authenticated statement of which factors an account has
+    /// — the list its client reads to decide what to encapsulate the account's keys to. A row filed
+    /// under somebody else's name is that person being handed a factor set this session chose: the
+    /// database cannot tell a well-formed manifest from a forged one, because the binding is the
+    /// authentication tag and is checkable only by a client holding the account's content key, which
+    /// this server has never held. Nothing below the browser would notice.
+    /// </para>
+    /// <para>
+    /// <b>Two assertions separate the two things <c>42501</c> can mean, and neither is redundant.</b>
+    /// A missing privilege and a <c>WITH CHECK</c> violation share that SQLSTATE, so a SQLSTATE
+    /// comparison on its own passes against a role holding no <c>INSERT</c> at all — which is the state
+    /// this table was in until the grant moved, and therefore not a hypothetical. The <b>positive
+    /// control</b> settles it: the identical statement naming the session's own account, on the same
+    /// connection, must land. The <b>message</b> settles it a second way and says which of the two
+    /// refusals arrived rather than leaving it to be inferred from the pair. The fragment is
+    /// transcribed from what this server really sends — <c>new row violates row-level security policy
+    /// for table "factor_manifests"</c>, read off a deliberately broken assertion rather than guessed —
+    /// and it carries the <b>table name</b>, so a refusal raised by some other table's policy is not
+    /// mistaken for this one's. It does assume the server's messages are in English, which is a
+    /// dependency the other probes in this file do not take and the reason they lean on the control
+    /// alone.
+    /// </para>
+    /// <para>
+    /// <b>The bystander is seeded by <see cref="SeedTwoOwnersAsync" /> on the elevated path, never
+    /// through a second application session.</b> Arranging the other account through the arm this test
+    /// measures would make a green here mean "whatever the policy does, it does consistently" — which
+    /// is true of a policy that does nothing. It is the same rule the read test next door keeps about
+    /// its own two seeded rows.
+    /// </para>
+    /// <para>
+    /// The probe's manifest sits inside the length band and its epoch is above the floor, so
+    /// <c>CK_factor_manifests_manifest_length</c> and <c>CK_factor_manifests_rotation_epoch</c> refuse
+    /// nothing and the owner is the only thing wrong with the row. Which of a constraint and a policy
+    /// PostgreSQL consults first is not a fact this suite asserts — see
+    /// <c>FactorManifestSchemaTests</c>' remarks — so a malformed probe would be reading a refusal it
+    /// could not attribute.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Database_RefusesAManifestInsertNamingAnotherAccount()
+    {
+        // Arrange — two owners and no manifest for either, so the row each probe writes is that
+        // account's first and PK_factor_manifests cannot be what refuses anything. No credential is
+        // needed: this table hangs off users directly, which is the point of it — a manifest belongs to
+        // the ACCOUNT and names every factor at once.
+        await using RepositoryTestHost host = await StartHostAsync();
+        (RepositoryTestHost.SeededOwner session, RepositoryTestHost.SeededOwner other) =
+            await SeedTwoOwnersAsync(host);
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(session.UserId);
+
+        // Act — the WITH CHECK half, which is the only half a SELECT cannot reach: hiding another
+        // account's manifest says nothing about whether this session can file one in their name, and a
+        // USING-only policy would let this through. A refused INSERT is loud — 42501, "new row violates
+        // row-level security policy".
+        await using NpgsqlCommand forOther = BuildManifestInsertProbe(app, other.UserId);
+        PostgresException? refusal = await CaptureRefusalAsync(forOther);
+
+        // The positive control, on the SAME connection and differing in one column. Without it every
+        // assertion below is satisfied by a role that holds no INSERT here at all, because a privilege
+        // failure answers the same 42501 — and that was this table's real state until registration took
+        // the grant.
+        await using NpgsqlCommand forOwn = BuildManifestInsertProbe(app, session.UserId);
+        int inserted = await forOwn.ExecuteNonQueryAsync();
+
+        // Assert — the null coalesce is for the failure message: a bare refusal?.SqlState renders a
+        // statement that went through as the empty string, which reads as a blank SQLSTATE rather than
+        // as no exception at all.
+        await Assert.That(refusal?.SqlState ?? "no error")
+            .IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(inserted).IsEqualTo(1);
+
+        // And it was the POLICY that refused rather than the grant, said by the server rather than
+        // inferred from the pair above. "permission denied for table factor_manifests" is the other
+        // sentence this SQLSTATE carries, and it is the one a role with no INSERT would answer to both
+        // probes.
+        await Assert.That(refusal?.MessageText ?? "no error")
+            .Contains("row-level security policy for table \"factor_manifests\"");
+
+        // And nothing landed. A SQLSTATE says the statement was rejected; only this says the other
+        // account still has no manifest at all. On the superuser connection, which row-level security
+        // does not apply to — no policed session could answer this question about another account.
+        await Assert.That(await CountKeyedRowsAsync(admin, "factor_manifests", "user_id", other.UserId))
+            .IsEqualTo(0L);
+        await Assert.That(await CountKeyedRowsAsync(admin, "factor_manifests", "user_id", session.UserId))
+            .IsEqualTo(1L);
+    }
+
     [Test]
     public async Task Database_ReadsAPasskeyPublicKeyWithNoUserOnTheSession()
     {
@@ -1500,6 +1615,63 @@ public sealed class RlsIsolationTests
         command.Parameters.AddWithValue("created_at_utc", SeedInstant);
         return command;
     }
+
+    /// <summary>
+    /// Builds the INSERT probe for <c>factor_manifests</c>, owned by <paramref name="ownerId" />.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Three columns and no fourth: this table carries no <c>created_at_utc</c>, because a generation
+    /// is identified by its epoch rather than by when it landed. It names no credential either — the
+    /// key is <c>user_id</c> alone, so <c>user_id</c> is both the only column a policy could object to
+    /// and the whole primary key.
+    /// </para>
+    /// <para>
+    /// The manifest is well inside <c>CK_factor_manifests_manifest_length</c>'s band and the epoch is
+    /// above <c>CK_factor_manifests_rotation_epoch</c>'s floor, so neither check refuses anything and
+    /// the owner is the only thing that can be wrong with the row. <see cref="BuildWrappedKeysInsertProbe" />
+    /// keeps the same rule for its four length and version checks, and for the same reason: a row
+    /// refused by a constraint would be a refusal the probe could not attribute to a policy.
+    /// </para>
+    /// <para>
+    /// Filled bytes rather than an envelope, and deliberately not built from
+    /// <see cref="RepositoryTestHost.WrappedPrivateKeyPayload" />: a manifest is authenticated PUBLIC
+    /// material the server holds in the clear, and a value carrying the wrapped-key version byte would
+    /// misstate what this column holds to anybody reading the probe for an example. Nothing here or
+    /// anywhere else on this side of the wire verifies the authentication — the tag is checkable only
+    /// by a client holding the account's content key — so the band and the owner are the whole of what
+    /// a row has to satisfy.
+    /// </para>
+    /// </remarks>
+    private static NpgsqlCommand BuildManifestInsertProbe(NpgsqlConnection connection, Guid ownerId)
+    {
+        NpgsqlCommand command = new(
+            "insert into factor_manifests (user_id, manifest, rotation_epoch) " +
+            "values (@user_id, @manifest, @rotation_epoch)",
+            connection);
+        command.Parameters.AddWithValue("user_id", ownerId);
+        command.Parameters.AddWithValue(
+            "manifest",
+            Enumerable.Repeat(ProbeManifestFiller, ProbeManifestLength).ToArray());
+        command.Parameters.AddWithValue("rotation_epoch", ProbeRotationEpoch);
+        return command;
+    }
+
+    /// <summary>
+    /// The shape of the manifest both probes above carry: a width comfortably inside the column's band
+    /// and a generation above its floor, so that neither check constraint is what answers.
+    /// </summary>
+    /// <remarks>
+    /// The epoch is <b>2</b> rather than 1 — not because the floor is wrong, but because 1 is the
+    /// generation registration writes and 0 is the absence of a row, so a probe carrying either would
+    /// read as an arrangement borrowed from somewhere. Nothing here turns on the number; the constraint
+    /// admits every value from 1 upward.
+    /// </remarks>
+    private const int ProbeManifestLength = 64;
+
+    private const byte ProbeManifestFiller = 0x5E;
+
+    private const int ProbeRotationEpoch = 2;
 
     /// <summary>
     /// Writes one live challenge on the superuser connection and returns its id. The nonce is 32

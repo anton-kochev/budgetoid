@@ -7,6 +7,7 @@ using Application.Sessions;
 using Application.Users;
 using Domain.Budgets;
 using Domain.Common;
+using Domain.Security;
 using Domain.Sessions;
 using Domain.Users;
 
@@ -57,7 +58,7 @@ namespace Application.Registration;
 /// than a cost one.</b> Such an executor opens its transaction through <c>CreateExecutionStrategy()</c>,
 /// and <c>BeginTransactionAsync</c> is what opens the connection — which is when
 /// <c>SessionContextInterceptor</c> writes <c>app.current_user_id</c>. A wrap whose delegate contains the
-/// publication at rung 13 therefore configures the connection while the setting is still empty, and the
+/// publication at rung 14 therefore configures the connection while the setting is still empty, and the
 /// <c>users</c> INSERT meets <c>''::uuid</c> in its <c>WITH CHECK</c>: a <c>22P02</c>. Inside a
 /// transaction the interceptor runs exactly once, at the begin, so nothing later in the delegate can
 /// repair a connection configured before the identity existed — and the size of the write changes
@@ -268,14 +269,35 @@ public sealed class RegisterAccountHandler(
                 "The passkey's factor identifier must differ from every recovery code's.");
         }
 
-        // 12. AFTER RUNG 4, AND THE POSITION IS THE WHOLE OF WHAT MAKES THIS VALUE UNCHOOSABLE. The only
+        // 12. THE MANIFEST, AND IT IS AFTER THE PRF GATE FOR RUNGS 7 TO 10'S REASON RATHER THAN A NEW
+        //     ONE: a client that cannot do PRF has no account keys, so it has no factor key pairs, so it
+        //     has no manifest to seal — an absent manifest is very often exactly what a request that gate
+        //     is for carries. Judged before it, such a caller would be told their payload was malformed.
+        //
+        //     AFTER RUNG 11 as well, and that ordering is about what the sentence means. This value is
+        //     one statement about the whole factor set the rungs above have just established; refusing it
+        //     while two of those factors are still known to collide would key a refusal on the manifest
+        //     for a request whose factors were the thing that was wrong.
+        //
+        //     WHAT IS JUDGED HERE IS THE FRAMING AND NOTHING ELSE, and the gap is the point of saying so.
+        //     The manifest is sealed under the account's content key, which this server has never held,
+        //     so it cannot be opened and cannot be checked: a blob naming eleven factors, one naming two,
+        //     and 4096 bytes of noise are the same value to every layer beneath this line. The
+        //     server enforces presence, framing and epoch; the set itself is held by the authentication
+        //     tag and by the client that can verify it. FactorManifestEnvelope carries the argument.
+        if (!FactorManifestEnvelope.TryDecode(command.Manifest, out byte[]? manifestBytes))
+        {
+            throw Refused(nameof(RegisterAccountCommand.Manifest), MalformedManifest());
+        }
+
+        // 13. AFTER RUNG 4, AND THE POSITION IS THE WHOLE OF WHAT MAKES THIS VALUE UNCHOOSABLE. The only
         //     source of the challenge bytes on this leg is the client's own clientDataJSON, so a
         //     derivation before the store has answered would be derived from a value the caller supplied —
         //     an account identifier of their choosing, wearing the shape of one this server minted.
         //     RegistrationAccountId carries the argument; this call site owes the reader the pointer.
         Guid accountId = RegistrationAccountId.For(clientData.Challenge.Span);
 
-        // 13. BEFORE THE INSERT, NEVER AFTER. app.current_user_id reaches the database on the next
+        // 14. BEFORE THE INSERT, NEVER AFTER. app.current_user_id reaches the database on the next
         //     connection open, and the users INSERT is checked against it, so an identity published
         //     afterwards is an identity that statement ran without — every policed row in the save below
         //     would meet ''::uuid and the request would die with 22P02. It is also only published now, and
@@ -284,8 +306,10 @@ public sealed class RegisterAccountHandler(
         userContextWriter.ResolveUser(accountId);
 
         // ONE `now` FOR EVERY ROW. The account, its budget, its three credentials, the passkey's key
-        // material and counter, ten hashes, eleven shares of the account keys and the session all come
-        // into existence in one save, so they carry one creation instant.
+        // material and counter, ten hashes, eleven shares of the account keys, the manifest naming all
+        // eleven and the session all come into existence in one save, so they carry one creation instant.
+        // The manifest is the one row among them that takes no instant: FactorManifest carries no
+        // created_at_utc, because a generation is identified by its epoch rather than by when it landed.
         DateTime now = timeProvider.GetUtcNow().UtcDateTime;
 
         User user = User.CreateWithId(accountId, command.Email, now);
@@ -355,6 +379,24 @@ public sealed class RegisterAccountHandler(
                 now)),
         ];
 
+        // ONE ROW NAMING ALL ELEVEN, AT THE FIRST EPOCH. The eleven rows above are each a factor's own
+        // share of the account keys; this is the single authenticated statement of which factors exist
+        // and what a later rotation may encapsulate to. It is written in THIS save rather than by a
+        // second call, for the reason the class remarks give about there being no transaction here: a
+        // manifest written afterwards is a second transaction, and an account committed without one
+        // answers 201 while its client cannot learn what its own factor set is.
+        //
+        // The epoch is FactorManifest.MinimumRotationEpoch and never a literal 1. Epoch 0 is the ABSENCE
+        // of a row — the state of every account registered before this line existed — so the first
+        // generation is one, and the constant is where that argument lives.
+        //
+        // Nothing here checks that the blob names the eleven factors beside it, and nothing ever can:
+        // it is sealed under the account's content key. See rung 12.
+        FactorManifest factorManifest = FactorManifest.For(
+            user,
+            manifestBytes,
+            FactorManifest.MinimumRotationEpoch);
+
         // OVER THE PASSKEY CREDENTIAL, NEVER THE RECOVERY-CODES ONE — see the class remarks for what the
         // mistake costs and why nothing catches it. Built from the Credential and never from a kind named
         // here: Session.Establish derives the kind from the credential's type, which is what makes "a
@@ -379,6 +421,7 @@ public sealed class RegisterAccountHandler(
                 counter,
                 hashes,
                 wrappedAccountKeys,
+                factorManifest,
                 session,
                 handle.TokenFor(session)),
             cancellationToken);
@@ -417,7 +460,7 @@ public sealed class RegisterAccountHandler(
     /// </para>
     /// <para>
     /// The read runs on <c>credentials</c>, which is exempt from row-level security, so it is unaffected
-    /// by the identity published at rung 13 naming a row that was never written.
+    /// by the identity published at rung 14 naming a row that was never written.
     /// </para>
     /// </remarks>
     private async Task<Exception> RefusalFor(
@@ -504,6 +547,22 @@ public sealed class RegisterAccountHandler(
         "encapsulatedAccountKeys must be base64url text decoding to exactly "
         + $"{WrappedAccountKeys.EncapsulatedAccountKeysLength} bytes carrying encapsulation framing "
         + $"version {WrappedAccountKeys.EncapsulatedAccountKeysVersion}.";
+
+    /// <summary>
+    /// What is required of <c>manifest</c>, said whole rather than split into which part of it was wrong.
+    /// </summary>
+    /// <remarks>
+    /// <b>A range where its two neighbours state a width, and the sentence has to say so.</b>
+    /// <see cref="MalformedWrappedPrivateKey"/> and <see cref="MalformedEncapsulatedAccountKeys"/> each
+    /// name one legal size because their plaintexts are fixed-width keys. A manifest's plaintext grows
+    /// with the number of factors it names, so the only bounds that exist are the framing's floor and the
+    /// column's cap — a sentence naming an exact width here would state a rule this server does not have
+    /// and cannot get.
+    /// </remarks>
+    private static string MalformedManifest() =>
+        "manifest must be base64url text decoding to between "
+        + $"{CiphertextEnvelope.MinimumLength} and {FactorManifest.MaximumBytes} bytes carrying AEAD "
+        + $"framing version {CiphertextEnvelope.Version}.";
 
     // Domain.Common.ValidationException by name, because both layers declare one and only that one is
     // what ValidationExceptionHandler turns into a 400 with the field errors on it.

@@ -316,15 +316,35 @@ isolation tests, `Database_HidesAnotherAccountsWrappedKeys_FromASessionNamingThi
 `Database_RefusesAWrappedKeyReadOnASessionNamingNobody` — which the endpoint does not make
 redundant, because they remain the only statements that have watched the policy *refuse* anything
 here. `app-role-grants.sql` names both kinds where it justifies granting `SELECT` at all.
-**`factor_manifests` has the first kind of reader and not the second**, and that gap is named rather
-than counted: nothing has watched `user_isolation` refuse a manifest, and the route cannot stand in
-for a statement that would, because nothing writes a manifest — the read answers an absent one
-either way, so a policy doing its work and a policy doing nothing are indistinguishable from the
-outside. What scopes that arm is the policy and the explicit `user_id` predicate the lateral
-carries — the same two layers as everywhere else on this page, with the difference that only one of
-them here has ever been watched doing anything. Its `SELECT` was granted before that reader
-existed, for the reason `key_rotations` and `key_rotation_seals` — policed on the same argument, and
-with no reader of the second kind at all — still rest on: `KeyRotationRepository` does issue two
+**`factor_manifests` has both kinds of reader, and its policy's two arms are watched separately.**
+The `USING` arm is held by
+`FactorManifestSchemaTests.Database_HidesAnotherAccountsManifest_FromASessionNamingThisUser`: two
+`select count(*)` on the application connection, the session's own manifest answering `1` and
+another account's answering `0`. The `WITH CHECK` arm is held in its **refusing** direction by
+`RlsIsolationTests.Database_RefusesAManifestInsertNamingAnotherAccount`, and by nothing else — an
+INSERT naming another account's `user_id`, on that same connection, answers `42501` with
+`new row violates row-level security policy for table "factor_manifests"`. Its **accepting**
+direction is held incidentally, on every green registration test, because registration drives the
+real least-privilege connection and the manifest INSERT passes through `WITH CHECK` on its way in —
+which is the other half of why the identity has to be published before the save opens its
+connection: published after, that insert meets `''::uuid` and the whole registration dies with
+`22P02` instead. **That refusal needs a positive control, because `42501` is ambiguous** — a missing
+privilege and a `WITH CHECK` violation share the SQLSTATE, so the same INSERT naming the session's
+**own** account has to succeed on the same connection, or the test would pass against a role holding
+no `INSERT` at all. That was this table's grant until registration widened it, so it is a control
+against the state the table was actually in rather than an imagined one. The endpoint stands in for
+neither arm and never could: the lateral names `user_id` itself, so it answers correctly whether the
+policy is doing its work or doing nothing, which is true of every policed read on this page.
+**The unobserved arm moved rather than closed, and it moved when the grant did.** While the role held
+`SELECT` alone the `WITH CHECK` arm was unreachable, and unreachable-and-unobserved costs nothing;
+`INSERT` made it live and unobserved in the same moment, which is the worse of the two states and is
+why that statement was written then rather than earlier. What is unobserved now is the **`UPDATE`
+arm**, unreachable today because the role holds no `UPDATE` of any shape — and worth naming here,
+because it will not fail the way the insert does: RLS refuses a cross-account update **silently**,
+zero rows affected and no error, so whoever brings the promotion path brings the statement that
+watches it. Its `SELECT` was granted before
+any reader existed, for the reason `key_rotations` and `key_rotation_seals` — policed on the same
+argument, and with no reader of the second kind at all — still rest on: `KeyRotationRepository` does issue two
 statements over `key_rotations`, both naming the owner, and the route table offers no way to reach
 either, while nothing anywhere names `key_rotation_seals`. The grant is what lets the tables be
 read **at all**,

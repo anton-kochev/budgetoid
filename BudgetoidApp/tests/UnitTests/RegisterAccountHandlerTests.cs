@@ -3,6 +3,7 @@ using Application.Abstractions;
 using Application.Passkeys.CompleteRegistration;
 using Application.RecoveryCodes.GenerateRecoveryCodes;
 using Application.Registration;
+using Domain.Security;
 using Domain.Users;
 using Microsoft.Extensions.Time.Testing;
 using TestSupport;
@@ -84,6 +85,9 @@ public sealed class RegisterAccountHandlerTests
 
     /// <summary>The member the passkey's factor identifier is refused under.</summary>
     private const string FactorIdField = "FactorId";
+
+    /// <summary>The member the account's first factor manifest is refused under.</summary>
+    private const string ManifestField = "Manifest";
 
     /// <summary>Fixed instant, so nothing here depends on the wall clock.</summary>
     private static readonly DateTimeOffset UtcNow = new(2026, 3, 4, 9, 15, 0, TimeSpan.Zero);
@@ -384,6 +388,208 @@ public sealed class RegisterAccountHandlerTests
     }
 
     /// <summary>
+    /// The first manifest is filed at <see cref="FactorManifest.MinimumRotationEpoch" /> and at no other
+    /// generation.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Nothing else in this system can see this number, which is the whole reason the test exists.</b>
+    /// <c>CK_factor_manifests_rotation_epoch</c> admits every integer from the floor upward, so a handler
+    /// written as <c>FactorManifest.For(user, bytes, 7)</c> stores 7, answers 201, and is refused by no
+    /// constraint, no policy and no other test in either project. The wrong generation is not a broken
+    /// row: it is a client told that seven rotations have happened on an account that has had none, which
+    /// is the one fact this blob exists to state and the one nothing downstream can re-derive.
+    /// </para>
+    /// <para>
+    /// <b>The assertion names the constant, and that is deliberately not the rule
+    /// <c>FactorManifestTests</c> keeps.</b> That file writes <c>1</c>, <c>0</c> and <c>-1</c> out as
+    /// literals because its subject is <em>where the floor is drawn</em>, and a test reading the constant
+    /// it checks would move with an edit to it and compare a constant with itself. This test's subject is
+    /// one ring up and is a different question: which number the <em>handler</em> chose. Named, it is red
+    /// on any literal the handler could have written; as a literal <c>1</c> of its own it would be green
+    /// on a handler that had hard-wired the same <c>1</c> — which is the mistake, since the floor's
+    /// argument lives on the constant and a copy of its value carries none of it.
+    /// </para>
+    /// <para>
+    /// The account the row is filed against is asserted beside it. A manifest at the right generation
+    /// filed under the wrong account is a well-formed row the database accepts — the factory reads the
+    /// owner off whichever <see cref="User" /> it was handed — and it would leave the registering account
+    /// answering the absent shape while a stranger's read answered bytes it cannot open.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task HandleAsync_FilesTheFirstManifestAtTheFloorGeneration()
+    {
+        // Arrange
+        byte[] challenge = RandomNumberGenerator.GetBytes(ChallengeBytes);
+        StubWebAuthnChallengeStore store = new(challenge, WebAuthnCeremony.AccountRegistration);
+        SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(RelyingPartyId);
+        AttestationResult attestation = device.Register(challenge, Origin, signCount: 0, prfEnabled: true);
+        Fixture fixture = Build(store);
+
+        // Act
+        await fixture.Handler.HandleAsync(CommandFor(attestation));
+
+        // Assert — the port was reached, so what follows is a claim about a manifest that exists.
+        await Assert.That(fixture.Repository.Calls.Count).IsEqualTo(1);
+
+        FactorManifest filed = fixture.Repository.Calls[0].FactorManifest;
+
+        await Assert.That(filed.RotationEpoch).IsEqualTo(FactorManifest.MinimumRotationEpoch);
+        await Assert.That(filed.UserId).IsEqualTo(RegistrationAccountId.For(challenge));
+    }
+
+    /// <summary>
+    /// The manifest handed to the repository is the decoded value the command carried, byte for byte.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The bytes are the only part of this row nothing downstream can check, ever.</b> A manifest is
+    /// sealed under the account's content key, which this server has never held: the column takes any
+    /// width inside the band, the framing check looks at one leading byte, and no layer beneath the
+    /// handler can tell one account's manifest from another's or from noise. So a handler that filed a
+    /// freshly encoded blank, the passkey's wrapped private key, or the bytes with the version stripped
+    /// would store a row every constraint accepts — and the person finds out on the day their browser
+    /// asks which factors it may encapsulate to and is handed something that will not open.
+    /// </para>
+    /// <para>
+    /// <b>Compared as hex against a value this test minted, not against a re-encode of what the command
+    /// carried.</b> Building the expectation by encoding and decoding again would pass on a handler that
+    /// round-tripped the value through the wrong alphabet, since both sides would make the same mistake.
+    /// The bytes are drawn first and the command is built from them, which is the one direction that
+    /// measures the decode.
+    /// </para>
+    /// <para>
+    /// <b>The width is neither bound and is not round.</b> Every manifest fixture written for the read
+    /// side of this feature was ten bytes wide, which made a ten-byte truncation the identity function on
+    /// all of them. <see cref="PlausibleManifestBytes" /> is what a manifest naming this account's eleven
+    /// factors really measures, so a projection or a copy that narrowed the value has somewhere to go
+    /// wrong. The width is asserted before the content, so a truncation reads as the number it is rather
+    /// than as a mismatch a thousand positions in.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task HandleAsync_FilesTheManifestBytesTheCommandCarried()
+    {
+        // Arrange — the bytes first, so the expectation is not a second encode of the same value.
+        byte[] manifest = ManifestPayload();
+        byte[] challenge = RandomNumberGenerator.GetBytes(ChallengeBytes);
+        StubWebAuthnChallengeStore store = new(challenge, WebAuthnCeremony.AccountRegistration);
+        SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(RelyingPartyId);
+        AttestationResult attestation = device.Register(challenge, Origin, signCount: 0, prfEnabled: true);
+        Fixture fixture = Build(store);
+
+        // Act
+        await fixture.Handler.HandleAsync(
+            CommandFor(attestation, manifest: Base64UrlText.Encode(manifest)));
+
+        // Assert
+        await Assert.That(fixture.Repository.Calls.Count).IsEqualTo(1);
+
+        ReadOnlyMemory<byte> filed = fixture.Repository.Calls[0].FactorManifest.Manifest;
+
+        await Assert.That(filed.Length).IsEqualTo(PlausibleManifestBytes);
+        await Assert.That(Convert.ToHexString(filed.Span))
+            .IsEqualTo(Convert.ToHexString(manifest));
+    }
+
+    /// <summary>
+    /// Rung 6 runs before rung 12: a client that cannot do PRF is told about its authenticator, never
+    /// about its manifest.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The two faults arrive together on a real request, which is what makes the order matter rather
+    /// than be a matter of taste.</b> A client whose authenticator has no PRF extension has no account
+    /// keys, so it has no factor key pairs, so there is nothing for it to seal a manifest under — an
+    /// absent or empty <c>manifest</c> is very often exactly what such a request carries. Judged first,
+    /// the manifest rung answers "your payload was malformed" to somebody whose payload was the best
+    /// their device can produce, and sends them to correct a member they cannot correct.
+    /// </para>
+    /// <para>
+    /// <b>Asserted both ways round.</b> A bag carrying both keys satisfies a one-sided check while
+    /// telling the caller two things at once, one of which is the wrong thing to act on — the rule the
+    /// factor-identifier case beside this one already keeps.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task HandleAsync_WithNoPrfAndAMalformedManifest_RefusesOnTheDevice()
+    {
+        // Arrange — a genuine ceremony in every respect the server can verify, a client reporting no
+        // extension results, and a manifest that is not base64url at all.
+        byte[] challenge = RandomNumberGenerator.GetBytes(ChallengeBytes);
+        StubWebAuthnChallengeStore store = new(challenge, WebAuthnCeremony.AccountRegistration);
+        SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(RelyingPartyId);
+        AttestationResult attestation = device.Register(challenge, Origin, signCount: 0, prfEnabled: null);
+        Fixture fixture = Build(store);
+
+        // Act
+        ValidationException refusal = await ThrowsAsync<ValidationException>(
+            () => fixture.Handler.HandleAsync(CommandFor(
+                attestation,
+                reportsEnabledPrf: false,
+                manifest: NotBase64Url)));
+
+        // Assert
+        await Assert.That(MessageOf(refusal, ResponseField))
+            .Contains("cannot hold the account's keys");
+        await Assert.That(refusal.Errors.Keys).DoesNotContain(ManifestField);
+        await Assert.That(fixture.Repository.Calls).IsEmpty();
+        await Assert.That(fixture.Writer.Published).IsEmpty();
+    }
+
+    /// <summary>
+    /// Rung 11 runs before rung 12: a factor set that collides with itself is reported as that, and not
+    /// as a bad manifest.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>What is at stake is what the sentence means, not which 400 comes back.</b> A manifest is one
+    /// authenticated statement about the <em>whole</em> factor set the rungs above have just established.
+    /// Refusing it while two of those factors are still known to collide keys the refusal on the manifest
+    /// for a request whose factors were the thing that was wrong — a caller then re-seals a manifest that
+    /// was never the problem, sends it again, and is refused again in the same words.
+    /// </para>
+    /// <para>
+    /// The repeated identifier is the <b>last</b> code's, for the reason the rung-11 case beside this one
+    /// gives: a check that looked at the first submission and trusted the other nine would pass an
+    /// arrangement built on the first.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task HandleAsync_WhenThePasskeyClaimsACodesFactorAndTheManifestIsMalformed_RefusesOnTheFactorId()
+    {
+        // Arrange
+        byte[] challenge = RandomNumberGenerator.GetBytes(ChallengeBytes);
+        StubWebAuthnChallengeStore store = new(challenge, WebAuthnCeremony.AccountRegistration);
+        SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(RelyingPartyId);
+        AttestationResult attestation = device.Register(challenge, Origin, signCount: 0, prfEnabled: true);
+        IReadOnlyList<RecoveryCodeSubmission> card = Card();
+        Fixture fixture = Build(store);
+
+        // Act
+        ValidationException refusal = await ThrowsAsync<ValidationException>(
+            () => fixture.Handler.HandleAsync(CommandFor(
+                attestation,
+                factorId: card[^1].FactorId,
+                codes: card,
+                manifest: NotBase64Url)));
+
+        // Assert
+        await Assert.That(MessageOf(refusal, FactorIdField))
+            .IsEqualTo("The passkey's factor identifier must differ from every recovery code's.");
+        await Assert.That(refusal.Errors.Keys).DoesNotContain(ManifestField);
+        await Assert.That(fixture.Repository.Calls).IsEmpty();
+        await Assert.That(fixture.Writer.Published).IsEmpty();
+    }
+
+    /// <summary>
+    /// Text a base64url decoder refuses outright, used wherever a member has to be malformed for a reason
+    /// no width or version check could be responsible for.
+    /// </summary>
+    private const string NotBase64Url = "this is not base64url!!";
+
+    /// <summary>
     /// The handler and the two collaborators the assertions read, assembled once.
     /// </summary>
     private sealed record Fixture(
@@ -457,7 +663,8 @@ public sealed class RegisterAccountHandlerTests
         AttestationResult attestation,
         bool reportsEnabledPrf = true,
         string? factorId = null,
-        IReadOnlyList<RecoveryCodeSubmission>? codes = null) =>
+        IReadOnlyList<RecoveryCodeSubmission>? codes = null,
+        string? manifest = null) =>
         new(
             Subject,
             Email,
@@ -469,7 +676,8 @@ public sealed class RegisterAccountHandlerTests
             factorId ?? Guid.CreateVersion7().ToString("D"),
             Base64UrlText.Encode(WrappedPrivateKeyPayload(PrivateKeyPurpose)),
             Base64UrlText.Encode(EncapsulatedAccountKeysPayload(AccountKeysPurpose)),
-            codes ?? Card());
+            codes ?? Card(),
+            manifest ?? Base64UrlText.Encode(ManifestPayload()));
 
     /// <summary>
     /// A card of <paramref name="count" /> whole submissions: a verifier, a factor of its own, and the
@@ -502,6 +710,55 @@ public sealed class RegisterAccountHandlerTests
             WrappedAccountKeys.WrappedPrivateKeyLength,
             WrappedAccountKeys.WrappedPrivateKeyVersion,
             purpose);
+
+    /// <summary>
+    /// A well-formed factor manifest: the AEAD framing's version byte, the byte that says what this
+    /// payload is, and random bytes to a width a real manifest of this account's factor set would have.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>A band rather than a width, which is what separates this helper from the two above it.</b> The
+    /// two envelopes have exactly one legal size each because their plaintexts are fixed-width keys; a
+    /// manifest's plaintext is a list that grows with the factor count, so the only bounds that exist are
+    /// <c>CiphertextEnvelope.MinimumLength</c> and <c>FactorManifest.MaximumBytes</c>. Both are read off
+    /// production rather than restated, for the reason <see cref="WrappedPrivateKeyPayload" /> gives about
+    /// its own two.
+    /// </para>
+    /// <para>
+    /// <b>The default width is neither bound, and that is deliberate rather than arbitrary.</b> Every
+    /// manifest fixture written for the read side of this feature was ten bytes wide, which made a
+    /// ten-byte truncation the identity function on all of them — a defect a review found rather than a
+    /// test. <see cref="PlausibleManifestBytes" /> is what a manifest naming this account's eleven factors
+    /// really measures, so a projection that narrowed the value has somewhere to go wrong.
+    /// </para>
+    /// </remarks>
+    private static byte[] ManifestPayload(int length = 0) =>
+        Payload(
+            length == 0 ? PlausibleManifestBytes : length,
+            CiphertextEnvelope.Version,
+            ManifestPurpose);
+
+    /// <summary>
+    /// What a manifest naming the eleven factors one registration writes really measures: the AEAD
+    /// framing, a two-digit count, and one entry per factor.
+    /// </summary>
+    /// <remarks>
+    /// Computed rather than written out, so it moves with the framing's own floor. The per-entry figure
+    /// is the client's encoding of one factor identifier beside one uncompressed P-256 public key; it is
+    /// an estimate and nothing turns on its exactness, only on the result being neither bound and not a
+    /// round number.
+    /// </remarks>
+    private static int PlausibleManifestBytes =>
+        CiphertextEnvelope.MinimumLength
+        + ManifestFactorCountBytes
+        + ((RequiredCodeCount + 1) * ManifestBytesPerFactor);
+
+    private const int ManifestFactorCountBytes = 2;
+
+    private const int ManifestBytesPerFactor = 103;
+
+    /// <summary>The byte that says a payload is a manifest rather than one of the two envelopes.</summary>
+    private const byte ManifestPurpose = 0x3F;
 
     /// <inheritdoc cref="WrappedPrivateKeyPayload" />
     private static byte[] EncapsulatedAccountKeysPayload(byte purpose) =>

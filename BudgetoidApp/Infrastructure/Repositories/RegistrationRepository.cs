@@ -30,6 +30,11 @@ public sealed class RegistrationRepository(BudgetoidDbContext dbContext) : IRegi
         // handed over either way and nothing going red until a browser months later.
         dbContext.WrappedAccountKeys.AddRange(registration.WrappedAccountKeys);
 
+        // Add, singular, over the same eleven factors the AddRange above covers: what the manifest
+        // authenticates is the SET, so there is one row per account and never one per factor. It rides
+        // this save rather than a second call for the reason the session below does.
+        dbContext.FactorManifests.Add(registration.FactorManifest);
+
         // The session and its handle ride on THIS save rather than on a second call to
         // ISessionRepository.AddAsync, which saves on its own. There is no transaction on this path, so
         // two saves would be two transactions — see IRegistrationRepository.RegisterAsync, which is where
@@ -39,7 +44,7 @@ public sealed class RegistrationRepository(BudgetoidDbContext dbContext) : IRegi
 
         try
         {
-            // ONE SAVE FOR ROUGHLY THIRTY ROWS ACROSS NINE RELATIONS. EF orders the statements from the
+            // ONE SAVE FOR ROUGHLY THIRTY ROWS ACROSS TEN RELATIONS. EF orders the statements from the
             // foreign keys between the entity types, so users precedes credentials, credentials precede
             // everything filed against one, and sessions precedes its token, whatever order they were
             // added in above. What the single save buys is the other direction: there is no window in
@@ -56,12 +61,19 @@ public sealed class RegistrationRepository(BudgetoidDbContext dbContext) : IRegi
         // RepositoryConstraintAttributionTests requires of every repository in this folder that
         // translates anything, and PasskeyRepository.TryAddAsync's catches are its shape.
         //
-        // THREE INDEXES ARE DELIBERATELY NOT AMONG THEM, AND EACH IS UNREACHABLE HERE BESIDES — which is
+        // FOUR INDEXES ARE DELIBERATELY NOT AMONG THEM, AND EACH IS UNREACHABLE HERE BESIDES — which is
         // what stops a later reader adding a fifth filter that can never fire. IX_budgets_user_id_name,
-        // IX_credentials_user_id_federated and IX_credentials_user_id_recovery_codes are all keyed on
+        // IX_credentials_user_id_federated, IX_credentials_user_id_recovery_codes and
+        // PK_factor_manifests are all keyed on
         // user_id, and the user_id every row in this call carries is derived for THIS registration from a
         // challenge this server minted and has just spent. No other row can share it, so none of the
-        // three can be breached by anything this save writes. The one collision the derived id could
+        // four can be breached by anything this save writes. PK_factor_manifests is the one worth reading
+        // twice, because it is the only one of the four whose whole key is user_id and because a
+        // "this account already has a manifest" sentence sounds like something a caller could act on:
+        // it cannot be reached from here, since a second manifest for this account would require a
+        // second registration under the same derived identifier, which is PK_users below rather than
+        // this index. FactorManifestConfiguration.PrimaryKeyName stays public for the promotion path
+        // that will need to filter on it, not for this one. The one collision the derived id could
         // itself produce — two registrations reaching the same account identifier — is the users primary
         // key, PK_users, which is not narrowed either: at 122 bits off a single-use nonce it is not
         // chance, and reporting it as any of the four below would be a sentence about the wrong thing.
@@ -149,6 +161,7 @@ public sealed class RegistrationRepository(BudgetoidDbContext dbContext) : IRegi
             yield return wrappedAccountKeys;
         }
 
+        yield return registration.FactorManifest;
         yield return registration.Session;
         yield return registration.SessionToken;
     }

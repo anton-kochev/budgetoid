@@ -25,10 +25,38 @@ namespace IntegrationTests;
 /// write would measure the Domain rather than the schema, and the table is policed by
 /// <c>user_isolation</c>, so on an application connection a probe could be refused by the policy
 /// rather than by the constraint and the SQLSTATE read back would be the wrong one arriving for the
-/// right-looking reason. The third is this table's own: <b>the app role holds <c>SELECT</c> and no
-/// write grant of any shape</b> — <c>AppRoleGrantMatrixTests</c> pins that — so every INSERT below
-/// would answer <c>42501</c> on the application connection before any constraint was consulted. The
-/// one test that must run on the application connection is the isolation one, and it only reads.
+/// right-looking reason.
+/// </para>
+/// <para>
+/// <b>The third is this table's own, and registration taking the <c>INSERT</c> made it stronger rather
+/// than retiring it.</b> The app role now holds <c>SELECT</c> <em>and</em> <c>INSERT</c> here —
+/// <see cref="AppRoleGrantMatrixTests" /> pins that pair — where it once held <c>SELECT</c> alone. The
+/// old argument was that an application-connection probe was <em>impossible</em>: every INSERT answered
+/// <c>42501</c> before a constraint was consulted, which is a refusal nobody could mistake for the rule
+/// under test. What replaces it is worse, because <b><c>42501</c> is also what a <c>WITH CHECK</c>
+/// violation answers</b> — "new row violates row-level security policy", the SQLSTATE
+/// <c>RlsIsolationTests.Database_RefusesAWrappedKeyInsertNamingAnotherAccount</c> asserts over the
+/// identical policy shape one table across. So the one code that used to mean "no grant, this probe
+/// never ran" now means "no grant <em>or</em> the policy refused the row", and a probe whose session
+/// named the wrong owner would read as a privilege problem while being an isolation refusal. A probe
+/// whose session names the <em>right</em> owner clears both and then meets a queue — this table's two
+/// <c>CHECK</c> constraints, its primary key, its foreign key and the policy's own <c>WITH CHECK</c> —
+/// whose order of evaluation is PostgreSQL's business and not this schema's, so which of them answers
+/// is not a fact these tests may assert. The superuser connection takes the grant and the policy out of
+/// the statement altogether, which is the whole of why the named constraint is the only thing left that
+/// can answer.
+/// </para>
+/// <para>
+/// <b>The one test that must run on the application connection is the isolation one, and "it only
+/// reads" is now the load-bearing half of that sentence rather than an aside.</b> A read exercises the
+/// policy's <c>USING</c> half and nothing else, so
+/// <see cref="Database_HidesAnotherAccountsManifest_FromASessionNamingThisUser" /> is a claim about
+/// what a session may <em>see</em> and never about what it may <em>write</em>. <b>Nothing in this file
+/// — and nothing anywhere in this suite — has watched <c>user_isolation</c> refuse a manifest
+/// write.</b> That policy's <c>WITH CHECK</c> arm is reachable today, because the role holds the
+/// <c>INSERT</c> that reaches it, and it is unobserved. <c>RlsIsolationTests</c> holds exactly that
+/// shape for <c>budgets</c>, <c>sessions</c>, <c>passkey_signature_counters</c> and
+/// <c>wrapped_account_keys</c>, and holds it for this table for none.
 /// </para>
 /// <para>
 /// <b>The column list is written out from the table's contract rather than built from the mapping</b>,
@@ -194,8 +222,15 @@ public sealed class FactorManifestSchemaTests
     {
         // Arrange — two accounts, each with a manifest of its own, and one app-role connection naming
         // the first. Two accounts because this rule is about isolation: a single account's row would be
-        // invisible to it, and the foreign count would come back zero with or without a policy. The
-        // rows are seeded on the superuser connection because the app role holds no INSERT here.
+        // invisible to it, and the foreign count would come back zero with or without a policy.
+        //
+        // SEEDED ON THE SUPERUSER CONNECTION, AND NO LONGER BECAUSE THE APP ROLE CANNOT INSERT — it can,
+        // since registration took the grant. It is because the second row belongs to the OTHER account,
+        // so filing it from an app connection would need a second session naming that owner, and each
+        // seeding statement would then be judged by the same policy's WITH CHECK arm. This test is about
+        // the USING arm. Arranging it through the arm it is measuring would make a green here mean
+        // "whatever the policy does, it does it consistently", which is true of a policy that does
+        // nothing.
         await using RepositoryTestHost host = await StartHostAsync();
         await using NpgsqlConnection admin = await OpenAdminAsync(host);
         Guid sessionUserId = await host.SeedUserAsync("google-1", "person@example.com");
@@ -220,9 +255,11 @@ public sealed class FactorManifestSchemaTests
         long own = await CountManifestsAsync(app, sessionUserId);
         long foreign = await CountManifestsAsync(app, otherUserId);
 
-        // Assert — nothing in the application reads this table today, so no EF query filter stands in
-        // the way of a statement aimed at it and user_isolation is the only thing between one account's
-        // session and another account's list of factor public keys. What leaks is not money: these are
+        // Assert — the application DOES read this table now, through AccountKeyReadService's single
+        // statement behind GET /api/me/account-keys, and FactorManifestConfiguration still declares no
+        // query filter of any kind. That pair is what makes this the whole of the rule rather than the
+        // lower of two layers: there is a real read, and user_isolation is the only thing between one
+        // account's session and another account's list of factor public keys. What leaks is not money: these are
         // public keys, and publishing a public key is what a public key is for. What leaks is HOW MANY
         // recovery factors somebody holds and what each of them is, which is a map of another person's
         // recovery arrangements.

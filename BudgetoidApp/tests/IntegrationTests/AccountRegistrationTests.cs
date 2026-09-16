@@ -6,6 +6,7 @@ using Api.Infrastructure;
 using Application.Passkeys;
 using Application.Registration;
 using Domain.Budgets;
+using Domain.Security;
 using Domain.Users;
 using Infrastructure.Persistence.Provisioning;
 using Microsoft.Extensions.DependencyInjection;
@@ -120,6 +121,34 @@ public sealed class AccountRegistrationTests
     private const string ReauthenticationOptionsPath = "/api/passkeys/reauthentication/options";
     private const string RecoveryCodeGenerationPath = "/api/me/recovery-codes";
     private const string RedemptionPath = "/api/recovery-codes/redemption";
+
+    /// <summary>
+    /// The read a client makes on its next visit to learn what its own factor set is.
+    /// </summary>
+    /// <remarks>
+    /// Written out rather than read off the endpoint class, the choice every other path in this file
+    /// makes: it is wire contract, and a test reading a production constant stays green through a rename
+    /// that breaks every client. <c>AccountKeysEndpointTests</c> owns what this route answers in general;
+    /// what the two cases here claim is narrower — that the bytes one <em>registration</em> posted are the
+    /// bytes that account reads back.
+    /// </remarks>
+    private const string AccountKeysPath = "/api/me/account-keys";
+
+    /// <summary>The member the account's manifest travels on, both ways, as the wire spells it.</summary>
+    private const string ManifestMember = RegistrationCeremony.ManifestMember;
+
+    /// <summary>The member carrying which generation the manifest beside it belongs to.</summary>
+    private const string RotationEpochMember = "rotationEpoch";
+
+    /// <summary>
+    /// The member the manifest is refused under — the command's own spelling of it.
+    /// </summary>
+    /// <remarks>
+    /// The PascalCase property name and not the wire member, for <see cref="CodesField" />'s reason: a
+    /// validation problem is keyed on what the command calls the member, and the two spellings differ by
+    /// a letter here in a way that reads as identical at a glance.
+    /// </remarks>
+    private const string ManifestField = "Manifest";
 
     /// <summary>
     /// The clause that separates the four 409s from one another, one per conflict.
@@ -299,6 +328,13 @@ public sealed class AccountRegistrationTests
         new("passkey_signature_counters", 1),
         new("recovery_code_hashes", RequiredCodeCount),
         new("wrapped_account_keys", RequiredCodeCount + 1),
+
+        // ONE ROW AGAINST THE ELEVEN ABOVE IT, and the asymmetry is the design rather than an oversight
+        // in this list. Each wrapped_account_keys row is one factor's own share of the account keys; the
+        // manifest is the single authenticated statement of WHICH factors exist, so what has to be
+        // unforgeable is the set and it is sealed once. A reader tempted to correct this to eleven is
+        // reading it as per-factor material, which it is not.
+        new("factor_manifests", 1),
         new("sessions", 1),
         new("session_tokens", 1),
         new("webauthn_challenges", 0),
@@ -2228,6 +2264,430 @@ public sealed class AccountRegistrationTests
     }
 
     /// <summary>
+    /// The manifest a registration posted is the manifest that account reads back, at generation one.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This is the whole of what holds the manifest's bytes, and nothing beneath it can help.</b> The
+    /// blob is sealed under the account's content key, which no server in this system has ever held: the
+    /// column takes any width inside the band, the check constraint counts bytes, the policy compares an
+    /// owner, and the framing check looks at one leading byte. A registration that stored a re-encode, a
+    /// truncation, the passkey's wrapped private key, or a manifest it minted itself would satisfy every
+    /// one of them and answer 201. The person finds out on the day their browser asks which factors it
+    /// may encapsulate to and is handed something that will not open — with no error anywhere and no row
+    /// to point at.
+    /// </para>
+    /// <para>
+    /// <b>Read back through the route a client really uses</b>, not out of the table, so what is measured
+    /// is the whole path the browser sees: the save, the read service's lateral, and the base64url
+    /// encoder at the edge. A direct <c>select</c> would still pass on an endpoint that served the
+    /// column through the standard alphabet, and the client decoding it strictly is what would fail.
+    /// </para>
+    /// <para>
+    /// <b>Decoded and compared as hex, not compared as text.</b> Base64url against base64url passes on an
+    /// implementation that read the right row and spelled it with the wrong alphabet, so long as the
+    /// expectation was built by the same encoder. The bytes are the ones this ceremony posted — carried
+    /// on <see cref="RegistrationCeremonyResult.Manifest" /> rather than minted again here — which is
+    /// what makes this a claim about a round trip rather than about a width.
+    /// </para>
+    /// <para>
+    /// <b>The generation is named rather than written as <c>1</c>.</b> Epoch 0 is the <em>absence</em> of
+    /// a row, so 0 and 1 are the two numbers a hard-wired implementation reaches for and the two an
+    /// account's client has to tell apart. Reading <see cref="FactorManifest.MinimumRotationEpoch" />
+    /// here is red on any literal the handler could have chosen; the value of the floor itself is held
+    /// one ring down, by <c>FactorManifestTests</c>, which writes it out as a literal for that purpose.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Registration_StoresTheManifestItWasSentAtTheFirstGeneration()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartHostAsync();
+        await using ApiFactory factory = CreateApiFactory(host);
+        HttpClient client = factory.CreateAuthenticatedClient(Subject, Email);
+        SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+
+        // Act — the real ceremony, then the read a browser makes on its next visit.
+        RegisteredAccount registered = await RegisterAccountAsync(client, device);
+        await Assert.That(registered.Response.StatusCode).IsEqualTo(HttpStatusCode.Created);
+
+        HttpResponseMessage keys = await SessionClientFor(factory, registered).GetAsync(AccountKeysPath);
+
+        // Assert — the status first, so an unauthenticated read reads as that rather than as an absent
+        // manifest.
+        await Assert.That(keys.StatusCode).IsEqualTo(HttpStatusCode.OK);
+
+        JsonObject body = await ReadJsonObjectAsync(keys);
+
+        // Served at all before decoded, so "no manifest came back" and "the wrong bytes came back" are
+        // two messages rather than one decode blowing up on a null.
+        await Assert.That(body[ManifestMember]).IsNotNull();
+
+        byte[] served = Base64UrlText.Decode(body[ManifestMember]!.GetValue<string>());
+
+        // The width first, so a truncation reads as the number it is rather than as a byte mismatch a
+        // thousand positions in.
+        await Assert.That(served.Length).IsEqualTo(registered.Manifest.Manifest.Length);
+        await Assert.That(Convert.ToHexString(served))
+            .IsEqualTo(Convert.ToHexString(registered.Manifest.Manifest));
+
+        await Assert.That(body[RotationEpochMember]!.GetValue<int>())
+            .IsEqualTo(FactorManifest.MinimumRotationEpoch);
+
+        // And exactly one row exists for it, so nothing above is a claim about whichever of several the
+        // read happened to pick.
+        await Assert.That(await CountAsync(host, "select count(*) from factor_manifests")).IsEqualTo(1L);
+    }
+
+    /// <summary>
+    /// Both ends of the band are accepted: a manifest at the framing's floor and one at the column's cap
+    /// are stored whole.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>A band is the one thing the two neighbouring members are not, and only a case at each end says
+    /// where it was drawn.</b> <c>wrappedPrivateKey</c> and <c>encapsulatedAccountKeys</c> each have
+    /// exactly one legal width, so a single well-formed value proves their rule; a manifest's plaintext
+    /// grows with the factor count, so the rule is two comparisons and an off-by-one in either is
+    /// invisible to every request a client really sends. A floor written as <c>&gt;</c> instead of
+    /// <c>&gt;=</c>, or a cap as <c>&lt;</c> instead of <c>&lt;=</c>, refuses exactly one width each and
+    /// is green on everything else in this file.
+    /// </para>
+    /// <para>
+    /// <b>The cap case is also the only place a wide manifest is carried end to end.</b> Every other
+    /// manifest in this suite is tens or hundreds of bytes, and a projection that narrowed the column —
+    /// a <c>substring</c>, a width guessed from the neighbouring envelopes — is invisible at those sizes
+    /// and catastrophic at this one, because the blob is the sole carrier of every factor's public key
+    /// and whichever factor fell past the line stops being encapsulatable-to.
+    /// </para>
+    /// <para>
+    /// The widths come from <see cref="ManifestFixture" />, which reads both bounds off the production
+    /// constants: a test carrying its own <c>29</c> and <c>4096</c> goes on being confident after the
+    /// real bound has moved.
+    /// </para>
+    /// </remarks>
+    [Test]
+    [Arguments(ManifestWidth.AtTheFloor)]
+    [Arguments(ManifestWidth.AtTheCap)]
+    public async Task Registration_WithAManifestAtEitherBound_StoresItWhole(ManifestWidth width)
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartHostAsync();
+        await using ApiFactory factory = CreateApiFactory(host);
+        HttpClient client = factory.CreateAuthenticatedClient(Subject, Email);
+        SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        ManifestFixture manifest = ManifestOf(width);
+
+        // Act
+        RegisteredAccount registered = await RegisterAccountAsync(client, device, manifest: manifest);
+
+        // Assert — accepted, which is the half a refusal test cannot state.
+        await Assert.That(registered.Response.StatusCode).IsEqualTo(HttpStatusCode.Created);
+
+        HttpResponseMessage keys = await SessionClientFor(factory, registered).GetAsync(AccountKeysPath);
+        await Assert.That(keys.StatusCode).IsEqualTo(HttpStatusCode.OK);
+
+        JsonObject body = await ReadJsonObjectAsync(keys);
+        await Assert.That(body[ManifestMember]).IsNotNull();
+
+        byte[] served = Base64UrlText.Decode(body[ManifestMember]!.GetValue<string>());
+
+        await Assert.That(served.Length).IsEqualTo(manifest.Manifest.Length);
+        await Assert.That(Convert.ToHexString(served))
+            .IsEqualTo(Convert.ToHexString(manifest.Manifest));
+    }
+
+    /// <summary>
+    /// No <c>manifest</c> member at all is a refusal, and the account is not created for one.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The case the request record's non-<c>required</c> members exist for</b>, and the reason is the
+    /// same one the absent card has: an absent member binds to <see langword="null" /> despite the
+    /// non-nullable declaration and reaches the handler's own refusal, which is worded for the member a
+    /// caller can correct. Declared <c>required</c> it would earn a framework 400 raised before the prf
+    /// gate — so a client whose authenticator genuinely cannot do PRF, and which therefore has no keys to
+    /// seal a manifest under, would be told its payload was malformed.
+    /// </para>
+    /// <para>
+    /// <b>An account created without a manifest is the failure this refuses, and it is silent.</b> The
+    /// row would be absent, which is a legal shape — it is what every account registered before this rung
+    /// existed answers — so there is no constraint, no policy and no read that could tell that account
+    /// apart from one of those. Its client would ask which factors it may encapsulate to, be told
+    /// "none", and have no way back to a set it in fact holds eleven of.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Registration_WithNoManifestMember_IsRefusedAndWritesNothing()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartHostAsync();
+        await using ApiFactory factory = CreateApiFactory(host);
+        HttpClient client = factory.CreateAuthenticatedClient(Subject, Email);
+        SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+
+        // Act — removed rather than set to null: an absent member and a present null are two different
+        // things a client can say, and this is the first.
+        HttpResponseMessage refused = await PostAmendedRegistrationAsync(
+            client,
+            device,
+            body => body.Remove(ManifestMember));
+
+        // Assert
+        await AssertRefusedForTheManifestAsync(refused);
+        await AssertNoAccountRowAnywhereAsync(host);
+    }
+
+    /// <summary>
+    /// A manifest below the framing's floor, above the column's cap, carrying a version this deployment
+    /// does not implement, or not base64url at all, is refused before anything is stored.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Four faults and one rule, because the four are the only things about this value a server that
+    /// cannot open it may judge.</b> The blob is sealed under the account's content key, so its contents
+    /// are unreachable here by design: a manifest naming eleven factors, one naming none and 4096 bytes
+    /// of noise are the same value to every layer below the wire. The framing and the band are therefore
+    /// the whole of the check, and each of these four is one way past it.
+    /// </para>
+    /// <para>
+    /// <b>Neither side of the width may be repaired.</b> A truncated manifest is a well-formed row whose
+    /// tag cannot verify, and the factor that fell past the line stops being encapsulatable-to — the
+    /// person loses a way back into their account and the row says nothing about it. A padded one is the
+    /// same failure read the other way. <c>FactorManifest</c> argues at length that this is refused and
+    /// never trimmed.
+    /// </para>
+    /// <para>
+    /// <b>The version case arrives from a direction the width cases cannot.</b> The two framings in this
+    /// product both lead with <c>0x01</c> over different suites, and nothing in the bytes says which — so
+    /// the member is the only discriminator, and a leading byte that is neither is a client claiming a
+    /// contract that does not exist. Both neighbours of the real version are driven, because zero is what
+    /// a buffer nobody set sends and the value above it is what a client running ahead of this
+    /// deployment sends.
+    /// </para>
+    /// <para>
+    /// <b>The alphabet case puts its stray character at index 4, and the position is what makes it prove
+    /// anything</b> — the rule <c>PasskeyCeremonyTests</c> states in full. Base64 carries three decoded
+    /// bytes per four characters, so a substitution in the leading group lands on the version byte and a
+    /// decoder that skipped the alphabet check would be refused for its version instead, leaving the
+    /// alphabet tested by nothing.
+    /// </para>
+    /// </remarks>
+    [Test]
+    [Arguments(ManifestFault.OneByteBelowTheFloor)]
+    [Arguments(ManifestFault.OneByteAboveTheCap)]
+    [Arguments(ManifestFault.VersionBelowTheOneImplemented)]
+    [Arguments(ManifestFault.VersionAboveTheOneImplemented)]
+    [Arguments(ManifestFault.OutsideTheAlphabet)]
+    public async Task Registration_WithAMalformedManifest_IsRefusedAndWritesNothing(ManifestFault fault)
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartHostAsync();
+        await using ApiFactory factory = CreateApiFactory(host);
+        HttpClient client = factory.CreateAuthenticatedClient(Subject, Email);
+        SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+
+        // Act — a genuine ceremony over a live nonce, carrying one malformed member and nothing else
+        // wrong, so the refusal has exactly one source.
+        HttpResponseMessage refused = await PostAmendedRegistrationAsync(
+            client,
+            device,
+            body => body[ManifestMember] = MalformedManifestText(fault));
+
+        // Assert
+        await AssertRefusedForTheManifestAsync(refused);
+        await AssertNoAccountRowAnywhereAsync(host);
+    }
+
+    /// <summary>
+    /// A registration refused <b>after</b> the manifest rung leaves no manifest behind: the save is one
+    /// unit of work, and the row rides it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The closest honest pin on "the manifest is in the same save", and it is not a complete
+    /// one.</b> There is deliberately no transaction on this path — wrapping it configures the connection
+    /// before the identity is published and every policed statement inside then meets <c>22P02</c> — so
+    /// atomicity here is the property of <em>one</em> <c>SaveChanges</c> and of nothing else. An
+    /// implementation that split the manifest into a second repository call would commit both rows on
+    /// every ordinary request and answer 201; only a failure landing between the two saves would show it,
+    /// and this route has no such failure to provoke from outside. What this test does reach is the other
+    /// order: a save refused by a unique rule, after the manifest has been built and the identity
+    /// published. A manifest written by a save of its own <em>before</em> that one would survive the
+    /// rollback and be found here.
+    /// </para>
+    /// <para>
+    /// <b>Why the remaining gap cannot be closed from this side, stated rather than left implied.</b>
+    /// Making the second save fail needs a fault injected between them, which needs a seam in production
+    /// code that does not exist and should not be added for a test. The manifest-first ordering is
+    /// separately impossible — <c>FK_factor_manifests_users</c> would refuse a row whose account has not
+    /// been written — so the untested arrangement is precisely "account save commits, manifest save
+    /// throws", which leaves a committed account with no manifest and a 500. A reader adding a second
+    /// call should expect this test to stay green.
+    /// </para>
+    /// <para>
+    /// <b>The conflict is the factor identifier, and it is refused by the database rather than by the
+    /// application</b>, which is what puts the refusal past every rung: rungs 1 to 12 have all passed, the
+    /// identity is published, the save is attempted, and <c>PK_wrapped_account_keys</c> is what turns it
+    /// away. A refusal keyed on a member — a short card, a bad envelope — is refused above the save and
+    /// would say nothing about what a save does.
+    /// </para>
+    /// <para>
+    /// <b>The surviving row's owner is asserted, not only the count.</b> One row is what a correct
+    /// implementation leaves and also what an implementation that replaced the first account's manifest
+    /// with the second's would leave; the whole-census check next door cannot tell those apart, because
+    /// neither moves a number.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Registration_RefusedBySaving_LeavesNoManifestForTheAccountItRefused()
+    {
+        // Arrange — one whole account, and a census taken before the second ceremony starts.
+        await using PostgresTestHost host = await StartHostAsync();
+        await using ApiFactory factory = CreateApiFactory(host);
+        RegisteredAccount first = await RegisterAccountAsync(
+            factory.CreateAuthenticatedClient(Subject, Email),
+            SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId));
+        await Assert.That(first.Response.StatusCode).IsEqualTo(HttpStatusCode.Created);
+
+        IReadOnlyDictionary<string, long> before = await CountEveryRelationAsync(host);
+
+        // Act — a second registration, correct in every respect except one factor identifier that is
+        // already standing in the table, and carrying a manifest of its own.
+        RegisteredAccount second = await RegisterAccountAsync(
+            factory.CreateAuthenticatedClient(OtherSubject, OtherEmail),
+            SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId),
+            WrappedKeyFixture.MintFor(first.PasskeyKeys.Factor));
+
+        // Assert — refused past the manifest rung rather than before it, or the arrangement above is
+        // describing a request that never reached the save.
+        await Assert.That(second.Response.StatusCode).IsEqualTo(HttpStatusCode.Conflict);
+        await Assert.That(await DetailOfAsync(second.Response)).Contains(FactorConflictClause);
+
+        // One manifest, and it is the first account's — so the refused registration's manifest neither
+        // landed beside it nor took its place.
+        await Assert.That(await CountAsync(host, "select count(*) from factor_manifests")).IsEqualTo(1L);
+        await Assert.That(await ScalarTextAsync(host, "select user_id::text from factor_manifests"))
+            .IsEqualTo(first.AccountId.ToString("D"));
+
+        // And nothing anywhere else moved either, which is the claim this file already makes about every
+        // conflict and which now covers this relation because the census reads the catalog.
+        await AssertNothingChangedAsync(host, before);
+    }
+
+    /// <summary>
+    /// The two ends of the width a manifest may take, as a case can name them.
+    /// </summary>
+    /// <remarks>
+    /// An enum rather than two <c>int</c> arguments, because the two numbers are read off production and
+    /// a <c>[Arguments]</c> value has to be a constant expression. It also keeps the case names saying
+    /// which bound they are about instead of quoting a byte count at a reader.
+    /// </remarks>
+    public enum ManifestWidth
+    {
+        AtTheFloor,
+        AtTheCap,
+    }
+
+    /// <summary>
+    /// The ways a <c>manifest</c> member can be wrong about its width, its framing or its alphabet, each
+    /// one thing at a time.
+    /// </summary>
+    public enum ManifestFault
+    {
+        OneByteBelowTheFloor,
+        OneByteAboveTheCap,
+        VersionBelowTheOneImplemented,
+        VersionAboveTheOneImplemented,
+        OutsideTheAlphabet,
+    }
+
+    /// <summary>The fixture for one end of the band.</summary>
+    private static ManifestFixture ManifestOf(ManifestWidth width) =>
+        width switch
+        {
+            ManifestWidth.AtTheFloor => ManifestFixture.AtTheFloor(),
+            ManifestWidth.AtTheCap => ManifestFixture.AtTheCap(),
+            _ => throw new ArgumentOutOfRangeException(
+                nameof(width), width, "No manifest is defined for this width."),
+        };
+
+    /// <summary>
+    /// A <c>manifest</c> member with exactly one fault in it and everything else about it right.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Every width case carries the framing's own version byte and every version case is of a width
+    /// inside the band, so each value has one thing wrong with it and a refusal has one source.
+    /// </para>
+    /// <para>
+    /// The alphabet case replaces the character at index 4, off the leading base64 group, for the reason
+    /// <c>PasskeyCeremonyTests</c> states about its own: a substitution inside the first group lands on
+    /// the version byte, and a decoder that skipped the alphabet check would be refused for the version
+    /// instead — leaving the alphabet tested by nothing.
+    /// </para>
+    /// </remarks>
+    private static string MalformedManifestText(ManifestFault fault) =>
+        fault switch
+        {
+            ManifestFault.OneByteBelowTheFloor =>
+                ManifestFixture.Of(CiphertextEnvelope.MinimumLength - 1).Text,
+            ManifestFault.OneByteAboveTheCap =>
+                ManifestFixture.Of(FactorManifest.MaximumBytes + 1).Text,
+            ManifestFault.VersionBelowTheOneImplemented => ManifestFixture
+                .Of(ManifestFixture.PlausibleLength, (byte)(CiphertextEnvelope.Version - 1))
+                .Text,
+            ManifestFault.VersionAboveTheOneImplemented => ManifestFixture
+                .Of(ManifestFixture.PlausibleLength, (byte)(CiphertextEnvelope.Version + 1))
+                .Text,
+            ManifestFault.OutsideTheAlphabet => ManifestFixture.Mint().Text
+                .Remove(4, 1)
+                .Insert(4, OutsideTheBase64UrlAlphabet.ToString()),
+            _ => throw new ArgumentOutOfRangeException(
+                nameof(fault), fault, "No text is defined for this fault."),
+        };
+
+    /// <summary>A character standard base64 defines and base64url does not.</summary>
+    private const char OutsideTheBase64UrlAlphabet = '+';
+
+    /// <summary>
+    /// The manifest refusal, read by the member it is keyed under and by what it says.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// One sentence for five arrangements, because the five are five inputs to <b>one</b> rule: what a
+    /// caller can act on is that the value must be base64url of a width inside the band carrying the one
+    /// framing version, and which of the five ways theirs missed is not a distinction this route draws.
+    /// </para>
+    /// <para>
+    /// <b>The two bounds and the version are asserted to appear, and the neighbouring envelopes' widths
+    /// to be absent.</b> A manifest, a wrapped private key and an encapsulated pair all lead with the
+    /// same version byte, and a refusal built from the wrong suite's constants would name <c>167</c> or
+    /// <c>158</c> — a sentence sending a client to pad a manifest to a width no manifest has. The
+    /// numbers are read off production rather than restated, for the reason the rest of this file reads
+    /// its bounds that way: a copy goes on being confident after the real bound has moved.
+    /// </para>
+    /// </remarks>
+    private static async Task AssertRefusedForTheManifestAsync(HttpResponseMessage response)
+    {
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+
+        string message = await ReadValidationErrorAsync(response, ManifestField);
+
+        await Assert.That(message).StartsWith(ManifestMember);
+        await Assert.That(message).Contains($"{CiphertextEnvelope.MinimumLength} and {FactorManifest.MaximumBytes} bytes");
+        await Assert.That(message).Contains($"version {CiphertextEnvelope.Version}");
+
+        // The neighbouring suites' widths must not appear. Both envelopes lead with this same version
+        // byte, so a refusal assembled from the wrong constants is otherwise indistinguishable from a
+        // correct one.
+        await Assert.That(message)
+            .DoesNotContain($"{WrappedAccountKeys.WrappedPrivateKeyLength} bytes");
+        await Assert.That(message)
+            .DoesNotContain($"{WrappedAccountKeys.EncapsulatedAccountKeysLength} bytes");
+    }
+
+    /// <summary>
     /// FR-104 read one leg earlier: a provider identity that already has an account is refused by the
     /// <b>options</b> leg, before any authenticator is asked to do anything.
     /// </summary>
@@ -2457,8 +2917,9 @@ public sealed class AccountRegistrationTests
     private static Task<RegisteredAccount> RegisterAccountAsync(
         HttpClient client,
         SyntheticAuthenticator device,
-        WrappedKeyFixture? passkeyKeys = null) =>
-        RegistrationCeremony.RegisterAsync(client, device, passkeyKeys);
+        WrappedKeyFixture? passkeyKeys = null,
+        ManifestFixture? manifest = null) =>
+        RegistrationCeremony.RegisterAsync(client, device, passkeyKeys, manifest);
 
     /// <inheritdoc cref="RegistrationCeremony.BeginAsync" />
     private static Task<IssuedRegistrationOptions> BeginRegistrationCeremonyAsync(HttpClient client) =>
@@ -2469,15 +2930,17 @@ public sealed class AccountRegistrationTests
         HttpClient client,
         AttestationResult attestation,
         WrappedKeyFixture passkeyKeys,
-        IReadOnlyList<CodeSubmission> card) =>
-        RegistrationCeremony.PostAsync(client, attestation, passkeyKeys, card);
+        IReadOnlyList<CodeSubmission> card,
+        ManifestFixture? manifest = null) =>
+        RegistrationCeremony.PostAsync(client, attestation, passkeyKeys, card, manifest);
 
     /// <inheritdoc cref="RegistrationCeremony.BodyOf" />
     private static Dictionary<string, object?> BodyOf(
         AttestationResult attestation,
         WrappedKeyFixture passkeyKeys,
-        IReadOnlyList<CodeSubmission> card) =>
-        RegistrationCeremony.BodyOf(attestation, passkeyKeys, card);
+        IReadOnlyList<CodeSubmission> card,
+        ManifestFixture? manifest = null) =>
+        RegistrationCeremony.BodyOf(attestation, passkeyKeys, card, manifest);
 
     /// <inheritdoc cref="RegistrationCeremony.PostAmendedAsync" />
     private static Task<HttpResponseMessage> PostAmendedRegistrationAsync(
@@ -3125,6 +3588,24 @@ public sealed class AccountRegistrationTests
             long count => count,
             var unexpected => throw new InvalidOperationException(
                 $"Expected a count from '{sql}', got '{unexpected ?? "null"}'."),
+        };
+    }
+
+    /// <summary>
+    /// Reads one text scalar, refusing anything else — <see cref="ScalarAsync" />'s rule for the queries
+    /// whose answer is an identifier rather than a number.
+    /// </summary>
+    private static async Task<string> ScalarTextAsync(PostgresTestHost host, string sql)
+    {
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
+        await using NpgsqlCommand command = new(sql, connection);
+
+        return await command.ExecuteScalarAsync() switch
+        {
+            string text => text,
+            var unexpected => throw new InvalidOperationException(
+                $"Expected one text value from '{sql}', got '{unexpected ?? "null"}'."),
         };
     }
 

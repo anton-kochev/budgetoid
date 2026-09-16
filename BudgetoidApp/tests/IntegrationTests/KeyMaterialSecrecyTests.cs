@@ -1513,6 +1513,13 @@ public sealed class KeyMaterialSecrecyTests
         new("RegistrationEndpoints.RegistrationRequest", "EncapsulatedAccountKeys",
             "base64url over a 158-byte encapsulation of BOTH account keys to that factor's PUBLIC half — "
             + "a different suite at a different width, produced from a public key and nothing else"),
+        new("RegistrationEndpoints.RegistrationRequest", "Manifest",
+            "base64url over an AEAD envelope of 29 to 4096 bytes SEALED UNDER the account's content key, "
+            + "listing every recovery factor and its PUBLIC half — the third framing on this record and "
+            + "the only one whose width is a band rather than a number, because the list grows with the "
+            + "factor count. The server cannot open it and never will, so what it carries is held by the "
+            + "authentication tag; nothing private is inside it, and a private key arriving here would "
+            + "be a secret the operator could reach with no test able to notice"),
         new("TransactionEndpoints.UpdateTransactionRequest", "Description",
             "base64url over the AEAD envelope holding a person's own note about one transaction, wrapped "
             + "in Optional<T> because this route is a PATCH and genuinely has THREE states: absent "

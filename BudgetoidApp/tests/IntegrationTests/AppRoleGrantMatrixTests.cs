@@ -218,38 +218,46 @@ public sealed class AppRoleGrantMatrixTests
         // erasure reaches this table down both paths. There is no shape of clearing a seal that this
         // role has to issue itself.
         ("key_rotation_seals", ["SELECT"]),
-        // THE ONLY READ-ONLY LINE IN THIS MATRIX OVER A TABLE THE APPLICATION WILL EVENTUALLY WRITE,
-        // which is the argument the entry above spent and this one now carries alone. Three privileges
-        // are absent and all three are absent for the same plain reason: NOTHING WRITES A MANIFEST YET.
-        // No handler mints the row, no route promotes a generation, and a privilege granted ahead of
-        // its caller is reach nobody has argued for.
+        // THE INSERT ARRIVED WITH ITS CALLER, which is what this line used to promise as an absence and
+        // is now stating as a fact. The entry above still carries the read-only argument alone; this one
+        // is the worked example of a privilege being granted on the day a statement needed it, and not
+        // one release earlier.
         //
-        // NO INSERT, NO UPDATE, NO DELETE, AND WITHHOLDING A WRITE COSTS NOTHING. That is the whole
-        // asymmetry of this file and it is worth saying on the one line where the two halves are most
-        // visible: an ungranted write fails LOUD — 42501, on the statement that wanted it, in the test
-        // that exercises the path — so the first feature to reach for one arrives carrying its own
-        // sentence about which operation needs it. An ungranted SELECT fails QUIET, which is why the
-        // read could not wait: NarrativeSecrecyTests' plaintext scan runs on the app-role connection,
-        // meets 42501 on an unreadable table and reports it UNSCANNABLE, so two secrecy gates pass
-        // over one table fewer than the schema holds. A table nothing can read is a table nothing can
-        // check, and this is the one place the account's whole set of factor public keys is written
-        // down.
+        // INSERT, BECAUSE REGISTRATION NOW WRITES THE FIRST MANIFEST. RegisterAccountHandler builds the
+        // account's first manifest at FactorManifest.MinimumRotationEpoch and files it in the SAME
+        // SaveChanges as the user, its three credentials and the eleven wrapped_account_keys rows the
+        // manifest names. There is no transaction on that path — see the 22P02 argument at that handler
+        // — so the atomicity is the single save's, and an ungranted INSERT here would turn the whole of
+        // registration into a 42501 rather than losing one row quietly. The statement is policed:
+        // user_isolation's WITH CHECK compares user_id against app.current_user_id, which the handler
+        // publishes before the save opens its connection.
+        //
+        // SELECT STILL COMES FIRST IN THE ARGUMENT, and an ungranted one is the absence that hides
+        // something: NarrativeSecrecyTests' plaintext scan runs on the app-role connection, meets 42501
+        // on an unreadable table and reports it UNSCANNABLE, so two secrecy gates pass over one table
+        // fewer than the schema holds. A table nothing can read is a table nothing can check, and this
+        // is the one place the account's whole set of factor public keys is written down.
+        //
+        // STILL NO UPDATE AND STILL NO DELETE, and the two absences have different reasons. Nothing
+        // promotes a generation yet — promotion is the step that rewrites this row in place and it is
+        // not built, so an UPDATE today would be a privilege with no statement behind it. DELETE has no
+        // caller in view at all.
         //
         // NO TABLE-WIDE UPDATE AND NO COLUMN LIST EITHER, which is an absence rather than a
         // simplification: immutability in this project is expressed by omission FROM a GRANT UPDATE
         // column list, so today every column here is immutable in the strongest available way because
-        // no UPDATE exists to name one. When promotion lands it wants rotation_epoch and manifest as an
-        // explicit two-column list, and user_id stays off it — a table-wide
-        // grant would let one statement re-file an account's whole factor set against another account.
-        // That widening would show up here as an unexpected table-wide UPDATE with nothing in
-        // ExpectedUpdateColumnGrants to match it, which is the two-directional failure the class
-        // remarks describe.
+        // no UPDATE exists to name one — an inserted manifest stays the generation it was written as.
+        // When promotion lands it wants rotation_epoch and manifest as an explicit two-column list, and
+        // user_id stays off it — a table-wide grant would let one statement re-file an account's whole
+        // factor set against another account. That widening would show up here as an unexpected
+        // table-wide UPDATE with nothing in ExpectedUpdateColumnGrants to match it, which is the
+        // two-directional failure the class remarks describe.
         //
         // Rows still leave without DELETE. FK_factor_manifests_users cascades from users, and a
         // referential action runs with the referencing table owner's privileges rather than this
         // role's — the same mechanism three lines up — so an account erasure carries this row away
         // although the role could not have deleted it itself.
-        ("factor_manifests", ["SELECT"]),
+        ("factor_manifests", ["SELECT", "INSERT"]),
         ("budgets", ["SELECT", "INSERT"]),
         ("accounts", ["SELECT", "INSERT", "DELETE"]),
         ("category_groups", ["SELECT", "INSERT", "DELETE"]),

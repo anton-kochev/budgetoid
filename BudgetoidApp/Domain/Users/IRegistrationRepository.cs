@@ -23,6 +23,8 @@ namespace Domain.Users;
 /// issued set of recovery codes. <see cref="WrappedAccountKeys"/> is <b>eleven</b> rows and never two: a
 /// factor is not a credential, each code derives its own key-encryption key, and one envelope pair for
 /// the whole set would seal the account under one code and leave the other nine unlocking nothing.
+/// <see cref="FactorManifest"/> is <b>one</b> row over the same eleven, for the opposite reason: what has
+/// to be unforgeable there is the set, so it is authenticated once.
 /// </para>
 /// </remarks>
 /// <param name="User">The account, under the identifier the ceremony derived.</param>
@@ -36,6 +38,14 @@ namespace Domain.Users;
 /// <param name="WrappedAccountKeys">
 /// The passkey factor's share of the account keys, and one share per code.
 /// </param>
+/// <param name="FactorManifest">
+/// The account's first manifest, at <see cref="Users.FactorManifest.MinimumRotationEpoch"/>: one
+/// authenticated blob naming every factor above and its public key. <b>One row against the eleven beside
+/// it, and the asymmetry is the design</b> — what has to be unforgeable is the <em>set</em>, so it is
+/// sealed once rather than carried per row. It rides this save for the reason the session does: there is
+/// no transaction here, and an account committed without a manifest answers 201 while its client cannot
+/// learn what its own factor set is.
+/// </param>
 /// <param name="Session">The session registration signs the person in on.</param>
 /// <param name="SessionToken">The handle that session is presented by.</param>
 public sealed record Registration(
@@ -48,6 +58,7 @@ public sealed record Registration(
     PasskeySignatureCounter SignatureCounter,
     IReadOnlyList<RecoveryCodeHash> RecoveryCodeHashes,
     IReadOnlyList<WrappedAccountKeys> WrappedAccountKeys,
+    FactorManifest FactorManifest,
     Session Session,
     SessionToken SessionToken);
 
@@ -84,8 +95,8 @@ public enum RegistrationOutcome
 
 /// <summary>
 /// Writes a whole account in one save: the user, its budget, its three credentials, the passkey's key
-/// material and counter, ten recovery-code hashes, eleven shares of the account keys, and the session the
-/// ceremony signs the person in on.
+/// material and counter, ten recovery-code hashes, eleven shares of the account keys, the manifest naming
+/// all eleven, and the session the ceremony signs the person in on.
 /// </summary>
 public interface IRegistrationRepository
 {
@@ -115,8 +126,9 @@ public interface IRegistrationRepository
     /// <b>One save, so roughly thirty rows land together or not at all.</b> Half an account is
     /// unreachable and unrepairable in every direction: a user with no credential holds the unique email
     /// forever, a passkey with no wrapped keys is a factor that opens nothing, a set of codes with no
-    /// hashes can never be redeemed, and a session with no handle is a person told they are signed in
-    /// whose next request is a 401.
+    /// hashes can never be redeemed, an account with no manifest reads back as one that has never had a
+    /// factor set, and a session with no handle is a person told they are signed in whose next request is
+    /// a 401.
     /// </para>
     /// <para>
     /// <b>A refusal is reported rather than thrown, and the sentences live above.</b> Which of the four

@@ -845,12 +845,14 @@ public sealed class AccountKeysEndpointTests
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <b>The only test in the suite that can tell a served manifest from a hard-wired
-    /// <see langword="null" />.</b> Nothing in the product writes a <c>factor_manifests</c> row, so
-    /// every account in every real database answers <see langword="null" /> at epoch 0 — which means a
-    /// read service that never looked at the table would be <em>correct everywhere</em> and would
-    /// satisfy every other case in this file. This one seeds the row behind the product's back, on the
-    /// elevated connection, and is therefore the single place the endpoint has to have read it.
+    /// <b>The case that tells a served manifest from a hard-wired <see langword="null" /> at a width and
+    /// a generation registration cannot reach.</b> Registration now writes a <c>factor_manifests</c> row,
+    /// but it writes exactly one shape of one: the client's bytes at
+    /// <c>FactorManifest.MinimumRotationEpoch</c>. Every account seeded rather than registered — which is
+    /// every account this file arranges — still answers <see langword="null" /> at epoch 0, so a read
+    /// service that never looked at the table would satisfy every other case here. This one seeds the row
+    /// behind the product's back, on the elevated connection, and holds the read for accounts the
+    /// registration route never touched.
     /// </para>
     /// <para>
     /// <b>What it holds is the whole path, not a projection.</b> The bytes cross a lateral in the one
@@ -1041,10 +1043,12 @@ public sealed class AccountKeysEndpointTests
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <b>The state of every account in the product, and a decision rather than a gap.</b> Epoch 0 is
-    /// the <em>absence</em> of a row — <c>CK_factor_manifests_rotation_epoch</c> refuses anything below
-    /// 1, so 0 can never collide with a stored generation — and nothing writes a manifest, so this is
-    /// the answer the whole product gets today. The 404 is the thing to refuse by name: it is the right
+    /// <b>A live state rather than a legacy one, and a decision rather than a gap.</b> Epoch 0 is the
+    /// <em>absence</em> of a row — <c>CK_factor_manifests_rotation_epoch</c> refuses anything below 1, so
+    /// 0 can never collide with a stored generation. Registration writes a manifest, so an account
+    /// created since that landed is not in this state; every account created before it is, nothing
+    /// backfills, and an account seeded rather than registered reaches it too. The 404 is the thing to
+    /// refuse by name: it is the right
     /// instinct almost everywhere else, and here it would give a client the one instruction that can
     /// never work, because <c>AccountKeyCustodyService</c> reads a failed read as "try the same factor
     /// again in a minute".

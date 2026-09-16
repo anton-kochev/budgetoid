@@ -22,10 +22,13 @@ namespace UnitTests;
 /// guard rather than a note.
 /// </para>
 /// <para>
-/// <b>Written because deleting the whole guard currently reddens nothing.</b> Every path in the product
-/// today produces the absent pairing — nothing writes a <c>factor_manifests</c> row — so the read
-/// service, the handler and the endpoint are all exercised on the one case the guard never fires for.
-/// An off-by-one in the cap, or a floor of 2 instead of 1, passes the entire suite without this file.
+/// <b>Written because deleting the whole guard still reddens nothing.</b> Registration now writes a
+/// <c>factor_manifests</c> row — at <c>FactorManifest.MinimumRotationEpoch</c>, in the account's own
+/// save — so the populated pairing is reachable; but it is reachable at exactly one width and exactly
+/// one generation, and every account that predates that line still produces the absent pairing. The read
+/// service, the handler and the endpoint are therefore exercised on two points of a range the guard
+/// covers the whole of. An off-by-one in the cap, or a floor of 2 instead of 1, passes the entire suite
+/// without this file.
 /// The boundary cases below are therefore as load-bearing as the refusals: the refusals say the guard
 /// exists, and the boundaries say it is drawn in the right place.
 /// </para>

@@ -293,8 +293,9 @@ public sealed class GetAccountKeysHandlerTests
     /// An account holding no manifest row is answered <see langword="null" /> at epoch 0, never a throw.
     /// </summary>
     /// <remarks>
-    /// The state every account in every database is in, because nothing writes a
-    /// <c>factor_manifests</c> row. Kept beside the populated case rather than folded into it: without
+    /// The state of every account that predates registration writing a <c>factor_manifests</c> row, and
+    /// nothing backfills — so it is a live answer rather than a legacy one. Kept beside the populated
+    /// case rather than folded into it: without
     /// the populated one this would be a decoration a handler that answered <see langword="null" />
     /// unconditionally satisfies, and without this one nothing says the absent answer is a legal answer
     /// at all. A <b>bystander</b> account holds a manifest, so a handler that answered whichever

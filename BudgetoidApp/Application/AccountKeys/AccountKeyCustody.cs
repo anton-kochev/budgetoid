@@ -9,17 +9,18 @@ namespace Application.AccountKeys;
 /// </summary>
 /// <param name="Manifest">
 /// The authenticated manifest bytes as <c>factor_manifests.manifest</c> holds them, or
-/// <see langword="null" /> when the account has no manifest row. <b>It is <see langword="null" /> for
-/// every account in every database</b> — the read exists, but nothing writes a manifest and the app role
-/// holds no privilege that could — so a reader must not take a non-null value here as a state this
-/// product can currently reach.
+/// <see langword="null" /> when the account has no manifest row. <b>Both answers are reachable, and
+/// which one an account gives is decided by when it was registered</b>: registration writes the first
+/// manifest at epoch 1 in the same save as the account, so an account created since that landed answers
+/// bytes, and one created before it answers <see langword="null" /> forever — no backfill is possible,
+/// because the blob is sealed under a content key this server has never held.
 /// </param>
 /// <param name="RotationEpoch">
 /// Which generation of the manifest is in force, or <c>0</c> when there is no manifest row. <b>Zero is
 /// the absence of the row and not an error</b>: <see cref="Domain.Users.FactorManifest.MinimumRotationEpoch" />
 /// is 1 and a stored row is refused below it, so no stored generation can collide with the answer that
-/// means "there is nothing stored". That is the pre-registration state and the state of every account
-/// that exists today.
+/// means "there is nothing stored". That is the state of an account registered before registration began
+/// writing a manifest, and of no account created since.
 /// </param>
 /// <param name="Factors">
 /// One row per recovery factor — one per registered passkey, ten per set of recovery codes — ordered
@@ -62,8 +63,9 @@ namespace Application.AccountKeys;
 /// into two awaits satisfies this type, compiles, and reddens nothing.
 /// </para>
 /// <para>
-/// Reasoned, not run: nothing writes a manifest today, so the race is not reproducible yet, which is
-/// exactly why the shape has to refuse it before the writer arrives.
+/// Reasoned, not run: the only writer is registration's single INSERT, which happens before anything
+/// can read the account at all, so the race has no second writer to run against yet — which is exactly
+/// why the shape has to refuse it before promotion arrives.
 /// </para>
 /// <para>
 /// <b>The pair is flat rather than a nullable nested <c>manifest</c> object, and the rejected shape has a

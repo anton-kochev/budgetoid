@@ -52,7 +52,7 @@ decorators are needed. The API is ASP.NET Core minimal API on Azure Container Ap
 Google OAuth.
 
 **The budget is the unit of tenancy**, and **exactly one path creates an account** —
-`POST /api/registration`, which writes ~30 rows in one `SaveChanges` and creates nothing without a
+`POST /api/registration`, which writes 31 rows in one `SaveChanges` and creates nothing without a
 passkey and a card of recovery codes. Nothing in the compiler holds that: a second creating path is
 one line that would redden nothing. Read [registration.md](docs/business-logic/registration.md) and
 [data isolation](docs/engineering/data-isolation.md) before touching budget-scoped queries.
@@ -128,7 +128,12 @@ because every one of these is something a reader will otherwise simplify away.
   `factorId` and both values in the credential's own `SaveChanges`; **"every factor has a row" is
   not a schema fact**, so a path that skipped them would redden nothing. **Every factor's public key
   lives only in `factor_manifests`**, one authenticated blob per account — there is deliberately no
-  per-row public key column, because what must be unforgeable is the *set*.
+  per-row public key column, because what must be unforgeable is the *set*. **Registration is the
+  one path that writes a manifest**, at epoch 1, in the same single `SaveChanges` as the account —
+  the other three that move the factor set still owe one. A manifest is *sealed under* the content
+  key, so the server enforces **presence, framing (29–4096) and epoch, never contents**: a manifest
+  naming nobody stores and reads back. Epoch 0 is the **absence** of the row, which every account
+  registered before that write answers forever — nothing can backfill it.
   `GET /api/me/account-keys` is keyed on the **account**, never on a credential — narrowing it was
   tried and was wrong. [account-keys.md](docs/business-logic/account-keys.md),
   [ADR 0018](docs/decisions/0018-give-the-wrapped-account-keys-a-policed-table-and-their-own-factor-identifier.md)

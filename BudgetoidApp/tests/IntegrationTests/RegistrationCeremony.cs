@@ -51,6 +51,16 @@ internal static class RegistrationCeremony
     /// </remarks>
     public const string CodesMember = "codes";
 
+    /// <summary>
+    /// The member the account's first factor manifest travels on, as the wire spells it.
+    /// </summary>
+    /// <remarks>
+    /// Named here rather than typed at each call site for <see cref="CodesMember" />'s reason: the tests
+    /// that remove this member, replace it, or read the refusal keyed on it are in three files, and one
+    /// wire value with three spellings in one assembly is a disagreement waiting to happen.
+    /// </remarks>
+    public const string ManifestMember = "manifest";
+
     /// <summary>How many codes a card holds. Restated rather than read off the handler.</summary>
     public const int RequiredCodeCount = 10;
 
@@ -78,13 +88,19 @@ internal static class RegistrationCeremony
     public static async Task<RegistrationCeremonyResult> RegisterAsync(
         HttpClient client,
         SyntheticAuthenticator device,
-        WrappedKeyFixture? passkeyKeys = null)
+        WrappedKeyFixture? passkeyKeys = null,
+        ManifestFixture? manifest = null)
     {
         ArgumentNullException.ThrowIfNull(device);
 
         IssuedRegistrationOptions options = await BeginAsync(client);
         WrappedKeyFixture keys = passkeyKeys ?? WrappedKeyFixture.Mint();
         IReadOnlyList<RegistrationCodeSubmission> card = CardOf(Verifiers());
+
+        // Minted HERE rather than left to BodyOf's own default, so the result below can carry the exact
+        // bytes that were posted. A caller asserting that a stored manifest is the one it sent has to be
+        // comparing against a value this helper never regenerated.
+        ManifestFixture sealedManifest = manifest ?? ManifestFixture.Mint();
 
         AttestationResult attestation = device.Register(
             options.Challenge,
@@ -100,11 +116,12 @@ internal static class RegistrationCeremony
             userHandle: options.UserHandle);
 
         return new RegistrationCeremonyResult(
-            await PostAsync(client, attestation, keys, card),
+            await PostAsync(client, attestation, keys, card, sealedManifest),
             options.Challenge,
             RegistrationAccountId.For(options.Challenge),
             keys,
-            card);
+            card,
+            sealedManifest);
     }
 
     /// <summary>
@@ -155,8 +172,9 @@ internal static class RegistrationCeremony
         HttpClient client,
         AttestationResult attestation,
         WrappedKeyFixture passkeyKeys,
-        IReadOnlyList<RegistrationCodeSubmission> card) =>
-        client.PostAsJsonAsync(RegistrationPath, BodyOf(attestation, passkeyKeys, card));
+        IReadOnlyList<RegistrationCodeSubmission> card,
+        ManifestFixture? manifest = null) =>
+        client.PostAsJsonAsync(RegistrationPath, BodyOf(attestation, passkeyKeys, card, manifest));
 
     /// <summary>
     /// The finish leg's body as a mutable map, so a test can take one member out or put a different
@@ -180,7 +198,8 @@ internal static class RegistrationCeremony
     public static Dictionary<string, object?> BodyOf(
         AttestationResult attestation,
         WrappedKeyFixture passkeyKeys,
-        IReadOnlyList<RegistrationCodeSubmission> card)
+        IReadOnlyList<RegistrationCodeSubmission> card,
+        ManifestFixture? manifest = null)
     {
         ArgumentNullException.ThrowIfNull(attestation);
         ArgumentNullException.ThrowIfNull(passkeyKeys);
@@ -194,6 +213,12 @@ internal static class RegistrationCeremony
             ["wrappedPrivateKey"] = passkeyKeys.WrappedPrivateKey,
             ["encapsulatedAccountKeys"] = passkeyKeys.EncapsulatedAccountKeys,
             [CodesMember] = SubmissionsOf(card),
+
+            // Defaulted rather than required of every caller, so the thirty-odd call sites that are
+            // about something else keep saying what they say. A caller whose subject IS this member
+            // hands one in — or amends the body afterwards, which is the only way to express an absent
+            // member at all.
+            [ManifestMember] = (manifest ?? ManifestFixture.Mint()).Text,
         };
     }
 
@@ -377,6 +402,10 @@ internal sealed record RegistrationCodeSubmission(string Verifier, WrappedKeyFix
 /// </param>
 /// <param name="PasskeyKeys">The passkey factor's share of the account keys.</param>
 /// <param name="Card">The ten codes, each with the factor and the envelope pair that code holds.</param>
+/// <param name="Manifest">
+/// The manifest this run posted, carried so a caller can compare the stored bytes against the ones that
+/// were sent rather than against a freshly minted fixture that would only prove a width.
+/// </param>
 /// <remarks>
 /// Named for the ceremony rather than for the account, because <c>Application.Registration</c> already
 /// declares a <c>RegisteredAccount</c> of its own and two types of one name in one file's view is a
@@ -388,7 +417,8 @@ internal sealed record RegistrationCeremonyResult(
     byte[] Challenge,
     Guid AccountId,
     WrappedKeyFixture PasskeyKeys,
-    IReadOnlyList<RegistrationCodeSubmission> Card)
+    IReadOnlyList<RegistrationCodeSubmission> Card,
+    ManifestFixture Manifest)
 {
     /// <summary>The verifiers alone, for the redemption that has to present one.</summary>
     public IReadOnlyList<string> Verifiers => [.. Card.Select(code => code.Verifier)];

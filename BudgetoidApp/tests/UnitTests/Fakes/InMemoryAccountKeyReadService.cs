@@ -47,9 +47,11 @@ namespace UnitTests.Fakes;
 /// handler is measured on whether it hands back everything it was given.
 /// </para>
 /// <para>
-/// <b>The manifest is seeded per account and is absent until a caller seeds one</b>, which is the state
-/// every account in every database is actually in: nothing writes a <c>factor_manifests</c> row. The
-/// absent answer is <see langword="null" /> at epoch <see cref="NoManifestRotationEpoch" />, because
+/// <b>The manifest is seeded per account and is absent until a caller seeds one</b>, which is a state a
+/// real account can still be in: registration writes a <c>factor_manifests</c> row, so an account
+/// created since that landed holds one — but every account that predates it holds none, and nothing
+/// backfills. Both arrangements are therefore arrangements a handler really meets. The absent answer is
+/// <see langword="null" /> at epoch <see cref="NoManifestRotationEpoch" />, because
 /// epoch 0 is the <em>absence</em> of a row rather than a generation — the floor a stored row may claim
 /// is <c>FactorManifest.MinimumRotationEpoch</c>, which is 1, so the two can never be confused.
 /// <c>AccountKeyCustody</c> argues both halves.
