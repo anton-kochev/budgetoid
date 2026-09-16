@@ -182,7 +182,8 @@ public interface IPasskeyRepository
     Task<int> CountPasskeysForUserAsync(Guid userId, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Removes a passkey credential, and with it everything the database hangs off that row.
+    /// Removes a passkey credential, and with it everything the database hangs off that row, writing
+    /// the promoted <paramref name="factorManifest"/> in the same save.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -213,10 +214,30 @@ public interface IPasskeyRepository
     /// binding between an id and its owner cannot move between the read and the write.
     /// </para>
     /// <para>
-    /// Only the <c>credentials</c> row is deleted. The public key, the signature counter and the
-    /// sessions the credential opened leave by the database's own <c>ON DELETE CASCADE</c>, which runs
-    /// as the table owner and is not a statement this role has to be granted — the role holds no
-    /// <c>DELETE</c> on any of them, and <c>AppRoleGrantsTests</c> pins that absence deliberately.
+    /// Only the <c>credentials</c> row is deleted. The public key, the signature counter, the factor's
+    /// share of the account keys and the sessions the credential opened leave by the database's own
+    /// <c>ON DELETE CASCADE</c>, which runs as the table owner and is not a statement this role has to
+    /// be granted — the role holds no <c>DELETE</c> on any of them, and <c>AppRoleGrantsTests</c> pins
+    /// that absence deliberately.
+    /// </para>
+    /// <para>
+    /// <b>That third one is why this member takes a manifest.</b>
+    /// <see cref="WrappedAccountKeys"/> leaving with the credential is a change to the account's set of
+    /// recovery factors, and <see cref="FactorManifest"/> is the sole carrier of every factor's public
+    /// key — so a revocation writing no manifest would leave the account's one statement of its set
+    /// naming a factor that holds no copy of the keys, and a later rotation would encapsulate them to an
+    /// authenticator the person has removed. The promoted <paramref name="factorManifest"/> is written
+    /// in the <em>same save</em> as the delete, which is what makes "the factor left and the manifest
+    /// moved with it" one statement batch rather than two.
+    /// </para>
+    /// <para>
+    /// <b>It is a parameter although EF would flush it either way</b>, for the reason
+    /// <see cref="TryAddAsync"/> gives about its own: the caller promoted an instance this port handed
+    /// it, so the UPDATE rides this save whether or not anybody names it — which would make the
+    /// atomicity a fact about the change tracker rather than about any signature on the path. It bites
+    /// harder here than there, because this route's caller already ran a save of its own inside the same
+    /// transaction: a reader could conclude the promotion is atomic wherever it is written, which is
+    /// true of the commit and false of the statement order.
     /// </para>
     /// <para>
     /// A credential that is already gone raises <see cref="Domain.Common.NotFoundException"/>, with the
@@ -225,8 +246,32 @@ public interface IPasskeyRepository
     /// implementation's to translate, which keeps the storage assembly out of every caller and every
     /// fake standing in for this interface.
     /// </para>
+    /// <para>
+    /// <b>A second race, on the other row, and it answers differently.</b> A concurrent change to the
+    /// account's factors can move the manifest's generation between the caller's read and this save, in
+    /// which case the concurrency token refuses the UPDATE and this raises
+    /// <see cref="Domain.Common.ConflictException"/> under
+    /// <see cref="Domain.Common.ConflictKind.FactorSetMoved"/> — the kind <see cref="TryAddAsync"/> and
+    /// <see cref="IRecoveryCodeRepository.AddSetAsync"/> raise for the same fact, because a caller whose
+    /// generation moved does the same thing about it whichever route they were on. It is not the 400
+    /// <see cref="FactorManifest.Promote"/> raises over the same rule: that one refuses an epoch that was
+    /// never one greater than the stored generation, and this one fires on an epoch that was right when
+    /// it was read.
+    /// </para>
+    /// <para>
+    /// <b>The two races can be lost together, and the answer is then the 404.</b> A revocation that
+    /// wins this one deletes the credential <em>and</em> promotes the generation, so the loser's
+    /// <c>DELETE</c> and its <c>UPDATE</c> both match no row. What the caller is told is the delete's
+    /// answer: the passkey they asked to have removed is gone, and telling them to reseal a manifest
+    /// and retry would send them to a request that can only answer 404 anyway. <b>Which of the two
+    /// arrives is decided beneath this port</b> — the implementation's remarks record how, and record
+    /// it as an accepted gap rather than a property this contract promises.
+    /// </para>
     /// </remarks>
-    Task DeletePasskeyAsync(Credential credential, CancellationToken cancellationToken = default);
+    Task DeletePasskeyAsync(
+        Credential credential,
+        FactorManifest factorManifest,
+        CancellationToken cancellationToken = default);
 
     Task<PasskeySignatureCounter?> FindCounterAsync(
         Guid credentialId,

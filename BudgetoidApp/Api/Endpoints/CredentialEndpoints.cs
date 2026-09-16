@@ -55,6 +55,8 @@ public static class CredentialEndpoints
             PasskeyRevocation revocation = await handler.HandleAsync(
                 new RevokePasskeyCommand(
                     credentialId,
+                    request.Manifest,
+                    request.RotationEpoch,
                     new ReauthenticationAssertion(
                         request.CredentialId,
                         request.ClientDataJson,
@@ -116,24 +118,44 @@ public static class CredentialEndpoints
     private sealed record CredentialListEntry(Guid Id, string Type, DateTime CreatedAtUtc);
 
     /// <summary>
-    /// The assertion the revocation is authorized by, in the shape the erasure leg's own request
-    /// record already uses.
+    /// The account's factor manifest as it stands after this passkey goes, and the assertion the
+    /// revocation is authorized by — the second in the shape the erasure leg's own request record
+    /// already uses.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The members are not <c>required</c>, deliberately and identically to that leg: every member
-    /// bound to <see langword="null" /> — a body of <c>{}</c>, or one naming only some of them —
-    /// reaches the gate's own decode, which answers the same 401 every other refusal on this endpoint
-    /// answers. Marking them required would buy a framework 400 that tells a caller holding a stolen
-    /// bearer token that its proof was the thing found wanting.
+    /// No member is <c>required</c>, deliberately and identically to that leg: every member bound to
+    /// <see langword="null" /> — a body of <c>{}</c>, or one naming only some of them — reaches the
+    /// gate's own decode, which answers the same 401 every other refusal on this endpoint answers.
+    /// Marking them required would buy a framework 400 that tells a caller holding a stolen bearer
+    /// token that its proof was the thing found wanting. It bites harder on <see cref="Manifest" />
+    /// than on the assertion members: a framework 400 there would tell an unproven caller that the
+    /// server has an opinion about this account's key custody, which is the disclosure the handler's
+    /// gate-before-validation ordering exists to prevent.
     /// </para>
     /// <para>
-    /// Byte-identical to the erasure's body on purpose, so a caller comparing the two gates learns
-    /// nothing from the difference between them. That envelope covers what binds, not what fails to:
-    /// no body at all, a literal <c>null</c>, or a member of the wrong JSON type is a framework 400
-    /// raised before this handler is entered, and the gap is accepted for the reason the erasure
-    /// states — a deserialization failure is a fact about the caller's own request and says nothing
-    /// about what credentials exist.
+    /// <b>The five assertion members are byte-identical to <c>ErasureRequest</c>'s on purpose</b>, so a
+    /// caller comparing the two gates learns nothing from the difference between them. The record as a
+    /// whole is not, and must not be made so: a revocation changes the account's set of recovery
+    /// factors and an erasure leaves nobody for a manifest to describe, so the two members below belong
+    /// here and would be meaningless there. <c>RecoveryCodeGenerationRequest</c> is the leg this shape
+    /// follows — payload first, assertion last.
+    /// </para>
+    /// <para>
+    /// That envelope covers what binds, not what fails to: no body at all, a literal <c>null</c>, or a
+    /// member of the wrong JSON type is a framework 400 raised before this handler is entered, and the
+    /// gap is accepted for the reason the erasure states — a deserialization failure is a fact about
+    /// the caller's own request and says nothing about what credentials exist.
+    /// </para>
+    /// <para>
+    /// <b><see cref="Manifest" /> and <see cref="RotationEpoch" /> travel beside the proof because the
+    /// revoked passkey's share of the account keys leaves with it.</b>
+    /// <c>wrapped_account_keys</c> cascades from the <c>credentials</c> row, and the manifest is the
+    /// sole carrier of every factor's public key — see <see cref="RevokePasskeyCommand" /> for both
+    /// members and for why the epoch is the client's number rather than one the server adds. The epoch
+    /// is the only non-string member on this record and is not <c>required</c> either: an omitted one
+    /// binds to <c>0</c>, which the domain keeps free to mean "no manifest row", and is refused past
+    /// the gate.
     /// </para>
     /// <para>
     /// <see cref="CredentialId" /> here is the WebAuthn <em>handle</em>, never the route's
@@ -141,6 +163,8 @@ public static class CredentialEndpoints
     /// </para>
     /// </remarks>
     private sealed record RevocationRequest(
+        string Manifest,
+        int RotationEpoch,
         string CredentialId,
         string ClientDataJson,
         string AuthenticatorData,

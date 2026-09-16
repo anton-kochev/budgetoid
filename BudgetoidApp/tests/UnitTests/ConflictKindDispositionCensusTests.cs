@@ -258,7 +258,11 @@ public sealed partial class ConflictKindDispositionCensusTests
             "PK_categories, with the same 400-not-409 split on the name rule as its group above"),
         new(
             "Infrastructure/Repositories/PasskeyRepository.cs",
-            [nameof(ConflictKind.FactorAlreadyRegistered), nameof(ConflictKind.FactorSetMoved)],
+            [
+                nameof(ConflictKind.FactorAlreadyRegistered),
+                nameof(ConflictKind.FactorSetMoved),
+                nameof(ConflictKind.FactorSetMoved),
+            ],
             "PK_wrapped_account_keys on a client-minted factor id, and then the account's factor "
             + "generation moving under the same save. Not AuthenticatorAlreadyRegistered, "
             + "though the same TryAddAsync also filters the WebAuthn credential index — that arm "
@@ -269,7 +273,14 @@ public sealed partial class ConflictKindDispositionCensusTests
             + "FactorSetMoved says the identifier was fine and the MANIFEST is stale, so read the "
             + "account's keys back and re-SEAL a manifest over the generation it now reports. It is "
             + "also not the 400 FactorManifest.Promote raises over the same rule — that caller's "
-            + "arithmetic was wrong, this caller's was right and was overtaken"),
+            + "arithmetic was wrong, this caller's was right and was overtaken. THE THIRD ROW IS A "
+            + "SECOND SAVE IN THIS FILE, NOT A SECOND CATCH ON THE FIRST: DeletePasskeyAsync promotes "
+            + "the manifest in the same batch as the credential's DELETE, because a factor LEAVING the "
+            + "set changes it exactly as one joining does, so it can lose the identical race and is "
+            + "answered with the identical member. What it must not be is the neighbouring "
+            + "NotFoundException that save also raises — that one says the passkey is already gone and "
+            + "there is nothing left to retry, this one says the passkey is still there and the caller "
+            + "has a manifest to reseal first"),
         new(
             "Infrastructure/Repositories/PayeeRepository.cs",
             [nameof(ConflictKind.DuplicateName), nameof(ConflictKind.DuplicateIdentifier)],

@@ -4,6 +4,7 @@ using Infrastructure.Persistence;
 using Infrastructure.Persistence.Configurations;
 using Infrastructure.Repositories;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Npgsql;
 using TUnit.Assertions.Enums;
 
@@ -93,12 +94,21 @@ public sealed class PasskeyRepositoryTests
         Credential credential = await repository.FindPasskeyCredentialAsync(credentialId, userId)
             ?? throw new InvalidOperationException(
                 "The seeded passkey was not readable through the repository before the act.");
+        // The manifest the revocation promotes in the same save, read and promoted in the order the
+        // handler works in. THE WINNER HERE PROMOTED NOTHING — it removed one row with a bare DELETE —
+        // so this UPDATE matches its row and the DELETE beside it is the only statement that finds
+        // nothing. That is deliberately the SIMPLER of the two lost races on this save, and
+        // DeletePasskeyAsync_WhenTheWinnerDeletedAndPromotedInOneSave_ThrowsNotFound is the one that
+        // stages a real revocation as the winner, so that BOTH of the loser's statements match nothing.
+        FactorManifest manifest = await PromotedManifestAsync(repository, userId);
+
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
         int removedByTheWinner = await DeleteCredentialAsync(admin, credentialId);
 
         // Act
-        Exception? escaped = await CaptureAsync(() => repository.DeletePasskeyAsync(credential));
+        Exception? escaped = await CaptureAsync(
+            () => repository.DeletePasskeyAsync(credential, manifest));
 
         // Assert — the premise first. A run in which the out-of-band delete matched nothing would be
         // arranging the opposite of this test, and could still go green against a repository that
@@ -139,8 +149,20 @@ public sealed class PasskeyRepositoryTests
     /// delete, and this is written to that shape rather than to a second one.
     /// </para>
     /// <para>
-    /// <b>The passkey being revoked is deliberately still present</b>, so exactly one entry can be in
-    /// the exception and the test cannot pass or fail on how EF happened to batch two failures.
+    /// <b>The passkey being revoked is deliberately still present, and so is the generation this save
+    /// promotes</b>, so exactly one entry can be in the exception and the test cannot pass or fail on
+    /// how EF happened to batch three statements' failures.
+    /// </para>
+    /// <para>
+    /// <b>It is also the control on the <em>widening</em> of <see cref="PasskeyRepository" />'s
+    /// already-deleted filter, which is what makes it worth more than it was.</b> That predicate now
+    /// tolerates a <c>Modified</c> <see cref="FactorManifest" /> beside the <c>Deleted</c>
+    /// <see cref="Credential" />, because a winning revocation deletes and promotes in one save. Widen it
+    /// one notch further — drop the requirement that some conflicting entry <em>is</em> a credential —
+    /// and a lost promotion alone comes back as a 404 saying the passkey is gone when it is still there,
+    /// which is <see cref="DeletePasskeyAsync_WhenTheManifestGenerationMovedFirst_ThrowsFactorSetMovedAndRemovesNothing" />'s
+    /// failure. Widen it to the bare exception type and a stranger's conflict comes back the same way,
+    /// which is this one's. Neither test sees the other's mutation, so both have to be here.
     /// </para>
     /// </remarks>
     [Test]
@@ -162,13 +184,19 @@ public sealed class PasskeyRepositoryTests
         PasskeySignatureCounter counter = await db.PasskeySignatureCounters
             .SingleAsync(tracked => tracked.CredentialId == bystanderId);
 
+        // The revocation's own manifest promotion, which nothing has overtaken: its UPDATE matches the
+        // row, so the only statement in this save that finds nothing is the intruder's DELETE and the
+        // exception names exactly one entry.
+        FactorManifest manifest = await PromotedManifestAsync(repository, userId);
+
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
         int removedOutOfBand = await DeleteSignatureCounterAsync(admin, bystanderId);
         db.PasskeySignatureCounters.Remove(counter);
 
         // Act
-        Exception? escaped = await CaptureAsync(() => repository.DeletePasskeyAsync(credential));
+        Exception? escaped = await CaptureAsync(
+            () => repository.DeletePasskeyAsync(credential, manifest));
 
         // Assert — the premise first, or the exception below was raised by something this test did not
         // arrange.
@@ -178,6 +206,283 @@ public sealed class PasskeyRepositoryTests
         // rolled-back transaction did not perform.
         await Assert.That(escaped).IsNotNull();
         await Assert.That(escaped).IsTypeOf<DbUpdateConcurrencyException>();
+    }
+
+    /// <summary>
+    /// A revocation whose manifest promotion was overtaken is refused as a conflict naming the moved
+    /// factor set — and the passkey it was asked to remove is still there.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b><see cref="TryAddAsync_WhenTheManifestGenerationMovedFirst_ThrowsFactorSetMovedAndWritesNothing" />'s
+    /// claim on the save that takes a factor AWAY, and it is not covered by it.</b> The two saves are
+    /// different statement batches reaching different <c>catch</c> blocks in the same file: that one
+    /// emits four INSERTs and one UPDATE, this one emits one DELETE and one UPDATE, and this one has a
+    /// <em>second</em> filter sitting in front of the manifest's — <c>IsAlreadyDeleted</c> — that the
+    /// registration save does not have. Nothing before this case had ever raised a
+    /// <see cref="DbUpdateConcurrencyException" /> on the delete's manifest half at all.
+    /// </para>
+    /// <para>
+    /// <b>409 and not 404 here, which is the whole of what separates this from its neighbour below.</b>
+    /// The credential this caller named is still in the table — the winner promoted a generation and
+    /// removed nothing — so telling them the passkey is gone would be a lie that stops them retrying at
+    /// exactly the moment a retry is the right thing to do. What they have to do first is real work:
+    /// read the account's keys back and reseal a manifest over the generation it now reports.
+    /// </para>
+    /// <para>
+    /// <b>The winner promotes and does nothing else</b>, which is what "another change to this account's
+    /// factor set landed first" is at the row level — a registration, an issue of recovery codes and
+    /// another revocation are indistinguishable from here, and this repository must not depend on which.
+    /// It commits through a context of its own for the reason every race in this file does: written
+    /// through the context under test it would travel inside the same unit of work, where the loser's
+    /// UPDATE could not fail to see it.
+    /// </para>
+    /// <para>
+    /// <b>Nothing of the loser's landed either</b>, and the DELETE is the half worth counting. One save
+    /// is one batch, so a refused promotion takes the credential's removal back with it; a repository
+    /// that promoted in a save of its own would leave a passkey deleted and a 409 telling its owner that
+    /// nothing happened.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task DeletePasskeyAsync_WhenTheManifestGenerationMovedFirst_ThrowsFactorSetMovedAndRemovesNothing()
+    {
+        // Arrange — one account, one passkey, at the generation the seeding left.
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
+        Guid credentialId = await host.SeedPasskeyAsync(userId, WebAuthnCredentialId);
+
+        // The loser: the credential resolved through the scoped lookup, and the manifest read and
+        // promoted before the winner exists. Read FIRST, so the entity's original values really are the
+        // generation this attempt started from — the order is the arrangement rather than tidiness.
+        await using BudgetoidDbContext loserDb = CreateDb(host);
+        var loser = new PasskeyRepository(loserDb);
+        Credential credential = await loser.FindPasskeyCredentialAsync(credentialId, userId)
+            ?? throw new InvalidOperationException(
+                "The seeded passkey was not readable through the repository before the act.");
+        FactorManifest losersManifest = await PromotedManifestAsync(loser, userId);
+
+        // The winner: the same row, promoted and committed by another session. Its bytes are its own, so
+        // the read-back below can say WHOSE generation survived rather than only that one did.
+        ManifestFixture winnersManifest = ManifestFixture.Mint();
+        await using (BudgetoidDbContext winnerDb = CreateDb(host))
+        {
+            var winner = new PasskeyRepository(winnerDb);
+            FactorManifest stored = await winner.FindFactorManifestAsync(userId)
+                ?? throw new InvalidOperationException("The seeded account holds no factor manifest.");
+            stored.Promote(winnersManifest.Manifest, stored.RotationEpoch + 1);
+            await winnerDb.SaveChangesAsync();
+        }
+
+        // Act
+        Exception? escaped = await CaptureAsync(
+            () => loser.DeletePasskeyAsync(credential, losersManifest));
+
+        // Assert — the premise first: the two attempts really did claim the same generation, or the
+        // token had nothing to refuse and everything below is about a race that did not happen.
+        await Assert.That(losersManifest.RotationEpoch).IsEqualTo(SeededRotationEpoch + 1);
+
+        // Translated, not raw, and not the delete's own NotFoundException either. The kind is asserted
+        // beside the type because the two this save can raise ask for opposite things of a caller.
+        await Assert.That(escaped).IsNotNull();
+        await Assert.That(escaped).IsTypeOf<ConflictException>();
+        await Assert.That(((ConflictException)escaped!).Kind).IsEqualTo(ConflictKind.FactorSetMoved);
+        await Assert.That(string.IsNullOrWhiteSpace(escaped.Message)).IsFalse();
+
+        // And the passkey is whole — all three rows, on a context of its own because the one under test
+        // is still holding a Deleted credential. The public key and the counter are counted beside the
+        // credential because they leave by the database's own cascade: a DELETE that had committed takes
+        // all three, so any one of them surviving alone would be a state no path produces.
+        await using BudgetoidDbContext verify = CreateDb(host);
+        await Assert.That(await verify.Credentials.AnyAsync(row => row.Id == credentialId)).IsTrue();
+        await Assert.That(await verify.PasskeyPublicKeys.AnyAsync(row => row.CredentialId == credentialId))
+            .IsTrue();
+        await Assert.That(await verify.PasskeySignatureCounters.AnyAsync(row => row.CredentialId == credentialId))
+            .IsTrue();
+
+        // And the row still holds the WINNER'S generation — both halves of it. The epoch alone would be
+        // satisfied by a loser whose UPDATE landed anyway, because both attempts computed the same
+        // number: it is the BYTES that say which of the two factor sets the account is now claiming.
+        FactorManifest survivor = await verify.FactorManifests.SingleAsync(row => row.UserId == userId);
+        await Assert.That(survivor.RotationEpoch).IsEqualTo(SeededRotationEpoch + 1);
+        await Assert.That(survivor.Manifest.ToArray())
+            .IsEquivalentTo(winnersManifest.Manifest, CollectionOrdering.Matching);
+    }
+
+    /// <summary>
+    /// A double-tapped revocation: the winner deletes the credential <b>and</b> promotes the generation
+    /// in one save, and the loser is answered 404 rather than 409 or 500.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This is the shape <c>IsAlreadyDeleted</c> was widened for, and nothing else arranges it.</b>
+    /// <see cref="DeletePasskeyAsync_WhenTheRowIsAlreadyGone_ThrowsNotFound" /> removes the row out of
+    /// band with a bare <c>DELETE</c> and no competing promotion, so its loser's save has exactly one
+    /// statement matching nothing. A real winner is a whole revocation, and a whole revocation moves two
+    /// rows — so here the loser's <em>save</em> carries a <c>DELETE</c> and an <c>UPDATE</c> that both
+    /// match nothing, which is the state the widening was written against.
+    /// </para>
+    /// <para>
+    /// <b>Be precise about what that does and does not prove, because the obvious reading is wrong.</b>
+    /// The widening tolerates a <c>Modified</c> <see cref="FactorManifest" /> arriving beside the
+    /// <c>Deleted</c> <see cref="Credential" /> — and on this stack that pair never arrives.
+    /// <see cref="DeletePasskeyAsync_WhenBothStatementsMatchNothing_ReportsOnlyTheFirstFailingStatement" />
+    /// measures it: EF Core 10 over Npgsql reports the first failing command and nothing after it, so
+    /// this case is green under the strict <c>All(entry is Credential)</c> filter exactly as it is under
+    /// the widened one. <b>It does not hold the widening.</b> What it holds is the answer — that the
+    /// commonest race this method has is a 404 — against a real winner rather than against a hand-written
+    /// <c>DELETE</c>, and it is the case that reddens the day either the provider's aggregation or the
+    /// batch's statement order changes underneath the choice.
+    /// </para>
+    /// <para>
+    /// <b>404 beats 409 here, and the two losses are not weighed equally.</b> Both races were lost, so
+    /// there is a choice about which to report. The passkey the caller asked to have removed is gone and
+    /// is going to stay gone: a retry finds nothing, and the answer to a retry is this same 404. Telling
+    /// them instead that the factor set moved invites the one remedy the neighbouring case asks for —
+    /// read the account's keys back, reseal a manifest, prove presence again — and spends all of it on a
+    /// request that can only answer 404 at the end of it. The generation is not left stale by the
+    /// choice: the winner promoted it, so the account's statement of its factor set is the winner's and
+    /// is correct.
+    /// </para>
+    /// <para>
+    /// <b>The winner is the production method rather than two hand-written statements</b>, which is what
+    /// makes the loser's exception the one a real double tap produces. A test that removed the row and
+    /// bumped the epoch with SQL of its own would be arranging the shape it believes production has,
+    /// which is precisely the belief under test.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task DeletePasskeyAsync_WhenTheWinnerDeletedAndPromotedInOneSave_ThrowsNotFound()
+    {
+        // Arrange — one account, one passkey, two contexts about to revoke the same row.
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
+        Guid credentialId = await host.SeedPasskeyAsync(userId, WebAuthnCredentialId);
+
+        // The loser resolves and promotes FIRST, so its manifest's original values are the generation
+        // the winner is about to take.
+        await using BudgetoidDbContext loserDb = CreateDb(host);
+        var loser = new PasskeyRepository(loserDb);
+        Credential losersCredential = await loser.FindPasskeyCredentialAsync(credentialId, userId)
+            ?? throw new InvalidOperationException(
+                "The seeded passkey was not readable through the repository before the act.");
+        FactorManifest losersManifest = await PromotedManifestAsync(loser, userId);
+
+        // The winner: a whole revocation, through the method under test, committed by another session.
+        await using (BudgetoidDbContext winnerDb = CreateDb(host))
+        {
+            var winner = new PasskeyRepository(winnerDb);
+            Credential winnersCredential = await winner.FindPasskeyCredentialAsync(credentialId, userId)
+                ?? throw new InvalidOperationException("The winner could not resolve the passkey.");
+            await winner.DeletePasskeyAsync(winnersCredential, await PromotedManifestAsync(winner, userId));
+        }
+
+        // Act
+        Exception? escaped = await CaptureAsync(
+            () => loser.DeletePasskeyAsync(losersCredential, losersManifest));
+
+        // Assert — the premise first: the winner really did move both rows, or this is the neighbouring
+        // one-statement race under another name.
+        await using BudgetoidDbContext verify = CreateDb(host);
+        await Assert.That(await verify.Credentials.AnyAsync(row => row.Id == credentialId)).IsFalse();
+        await Assert.That(
+                (await verify.FactorManifests.SingleAsync(row => row.UserId == userId)).RotationEpoch)
+            .IsEqualTo(SeededRotationEpoch + 1);
+
+        // The delete's own answer, and NOT the manifest's: see the remarks for why the 404 is the one
+        // worth giving when both races were lost.
+        await Assert.That(escaped).IsNotNull();
+        await Assert.That(escaped).IsTypeOf<NotFoundException>();
+    }
+
+    /// <summary>
+    /// What the loser of a double tap is actually handed: <b>one</b> conflicting entry, the credential's,
+    /// although two of its statements matched no row.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This is a measurement, and it says the opposite of what a reader expects.</b> EF Core's
+    /// concurrency machinery is documented as aggregating a batch's failures, and
+    /// <c>PasskeyRepository.IsAlreadyDeleted</c>'s remarks are written on that premise — a <c>Deleted</c>
+    /// <see cref="Credential" /> and a <c>Modified</c> <see cref="FactorManifest" /> arriving together,
+    /// which is what its widening exists to tolerate. On this stack — EF Core 10 over Npgsql, batched —
+    /// that pair never arrives: the exception names the <b>first</b> command whose row count was wrong
+    /// and nothing after it. Measured twice, because one measurement could have been about the
+    /// <c>UPDATE</c> having quietly succeeded: a save queueing two <c>DELETE</c>s that both match nothing
+    /// reports one entry as well.
+    /// </para>
+    /// <para>
+    /// <b>What follows for the neighbour above, stated rather than left for somebody to discover.</b>
+    /// The double tap is answered 404 because the credential's entry is the only one there, so it
+    /// satisfies the strict <c>All(entry is Credential)</c> filter exactly as it satisfies the widened
+    /// one — the neighbour is green under both and cannot be the thing that holds the widening. The
+    /// widening is therefore <em>unexercised</em> today, and it is this case that says so out loud rather
+    /// than the suite implying otherwise by staying green.
+    /// </para>
+    /// <para>
+    /// <b>It is still a pin worth keeping, and it is one that reddens in both directions.</b> A provider
+    /// that begins aggregating makes this case report the pair — at which point the widening starts
+    /// earning its keep and the 404 above keeps holding, while an un-widened filter would answer 500. A
+    /// batch whose statement order put the manifest's <c>UPDATE</c> first makes it report
+    /// <c>FactorManifest/Modified</c> instead — at which point the double tap silently becomes a 409
+    /// asking a caller to reseal a manifest for a request that can only answer 404, and the neighbour
+    /// reddens beside this one. Both are behaviours of a dependency this repository does not control, so
+    /// they belong in a test rather than in a belief.
+    /// </para>
+    /// <para>
+    /// <b>It queues the two statements itself rather than calling the method under test</b>, which is the
+    /// one place in this file that is deliberate rather than a shortcut: what is being observed is the
+    /// <em>exception</em>, and <see cref="PasskeyRepository.DeletePasskeyAsync" /> translates it into a
+    /// type carrying no entries at all. The two statements are the two that method queues, in the states
+    /// it queues them — <c>Remove</c> on the credential and a promotion on a tracked manifest — so the
+    /// batch this arranges is the batch it emits.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task DeletePasskeyAsync_WhenBothStatementsMatchNothing_ReportsOnlyTheFirstFailingStatement()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
+        Guid credentialId = await host.SeedPasskeyAsync(userId, WebAuthnCredentialId);
+
+        await using BudgetoidDbContext loserDb = CreateDb(host);
+        var loser = new PasskeyRepository(loserDb);
+        Credential credential = await loser.FindPasskeyCredentialAsync(credentialId, userId)
+            ?? throw new InvalidOperationException(
+                "The seeded passkey was not readable through the repository before the act.");
+        // Discarded, because what this line is for is the promotion it performs on the tracked instance:
+        // that is what queues the UPDATE the save below carries beside the DELETE.
+        _ = await PromotedManifestAsync(loser, userId);
+
+        // The winner: the same whole revocation, through the method under test, on another session.
+        await using (BudgetoidDbContext winnerDb = CreateDb(host))
+        {
+            var winner = new PasskeyRepository(winnerDb);
+            Credential winnersCredential = await winner.FindPasskeyCredentialAsync(credentialId, userId)
+                ?? throw new InvalidOperationException("The winner could not resolve the passkey.");
+            await winner.DeletePasskeyAsync(winnersCredential, await PromotedManifestAsync(winner, userId));
+        }
+
+        // Act — the loser's two statements, saved directly so the raw exception survives the call.
+        loserDb.Credentials.Remove(credential);
+        Exception? escaped = await CaptureAsync(() => loserDb.SaveChangesAsync());
+
+        // Assert
+        await Assert.That(escaped).IsNotNull();
+        await Assert.That(escaped).IsTypeOf<DbUpdateConcurrencyException>();
+
+        // Rendered as text rather than probed with a predicate, so a failure prints what the provider DID
+        // report instead of only that something was or was not there — which is the whole question this
+        // case asks, and the answer a reader will want when it changes. Ordered, so a day on which two
+        // entries do arrive produces the same message whichever order the batch put them in.
+        string reported = string.Join(
+            ", ",
+            ((DbUpdateConcurrencyException)escaped!).Entries
+                .Select(entry => $"{entry.Entity.GetType().Name}/{entry.State}")
+                .Order(StringComparer.Ordinal));
+
+        await Assert.That(reported).IsEqualTo("Credential/Deleted");
     }
 
     /// <summary>

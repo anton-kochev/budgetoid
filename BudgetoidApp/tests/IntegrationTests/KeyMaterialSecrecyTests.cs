@@ -1421,6 +1421,17 @@ public sealed class KeyMaterialSecrecyTests
             "base64url over the JSON the browser signed — type, challenge, origin — a public transcript"),
         new("CredentialEndpoints.RevocationRequest", "CredentialId",
             "base64url over the authenticator's opaque handle, which selects a key and is not one"),
+        new("CredentialEndpoints.RevocationRequest", "Manifest",
+            "base64url over an AEAD envelope of 29 to 4096 bytes SEALED UNDER the account's content key, "
+            + "listing every recovery factor and its PUBLIC half, resealed here because this request "
+            + "takes one OUT of the set. The same value and the same argument as "
+            + "PasskeyEndpoints.RegistrationRequest.Manifest — this server cannot open it, so what the "
+            + "list contains is held by the authentication tag and by the client that can verify it. What "
+            + "is different on this route is the direction, and it is worth naming because it decides "
+            + "what a stale one COSTS: the factor this removes takes its wrapped_account_keys row with "
+            + "it by the database's own cascade, so a manifest that still named it would have the next "
+            + "rotation encapsulate the account's keys to an authenticator the person has just taken "
+            + "away — very often one they took away because somebody else has it"),
         new("CredentialEndpoints.RevocationRequest", "Signature",
             "base64url over an assertion signature, verified with a published public key"),
         new("CredentialEndpoints.RevocationRequest", "UserHandle",

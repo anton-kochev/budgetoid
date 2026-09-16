@@ -1248,6 +1248,29 @@ public sealed class CredentialRevocationTests
     /// </summary>
     /// <param name="device">The authenticator that proves presence — not necessarily the one removed.</param>
     /// <param name="credentialId">The <c>credentials.id</c> of the passkey to remove.</param>
+    /// <remarks>
+    /// <para>
+    /// <b>ONE FACTOR LEAVES THE SET HERE, so the account's one authenticated statement of what the set
+    /// contains moves with it</b> — the revoked passkey's <c>wrapped_account_keys</c> row cascades away
+    /// with its credential, and the manifest is the sole carrier of every factor's public key. The bytes
+    /// are minted per call and are never opened by anything below the wire, so what has to be right is
+    /// the framing and the generation.
+    /// </para>
+    /// <para>
+    /// <b>The generation is read off the running API rather than written out</b>, for the reason
+    /// <see cref="RegisterPasskeyAsync" /> gives and one this helper feels harder: several cases here
+    /// revoke twice against one account, and every registration in the arrangement moved the number
+    /// first. An epoch that is not exactly one greater than the stored one is a 400 naming
+    /// <c>rotationEpoch</c>, which reads as the route being broken. See <c>FactorGeneration</c>.
+    /// </para>
+    /// <para>
+    /// <b>This is the single place the two members go, and it is why every refusal family below still
+    /// compares equal.</b> The gate-refusal entries post through
+    /// <see cref="PostRevocationAsync" /> directly and carry neither member, which binds both to their
+    /// defaults and reaches the same 401 — the decode sits behind the gate, so an unproven caller learns
+    /// nothing about this account's key custody either way.
+    /// </para>
+    /// </remarks>
     private static async Task<HttpResponseMessage> RevokeAsync(
         HttpClient client,
         SyntheticAuthenticator device,
@@ -1259,8 +1282,10 @@ public sealed class CredentialRevocationTests
             challenge,
             ApiFactory.PasskeyOrigin,
             PasskeyEncoding.ToUserHandle(userId));
+        int rotationEpoch = await FactorGeneration.NextAsync(client);
 
-        return await PostRevocationAsync(client, credentialId, assertion);
+        return await PostRevocationAsync(
+            client, credentialId, assertion, ManifestFixture.Mint().Text, rotationEpoch);
     }
 
     /// <summary>
@@ -1268,15 +1293,28 @@ public sealed class CredentialRevocationTests
     /// ceremony above would never produce — a stale pool, a foreign device, a flipped signature.
     /// </summary>
     /// <remarks>
-    /// The body shape is the erasure request's, members and all, so a caller holding a stolen bearer
-    /// token learns nothing from the difference between the two gates.
+    /// <para>
+    /// The five assertion members are the erasure request's, members and all, so a caller holding a
+    /// stolen bearer token learns nothing from the difference between the two gates.
+    /// </para>
+    /// <para>
+    /// <paramref name="manifest" /> and <paramref name="rotationEpoch" /> default to the shape a client
+    /// that has not been updated sends — the member absent, the number zero — which is exactly what every
+    /// gate-refusal entry wants. The decode and the promotion both sit behind the re-authentication gate,
+    /// so a request refused there never reaches either, and a family of refusals compared whole must not
+    /// be split by one of them happening to carry a well-formed payload.
+    /// </para>
     /// </remarks>
     private static Task<HttpResponseMessage> PostRevocationAsync(
         HttpClient client,
         Guid credentialId,
-        AssertionResult assertion) =>
+        AssertionResult assertion,
+        string? manifest = null,
+        int rotationEpoch = 0) =>
         client.PostAsJsonAsync(RevocationPath(credentialId), new
         {
+            manifest,
+            rotationEpoch,
             credentialId = assertion.CredentialIdBase64Url,
             clientDataJson = assertion.ClientDataJsonBase64Url,
             authenticatorData = assertion.AuthenticatorDataBase64Url,

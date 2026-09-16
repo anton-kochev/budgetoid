@@ -129,8 +129,9 @@ because every one of these is something a reader will otherwise simplify away.
   not a schema fact**, so a path that skipped them would redden nothing. **Every factor's public key
   lives only in `factor_manifests`**, one authenticated blob per account — there is deliberately no
   per-row public key column, because what must be unforgeable is the *set*. **Four paths move a
-  factor set and three now carry a manifest** — registration inserts the first at epoch 1,
-  adding a passkey and regenerating the code card each *promote* it; revocation still owes one.
+  factor set and all four carry a manifest** — registration inserts the first at epoch 1; adding a
+  passkey, regenerating the code card and revoking a passkey each *promote* it, in the unit of work
+  that path already had. Erasure owes none: there is nobody left for one to describe.
   A manifest is *sealed under* the content key, so the server enforces **presence, framing
   (29–4096) and epoch, never contents**: a manifest naming nobody stores and reads back.
   **The client supplies the epoch**, because it is the manifest's associated data — the server

@@ -9,19 +9,27 @@ namespace IntegrationTests;
 /// <remarks>
 /// <para>
 /// <b>Read rather than counted, and that is what makes it safe to call from a helper that does not know
-/// how many times it has run.</b> Both routes that change a factor set refuse any epoch that is not
-/// exactly one greater than the stored one, so a test registering a second passkey has to send a
-/// different number from the first. A helper carrying a literal would be correct for whichever call
-/// site it was written beside and silently wrong for the next one — and wrong in the shape that looks
-/// like the feature is broken, because the refusal is a 400 naming <c>rotationEpoch</c>.
+/// how many times it has run.</b> All three routes that change a factor set — a passkey registered, a
+/// card of recovery codes issued, a passkey revoked — refuse any epoch that is not exactly one greater
+/// than the stored one, so a test registering a second passkey has to send a different number from the
+/// first. A helper carrying a literal would be correct for whichever call site it was written beside and
+/// silently wrong for the next one — and wrong in the shape that looks like the feature is broken,
+/// because the refusal is a 400 naming <c>rotationEpoch</c>.
+/// </para>
+/// <para>
+/// <b>The revocation route is the one that makes this unavoidable rather than merely convenient.</b> Its
+/// callers arrive at the request after an arrangement that has already registered one or two passkeys,
+/// each of which promoted the generation — so the number a revocation has to carry is not a property of
+/// the revocation at all, it is whatever the arrangement left behind.
 /// </para>
 /// <para>
 /// <b>It is the product's own flow rather than a shortcut around it.</b> A client reads
 /// <c>GET /api/me/account-keys</c>, seals a manifest over the generation it reports plus one, and posts
 /// both — which is exactly the remedy the <c>factor_set_moved</c> conflict asks of a caller that lost
-/// the race. Going to the database instead would make every arrangement in the suite depend on a
-/// connection string the helpers holding an <see cref="HttpClient" /> do not have, and would let a test
-/// pass over an <c>account-keys</c> read that had stopped reporting the generation at all.
+/// the race, on whichever of the three routes it met one. Going to the database instead would make every
+/// arrangement in the suite depend on a connection string the helpers holding an
+/// <see cref="HttpClient" /> do not have, and would let a test pass over an <c>account-keys</c> read that
+/// had stopped reporting the generation at all.
 /// </para>
 /// <para>
 /// <b>Zero is a legal answer and is not an error.</b> An account with no manifest row reports epoch 0

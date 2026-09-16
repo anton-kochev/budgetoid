@@ -604,6 +604,17 @@ ELSE
 - **`webauthn_challenges` is not in the verification query, and that is not an oversight.** A
   challenge belongs to a ceremony rather than to a person and carries neither `user_id` nor
   `budget_id`, so "no row references the erased user" holds vacuously.
+- **Erasure is the one act that changes an account's factor set and writes no manifest, and that is
+  a consequence rather than an omission.** Every other path that moves a set — registration, adding
+  a passkey, replacing a card of recovery codes, revoking a passkey — carries the account's new list
+  of factor public keys and the epoch it was sealed under, and lands it in the unit of work that
+  moved the set. This one has nobody left for a list to describe: `factor_manifests` cascades from
+  `users`, so the row a promotion would be applied to leaves in the same transaction. A `manifest`
+  member on `ErasureRequest` would therefore be a value the handler could only write and then
+  delete — which is also why `ErasureRequest` and `RevocationRequest` must not be folded onto one
+  record or one base type, however closely their five assertion members still match.
+  [account-keys.md](account-keys.md) owns the manifest rule and [passkeys.md](passkeys.md) owns the
+  revocation it is stated against.
 - **A recovery code leaves nothing behind an erasure, and it left nothing behind its own redemption
   either.** `recovery_code_hashes` carries `user_id` and cascades from `credentials`, so erasure
   reaches it structurally. What is worth reading is that the table could never have held a remnant

@@ -315,10 +315,33 @@ public sealed class InMemoryPasskeyRepository : IPasskeyRepository
     /// persistence type this interface never surfaces would let a unit test prove a behaviour the real
     /// system does not have, and would drag the EF assembly back above Infrastructure to name it.
     /// </para>
+    /// <para>
+    /// <paramref name="factorManifest" /> is required and is not filed anywhere, for the reason
+    /// <see cref="TryAddAsync" /> gives about its own: the promotion happened on the instance
+    /// <see cref="FindFactorManifestAsync" /> handed out, so it is already visible through
+    /// <see cref="FactorManifestOf" /> before this call, and what a save does in production is commit it.
+    /// It is still taken and still null-checked, because a handler reaching this line with no manifest is
+    /// one that skipped the load — the failure the real signature exists to make impossible.
+    /// </para>
+    /// <para>
+    /// <b>What this fake therefore cannot see is where the load was placed</b>, which is the defect the
+    /// promotion's placement exists to prevent. A manifest read in front of either
+    /// <c>DiscardTrackedEntities</c> is <em>detached</em> in production: the promotion mutates an instance
+    /// nothing will save, no <c>UPDATE</c> is emitted, and the route answers 200 having moved no
+    /// generation. There is no change tracker here, so a detached promotion is indistinguishable from a
+    /// tracked one and every assertion in this file stays green over it.
+    /// <c>IntegrationTests.FactorManifestPromotionTests.Revocation_StoresExactlyTheManifestAndEpochItWasPosted</c>
+    /// is the one test in either suite that reads the row back after a revocation, and it is the only
+    /// thing that can catch it.
+    /// </para>
     /// </remarks>
-    public Task DeletePasskeyAsync(Credential credential, CancellationToken cancellationToken = default)
+    public Task DeletePasskeyAsync(
+        Credential credential,
+        FactorManifest factorManifest,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(credential);
+        ArgumentNullException.ThrowIfNull(factorManifest);
 
         // Asked first, before a single row moves: see ObserveAtDelete.
         ObservationAtDelete = ObserveAtDelete?.Invoke(credential);

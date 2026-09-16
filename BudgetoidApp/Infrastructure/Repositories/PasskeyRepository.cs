@@ -24,9 +24,10 @@ public sealed class PasskeyRepository(BudgetoidDbContext dbContext) : IPasskeyRe
         "That factor identifier is already registered. Mint a fresh one, wrap the account keys under it, "
         + "and run the ceremony again.";
 
-    // ONE FACT ABOUT ONE ROW, REACHED FROM TWO ROUTES, and the identical sentence lives on
-    // RecoveryCodeRepository.AddSetAsync — the other path that changes an account's factor set and so
-    // the other path that promotes its manifest. Change one message and change both.
+    // ONE FACT ABOUT ONE ROW, REACHED FROM THREE ROUTES: registration of a passkey and revocation of
+    // one, both in this file, and RecoveryCodeRepository.AddSetAsync, where the identical sentence
+    // lives. Every path that changes an account's factor set promotes its manifest, so every one of
+    // them can lose this race. Change one message and change all of them.
     //
     // IT DOES NOT BLAME THE CALLER, AND THAT IS THE WHOLE CARE THIS SENTENCE NEEDS. Their rotation epoch
     // was the stored generation plus one when they read it; a concurrent registration or issue committed
@@ -248,9 +249,19 @@ public sealed class PasskeyRepository(BudgetoidDbContext dbContext) : IPasskeyRe
     /// satisfy the predicate vacuously.
     /// </summary>
     /// <remarks>
-    /// <b>The state is half of the filter.</b> The manifest is the one entity in this save that is
-    /// <see cref="EntityState.Modified"/> — the other four are inserts — so a conflict attributed to a
-    /// row in any other state is not the lost promotion this models, whatever its type.
+    /// <para>
+    /// <b>The state is half of the filter.</b> The manifest is the one entity in either save that is
+    /// <see cref="EntityState.Modified"/> — <see cref="TryAddAsync"/>'s other four rows are inserts and
+    /// <see cref="DeletePasskeyAsync"/>'s other row is a delete — so a conflict attributed to a row in
+    /// any other state is not the lost promotion this models, whatever its type.
+    /// </para>
+    /// <para>
+    /// <b>Shared by the two saves in this class rather than written twice</b>, because it is one fact
+    /// about one row read the same way on both; <c>RecoveryCodeRepository</c> spells its own out for the
+    /// reason that file gives — each repository owns the predicates its own catches read. On the delete
+    /// it is the narrower half of a pair: <see cref="IsAlreadyDeleted"/> claims every conflict naming a
+    /// removed credential, manifest or no manifest, and this one claims the rest.
+    /// </para>
     /// </remarks>
     private static bool IsManifestPromotionLost(DbUpdateConcurrencyException exception) =>
         exception.Entries.Count > 0
@@ -297,8 +308,11 @@ public sealed class PasskeyRepository(BudgetoidDbContext dbContext) : IPasskeyRe
     /// <inheritdoc />
     public async Task DeletePasskeyAsync(
         Credential credential,
+        FactorManifest factorManifest,
         CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(factorManifest);
+
         // Through the change tracker, and there is no alternative to weigh: ExecuteDelete is a compile
         // error under BannedSymbols.txt, and rightly — a statement carrying its own owner predicate
         // would put the scope where a reader expects it while bypassing the tracker the calling
@@ -317,12 +331,27 @@ public sealed class PasskeyRepository(BudgetoidDbContext dbContext) : IPasskeyRe
         // notice — docs/decisions/0014 names that as the one thing review has to catch.
         //
         // Remove on the one row, never on its children: passkey_public_keys,
-        // passkey_signature_counters and sessions leave by the database's own cascade from this row,
-        // and the role holds no DELETE on any of them.
+        // passkey_signature_counters, wrapped_account_keys and sessions leave by the database's own
+        // cascade from this row, and the role holds no DELETE on any of them.
+        //
+        // wrapped_account_keys is the member of that list this method now owes a manifest for — the
+        // factor's share of the account keys goes with it, which is a change to the account's set of
+        // recovery factors. See IPasskeyRepository.DeletePasskeyAsync.
         dbContext.Credentials.Remove(credential);
+
+        // NOT Add AND NOT Update, the same as TryAddAsync above: the manifest arrived from
+        // FindFactorManifestAsync, so it is tracked as Unchanged-then-Modified and its original values
+        // are the ones the row held when it was read — which is the whole of what makes the concurrency
+        // token on rotation_epoch mean anything. The promotion is picked up by the save below because
+        // the tracker already knows about it.
 
         try
         {
+            // ONE SAVE, so the credential's row and the promoted manifest leave and move together — two
+            // statements in one batch rather than two saves whose atomicity would be a fact about the
+            // enclosing transaction instead of about this method. A revocation committed without the
+            // promotion would leave the account's only statement of its factor set naming the passkey
+            // that just went, and the next rotation would encapsulate the account's keys to it.
             await dbContext.SaveChangesAsync(cancellationToken);
         }
         // The row went out from under this request between the caller's lookup and this save: another
@@ -349,11 +378,19 @@ public sealed class PasskeyRepository(BudgetoidDbContext dbContext) : IPasskeyRe
         //
         // Narrowed by the entries, the same way UserRepository.DeleteAsync and
         // TransactionRepository.DeleteAllForAmbientBudgetAsync narrow theirs: a concurrency conflict
-        // carries no SQLSTATE, so "every conflicting row is a credentials row this call itself marked
-        // Deleted" is this method's equivalent of the constraint-name filter
-        // RepositoryConstraintAttributionTests requires elsewhere in this folder. A conflict over some
-        // other entity riding along on the same SaveChanges is a failure this method does not model,
-        // and reporting it as a missing passkey would be the same lie in the other direction.
+        // carries no SQLSTATE, so "every conflicting row is one this call itself queued" is this
+        // method's equivalent of the constraint-name filter RepositoryConstraintAttributionTests
+        // requires elsewhere in this folder. A conflict over some other entity riding along on the same
+        // SaveChanges is a failure this method does not model, and reporting it as a missing passkey
+        // would be the same lie in the other direction.
+        //
+        // This call queues TWO rows, so the filter names two: the credentials row it marked Deleted,
+        // which has to be among them, and the manifest it promoted, which is tolerated beside it. The
+        // second arm is unreachable on this provider — a lost double tap loses both statements, and EF
+        // Core 10 over Npgsql reports only the FIRST failing command in the batch, which is the DELETE.
+        // IsAlreadyDeleted carries the measurement, why the clause is kept regardless, and the accepted
+        // gap that follows from reporting one statement: the batch's ordering is what decides whether
+        // this 404 or the 409 below is what a double tap receives.
         //
         // No detach on the way out, unlike those two: they swallow and let the request carry on with a
         // context that still holds Deleted entries, while this one throws. The unit of work unwinds,
@@ -362,17 +399,104 @@ public sealed class PasskeyRepository(BudgetoidDbContext dbContext) : IPasskeyRe
         {
             throw new NotFoundException("Passkey was not found.");
         }
+        // THE OTHER RACE ON THIS SAVE, and the two catches cannot swallow each other: the predicate
+        // above requires at least one conflicting Credential and this one requires every conflicting
+        // entry to be a FactorManifest, so no exception satisfies both and their order is a reading
+        // choice rather than a behaviour. The delete's own answer is written first because it is the
+        // thing this method is named for.
+        //
+        // A concurrent change to this account's factors — a passkey registration, an issue of recovery
+        // codes, or another revocation of a DIFFERENT passkey — moved the generation between the
+        // caller's read and this save, so the promotion's UPDATE carries WHERE rotation_epoch = N,
+        // matches nothing, and EF raises. Left alone it is a 500 telling a caller who did everything
+        // right that the server broke, on a request their retry could complete.
+        //
+        // "A different passkey" is not a stray qualifier. This catch is reached when the UPDATE is the
+        // first failing command in the batch, which means the DELETE above it matched its row — so the
+        // revocation itself was sound and only the generation moved. A winner that took THIS credential
+        // fails the DELETE first and is answered by the catch above; see IsAlreadyDeleted.
+        //
+        // NARROWED BY THE ENTRIES, the shape the delete's own catch and TryAddAsync's use: a concurrency
+        // conflict carries no SQLSTATE and no constraint name, so "every conflicting row is the manifest
+        // this call promoted" is this catch's equivalent of a constraint-name filter. SaveChangesAsync
+        // flushes everything the scoped context is tracking, so a conflict over some other entity riding
+        // along must propagate — a 500 naming the real failure beats a confident, specific, false "the
+        // factor set moved".
+        //
+        // No detach on the way out, for the reason the catch above gives: this throws, the unit of work
+        // unwinds, and ITransactionalExecutor does not replay a ConflictException.
+        catch (DbUpdateConcurrencyException exception) when (IsManifestPromotionLost(exception))
+        {
+            // The kind and the sentence are shared with the two paths that ADD a factor, because a
+            // caller whose generation moved under them does the same thing about it whichever route
+            // they were on: read the account's keys back, seal a manifest over the generation it
+            // reports, and prove presence again. Deliberately not the 400 FactorManifest.Promote raises
+            // over the same rule — that caller's epoch was never one greater than stored, this caller's
+            // was.
+            throw new ConflictException(FactorSetMovedMessage, ConflictKind.FactorSetMoved);
+        }
     }
 
     /// <summary>
-    /// True when the conflict is only about <see cref="Credential"/> rows this call removed. The count
-    /// test is not redundant: an exception EF could not attribute to any entry would otherwise satisfy
-    /// the predicate vacuously.
+    /// True when the conflict is about <see cref="Credential"/> rows this call removed, and about
+    /// nothing else the call itself queued. The count test is not redundant: an exception EF could not
+    /// attribute to any entry would otherwise satisfy the predicate vacuously.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>A promoted <see cref="FactorManifest"/> is tolerated beside the credential, and on this
+    /// provider that arm is unreachable today.</b> A revocation that wins the race deletes the
+    /// credential <em>and</em> promotes the generation in one save, so both of the loser's statements
+    /// match no row — but EF Core 10 over Npgsql reports only the <em>first failing command in the
+    /// batch</em> and nothing after it, so the exception carries one entry,
+    /// <c>Credential/Deleted</c>. Measured, not reasoned:
+    /// <c>DeletePasskeyAsync_WhenBothStatementsMatchNothing_ReportsOnlyTheFirstFailingStatement</c> is
+    /// the test that reads it off a real database. <c>ThrowAggregateUpdateConcurrencyExceptionAsync</c>
+    /// is exported by the relational assembly, and an exported symbol is not proof of the path taken.
+    /// </para>
+    /// <para>
+    /// <b>It is kept anyway, and the reason is the cost either way rather than a race it prevents.</b>
+    /// The clause costs one line and changes no answer today; without it, a provider that ever did
+    /// aggregate would turn the commonest race this method has — a person double-tapping the button —
+    /// into a 500, silently, because every test of that race arranges the loss out of band and sees one
+    /// entry. The <c>Count &gt; 0</c> guard above it is kept on the same footing: a defence against a
+    /// shape nobody has produced, written down rather than trusted to stay impossible.
+    /// </para>
+    /// <para>
+    /// The <c>Any</c> is what keeps it disjoint from <see cref="IsManifestPromotionLost"/>: a conflict
+    /// naming only the manifest is that one's, and a conflict naming any <em>third</em> entity is
+    /// neither's and propagates, which is what
+    /// <c>DeletePasskeyAsync_WhenAnUnrelatedEntityConflicts_LetsTheConflictEscape</c> holds. That
+    /// disjointness is a property of the two predicates and holds however many entries a provider
+    /// reports.
+    /// </para>
+    /// <para>
+    /// 404 is what the double tap answers, under this filter and under a strict
+    /// <c>All(entry is Credential)</c> alike, because the <c>DELETE</c> is the first failing command —
+    /// and it is the right answer: the passkey the caller asked to have removed is gone, and inviting
+    /// them to reseal a manifest and retry sends them to a request that can only answer 404.
+    /// </para>
+    /// <para>
+    /// <b>ACCEPTED GAP, and it follows from the measurement rather than from this predicate.</b> Since
+    /// only the first failing command is reported, <em>which</em> answer a double tap receives is
+    /// decided by the statement order EF chooses inside the batch. Today the <c>DELETE</c> on
+    /// <c>credentials</c> is ordered before the <c>UPDATE</c> on <c>factor_manifests</c> — the two
+    /// tables have no foreign key between them, so nothing in this repository, in the model or in any
+    /// test pins that order — and were it ever reversed, the identical request would answer 409
+    /// <see cref="ConflictKind.FactorSetMoved"/>: telling somebody to reseal a manifest and retry a
+    /// revocation that can only ever 404. A dependency's ordering choice reaching a user-visible
+    /// response is the gap; it is recorded rather than closed, because pinning the order or splitting
+    /// the save is a larger decision than the one this method was changed for, and the test named above
+    /// is what would catch the day it moves.
+    /// </para>
+    /// </remarks>
     private static bool IsAlreadyDeleted(DbUpdateConcurrencyException exception) =>
         exception.Entries.Count > 0
+        && exception.Entries.Any(entry =>
+            entry.Entity is Credential && entry.State == EntityState.Deleted)
         && exception.Entries.All(entry =>
-            entry.Entity is Credential && entry.State == EntityState.Deleted);
+            (entry.Entity is Credential && entry.State == EntityState.Deleted)
+            || (entry.Entity is FactorManifest && entry.State == EntityState.Modified));
 
     /// <inheritdoc />
     public Task<PasskeySignatureCounter?> FindCounterAsync(

@@ -9,6 +9,7 @@ using Domain.Sessions;
 using Domain.Users;
 using Microsoft.Extensions.Time.Testing;
 using TestSupport;
+using TUnit.Assertions.Enums;
 using UnitTests.Fakes;
 
 namespace UnitTests;
@@ -40,6 +41,20 @@ namespace UnitTests;
 /// The floor is one <b>passkey</b>, not one credential. The account below therefore holds its federated
 /// Google credential too, so a count that forgot the type predicate would read two and let the last
 /// passkey go.
+/// </para>
+/// <para>
+/// <b>Every account here holds a factor manifest, and every command here carries one, because a factor
+/// leaving the set is a factor change like any other.</b> The revoked passkey's share of the account keys
+/// cascades away with its <c>credentials</c> row, so the account's one authenticated statement of which
+/// factors exist has to move with it — and the handler decodes the payload before it opens a transaction,
+/// so a command without one is refused before any of the orderings below are reached.
+/// </para>
+/// <para>
+/// <b>What is asserted here about the promotion is only its value, never its placement.</b>
+/// <see cref="InMemoryPasskeyRepository" /> has no change tracker, so a manifest loaded in front of either
+/// <c>DiscardTrackedEntities</c> — which in production is detached, emits no <c>UPDATE</c> and leaves the
+/// route answering 200 over a generation that never moved — reads back here exactly as a correctly placed
+/// one does. <c>IntegrationTests.FactorManifestPromotionTests</c> holds that half against a real database.
 /// </para>
 /// </remarks>
 public sealed class RevokePasskeyHandlerTests
@@ -97,6 +112,13 @@ public sealed class RevokePasskeyHandlerTests
     /// <em>used</em> it, which is the actual rule, and it keeps holding if the sweep ever gains a second
     /// call site.
     /// </para>
+    /// <para>
+    /// <b>The generation is read back too, and it is the half that catches a floor checked too late in a
+    /// way no row count can.</b> A handler that loaded the account's manifest and promoted it before
+    /// consulting the count leaves every row exactly where it was — the promotion is a mutation in
+    /// memory, not a delete — so both assertions above pass while the account's one statement of its
+    /// factor set now names a set this request was refused permission to create.
+    /// </para>
     /// </remarks>
     [Test]
     public async Task HandleAsync_ForTheOnlyRemainingPasskey_ThrowsAndDeletesNothing()
@@ -105,6 +127,12 @@ public sealed class RevokePasskeyHandlerTests
         Guid userId = Guid.CreateVersion7();
         StubUserContext userContext = new(userId);
         InMemoryPasskeyRepository passkeys = new();
+
+        // The account's manifest, at the generation registration files an account's first one at. The
+        // command below promotes from it; nothing on this path should reach the promotion, which is what
+        // the last assertion says.
+        FactorManifestFixture seeded = FactorManifestFixture.Mint();
+        passkeys.SeedFactorManifest(userId, seeded.Manifest, FactorManifestFixture.SeededRotationEpoch);
 
         // The one passkey the account holds, filed the way a completed registration would file it.
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(RelyingPartyId);
@@ -160,8 +188,12 @@ public sealed class RevokePasskeyHandlerTests
                 new StubPasskeyCeremonyPolicy(RelyingPartyId, Origin)),
             new RevokeSessionsForCredentialHandler(sessions, new FakeTimeProvider(new DateTimeOffset(UtcNow))));
 
+        // A well-formed manifest and the one generation the account would accept, so the refusal below
+        // is the floor's and never the envelope decode's or the epoch's.
         RevokePasskeyCommand command = new(
             passkey.Id,
+            FactorManifestFixture.Mint().Text,
+            FactorManifestFixture.PromotedRotationEpoch,
             new ReauthenticationAssertion(
                 assertion.CredentialIdBase64Url,
                 assertion.ClientDataJsonBase64Url,
@@ -181,6 +213,16 @@ public sealed class RevokePasskeyHandlerTests
         // And the refusal ended no sessions: the sweep was there to be called and was never asked to
         // run, which is what a zero call count says and what an unpassed collaborator could not.
         await Assert.That(sessions.RevokeForCredentialCallCount).IsEqualTo(0);
+
+        // And the account's factor set is still the one it had. Both halves, because they fail for
+        // different reasons: a generation that moved is a promotion the floor should have prevented, and
+        // bytes that moved are the refused request's manifest standing as the account's statement of
+        // which factors exist.
+        (byte[] Manifest, int RotationEpoch)? manifest = passkeys.FactorManifestOf(userId);
+        await Assert.That(manifest).IsNotNull();
+        await Assert.That(manifest!.Value.RotationEpoch)
+            .IsEqualTo(FactorManifestFixture.SeededRotationEpoch);
+        await Assert.That(manifest.Value.Manifest).IsEquivalentTo(seeded.Manifest, CollectionOrdering.Matching);
     }
 
     /// <summary>
@@ -385,6 +427,21 @@ public sealed class RevokePasskeyHandlerTests
         await Assert.That(await account.Passkeys.CountPasskeysForUserAsync(account.UserId)).IsEqualTo(1);
         await Assert.That(revocation.SessionsEnded).IsEqualTo(1);
 
+        // And the generation moved exactly ONCE, which is the half of "exactly once" that is about the
+        // manifest rather than about the passkey. A promotion is arithmetic against the value the
+        // instance was loaded at, so a replay that kept the abandoned attempt's instance meets
+        // FactorManifest.Promote's own refusal on attempt two — the act above would throw and none of
+        // this would be reached. The bytes are compared whole beside the number, because the epoch alone
+        // is satisfied by an attempt that promoted the seeded blob rather than the posted one.
+        (byte[] Manifest, int RotationEpoch)? manifest = account.Passkeys.FactorManifestOf(account.UserId);
+        await Assert.That(manifest).IsNotNull();
+        await Assert.That(manifest!.Value.RotationEpoch)
+            .IsEqualTo(FactorManifestFixture.PromotedRotationEpoch);
+        await Assert.That(manifest.Value.Manifest)
+            .IsEquivalentTo(account.PostedManifest.Manifest, CollectionOrdering.Matching);
+        await Assert.That(manifest.Value.Manifest)
+            .IsNotEquivalentTo(account.SeededManifest.Manifest);
+
         // Two discards per attempt, and never on attempt zero — which is what a call made before the
         // executor was entered would record.
         await Assert.That(persistenceState.DiscardedOnAttempt).IsEquivalentTo(new[] { 1, 1, 2, 2 });
@@ -400,6 +457,15 @@ public sealed class RevokePasskeyHandlerTests
     /// with — what a <c>ROLLBACK</c> does to the row a deleted attempt removed. It lives here because
     /// the public key it needs is built in the arrangement and is otherwise not kept.
     /// </param>
+    /// <param name="SeededManifest">
+    /// The manifest the account already holds, kept so a case can say the row still carries <em>these</em>
+    /// bytes rather than only that it carries some.
+    /// </param>
+    /// <param name="PostedManifest">
+    /// The manifest every command this record builds carries — minted <b>once</b> per arrangement and not
+    /// per call, which is what lets a read-back name which of the two blobs survived. Two commands from
+    /// one account are therefore the same request twice, which is also what a replayed unit of work is.
+    /// </param>
     private sealed record TwoPasskeyAccount(
         Guid UserId,
         InMemoryPasskeyRepository Passkeys,
@@ -407,12 +473,16 @@ public sealed class RevokePasskeyHandlerTests
         Credential Revoked,
         StubWebAuthnChallengeStore Challenges,
         AssertionResult Assertion,
-        Action RestoreTheRevokedPasskey)
+        Action RestoreTheRevokedPasskey,
+        FactorManifestFixture SeededManifest,
+        FactorManifestFixture PostedManifest)
     {
         /// <summary>The revocation of <see cref="Revoked" />, proved by <see cref="Proving" />.</summary>
         public RevokePasskeyCommand CommandRevokingTheOtherPasskey() =>
             new(
                 Revoked.Id,
+                PostedManifest.Text,
+                FactorManifestFixture.PromotedRotationEpoch,
                 new ReauthenticationAssertion(
                     Assertion.CredentialIdBase64Url,
                     Assertion.ClientDataJsonBase64Url,
@@ -425,10 +495,22 @@ public sealed class RevokePasskeyHandlerTests
     /// Two registered passkeys rather than one, so the "an account's last passkey does not go" floor
     /// cannot turn a test about sessions into a test about the refusal above.
     /// </summary>
+    /// <remarks>
+    /// The account also holds a factor manifest, which registration writes for every account and whose
+    /// absence the handler treats as an integrity failure rather than a refusal — so an arrangement
+    /// without one would answer <see cref="InvalidOperationException" /> and every case built on it would
+    /// be measuring that instead of what it is named for. The seeded blob and the posted blob are
+    /// different random payloads, which is what lets a read-back say <em>which</em> of the two the
+    /// account ended up claiming.
+    /// </remarks>
     private static TwoPasskeyAccount ArrangeAccountWithTwoPasskeys()
     {
         Guid userId = Guid.CreateVersion7();
         InMemoryPasskeyRepository passkeys = new();
+
+        FactorManifestFixture seededManifest = FactorManifestFixture.Mint();
+        passkeys.SeedFactorManifest(
+            userId, seededManifest.Manifest, FactorManifestFixture.SeededRotationEpoch);
 
         SyntheticAuthenticator provingDevice = SyntheticAuthenticator.CreateEs256(RelyingPartyId);
         Credential proving = Credential.CreatePasskey(userId, UtcNow);
@@ -459,7 +541,9 @@ public sealed class RevokePasskeyHandlerTests
             revoked,
             challenges,
             provingDevice.Authenticate(challenge, Origin, userHandle: null),
-            () => passkeys.Register(revoked, revokedKey, signatureCounter: 0));
+            () => passkeys.Register(revoked, revokedKey, signatureCounter: 0),
+            seededManifest,
+            FactorManifestFixture.Mint());
     }
 
     /// <summary>

@@ -2,6 +2,7 @@ using Application.Abstractions;
 using Application.Passkeys.Reauthentication;
 using Application.Sessions.RevokeSessionsForCredential;
 using Domain.Common;
+using Domain.Security;
 using Domain.Users;
 
 namespace Application.Passkeys.RevokePasskey;
@@ -12,11 +13,22 @@ namespace Application.Passkeys.RevokePasskey;
 /// <remarks>
 /// <para>
 /// Deleting the <c>credentials</c> row is what removes the passkey: its public key, its signature
-/// counter and the sessions it opened all leave by <c>ON DELETE CASCADE</c>, which runs with the
-/// privileges of the referencing table's owner rather than this role's. The role holds no
-/// <c>DELETE</c> on any of them and must not be granted one — see
+/// counter, <b>its share of the account's keys</b> and the sessions it opened all leave by
+/// <c>ON DELETE CASCADE</c>, which runs with the privileges of the referencing table's owner rather
+/// than this role's. The role holds no <c>DELETE</c> on any of them and must not be granted one — see
 /// <c>docs/decisions/0014-scope-the-credential-delete-in-the-application.md</c>, which is also where
 /// the argument for the delete being scoped in the application rather than by a policy lives.
+/// </para>
+/// <para>
+/// <b>The share of the account's keys is the member of that cascade this route owes a manifest for.</b>
+/// A factor leaving takes its <c>wrapped_account_keys</c> row with it, and
+/// <see cref="FactorManifest"/> is the sole carrier of every factor's public key — so a revocation
+/// that moved no manifest would leave the account's one statement of its factor set naming an
+/// authenticator that holds no copy of the keys, and the next rotation would encapsulate them to a
+/// device the person has just removed. The promotion therefore rides the delete's own
+/// <c>SaveChanges</c>, not the session sweep's: both commit together inside this handler's one
+/// transaction, but which statements travel together is the fact a reader can check, and
+/// <see cref="IPasskeyRepository.DeletePasskeyAsync"/> is where it is named.
 /// </para>
 /// <para>
 /// <b>An absent credential is a 404 here, unlike erasure, and the difference is what the two requests
@@ -56,6 +68,30 @@ public sealed class RevokePasskeyHandler(
         // endpoint was reached, so the connection is configured whenever it opens; the 22P02 ordering
         // CompleteAssertionHandler states for its own gate is not what is going on here.
         await reauthentication.VerifyAsync(command.Assertion, cancellationToken);
+
+        // AFTER THE GATE AND OUTSIDE THE TRANSACTION, the placement GenerateRecoveryCodesHandler uses
+        // for its own manifest and for the same two reasons rather than new ones.
+        //
+        // After the gate, because a refusal here is a real sentence where every gate refusal on this
+        // endpoint is a byte-identical 401: judged first, a caller holding nothing but a stolen bearer
+        // token would learn that this account has a manifest and what shape one takes. Past the gate the
+        // caller has proved possession of an authenticator registered to this account and there is
+        // nobody left to enumerate about.
+        //
+        // Outside the transaction, because it judges the payload and reads nothing. The delegate below
+        // is replayed by the execution strategy, and a decode inside it would be the same pure work done
+        // again per attempt; nothing here touches the database and nothing here can go stale.
+        //
+        // WHAT IS JUDGED IS THE FRAMING AND NOTHING ELSE. The blob is sealed under the account's content
+        // key, which this server has never held, so a manifest naming the factors that survive this
+        // revocation, one still naming the passkey it removes, and 4096 bytes of noise are the same
+        // value here. Presence, framing and the epoch are the enforceable half; FactorManifestEnvelope
+        // carries the argument, including why it is not one of the two decoders the registration path
+        // runs beside it — three framings, and all three lead with 0x01.
+        if (!FactorManifestEnvelope.TryDecode(command.Manifest, out byte[]? manifestBytes))
+        {
+            throw Refused(nameof(RevokePasskeyCommand.Manifest), MalformedManifest());
+        }
 
         return await transactionalExecutor.ExecuteAsync(
             async token =>
@@ -124,6 +160,26 @@ public sealed class RevokePasskeyHandler(
                 // lock on `users` held across the count and the delete, for which EF Core offers no
                 // first-class API and whose raw-SQL spelling is a compile error under
                 // BannedSymbols.txt. It was weighed, not missed.
+                //
+                // THE MANIFEST PROMOTION NARROWS THAT GAP AND DOES NOT CLOSE IT. Read the two halves
+                // separately, because only one of them is a property of this server.
+                //
+                // What it buys: the count above is still unserialized, so both requests still read two
+                // and both still reach a delete — but a factor change now also moves the account's
+                // generation, and both requests read that generation at the same N and promote from it.
+                // Whichever commits first takes N + 1; the other either carries WHERE rotation_epoch = N
+                // and matches nothing — a 409 through the repository, the whole delegate rolled back —
+                // or, if it read the manifest after the winner committed, is refused one statement
+                // earlier by FactorManifest.Promote, because the epoch its client computed is no longer
+                // the stored generation plus one. A 409 or a 400 where the account used to be left with
+                // no way to sign in and nothing said about it.
+                //
+                // What it does not buy: the epoch is the CLIENT'S number, so what the server refuses is
+                // two requests promoting from the same generation, not two deletes. A caller that sends
+                // a generation two greater than the one it read still clears both promotions and both
+                // deletes, and nothing here can tell that request from an honest one. Closing the gap
+                // against any caller still needs the row lock on `users` held across the count and the
+                // delete, for the reason above, and this is not that lock wearing another name.
                 if (await passkeys.CountPasskeysForUserAsync(userContext.UserId, token) <= 1)
                 {
                     // A real sentence, where every other refusal on this endpoint is a byte-identical
@@ -188,6 +244,50 @@ public sealed class RevokePasskeyHandler(
                 // the statement below still names that one row.
                 persistenceState.DiscardTrackedEntities();
 
+                // READ HERE AND NOWHERE ABOVE, AND THE POSITION IS THE WHOLE OF WHAT MAKES IT SURVIVE —
+                // the rule IRecoveryCodeRepository.FindFactorManifestAsync states for the sibling path
+                // and this one inherits whole. Two calls reach back and empty the tracker before this
+                // line: the discard at the top of the delegate, which the execution strategy's replay
+                // needs, and the one directly above, which the session sweep needs. Both are
+                // ChangeTracker.Clear, so a manifest loaded in front of either is detached — Promote
+                // would mutate an instance nothing will save, no UPDATE would be emitted, and the route
+                // would answer 200 having moved no generation at all. No exception, no SQLSTATE,
+                // nothing to notice. Loaded outside ExecuteAsync it is worse than silent: the row it
+                // snapshotted was read before an abandoned attempt rolled back, so a replay would
+                // compute its successor from a generation the database may never have held.
+                //
+                // Read fresh on every attempt, which is also what makes a replay converge: an abandoned
+                // attempt's UPDATE went back with its transaction, so the row still holds N and the
+                // surviving attempt promotes it to N + 1 exactly once.
+                //
+                // A MISS IS AN INTEGRITY VIOLATION AND IS RAISED, NEVER BRANCHED ON AND NEVER REPAIRED
+                // HERE. Registration has written a manifest for every account since the table existed,
+                // so there is no account this can legitimately find nothing for. Filing a first one here
+                // would let a revocation establish the account's factor set under an epoch and a blob
+                // nothing upstream agreed to, and skipping the promotion would leave the account's only
+                // statement of its factor set naming the very passkey this request removes — the silent
+                // half of the state this path exists to make unreachable. It is not a
+                // ValidationException: nothing the caller sent is wrong, so there is no member to key a
+                // 400 on.
+                FactorManifest factorManifest =
+                    await passkeys.FindFactorManifestAsync(userContext.UserId, token)
+                    ?? throw new InvalidOperationException(
+                        "The account holds no factor manifest, so there is no generation to promote.");
+
+                // Loaded, mutated, saved — never FactorManifest.For(user, bytes, epoch + 1) and an
+                // Update. That shape hands EF a detached row whose original values are its current ones,
+                // so the statement carries WHERE rotation_epoch = <the new value>: it matches nothing
+                // against the row it was computed from, and it MATCHES against a row a racing promotion
+                // has already moved to N + 1 — the one statement the concurrency token exists to refuse.
+                // FactorManifest's own remarks spend a paragraph on it.
+                //
+                // The epoch stored is the client's number, because it is bound into the manifest's
+                // associated data; what the server owes is the refusal of anything that is not stored
+                // plus one, and that refusal is Promote's — a 400 keyed on the member, and a different
+                // answer from the 409 the repository raises for a caller whose epoch was right when it
+                // was read.
+                factorManifest.Promote(manifestBytes, command.RotationEpoch);
+
                 // A lost delete race — another revocation of the same credential committing between
                 // this request's lookup and its save — arrives here as the same NotFoundException the
                 // lookup above throws, carrying the same message, because IPasskeyRepository promises
@@ -195,7 +295,23 @@ public sealed class RevokePasskeyHandler(
                 // EF's exception here instead would put the EF assembly on Application.csproj, against
                 // a dependency direction that runs Infrastructure → Application, to catch a type this
                 // port never surfaces.
-                await passkeys.DeletePasskeyAsync(credential, token);
+                //
+                // THE PROMOTED MANIFEST IS NAMED ALTHOUGH EF WOULD FLUSH IT EITHER WAY — it is tracked
+                // and Modified, so the UPDATE joins whichever save runs next — because "the factor left
+                // and the manifest naming the set moved with it" must be visible in a signature rather
+                // than be a fact about the change tracker. It bites harder here than on the two paths
+                // that add a factor: this delegate already ran a save of its own, the session sweep's,
+                // and both commit together, so a reader could conclude the promotion is atomic wherever
+                // it is written. That is true of the commit — a delete refused after a promotion still
+                // rolls the promotion back with it — and it is not true of the statement order, which is
+                // what the token is read against and what a reader of this file can check.
+                //
+                // A concurrent change to this account's factors that moved the generation between the
+                // load above and this save loses on that token, and the repository answers it as a
+                // FactorSetMoved conflict — the kind registration and issuing already raise, because a
+                // revocation losing that race is the same fact about the caller and asks the same thing
+                // of them.
+                await passkeys.DeletePasskeyAsync(credential, factorManifest, token);
 
                 // The sessions THIS call ended, excluding any a concurrent sweep ended first — the
                 // semantics ISessionRepository.RevokeForCredentialAsync already documents, now a
@@ -204,4 +320,29 @@ public sealed class RevokePasskeyHandler(
             },
             cancellationToken);
     }
+
+    /// <summary>
+    /// What is required of <c>manifest</c>, said whole rather than split into which part of it was
+    /// wrong.
+    /// </summary>
+    /// <remarks>
+    /// <b>A range where the two envelope sentences on a factor's own key material state a width, and
+    /// this one has to say so.</b> Those name one legal size each because their plaintexts are
+    /// fixed-width keys; a manifest's plaintext grows with the number of factors it names, so the only
+    /// bounds that exist are the framing's floor and the column's cap. The same sentence stands on every
+    /// other path that accepts a manifest, and every number in all of them is read off the type that
+    /// refuses a row against it rather than written out — a message carrying its own copy goes on being
+    /// confident after the real bound has moved.
+    /// </remarks>
+    private static string MalformedManifest() =>
+        "manifest must be base64url text decoding to between "
+        + $"{CiphertextEnvelope.MinimumLength} and {FactorManifest.MaximumBytes} bytes carrying AEAD "
+        + $"framing version {CiphertextEnvelope.Version}.";
+
+    // Domain.Common.ValidationException by name, because both layers declare one and only that one is
+    // what ValidationExceptionHandler turns into a 400 with the field errors on it. Keyed on the member
+    // the caller can correct, the shape GenerateRecoveryCodesHandler raises its own manifest refusal
+    // through.
+    private static Domain.Common.ValidationException Refused(string field, string message) =>
+        new(new Dictionary<string, string[]> { [field] = [message] });
 }

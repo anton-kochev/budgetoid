@@ -339,8 +339,10 @@ policy is doing its work or doing nothing, which is true of every policed read o
 own.** While the role held `SELECT` alone the `WITH CHECK` arm was unreachable, and
 unreachable-and-unobserved costs nothing; `INSERT` made it live and unobserved in the same moment,
 which is the worse of the two states and is why that statement was written then rather than earlier.
-The grant is now `SELECT, INSERT, UPDATE (manifest, rotation_epoch)`, widened by the two routes that
-promote an account's factor manifest in the same unit of work as the factor change. **The `UPDATE`
+The grant is now `SELECT, INSERT, UPDATE (manifest, rotation_epoch)`, widened by the routes that
+promote an account's factor manifest in the same unit of work as the factor change — and one column
+list covers every one of them, because a promotion writes those same two columns whichever path
+issues it, so a route that only ever *retires* a factor needs no widening either. **The `UPDATE`
 arm does not fail the way the insert does, and that is the whole reason it needs a statement of its
 own.** An `INSERT` refused by `WITH CHECK` raises `42501` on the statement that wanted it; RLS
 refuses a cross-account `UPDATE` **silently** — zero rows affected, no error. On this table that

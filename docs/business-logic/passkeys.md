@@ -183,6 +183,35 @@ erDiagram
     [account-keys.md](account-keys.md) owns every one of those rules — including why `Promote` is an
     instance method on a tracked row rather than a fresh `For` beside an `Update`.
 
+- **A revocation MUST NOT complete unless it also carries the account's new factor manifest and the
+  epoch that manifest was sealed under**, and the promotion MUST ride the **same `SaveChanges` as
+  the credential's delete**. `POST /api/me/credentials/{credentialId}/revocation` takes `manifest`
+  and `rotationEpoch` beside the re-authentication response.
+  - **Why**: this request takes a factor away, so the account's factor set is a different set the
+    moment it commits, and the argument the rule above makes runs here in the other direction — a
+    stored list still naming a revoked passkey hands a client one true snapshot it reports as
+    **tampering** at somebody who was merely retiring a device. With this route carrying one, **all
+    four paths that move an account's factor set write a manifest**: registration files the first,
+    and adding a passkey, replacing a card of recovery codes and this revocation each promote one.
+    Erasure owes none, because it leaves nobody for a list to describe.
+  - **Enforced in**: `RevokePasskeyHandler`. The envelope decode sits **after** the
+    re-authentication gate and **outside** the transactional delegate — it judges the payload and
+    reads nothing, and inside the delegate it would repeat on every retry. The manifest is loaded
+    **inside** the delegate and **after the second `ChangeTracker.Clear()`**, because an entity
+    loaded ahead of a clear is detached and its promotion is then silently never emitted; it is
+    promoted there and handed to `PasskeyRepository.DeletePasskeyAsync`. **This path has two
+    `SaveChanges` inside one transaction** — the session sweep's and the delete's — and the
+    promotion must ride the delete's. Both commit together, but commit atomicity and statement order
+    are two different facts, and a reader holding only the first will move the promotion to the
+    sweep's save, where the epoch advances in a statement that does not know whether the credential
+    is going. The answers are the registration rule's: an epoch that is not one greater than the
+    stored one is a `400`; one that *was* one greater when this request read it and has since moved
+    is a `409 factor_set_moved`, raised as the **existing** `ConflictKind.FactorSetMoved` and never
+    a kind of its own; a missing manifest row is a `500` and never a first-manifest repair. **The
+    grant needs no widening for it** — this promotion is `UPDATE (manifest, rotation_epoch)`,
+    exactly the two columns `app-role-grants.sql` already names. [account-keys.md](account-keys.md) owns every one
+    of those rules.
+
 - **A registration MUST NOT complete unless the client reports a `prf` extension result of true.**
   Both registering legs carry it, at the same position in their own ladders. → the PRF rule below.
 
@@ -742,6 +771,14 @@ factor, and an account identifier derived from the challenge it just spent —
   need telling apart, the split is a new **ceremony value** — never a column on
   `webauthn_challenges`, which the pinned column set forbids. The third spender has most riding on
   the gate: a set of recovery codes is a full-session credential, and issuing *replaces*.
+  - **Their request records are no longer alike, and must not be made alike again.**
+    `RevocationRequest` was byte-identical to `ErasureRequest` and to the assertion half of
+    `RecoveryCodeGenerationRequest`; it now carries a `manifest` and a `rotationEpoch` beside them.
+    **The five assertion members are still identical across all three** — that is the gate's shape
+    and it is shared on purpose — which is exactly what makes folding the three onto one record or
+    one base type look like tidying. Erasure takes no manifest because it leaves nobody for a list
+    to describe, so a shared record would hand it a member it must never carry, and would be where
+    the wrong member arrives the day a fourth gated act needs one of its own.
 - **The assertion options leg is the first unauthenticated write path in the system.** Anyone can
   make the role insert a challenge row. Growth is bounded by a five-minute lifetime and an
   opportunistic capped sweep on each options call, **not** by rate limiting, which does not exist
@@ -791,11 +828,16 @@ factor, and an account identifier derived from the challenge it just spent —
   set refuses a new column, and a revoked-but-present credential is a row a bug can bring back.
   **The statement is scoped by the application alone**, because `credentials` keeps its exemption —
   see [ADR 0014](../decisions/0014-scope-the-credential-delete-in-the-application.md).
-  - **Revocation is the one path that moves an account's factor set and writes no manifest.** The
-    two that add factors — this file's registration leg and the recovery-code generation — each
-    promote the list in the unit of work that changed the set; a revocation takes a factor away and
-    leaves the stored list naming the set as it was, with nothing on the server able to notice,
-    because nothing on the server can read it. See [account-keys.md](account-keys.md).
+  - **The same statement takes the factor's share of the account keys with it.** The
+    `wrapped_account_keys` row leaves by `FK_wrapped_account_keys_credentials`, cascading from the
+    `credentials` delete and running as the table owner rather than as this role. The role holds no
+    `DELETE` on that table at all and deliberately never will, so a handler that materialised those
+    rows would die with `42501` rather than quietly take them.
+  - **And the list naming the set moves in the same save.** A revocation carries the account's new
+    manifest and the epoch it was sealed under, and `Promote` rides the delete's own `SaveChanges`
+    — the MUST above owns that ordering and the three answers. Every path that moves a factor set
+    writes the list that names it, so there is no account whose stored list names a set that has
+    moved. See [account-keys.md](account-keys.md).
 - **An account's last passkey cannot be revoked, and that rule cannot live in the database.** It is
   a cross-row claim, and the two mechanisms that could reach it are a trigger, which ADR 0002
   refuses, and a materialized counter column on `users`, which has to be kept in step with the table
@@ -816,9 +858,19 @@ factor, and an account identifier derived from the challenge it just spent —
   which EF Core offers no first-class API and whose raw-SQL spelling is a compile error under
   `BannedSymbols.txt`. Reaching it takes two concurrent, separately-proven re-authentications.
   Accepted and recorded.
+  - **The manifest promotion narrows what that window ends in and does not close it, and the
+    difference is the one a reader will collapse.** The count and the delete are still not
+    serialized against each other, so the winning request is unchanged and the floor is still read
+    from a snapshot it does not hold. What changed is the **loser**: both requests read the same
+    generation and promote from it, so the second one's `WHERE rotation_epoch = N` matches nothing
+    and it answers `409 factor_set_moved` instead of deleting in silence. On this pair of requests
+    the outcome is therefore one revocation and one refusal rather than an account with no passkey
+    left. That is a consequence of the concurrency token and not a serialization of the floor: a
+    promotion takes no lock, nothing orders it against the count, and it holds only while every path
+    that moves a factor set promotes the epoch. Do not read it as the race being fixed.
 - **Two revocations racing on the same passkey: the loser answers 404, not 500.** Both requests
-  resolve the credential, both clear the floor, and both reach the delete; the second `SaveChanges`
-  matches zero rows and EF Core raises `DbUpdateConcurrencyException`. A person double-tapping the
+  resolve the credential, both clear the floor, and both reach the delete; the losing request's
+  delete `SaveChanges` matches zero rows and EF Core raises `DbUpdateConcurrencyException`. A person double-tapping the
   button on a slow connection is enough. `PasskeyRepository.DeletePasskeyAsync` catches it and
   throws the *same* `NotFoundException`, with the *same* message, that the lookup's own miss
   produces — so the two orderings of one pair of requests are indistinguishable to the caller, which
@@ -832,6 +884,19 @@ factor, and an account identifier derived from the challenge it just spent —
   deletes the row out of band on a second connection rather than interleaving two transactions at a
   chosen statement — a timing-dependent test for a branch whose entire input is that state is worse
   than none.
+  - **EF Core over Npgsql reports the *first* failing command in a batch and nothing after it, and
+    that is what decides this answer.** It does not aggregate, which is the natural assumption and
+    the wrong one. Measured by arranging a real double tap and reading the loser's exception: **one**
+    entry, `Credential/Deleted`. The loser's `DELETE` and its manifest `UPDATE` both match zero rows,
+    and the caller is handed the `DELETE`'s verdict alone — the documented 404.
+  - **Which of the two answers a double tap receives is therefore decided by EF's statement order
+    inside that batch, and nothing pins that order.** `credentials` and `factor_manifests` share no
+    foreign key, so there is no dependency for EF to sort them by and no declaration anywhere that
+    says which goes first. Reversed, the identical request would answer `409 factor_set_moved` —
+    telling somebody to re-read the manifest and **re-seal** it before retrying a revocation that
+    can only ever 404, because the row it names is already gone. Recorded as an accepted gap rather
+    than a closed one: a test asserting the answer on a real double tap would catch the day the
+    order moves.
 - **The captured assertion in the golden vectors has user verification clear**, so it is checked
   against the parsing and signature layers rather than the full ladder, with a companion test
   asserting the ladder refuses it for exactly that. A reader finding a golden vector deliberately

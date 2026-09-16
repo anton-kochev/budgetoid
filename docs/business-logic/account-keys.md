@@ -43,14 +43,17 @@ once.
 [ADR 0025](../decisions/0025-give-every-recovery-factor-an-ecdh-key-pair.md) records the decision,
 the widths it fixed and what it refused.
 
-**What is built today is the schema, the three server-side write paths, the one route that reads it
-back — and a browser that has not followed.** Read that sentence at its full width, because the two
+**What is built today is the schema, the three server-side paths that bring a factor into existence
+and the fourth that takes one away, the one route that reads it all back — and a browser that has
+not followed.** Read that sentence at its full width, because the two
 halves disagree. The server refuses to register a passkey, issue a set of recovery codes, **or create
 an account** unless the request carries, for every factor it brings into existence, a factor
 identifier, a wrapped private key of exactly 167 bytes and an encapsulated pair of exactly 158, and
 it files them in the same save as the credential. **All three demand a manifest beside them**, naming
 the factor set that path leaves behind; the two that change a set an account already holds demand a
-`rotationEpoch` as well, and refuse any number but one greater than the stored one.
+`rotationEpoch` as well, and refuse any number but one greater than the stored one. **The fourth
+demands that pair and brings nothing into existence**: revoking a passkey takes a factor away, and
+promotes the manifest in the same `SaveChanges` that deletes the credential.
 `GET /api/me/account-keys` hands those two values
 back per factor, one level down inside an answer that also carries the account's manifest and the
 generation that manifest is in — see
@@ -66,17 +69,19 @@ in this repository can currently register an account or open one, the client sec
 describe what that browser does rather than what the server takes, and closing the gap is **work**
 rather than a departure anybody argued for.
 
-**`factor_manifests` has three writers now; `key_rotation_seals` still has none, and the two must not
+**`factor_manifests` has a writer on every path that changes an account's factor set;
+`key_rotation_seals` still has none, and the two must not
 be folded back together.** Registration writes the account's first manifest — at rotation epoch 1, in
 the same `SaveChanges` as the eleven `wrapped_account_keys` rows it names. Registering a further
-passkey and replacing a card of recovery codes each rewrite it and promote the epoch **in the same
-unit of work as the factor change itself**, which is the property the read beneath them rests on. The
+passkey, replacing a card of recovery codes and **revoking a passkey** each rewrite it and promote
+the epoch **in the same unit of work as the factor change itself**, which is the property the read
+beneath them rests on. The
 application role holds `SELECT`, `INSERT` and a two-column `UPDATE` on that table, and `SELECT` alone
 on `key_rotation_seals`, which stands in every database and is empty in all of them: no handler, no
-route, no repository and no read service names it. **Three writers is not every writer.** Revoking a
-passkey takes a factor away and writes no manifest, so on an account that has revoked one the stored
-list names the set as it was. The key pair beneath it is in neither category: the pair is in the
-schema, refused by check constraints and required by three write paths. See
+route, no repository and no read service names it. **Erasure is the one act that changes a factor
+set and owes no manifest**, because it leaves nobody for a list to describe. The key pair beneath it
+is in neither category: the pair is in the schema, refused by check constraints and required by
+every path that creates a factor. See
 [The manifest of factor public keys](#the-manifest-of-factor-public-keys) and
 [key-rotation.md](key-rotation.md).
 
@@ -353,7 +358,9 @@ erDiagram
     of. On `POST /api/registration` that triple arrives eleven times over. **Every one of the three
     carries one member more**: the `manifest`, whose plaintext is public halves and which this server
     could not open if it wanted to, since it is sealed under a content key no request has ever
-    carried. The **outbound** direction
+    carried. **A fourth route carries the `manifest` and none of the triple** — a revocation moves
+    the set without bringing a factor into existence, so it has nothing to file. The **outbound**
+    direction
     is held by `KeyMaterialSecrecyTests`, a census over every member of every type a route
     serialises: what leaves on `GET /api/me/account-keys` is that same triple per factor, and the
     census carries
@@ -433,8 +440,10 @@ erDiagram
     is a census reading as complete while it is not. An ungranted **write** fails loud, with `42501`
     on the statement that wanted it, in the test exercising the path. So the read was granted while
     the table was still empty, the **`INSERT` arrived with the handler that needed it** —
-    registration, writing the account's first manifest — and the **`UPDATE` arrived with the two
-    paths that promote a generation**, not before them. The `DELETE` is still missing on a reason of
+    registration, writing the account's first manifest — and the **`UPDATE` arrived with the paths
+    that promote a generation**, not before them. Three paths promote today and one column list
+    covers them all, because a promotion writes those same two columns whichever path issues it.
+    The `DELETE` is still missing on a reason of
     its own: a manifest leaves by `FK_factor_manifests_users` cascading from an account erasure,
     which runs with the referencing table's owner's privileges rather than this role's. It does not
     arrive from whoever is in a hurry.
@@ -897,16 +906,17 @@ roughly 4 KB. That is the ordinary cartesian cost of refusing a split query, and
 second statement would give up is worth more than the bytes.
 
 **One read is only half of one snapshot, and the other half is owed by every path that moves the
-factor set.** A single statement makes the two levels self-consistent only if the enrolment that
-brings a factor into existence writes its `wrapped_account_keys` row and the `factor_manifests` row
-naming it in **one unit of work**. Landed in two, this read observes the state between them
-perfectly correctly — the factor present, the manifest not yet naming it — and hands a client one
+factor set.** A single statement makes the two levels self-consistent only if the path that changes
+a set writes the `wrapped_account_keys` row it adds or takes away and the `factor_manifests` row
+naming the result in **one unit of work**. Landed in two, this read observes the state between them
+perfectly correctly — the factor present and the manifest not yet naming it, or the factor gone and
+the manifest still naming it — and hands a client one
 true snapshot of a database that was briefly inconsistent, which the client compares and reports as
-**tampering** while somebody was merely enrolling an authenticator. Reshaping the response buys
-nothing at all against a split write.
+**tampering** while somebody was merely enrolling or retiring an authenticator. Reshaping the
+response buys nothing at all against a split write.
 
-**Four paths move a factor set, three of them meet this, and each meets it in the unit of work it
-already had** — which is the part worth reading exactly, because the three are not one shape.
+**Four paths move a factor set, all four meet this, and each meets it in the unit of work it
+already had** — which is the part worth reading exactly, because the four are not one shape.
 Registration
 writes the eleven factor rows and the manifest naming them in **one `SaveChanges`** with **no
 transaction on that path at all**: wrapping it would configure the connection before
@@ -916,10 +926,12 @@ transaction" will reach for the one thing that path may not do. Registering a fu
 the same shape one row wider — the credential, the public key, the signature counter, the wrapped
 keys and the manifest promotion in one save, no transaction. Replacing a card of recovery codes has
 a transaction already, and its promotion sits **inside** the handler's retried delegate for a
-reason [recovery-codes.md](recovery-codes.md) owns. **The fourth path still owes it and writes no
-manifest**: revoking a passkey takes a factor away and leaves the stored list naming the set as it
-was. Until it carries one, the factor row and the manifest naming it move together in one unit of
-work or the read beneath them cannot be trusted however few statements it takes.
+reason [recovery-codes.md](recovery-codes.md) owns. Revoking a passkey has a transaction too, and
+**two `SaveChanges` inside it** — the session sweep's and the delete's — so on that path the
+obligation has to name one of the two: the promotion rides **the delete's**, because commit
+atomicity is not statement order and only the delete's save is the one that knows whether the
+credential is going. The factor row and the manifest naming it move together in one unit of
+work, or the read beneath them cannot be trusted however few statements it takes.
 
 **`manifest: null` is unreachable through this API, and it survives as the read's shape rather than
 as a state anybody meets.** A session exists only after a registration, and a registration files the
@@ -1799,10 +1811,10 @@ nothing distinguishing the assertion that is thrown away from the one that autho
 
 ### The manifest of factor public keys
 
-**`factor_manifests` is read for every account and written by three paths, and what
-separates the three is not the bytes but the epoch.** The creating path files a row; the
-two that change an account's factor set rewrite one that already exists and move its
-generation on.
+**`factor_manifests` is read for every account and written by four paths, and what
+separates them is not the bytes but the epoch.** The creating path files a row; the
+three that change an account's factor set afterwards rewrite one that already exists and
+move its generation on.
 One row per account: `user_id` is the whole of the primary key, `manifest`
 holds the authenticated bytes naming every recovery factor's public key, and
 `rotation_epoch` numbers the generation of that list. Three columns and no fourth, and the
@@ -1841,7 +1853,7 @@ three verbs at three exact widths, and a separate name for each kind of key — 
 name is where the refusal is worth most, because a name is read far more often than the
 chapter correcting it.
 
-**One path files a manifest and two promote one, and what each can and cannot be held to
+**One path files a manifest and three promote one, and what each can and cannot be held to
 is the whole of this section.** `RegisterAccountHandler` is `For`'s one production caller:
 it decodes the request's `manifest` at rung 12, builds the row at
 `MinimumRotationEpoch`, and files it in the **same `SaveChanges`** as the user, the three
@@ -1852,7 +1864,8 @@ answers `201` while its client cannot learn what its own factor set is. The `INS
 arrived in `app-role-grants.sql` with that handler and not before it; the *MUST NOT* above
 argues why the read could be granted early and the writes could not.
 
-**`POST /api/passkeys/registration` and `POST /api/me/recovery-codes` each carry a
+**`POST /api/passkeys/registration`, `POST /api/me/recovery-codes` and
+`POST /api/me/credentials/{credentialId}/revocation` each carry a
 `manifest` and a `rotationEpoch`, and each promotes in the unit of work that changed the
 factor set.** One factor joins on the first, and the manifest update rides the **same
 `SaveChanges`** as the credential, the public key, the signature counter and the wrapped
@@ -1864,6 +1877,25 @@ either is **detached**: the promotion is then applied to an instance EF is no lo
 tracking, and is silently never emitted. Nothing about that is visible in the response, in
 a SQLSTATE, or in the schema afterwards — the factor set moved and the list naming it did
 not.
+
+**One factor leaves on the third, whose transaction holds two saves — so there "the same
+unit of work" has to name which of them.**
+`RevokePasskeyHandler` sweeps the credential's sessions in one `SaveChanges` and deletes
+the credential in another, both inside one transaction, and the promotion rides **the
+delete's**. Both commit together, which is exactly what makes the wrong arrangement look
+sound: commit atomicity is a fact about the transaction and statement order is a different
+fact, and only the delete's save is the statement that knows whether the factor is going.
+The detachment hazard of the recovery-code path applies here for the same reason and is
+answered the same way — the manifest is loaded **inside** the delegate and **after the
+second `ChangeTracker.Clear()`**. What is deliberately *not* inside the delegate is the
+**decode**: the request's bytes are judged after the re-authentication gate and before the
+transaction opens, because that judgement reads nothing and a decode inside a retried
+region runs again on every retry. The factor's own `wrapped_account_keys` row needs
+no statement here at all — it leaves by `FK_wrapped_account_keys_credentials`, cascading
+from the `credentials` delete under the table owner's privileges, which is the only way it
+can leave, since the role holds no `DELETE` on that table. **And it needs no widening of
+the grant**: this promotion is `UPDATE (manifest, rotation_epoch)`, the two columns the
+role already holds on this table.
 
 **The client supplies the epoch and the server never computes one**, which reads like
 laxity and is the opposite. The epoch is bound into the manifest's **associated data**, so
@@ -1902,19 +1934,28 @@ data: a client that reposted the same blob under a bumped number would produce a
 nothing can open, and would produce it at exactly the moment somebody is recovering from a
 race.
 
-**A missing `factor_manifests` row on either promoting path is a `500`, deliberately.** It
+**A missing `factor_manifests` row on any promoting path is a `500`, deliberately.** It
 is an `InvalidOperationException`, not a branch and not a repair. No account can exist
 without a manifest — registration writes one in the same save as the account — so its
 absence is an integrity violation rather than a state to handle. Filing a first manifest
 from here is the repair a reader will reach for, and it is the one thing these routes may
-not do: it would let either of them establish the account's whole factor set under an
+not do: it would let any of them establish the account's whole factor set under an
 epoch and a blob nothing upstream ever agreed to.
 
 **A factor change re-encrypts nothing, and what holds that is a content digest rather than
-a row count.** Each of the two routes carries a whole-schema census comparing the digest of
-every column's content across the request. A count passes over the failure that matters: a
-re-seal rewrites a column in place without moving a row, so "the same rows are still there"
-is true of precisely the database this rule exists to refuse.
+a row count.** Each of the three promoting routes carries a whole-schema census comparing
+the digest of every column's content across the request. A count passes over the failure
+that matters: a re-seal rewrites a column in place without moving a row, so "the same rows
+are still there" is true of precisely the database this rule exists to refuse.
+
+**Each census carries an allow-list of its own, and the three are deliberately not one
+list.** What a route may legitimately touch is a fact about that route. A revocation
+removes the credential's sessions, the passkey's public key and its signature counter
+beside the factor rows and the manifest, so `TablesARevocationMayTouch` names **eight**
+tables, each argued on its own, and is not the generation route's list with entries added
+to it. One shared list would widen every census to the union of what any of them does,
+which is the licence this gate exists to withhold: on the day a route touched a table it
+had no business in, the shared list would already permit it.
 
 **What the server enforces is presence, framing and epoch. What the bytes *say* is not
 checkable here and never will be.** The manifest is *sealed under* the account's content
@@ -1948,10 +1989,10 @@ repair a real one if it arose: a manifest is sealed under a content key this ser
 never held, so no migration, no backfill and no administrative path can produce one for an
 account whose browser is not in front of it.
 
-**The key pair is built and so is the list, on three paths — and what is still design is
-the fourth path that moves the set.** Every recovery factor
-holds an ECDH P-256 key pair today — the factor's private key *wrapped under* the
-key-encryption key that factor derives, and the account's two keys *encapsulated to* the
+**The key pair is built, and so is the list, on every path that moves the set.** Every
+recovery factor holds an ECDH P-256 key pair today — the factor's private key *wrapped
+under* the key-encryption key that factor derives, and the account's two keys
+*encapsulated to* the
 factor's public key, at 167 and 158 bytes, each refused by its own check constraints. The
 manifest is the **sole authenticated carrier** of the public halves, with deliberately no
 per-row public key column beside the
@@ -1962,12 +2003,12 @@ encapsulated to. What has to be unforgeable is the **set**. A per-row column is 
 added, removed or swapped row would each have to carry its own authentication, and a
 client choosing what to encapsulate a value to would have no way to ask whether it was
 looking at all of them. `rotation_epoch` counts the generations that list has been
-through, and three paths move it on or lay it down. What is still in the future tense is
-the last step of the lifecycle: **revoking a passkey takes a factor away and writes no
-manifest**, so on an account that has revoked one the stored list names the set as it was.
-Nothing on the server can notice — it cannot read the list — and the client that compares
-the two is the client that reports it, which is why the comparison and the write have to
-land together. See
+through, and four paths lay it down or move it on — one at each end of a factor's life.
+**Revoking a passkey closes the lifecycle**: the factor leaves in the same `SaveChanges`
+as the manifest that stops naming it, so there is no account on which the stored list
+names a set that has moved. Nothing on the server could ever notice if there were — it
+cannot read the list — and the client that compares the two is the client that reports it
+as tampering, which is why the comparison and the write have to land together. See
 [The one route that hands them back](#the-one-route-that-hands-them-back).
 [ciphertext-envelope.md](ciphertext-envelope.md) owns the two framings and the three
 verbs.
@@ -2093,6 +2134,14 @@ gets back out.
    set has moved and the list naming it has not. **The manifest is judged by a band rather
    than a width** — `FactorManifestEnvelope` takes the framing's floor of 29 and the column's cap of
    4096, because a manifest's plaintext grows with the factor count and its two neighbours' do not.
+
+   **A fourth route carries the same pair and stores no factor at all.**
+   `POST /api/me/credentials/{credentialId}/revocation` takes a `manifest` and a `rotationEpoch`
+   and brings nothing into existence: the factor's row leaves by the cascade from `credentials` and
+   the promotion rides the delete's own `SaveChanges`, inside that handler's transaction. So the
+   same sentence holds from the other end — there is no state in which the factor set has shrunk
+   and the list naming it has not. See
+   [The manifest of factor public keys](#the-manifest-of-factor-public-keys).
 
    **Steps 3 and 4 describe what the browser does and step 5 describes what the routes take, and
    today those disagree** — the client wraps both account keys under the key-encryption key and sends
@@ -2238,8 +2287,12 @@ each other's job.
   where the passkey factor's identifier is compared against the set's ten, and where the manifest's
   rung sits: after the `prf` gate for the key-custody payload's reason, and after the eleventh-factor
   cross-check because it is one statement about the set those rungs have just established.
-- **`passkeys.md`** — the ceremonies that supply the PRF output, and the members registration
-  carries. It owns the four server-side ceremonies and their nonce pools; the unlock ceremony is a
+- **`passkeys.md`** — the ceremonies that supply the PRF output, the members registration
+  carries, and the **fourth** path that moves a factor set: a revocation, gated by a fresh
+  re-authentication, whose manifest promotion rides the delete's `SaveChanges` and whose two racing
+  outcomes — the documented 404 on a double tap, the 409 on a lost promotion — that file owns
+  together with the batch-ordering gap behind them. It owns the four server-side ceremonies and
+  their nonce pools; the unlock ceremony is a
   fifth that spends none of them, which is why the two candidate pools were rejected rather than
   chosen between. The registration path refuses an authenticator that reports no enabled `prf`
   result; that
@@ -2280,7 +2333,9 @@ each other's job.
   `SELECT` was granted before any
   reader existed, so that the table could be read at all — an absence that would otherwise turn a
   plaintext scan into a skip. Its `INSERT` arrived with registration and its two-column `UPDATE`
-  with the two paths that promote a generation, each with the statement it exists for.
+  with the paths that promote a generation, each with the statement it exists for. Three paths
+  promote today and the column list covers all three, because a promotion writes those same two
+  columns whichever one issues it.
 - **[sessions.md](sessions.md)** — where custody begins and ends. A session opening does **not**
   unlock an account: the paths that know which factor was presented hand the keys over themselves,
   and `SessionService.established()` clears nothing. The third of those paths is not a session event

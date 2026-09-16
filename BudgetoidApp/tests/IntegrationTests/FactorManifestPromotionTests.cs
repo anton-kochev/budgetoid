@@ -13,20 +13,34 @@ using TUnit.Assertions.Enums;
 namespace IntegrationTests;
 
 /// <summary>
-/// What the two routes that change an account's set of recovery factors leave in
-/// <c>factor_manifests</c> — read back, over real HTTP, on both of them.
+/// What the three routes that change an account's set of recovery factors leave in
+/// <c>factor_manifests</c> — read back, over real HTTP, on all of them.
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>This file exists because nothing read the row back.</b> Both routes gained a manifest and an
-/// epoch, both load the account's row and promote it inside the unit of work that files the factor, and
-/// every suite that drives them asserted the status, the rows on the factor tables and nothing else. So
-/// each of these passed: a repository read that added <c>AsNoTracking()</c> and emitted no UPDATE at
-/// all; a promotion performed on an entity and then never saved; a load hoisted above the
+/// <b>This file exists because nothing read the row back.</b> Every route here gained a manifest and an
+/// epoch, each loads the account's row and promotes it inside the unit of work that files or removes the
+/// factor, and every suite that drives them asserted the status, the rows on the factor tables and
+/// nothing else. So each of these passed: a repository read that added <c>AsNoTracking()</c> and emitted
+/// no UPDATE at all; a promotion performed on an entity and then never saved; a load hoisted above the
 /// <c>ChangeTracker.Clear()</c> on the retried route, so the promotion rode on a detached instance. Each
 /// leaves a 200 and a correctly registered factor behind, and each leaves the account's one
 /// authenticated statement of which factors exist naming the set it had <em>before</em> — discovered by
 /// the person on the day they reach for a factor no client could learn about.
+/// </para>
+/// <para>
+/// <b>The cases come in matched triples, and the revocation arm is the one a reader should not assume
+/// follows from its siblings.</b> Registration and issuing <em>add</em> a factor, so a stale manifest
+/// there names a set missing something; revocation <em>removes</em> one, and the row it leaves behind
+/// names an authenticator the person has just taken away — very often one they took away because
+/// somebody else has it. It is also the only one of the three whose factor's share of the account keys
+/// leaves by the database's own cascade rather than being written by the request, and the only one whose
+/// promotion rides a <c>DELETE</c>'s save while a second save — the session sweep's — has already run
+/// inside the same transaction. That last fact is why
+/// <see cref="Revocation_StoresExactlyTheManifestAndEpochItWasPosted" /> is the single most valuable
+/// case in the arm: a manifest loaded in front of either <c>DiscardTrackedEntities</c> is detached, emits
+/// no UPDATE, and answers 200 having moved nothing — and the unit-level fake for that route has no change
+/// tracker, so nothing outside this file can see it.
 /// </para>
 /// <para>
 /// <b><see cref="Registration_WithAnEpochThatIsNotTheNextGeneration_IsRefusedAndMovesNothing" /> and its
@@ -66,6 +80,8 @@ public sealed class FactorManifestPromotionTests
     private const string ReauthenticationOptionsPath = "/api/passkeys/reauthentication/options";
     private const string RegistrationOptionsPath = "/api/passkeys/registration/options";
     private const string RegistrationPath = "/api/passkeys/registration";
+    private const string AssertionOptionsPath = "/api/passkeys/assertion/options";
+    private const string AssertionPath = "/api/passkeys/assertion";
 
     /// <summary>The account under test.</summary>
     private const string Subject = "google-manifest-promotion";
@@ -143,6 +159,48 @@ public sealed class FactorManifestPromotionTests
         "recovery_code_hashes",
         "wrapped_account_keys",
         "factor_manifests",
+    ];
+
+    /// <summary>
+    /// The tables a passkey revocation is allowed to change.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Written out rather than copied from either list above, because a revocation legitimately
+    /// reaches further than both and the extra reach is the part worth arguing over.</b> The four the two
+    /// adding routes share are here for the same reasons — <c>webauthn_challenges</c> because the
+    /// re-authentication's options leg writes a nonce and the request spends it, <c>credentials</c>
+    /// because that row is the act, <c>wrapped_account_keys</c> because the factor's share of the account
+    /// keys goes with it, and <c>factor_manifests</c> because the set it belonged to has changed.
+    /// </para>
+    /// <para>
+    /// <b><c>passkey_public_keys</c> and <c>passkey_signature_counters</c> are here for two reasons
+    /// each</b>, and only one of them is the cascade: both rows of the revoked passkey leave with its
+    /// credential, and the <em>proving</em> passkey's counter is stamped by the gate on the way in. A
+    /// revocation cannot be performed without moving a counter that has nothing to do with the credential
+    /// being removed.
+    /// </para>
+    /// <para>
+    /// <b><c>sessions</c> and <c>session_tokens</c> are the sharp difference from
+    /// <see cref="TablesARecoveryCodeIssueMayTouch" />, where their absence is half the claim.</b> Here
+    /// they are present and earned: the revoked passkey opened a session in the arrangement below, the
+    /// handler stamps it before the delete, and the row and its token then leave by the cascade from
+    /// <c>credentials</c> through <c>sessions</c>. What this list cannot say is that only <em>that</em>
+    /// credential's sessions moved — an allow-list is per table —
+    /// <c>CredentialRevocationTests.Revocation_LeavesTheAccountsOtherSessionsAlive</c> owns that half and
+    /// is the test to read if the question is whose sign-in ended.
+    /// </para>
+    /// </remarks>
+    private static readonly string[] TablesARevocationMayTouch =
+    [
+        "webauthn_challenges",
+        "credentials",
+        "passkey_public_keys",
+        "passkey_signature_counters",
+        "wrapped_account_keys",
+        "factor_manifests",
+        "sessions",
+        "session_tokens",
     ];
 
     /// <summary>
@@ -847,6 +905,295 @@ public sealed class FactorManifestPromotionTests
     }
 
     /// <summary>
+    /// A successful revocation stores exactly the manifest bytes and exactly the epoch that were posted.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The single most valuable case in this file, and the only thing anywhere that can catch where
+    /// the revocation's manifest is loaded.</b> That route runs two saves inside one transaction: the
+    /// session sweep's and the delete's, with a <c>DiscardTrackedEntities()</c> between them and another
+    /// opening the delegate. Both are <c>ChangeTracker.Clear</c>, so a manifest read in front of either
+    /// is <em>detached</em> — <c>Promote</c> mutates an instance nothing will save, no <c>UPDATE</c> is
+    /// emitted, and the request answers 200 with the passkey correctly gone and the generation exactly
+    /// where it was. No exception, no SQLSTATE, nothing in a log. The unit-level fake for that handler
+    /// has no change tracker at all, so a detached promotion reads there exactly as a tracked one does;
+    /// every other integration case on the route asserts the status and the rows that left. This reads
+    /// the row.
+    /// </para>
+    /// <para>
+    /// <b>Worse here than on either adding route, which is why it is not enough that they are covered.</b>
+    /// A stale manifest after a <em>revocation</em> names the authenticator this very request removed, and
+    /// the next rotation encapsulates the account's keys to it. A person revokes a passkey because a
+    /// device is lost or taken; a promotion that silently did not happen hands the keys straight back to
+    /// whoever has it.
+    /// </para>
+    /// <para>
+    /// <b>The bytes are compared whole and in order</b>, for the reason the registration case gives:
+    /// "something is stored" is satisfied by a truncation, a re-encode, the previous generation's blob
+    /// and another account's row alike. The generation promoted from is one this application wrote —
+    /// two registrations ran in the arrangement — rather than the one the seeding left, which the
+    /// premise below states.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Revocation_StoresExactlyTheManifestAndEpochItWasPosted()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartHostAsync();
+        RevocableAccount account = await ArrangeTwoPasskeysAsync(host);
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        StoredManifest before = await StoredManifestAsync(admin, account.UserId);
+
+        ManifestFixture posted = ManifestFixture.Mint();
+
+        // Act — proved by the passkey that stays, naming the one that goes.
+        HttpResponseMessage response = await RevokePasskeyAsync(
+            account, account.RevokedCredentialId, posted.Text, before.RotationEpoch + 1);
+
+        // Assert — the act succeeded, or the read-back below is about a request that was refused.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+
+        // The premise: the two registrations in the arrangement really did move the row twice, so this
+        // case promotes from a generation the product wrote.
+        await Assert.That(before.RotationEpoch).IsEqualTo(FactorManifest.MinimumRotationEpoch + 2);
+        await Assert.That(before.Manifest).IsNotEquivalentTo(posted.Manifest);
+
+        StoredManifest after = await StoredManifestAsync(admin, account.UserId);
+        await Assert.That(after.RotationEpoch).IsEqualTo(before.RotationEpoch + 1);
+        await Assert.That(after.Manifest).IsEquivalentTo(posted.Manifest, CollectionOrdering.Matching);
+    }
+
+    /// <summary>
+    /// The same rule on the revocation route: an epoch that is not the next generation is refused, and
+    /// neither the row nor the passkey moves.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>+2</c> is the discriminator, for the reason
+    /// <see cref="Registration_WithAnEpochThatIsNotTheNextGeneration_IsRefusedAndMovesNothing" /> argues
+    /// at length: a request carrying <c>N + 1</c> cannot tell a server that validates the client's number
+    /// from one that ignores it and computes its own, because both store the same value and answer the
+    /// same 200. <c>0</c> and <c>-1</c> pin the two sides of the step.
+    /// </para>
+    /// <para>
+    /// <b>What this arm adds to the two above is where the refusal lands, and it is the latest of the
+    /// three.</b> The epoch is judged inside the transactional delegate, <em>after</em> the
+    /// re-authentication gate, after the last-passkey floor, and after the session sweep has already
+    /// saved. So this case also says that a 400 raised at that depth unwinds rather than committing what
+    /// came before it — which here means that a passkey whose sessions were stamped one statement earlier
+    /// is still signed in.
+    /// </para>
+    /// <para>
+    /// <b>The passkey is counted whole afterwards, not just the manifest row.</b> A handler that refused
+    /// the epoch after issuing the delete would leave the person's authenticator gone and a 400 telling
+    /// them nothing happened — and every assertion about the manifest would be perfectly satisfied.
+    /// </para>
+    /// </remarks>
+    [Test]
+    [Arguments(2)]
+    [Arguments(0)]
+    [Arguments(-1)]
+    public async Task Revocation_WithAnEpochThatIsNotTheNextGeneration_IsRefusedAndMovesNothing(
+        int offsetFromStored)
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartHostAsync();
+        RevocableAccount account = await ArrangeTwoPasskeysAsync(host);
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        StoredManifest before = await StoredManifestAsync(admin, account.UserId);
+        await AssertPasskeyIsWholeAsync(admin, account.RevokedCredentialId);
+
+        // Act — every other member is genuine, so the member named below is the member that was wrong.
+        HttpResponseMessage response = await RevokePasskeyAsync(
+            account,
+            account.RevokedCredentialId,
+            ManifestFixture.Mint().Text,
+            before.RotationEpoch + offsetFromStored);
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(await ErrorKeysOfAsync(response)).Contains(RotationEpochErrorKey);
+
+        // Nothing moved: both halves of the row, and the passkey the request named.
+        StoredManifest after = await StoredManifestAsync(admin, account.UserId);
+        await Assert.That(after.RotationEpoch).IsEqualTo(before.RotationEpoch);
+        await Assert.That(after.Manifest).IsEquivalentTo(before.Manifest, CollectionOrdering.Matching);
+        await AssertPasskeyIsWholeAsync(admin, account.RevokedCredentialId);
+    }
+
+    /// <summary>
+    /// A revocation carrying no <c>manifest</c> member at all is refused, and removes nothing.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Absent rather than null or empty, because absent is what a client that has not been updated
+    /// sends.</b> The request record declares the member without <c>required</c>, so an omitted one binds
+    /// to <see langword="null" /> and reaches the handler as a request that is well formed in every other
+    /// respect — a genuine fresh proof over a credential this account really owns. That is precisely the
+    /// shape that would otherwise take a factor out of the set while the account's one authenticated
+    /// statement of that set went on naming it.
+    /// </para>
+    /// <para>
+    /// <b>"Removes nothing" is the half worth having, and all four rows are counted.</b> The status alone
+    /// is satisfied by a handler that refused after issuing the delete, and that state is not
+    /// recoverable: the credential, the key a signature verifies against, the counter a clone gives
+    /// itself away against and the factor's share of the account keys all leave together by the
+    /// database's own cascade, so a route that got as far as the <c>DELETE</c> has taken an
+    /// authenticator away for a request it then reported as a 400.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Revocation_WithNoManifestMember_IsRefusedAndRemovesNothing()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartHostAsync();
+        RevocableAccount account = await ArrangeTwoPasskeysAsync(host);
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        StoredManifest before = await StoredManifestAsync(admin, account.UserId);
+        await AssertPasskeyIsWholeAsync(admin, account.RevokedCredentialId);
+
+        byte[] challenge = await BeginCeremonyAsync(account.Client, ReauthenticationOptionsPath);
+        AssertionResult assertion = account.Proving.Authenticate(
+            challenge,
+            ApiFactory.PasskeyOrigin,
+            PasskeyEncoding.ToUserHandle(account.UserId),
+            signCount: 0);
+
+        // Act — every member the route takes except the two this case is about.
+        HttpResponseMessage response = await account.Client.PostAsJsonAsync(
+            RevocationPath(account.RevokedCredentialId),
+            new
+            {
+                credentialId = assertion.CredentialIdBase64Url,
+                clientDataJson = assertion.ClientDataJsonBase64Url,
+                authenticatorData = assertion.AuthenticatorDataBase64Url,
+                signature = assertion.SignatureBase64Url,
+                userHandle = assertion.UserHandleBase64Url,
+            });
+
+        // Assert — refused, and keyed on the member the caller can correct rather than on a catch-all.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(await ErrorKeysOfAsync(response)).Contains(ManifestErrorKey);
+
+        // Nothing removed: the credential, its key, its counter and its share of the account keys.
+        await AssertPasskeyIsWholeAsync(admin, account.RevokedCredentialId);
+
+        // And the generation exactly where it was.
+        StoredManifest after = await StoredManifestAsync(admin, account.UserId);
+        await Assert.That(after.RotationEpoch).IsEqualTo(before.RotationEpoch);
+        await Assert.That(after.Manifest).IsEquivalentTo(before.Manifest, CollectionOrdering.Matching);
+    }
+
+    /// <summary>
+    /// A manifest that is not a well-formed envelope is refused on the revocation route too, in each of
+    /// the three shapes the decoder tells apart.
+    /// </summary>
+    /// <remarks>
+    /// The three shapes and the argument for keeping the version case are
+    /// <see cref="Registration_WithAMalformedManifest_IsRefusedAndMovesNothing" />'s. What this arm adds
+    /// is the key: this route names the member, as the recovery-code route does and as the passkey
+    /// registration route does not — and it is asserted in the spelling this route actually uses rather
+    /// than in one borrowed from a sibling, because a client reads the key to decide which control to put
+    /// the error on. The passkey is counted whole beside the row for the reason the neighbouring case
+    /// gives: a refusal that had already issued the delete satisfies every assertion about the manifest.
+    /// </remarks>
+    [Test]
+    [Arguments(MalformedManifest.NotBase64Url)]
+    [Arguments(MalformedManifest.OneByteShortOfTheFloor)]
+    [Arguments(MalformedManifest.WrongVersionByte)]
+    public async Task Revocation_WithAMalformedManifest_IsRefusedAndMovesNothing(MalformedManifest shape)
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartHostAsync();
+        RevocableAccount account = await ArrangeTwoPasskeysAsync(host);
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        StoredManifest before = await StoredManifestAsync(admin, account.UserId);
+
+        // Act — the epoch is the one the route would accept, so the manifest is the only thing wrong.
+        HttpResponseMessage response = await RevokePasskeyAsync(
+            account, account.RevokedCredentialId, TextOf(shape), before.RotationEpoch + 1);
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(await ErrorKeysOfAsync(response)).Contains(ManifestErrorKey);
+
+        await AssertPasskeyIsWholeAsync(admin, account.RevokedCredentialId);
+
+        StoredManifest after = await StoredManifestAsync(admin, account.UserId);
+        await Assert.That(after.RotationEpoch).IsEqualTo(before.RotationEpoch);
+        await Assert.That(after.Manifest).IsEquivalentTo(before.Manifest, CollectionOrdering.Matching);
+    }
+
+    /// <summary>
+    /// A revocation changes the factor tables, the manifest and the revoked credential's sessions — and
+    /// no other relation in the database.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The claim and the method are
+    /// <see cref="Registration_ChangesNoRelationBesideTheFactorTablesAndTheManifest" />'s: a factor
+    /// change re-encrypts nothing, asserted as a whole-schema content digest against a written-down
+    /// allow-list rather than as a list of tables to check. Read that case's remarks for why the digest
+    /// is over row content and why the budget is furnished first.
+    /// </para>
+    /// <para>
+    /// <b>The allow-list is <see cref="TablesARevocationMayTouch" /> and it is longer than either of the
+    /// other two</b>, which is the whole reason this case is written out instead of parameterised over a
+    /// shared one. Every extra entry on it is argued on that field; the direction that matters here is
+    /// still the other one — a row moving on a table that is <em>not</em> there.
+    /// </para>
+    /// <para>
+    /// <b>The revoked passkey signs in before the snapshot, and that is what makes two of those entries
+    /// earned rather than precautionary.</b> Without a session on the credential being removed,
+    /// <c>sessions</c> and <c>session_tokens</c> would be excusing tables nothing wrote to — an
+    /// allow-list entry that can never fire is an entry that quietly stops being a decision.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Revocation_ChangesNoRelationBesideTheFactorTablesAndTheManifest()
+    {
+        // Arrange — a furnished budget, two passkeys, and a real sign-in on the one about to go.
+        await using PostgresTestHost host = await StartHostAsync();
+        RevocableAccount account = await ArrangeTwoPasskeysAsync(host);
+        await FurnishBudgetAsync(account.Client);
+        await SignInAsync(host, account.Revoked, account.UserId);
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        IReadOnlyDictionary<string, RelationContents> before = await ContentsOfEveryRelationAsync(admin);
+
+        // Act
+        HttpResponseMessage response = await RevokePasskeyAsync(account, account.RevokedCredentialId);
+
+        // Assert — the act happened, or "nothing changed" is true of a request that was refused.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+
+        IReadOnlyDictionary<string, RelationContents> after = await ContentsOfEveryRelationAsync(admin);
+
+        // Non-vacuity first, both halves: the sweep read something, and the relations this case is named
+        // for hold rows for it to have compared.
+        await Assert.That(before).IsNotEmpty();
+        await Assert.That(RelationsWithNoRows(before, RelationsAFactorChangeMustLeaveAlone)).IsEmpty();
+
+        // And the two tables the act is about really did move, or the allow-list is excusing tables
+        // nothing wrote to and the whole comparison is about a request that did nothing.
+        await Assert.That(before["factor_manifests"].Digest)
+            .IsNotEqualTo(after["factor_manifests"].Digest);
+        await Assert.That(before["sessions"].Digest).IsNotEqualTo(after["sessions"].Digest);
+
+        // The claim.
+        await Assert.That(DriftOutside(before, after, TablesARevocationMayTouch)).IsEmpty();
+    }
+
+    /// <summary>
     /// The shapes of manifest text this deployment refuses, named so a failing case says which clause
     /// of the decoder stopped looking.
     /// </summary>
@@ -1115,6 +1462,216 @@ public sealed class FactorManifestPromotionTests
             signature = assertion.SignatureBase64Url,
             userHandle = assertion.UserHandleBase64Url,
         });
+    }
+
+    /// <summary>
+    /// An account holding two registered passkeys: one that proves presence and one the revocation cases
+    /// name.
+    /// </summary>
+    /// <param name="Proving">
+    /// The authenticator every revocation below signs with. It is never the one removed, so the proof and
+    /// the target are two rows — the shape a person uses when a device is lost, and the shape that leaves
+    /// the proving passkey's own counter as the only counter a refused request could have moved.
+    /// </param>
+    /// <param name="Revoked">The authenticator whose <c>credentials</c> row the route names.</param>
+    private sealed record RevocableAccount(
+        HttpClient Client,
+        Guid UserId,
+        SyntheticAuthenticator Proving,
+        SyntheticAuthenticator Revoked,
+        Guid RevokedCredentialId);
+
+    /// <summary>
+    /// Seeds an account signed in over a set of recovery codes and registers two passkeys onto it
+    /// through the real ceremony.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Two, because the floor refuses an account's last passkey</b> — with one registered, every
+    /// revocation below would be answered 409 before the manifest decided anything, and each case would
+    /// be green over a route that had lost the rule it is named for.
+    /// </para>
+    /// <para>
+    /// <b>Signed in over a set of recovery codes rather than over a passkey</b>, for the reason every
+    /// <c>Registration_</c> case above gives: the harness's default opens a full session with a passkey
+    /// of its own, which would make "this account holds exactly the two passkeys this helper
+    /// registered" false and every row count below a fact about the arrangement.
+    /// </para>
+    /// <para>
+    /// The two registrations move the generation twice, which is why the successful case asserts it
+    /// starts at <see cref="FactorManifest.MinimumRotationEpoch" /> plus two — a promotion this
+    /// application performed rather than a number the seeding chose.
+    /// </para>
+    /// </remarks>
+    private static async Task<RevocableAccount> ArrangeTwoPasskeysAsync(PostgresTestHost host)
+    {
+        ApiFactory.SignedInClient signedIn = await host.Factory.CreateSignedInClientAsync(
+            Subject, opensWith: CredentialType.RecoveryCodes);
+
+        SyntheticAuthenticator proving = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        SyntheticAuthenticator revoked = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await RegisterPasskeyOrThrowAsync(signedIn.Client, proving);
+        await RegisterPasskeyOrThrowAsync(signedIn.Client, revoked);
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+
+        return new RevocableAccount(
+            signedIn.Client,
+            signedIn.UserId,
+            proving,
+            revoked,
+            await ResolveCredentialIdAsync(admin, revoked));
+    }
+
+    /// <summary>
+    /// Runs the re-authentication leg and posts one revocation, handing back the response.
+    /// </summary>
+    /// <inheritdoc cref="RegisterPasskeyAsync" path="/param" />
+    /// <remarks>
+    /// <c>signCount</c> stays at zero, which is what an authenticator backing a synced passkey reports
+    /// every time and what <c>PasskeySignatureCounter.Accept</c> reads as no movement — so the proving
+    /// device can answer as many nonces as a case needs without this file keeping a counter ledger.
+    /// </remarks>
+    private static async Task<HttpResponseMessage> RevokePasskeyAsync(
+        RevocableAccount account,
+        Guid credentialId,
+        string? manifest = null,
+        int? rotationEpoch = null)
+    {
+        byte[] challenge = await BeginCeremonyAsync(account.Client, ReauthenticationOptionsPath);
+        AssertionResult assertion = account.Proving.Authenticate(
+            challenge,
+            ApiFactory.PasskeyOrigin,
+            PasskeyEncoding.ToUserHandle(account.UserId),
+            signCount: 0);
+        int epoch = rotationEpoch ?? await FactorGeneration.NextAsync(account.Client);
+
+        return await account.Client.PostAsJsonAsync(RevocationPath(credentialId), new
+        {
+            manifest = manifest ?? ManifestFixture.Mint().Text,
+            rotationEpoch = epoch,
+            credentialId = assertion.CredentialIdBase64Url,
+            clientDataJson = assertion.ClientDataJsonBase64Url,
+            authenticatorData = assertion.AuthenticatorDataBase64Url,
+            signature = assertion.SignatureBase64Url,
+            userHandle = assertion.UserHandleBase64Url,
+        });
+    }
+
+    /// <summary>
+    /// The route one passkey is revoked at. The segment is a <c>credentials.id</c>, which is a different
+    /// id space from the WebAuthn handle the body carries under the same word.
+    /// </summary>
+    private static string RevocationPath(Guid credentialId) =>
+        $"/api/me/credentials/{credentialId}/revocation";
+
+    /// <summary>
+    /// Signs in for real — both anonymous assertion legs, which is the only thing that writes a
+    /// <c>sessions</c> row and the <c>session_tokens</c> row hanging off it.
+    /// </summary>
+    /// <remarks>
+    /// On a client carrying no token, because a sign-in by definition happens before anyone is signed
+    /// in. <c>CredentialRevocationTests</c> carries the same helper, and it is copied rather than shared
+    /// for the reason <see cref="FurnishBudgetAsync" /> is: extracting across files is a change to those
+    /// files rather than to this one.
+    /// </remarks>
+    private static async Task SignInAsync(
+        PostgresTestHost host,
+        SyntheticAuthenticator device,
+        Guid userId)
+    {
+        HttpClient anonymous = host.Factory.CreateClient();
+        byte[] challenge = await BeginCeremonyAsync(anonymous, AssertionOptionsPath);
+        AssertionResult assertion = device.Authenticate(
+            challenge,
+            ApiFactory.PasskeyOrigin,
+            PasskeyEncoding.ToUserHandle(userId),
+            signCount: 0);
+
+        HttpResponseMessage response = await anonymous.PostAsJsonAsync(AssertionPath, new
+        {
+            credentialId = assertion.CredentialIdBase64Url,
+            clientDataJson = assertion.ClientDataJsonBase64Url,
+            authenticatorData = assertion.AuthenticatorDataBase64Url,
+            signature = assertion.SignatureBase64Url,
+            userHandle = assertion.UserHandleBase64Url,
+        });
+        response.EnsureSuccessStatusCode();
+    }
+
+    /// <summary>
+    /// Translates a device's WebAuthn handle into the <c>credentials.id</c> the revocation route names.
+    /// The two id spaces meet here and nowhere else: registration answers 201 with no body, so reading
+    /// the key material filed under the handle is the only way to learn which row a device produced.
+    /// </summary>
+    private static async Task<Guid> ResolveCredentialIdAsync(
+        NpgsqlConnection admin,
+        SyntheticAuthenticator device)
+    {
+        await using NpgsqlCommand command = new(
+            "select credential_id from passkey_public_keys where webauthn_credential_id = @handle",
+            admin);
+        command.Parameters.AddWithValue("handle", device.CredentialId);
+
+        return await command.ExecuteScalarAsync() switch
+        {
+            Guid credentialId => credentialId,
+            var unexpected => throw new InvalidOperationException(
+                $"No passkey was registered for that handle, got '{unexpected ?? "null"}'."),
+        };
+    }
+
+    /// <summary>
+    /// The four rows a registered passkey owns, all still present.
+    /// </summary>
+    /// <remarks>
+    /// <b>All four, because all four leave together.</b> The credential is the row the route removes; the
+    /// public key, the signature counter and the factor's share of the account keys go with it by the
+    /// database's own <c>ON DELETE CASCADE</c>. So a refusal that had reached the <c>DELETE</c> takes the
+    /// lot, and any one of them counted alone would say as much as all four — while <em>omitting</em> one
+    /// would leave a refusal that somehow removed only that row invisible. It is also the arrangement
+    /// guard: asserted before each act as well as after, so a zero afterwards is a zero the route
+    /// produced rather than one a silently failed registration left.
+    /// </remarks>
+    private static async Task AssertPasskeyIsWholeAsync(NpgsqlConnection admin, Guid credentialId)
+    {
+        await Assert.That(await CountByCredentialAsync(admin, "credentials", "id", credentialId))
+            .IsEqualTo(1L);
+        await Assert.That(
+                await CountByCredentialAsync(admin, "passkey_public_keys", "credential_id", credentialId))
+            .IsEqualTo(1L);
+        await Assert.That(
+                await CountByCredentialAsync(
+                    admin, "passkey_signature_counters", "credential_id", credentialId))
+            .IsEqualTo(1L);
+        await Assert.That(
+                await CountByCredentialAsync(admin, "wrapped_account_keys", "credential_id", credentialId))
+            .IsEqualTo(1L);
+    }
+
+    /// <summary>
+    /// How many rows of <paramref name="table" /> name <paramref name="credentialId" /> in
+    /// <paramref name="column" />.
+    /// </summary>
+    /// <remarks>
+    /// The relation and the column are interpolated because both come from constants in this file and
+    /// never from anything a caller supplies; the id is a parameter, as every value in this suite is. The
+    /// column varies because <c>credentials</c> carries the id as its primary key and the three tables
+    /// hanging off it carry it as <c>credential_id</c>.
+    /// </remarks>
+    private static async Task<long> CountByCredentialAsync(
+        NpgsqlConnection admin,
+        string table,
+        string column,
+        Guid credentialId)
+    {
+        await using NpgsqlCommand command = new(
+            $"select count(*) from public.\"{table}\" where \"{column}\" = @id",
+            admin);
+        command.Parameters.AddWithValue("id", credentialId);
+
+        return (long)(await command.ExecuteScalarAsync())!;
     }
 
     /// <summary>
