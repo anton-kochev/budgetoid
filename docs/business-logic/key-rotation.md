@@ -31,6 +31,15 @@ content key and a set of public keys, and no authenticator but the one already i
 [ADR 0025](../decisions/0025-give-every-recovery-factor-an-ecdh-key-pair.md) records that decision
 and the alternatives it refused.
 
+**NFR-027 is that clause as a requirement — a rotation shall require the exercise of at most one
+authenticator, whatever the number of registered recovery factors — and it is demonstrated rather
+than argued.** One case in `BeginKeyRotationHandlerTests` —
+`HandleAsync_WithElevenFactors_StagesThemAllOnOneReauthentication` — begins a run on an account
+holding one passkey and the ten factors of a recovery-code card, and eleven seals are staged while
+exactly one challenge is consumed. The seal count is asserted beside
+the consume count on purpose: one consume alone is true of a handler that refused everything, or of
+one that sealed the passkey and left the card behind.
+
 It is deliberately **not** what the industry usually means by "key rotation". A cloud key service
 rotates by minting new key material and keeping every earlier version forever, so that nothing has to
 be rewritten; that defends against key material ageing, not against a key that leaked. Here the whole
@@ -57,12 +66,14 @@ stamp columns; the presence rule; the six reseal members and the clearing rule b
 completeness gate — `Application.KeyRotations.IRotationCompletenessReadService` and its one
 implementation — which is registered and which nothing calls; and the begin —
 `BeginKeyRotationHandler` over `Domain.Users.IKeyRotationRepository` and
-`Application.KeyRotations.IRotationInventoryReadService`, all three registered and none of them
-called.
+`Application.KeyRotations.IRotationInventoryReadService` — which writes **the staging row and one
+seal per factor in one save** and which holds the factor-set gate over those seals. All of it is
+registered, and none of it is reachable over HTTP.
 
 Not built: the routes that begin, continue and complete a rotation; the chunk that reseals rows; the
-leg that writes a seal; the promotion that files a manifest; the client that does the actual
-encryption. Do not state any of those in the present tense until they ship.
+promotion that files the manifest and copies each seal into
+`wrapped_account_keys.encapsulated_account_keys`; the client that does the actual encryption. Do not
+state any of those in the present tense until they ship.
 
 **The begin can write its row, and `key_rotations` still holds no `DELETE` of any shape.**
 `app-role-grants.sql` grants `SELECT`, `INSERT` and a column-listed `UPDATE` over `rotation_id`,
@@ -76,16 +87,32 @@ half-written promotion path clearing the staging before it has promoted anything
 destruction here with no repair: until the live rows are overwritten, the staged seals are the only
 copies of the new generation.
 
-**`key_rotation_seals` holds `SELECT` and nothing else, and the asymmetry with the table above is the
-argument rather than an oversight.** An ungranted **read** fails quiet: measured on `key_rotations`,
-the plaintext scan behind `NarrativeSecrecyTests` meets `42501`, reports the table unscannable, and
-two secrecy gates then pass while covering one table fewer than the schema holds. An ungranted
-**write** fails loud, with `42501` on the statement that wanted it, in the test exercising the path.
-So the read was granted while the table was still empty, and the `INSERT` arrives with the continue
-leg that writes a seal, carrying the sentence that names the operation. A `DELETE` is not obviously
-owed at all: a superseded run's seals leave by the `ON DELETE CASCADE` from `key_rotations` when a
-second begin replaces the staging row, which runs with the referencing table owner's privileges rather
-than this role's.
+**`key_rotation_seals` holds `SELECT`, `INSERT` and `UPDATE (encapsulated_account_keys)`, and still
+no `DELETE`.** The asymmetry between a read and a write is what decided the order they were granted
+in: an ungranted **read** fails quiet — measured on `key_rotations`, the plaintext scan behind
+`NarrativeSecrecyTests` meets `42501`, reports the table unscannable, and two secrecy gates then pass
+while covering one table fewer than the schema holds — while an ungranted **write** fails loud, with
+`42501` on the statement that wanted it, in the test exercising the path. So the read was granted
+while the table was still empty, and the two writes arrived with the begin, which is the leg that
+stages the seals: `INSERT` for a factor the previous run did not seal, `UPDATE` for one it did.
+`user_id` and `factor_id` are off that column list, because one statement could otherwise re-file an
+account's staged generation against another account's factor — and an omission from a column list is
+how this schema makes a column immutable, never a `REVOKE` and never a table-wide grant.
+
+**The `DELETE` stays absent, and the cascade it used to be credited to is not the one doing the
+work.** Two cascading foreign keys reach this table and they must not be collapsed into one.
+`FK_key_rotation_seals_key_rotations` (`user_id`) fires when the **parent row is deleted**, and a
+second begin *updates* that row in place — `key_rotations` is keyed on `user_id` and is granted no
+`DELETE` of any shape — so it never runs on the replacement path at all, which is precisely why the
+`INSERT` and the `UPDATE` above are both needed: nothing clears the previous run's seals, so a begin
+rewrites them one by one. What does clear a superseded seal is
+`FK_key_rotation_seals_wrapped_account_keys`, the composite `(factor_id, user_id)` edge: a factor can
+only leave the set a begin submits by its own `wrapped_account_keys` row being deleted — revocation
+cascades `credentials` → `wrapped_account_keys` → the seal — and that deletion takes the seal with
+it, with the referencing table owner's privileges rather than this role's. So a `DELETE` here would
+be a privilege on a table holding key material, granted for a statement nothing can issue. **What
+would change that**: a begin allowed to stage a *subset* of the account's factors, or a path that
+removed a factor without deleting its `wrapped_account_keys` row.
 
 **`key_rotations` hangs off `users` directly now, and that edge is the erasure chain rather than
 bookkeeping.** Its only foreign key used to be the composite one to `wrapped_account_keys`, and that
@@ -118,7 +145,9 @@ being SQL Server's rather than this server's.
 - **Rotation seal** — one row of `key_rotation_seals`, keyed `(user_id, factor_id)`, holding the next
   generation's content key and index key as one 64-byte plaintext **encapsulated to** that factor's
   public key. One per surviving factor per run: a rotation draws the new pair once and encapsulates it
-  to every public key the staged manifest names. Its one payload column is the value a promotion
+  to every surviving factor's public key. Which factors those are is judged at the begin, against the
+  account's live `wrapped_account_keys` rows and never against the staged manifest, which nothing on
+  this side reads into. Its one payload column is the value a promotion
   copies into `wrapped_account_keys.encapsulated_account_keys`, so it carries that column's width and
   version rather than a second copy of either. It records no instant — a seal lives entirely inside
   one run, and the run carries `started_at_utc`.
@@ -138,11 +167,14 @@ being SQL Server's rather than this server's.
 - **Both generations of the account's keys must be readable for as long as a rotation is in flight.**
   That is what the staging tables are for, and it is a correctness requirement rather than a
   convenience — see the two orderings under [Why staging](#why-staging-rather-than-one-generation).
-- **A run must produce one seal per surviving factor, and the manifest is what says which those
-  are.** The set is authenticated as a blob by a key the client holds, so nothing on this side can
-  count it, compare it or repair it — which is the whole of why the check that used to compare a
-  staged factor set against the account's live passkeys is gone for now. See
-  [what the begin no longer checks](#what-the-begin-no-longer-checks-and-where-the-rule-went).
+- **A run must produce one seal per factor the account holds, and the begin refuses a set that is
+  not exactly that** — set equality in both directions, never *"the factor named is one of them"*.
+  What it is compared against is `IKeyRotationRepository.ListFactorsAsync`, which answers **every**
+  factor rather than the passkeys alone, so the ten factors of a recovery-code card are inside the
+  set. The set named *inside* the staged manifest is a different set and is judged by nothing: it is
+  authenticated as a blob by a key the client holds, so nothing on this side can count it, compare
+  it or repair it. See
+  [what the begin checks](#what-the-begin-checks-and-the-half-of-fr-123-nothing-here-holds).
 - **A reseal must move narrative columns and nothing else.** A reseal built by reusing an entity's
   ordinary `Update` would echo back `type`, `opening_balance`, `position` or `category_group_id`, and
   one wrong echo silently edits data the server cannot check.
@@ -331,7 +363,7 @@ Development branch of `GlobalExceptionHandler` echoes it into the response body.
 exactly why it is written now: the schema has been multi-budget-ready since day one, and this is the
 tripwire for the day a second budget becomes creatable.
 
-### Beginning a run: three rules, and none of them is visible in the result
+### Beginning a run: what it holds, and none of it visible in the result
 
 **The re-authentication gate runs first and runs to completion, before the owned budget set is read,
 before the staged material is judged and before anything is counted.** Every refusal below it is a real
@@ -354,9 +386,14 @@ begin with the same 401 an attacker gets.
 factor set moved — a passkey registered or revoked while a run was in flight — the only way forward is
 a begin carrying the corrected set. Answer that with a `409` and the client is left holding a staged
 row it cannot replace and a rotation it cannot finish, with no route that removes either. So
-`IKeyRotationRepository.StageAsync` promises replacement, and the adapter honours it as an upsert —
-find and update, never a blind insert, and never a delete followed by an insert of the same key, since
-EF orders that pair no particular way and `key_rotations` is granted no `DELETE` besides.
+`IKeyRotationRepository.StageAsync` promises replacement of **the staging row and its seals**, and
+the adapter honours it by converging both in one save. The parent is found and updated, or inserted
+when there is none; each submitted seal is matched against the seals the account already holds, so
+that **per key exactly one statement is issued** — an `UPDATE` where a seal stood, an `INSERT` where
+none did, and never a delete followed by an insert of the same key, since EF orders that pair no
+particular way and neither table is granted a `DELETE` besides. The two go in one save because a row
+committed without its seals, or seals committed without their row, is a staged generation that
+cannot be completed.
 
 **That upsert has a window, and saying otherwise would be the overclaim to avoid here.** Find-then-add
 is two statements, so two begins racing from different requests both find no staged row, both add, and
@@ -380,40 +417,78 @@ otherwise is a count per narrative-bearing table, drawn from the same presence-a
 gate asks about, and a chunk byte budget. A denominator measured over a wider population than the gate
 checks is a progress bar that never reaches the end.
 
-### What the begin no longer checks, and where the rule went
+**Four refusals cost the database nothing, and stating it as more than four would be the overclaim
+here.** The scope refusal and the three the factor-set gate makes — the section below — are decided
+from what the request says about a set, and all four run before `CountNarrativeRowsAsync`. Everything below that line has
+already paid for all six counts: the seals are built afterwards, because `KeyRotationSeal.For` takes
+the loaded `KeyRotation` and that needs the clock — so a begin refused for a seal of the wrong width
+or framing version, and every refusal `KeyRotation.Begin` can raise, happens after the counts have
+been taken and thrown away. That is measured rather than reasoned:
+`HandleAsync_WithAMalformedSeal_RefusesBeforeAnythingIsStaged` asserts the counting read ran exactly
+once on a request that is refused. Reordering to close it would mean moving the clock and the rows
+below the counts, to buy one saved read on a malformed request.
 
-**One guarantee is deliberately surrendered for a few slices, and it is recorded here rather than
-lost.** The begin used to assert that the staged factor set was **exactly** the account's live passkey
-factors — set equality in both directions, never *"the factor named is one of them"* — and three unit
-cases held it. Both the check and the cases are gone.
+### What the begin checks, and the half of FR-123 nothing here holds
 
-**What it held, and why the weaker reading is the dangerous one.** Today an account holds one passkey,
-so the two readings are indistinguishable and every fixture passes either way. They come apart the day
-a second passkey becomes registrable, and they come apart silently: under *"is one of"*, a begin
-naming one factor out of two succeeds, the run completes, the promotion overwrites
-`wrapped_account_keys`, and the second passkey is left holding a copy of a content key that no longer
-opens anything — an authenticator the person still has, still enrolled, that can no longer unlock the
-account, with no repair that does not go through a recovery code. Under set equality the same begin is
-refused at the start of the run, while the client can still re-post a corrected one.
+**The factor-set gate is back, over the seals, and this section is a warning rather than a
+completion notice: a partial restoration must not be read as a closed requirement.** FR-123 asks that
+a rotation naming a set of recovery factors other than the set the server holds be refused. A run
+stages one value per surviving factor — those are the seals the command carries — and the begin
+compares **that** set against the account's live factors, in both directions. The set named *inside*
+the staged manifest is judged by nothing.
 
-**Why it cannot hold now.** It compared a `factorId` on the command against
-`IKeyRotationRepository.ListPasskeyFactorsAsync`'s keys, and there is no longer a factor on the
-command to compare — the set a run stages is the set named **inside the staged manifest**, whose bytes
-are authenticated as a set by a key this server does not hold. Judging it means parsing a client's
-grammar, which this slice does not do and which `KeyRotation` deliberately does not do either. So the
-staged manifest is accepted unexamined, and a client that staged a generation omitting one of its own
-passkeys is refused by nothing.
+**Three refusals, in this order, each a `400` keyed on the command's seal member.**
 
-**Nothing is exposed meanwhile, and that is what makes the gap affordable.** No route reaches
+- **No seals at all.** This one does not depend on the comparison below being right, which is its
+  whole point: set equality between two empty sets passes vacuously, so a listing that lost its owner
+  predicate — which under `user_isolation` answers *empty* rather than *wrong* — would agree with a
+  client that submitted nothing, and the run would stage a generation no factor can open. Neither
+  side of that agreement is a legitimate state: registration files eleven factors in one save, and
+  every path that moves a factor set replaces rather than empties it.
+- **A repeated factor id.** A `HashSet` absorbs a duplicate silently, so twelve seals naming eleven
+  factors satisfy set equality against eleven factors, and the account ends one seal short of what
+  the client believed it sent with nothing saying which factor was repeated. The distinct count is
+  therefore checked **before** the comparison, and the two sentences are not interchangeable: the
+  distinct one names how many seals were presented against how many factors they name, which is the
+  fact that tells a client its own randomness repeated itself.
+- **Set equality, in both directions.** A set missing a factor is the orphaning this whole story
+  exists to prevent — the promotion rewrites the factors that were sealed, and the one that was not
+  is left holding a copy of a content key that opens nothing, an authenticator still enrolled that
+  can no longer unlock the account. A set naming a factor the account does not hold is a value staged
+  against a row the promotion will not find; left to the database that is `23503` mid-save, a `500`
+  for a request that was merely wrong. `KeyRotationSeal.For` makes that second refusal one ring
+  further in, and this is the ring that can say which **set** was wrong rather than which row.
+
+All three name **counts and never identifiers**, and the rule binds harder here than on the scope
+refusal beside them. `RotationScopeException` reaches a caller as a `500` whose message only the
+Development branch of `GlobalExceptionHandler` echoes into the body; these three are a
+`ValidationException`, which `ValidationExceptionHandler` writes out as `ValidationProblemDetails`
+field errors in **every** environment. So a factor identifier spelled into one of these sentences is
+a factor identifier handed to the caller of a request that was refused precisely so that nothing
+would be.
+
+**Where the check was expected to return, and where it actually did.** While the gap stood, the plan
+written here was that it would return with whatever came to read the manifest — comparing the factor
+ids the staged manifest names against the listing's keys. It returned earlier and over a different
+set, and the difference is worth keeping rather than tidying away, because it is what makes the
+requirement checkable at all: the seals are where the set a run commits to is stated in the clear,
+and a manifest is bytes this server cannot parse. The listing widened with it. It used to answer
+passkey factors joined out of `credentials`; `ListFactorsAsync` answers **every** factor the account
+holds, which is what brings the ten factors of a recovery-code card inside the set. A begin that
+sealed the passkey and skipped the card would have passed the narrower listing and orphaned ten
+factors.
+
+**What is still not held, and it is the sentence not to lose.** The gate holds that a run stages a
+value for exactly the account's live factor set. It holds nothing about the set named inside the
+staged manifest: those bytes are authenticated by a key this server does not hold, so a client may
+stage a manifest naming a different set than its seals and nothing on this side refuses it. **FR-123
+is held over the seals and not over the manifest.** The residual is the client's to hold — it
+compares the factor set the server serves it against the manifest it opened — and a sentence anywhere
+reading as though the requirement were now closed server-side would be the overclaim to avoid.
+
+**Nothing is exposed meanwhile, and that is what makes the residual affordable.** No route reaches
 `BeginKeyRotationHandler`, so no request can begin a run at all. It is also what will make it easy to
-forget: the day a route is added, this section is the thing that has to be answered first.
-
-**Where it returns.** The check belongs with whatever comes to read the manifest: it compares the
-factor ids the staged manifest names against `ListPasskeyFactorsAsync`'s keys, in both directions, and
-refuses as a `400` keyed on the manifest member. That listing is still registered and still answers
-passkey factors only; nothing in the handler calls it any more. The comment block standing where the
-guard used to be carries the same sentence — deleting it and calling the slice finished is the failure
-mode, because a guard removed with no trace is how a temporary gap becomes permanent.
+forget: the day a route is added, the paragraph above is the thing that has to be answered first.
 
 ### Clearing too little is silent data loss
 
@@ -441,8 +516,7 @@ than a crash.
 ```mermaid
 stateDiagram-v2
     [*] --> None
-    None --> Staged: a rotation begins — staging row written with the next manifest and epoch
-    Staged --> Staged: the new keys are encapsulated to each surviving factor — one seal per factor
+    None --> Staged: a rotation begins — the staging row and one seal per surviving factor, in one save
     Staged --> Staged: a chunk reseals rows and stamps them
     Staged --> None: completion promotes each seal and the manifest, then clears the staging
     Staged --> Staged: interrupted — both generations still on file, resumable
@@ -493,12 +567,16 @@ the handler that writes a staging row.
   *exactly one greater* than the one it read, because a `CHECK` sees the values of one row and never
   the step between two, and a trigger is the procedural logic
   [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) forbids pushing down to
-  buy the phrase *the database enforces it*. The **atomicity** half — that nobody moved the epoch
-  between the read and the write — is unheld too: EF optimistic concurrency on `rotation_epoch` is
-  what will hold it, and it is unconfigured because no statement exists for it to guard. Whoever
-  writes the arithmetic writes it in application code with nothing beneath it that will notice if it
-  goes wrong. [account-keys.md](account-keys.md#the-manifest-of-factor-public-keys) carries it in
-  full.
+  buy the phrase *the database enforces it*. So the arithmetic lives in application code —
+  `FactorManifest.Promote`, an instance method on a loaded row, refusing anything that is not the
+  stored value plus one — with nothing beneath it that will notice the day it goes. The **atomicity**
+  half, that nobody moved the epoch between the read and the write, is held and is only that half:
+  EF optimistic concurrency on `factor_manifests.rotation_epoch` emits
+  `WHERE rotation_epoch = @expected` and refuses a statement matching nothing, while `N + 17`
+  satisfies that predicate exactly as `N + 1` does. **`key_rotations.staged_rotation_epoch` carries
+  neither** — the floor above and nothing else, because a begin writes it whole rather than stepping
+  it from a stored value. [account-keys.md](account-keys.md#the-manifest-of-factor-public-keys)
+  carries it in full.
 - **The epoch is bound in the manifest and nowhere else** — not in any encapsulated value's KDF
   `info`, and not in any associated data. Binding it into a value would make every encapsulation of a
   generation unopenable the moment the epoch it was produced under stopped being current, which turns
@@ -510,6 +588,14 @@ the handler that writes a staging row.
   `42501`, reports the table unscannable, and two secrecy gates pass while covering one table fewer
   than the schema holds. An ungranted write, by contrast, hides nothing — it fails loudly on first
   reach.
+
+  **The rule has now held twice.** `key_rotation_seals` held `SELECT` alone until a begin needed to
+  write a seal, and took `INSERT` and `UPDATE (encapsulated_account_keys)` in the commit that gave it
+  one. What that table's grant block guessed wrong was the **caller** and not the discipline: it said
+  the `INSERT` would arrive with a continue leg, and it arrived with the begin, because the begin is
+  where the set of factors a run stages a value for is judged against the account's live factors. The
+  block keeps its own record of having missed rather than being quietly overwritten, which is the
+  same reason this bullet exists.
 - **The six `rotation_id` columns have no `GRANT UPDATE` yet either**, and that is deliberate for the
   same reason. The first handler to reseal a row will fail loudly with `42501` until the six column
   lists are widened, which is the fail-closed direction.

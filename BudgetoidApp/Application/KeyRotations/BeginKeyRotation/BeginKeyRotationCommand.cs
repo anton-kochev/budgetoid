@@ -14,15 +14,16 @@ namespace Application.KeyRotations.BeginKeyRotation;
 /// choose.
 /// </para>
 /// <para>
-/// <b>No factor is named either, and that is the shape of the change rather than a member somebody
-/// dropped.</b> Under a key-encryption key there was exactly one factor a run could be begun under,
-/// because re-wrapping the account's keys needed the secret that factor derives — so the command
+/// <b>No <em>single</em> factor is named, and that is the shape of the change rather than a member
+/// somebody dropped.</b> Under a key-encryption key there was exactly one factor a run could be begun
+/// under, because re-wrapping the account's keys needed the secret that factor derives — so the command
 /// carried a <c>factorId</c> and the handler compared it against the account's live passkey factors.
 /// Encapsulating to a factor's <em>public</em> half needs no secret at all, so a run produces one value
-/// per surviving factor and "the factor this rotation was performed under" has stopped being a question
-/// with an answer. The credential the run is filed against is now the one the assertion below was
-/// verified with, which the handler receives from the gate rather than looking up — strictly stronger
-/// than an identifier a client could choose, and one fewer id space on the wire.
+/// per surviving factor — those are <see cref="Seals"/>, and the factor each one names is a property of
+/// that value rather than of the run. "The factor this rotation was performed under" has stopped being a
+/// question with an answer. The credential the run is filed against is now the one the assertion below
+/// was verified with, which the handler receives from the gate rather than looking up — strictly
+/// stronger than an identifier a client could choose, and one fewer id space on the wire.
 /// </para>
 /// <para>
 /// <b>The assertion is a member of the command rather than a separate call from the endpoint</b>, so
@@ -38,10 +39,11 @@ namespace Application.KeyRotations.BeginKeyRotation;
 /// </para>
 /// <para>
 /// <b>Nothing here is an unwrapped key, a private key, a key-encryption key or a PRF output</b>, and
-/// nothing may be added that is. The manifest carries <em>public</em> halves, which the server may hold
-/// in the clear; a member carrying a private one would put the account's whole plaintext within reach
-/// of the operator without reddening a test, because there is no test that can notice a value the
-/// design says never arrives.
+/// nothing may be added that is. The manifest carries <em>public</em> halves and every seal is
+/// ciphertext <em>encapsulated to</em> one of them, both of which the server may hold in the clear
+/// because it holds nothing that opens either; a member carrying a private one would put the account's
+/// whole plaintext within reach of the operator without reddening a test, because there is no test that
+/// can notice a value the design says never arrives.
 /// </para>
 /// </remarks>
 /// <param name="Assertion">The fresh re-authentication the begin is authorized by.</param>
@@ -53,8 +55,28 @@ namespace Application.KeyRotations.BeginKeyRotation;
 /// authoritative.
 /// </param>
 /// <param name="StagedRotationEpoch">The generation the manifest above will be filed at.</param>
+/// <param name="Seals">
+/// <para>
+/// One copy of the next generation's account keys per factor the account holds, each encapsulated to
+/// that factor's public key. The handler judges this set against the account's live factors in both
+/// directions before anything is written.
+/// </para>
+/// <para>
+/// <b>A list rather than a dictionary keyed on the factor, and the weaker-looking shape is the one that
+/// can be refused.</b> A dictionary makes a duplicate factor id unconstructible, which reads like a
+/// guarantee and is the opposite of one on the wire: no route reaches this command yet, and the day one
+/// does, JSON deserialisation into a dictionary silently drops a repeat — last wins — so a request
+/// naming eleven seals for ten factors arrives as ten and <em>nothing anywhere says so</em>. A client
+/// whose randomness is not what it claims would have that fact absorbed by the binder. Kept as a list,
+/// the duplicate survives into the handler, which counts distinct factor ids against the number of
+/// seals and refuses first. It is the same argument
+/// <c>RecoveryCodeSetValidation</c> makes about the ten factor identifiers on a card, in the same
+/// direction.
+/// </para>
+/// </param>
 public sealed record BeginKeyRotationCommand(
     ReauthenticationAssertion Assertion,
     Guid RotationId,
     ReadOnlyMemory<byte> StagedManifest,
-    int StagedRotationEpoch);
+    int StagedRotationEpoch,
+    IReadOnlyList<RotationSeal> Seals);

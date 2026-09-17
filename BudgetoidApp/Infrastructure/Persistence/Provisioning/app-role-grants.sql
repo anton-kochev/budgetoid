@@ -114,9 +114,14 @@ GRANT SELECT ON currencies TO budgetoid_app;
 -- place — and still no DELETE at all, because a manifest leaves only by the cascade from users. It
 -- belongs here for the same reason the first one does: this is a list of absent DELETEs, not a list of
 -- read-only tables and not a list of write-free ones.
--- key_rotation_seals holds SELECT and nothing else on the same reasoning and
--- is the newest arrival; its own block says which write it expects and which caller has to bring it.
--- That is a list of the
+-- key_rotation_seals STAYED ON THIS LIST WHILE GAINING TWO WRITES, and it carries the one correction
+-- worth repeating up here: its seals were said to leave by the ON DELETE CASCADE from key_rotations
+-- when a second begin replaced the staging row, and a second begin UPDATES that row in place rather
+-- than deleting it, so that cascade never runs on that path — which is exactly why the table needed
+-- INSERT and a column-listed UPDATE (encapsulated_account_keys) for a begin to rewrite the previous
+-- run's seals one by one. The DELETE stays absent on a DIFFERENT cascade than the one it was credited
+-- to: a factor can only leave the set a begin submits by its own wrapped_account_keys row being
+-- deleted, and the composite (factor_id, user_id) edge takes the seal with it. That is a list of the
 -- same kind as the cascade rendering above and carries the same obligation — it is exhaustive or it
 -- is misleading, and this is the list somebody consults to decide whether a child needs a grant.
 -- Two of those absences would cost something real to fill.
@@ -544,7 +549,8 @@ GRANT UPDATE (encapsulated_account_keys) ON wrapped_account_keys TO budgetoid_ap
 -- to cover factor_id and the two wrapped envelopes; a rotation is no longer performed under one factor
 -- and no longer stages a wrapped key here, so the staged material is now the next generation's factor
 -- manifest and the epoch it will be filed at. The per-factor values of a run live on
--- key_rotation_seals, whose own block below explains why it holds no write privilege yet.
+-- key_rotation_seals, which a begin writes in the same save as this row and whose own block below
+-- argues both of the privileges that takes and the one it still does without.
 --
 -- THE COLUMN LIST OMITS user_id, AND THAT OMISSION IS THE IMMUTABILITY. PostgreSQL column privileges
 -- are additive and REVOKE UPDATE (col) cannot subtract from a table-wide grant, so the only spelling
@@ -573,12 +579,21 @@ GRANT SELECT, INSERT ON key_rotations TO budgetoid_app;
 GRANT UPDATE (rotation_id, staged_manifest, staged_rotation_epoch, started_at_utc)
     ON key_rotations TO budgetoid_app;
 
--- key_rotation_seals: SELECT AND NOTHING ELSE. One row per surviving factor per run, holding the next
--- generation's content key and index key as one value, encapsulated TO that factor's public key — the
--- value a promotion copies into wrapped_account_keys.encapsulated_account_keys. The verb matters and
--- is not interchangeable with the two beside it: nothing here is wrapped, because the factor's private
--- key is not the run's to touch, and nothing here is sealed, because the plaintext is keys rather than
--- content.
+-- key_rotation_seals: SELECT, INSERT AND A ONE-COLUMN UPDATE. STILL NO DELETE. One row per surviving
+-- factor per run, holding the next generation's content key and index key as one value, encapsulated TO
+-- that factor's public key — the value a promotion copies into
+-- wrapped_account_keys.encapsulated_account_keys. The verb matters and is not interchangeable with the
+-- two beside it: nothing here is wrapped, because the factor's private key is not the run's to touch,
+-- and nothing here is sealed, because the plaintext is keys rather than content.
+--
+-- THIS BLOCK PREDICTED THE WRITES AND NAMED THE WRONG LEG, AND THAT IS RECORDED RATHER THAN QUIETLY
+-- OVERWRITTEN. It said the INSERT would "arrive with the continue leg that writes a seal". It arrives
+-- with the BEGIN. The begin is where the set of factors a run stages a value for is judged against the
+-- account's live factors — ListFactorsAsync answers every factor the account holds and
+-- BeginKeyRotationHandler compares the two in both directions — so the begin is where the seals exist
+-- as a judged set, and a leg that wrote them later would be writing a set nothing had compared. The
+-- prediction was right about the discipline and wrong about the caller; the discipline is what this
+-- block is for, so it keeps its own record of having missed.
 --
 -- SELECT FIRST, BECAUSE AN UNGRANTED SELECT IS THE ONE ABSENCE THAT HIDES SOMETHING. Measured on
 -- key_rotations rather than argued from precedent: with no SELECT, NarrativeSecrecyTests' plaintext
@@ -587,37 +602,67 @@ GRANT UPDATE (rotation_id, staged_manifest, staged_rotation_epoch, started_at_ut
 -- is the same defect as a census that reads as complete and is not. A table nothing can read is a table
 -- nothing can check — and this one holds key material, which is the last place to accept a silent gap.
 --
--- NO INSERT, NO UPDATE, NO DELETE, BECAUSE NOTHING WRITES A SEAL YET, AND THE ASYMMETRY WITH THE SELECT
--- ABOVE IS THE WHOLE ARGUMENT. An ungranted write leaves nothing unobservable: it fails loud on the
--- first reach — 42501, on the statement that wanted it, in the test that exercises the path — where an
--- ungranted read fails quiet by turning a scan into a skip. Withholding a write therefore costs
--- nothing, and granting one ahead of its caller buys nothing but reach. THE TABLE EXISTS TO BE WRITTEN,
--- and by a path this repository does not have: the continue leg of a rotation, which encapsulates the
--- new generation to every public key the staged manifest names and files one of these rows per factor.
--- Whoever brings that leg brings INSERT, and brings it with the sentence saying which operation needs
--- it — not now, by whoever is in a hurry. A DELETE is not obviously owed at all: a superseded run's
--- seals leave by the ON DELETE CASCADE from key_rotations when a second begin replaces the staging row,
--- which runs with the referencing table owner's privileges rather than this role's, so the rows go
--- while this role still cannot issue the statement. That asymmetry is the one ADR 0017 argues for, and
--- it is why an EF cascade into rows the change tracker happens to be holding dies loudly here with
--- 42501 instead of succeeding in silence.
+-- INSERT, BECAUSE A FACTOR GAINS A SEAL ON A BEGIN. KeyRotationRepository.StageAsync adds one row per
+-- submitted seal that the account does not already hold one for, in the SAME SaveChanges as the staging
+-- row itself — a row committed without its seals, or seals committed without their row, is a staged
+-- generation that cannot be completed. The statement is policed: user_isolation's WITH CHECK compares
+-- user_id against app.current_user_id, which the session interceptor published when the connection
+-- opened.
 --
--- THERE IS NO GRANT UPDATE OF ANY SHAPE HERE, SO THERE IS NO COLUMN LIST EITHER, AND THAT IS WORTH
--- SAYING RATHER THAN LEAVING AS AN ABSENCE. Immutability in this file is expressed by OMISSION FROM A
--- GRANT UPDATE COLUMN LIST — never by REVOKE, which cannot subtract from a table-wide grant, and never
--- by widening a list to table-wide (rule B2 at the head of this file). Today every column of this table
--- is immutable in the strongest available way, because no UPDATE exists to name one — and a seal has no
--- edit that means anything: a run that wants a different value for a factor has staged the wrong one
--- and is replaced whole. If an UPDATE is ever wanted it takes encapsulated_account_keys alone; user_id
--- and factor_id stay off it, or one statement could re-file an account's staged generation against
--- another account's factor.
+-- UPDATE (encapsulated_account_keys), BECAUSE A SECOND BEGIN RESTAGES A VALUE FOR A FACTOR ALREADY
+-- SEALED. Begin is the repair path, so a second one rewrites the staging row in place and, for every
+-- factor the previous run also sealed, rewrites that factor's value rather than replacing the row:
+-- StageAsync copies the new value onto the tracked row and forces it Modified, which is an UPDATE
+-- naming this one column. A delete followed by an insert of the same key is the alternative and is
+-- refused for the reason the key_rotations block already gives about itself — EF batches that pair in
+-- no guaranteed order, so it is a coin flip on 23505, and here it would be a whole set of them.
+--
+-- THE COLUMN LIST IS THE ENFORCEMENT, AND user_id AND factor_id ARE OFF IT DELIBERATELY. This block
+-- predicted this exact list before there was a caller for it, and the reasoning it gave then is the
+-- reasoning now rather than a new one: "if an UPDATE is ever wanted it takes encapsulated_account_keys
+-- alone; user_id and factor_id stay off it, or one statement could re-file an account's staged
+-- generation against another account's factor." Immutability in this file is expressed by OMISSION FROM
+-- A GRANT UPDATE COLUMN LIST — never by REVOKE, which cannot subtract from a table-wide grant, and
+-- never by widening a list to table-wide (rule B2 at the head of this file).
+--
+-- STILL NO DELETE. "A DELETE IS NOT OBVIOUSLY OWED AT ALL" — THIS BLOCK'S OWN SENTENCE — TURNS OUT TO
+-- HAVE BEEN RIGHT, AND ITS REASON TURNS OUT TO HAVE BEEN WRONG. Both halves are recorded, because the
+-- reason is the part a reader will reuse.
+--
+-- What was wrong: it said a superseded run's seals leave by the ON DELETE CASCADE from key_rotations
+-- when a second begin replaces the staging row. THAT CASCADE FIRES WHEN THE PARENT ROW IS DELETED, and
+-- a second begin does not delete the parent — it UPDATES it in place, because key_rotations is keyed on
+-- user_id and is granted no DELETE of any shape. So that cascade never runs on the replacement path at
+-- all. It is why the INSERT and the UPDATE above are both needed: nothing clears the previous run's
+-- seals, so a begin rewrites them one by one.
+--
+-- What is right, by the OTHER cascade: FK_key_rotation_seals_wrapped_account_keys is the composite
+-- (factor_id, user_id) → wrapped_account_keys, ON DELETE CASCADE, and it fires on the only event that
+-- can take a factor out of the set a begin submits. BeginKeyRotationHandler refuses any begin whose
+-- seals are not EXACTLY the account's live wrapped_account_keys rows, so a seal for a factor a later
+-- begin does not name is a seal whose own factor row is gone — and the statement that removed that row
+-- took the seal with it, with the referencing table owner's privileges rather than this role's. This
+-- role holds no DELETE on wrapped_account_keys either, so rows leave that table only by the cascade
+-- from credentials or from users, both of which reach this table down the same edge.
+--
+-- So the DELETE would be a privilege on a table holding key material, granted for a statement nothing
+-- can issue. That is the case the rule below exists to refuse, and it is refused. WHAT WOULD CHANGE IT:
+-- a begin allowed to stage a SUBSET of the account's factors, or any path that removed a factor without
+-- deleting its wrapped_account_keys row. Neither exists today.
+--
+-- THE ASYMMETRY THAT HELD THE WRITES BACK IS SPENT FOR TWO OF THEM AND STILL STANDS FOR THE THIRD. An
+-- ungranted write leaves nothing unobservable: it fails loud on the first reach — 42501, on the
+-- statement that wanted it, in the test that exercises the path — where an ungranted read fails quiet by
+-- turning a scan into a skip. That is why SELECT went first, why the INSERT and the UPDATE waited for a
+-- statement that needed them, and why the DELETE is still waiting for one.
 --
 -- The table is POLICED rather than exempt: it carries user_id, so the coverage classifier reaches that
 -- verdict from the columns without being told, and user_isolation appends the owner to every statement
 -- against it. Nothing here is read before the request has an identity. See the policy at the foot of
 -- this file.
 REVOKE ALL ON key_rotation_seals FROM budgetoid_app;
-GRANT SELECT ON key_rotation_seals TO budgetoid_app;
+GRANT SELECT, INSERT ON key_rotation_seals TO budgetoid_app;
+GRANT UPDATE (encapsulated_account_keys) ON key_rotation_seals TO budgetoid_app;
 
 -- factor_manifests: SELECT, INSERT AND A TWO-COLUMN UPDATE. The table is one row per account holding
 -- the authenticated list of every recovery factor's public key — the value a client reads to learn
@@ -1120,17 +1165,20 @@ CREATE POLICY user_isolation ON key_rotations FOR ALL TO budgetoid_app
 -- is begun under a passkey assertion that has already verified — so a policy costs nothing and the
 -- table is policed rather than exempt.
 --
--- THE GRANT ABOVE IS SELECT ALONE AND THE POLICY IS STILL FOR ALL, which is not an oversight and not
--- a widening. factor_manifests was the precedent and is now the worked example rather than the
--- parallel: its policy was written FOR ALL while its grant was SELECT alone, registration arrived and
--- took the INSERT, the promotion path then took a column-listed UPDATE, and the rows each of those
--- statements may touch were already decided. A policy is not a privilege: FOR ALL says which ROWS each
--- command may reach if the role ever holds that command, and holding none of the write commands means
--- the write arms are unreachable today. Writing it narrower would mean the day INSERT is granted — and
--- this table exists to take one — the rows it may write are decided by nobody. The two halves fail in
--- opposite directions, as the header says at length: a table nobody grants fails loudly with 42501, a
--- table nobody polices is silently readable and writable across every tenant. Writing the policy first
--- is the ordering with no silent failure in it.
+-- THE POLICY WAS WRITTEN FOR ALL WHILE THE GRANT ABOVE WAS SELECT ALONE, AND THE WRITES IT WAS WAITING
+-- FOR HAVE NOW ARRIVED. That ordering is the worked example this paragraph used to describe from one
+-- table over: factor_manifests' policy was FOR ALL while its grant was SELECT alone, registration
+-- arrived and took the INSERT, the promotion path then took a column-listed UPDATE, and the rows each
+-- of those statements may touch had already been decided. The same happened here — a begin now inserts
+-- a seal and rewrites one — and both statements found their rows already scoped rather than finding
+-- nobody had said. A policy is not a privilege: FOR ALL says which ROWS each command may reach IF the
+-- role holds that command, so writing it narrower would have meant the day INSERT was granted the rows
+-- it may write were decided by nobody. THE DELETE ARM IS STILL UNREACHABLE and stays written all the
+-- same: the role holds no DELETE here and the block above argues why none is owed, and the arm costs
+-- nothing while the privilege is absent. The two halves fail in opposite directions, as
+-- the header says at length: a table nobody grants fails loudly with 42501, a table nobody polices is
+-- silently readable and writable across every tenant. Writing the policy first is the ordering with no
+-- silent failure in it.
 --
 -- The policy reads only the ownership column, like the four above it. It says nothing about factor_id,
 -- and it does not need to: that a seal names a factor of this same account is held one layer down by

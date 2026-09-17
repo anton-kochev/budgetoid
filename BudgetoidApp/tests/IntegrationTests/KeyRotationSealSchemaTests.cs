@@ -299,9 +299,15 @@ public sealed class KeyRotationSealSchemaTests
     /// hidden row is genuinely there and genuinely hidden rather than never written.
     /// </para>
     /// <para>
-    /// The app role holds <c>SELECT</c> here and nothing else, so this is a read and not a write probe:
-    /// an INSERT on this connection would be answered by <c>42501</c> before any policy ran, and would
-    /// be measuring the grant matrix's rule in the grant matrix's place.
+    /// <b>This is a read probe and stays one, and the reason it gives has changed.</b> It used to be
+    /// that the role held <c>SELECT</c> here and nothing else, so an INSERT on this connection would be
+    /// answered by <c>42501</c> before any policy ran. That is no longer true — a begin took
+    /// <c>INSERT</c> and <c>UPDATE (encapsulated_account_keys)</c> — so the two write arms are live, and
+    /// they are observed where the other policed tables' are:
+    /// <c>RlsIsolationTests.Database_RefusesASealInsertNamingAnotherAccount</c> and
+    /// <c>Database_RefusesToUpdateAnotherAccountsSeal_WhileStillAllowingItsOwn</c>, each with the
+    /// positive control a bare <c>42501</c> or a bare affected count cannot do without. What stays here
+    /// is the <c>USING</c> arm, read-side, which is the half those two cannot reach.
     /// </para>
     /// </remarks>
     [Test]

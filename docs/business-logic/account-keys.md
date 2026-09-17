@@ -2165,10 +2165,11 @@ gets back out.
    come off **one** statement, so what a
    caller compares describes one instant. It is the only read of `wrapped_account_keys` any route
    in the product can reach, which is not the same as the only one written down:
-   `KeyRotationRepository.ListPasskeyFactorsAsync` reads that table too — joined to `credentials`,
-   filtered on `user_id` and on `credential_type` — and is registered like every other port, with no
-   caller today, because `BeginKeyRotationHandler` stopped calling it and no route reaches that
-   handler either. The browser's one caller is custody — still
+   `KeyRotationRepository.ListFactorsAsync` reads that table too — filtered on `user_id` alone, over
+   **every** factor rather than the passkey ones, and materialising the rows `AsNoTracking` because
+   `KeyRotationSeal.For` takes the loaded entity — and `BeginKeyRotationHandler` calls it on every
+   begin, judging the seals a client staged against its keys in both directions. No route reaches
+   that handler. The browser's one caller is custody — still
    written against the bare array this route used to answer. See
    [The one route that hands them back](#the-one-route-that-hands-them-back).
 
@@ -2195,11 +2196,17 @@ extension off to debug their client.
 
 **Replacing a set of recovery codes replaces all ten of its factor rows by the database's
 cascade**, never by the application: the role holds no `DELETE` on `wrapped_account_keys` at all, so
-a handler that materialised them would die with `42501` rather than quietly take them. That is the
-same never-materialise rule the recovery-code hashes already carry, binding a second table and
-failing the opposite way — loudly. What changes at ten rows is the temptation, since "load the
-replaced set's envelopes so we can check we are replacing as many as we found" is a sentence nobody
-could write when there was one.
+a handler that materialised them **tracked** and left EF to cascade into them would die with `42501`
+rather than quietly take them. That is the same never-materialise rule the recovery-code hashes
+already carry, binding a second table and failing the opposite way — loudly. What changes at ten rows
+is the temptation, since "load the replaced set's envelopes so we can check we are replacing as many
+as we found" is a sentence nobody could write when there was one.
+
+**The hazard is the tracking rather than the materialisation**, which is what lets
+`KeyRotationRepository.ListFactorsAsync` read these rows as entities and **satisfy** that rule rather
+than be exempted from it: it asks for `AsNoTracking`, and an untracked entity is never cascaded into
+and is never in a save at all. What would bring the hazard back is dropping that call, or handing one
+of those entities to anything that saves.
 
 **Redeeming a code deletes its hash row and leaves its factor row standing**, and that asymmetry is
 deliberate. Consuming a code removes its ability to *authenticate*; it cannot remove its ability to

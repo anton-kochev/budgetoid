@@ -10,10 +10,11 @@ namespace Application.KeyRotations.BeginKeyRotation;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>One guarantee this handler used to hold is surrendered in this slice, and the block where it
-/// stood says so in full.</b> Read that comment before adding a route, a member or a test here: the
-/// staged factor set is no longer compared against the account's live passkey factors, because the set
-/// now lives inside a manifest nothing on this side parses.
+/// <b>The factor-set gate is back, over the seals rather than over the manifest, and the block where it
+/// stands says exactly what it does and does not hold.</b> Read that comment before adding a route, a
+/// member or a test here: the set of factors a run stages a value for is compared against the account's
+/// live factors in both directions, while the set named <em>inside</em> the staged manifest is still
+/// authenticated by a key this server does not hold and is still judged by nothing.
 /// </para>
 /// <para>
 /// <b>A second begin replaces the first rather than conflicting with it.</b> Begin is the repair path —
@@ -97,12 +98,13 @@ public sealed class BeginKeyRotationHandler(
         // exactly what KeyRotation.Begin's own refusal restates, established rather than asserted.
         //
         // The rejected alternatives, named so nobody reintroduces one. Picking a credential out of
-        // IKeyRotationRepository.ListPasskeyFactorsAsync is arbitrary the day an account holds two
-        // passkeys, and the arbitrariness is invisible: the wrong one is a perfectly good passkey of
-        // the right account, so the row stages, the run completes, and nothing anywhere reports that
-        // the choice was made by iteration order. Giving Begin a Guid userId instead would move the
-        // only refusal of a fabricated KeyRotation out of the Domain and into whichever caller
-        // remembered it.
+        // IKeyRotationRepository.ListFactorsAsync is arbitrary the day an account holds two passkeys,
+        // and the arbitrariness is invisible: the wrong one is a perfectly good passkey of the right
+        // account, so the row stages, the run completes, and nothing anywhere reports that the choice
+        // was made by iteration order. It is not even available now — that listing answers
+        // wrapped_account_keys rows, which carry no credential — and it should not be made available
+        // again. Giving Begin a Guid userId instead would move the only refusal of a fabricated
+        // KeyRotation out of the Domain and into whichever caller remembered it.
         Credential passkey = await reauthentication.VerifyAsync(command.Assertion, cancellationToken);
 
         Guid userId = userContext.UserId;
@@ -136,60 +138,158 @@ public sealed class BeginKeyRotationHandler(
                 + "alone, and one that cannot finish is better not begun.");
         }
 
-        // A GUARANTEE STOOD HERE AND IS SURRENDERED FOR THIS SLICE. READ THIS BEFORE ADDING ANYTHING.
+        // THE FACTOR-SET GATE. WHAT IT HOLDS AND WHAT IT STILL DOES NOT ARE BOTH WRITTEN OUT, AND THE
+        // SECOND HALF IS THE ONE TO READ BEFORE ADDING A ROUTE.
         //
-        // What it held: the staged factor set must be EXACTLY the account's live passkey factors — set
-        // equality in both directions, never "the factor named is one of them". The weaker reading
-        // fails silently the day a second passkey becomes registrable: a begin naming one factor out of
-        // two succeeds, the rotation runs to completion, the promotion overwrites wrapped_account_keys,
-        // and the second passkey is left holding a copy of a content key that no longer opens
-        // anything — an authenticator the person still has, still enrolled, that can no longer unlock
-        // the account, with no repair that does not go through a recovery code. Under set equality the
-        // same begin is refused here, at the start of the run, while the client can still re-post.
+        // RESTORED: a run stages a value for EXACTLY the account's live factor set, in both directions
+        // — and the set now covers recovery-code factors, which it never did before. The guard this
+        // replaces compared one factor id on the command against a listing of passkey factors; it was
+        // surrendered when the command stopped naming a factor, and it comes back here over the seals
+        // the command now carries, which is where the set a run actually stages is stated in the clear.
         //
-        // Why it cannot hold now: it compared command.FactorId against
-        // IKeyRotationRepository.ListPasskeyFactorsAsync's keys, and there is no longer a factor on the
-        // command to compare. The set a run stages is the set named inside command.StagedManifest,
-        // whose bytes are authenticated as a set by a key this server does not hold — so judging it
-        // means parsing a client's grammar, which this slice does not do and KeyRotation deliberately
-        // does not do either. The staged manifest is therefore accepted unexamined, and a client that
-        // staged a generation omitting one of its own passkeys is not refused by anything.
+        // STILL NOT HELD: the manifest's own named set. command.StagedManifest is authenticated as a
+        // set by a key this server does not hold, so a client may stage a manifest naming a different
+        // set than its seals and nothing below refuses it — judging it means parsing a client's
+        // grammar, which KeyRotation deliberately does not do either. That residual gap is the
+        // client's to hold: it compares the factor set the server serves it against the manifest it
+        // opened. FR-123 is therefore held over the seals and NOT over the manifest, and a comment
+        // reading as though the requirement were now closed server-side would be the overclaim to
+        // avoid.
         //
-        // Nothing is exposed meanwhile: no route reaches this handler, so no request can begin a run at
-        // all. That is what makes the gap affordable, and it is also what will make it easy to forget —
-        // the day a route is added, this comment is the thing that has to be answered first. The
-        // restoration belongs with whatever comes to read the manifest: it compares the factor ids the
-        // staged manifest names against ListPasskeyFactorsAsync's keys, in both directions, and refuses
-        // as a 400 keyed on the manifest member. That listing is still registered and still answers
-        // passkey factors only; nothing in this handler calls it any more.
+        // No route reaches this handler, so no request can begin a run at all — which is what made the
+        // gap affordable while the guard was gone, and is still what a route has to answer first.
         //
-        // Deleting this comment and calling the slice finished is the failure mode. A guard removed
-        // with no trace is how a temporary gap becomes permanent.
+        // AFTER THE SCOPE REFUSAL AND BEFORE THE COUNTS, so that the three refusals below cost the
+        // database nothing. Read the counting read's own comment for what that is and is not worth: it
+        // is these three and the scope refusal that are free, and NOT every refusal this handler can
+        // make — the two factories run after the counts and cannot be moved above them.
+        IReadOnlyDictionary<Guid, WrappedAccountKeys> factors =
+            await keyRotations.ListFactorsAsync(userId, cancellationToken);
 
-        // AFTER THE SCOPE REFUSAL, so a begin that will not be staged costs the database six counts it
-        // would only have thrown away. It is also the only read here whose answer is measured over the
-        // ambient budget alone, which is what the scope gate above has just established is the whole of
-        // what the account owns.
+        // A missing array on the wire arrives as null despite the non-nullable declaration, the same
+        // way RecoveryCodeSetValidation meets one on a card. It is not a fault: it is a request that
+        // staged no seal, and the next guard is what says so.
+        IReadOnlyList<RotationSeal> submitted = command.Seals is { } presented ? presented : [];
+
+        // NO SEALS AT ALL IS ITS OWN REFUSAL, AND IT IS THE ONE THAT DOES NOT DEPEND ON THE COMPARISON
+        // BELOW BEING RIGHT. Set equality between two empty sets passes vacuously, so a listing that
+        // came back EMPTY — which in production is what a query that lost its owner predicate answers,
+        // since user_isolation makes such a query empty rather than wrong — would agree with a client
+        // that submitted nothing, and the run would stage a generation no factor in the world can open.
+        // An account holding no factor at all is not a state any path produces: registration files
+        // eleven in one save, and every path that moves a factor set replaces rather than empties it.
+        // So neither side of that agreement is a legitimate answer, and refusing the client's side
+        // first costs one comparison and needs nothing from the listing.
+        //
+        // ALL THREE REFUSALS IN THIS BLOCK SAY COUNTS AND NEVER IDENTIFIERS, AND THE BOUND IS HARDER
+        // THAN THE SCOPE REFUSAL'S ABOVE. That one is unmapped, so it falls to GlobalExceptionHandler
+        // and only the Development branch there echoes its message. These three are a
+        // Domain.Common.ValidationException, which ValidationExceptionHandler renders into a 400 by
+        // copying Errors verbatim into a ValidationProblemDetails — that handler contains no
+        // environment check of any kind, so every sentence below ships to the caller in PRODUCTION. Do
+        // not borrow the scope refusal's Development-branch reasoning for these; it is the weaker
+        // argument for the stronger rule, and a reader who checked it would find it false here. See
+        // the Refused helper at the foot of this class.
+        if (submitted.Count == 0)
+        {
+            throw Refused(
+                nameof(BeginKeyRotationCommand.Seals),
+                "A rotation must stage the next generation's account keys for every factor the account "
+                + "holds; this request staged none.");
+        }
+
+        // THE DISTINCT COUNT BEFORE THE SET COMPARISON, because a HashSet absorbs a duplicate silently:
+        // eleven seals naming ten factors collapse to ten and satisfy set equality against ten factors,
+        // and the account would then be one seal short of what the client believed it sent, with
+        // nothing anywhere saying which factor was repeated. It is RecoveryCodeSetValidation's rule
+        // over the ten factor identifiers of a card, on the other set of the same identifiers.
+        int distinctFactorCount = submitted.Select(seal => seal.FactorId).Distinct().Count();
+
+        if (distinctFactorCount != submitted.Count)
+        {
+            throw Refused(
+                nameof(BeginKeyRotationCommand.Seals),
+                $"A rotation must stage exactly one seal per factor: {submitted.Count} seals were "
+                + $"presented naming {distinctFactorCount} distinct factors.");
+        }
+
+        // SET EQUALITY, IN BOTH DIRECTIONS, never "is each named factor one of them" — and the two
+        // directions fail differently, so neither can stand for the other.
+        //
+        // A seal set MISSING a factor is the orphaning this story exists to prevent: the run completes,
+        // the promotion overwrites wrapped_account_keys.encapsulated_account_keys for the factors that
+        // were sealed, and every factor that was not is left holding a copy of a content key that opens
+        // nothing — an authenticator still in the drawer, a card still in the wallet, still enrolled,
+        // that can no longer unlock the account. Nothing reports it, and the only repair goes through a
+        // factor that was sealed.
+        //
+        // A seal set naming a factor the account DOES NOT hold is a value staged against a row the
+        // promotion will not find. Left to the database it is the composite foreign key to
+        // wrapped_account_keys raising 23503 mid-save, which is a 500 for a caller whose request was
+        // merely wrong; KeyRotationSeal.For makes the same refusal one ring further in, and this is the
+        // ring that can say which SET was wrong rather than which row.
+        //
+        // WHAT STILL PASSES THIS: a seal carrying the right factor id and the wrong bytes. The value is
+        // ciphertext under a public key, so the server cannot tell the account's new keys from any
+        // other 158 bytes of the right framing — the width and the version are all KeyRotationSeal.For
+        // can judge, and the halves inside are a client contract nothing here can reach.
+        if (!submitted.Select(seal => seal.FactorId).ToHashSet().SetEquals(factors.Keys))
+        {
+            // Two counts and no identifier — the only refusal here that reports a number drawn from
+            // what the SERVER holds rather than from what the request carried, which is why the rule
+            // stated above the first of these three is worth re-reading on this line. It reaches the
+            // caller in every environment.
+            throw Refused(
+                nameof(BeginKeyRotationCommand.Seals),
+                $"A rotation must stage one seal for each of the {factors.Count} factors the account "
+                + $"holds and no others; {submitted.Count} were presented, naming a different set.");
+        }
+
+        // AFTER THE SCOPE REFUSAL AND AFTER THE FACTOR-SET GATE, SO FOUR REFUSALS COST NOTHING AND
+        // EVERYTHING BELOW THIS LINE HAS ALREADY PAID. The four are the scope refusal and the gate's
+        // three — no seals, a repeated factor, a set that is not the account's — and they are the ones
+        // that can be decided from what the request says about a set.
+        //
+        // NOT "a begin that will not be staged never costs the counts", WHICH WOULD BE THE OVERCLAIM
+        // HERE. The seals are built below, because KeyRotationSeal.For takes the loaded KeyRotation and
+        // that needs the clock — so every refusal KeyRotation.Begin can raise (an over-wide manifest, an
+        // epoch below the floor, an empty rotation id, a credential that is not a passkey) and every one
+        // KeyRotationSeal.For can raise (a seal of the wrong width or the wrong framing version) happens
+        // after all six counts have been taken and thrown away. That is measured rather than reasoned:
+        // BeginKeyRotationHandlerTests.HandleAsync_WithAMalformedSeal_RefusesBeforeAnythingIsStaged
+        // asserts the count read ran exactly once on a request that is refused.
+        //
+        // Reordering to close that is refused: the counts cannot move below the seal construction
+        // without moving the clock and the row with them, which is the shape the block below argues
+        // for, and it would buy one saved read on a malformed request.
+        //
+        // It is also the only read here whose answer is measured over the ambient budget alone, which
+        // is what the scope gate above has just established is the whole of what the account owns.
         RotationInventory counts = await inventory.CountNarrativeRowsAsync(userId, cancellationToken);
 
-        // THE CLOCK IS READ AND THE ROW IS BUILT BEFORE THE DELEGATE IS ENTERED, and both halves are
+        // THE CLOCK IS READ AND THE ROWS ARE BUILT BEFORE THE DELEGATE IS ENTERED, and both halves are
         // about the replay rather than about tidiness.
         //
         // The clock, for the reason GenerateRecoveryCodesHandler reads its own here: the delegate is
         // replayed, so an instant read inside it would stamp the row with whenever the surviving
         // attempt happened to run rather than with when the person asked.
         //
-        // The row, because IKeyRotationRepository.StageAsync is promised ONE INSTANCE for all the
-        // attempts of one begin. A KeyRotation minted per attempt would hand the adapter a second
-        // object carrying the same primary key while the first is still tracked from an attempt the
-        // database rolled back, which EF refuses by name. That contract is what lets this handler stay
-        // out of IPersistenceState: the discard the sibling handlers open their delegate with is
-        // answered by the port being an upsert over one object rather than by a dependency read for
-        // one line.
+        // The rows, because IKeyRotationRepository.StageAsync is promised ONE INSTANCE SET for all the
+        // attempts of one begin. A KeyRotation or a KeyRotationSeal minted per attempt would hand the
+        // adapter a second object carrying the same primary key while the first is still tracked from
+        // an attempt the database rolled back, which EF refuses by name. That contract is what lets
+        // this handler stay out of IPersistenceState: the discard the sibling handlers open their
+        // delegate with is answered by the port being an upsert over one object set rather than by a
+        // dependency read for one line.
         //
         // Every refusal KeyRotation.Begin can raise — an absent or over-wide manifest, an epoch below
         // the floor, an empty identifier, a credential that is not a passkey — therefore also happens
-        // before anything is written.
+        // before anything is written, and so does every refusal KeyRotationSeal.For can raise: a value
+        // of the wrong width or the wrong framing version, and a factor of another account. That last
+        // one is unreachable from here today rather than merely unlikely — the gate above has already
+        // established that every submitted factor is a key of a listing scoped to this same user — and
+        // it is kept because the factory is the ring where a cross-account seal must be unconstructable
+        // rather than merely unstorable.
         DateTime now = timeProvider.GetUtcNow().UtcDateTime;
         KeyRotation rotation = KeyRotation.Begin(
             passkey,
@@ -197,6 +297,18 @@ public sealed class BeginKeyRotationHandler(
             command.StagedManifest,
             command.StagedRotationEpoch,
             now);
+
+        // The indexer is safe because the set comparison above has just established that every
+        // submitted factor id is a key of this listing. Read it the other way and it is the whole point
+        // of running that comparison first: a lookup that could miss would be a KeyNotFoundException
+        // for a request that should have been a 400.
+        List<KeyRotationSeal> seals =
+        [
+            .. submitted.Select(seal => KeyRotationSeal.For(
+                rotation,
+                factors[seal.FactorId],
+                seal.EncapsulatedAccountKeys)),
+        ];
 
         return await transactionalExecutor.ExecuteAsync(
             async token =>
@@ -208,14 +320,31 @@ public sealed class BeginKeyRotationHandler(
                 // account's keys surviving a failure that abandoned everything else the request was
                 // doing.
                 //
-                // One write and one save, so there is nothing here for the transaction to hold
-                // together today. It is still the right side of the line: the routes that continue and
-                // complete a rotation land beside this one, and a staging write that had grown a habit
-                // of sitting outside the unit of work is the habit they would inherit.
-                await keyRotations.StageAsync(rotation, token);
+                // One save covering the staging row and one seal per factor, which is more than this
+                // path used to have for the transaction to hold together: a row committed without its
+                // seals, or seals committed without their row, is a staged generation that cannot be
+                // completed. The routes that continue and complete a rotation land beside this one, and
+                // a staging write that had grown a habit of sitting outside the unit of work is the
+                // habit they would inherit.
+                await keyRotations.StageAsync(rotation, seals, token);
 
                 return new KeyRotationBegun(counts, MaxChunkBytes);
             },
             cancellationToken);
     }
+
+    // Domain.Common.ValidationException by name, because both layers declare one and only that one is
+    // what ValidationExceptionHandler turns into a 400 with the field errors on it. Keyed on the member
+    // the caller can correct, the shape RevokePasskeyHandler and GenerateRecoveryCodesHandler raise
+    // their own refusals through.
+    //
+    // EVERY MESSAGE HANDED TO THIS HELPER IS RENDERED INTO THE RESPONSE BODY UNCONDITIONALLY, WHICH IS
+    // WHY NONE OF THEM MAY NAME AN IDENTIFIER. ValidationExceptionHandler sets 400 and copies Errors
+    // straight into a ValidationProblemDetails; there is no environment check anywhere in that file, so
+    // what is written at a call site is what a Production client reads. The neighbouring
+    // RotationScopeException is a WEAKER case and its own comment says so in its own terms — unmapped,
+    // caught by GlobalExceptionHandler, message echoed only under IsDevelopment. Borrowing that
+    // sentence for a refusal raised here understates the rule by one environment.
+    private static Domain.Common.ValidationException Refused(string field, string message) =>
+        new(new Dictionary<string, string[]> { [field] = [message] });
 }

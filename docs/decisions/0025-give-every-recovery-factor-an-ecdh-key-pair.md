@@ -73,14 +73,19 @@ authenticator but the one already in the person's hand.**
    or swapped row would each have to carry its own authentication, and a client choosing what to
    encapsulate to would have no way to ask whether it was looking at all of them. The manifest is one
    blob per account, authenticated as a set by a key this server does not hold, with `rotation_epoch`
-   counting the generations that list has been through. **Nothing writes one yet**, so the public
-   half of every factor's pair is today held by nobody — that is the state this commit leaves and it
-   is named as work in [account-keys.md](../business-logic/account-keys.md), not as a decision.
+   counting the generations that list has been through. **Four paths carry one, and each carries it
+   in the unit of work that already moved the factor set**: registration files the account's first at
+   epoch 1, and adding a passkey, replacing a card of recovery codes and revoking a passkey each
+   *promote* it. Erasure owes none, because there is nobody left for a list to describe.
+   [account-keys.md](../business-logic/account-keys.md) holds the four and what separates them.
 
 5. **A rotation stages a manifest and one value per factor, so `key_rotations` stopped naming one.**
    It lost `factor_id` and both staged envelopes and gained `staged_manifest` and
    `staged_rotation_epoch`; the per-factor values moved to a new `key_rotation_seals`, keyed
-   `(user_id, factor_id)`, one payload column, `SELECT`-only and policed by `user_isolation`.
+   `(user_id, factor_id)`, one payload column and policed by `user_isolation`. It holds `SELECT`,
+   `INSERT` and `UPDATE (encapsulated_account_keys)` and **no `DELETE` of any shape**, with `user_id`
+   and `factor_id` off that column list so that one statement cannot re-file an account's staged
+   generation against another account's factor. `app-role-grants.sql` argues each of them.
    Dropping `factor_id` dropped this table's only foreign key, so `FK_key_rotations_users` restores
    the erasure chain the old edge carried — without it an erased account would have left a staging
    row behind naming its own user, which [erasure.md](../business-logic/erasure.md) forbids outright
@@ -170,19 +175,27 @@ server can do nothing with what it holds.
   named rather than left to be assumed.** A `CHECK` sees the values of one row and never the step
   between two, and a trigger is the procedural logic
   [ADR 0002](0002-enforce-rules-at-the-lowest-capable-layer.md) forbids pushing down to buy the
-  phrase *the database enforces it*. The **atomicity** half is unheld too: EF optimistic concurrency
-  on `rotation_epoch` is what will hold it and is unconfigured, because no route, handler or
-  repository writes a manifest and the role holds no write privilege on the table, so a token today
-  would guard a statement nobody can issue. Whoever writes the arithmetic writes it in application
-  code with nothing beneath it that will notice if it goes wrong — the check landing there is not a
-  restatement of a database rule, and deleting it falls back on nothing.
-- **One guarantee at the begin of a rotation is surrendered for a few slices, and it is recorded
-  rather than lost.** `BeginKeyRotationHandler` used to assert that the staged factor set was exactly
-  the account's live passkey factors, set equality in both directions; that rule now lives inside the
-  manifest, whose bytes this slice cannot parse, so the check is gone and three unit cases went with
-  it. Nothing is exposed meanwhile — no route reaches the handler — and the restoration belongs with
-  whatever comes to read a manifest.
-  [key-rotation.md](../business-logic/key-rotation.md#what-the-begin-no-longer-checks-and-where-the-rule-went)
+  phrase *the database enforces it*. So the arithmetic is application code —
+  `FactorManifest.Promote` and nowhere else — with nothing beneath it that will notice if it goes
+  wrong, which is why that check is not a restatement of a database rule and deleting it falls back
+  on nothing. The **atomicity** half is held, and only that half: EF optimistic concurrency on
+  `factor_manifests.rotation_epoch` appends `WHERE rotation_epoch = @original` to every promotion, so
+  two started from the same generation cannot both land, while `N + 17` satisfies that predicate
+  exactly as `N + 1` does. The token is model-only, with no relational artifact, so no schema census
+  would notice it leaving. `key_rotations.staged_rotation_epoch` carries neither guard — a floor and
+  nothing else.
+- **The guarantee surrendered at the begin came back earlier, and somewhere else, than this entry
+  predicted.** The check that went compared the one factor id the command named against a listing of
+  **passkey** factors, and was expected back with whatever came to read a manifest. It returned at
+  the begin, over the **seals** — the set a run commits to, stated in the clear, where a manifest is
+  bytes this server cannot parse — and stronger, because the listing widened to **every** factor: a
+  card's ten recovery-code factors are inside the set equality now, and a run that sealed the passkey
+  and skipped the ten would have satisfied the old check. It is weaker in one respect, and that half
+  is still open: the manifest's own named set is authenticated by a key this server does not hold, so
+  a client may stage a manifest that disagrees with its seals. **FR-123 is held over the seals and
+  not over the manifest**; the residual is the client's, comparing the factor set the server serves
+  it against the manifest it opened. Nothing is exposed meanwhile — no route reaches the handler.
+  [key-rotation.md](../business-logic/key-rotation.md#what-the-begin-checks-and-the-half-of-fr-123-nothing-here-holds)
 - **The baseline was regenerated and this one *drops* columns.** Earlier rebaselines collapsed a
   chain of additions, which an additive migration could in principle have expressed; this one removes
   two columns from `wrapped_account_keys` and three from `key_rotations`, which against a database

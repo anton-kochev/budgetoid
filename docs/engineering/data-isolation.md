@@ -305,7 +305,7 @@ factor rows off `wrapped_account_keys` and the account's manifest and rotation e
 arms rather than leaving any of them to the policy. That is the same predicate
 `UserAccountReadService.FindEmailAsync`, `ExportReadService.FindUserAsync`,
 `RotationInventoryReadService.ListOwnedBudgetIdsAsync` and
-`KeyRotationRepository.ListPasskeyFactorsAsync` each write by hand on their own policed sets, and
+`KeyRotationRepository.ListFactorsAsync` each write by hand on their own policed sets, and
 each writes it for the reason stated above — a policy makes a wrong query answer *empty* rather than
 *correct*. **Every count this paragraph has carried has gone stale inside a slice while the
 predicate has not moved**, so a sentence of the form "the one policed table with a reader", or the

@@ -1180,6 +1180,205 @@ public sealed class RlsIsolationTests
         await Assert.That(await PromoteManifestAsync(admin, other.UserId)).IsEqualTo(1);
     }
 
+    /// <summary>
+    /// One account's session cannot stage a rotation seal in another account's name.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The <c>WITH CHECK</c> arm of <c>key_rotation_seals</c>' policy, live since the grant widened
+    /// and watched by nothing until this test.</b> The table's other rules are held next door and it is
+    /// worth naming which is which, because two of them look like this one and are not.
+    /// <c>KeyRotationSealSchemaTests</c> owns the composite key (one seal per factor per account), the
+    /// two payload checks, both foreign keys — including the cross-account factor, which is that table's
+    /// reason for existing — and the <c>USING</c> arm, read-side, on an application connection. None of
+    /// those is this: hiding another account's seals says nothing about whether this session can file
+    /// one in their name, and a <c>USING</c>-only policy would let this through.
+    /// </para>
+    /// <para>
+    /// <b>It was not a gap last week, and the grant is what changed.</b> The role held <c>SELECT</c> on
+    /// this table and no write command of any shape, so a probe like this one could not get past the
+    /// privilege check to be judged by a policy at all —
+    /// <c>KeyRotationSealSchemaTests.Database_HidesAnotherAccountsSeals</c> says so in its own remarks,
+    /// which is why it is a read probe. A begin took the <c>INSERT</c>, and an unreachable arm became a
+    /// live, unobserved rule on a table whose every row is key material.
+    /// </para>
+    /// <para>
+    /// <b>What a leak costs here.</b> A seal is one factor's copy of the <em>next</em> generation of an
+    /// account's content key and index key. A row filed under somebody else's name is a value staged
+    /// against their factor that this session chose — and a promotion copies a seal straight into
+    /// <c>wrapped_account_keys.encapsulated_account_keys</c>, at the one moment in an account's life
+    /// when the old generation has already gone. The database cannot tell one encapsulated value from
+    /// another: it is ciphertext under a public key, and the only thing that could judge it is a client
+    /// holding the private half, which this server has never stored.
+    /// </para>
+    /// <para>
+    /// <b>The positive control is not optional, because <c>42501</c> is ambiguous.</b> A missing
+    /// privilege and a <c>WITH CHECK</c> violation share that SQLSTATE, so a SQLSTATE comparison alone
+    /// passes against a role holding no <c>INSERT</c> here at all — which is the state this table was in
+    /// until the grant moved, and therefore not a hypothetical. The identical statement naming the
+    /// session's own account, on the same connection, must land. The <b>message</b> settles it a second
+    /// way and says which of the two refusals arrived rather than leaving it to be inferred: the
+    /// fragment carries the table name, so a refusal raised by some other table's policy is not mistaken
+    /// for this one's. It assumes the server's messages are in English, the same dependency the manifest
+    /// probe above takes and for the same reason.
+    /// </para>
+    /// <para>
+    /// <b>Both accounts are seeded on the elevated path</b>, the rule every probe in this file keeps:
+    /// arranging the bystander through the arm under test would make a green here mean "whatever the
+    /// policy does, it does consistently", which is true of a policy that does nothing. Each account
+    /// gets its own factor and its own run in flight, so the two foreign keys on this table are both
+    /// satisfied and the owner is the only thing wrong with the refused row — a probe naming a factor
+    /// the far account does not hold would be refused by <c>23503</c> before a policy was consulted, and
+    /// would be reading <c>KeyRotationSealSchemaTests</c>' rule in its place.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Database_RefusesASealInsertNamingAnotherAccount()
+    {
+        // Arrange — two accounts, each with a passkey, a factor of its own and a rotation in flight, and
+        // no seal staged for either: the row each probe writes is that account's first, so
+        // PK_key_rotation_seals cannot be what refuses anything.
+        await using RepositoryTestHost host = await StartHostAsync();
+        (RepositoryTestHost.SeededOwner session, RepositoryTestHost.SeededOwner other) =
+            await SeedTwoOwnersAsync(host);
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await SeedFactorAndRunAsync(host, admin, session.UserId, 0x21, SessionFactorId);
+        await SeedFactorAndRunAsync(host, admin, other.UserId, 0x22, OtherAccountFactorId);
+        await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(session.UserId);
+
+        // Act — the WITH CHECK half. Both halves of the far row are genuinely that account's: their
+        // factor, their run, a well-formed payload. The only thing wrong with it is whose it is.
+        await using NpgsqlCommand forOther = BuildSealInsertProbe(app, other.UserId, OtherAccountFactorId);
+        PostgresException? refusal = await CaptureRefusalAsync(forOther);
+
+        // The positive control, on the SAME connection and differing in the owner and the factor it
+        // names. Without it every assertion below is satisfied by a role that holds no INSERT here at
+        // all, because a privilege failure answers the same 42501 — and that was this table's real state
+        // until a begin took the grant.
+        await using NpgsqlCommand forOwn = BuildSealInsertProbe(app, session.UserId, SessionFactorId);
+        int inserted = await forOwn.ExecuteNonQueryAsync();
+
+        // Assert — the null coalesce is for the failure message: a bare refusal?.SqlState renders a
+        // statement that went through as the empty string, which reads as a blank SQLSTATE rather than
+        // as no exception at all.
+        await Assert.That(refusal?.SqlState ?? "no error")
+            .IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(inserted).IsEqualTo(1);
+
+        // And it was the POLICY that refused rather than the grant, said by the server rather than
+        // inferred from the pair above. "permission denied for table key_rotation_seals" is the other
+        // sentence this SQLSTATE carries, and it is the one a role with no INSERT would answer to both
+        // probes.
+        await Assert.That(refusal?.MessageText ?? "no error")
+            .Contains("row-level security policy for table \"key_rotation_seals\"");
+
+        // And nothing landed. A SQLSTATE says the statement was rejected; only this says the other
+        // account still has no seal at all. On the superuser connection, which row-level security does
+        // not apply to — no policed session could answer this question about another account.
+        await Assert.That(await CountKeyedRowsAsync(
+                admin, "key_rotation_seals", "user_id", other.UserId))
+            .IsEqualTo(0L);
+        await Assert.That(await CountKeyedRowsAsync(
+                admin, "key_rotation_seals", "user_id", session.UserId))
+            .IsEqualTo(1L);
+    }
+
+    /// <summary>
+    /// One account's session cannot restage another account's seal.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The <c>UPDATE</c> arm, and it is the arm whose failure a caller could never see.</b> Row-level
+    /// security refuses a cross-account <c>UPDATE</c> <em>silently</em> — the row is not in reach, so
+    /// the statement succeeds having matched nothing. There is no error, no SQLSTATE and nothing to
+    /// catch, which is why the observation is the affected count and why this cannot be written as an
+    /// assertion about a response.
+    /// </para>
+    /// <para>
+    /// <b>It was unreachable until this slice and is live now.</b> The role held <c>SELECT</c> alone,
+    /// so a statement like this one would have been refused by the grant matrix with <c>42501</c> before
+    /// a policy was consulted — a green run measuring nothing.
+    /// <c>GRANT UPDATE (encapsulated_account_keys)</c> arrived because a second begin has to rewrite
+    /// the previous run's seals one by one: begin is the repair path, it updates the
+    /// <c>key_rotations</c> row in place rather than replacing it, so the cascade that would have
+    /// cleared the children never fires.
+    /// </para>
+    /// <para>
+    /// <b>The positive control is the whole discriminator</b>, exactly as the <c>42501</c> ambiguity was
+    /// on the insert side. Zero rows affected is what a statement matching nothing produces for
+    /// <em>any</em> reason — a predicate naming a row that is not there, a seeding that silently did not
+    /// run, a column list the grant does not cover — and none of those is the policy. The identical
+    /// statement against this session's <b>own</b> row, on the same connection, affecting exactly one
+    /// and leaving behind the bytes it wrote, is what says the statement was capable of landing. The
+    /// sharpest control comes last: the identical statement, same owner in the predicate, on the
+    /// superuser connection that row-level security does not apply to, affecting one — which leaves
+    /// exactly one difference between the two runs, and that is which account the session declares.
+    /// </para>
+    /// <para>
+    /// The statement names exactly the one column
+    /// <c>GRANT UPDATE (encapsulated_account_keys)</c> covers — a second would answer <c>42501</c> from
+    /// the grant and this probe would be reading the column list instead of the policy — and the payload
+    /// is at the framing's exact width carrying its own version, so neither check constraint is what
+    /// answers.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Database_RefusesToUpdateAnotherAccountsSeal_WhileStillAllowingItsOwn()
+    {
+        // Arrange — two accounts, each with a factor, a run in flight and a seal already staged. Unlike
+        // the insert probe next door this one WANTS those rows: there has to be a row on the far side
+        // for the policy to hide and a row on this side for the control to move.
+        await using RepositoryTestHost host = await StartHostAsync();
+        (RepositoryTestHost.SeededOwner session, RepositoryTestHost.SeededOwner other) =
+            await SeedTwoOwnersAsync(host);
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await SeedFactorAndRunAsync(host, admin, session.UserId, 0x31, SessionFactorId);
+        await SeedFactorAndRunAsync(host, admin, other.UserId, 0x32, OtherAccountFactorId);
+        await SeedSealAsync(admin, session.UserId, SessionFactorId);
+        await SeedSealAsync(admin, other.UserId, OtherAccountFactorId);
+
+        byte[] otherBefore = await ReadSealAsync(admin, other.UserId, OtherAccountFactorId);
+
+        await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(session.UserId);
+
+        // Act — the foreign restage first, then the identical statement aimed at this session's own row.
+        // Same connection, same column, same value; the owner in the predicate is the only difference.
+        int foreignAffected = await RestageSealAsync(app, other.UserId, OtherAccountFactorId);
+        int ownAffected = await RestageSealAsync(app, session.UserId, SessionFactorId);
+
+        // Assert — zero rows affected and NOT a 42501 is the whole content of the first line: a refusal
+        // would say the grant matrix stopped the statement, an affected count of zero says the POLICY
+        // did, because the row was never in reach for there to be anything to update.
+        await Assert.That(foreignAffected).IsEqualTo(0);
+
+        // The control, without which the line above passes against a role that holds no UPDATE here at
+        // all and against a statement that matched nothing for a reason no policy is involved in.
+        await Assert.That(ownAffected).IsEqualTo(1);
+
+        // And what actually survived. On the superuser connection, which row-level security does not
+        // apply to: no policed session could ask this question about another account.
+        await Assert.That(await ReadSealAsync(admin, other.UserId, OtherAccountFactorId))
+            .IsEquivalentTo(otherBefore, CollectionOrdering.Matching);
+        await Assert.That(await ReadSealAsync(admin, session.UserId, SessionFactorId))
+            .IsEquivalentTo(ProbeSealPayload(), CollectionOrdering.Matching);
+
+        // The premise, and it reads as an assertion but is really a guard: the probe has to write
+        // something the seeding did not, or "the far row did not move" and "the near row did" are both
+        // true of a statement that wrote the values back unchanged.
+        await Assert.That(otherBefore).IsNotEquivalentTo(ProbeSealPayload());
+
+        // AND THE SHARPEST CONTROL, LAST BECAUSE IT MOVES THE FAR ROW. The own-row control above says
+        // the statement can land, but it says it against a DIFFERENT predicate value — so a zero on the
+        // foreign half could still be a predicate that matches nothing for a reason no session is
+        // involved in. This runs the IDENTICAL statement on the superuser connection that row-level
+        // security does not apply to. It is destructive to the far row and every assertion about that
+        // row has already been made, so it sits at the end rather than in the arrangement.
+        await Assert.That(await RestageSealAsync(admin, other.UserId, OtherAccountFactorId))
+            .IsEqualTo(1);
+    }
+
     [Test]
     public async Task Database_ReadsAPasskeyPublicKeyWithNoUserOnTheSession()
     {
@@ -1888,6 +2087,165 @@ public sealed class RlsIsolationTests
     private const byte ProbeManifestFiller = 0x5E;
 
     private const int ProbeRotationEpoch = 2;
+
+    /// <summary>
+    /// Gives <paramref name="userId" /> what a seal needs to exist at all: a passkey, one factor filed
+    /// against it, and one rotation in flight.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Both of <c>key_rotation_seals</c>' foreign keys are satisfied here rather than at the probe</b>,
+    /// which is what leaves the owner as the only thing a refused row can be wrong about. Without the
+    /// factor the composite <c>(factor_id, user_id)</c> edge to <c>wrapped_account_keys</c> answers
+    /// <c>23503</c>; without the run, <c>FK_key_rotation_seals_key_rotations</c> does — and both are
+    /// raised before any policy is consulted, so a probe missing either would be reading
+    /// <c>KeyRotationSealSchemaTests</c>' rules in this file's place.
+    /// </para>
+    /// <para>
+    /// On the elevated connection. The role does hold <c>INSERT</c> on <c>key_rotations</c>, but a
+    /// policed write needs an identity published on the session and the arrangement is a precondition of
+    /// these probes rather than one of them. <paramref name="handleFill" /> is required for
+    /// <see cref="PasskeyHandle" />'s reason: <c>webauthn_credential_id</c> is unique, so two accounts
+    /// seeded with "a passkey" would collide before a probe ran.
+    /// </para>
+    /// </remarks>
+    private static async Task SeedFactorAndRunAsync(
+        RepositoryTestHost host,
+        NpgsqlConnection admin,
+        Guid userId,
+        byte handleFill,
+        Guid factorId)
+    {
+        Guid credentialId = await host.SeedPasskeyAsync(userId, PasskeyHandle(handleFill));
+        await host.SeedWrappedAccountKeysAsync(credentialId, factorId);
+
+        await using NpgsqlCommand rotation = new(
+            "insert into key_rotations " +
+            "(user_id, rotation_id, staged_manifest, staged_rotation_epoch, started_at_utc) " +
+            "values (@user_id, @rotation_id, @staged_manifest, @staged_rotation_epoch, @started_at_utc)",
+            admin);
+        rotation.Parameters.AddWithValue("user_id", userId);
+        rotation.Parameters.AddWithValue("rotation_id", Guid.CreateVersion7());
+        rotation.Parameters.AddWithValue("staged_manifest", ProbeManifest());
+        rotation.Parameters.AddWithValue("staged_rotation_epoch", ProbeRotationEpoch);
+        rotation.Parameters.AddWithValue("started_at_utc", SeedInstant);
+        await rotation.ExecuteNonQueryAsync();
+    }
+
+    /// <summary>
+    /// Stages one seal on the superuser connection, carrying the <b>seeded</b> filler rather than the
+    /// probe's — so an UPDATE that landed is distinguishable from one that wrote the value back
+    /// unchanged.
+    /// </summary>
+    private static async Task SeedSealAsync(
+        NpgsqlConnection admin,
+        Guid userId,
+        Guid factorId)
+    {
+        await using NpgsqlCommand command = new(
+            "insert into key_rotation_seals (user_id, factor_id, encapsulated_account_keys) " +
+            "values (@user_id, @factor_id, @encapsulated_account_keys)",
+            admin);
+        command.Parameters.AddWithValue("user_id", userId);
+        command.Parameters.AddWithValue("factor_id", factorId);
+        command.Parameters.AddWithValue(
+            "encapsulated_account_keys",
+            RepositoryTestHost.EncapsulatedAccountKeysPayload(RepositoryTestHost.SeededAccountKeysFiller));
+        await command.ExecuteNonQueryAsync();
+    }
+
+    /// <summary>
+    /// Builds the INSERT probe for <c>key_rotation_seals</c>, owned by <paramref name="ownerId" /> and
+    /// staged against <paramref name="factorId" />.
+    /// </summary>
+    /// <remarks>
+    /// Three columns and no fourth: this table carries no <c>created_at_utc</c>, because a seal lives
+    /// entirely inside one run and the run carries its own instant. The payload is at the framing's
+    /// exact width carrying its own version, so neither of the column's two check constraints refuses
+    /// anything — a row refused by a constraint would be a refusal the probe could not attribute to a
+    /// policy.
+    /// </remarks>
+    private static NpgsqlCommand BuildSealInsertProbe(
+        NpgsqlConnection connection,
+        Guid ownerId,
+        Guid factorId)
+    {
+        NpgsqlCommand command = new(
+            "insert into key_rotation_seals (user_id, factor_id, encapsulated_account_keys) " +
+            "values (@user_id, @factor_id, @encapsulated_account_keys)",
+            connection);
+        command.Parameters.AddWithValue("user_id", ownerId);
+        command.Parameters.AddWithValue("factor_id", factorId);
+        command.Parameters.AddWithValue("encapsulated_account_keys", ProbeSealPayload());
+        return command;
+    }
+
+    /// <summary>
+    /// Restages one account's seal through the one column the role's
+    /// <c>GRANT UPDATE (encapsulated_account_keys)</c> covers, and returns the rows affected.
+    /// </summary>
+    /// <remarks>
+    /// <b>The affected count is the answer and there is nothing to catch.</b> A cross-account UPDATE is
+    /// filtered by <c>user_isolation</c>'s <c>USING</c> arm rather than refused by it, so the statement
+    /// succeeds having matched no row. Naming a second column would answer <c>42501</c> from the grant
+    /// matrix before any policy was consulted, and the probe would be reading the column list.
+    /// </remarks>
+    private static async Task<int> RestageSealAsync(
+        NpgsqlConnection connection,
+        Guid ownerId,
+        Guid factorId)
+    {
+        await using NpgsqlCommand command = new(
+            "update key_rotation_seals set encapsulated_account_keys = @value " +
+            "where user_id = @user_id and factor_id = @factor_id",
+            connection);
+        command.Parameters.AddWithValue("value", ProbeSealPayload());
+        command.Parameters.AddWithValue("user_id", ownerId);
+        command.Parameters.AddWithValue("factor_id", factorId);
+
+        return await command.ExecuteNonQueryAsync();
+    }
+
+    /// <summary>
+    /// Reads one staged seal's payload back, keyed on both halves of <c>PK_key_rotation_seals</c>.
+    /// </summary>
+    private static async Task<byte[]> ReadSealAsync(
+        NpgsqlConnection connection,
+        Guid ownerId,
+        Guid factorId)
+    {
+        await using NpgsqlCommand command = new(
+            "select encapsulated_account_keys from key_rotation_seals " +
+            "where user_id = @user_id and factor_id = @factor_id",
+            connection);
+        command.Parameters.AddWithValue("user_id", ownerId);
+        command.Parameters.AddWithValue("factor_id", factorId);
+
+        return await command.ExecuteScalarAsync() switch
+        {
+            byte[] payload => payload,
+            var unexpected => throw new InvalidOperationException(
+                $"Expected one staged seal payload, got '{unexpected ?? "null"}'."),
+        };
+    }
+
+    /// <summary>
+    /// The encapsulated account keys every seal probe in this file writes — a fresh array per call,
+    /// because a shared one handed to two commands is a buffer two statements could reuse.
+    /// </summary>
+    /// <remarks>
+    /// The filler is neither the one <see cref="SeedSealAsync" /> stages nor either of the two
+    /// <c>RepositoryTestHost</c> defaults, so a read-back says which statement wrote the row that is
+    /// there. The width and the version are the encapsulation framing's own, read off
+    /// <c>WrappedAccountKeys</c> — which is where this column's check constraints are rendered from as
+    /// well, so a probe cannot drift into being refused for a bound that moved. The AEAD suite's
+    /// constants are never read here: they hold the same version number today, so a cross-read would
+    /// render plausible bytes and be refused for the wrong reason.
+    /// </remarks>
+    private static byte[] ProbeSealPayload() =>
+        RepositoryTestHost.EncapsulatedAccountKeysPayload(ProbeSealFiller);
+
+    private const byte ProbeSealFiller = 0x7C;
 
     /// <summary>
     /// Writes one live challenge on the superuser connection and returns its id. The nonce is 32

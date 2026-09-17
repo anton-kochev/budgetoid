@@ -143,8 +143,25 @@ because every one of these is something a reader will otherwise simplify away.
   `N + 1` does. **Two refusals that must not collapse**: `Promote` throwing is a 400 (the epoch was
   never stored + 1); the token firing is a 409 `factor_set_moved` (it was, at read time). A missing
   manifest row is a **500 on purpose** — no account can exist without one.
+  **A rotation begins by staging one seal per factor**, never by touching one: the begin carries an
+  encapsulated value per factor into `key_rotation_seals` in the same save as the staging row, and
+  refuses three ways — no seals at all, a repeated factor id, and a seal set that is not *exactly*
+  the account's live factor set in both directions. The three are not one check: the empty refusal
+  is the only one that survives a listing which lost its owner predicate (two empty sets compare
+  equal), and the duplicate refusal is separate because a `HashSet` absorbs a repeat, so twelve
+  seals naming eleven factors satisfy set equality. That listing answers **every** factor, not only
+  passkeys — a run that sealed the passkey and skipped a card's ten is the silent orphaning the
+  keypair exists to prevent. **The gate is over the seals and never over the manifest**, whose named
+  set is authenticated by a key this server does not hold, so a client may stage a manifest
+  disagreeing with its own seals and nothing here refuses it; the client holds that half.
+  `key_rotation_seals` takes `SELECT`, `INSERT` and `UPDATE (encapsulated_account_keys)` and **no
+  `DELETE`** — a second begin *updates* the staging row in place, so
+  `FK_key_rotation_seals_key_rotations` never fires on that path, which is why the insert and update
+  arms exist at all; `FK_key_rotation_seals_wrapped_account_keys` is what clears a superseded seal,
+  when the factor's own row goes.
   `GET /api/me/account-keys` is keyed on the **account**, never on a credential — narrowing it was
   tried and was wrong. [account-keys.md](docs/business-logic/account-keys.md),
+  [key-rotation.md](docs/business-logic/key-rotation.md),
   [ADR 0018](docs/decisions/0018-give-the-wrapped-account-keys-a-policed-table-and-their-own-factor-identifier.md)
 - **One AEAD envelope serves both consumers, and its associated data is never carried inside it.**
   `version(1) ‖ nonce(12) ‖ ciphertext ‖ tag(16)`, unpadded base64url; 29 bytes is a **floor**.
