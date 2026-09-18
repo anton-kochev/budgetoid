@@ -19,10 +19,10 @@
 // fold every derivation off a code applies.
 //
 // The whole flow below runs on real crypto: `mintRecoveryCodeSet`,
-// `generateAccountKeys` and `wrapAccountKeys` are production's, unstubbed, over
-// Node's WebCrypto — `+core/security/account-keys.spec.ts` already shows that
-// works under this runner. Stubbing them would be stubbing away the values this
-// test is looking for.
+// `generateAccountKeys`, `mintFactorKeypair` and `sealFactorManifest` are
+// production's, unstubbed, over Node's WebCrypto — `account-keys.spec.ts` and
+// `factor-keypair.spec.ts` already show that works under this runner. Stubbing
+// them would be stubbing away the values this test is looking for.
 import { provideHttpClient } from '@angular/common/http';
 import {
   HttpTestingController,
@@ -38,14 +38,20 @@ import {
   importAesGcmKey,
   importHmacSha256Key,
   keyEncryptionKeyFromRecoveryCode,
-  unwrapAccountKeys,
-  type WrappedAccountKeys,
 } from '@app-core/security/account-keys';
+import { UNIT_SEPARATOR } from '@app-core/security/associated-data';
 import { decodeBase64Url, encodeBase64Url } from '@app-core/security/base64url';
 import { isCanonicalFactorId } from '@app-core/security/factor-id';
 import {
+  ENCAPSULATED_ACCOUNT_KEYS_BYTES,
+  FACTOR_PUBLIC_KEY_BYTES,
+  WRAPPED_PRIVATE_KEY_BYTES,
+  openFactorKeypair,
+  type FactorKeypairEnvelopes,
+} from '@app-core/security/factor-keypair';
+import { openFactorManifest } from '@app-core/security/factor-manifest';
+import {
   ENVELOPE_NONCE_BYTES,
-  ENVELOPE_TAG_BYTES,
   ENVELOPE_VERSION,
 } from '@app-core/security/key-envelope';
 import { canonicalRecoveryCode } from '@app-core/security/recovery-code-canonical';
@@ -65,6 +71,8 @@ import type {
 } from '@app-core/security/webauthn-encoding';
 import { AuthService } from '@app-core/services/auth-service';
 import { ConfigurationService } from '@app-core/services/configuration.service';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { RegisterService } from './register.service';
 
@@ -113,15 +121,121 @@ const GROUP_SIZE = 4;
 // a literal here would be a second, silent copy of it.
 const FACTOR_COUNT = 1 + RECOVERY_CODE_SET_SIZE;
 
-// The version byte occupies one byte by definition of the envelope layout.
-// `key-envelope.ts` keeps that width as a module-private constant on purpose —
-// it is the arithmetic the format is made of rather than a setting — so it is
-// the one number below that cannot be imported. The other three are the shipped
-// constants: a literal `61` here would be a second copy of the format, agreeing
-// with the first until one of them moves.
-const VERSION_BYTES = 1;
-const ENVELOPE_BYTES =
-  VERSION_BYTES + ENVELOPE_NONCE_BYTES + ACCOUNT_KEY_BYTES + ENVELOPE_TAG_BYTES;
+// The epoch registration's manifest is sealed at, and the only epoch this flow
+// has: a registration **files** the account's first manifest rather than
+// promoting one, so the generation it names is the first. It is a fixture here
+// rather than a constant imported from the service, because what the assertions
+// below are for is that the client sealed at *this* number — reading the
+// service's own would make any number it chose the right one.
+const FIRST_ROTATION_EPOCH = 1;
+
+// Where an encapsulated value's ephemeral public key starts: straight after the
+// one version byte its framing leads with.
+const ENCAPSULATION_VERSION_BYTES = 1;
+
+// The prefix of an uncompressed P-256 point. Restated rather than imported for
+// the reason the grouping below is: `requireUncompressedPoint` is the
+// production check, and an assertion written in terms of it would agree with it
+// however it drifted.
+const UNCOMPRESSED_POINT_PREFIX = 0x04;
+
+// ---------------------------------------------------------------------------
+// The wire contract, read from the artifact both suites read.
+//
+// **This is the request half of the only thing binding this client to the
+// server.** There is no OpenAPI document here, no generated client and no
+// captured fixture, so the shape of `POST /api/registration/` is asserted twice
+// — once by a C# record and once by `RegistrationRequestBody` — and until this
+// file existed the two assertions never met. The backend moved a factor to its
+// own keypair, both suites stayed green, and this client went on posting members
+// no route bound.
+//
+// The interfaces cannot be reflected over: TypeScript erases them before a line
+// of this spec runs, and a sample object built from the names in the file would
+// prove only that the file agrees with itself. What *is* observable is what the
+// service actually PUTS ON THE WIRE — so the census below reads the body the
+// `HttpTestingController` caught and compares its members against this list. A
+// member renamed in `RegistrationRequestBody` or in `FactorKeypairEnvelopes`
+// changes what is posted, so the census reddens, and it now reddens against a
+// file the server's own test also reads.
+//
+// A missing or malformed artifact throws here, at import, and takes the file
+// with it. It must never skip.
+const WIRE_CONTRACT_PATH = join(
+  process.cwd(),
+  '..',
+  '..',
+  'docs',
+  'business-logic',
+  'vectors',
+  'account-keys-wire-v1.json',
+);
+
+// An object and not an array. `isRecord` further down is the body narrowing and
+// admits both, deliberately; a JSON file whose `messages` arrived as a list has
+// to be refused here rather than walked.
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+// One message's whole set of wire spellings, parsed rather than trusted.
+// Duplicates are refused as well as non-strings: the census compares sorted
+// lists, so a list naming `factorId` twice could only ever be satisfied by a
+// body that posted it twice — which JSON cannot express — and the failure would
+// name the body rather than the file that was edited.
+function wireMembers(file: unknown, message: string): readonly string[] {
+  if (!isJsonObject(file)) {
+    throw new Error('The account-key wire contract is not an object.');
+  }
+
+  const messages = file['messages'];
+
+  if (!isJsonObject(messages)) {
+    throw new Error('The account-key wire contract names no messages.');
+  }
+
+  const entry = messages[message];
+
+  if (!isJsonObject(entry)) {
+    throw new Error(`The wire contract carries no ${message} message.`);
+  }
+
+  const listed = entry['members'];
+
+  if (!Array.isArray(listed) || listed.length === 0) {
+    throw new Error(`The wire contract's ${message} lists no members.`);
+  }
+
+  const members: string[] = [];
+
+  for (const member of listed) {
+    if (typeof member !== 'string' || member.length === 0) {
+      throw new Error(`The wire contract's ${message} lists a blank member.`);
+    }
+
+    members.push(member);
+  }
+
+  if (new Set(members).size !== members.length) {
+    throw new Error(`The wire contract's ${message} names a member twice.`);
+  }
+
+  return members;
+}
+
+const WIRE_CONTRACT: unknown = JSON.parse(
+  readFileSync(WIRE_CONTRACT_PATH, 'utf8'),
+);
+
+// Sorted once, here, because `toEqual` over arrays compares position by
+// position and the file's order is the order a person wrote it in.
+const REGISTRATION_REQUEST_MEMBERS = [
+  ...wireMembers(WIRE_CONTRACT, 'registrationRequest'),
+].sort();
+
+const RECOVERY_CODE_SUBMISSION_MEMBERS = [
+  ...wireMembers(WIRE_CONTRACT, 'recoveryCodeSubmission'),
+].sort();
 
 // A realistic answer from `POST /api/registration/options`. Every binary member
 // is unpadded base64url over bytes a server could actually have sent — the
@@ -255,7 +369,12 @@ interface BodyFactor {
   // no verifier at all" instead of comparing `undefined` against a string and
   // reporting a mismatch that names the wrong thing.
   readonly verifier: string | null;
-  readonly wrapped: WrappedAccountKeys;
+  // The factor's keypair as the body carries it: its private half wrapped under
+  // the key-encryption key that factor derives, and the account's two keys
+  // encapsulated to its public half. **Not the public key** — there is
+  // deliberately no per-factor member for one, because what has to be
+  // unforgeable is the set, and the set is the manifest.
+  readonly envelopes: FactorKeypairEnvelopes;
 }
 
 // How a failure names one of the eleven. Body order is the order they were
@@ -298,13 +417,13 @@ function factorsOf(body: Record<string, unknown>): readonly BodyFactor[] {
 
     const factorId: unknown = entry['factorId'];
     const verifier: unknown = entry['verifier'];
-    const wrappedContentKey: unknown = entry['wrappedContentKey'];
-    const wrappedIndexKey: unknown = entry['wrappedIndexKey'];
+    const wrappedPrivateKey: unknown = entry['wrappedPrivateKey'];
+    const encapsulatedAccountKeys: unknown = entry['encapsulatedAccountKeys'];
 
     if (
       typeof factorId !== 'string' ||
-      typeof wrappedContentKey !== 'string' ||
-      typeof wrappedIndexKey !== 'string'
+      typeof wrappedPrivateKey !== 'string' ||
+      typeof encapsulatedAccountKeys !== 'string'
     ) {
       throw new Error(
         `Factor ${index} carries no factor id and pair of envelopes.`,
@@ -314,7 +433,7 @@ function factorsOf(body: Record<string, unknown>): readonly BodyFactor[] {
     return {
       factorId,
       verifier: typeof verifier === 'string' ? verifier : null,
-      wrapped: { wrappedContentKey, wrappedIndexKey },
+      envelopes: { wrappedPrivateKey, encapsulatedAccountKeys },
     };
   });
 }
@@ -322,8 +441,8 @@ function factorsOf(body: Record<string, unknown>): readonly BodyFactor[] {
 // Both envelopes of every factor, in body order.
 function envelopesOf(factors: readonly BodyFactor[]): readonly string[] {
   return factors.flatMap((factor) => [
-    factor.wrapped.wrappedContentKey,
-    factor.wrapped.wrappedIndexKey,
+    factor.envelopes.wrappedPrivateKey,
+    factor.envelopes.encapsulatedAccountKeys,
   ]);
 }
 
@@ -613,10 +732,10 @@ async function pairFrom(
   factor: BodyFactor,
   keyEncryptionKey: CryptoKey,
 ): Promise<{ readonly contentKey: CryptoKey; readonly indexKey: CryptoKey }> {
-  const opened = await unwrapAccountKeys(
+  const opened = await openFactorKeypair(
     keyEncryptionKey,
-    factor.wrapped,
     factor.factorId,
+    factor.envelopes,
   );
 
   // Through the production doors, which wipe the material they are handed on
@@ -627,6 +746,98 @@ async function pairFrom(
     contentKey: await importAesGcmKey(opened.contentKey),
     indexKey: await importHmacSha256Key(opened.indexKey),
   };
+}
+
+// The factor set the manifest names, read out of the plaintext it seals.
+//
+// **Structural, never a split on the separator.** A public key is 65 raw bytes
+// and `0x1F` occurs inside one often enough that splitting would shear entries
+// apart — over eleven points it is not a hypothetical. So this takes the count
+// up to the first separator, then alternates: an identifier up to the next
+// separator (an identifier is hex and hyphens, so it holds none), one
+// separator, exactly {@link FACTOR_PUBLIC_KEY_BYTES} bytes, and either the end
+// or one more separator.
+//
+// A private reader rather than `factor-manifest.spec.ts`'s, deliberately: that
+// file is the format's own spec and this one is a *consumer* asking what the
+// register flow sealed. A shared reader would agree with whatever the format
+// produced, which is the one thing a consumer must not do.
+const SEPARATOR_BYTE = UNIT_SEPARATOR.charCodeAt(0);
+
+// `fatal`, so bytes that are not UTF-8 throw here instead of arriving as
+// U+FFFD — a replacement character in an identifier compares unequal to
+// everything and says nothing about why.
+const manifestDecoder = new TextDecoder('utf-8', { fatal: true });
+
+interface ManifestEntry {
+  readonly factorId: string;
+  readonly publicKey: Uint8Array;
+}
+
+interface ParsedManifest {
+  /** As it was written — text, not a number: the count leads the plaintext. */
+  readonly count: string;
+  readonly entries: readonly ManifestEntry[];
+}
+
+function parseManifest(plaintext: Uint8Array): ParsedManifest {
+  const countEnd = plaintext.indexOf(SEPARATOR_BYTE);
+
+  if (countEnd < 0) {
+    return { count: manifestDecoder.decode(plaintext), entries: [] };
+  }
+
+  const count = manifestDecoder.decode(plaintext.subarray(0, countEnd));
+  const entries: ManifestEntry[] = [];
+
+  let at = countEnd + 1;
+
+  while (at < plaintext.length) {
+    const identifierEnd = plaintext.indexOf(SEPARATOR_BYTE, at);
+
+    if (identifierEnd < 0) {
+      throw new Error('A manifest entry carries no public key.');
+    }
+
+    const publicKeyStart = identifierEnd + 1;
+    const publicKeyEnd = publicKeyStart + FACTOR_PUBLIC_KEY_BYTES;
+
+    if (publicKeyEnd > plaintext.length) {
+      throw new Error("A manifest entry's public key is cut short.");
+    }
+
+    entries.push({
+      factorId: manifestDecoder.decode(plaintext.subarray(at, identifierEnd)),
+      publicKey: Uint8Array.from(
+        plaintext.subarray(publicKeyStart, publicKeyEnd),
+      ),
+    });
+
+    at = publicKeyEnd;
+
+    if (at < plaintext.length) {
+      if (plaintext[at] !== SEPARATOR_BYTE) {
+        throw new Error('A manifest entry is not followed by a separator.');
+      }
+
+      at += 1;
+    }
+  }
+
+  return { count, entries };
+}
+
+// The manifest the body carries, as a string, refused rather than coerced: a
+// body with no manifest reaches the opener as `undefined` otherwise, and GCM's
+// refusal would then be read as "the epoch was wrong".
+function manifestOf(body: Record<string, unknown>): string {
+  const manifest: unknown = body['manifest'];
+
+  if (typeof manifest !== 'string') {
+    throw new Error('The registration request carried no manifest.');
+  }
+
+  return manifest;
 }
 
 describe('RegisterService', () => {
@@ -933,10 +1144,10 @@ describe('RegisterService', () => {
     const envelopes = envelopesOf(factors);
     const strings = stringsOf(body, 'body', 'body');
     const passkey = factors[0];
-    const account = await unwrapAccountKeys(
+    const account = await openFactorKeypair(
       keyEncryptionKey,
-      passkey.wrapped,
       passkey.factorId,
+      passkey.envelopes,
     );
 
     // Assert
@@ -951,23 +1162,51 @@ describe('RegisterService', () => {
 
     expect(envelopes).toHaveLength(2 * FACTOR_COUNT);
 
-    for (const [index, envelope] of envelopes.entries()) {
-      const bytes = decodedOrNull(envelope);
+    // **Two framings, and the widths are checked apart.** A wrapped private key
+    // is the AEAD envelope over a 138-byte PKCS#8; an encapsulated value is the
+    // other framing entirely, carrying an ephemeral point between its version
+    // and its nonce. Both are exactly their own width — never a floor — and a
+    // single width asserted over all twenty-two would admit either value in the
+    // other's member.
+    for (const [index, factor] of factors.entries()) {
+      const wrapped = decodedOrNull(factor.envelopes.wrappedPrivateKey);
+      const encapsulated = decodedOrNull(
+        factor.envelopes.encapsulatedAccountKeys,
+      );
 
-      if (bytes === null) {
-        throw new Error(`Envelope ${index} is not base64url at all.`);
+      if (wrapped === null || encapsulated === null) {
+        throw new Error(`${factorName(index)}'s envelopes are not base64url.`);
       }
 
-      // A sealed envelope and not a key: the width is the layout's, computed
-      // from the shipped constants, and the version byte is the one the
-      // envelope format's reader will refuse anything else in place of.
       expect(
-        bytes.length,
-        `Envelope ${index} is not an envelope's width.`,
-      ).toBe(ENVELOPE_BYTES);
-      expect(bytes[0], `Envelope ${index} leads with an unknown version.`).toBe(
-        ENVELOPE_VERSION,
-      );
+        wrapped.length,
+        `${factorName(index)}'s wrapped private key is not its width.`,
+      ).toBe(WRAPPED_PRIVATE_KEY_BYTES);
+      // The AEAD suite's version, and this is the framing that carries it.
+      // The encapsulation suite has a version byte of its own which is 1 as
+      // well, and it is deliberately not asserted from this constant: the two
+      // are different suites and nothing in the bytes says which, so an
+      // assertion that spelled one from the other would be the aliasing
+      // `factor-keypair.ts` is careful not to do.
+      expect(
+        wrapped[0],
+        `${factorName(index)}'s wrapped private key leads with an unknown ` +
+          'version.',
+      ).toBe(ENVELOPE_VERSION);
+
+      expect(
+        encapsulated.length,
+        `${factorName(index)}'s encapsulated account keys are not their width.`,
+      ).toBe(ENCAPSULATED_ACCOUNT_KEYS_BYTES);
+      // The ephemeral public key, where the layout puts it: uncompressed, so
+      // the byte after the version is `0x04`. Structural rather than a second
+      // version assertion, and it is the half that says the value really is an
+      // encapsulation rather than an envelope of the right length.
+      expect(
+        encapsulated[ENCAPSULATION_VERSION_BYTES],
+        `${factorName(index)}'s encapsulated value carries no uncompressed ` +
+          'ephemeral point.',
+      ).toBe(UNCOMPRESSED_POINT_PREFIX);
     }
 
     // The control the walk needs. Every assertion below is a refusal, and a
@@ -1021,7 +1260,7 @@ describe('RegisterService', () => {
     expect(new Set(envelopes).size).toBe(envelopes.length);
   });
 
-  it('wraps the account keys once for the passkey and once per code', async () => {
+  it('mints a keypair once for the passkey and once per code', async () => {
     // Arrange
     const { request } = await driveToRegistration();
 
@@ -1030,17 +1269,81 @@ describe('RegisterService', () => {
     const factors = factorsOf(body);
 
     // Assert
-    // The passkey's own pair, at the top level. Wrapping only inside the loop
+    // The passkey's own pair, at the top level. Minting only inside the loop
     // is the half-implementation the count alone would hide: it satisfies "one
     // per code" and leaves the authenticator the person just registered unable
     // to open the account it was registered for.
     expect(typeof body['factorId']).toBe('string');
-    expect(typeof body['wrappedContentKey']).toBe('string');
-    expect(typeof body['wrappedIndexKey']).toBe('string');
+    expect(typeof body['wrappedPrivateKey']).toBe('string');
+    expect(typeof body['encapsulatedAccountKeys']).toBe('string');
 
     expect(body['codes']).toHaveLength(RECOVERY_CODE_SET_SIZE);
     expect(factors).toHaveLength(FACTOR_COUNT);
     expect(envelopesOf(factors)).toHaveLength(2 * FACTOR_COUNT);
+  });
+
+  // **The members are the request's whole surface, named rather than counted.**
+  //
+  // What this catches is one edit: `{ verifier, factorId, ...minted }`, which is
+  // how the ten submissions used to be built and is what a reader will write
+  // again. `mintFactorKeypair` hands back the factor's **public key** beside the
+  // two envelopes, so the spread puts a `Uint8Array` on the wire as a JSON
+  // object of numbered members — a per-factor public key, which this design
+  // deliberately withholds because what has to be unforgeable is the *set*. The
+  // server has no column for it and would ignore it; nothing anywhere would say
+  // a word. TypeScript does not catch it either: excess-property checking does
+  // not reach through a spread, and `MintedFactorKeypair` extends the interface
+  // the member is typed as.
+  //
+  // It is also what holds the two absences the members below are chosen for: a
+  // `rotationEpoch` at the top level, and a raw key under any name at all.
+  //
+  // **The expected sets come from `account-keys-wire-v1.json`, not from this
+  // file.** Written out here they were greenable by one paste — the actual over
+  // the expected, in a diff that looks like a test being updated alongside the
+  // code it tests. Read from the artifact, the same paste has to move a file the
+  // server's own test reads, so renaming a member on either side reddens the
+  // other side. The comparison is a set equality in both directions by
+  // construction: `toEqual` over two sorted lists refuses a member the client
+  // posts and the file does not name, *and* a member the file names and the
+  // client does not post.
+  it('posts these members and no others', async () => {
+    // Arrange
+    const { request } = await driveToRegistration();
+
+    // Act
+    const body = objectBodyOf(request);
+    const codes: unknown = body['codes'];
+
+    if (!isUnknownArray(codes)) {
+      throw new Error('The registration request carried no set of codes.');
+    }
+
+    // Assert
+    expect(
+      Object.keys(body).sort(),
+      'The registration body disagrees with the registrationRequest members ' +
+        'in docs/business-logic/vectors/account-keys-wire-v1.json.',
+    ).toEqual(REGISTRATION_REQUEST_MEMBERS);
+
+    expect(codes).toHaveLength(RECOVERY_CODE_SET_SIZE);
+
+    // All ten, and not the first. The submissions are built in one loop, so a
+    // rename moves every one of them — but the loop is also where a
+    // conditionally-added member would live, and a census of entry zero is what
+    // would not see one.
+    for (const [index, entry] of codes.entries()) {
+      if (!isRecord(entry)) {
+        throw new Error(`The code at index ${index} is not an object.`);
+      }
+
+      expect(
+        Object.keys(entry).sort(),
+        `The code at index ${index} disagrees with the ` +
+          'recoveryCodeSubmission members in ' +
+          'docs/business-logic/vectors/account-keys-wire-v1.json.',
+      ).toEqual(RECOVERY_CODE_SUBMISSION_MEMBERS);
+    }
   });
 
   // The test that catches `generateAccountKeys()` moved inside the loop. A
@@ -1062,10 +1365,10 @@ describe('RegisterService', () => {
     const opened = await Promise.all(
       factors.map(async (factor, index) => {
         try {
-          return await unwrapAccountKeys(
+          return await openFactorKeypair(
             await keyOf(index, codes),
-            factor.wrapped,
             factor.factorId,
+            factor.envelopes,
           );
         } catch {
           // GCM refuses without a word about why, so the name is the whole of
@@ -1144,10 +1447,10 @@ describe('RegisterService', () => {
       // derives. Paired with another code's, the code redeems and then unwraps
       // nothing — an account that authenticates and stays unreadable.
       await expect(
-        unwrapAccountKeys(
+        openFactorKeypair(
           await keyEncryptionKeyFromRecoveryCode(code),
-          factor.wrapped,
           factor.factorId,
+          factor.envelopes,
         ),
         `The code at index ${index} does not open the envelopes filed beside ` +
           'it.',
@@ -1176,7 +1479,7 @@ describe('RegisterService', () => {
       // formed. Alone it would pass just as happily against envelopes bound to
       // nothing at all.
       await expect(
-        unwrapAccountKeys(kek, factor.wrapped, factor.factorId),
+        openFactorKeypair(kek, factor.factorId, factor.envelopes),
         `${factorName(index)} cannot open its own envelopes.`,
       ).resolves.toBeDefined();
 
@@ -1185,7 +1488,7 @@ describe('RegisterService', () => {
       // — which is what makes a copy lifted into another factor's row fail
       // rather than open there.
       await expect(
-        unwrapAccountKeys(kek, factor.wrapped, neighbour.factorId),
+        openFactorKeypair(kek, neighbour.factorId, factor.envelopes),
         `${factorName(index)}'s envelopes open under another factor's id.`,
       ).rejects.toThrow();
     }
@@ -1216,6 +1519,159 @@ describe('RegisterService', () => {
     // factors sharing an id share their associated data — which is the binding
     // the test above exists to prove is not shared.
     expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  // **Registration files the account's *first* factor manifest**, and that is
+  // why the body carries no epoch. The three routes that *promote* a manifest
+  // send one, because each moves a generation and the server refuses anything
+  // that is not the stored value plus one. This path has nothing stored to
+  // move: the server derives the first epoch itself. A `rotationEpoch` member
+  // here would be this client choosing a generation number nobody can disagree
+  // with, and a reader will add one for symmetry with the other three.
+  //
+  // What the manifest is *for* is that the set is unforgeable. Every factor's
+  // own row carries its wrapped private half and the account's keys
+  // encapsulated to its public half; no row says which factors the account has,
+  // and there is deliberately no per-row public key column. So the eleven
+  // points are named once, in a blob sealed under the account's content key —
+  // which the server stores, frames and epochs, and can never read a byte of.
+  describe('files the account’s first factor manifest', () => {
+    it('carries a manifest and no rotation epoch', async () => {
+      // Arrange
+      const { request } = await driveToRegistration();
+
+      // Act
+      const body = objectBodyOf(request);
+
+      // Assert
+      expect(typeof body['manifest']).toBe('string');
+      expect(Object.keys(body)).not.toContain('rotationEpoch');
+      // And in the serialised text as well, because a member nested inside one
+      // of the ten submissions carries the same token and the key check above
+      // looks only at the top level.
+      expect(JSON.stringify(body)).not.toContain('rotationEpoch');
+    });
+
+    // **The manifest is the content key's first real use in the product**, and
+    // this is the case that says so: the key it opens under is recovered from a
+    // *code's* factor, off the wire, so a manifest sealed under anything else —
+    // a second draw, the index key, a key-encryption key — fails here.
+    it('seals it under the account’s content key at the first epoch', async () => {
+      // Arrange
+      const { request, codes } = await driveToRegistration();
+      const body = objectBodyOf(request);
+      const factors = factorsOf(body);
+      const wire = manifestOf(body);
+      const { contentKey } = await pairFrom(factors[1], await keyOf(1, codes));
+
+      // Act
+      // Settled together rather than awaited one at a time: the second call
+      // rejects, and a rejection with no handler attached in the tick it was
+      // created in is reported as an unhandled rejection, which fails the run
+      // behind a green test list.
+      const [atFirst, atSecond] = await Promise.allSettled([
+        openFactorManifest(contentKey, wire, FIRST_ROTATION_EPOCH),
+        openFactorManifest(contentKey, wire, FIRST_ROTATION_EPOCH + 1),
+      ]);
+
+      // Assert
+      expect(
+        atFirst.status,
+        'the manifest does not open under the account’s content key at the ' +
+          'first epoch.',
+      ).toBe('fulfilled');
+      // The epoch is the manifest's associated data and the only thing binding
+      // it, so a manifest sealed at any other number opens at that number and
+      // at none of the ones a rotation will ask for.
+      expect(
+        atSecond.status,
+        'the manifest opens at an epoch the first registration cannot have ' +
+          'sealed it at.',
+      ).toBe('rejected');
+    });
+
+    it('names exactly the eleven factors the body posts', async () => {
+      // Arrange
+      const { request, codes } = await driveToRegistration();
+      const body = objectBodyOf(request);
+      const factors = factorsOf(body);
+      const { contentKey } = await pairFrom(factors[1], await keyOf(1, codes));
+
+      // Act
+      const manifest = parseManifest(
+        await openFactorManifest(
+          contentKey,
+          manifestOf(body),
+          FIRST_ROTATION_EPOCH,
+        ),
+      );
+
+      // Assert
+      expect(factors).toHaveLength(FACTOR_COUNT);
+      // The count leads the plaintext as decimal text, so a truncated manifest
+      // is a mismatch rather than a smaller set.
+      expect(manifest.count).toBe(String(FACTOR_COUNT));
+      expect(manifest.entries).toHaveLength(FACTOR_COUNT);
+
+      // **Set equality in both directions.** A manifest missing a code's factor
+      // is a rotation that will stage no seal for it — the silent orphaning of
+      // a card the person still holds — and one naming a factor the body never
+      // posted is a stranger in the set the whole blob exists to make
+      // unforgeable. Sorted, because the manifest orders its entries and the
+      // body's order is the order the eleven were minted in.
+      expect(
+        [...manifest.entries.map((entry) => entry.factorId)].sort(),
+        'the manifest does not name exactly the factors the body posts.',
+      ).toEqual([...factors.map((factor) => factor.factorId)].sort());
+    });
+
+    // **One factor's id against another factor's point is the mistake this
+    // catches**, and nothing else in the system can: every width is right,
+    // every envelope opens, the account is created and the set validates. It
+    // surfaces at a rotation, which stages one seal per named point — so the
+    // factor whose real point was never named is sealed to a keypair nobody
+    // holds, and the person who kept that code finds it opens nothing.
+    it('names the public key that opens each factor', async () => {
+      // Arrange
+      const { request, codes } = await driveToRegistration();
+      const body = objectBodyOf(request);
+      const factors = factorsOf(body);
+      const { contentKey } = await pairFrom(factors[1], await keyOf(1, codes));
+      const manifest = parseManifest(
+        await openFactorManifest(
+          contentKey,
+          manifestOf(body),
+          FIRST_ROTATION_EPOCH,
+        ),
+      );
+
+      // Act & Assert
+      expect(factors).toHaveLength(FACTOR_COUNT);
+
+      for (const [index, factor] of factors.entries()) {
+        // The point that really belongs to this factor: lifted from the PKCS#8
+        // its own wrapped private key opens into, which is the only place a
+        // client ever reads one from.
+        const opened = await openFactorKeypair(
+          await keyOf(index, codes),
+          factor.factorId,
+          factor.envelopes,
+        );
+        const named = manifest.entries.find(
+          (entry) => entry.factorId === factor.factorId,
+        );
+
+        if (named === undefined) {
+          throw new Error(`The manifest does not name ${factorName(index)}.`);
+        }
+
+        expect(
+          sameBytes(named.publicKey, opened.publicKey),
+          `The manifest names ${factorName(index)} against another factor’s ` +
+            'public key.',
+        ).toBe(true);
+      }
+    });
   });
 
   it('parks no key material on the instance', async () => {

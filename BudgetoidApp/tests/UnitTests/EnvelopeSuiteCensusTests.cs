@@ -485,6 +485,168 @@ public sealed partial class EnvelopeSuiteCensusTests
     }
 
     /// <summary>
+    /// Every version byte in the test project's reproduction of the client's grammar is written out as a
+    /// number, never as one of its neighbours' names.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The rule that file used to carry was about a spelling that cannot occur, and this is the one
+    /// that can.</b> <c>ClientKeyCustody.cs</c> asked that no constant in it ever be named plain
+    /// <c>Version</c>, on the grounds that this census discovers a suite by that member name. Measured:
+    /// the discovery filter is <c>IsPublic &amp;&amp; IsAbstract &amp;&amp; IsSealed</c>, namespace
+    /// <c>Domain.Security</c> or below, in <c>typeof(CiphertextEnvelope).Assembly</c>. That class is
+    /// <c>internal</c>, in <c>IntegrationTests</c>, in an assembly this project does not reference —
+    /// three independent reasons the hazard was unreachable. What <em>is</em> reachable is
+    /// <c>EncapsulationVersion = EnvelopeVersion</c>: it compiles, folds to the same byte, reddens
+    /// nothing, and is exactly the mistake <c>WrappedAccountKeys</c> spends four paragraphs refusing.
+    /// </para>
+    /// <para>
+    /// <b>Three constants and not two, and the third is the one a reader will alias first.</b>
+    /// <c>EnvelopeVersion</c> numbers the AEAD suite and <c>EncapsulationVersion</c> numbers the ECDH
+    /// one, so an alias across those two is the client-side twin of the format types' defect.
+    /// <c>FactorKeypairGrammarVersion</c> numbers <em>neither</em> — it versions which fields go in what
+    /// order, and it appears in the associated data of values riding both suites — so aliasing it to
+    /// either renumbers a suite nobody meant to touch. All three hold <c>1</c> today, which is what makes
+    /// every spelling of the mistake invisible to a build.
+    /// </para>
+    /// <para>
+    /// <b>It scans a file in another test project, which is only possible because it reads source text
+    /// from disk.</b> <c>UnitTests.csproj</c> holds no reference to <c>IntegrationTests</c> — that
+    /// absence is a pinned row in <c>ProjectReferenceGraphTests</c> — and none is needed: the scan walks
+    /// to the solution root and opens the file, exactly as the two cases above open files in
+    /// <c>Domain</c>. A path naming no file reddens here rather than being skipped, which is what stops
+    /// the case from passing by finding nothing.
+    /// </para>
+    /// <para>
+    /// <b>Owed and paid: a manufactured red.</b> Rewriting <c>EncapsulationVersion</c> as
+    /// <c>= EnvelopeVersion</c> in a scratch copy of the tree reddens this case and nothing else in
+    /// either project — which is the whole argument for its existing.
+    /// </para>
+    /// </remarks>
+    [Test]
+    [Arguments("EnvelopeVersion")]
+    [Arguments("EncapsulationVersion")]
+    [Arguments("FactorKeypairGrammarVersion")]
+    public async Task EveryClientReproductionVersionByte_IsWrittenOutRatherThanAliased(string constant)
+    {
+        // Arrange
+        DirectoryInfo root = VersionDeclaration.SolutionRootFrom(AppContext.BaseDirectory);
+        string path = Path.Combine(
+            root.FullName, ClientReproductionSource.Replace('/', Path.DirectorySeparatorChar));
+
+        // Act
+        string? initialiser = File.Exists(path)
+            ? VersionDeclaration.ByteConstantIn(File.ReadAllText(path), constant)
+            : null;
+
+        // Assert — the non-null check first, so a scan that read nothing at all fails as the unreadable
+        // source it is rather than as a literal test over a value nobody looked at.
+        await Assert.That(initialiser).IsNotNull();
+        await Assert.That(VersionDeclaration.IsNumericLiteral(initialiser!)).IsTrue();
+    }
+
+    /// <summary>
+    /// Every <c>const byte</c> that file declares is accounted for: written out, or deliberately derived
+    /// and said so.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>A written list of constants is satisfied by a file that has grown one more, and the one nobody
+    /// listed is the one nobody looked at.</b> The case above is keyed on three names; a fourth version
+    /// byte added to the reproduction — a second grammar, a successor suite — would be scanned by
+    /// nothing and could be aliased freely. The subject is therefore discovered out of the source and
+    /// only the <em>disposition</em> is written down, which is the shape the rest of this file takes.
+    /// </para>
+    /// <para>
+    /// <b>Two dispositions and not one, because "written out" is the wrong rule for one of the four.</b>
+    /// <c>UnitSeparatorByte</c> is <c>(byte)UnitSeparator</c> on purpose: the separator is declared once
+    /// as a <c>char</c> and read back as the byte the join writes, because two literals of one value can
+    /// drift and a drift in that byte makes every envelope already written unopenable with the same
+    /// failure a corrupted key gives. Demanding a literal there would be a test asking for the defect.
+    /// So it is listed as derived, and asserted to <em>be</em> derived — which is the half that stops
+    /// the list from being a place to park a version byte somebody did not want scanned.
+    /// </para>
+    /// <para>
+    /// Both differences are asserted, so a constant renamed out from under either list reddens as loudly
+    /// as one added beside them.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task TheClientReproductionDeclaresExactlyTheByteConstantsThisCensusAccountsFor()
+    {
+        // Arrange
+        DirectoryInfo root = VersionDeclaration.SolutionRootFrom(AppContext.BaseDirectory);
+        string path = Path.Combine(
+            root.FullName, ClientReproductionSource.Replace('/', Path.DirectorySeparatorChar));
+
+        await Assert.That(File.Exists(path)).IsTrue();
+
+        string source = File.ReadAllText(path);
+        string[] accounted =
+            [.. ClientReproductionVersionBytes, .. ClientReproductionDerivedBytes];
+
+        // Act
+        IReadOnlyList<string> declared = VersionDeclaration.ByteConstantNamesIn(source);
+
+        // Assert — two explicit differences rather than a collection comparison, so the failure names the
+        // constant instead of printing two lists for a reader to diff.
+        string[] unaccounted =
+            [.. declared.Except(accounted, StringComparer.Ordinal).Order(StringComparer.Ordinal)];
+        string[] missing =
+            [.. accounted.Except(declared, StringComparer.Ordinal).Order(StringComparer.Ordinal)];
+
+        await Assert.That(unaccounted).IsEmpty();
+        await Assert.That(missing).IsEmpty();
+        await Assert.That(declared).IsNotEmpty();
+
+        // And the derived list really holds derivations. Without this it is a bucket anything can be
+        // moved into to escape the literal rule one case up.
+        foreach (string derived in ClientReproductionDerivedBytes)
+        {
+            string? initialiser = VersionDeclaration.ByteConstantIn(source, derived);
+
+            await Assert.That(initialiser).IsNotNull();
+            await Assert.That(VersionDeclaration.IsNumericLiteral(initialiser!)).IsFalse();
+        }
+    }
+
+    /// <summary>
+    /// The test project's reproduction of the client's key-custody grammar, relative to the solution
+    /// root.
+    /// </summary>
+    /// <remarks>
+    /// Named rather than discovered, the rule <see cref="EntityVersionSource" /> keeps: a discovery rule
+    /// would have to decide what makes a file "a place version bytes live", and the honest answer is that
+    /// a reader decides.
+    /// </remarks>
+    private const string ClientReproductionSource = "tests/IntegrationTests/ClientKeyCustody.cs";
+
+    /// <summary>
+    /// The version bytes <see cref="ClientReproductionSource" /> declares, transcribed.
+    /// </summary>
+    /// <remarks>
+    /// Text and not <c>nameof</c>, for the reason <see cref="EnvelopeSuitePin.Type" /> gives: a pin
+    /// spelled with <c>nameof</c> could not survive the deletion it exists to notice, and here it could
+    /// not be spelled that way at all — the constants are <c>private</c> in an assembly this project
+    /// does not reference.
+    /// </remarks>
+    private static readonly string[] ClientReproductionVersionBytes =
+        ["EncapsulationVersion", "EnvelopeVersion", "FactorKeypairGrammarVersion"];
+
+    /// <summary>
+    /// The byte constants in that file that are <b>derived on purpose</b>, and must not be written out.
+    /// </summary>
+    /// <remarks>
+    /// <c>UnitSeparatorByte</c> is <c>(byte)UnitSeparator</c>, and the derivation is the rule rather than
+    /// an exception to one: the separator is declared once, as the <c>char</c> a message is described in,
+    /// and read back as the byte the join writes. Two literals of one value can drift, and a drift in
+    /// this byte makes every envelope already written unopenable with the same failure a corrupted key
+    /// gives — so the version rule and this one point in opposite directions, and a census with a single
+    /// disposition would have to get one of them wrong.
+    /// </remarks>
+    private static readonly string[] ClientReproductionDerivedBytes = ["UnitSeparatorByte"];
+
+    /// <summary>
     /// The entity whose two version constants alias the two format types, relative to the solution root.
     /// </summary>
     /// <remarks>
@@ -525,6 +687,47 @@ public sealed partial class EnvelopeSuiteCensusTests
         await Assert.That(wrapped).IsEqualTo("CiphertextEnvelope.Version");
         await Assert.That(encapsulated).IsEqualTo("EncapsulatedValueEnvelope.Version");
         await Assert.That(absent).IsNull();
+    }
+
+    /// <summary>
+    /// The scan reads a <c>private</c> declaration, and tells an aliased one from a written-out one.
+    /// </summary>
+    /// <remarks>
+    /// <b>The permanent control for widening the scan past <c>public</c>.</b> Both halves matter and
+    /// neither is decoration: the first says a private constant is seen at all — narrowed back to
+    /// <c>public</c>, <see cref="EveryClientReproductionVersionByte_IsWrittenOutRatherThanAliased" />
+    /// would fail on its non-null line, loudly but for the wrong reason — and the second says the
+    /// widening did not also turn every answer into a literal, which is the way a scan quietly stops
+    /// being able to fail.
+    /// </remarks>
+    [Test]
+    public async Task Scan_ReadsAPrivateByteConstantAndStillTellsAnAliasApart()
+    {
+        // Arrange — the shape ClientKeyCustody.cs has: two private version bytes, one written out and
+        // one aliased to the other.
+        const string source = """
+                private const byte EnvelopeVersion = 1;
+
+                private const byte EncapsulationVersion = EnvelopeVersion;
+            """;
+
+        // Act
+        string? written = VersionDeclaration.ByteConstantIn(source, "EnvelopeVersion");
+        string? aliased = VersionDeclaration.ByteConstantIn(source, "EncapsulationVersion");
+        IReadOnlyList<string> declared = VersionDeclaration.ByteConstantNamesIn(source);
+
+        // Assert
+        await Assert.That(written).IsEqualTo("1");
+        await Assert.That(VersionDeclaration.IsNumericLiteral(written!)).IsTrue();
+
+        await Assert.That(aliased).IsEqualTo("EnvelopeVersion");
+        await Assert.That(VersionDeclaration.IsNumericLiteral(aliased!)).IsFalse();
+
+        // The census over names sees both, ordered — joined rather than compared as a collection,
+        // because TUnit's IsEquivalentTo defaults to CollectionOrdering.Any and would not notice either
+        // name going missing in exchange for the other arriving twice.
+        await Assert.That(string.Join(", ", declared))
+            .IsEqualTo("EncapsulationVersion, EnvelopeVersion");
     }
 
     /// <summary>
@@ -1000,6 +1203,22 @@ public sealed partial class EnvelopeSuiteCensusTests
         private const string SolutionFileName = "BudgetoidApp.sln";
 
         /// <summary>
+        /// The accessibility keywords a version constant may be declared at.
+        /// </summary>
+        /// <remarks>
+        /// <b>Wider than <c>public</c>, because the reachable mistake is not always on a public
+        /// member.</b> The two format types declare their version <c>public</c>; the test project's
+        /// reproduction of the client's grammar declares its three <c>private</c>, and an alias between
+        /// those three is the same defect — it compiles, folds to the same byte and reddens nothing. A
+        /// scan admitting only <c>public</c> would report that file as holding no declaration at all,
+        /// which its caller reports as unreadable rather than as a pass, so the narrow version failed
+        /// loudly rather than silently; widening is what lets it answer. <c>protected</c> is listed for
+        /// completeness rather than because anything uses it — leaving it out would be a rule about what
+        /// a future declaration may look like, written into a regular expression.
+        /// </remarks>
+        private const string Accessibility = @"(?:public|internal|protected|private)";
+
+        /// <summary>
         /// Walks up from <paramref name="startDirectory"/> to the directory holding the solution, and
         /// throws rather than returning nothing when no ancestor does.
         /// </summary>
@@ -1071,11 +1290,39 @@ public sealed partial class EnvelopeSuiteCensusTests
 
             MatchCollection matches = Regex.Matches(
                 source,
-                @"^[ \t]*public\s+const\s+byte\s+" + Regex.Escape(name) + @"\s*=\s*(?<initialiser>[^;]+);",
+                @"^[ \t]*" + Accessibility + @"\s+const\s+byte\s+" + Regex.Escape(name)
+                + @"\s*=\s*(?<initialiser>[^;]+);",
                 RegexOptions.Multiline,
                 TimeSpan.FromSeconds(5));
 
             return matches.Count == 1 ? matches[0].Groups["initialiser"].Value.Trim() : null;
+        }
+
+        /// <summary>
+        /// The names of every <c>const byte</c> declared in <paramref name="source" />, at any
+        /// accessibility.
+        /// </summary>
+        /// <remarks>
+        /// <b>What keeps a written list of constants from silently covering fewer of them than the file
+        /// holds.</b> A pin table naming three constants is satisfied by a file that has grown a fourth,
+        /// and the fourth is precisely the one nobody looked at. Anchored the same way
+        /// <see cref="In" /> is, so a name quoted in a doc comment is not a declaration.
+        /// <para>
+        /// Source-generated, unlike <see cref="ByteConstantIn" /> beside it: this pattern names no
+        /// constant in particular, so every part of it is known at build time. That is the rule the two
+        /// halves of this class already split on — a generator cannot take a runtime string.
+        /// </para>
+        /// </remarks>
+        internal static IReadOnlyList<string> ByteConstantNamesIn(string source)
+        {
+            ArgumentNullException.ThrowIfNull(source);
+
+            return
+            [
+                .. ByteConstantDeclaration().Matches(source)
+                    .Select(match => match.Groups["name"].Value)
+                    .Order(StringComparer.Ordinal),
+            ];
         }
 
         /// <summary>
@@ -1092,6 +1339,20 @@ public sealed partial class EnvelopeSuiteCensusTests
             @"^[ \t]*public\s+const\s+byte\s+Version\s*=\s*(?<initialiser>[^;]+);",
             RegexOptions.Multiline)]
         private static partial Regex Declaration();
+
+        /// <summary>
+        /// Any <c>const byte</c> declaration, at any accessibility, at the start of its own line.
+        /// </summary>
+        /// <remarks>
+        /// Anchored exactly as <see cref="Declaration" /> is and for the same reason — the leading class
+        /// is spaces and tabs only, never <c>\s</c>, so the match cannot drift past the <c>///</c> of a
+        /// doc comment. The file this scans argues about aliasing by quoting it in prose, so a scanner
+        /// reading comments would report constants that do not exist.
+        /// </remarks>
+        [GeneratedRegex(
+            @"^[ \t]*" + Accessibility + @"\s+const\s+byte\s+(?<name>\w+)\s*=",
+            RegexOptions.Multiline)]
+        private static partial Regex ByteConstantDeclaration();
 
         /// <summary>A decimal or hexadecimal integer literal, and nothing else.</summary>
         [GeneratedRegex(@"^(?:0[xX][0-9a-fA-F]+|[0-9]+)$")]

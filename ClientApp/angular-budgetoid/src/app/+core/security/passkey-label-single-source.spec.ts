@@ -10,11 +10,13 @@
 // `PASSKEY_PRF_EVAL_INPUT` is the value a passkey's `prf` extension is evaluated
 // against, and `PASSKEY_KEY_ENCRYPTION_KEY_INFO` is the HKDF `info` that turns
 // what comes back into a key-encryption key. Both are part of the definition of
-// every wrapped account key already written: an account's keys open under a
-// key-encryption key derived through exactly these strings, so a second copy
-// that drifts from the first locks out every account wrapped under the old
-// value — with a passkey that goes on authenticating perfectly and simply hands
-// back different bytes, and no error anywhere naming the cause.
+// every factor keypair already written: a factor's private key is wrapped
+// under a key-encryption key derived through exactly these strings, and the
+// account's keys are encapsulated to that keypair's public half — so a second
+// copy that drifts from the first locks out every account whose factors
+// wrapped their private keys under the old value, with a passkey that goes on
+// authenticating perfectly and simply hands back different bytes, and no error
+// anywhere naming the cause.
 //
 // **No runtime assertion can hold this.** A caller that types the literal out
 // agrees with the constant byte for byte on the day it is written, so every

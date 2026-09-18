@@ -833,8 +833,9 @@ describe('WebauthnCeremonyService', () => {
     // Read off `account-keys.ts`, never typed again. The value is the input the
     // account's key-encryption key is derived through, so a second copy of the
     // string is a second place for it to drift — and the day it drifts, every
-    // account that wrapped its keys under the old one is locked out by a passkey
-    // that still authenticates and simply hands back different bytes.
+    // account whose factors wrapped their private keys under the old one is
+    // locked out by a passkey that still authenticates and simply hands back
+    // different bytes.
     const first = creationRequest().extensions?.prf?.eval?.first;
     expect(first).toBeDefined();
     expect(toHex(bytesOf(first))).toBe(
@@ -1153,11 +1154,11 @@ describe('WebauthnCeremonyService', () => {
   it('asks a sign-in for the PRF input too, and keeps its output in a key', async () => {
     // Arrange
     // A sign-in that produced no key-encryption key would authenticate the
-    // person and leave every row on the account unreadable, because the wrapped
-    // account keys are opened under exactly this value. The server's request
-    // options carry no extensions — `PasskeyRequestOptions.cs` has four members
-    // — so the input is this module's to add here, exactly as it is on the
-    // creation leg.
+    // person and leave every row on the account unreadable, because the
+    // account's keys are reached only through the private key this value
+    // unwraps. The server's request options carry no extensions —
+    // `PasskeyRequestOptions.cs` has four members — so the input is this
+    // module's to add here, exactly as it is on the creation leg.
     const assertionPrf = prfOutput(ASSERTION_PRF_BYTES);
     get.mockResolvedValue(
       assertionCredential({ prf: { results: { first: assertionPrf.buffer } } }),
@@ -1341,7 +1342,8 @@ describe('WebauthnCeremonyService', () => {
     // Read off `account-keys.ts` and never typed again, for the reason the
     // registration leg's twin states: the value decides what every authenticator
     // hands back, so a second copy is a second place for it to drift and the
-    // drift locks out every account that wrapped under the old one.
+    // drift locks out every account whose factors wrapped their private keys
+    // under the old one.
     const request = localAssertionRequest();
     const first = request.extensions?.prf?.eval?.first;
     expect(first).toBeDefined();

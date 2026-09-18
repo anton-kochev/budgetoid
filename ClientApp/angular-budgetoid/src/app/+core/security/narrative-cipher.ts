@@ -54,10 +54,11 @@
 // **All three fields of a binding are checked at runtime, and not because the
 // compiler is untrusted.** The table and the column are looked up as a *pair* —
 // the eight entries are pairs and not a cross product — and the row id is
-// refused, never folded, which is deliberately the opposite of
-// `wrappedKeyAssociatedData` next door. Both arguments are at the checks
-// themselves, below, so that whoever arrives to make them consistent with each
-// other, or with the neighbouring grammar, reads them before editing anything.
+// refused, never folded, which is deliberately the opposite of what
+// `factor-keypair.ts` does with the factor id in its own associated data next
+// door. Both arguments are at the checks themselves, below, so that whoever
+// arrives to make them consistent with each other, or with the neighbouring
+// grammar, reads them before editing anything.
 // What the checks are for is a caller the compiler never saw: a table name that
 // arrives as data, through one `as NarrativeFieldBinding` in a mapper.
 //
@@ -94,7 +95,7 @@
 // configuration, no dependency, so a function is the whole of it.
 import { buildAssociatedData } from './associated-data';
 import { decodeBase64Url, encodeBase64Url } from './base64url';
-// The same question the wrapped-key grammar's factor id is asked — "is this
+// The same question `factor-id.ts` answers about a factor id — "is this
 // *exactly* the canonical spelling", not "does this parse as a UUID" — so it is
 // the same predicate, imported rather than restated. A second regular
 // expression here would be a second definition of one spelling, and the half
@@ -313,14 +314,15 @@ export function refuseInvalidBinding(binding: NarrativeFieldBinding): void {
     );
   }
 
-  // **Refused, never folded — deliberately unlike `wrappedKeyAssociatedData`,
-  // which folds case, braces, parentheses and the bare 32-digit form.** The two
-  // are not inconsistent, and making them consistent would break one of them.
+  // **Refused, never folded — deliberately unlike the messages
+  // `factor-keypair.ts` binds a factor id into, which fold case, braces,
+  // parentheses and the bare 32-digit form.** The two are not inconsistent, and
+  // making them consistent would break one of them.
   //
   // There, the factor id is *minted by this client* before any server has seen
   // it — `factor-id.ts`'s `mintFactorId`, over `crypto.randomUUID`. Nothing
-  // upstream hands `wrappedKeyAssociatedData` a canonical value, so the fold it
-  // makes through `canonicalFactorId` is the only place one is made: folding is
+  // upstream hands those messages a canonical value, so the fold they make
+  // through `canonicalFactorId` is the only place one is made: folding is
   // a defence against a value arriving from elsewhere, and emitting one
   // spelling is a property of what a client creates — the argument stated at
   // that mint.
@@ -336,12 +338,13 @@ export function refuseInvalidBinding(binding: NarrativeFieldBinding): void {
   // costs a person their ledger.
   //
   // The row id is the one field whose *value* a caller chooses — the same line
-  // `wrappedKeyAssociatedData` draws between its factor id and its purpose. The
-  // pair above is drawn from a list this module owns, which is what carries the
-  // claim that no field of the associated data can contain the separator: with
-  // the lookup in place that claim is a runtime fact for two of the three fields
-  // rather than a property of the type alone, and the third cannot hold a 0x1F
-  // and still be a canonical uuid.
+  // `factor-keypair.ts`'s wrapped-private-key message draws between its factor
+  // id and its purpose, that being the one of its two messages carrying a
+  // purpose field at all. The pair above is drawn from a list this module owns,
+  // which is what carries the claim that no field of the associated data can
+  // contain the separator: with the lookup in place that claim is a runtime fact
+  // for two of the three fields rather than a property of the type alone, and
+  // the third cannot hold a 0x1F and still be a canonical uuid.
   if (!isCanonicalRowId(binding.rowId)) {
     throw new NarrativeFieldMisuseError(
       'A narrative field can only be bound to a row id in the canonical spelling.',

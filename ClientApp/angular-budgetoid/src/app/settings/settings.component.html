@@ -60,10 +60,12 @@
        where it moved to is worth writing down.
 
        **Register a passkey** waits on the account's keys **as bytes**, and on
-       nothing else. A new passkey is a new *factor*, every factor stores its own
-       wrapped copy of the account's content key and index key, and
-       `wrapAccountKeys` takes those keys themselves rather than the ability to
-       use them.
+       nothing else. A new passkey is a new *factor*, and what a factor holds is
+       an ECDH P-256 keypair rather than a wrapped copy of each account key: its
+       private half *wrapped under* the key-encryption key that factor derives,
+       and the content key and index key *encapsulated to* its public half as one
+       64-byte plaintext, content key first. `mintFactorKeypair` therefore takes
+       those two keys themselves rather than the ability to use them.
 
        **The clause naming what is missing has now been narrowed twice, each time
        by a capability that landed.** It first said Budgetoid could not unlock
@@ -78,9 +80,10 @@
        the key-encryption key as an **argument** and hands it to custody in one
        statement, and custody keeps what it opened as two non-extractable
        `CryptoKey` objects behind no accessor. There is no route from anything
-       this tab is holding back to bytes: bytes come only from unwrapping again
-       under a key-encryption key *held long enough to wrap with*, and holding
-       one that long is exactly what the unlock path refuses to do.
+       this tab is holding back to bytes: bytes come only from opening a factor's
+       pair again under a key-encryption key *held long enough to encapsulate
+       with*, and holding one that long is exactly what the unlock path refuses
+       to do.
 
        **Revoke** waits on an assertion the *server* checks, and on nothing else.
        `POST /api/me/credentials/{id}/revocation` is live and the fresh assertion
@@ -416,10 +419,11 @@
   @let working = unlocking.working();
 
   <!-- One region, in the DOM from first paint and empty at rest, carrying every
-       line this section says: both waits, all eight refusals, and the line
-       saying the keys are held. A live region inserted together with its text is
-       announced by nothing — argued at length in the account and recovery
-       sections above and not argued a third time here. `status` and never
+       line this section says: both waits, all ten refusals — the flow's five
+       and custody's five — and the line saying the keys are held. A live
+       region inserted together with its text is announced by nothing — argued
+       at length in the account and recovery sections above and not argued a
+       third time here. `status` and never
        `alert`: the person asked for this, and assertive is reserved for a
        failure to save something they typed.
 
@@ -509,15 +513,28 @@
           }
         }
       } @else if (read !== null) {
-        <!-- Custody's three, and they are three because a person's next move is
-             three different things: present another factor, press again in a
-             minute, sign in again. Collapsing any two sends somebody down a road
+        <!-- Custody's five, and they are five because a person's next move is
+             five different things: present another factor, press again in a
+             minute, sign in again, reload the page, and — the one this section
+             can send nobody anywhere for — stop, because nothing they hold will
+             open this account. Collapsing any two sends somebody down a road
              that cannot help them.
 
              `unopened`'s sentence names only doors that exist — redeeming a
              recovery code has no surface anywhere in the product, so "another
              way in" can offer another passkey and nothing else. It gains its
              second clause the day redemption lands, and not before.
+
+             **`unopened` and `inconsistent` are the pair this block exists to
+             keep apart, and they were one sentence until now.** Both follow a
+             read that came back; what differs is whether anything the person
+             holds can change the answer. Every factor of an account
+             encapsulates the same two keys, so when what came out of one will
+             not open the account's own manifest, another passkey and all ten
+             recovery codes produce the same pair — in this browser, in any
+             other, after every reload. Told `unopened`'s sentence, somebody
+             spends their whole recovery card one code at a time on a door that
+             cannot open.
 
              **The screen says "sign in again" and does not sign anybody out.**
              `AccountUnlockService` injects the ceremony and custody and nothing
@@ -544,6 +561,52 @@
             <p class="s-error">
               Budgetoid wouldn&rsquo;t hand your keys back to this browser. Sign
               out and sign in again.
+            </p>
+          }
+          <!-- The fourth, and the only one whose remedy is a reload. The server
+               answered and this tab could not read the answer, which is a fact
+               about this read rather than about the factor, the network or the
+               session — so the sentence offers the one act that can change the
+               answer at all. A reload refetches the bundle from the static
+               host; nothing else in the product does.
+
+               **It offers the reload and stops there, where it used to end
+               "this tab is running an older version".** That was a diagnosis
+               the evidence cannot carry: the same refusal covers the retired
+               bare-array body, which is this tab being the *newer* side of the
+               skew — and there the sentence is false and the act it names
+               returns the same bundle forever. What was observed is that the
+               answer came back in a shape this client does not recognise, and
+               a reload is worth trying because nothing else can change it.
+
+               It is not `unreachable`'s sentence with a different verb. That
+               one says "try again in a minute", which here is advice that can
+               never succeed: the next minute runs this same bundle against that
+               same route. -->
+          @case ('unrecognised') {
+            <p class="s-error">
+              Budgetoid couldn&rsquo;t read what the server sent back. Reload
+              the page &mdash; that&rsquo;s the one thing here that can change
+              the answer.
+            </p>
+          }
+          <!-- The fifth, and the only sentence in this section that offers
+               nothing to do, because there is nothing. A factor opened and what
+               came out of it does not agree with the account's own manifest —
+               which is a fact about the account's key material, not about the
+               authenticator in somebody's hand. It says so in both halves: what
+               is wrong, and that no factor will change it. Anything softer
+               ("try again later", "try another passkey") is an instruction to
+               keep pressing a control that cannot succeed.
+
+               There is no way out of this state on this screen and the sentence
+               does not invent one. The section's Unlock control stays where it
+               is, for the reason every other refusal here leaves it: this
+               section has nowhere else to send anybody. -->
+          @case ('inconsistent') {
+            <p class="s-error">
+              Something about this account&rsquo;s keys doesn&rsquo;t line up
+              &mdash; no passkey or recovery code will change it.
             </p>
           }
         }
@@ -713,7 +776,7 @@
        carries the same qualifier and takes it in the same commit, or the two
        come apart.
 
-       Deliberately **not** the sentence the key-wrapping sections above use.
+       Deliberately **not** the sentence the factor-creating sections above use.
        Erasing waits on nothing about the account's keys — deleting rows needs no
        key unwrapped — and pasting one sentence at all four sites would swap one
        falsehood for another.

@@ -1,19 +1,20 @@
 // The account owns two keys — one for content, one for the blind index — and
-// every recovery factor holds its own wrapped copy of **both**. A passkey is one
-// factor; a set of recovery codes is another. Each derives its own
-// key-encryption key, wraps the same two account keys under it, and stores the
-// two envelopes beside itself. Adding a factor is therefore a second way *in*,
+// every recovery factor is a way back to **both**. A passkey is one factor; a
+// set of recovery codes is another. Each derives its own key-encryption key
+// from whatever it can produce, and what that key opens is a keypair holding
+// the same two account keys. Adding a factor is therefore a second way *in*,
 // never a second set of keys: two factors that produced two different content
 // keys would give one account two keyspaces, and everything written under the
-// one the client happened to unwrap first would be unreadable through the other
+// one the client happened to open first would be unreadable through the other
 // — silently, and only after the first factor is gone.
 //
-// What binds a wrapped copy to where it lives is the associated data, and it
-// names two things rather than one: the factor, and which of the two keys it is.
-// Binding only the factor leaves the two envelopes under one factor
-// interchangeable, so an operator swapping two columns hands the account a
-// second index keyspace with no error anywhere. Binding neither is IFR-009's
-// failure in full: a wrapped key copied to another account's row opens there.
+// **How a factor carries those keys is not this file's subject any more**, and
+// neither is what binds its material to where that material lives. The keypair
+// grammar writes a factor id into both of its messages and a purpose word into
+// one of them; `factor-keypair.ts` owns it and pins it against frozen vectors,
+// and the note at the foot of this file says what moved there. Binding nothing
+// would be IFR-009's failure in full: a value copied to another account's row
+// opens there.
 //
 // **The key-encryption keys are non-extractable by construction**, so no
 // assertion below reads their bytes — there is no API that can, which is the
@@ -22,21 +23,19 @@
 // envelopes are compared. That is also the more useful pin, because the envelope
 // is what a second implementation has to reproduce, and a key nobody can name is
 // still a key two clients must agree on.
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
   ACCOUNT_KEY_BYTES,
   PASSKEY_KEY_ENCRYPTION_KEY_INFO,
   PASSKEY_PRF_EVAL_INPUT,
-  WRAPPED_KEY_AAD_PREFIX,
   generateAccountKeys,
   importAesGcmKey,
   importHmacSha256Key,
   keyEncryptionKeyFromPasskey,
   keyEncryptionKeyFromRecoveryCode,
-  unwrapAccountKeys,
-  wrapAccountKeys,
-  wrappedKeyAssociatedData,
 } from './account-keys';
 import * as accountKeysModule from './account-keys';
 import { decodeBase64Url } from './base64url';
@@ -44,12 +43,53 @@ import { openEnvelope, sealEnvelope } from './key-envelope';
 import { recoveryCodeVerifier } from './recovery-codes';
 
 const utf8 = new TextEncoder();
-const utf8Decoder = new TextDecoder();
 
-// Two factor ids, both canonical. UUIDs rather than free-form labels, which is
-// the shape the associated data below refuses to do without.
-const PASSKEY_FACTOR_ID = 'c1d2e3f4-5a6b-7c8d-9e0f-a1b2c3d4e5f6';
-const RECOVERY_FACTOR_ID = '0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0';
+// The width of the plaintext an account's two keys travel as, read from the
+// wire contract both suites read rather than written as 64 here. The literal
+// was an independent check of `2 * ACCOUNT_KEY_BYTES` — it still is, and it now
+// also fails if this client and the server stop agreeing about how wide that
+// plaintext is. A missing or malformed artifact throws at import; it must never
+// skip.
+const WIRE_CONTRACT_PATH = join(
+  process.cwd(),
+  '..',
+  '..',
+  'docs',
+  'business-logic',
+  'vectors',
+  'account-keys-wire-v1.json',
+);
+
+function wireWidth(name: string): number {
+  const parsed: unknown = JSON.parse(readFileSync(WIRE_CONTRACT_PATH, 'utf8'));
+
+  if (typeof parsed !== 'object' || parsed === null || !('widths' in parsed)) {
+    throw new Error('The account-key wire contract carries no widths.');
+  }
+
+  const widths: unknown = parsed.widths;
+
+  if (typeof widths !== 'object' || widths === null || !(name in widths)) {
+    throw new Error(`The account-key wire contract states no ${name} width.`);
+  }
+
+  const entry: unknown = Reflect.get(widths, name);
+
+  if (
+    typeof entry !== 'object' ||
+    entry === null ||
+    !('exactBytes' in entry) ||
+    typeof entry.exactBytes !== 'number' ||
+    !Number.isInteger(entry.exactBytes) ||
+    entry.exactBytes <= 0
+  ) {
+    throw new Error(`The wire contract's ${name} width is not a whole width.`);
+  }
+
+  return entry.exactBytes;
+}
+
+const ACCOUNT_KEYS_PLAINTEXT_BYTES = wireWidth('accountKeysPlaintext');
 
 // A code the generator could have minted: every character is in the alphabet,
 // so it is already its own canonical form and the folds below have somewhere to
@@ -226,9 +266,16 @@ describe('the account keys', () => {
     // Sixty-four bytes' worth requested, however many calls it took — one draw
     // of 64 and two draws of 32 are both honest implementations, and a single
     // draw of 32 is the one this rules out.
+    //
+    // The second assertion is the same number arrived at independently: once
+    // from this client's own constant, once from the width the wire contract
+    // states for the plaintext the pair is encapsulated as. Both are kept — a
+    // client that halved `ACCOUNT_KEY_BYTES` satisfies the first and not the
+    // second, and a contract edited to agree with a shrunken client satisfies
+    // neither, because the server's own test reads the same file.
     const requested = drawn.reduce((total, region) => total + region.length, 0);
     expect(requested).toBe(2 * ACCOUNT_KEY_BYTES);
-    expect(requested).toBe(64);
+    expect(requested).toBe(ACCOUNT_KEYS_PLAINTEXT_BYTES);
 
     // And both keys are regions the generator was handed, rather than anything
     // computed from them.
@@ -656,7 +703,7 @@ describe('a key-encryption key', () => {
 //
 // Both key-encryption-key derivations go through this one, and so does anything
 // that has to turn the account's **content** key — which `generateAccountKeys`
-// and `unwrapAccountKeys` hand back as `Uint8Array`, never as a key object —
+// and `openFactorKeypair` hand back as `Uint8Array`, never as a key object —
 // into something a cipher will take.
 //
 // **That the doors are counted at all is the argument, and it outlived the
@@ -1352,234 +1399,15 @@ describe('importing raw bytes as an HMAC key', () => {
   });
 });
 
-// The associated data is
-//
-//   "budgetoid/wrapped-key/v1" || 0x1F || <factor id> || 0x1F || <purpose>
-//
-// in UTF-8. `0x1F` is the ASCII unit separator and cannot occur in any of the
-// three fields — the prefix is a literal, the factor id is a canonical UUID, and
-// the purpose is one of two words — so the fields cannot run into one another
-// and no length prefix is needed. That is an argument about the *fields*, which
-// is why the factor id's shape is checked below rather than assumed.
-describe('the associated data of a wrapped key', () => {
-  // Frozen, and computed from the layout above with `node:crypto` rather than by
-  // running the module. A red result here is never answered by updating the
-  // constant: it is answered by naming which of the prefix, the separator, the
-  // factor id's spelling or the purpose word changed, because every envelope
-  // already written was bound to these bytes and none of them will open against
-  // any others.
-  const GOLDEN_CONTENT_AAD =
-    '6275646765746f69642f777261707065642d6b65792f76311f63316432653366342d356136622d376338642d396530662d6131623263336434653566361f636f6e74656e74';
-
-  // Escaped rather than typed. A literal control character in source is
-  // invisible in every tool a reviewer would read this in, which is the one
-  // property a frozen vector cannot afford.
-  const UNIT_SEPARATOR = String.fromCharCode(0x1f);
-
-  it('is the frozen bytes for a known factor and the content purpose', () => {
-    // Arrange, Act
-    const associatedData = wrappedKeyAssociatedData(
-      PASSKEY_FACTOR_ID,
-      'content',
-    );
-
-    // Assert
-    // The hex is the pin; the text below it is the same value written out so a
-    // reader can see the three fields and the two separators without decoding
-    // anything.
-    expect(toHex(associatedData)).toBe(GOLDEN_CONTENT_AAD);
-    expect(utf8Decoder.decode(associatedData)).toBe(
-      `budgetoid/wrapped-key/v1${UNIT_SEPARATOR}c1d2e3f4-5a6b-7c8d-9e0f-a1b2c3d4e5f6${UNIT_SEPARATOR}content`,
-    );
-    expect(associatedData).toHaveLength(69);
-  });
-
-  it('reads every spelling of one factor id as the same factor', () => {
-    // Arrange
-    // A UUID has more than one way of being written down and only one canonical
-    // form. This matters more than it looks: associated data is not carried in
-    // the envelope, it is re-supplied from wherever the envelope was found — so
-    // a client that wrapped under one spelling and read back another finds the
-    // envelope unopenable, forever, with the same failure a corrupted key gives
-    // and nothing anywhere saying which of the two spellings was right.
-    const upperCase = PASSKEY_FACTOR_ID.toUpperCase();
-    const braced = `{${PASSKEY_FACTOR_ID}}`;
-
-    // Act
-    const canonical = toHex(
-      wrappedKeyAssociatedData(PASSKEY_FACTOR_ID, 'content'),
-    );
-    const fromUpperCase = toHex(wrappedKeyAssociatedData(upperCase, 'content'));
-    const fromBraced = toHex(wrappedKeyAssociatedData(braced, 'content'));
-
-    // Assert
-    expect(fromUpperCase).toBe(canonical);
-    expect(fromBraced).toBe(canonical);
-  });
-
-  it('tells the content copy apart from the index copy', () => {
-    // Arrange, Act
-    const content = toHex(
-      wrappedKeyAssociatedData(PASSKEY_FACTOR_ID, 'content'),
-    );
-    const index = toHex(wrappedKeyAssociatedData(PASSKEY_FACTOR_ID, 'index'));
-
-    // Assert
-    // Without the purpose in here, one factor's two envelopes are bound to the
-    // same data and are therefore interchangeable. Nothing downstream notices:
-    // both open, both yield 32 usable bytes, and the account quietly gets a
-    // second index keyspace that everything already written is invisible in.
-    expect(index).not.toBe(content);
-  });
-
-  it('refuses a factor id that is not a UUID', () => {
-    // Arrange
-    // The separators only remove ambiguity if the fields cannot contain them,
-    // and "cannot" is a claim about the factor id's shape. A free-form label —
-    // "the passkey on my phone" — reintroduces every ambiguity the layout exists
-    // to remove, and does it in a value that is written once and read back
-    // forever.
-    const freeForm = 'the passkey on my phone';
-
-    // Act, Assert
-    expect(() => wrappedKeyAssociatedData(freeForm, 'content')).toThrow();
-  });
-});
-
-describe('wrapping the account keys', () => {
-  it('renders both copies as unpadded base64url over an envelope', async () => {
-    // Arrange
-    const kek = await keyEncryptionKeyFromPasskey(fromHex(GOLDEN_PRF_OUTPUT));
-    const keys = generateAccountKeys();
-
-    // Act
-    const wrapped = await wrapAccountKeys(kek, keys, PASSKEY_FACTOR_ID);
-
-    // Assert
-    // Sixty-one bytes is the envelope over a 32-byte key: one version byte,
-    // twelve of nonce, thirty-two of ciphertext, sixteen of tag.
-    // `decodeBase64Url` refuses padding, refuses `+` and `/`, and refuses a final
-    // group no encoder would emit, so decoding is itself the assertion that the
-    // wire form is the one the server's decoder will accept.
-    for (const wire of [wrapped.wrappedContentKey, wrapped.wrappedIndexKey]) {
-      expect(wire).toMatch(/^[A-Za-z0-9_-]+$/);
-      expect(wire).not.toContain('=');
-      expect(decodeBase64Url(wire)).toHaveLength(61);
-    }
-  });
-
-  it('unwraps back to exactly the two keys that were wrapped', async () => {
-    // Arrange
-    const kek = await keyEncryptionKeyFromPasskey(fromHex(GOLDEN_PRF_OUTPUT));
-    const keys = generateAccountKeys();
-
-    // Act
-    const wrapped = await wrapAccountKeys(kek, keys, PASSKEY_FACTOR_ID);
-    const unwrapped = await unwrapAccountKeys(kek, wrapped, PASSKEY_FACTOR_ID);
-
-    // Assert
-    // Byte for byte, and compared as hex so a failure names the byte instead of
-    // printing two arrays. The round trip is the whole of the module's
-    // usefulness and the one thing an off-by-one in either direction breaks
-    // loudly.
-    expect(toHex(unwrapped.contentKey)).toBe(toHex(keys.contentKey));
-    expect(toHex(unwrapped.indexKey)).toBe(toHex(keys.indexKey));
-  });
-
-  it('refuses a wrapped copy presented under another factor', async () => {
-    // Arrange
-    // IFR-009 in one assertion. The key-encryption key is the same on both sides
-    // here, so nothing but the binding can refuse this — which is the point: two
-    // factors of one account could share a derived key by accident, and a
-    // wrapped copy lifted out of one row into another must still not open.
-    const kek = await keyEncryptionKeyFromPasskey(fromHex(GOLDEN_PRF_OUTPUT));
-    const keys = generateAccountKeys();
-    const wrapped = await wrapAccountKeys(kek, keys, PASSKEY_FACTOR_ID);
-
-    // Act
-    const opening = unwrapAccountKeys(kek, wrapped, RECOVERY_FACTOR_ID);
-
-    // Assert
-    await expect(opening).rejects.toThrow();
-  });
-
-  it('refuses the content copy presented as the index copy', async () => {
-    // Arrange
-    // The reason the purpose is in the associated data at all. Both envelopes
-    // are under one key and one factor, so everything else about them matches:
-    // swapped, they decrypt to 32 perfectly usable bytes each. An operator or a
-    // migration that transposed two columns would hand the account a second
-    // index keyspace, and the only symptom is search returning nothing for
-    // everything written before the swap.
-    const kek = await keyEncryptionKeyFromPasskey(fromHex(GOLDEN_PRF_OUTPUT));
-    const keys = generateAccountKeys();
-    const wrapped = await wrapAccountKeys(kek, keys, PASSKEY_FACTOR_ID);
-
-    // Act
-    const swapped = {
-      wrappedContentKey: wrapped.wrappedIndexKey,
-      wrappedIndexKey: wrapped.wrappedContentKey,
-    };
-    const opening = unwrapAccountKeys(kek, swapped, PASSKEY_FACTOR_ID);
-
-    // Assert
-    await expect(opening).rejects.toThrow();
-  });
-
-  it('gives one account the same two keys through either kind of factor', async () => {
-    // Arrange
-    // The property that makes a second factor a second way in rather than a
-    // second, incompatible budget. The keys are generated once and wrapped
-    // twice: once under a passkey's key-encryption key, once under a recovery
-    // code's, each bound to its own factor id. An implementation that generated
-    // fresh keys per factor passes every other test in this file and loses the
-    // account's whole history the first time the other factor is used.
-    const keys = generateAccountKeys();
-    const fromPasskey = await keyEncryptionKeyFromPasskey(
-      fromHex(GOLDEN_PRF_OUTPUT),
-    );
-    const fromCode = await keyEncryptionKeyFromRecoveryCode(PRINTED_CODE);
-
-    // Act
-    const wrappedForPasskey = await wrapAccountKeys(
-      fromPasskey,
-      keys,
-      PASSKEY_FACTOR_ID,
-    );
-    const wrappedForCode = await wrapAccountKeys(
-      fromCode,
-      keys,
-      RECOVERY_FACTOR_ID,
-    );
-
-    const throughPasskey = await unwrapAccountKeys(
-      fromPasskey,
-      wrappedForPasskey,
-      PASSKEY_FACTOR_ID,
-    );
-    const throughCode = await unwrapAccountKeys(
-      fromCode,
-      wrappedForCode,
-      RECOVERY_FACTOR_ID,
-    );
-
-    // Assert
-    expect(toHex(throughPasskey.contentKey)).toBe(toHex(keys.contentKey));
-    expect(toHex(throughPasskey.indexKey)).toBe(toHex(keys.indexKey));
-    expect(toHex(throughCode.contentKey)).toBe(toHex(keys.contentKey));
-    expect(toHex(throughCode.indexKey)).toBe(toHex(keys.indexKey));
-
-    // And the two factors' wire values differ, because the key-encryption keys,
-    // the nonces and the associated data all do — equal envelopes here would
-    // mean one of those three stopped varying.
-    expect(wrappedForCode.wrappedContentKey).not.toBe(
-      wrappedForPasskey.wrappedContentKey,
-    );
-  });
-});
+// **The wrapped-key grammar is gone from this module and its cases with it.** A
+// factor no longer holds a wrapped copy of each account key; it holds an ECDH
+// keypair, and the associated data binding a factor's material to its factor is
+// `factor-keypair.ts`'s — pinned by that module's own frozen vectors, including
+// the spelling fold and the purpose field that kept one factor's two values from
+// being interchangeable. Nothing here restates them.
 
 describe("the contract's constants", () => {
-  it('names the three labels by value, the way the verifier label already is', () => {
+  it('names the two labels by value, the way the verifier label already is', () => {
     // Arrange, Act, Assert
     // Pinned by value rather than derived, for the same reason
     // `RECOVERY_CODE_VERIFIER_INFO` is: these strings are part of the definition
@@ -1588,38 +1416,47 @@ describe("the contract's constants", () => {
     expect(PASSKEY_KEY_ENCRYPTION_KEY_INFO).toBe(
       'budgetoid/passkey/key-encryption-key/v1',
     );
-    expect(WRAPPED_KEY_AAD_PREFIX).toBe('budgetoid/wrapped-key/v1');
 
     // This one is live now: `webauthn-encoding.ts` writes it into the `prf`
     // extension's `eval.first` of every creation request, and
     // `webauthn-ceremony.service.ts` evaluates against it on both legs of a
     // ceremony — so any passkey this client has registered derived its
-    // key-encryption key from this exact string, and the envelopes wrapped
-    // under that key open against nothing else. Every other reader spells the
+    // key-encryption key from this exact string, and the private key wrapped
+    // under that key opens against nothing else. Every other reader spells the
     // value by importing the constant, which leaves this assertion the only
     // thing in the system that would notice the value itself drifting. The day
-    // it drifts, every account wrapped under the old one is locked out
-    // silently, by a passkey that still authenticates perfectly and simply
-    // hands back different bytes.
+    // it drifts, every account whose factors wrapped their private keys under
+    // the old one is locked out silently, by a passkey that still authenticates
+    // perfectly and simply hands back different bytes.
     expect(PASSKEY_PRF_EVAL_INPUT).toBe('budgetoid/passkey/prf-eval-input/v1');
 
-    // And the three are distinct, which a copy-paste between them would break
-    // while leaving the three assertions above intact only if somebody edited
-    // them together.
+    // And the two are distinct, which a copy-paste between them would break
+    // while leaving the two assertions above intact only if somebody edited
+    // them together. They are two rather than three because the wrapped-key
+    // prefix went with the grammar it labelled — `factor-keypair.ts` owns the
+    // label every factor's material is now bound under, and pins it there.
     expect(
-      new Set([
-        PASSKEY_PRF_EVAL_INPUT,
-        PASSKEY_KEY_ENCRYPTION_KEY_INFO,
-        WRAPPED_KEY_AAD_PREFIX,
-      ]).size,
-    ).toBe(3);
+      new Set([PASSKEY_PRF_EVAL_INPUT, PASSKEY_KEY_ENCRYPTION_KEY_INFO]).size,
+    ).toBe(2);
   });
 });
 
 describe('the module surface', () => {
-  it('exports these functions and no others', () => {
+  it('exports these names and no others, whatever kind of value each one is', () => {
     // Arrange
-    // Read the claim carefully, because the obvious stronger reading is false:
+    // **This census used to filter `typeof value === 'function'`, and that
+    // filter was a hole its own comment did not admit to.** The promise below
+    // is "a new name here is a red test"; under the filter, an exported
+    // `const`, class or object was not a new name at all — including the one
+    // shape a leak really takes, a module-level array of drawn keys. The filter
+    // is gone rather than documented as a limit: the three constants it was
+    // hiding are values this module is already the authority on, so naming them
+    // costs three lines and closes the hole instead of describing it.
+    // `factor-keypair.spec.ts` and `factor-manifest.spec.ts` carry the same
+    // census for the same reason.
+    //
+    // Read the rest of the claim carefully, because the obvious stronger
+    // reading is false:
     // `generateAccountKeys` returns unwrapped key material by definition, so
     // this does **not** say "nothing unwrapped is exported". What it says is
     // that the set of openings is the set somebody argued for. A helper added in
@@ -1627,6 +1464,14 @@ describe('the module surface', () => {
     // wrap that skips the associated data — is a new name here, and a new name
     // is a red test and a conversation rather than a diff nobody read.
     const expected = [
+      // The three constants, which the filter this census used to carry could
+      // not see. Each is read by a neighbour — the width by every module that
+      // frames account material, the two labels by the ceremony that derives a
+      // key-encryption key — and each is pinned by value elsewhere in this
+      // file. What they are doing *here* is being a name somebody argued for.
+      'ACCOUNT_KEY_BYTES',
+      'PASSKEY_PRF_EVAL_INPUT',
+      'PASSKEY_KEY_ENCRYPTION_KEY_INFO',
       'generateAccountKeys',
       // The module's one AES-GCM import, open rather than private, and open on
       // purpose: the alternative to opening it is a *second* `importKey`
@@ -1648,16 +1493,17 @@ describe('the module surface', () => {
       'importHmacSha256Key',
       'keyEncryptionKeyFromPasskey',
       'keyEncryptionKeyFromRecoveryCode',
-      'unwrapAccountKeys',
-      'wrapAccountKeys',
-      'wrappedKeyAssociatedData',
+      // **Eight names and no ninth**, and three that were here are gone:
+      // `wrapAccountKeys`, `unwrapAccountKeys` and `wrappedKeyAssociatedData`
+      // went with the grammar they belonged to when a factor stopped holding a
+      // wrapped copy of each account key and started holding a keypair. What
+      // this module keeps is the account's own material; how a factor carries
+      // it is `factor-keypair.ts`'s, and a re-export of any of the three here
+      // would be two modules answering one question.
     ].sort();
 
     // Act
-    const exported = Object.entries(accountKeysModule)
-      .filter(([, value]) => typeof value === 'function')
-      .map(([name]) => name)
-      .sort();
+    const exported = Object.keys(accountKeysModule).sort();
 
     // Assert
     expect(exported).toEqual(expected);

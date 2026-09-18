@@ -375,14 +375,47 @@ erDiagram
     onto one another. `U` is excluded from the draw and deliberately **not** folded — it is excluded
     so a draw cannot spell an obscenity, not because it is read back as something else — and a rule
     generous enough to rescue every typo would quietly shrink the code's 130 bits.
+  - **The canonical form is frozen by
+    [`vectors/recovery-code-v1.json`](vectors/recovery-code-v1.json), and both suites read it.** The
+    fold is written twice — the browser's `recovery-code-canonical.ts`, which owns it, and the
+    reproduction the server's integration suite needs in order to seed a code a redemption can
+    actually spend. Nothing compared the two to each other, and they had already drifted on four
+    code points by the time anybody looked. A file read from both sides is the arrangement in which
+    that drift is a red result rather than a discovery: a suite checking its own output passes under
+    either spelling, and both did.
+  - **The rule leans on the platform in two places, which is why the vectors name individual code
+    points and not only well-formed codes.** Which code points count as whitespace is one; how a
+    character upper-cases is the other. Neither answer is the same in two runtimes — a byte order
+    mark is whitespace to JavaScript and is not to .NET, and a sharp s upper-cases to two characters
+    in one and to one in the other. So a second implementation agrees with this one by
+    **reproducing the frozen answers**, never by calling its own local equivalents, and that is what
+    CON-009 — every client implements the identical contract — actually asks for here. Two honest
+    implementers reading the word *whitespace* disagree, and the symptom is a code that will not
+    redeem and keys that will not unwrap, with nothing naming the cause.
+  - **Upper case runs first, before the digit folds, and reversing the two moves every case carrying
+    a lower-case letter.** A lower-case `i` upper-cases to `I` and then folds to `1`, exactly as its
+    upper-case twin does; fold the digits first and the `i` survives as an `i`. `ilo` is `110` under
+    the rule and `ILO` under the reversal — a canonical form that is still well-formed, still
+    derives a verifier of exactly the right width, and matches no row.
 - **Enforced in**: `canonicalRecoveryCode` in the client's `recovery-code-canonical.ts` — its own
   module since the account-key derivation began sharing it — applied by `recoveryCodeVerifier`
-  before any derivation and covered by that module's spec. The rule itself is **normative in**
+  before any derivation. **Three holders cover it and each does a different job**:
+  `recovery-code-canonical.spec.ts` states the rule independently of the module,
+  `recovery-code-canonical-vectors.spec.ts` drives the frozen file above, and the server suite's
+  `RecoveryCodeCanonicalFormTests` drives that same file from the other side — the arrangement the
+  factor-keypair vectors keep with `ClientKeyCustodyTests`. The rule itself is **normative in**
   [account-keys.md](account-keys.md), character by character including the exact set of whitespace
   it strips, because a second client cannot read this one's source and "whitespace" is a different
   set in every regular-expression dialect. It uses `toUpperCase` and never `toLocaleUpperCase`,
   which maps `i` to `İ` under a Turkish locale and would make one typed code derive different
-  verifiers on two phones. The refusal to derive from nothing runs *after* canonicalisation, so a
+  verifiers on two phones. **What holds that is the case in `recovery-code-canonical.spec.ts` that
+  overrides `String.prototype.toLocaleUpperCase` to answer as a Turkish host would**, folds `i` and
+  asserts the answer is still `1` — because no ordinary assertion over a value can catch the edit:
+  measured on the runner's V8, the no-argument `toLocaleUpperCase()` does not follow the host's
+  default locale, so swapping it in reddens nothing. The hazard is `i` → `İ` and **not** `ı`, which
+  Turkish upper-cases to a plain `I` and so reaches the same `1` `toUpperCase` reaches — a reader
+  assumes both characters carry the rule and only one does. The refusal to derive from nothing runs
+  *after* canonicalisation, so a
   field holding only the grouping the person was shown is the same programming error as an empty one
   rather than a well-formed verifier for the empty string.
 - **Example**: a card printed `A2B3-C4D5-…` typed as `a2b3 c4d5 …` on a phone derives the same
@@ -932,22 +965,34 @@ ELSE                                                               ← first iss
   - **What has a caller.** `mintRecoveryCodeSet` and `keyEncryptionKeyFromRecoveryCode` are both
     called by the registration flow, the client's **first-issue** path: ten codes minted in the
     browser, ten verifiers derived, ten key-encryption keys derived on the independent branch over
-    the same canonical form, and the account's two keys wrapped under each. See
+    the same canonical form, a factor keypair minted under each — its private half *wrapped under*
+    that key, the account's two keys *encapsulated to* its public half — and the manifest naming all
+    eleven public halves sealed beside them. See
     [registration.md](registration.md) and [account-keys.md](account-keys.md).
-  - **What has none, and what actually blocks it.** `POST /api/me/recovery-codes` is uncalled, and
-    **not** for want of an assertion: this client runs one on `/welcome`. What blocks it is the
-    payload — ten whole submissions, each carrying its own factor key pair and the account's two
-    keys encapsulated to it, and a factor manifest sealed under the content key beside them.
-    Producing any of that needs the account's keys as bytes, and while
-    `GET /api/me/account-keys` now hands back every factor's envelopes and `AccountKeyCustodyService`
-    opens them — on a passkey sign-in, and from the settings screen's own Unlock control — **what it
-    holds afterwards is two non-extractable key objects behind no accessor**, and a wrap takes
-    bytes. So the block moved from the server to the client and then narrowed again without
-    lifting: reaching bytes means unwrapping under a key-encryption key **held long enough to wrap
-    with**, which is exactly what the unlock path refuses to do. **The second half of the block is
-    this route's own gate**: a fresh assertion the *server* verifies, which an unlock's locally
-    minted and discarded assertion is not, so a person can unlock all afternoon without moving this
-    control. **Three different things hold the screen's inert controls off and it says all three in
+  - **What has none, and what actually blocks it — which is no longer a missing capability.**
+    `POST /api/me/recovery-codes` is uncalled, and **not** for want of an assertion, and no longer
+    for want of any cryptography either: every piece of this payload has a live implementation and a
+    live caller one route over. Ten whole submissions, each carrying its own factor keypair, and a
+    manifest sealed under the content key beside them are exactly what a registration builds. Three
+    things hold the route instead, and they are not one thing stated three ways.
+    - **The account's keys as bytes.** An encapsulation takes bytes, and the one thing in this
+      client that yields them is opening a factor's keypair under a key-encryption key. Custody
+      holds no such key — it takes one as an argument, hands the pair it opened to two doors in one
+      statement and keeps two non-extractable key objects behind no accessor. So reaching bytes
+      means opening a factor again under a key **held long enough to encapsulate with**, which is
+      precisely what the unlock path refuses to do.
+    - **A server-verified assertion.** This route is gated on one; an unlock's assertion is minted
+      in the browser over a challenge the browser chose and thrown away unsent, so a person can
+      unlock all afternoon without moving this control one step.
+    - **A manifest *promotion*, which no client path performs.** Replacing a card retires ten
+      factors and files ten, so it carries a manifest **and** the generation that manifest moves to
+      — the stored epoch plus one, re-sealed at that number, because the epoch is the manifest's own
+      associated data. Registration *files* the only manifest any browser has ever written, at epoch
+      1, and sends no epoch at all. Nothing in this client reads a stored epoch and seals against
+      it, and a client that re-sent a manifest under a bumped number without re-sealing would
+      produce one nothing can open, at exactly the moment somebody is replacing the card they lost.
+
+    **Three different things hold the screen's inert controls off and it says all three in
     different words** — the keys as bytes under registering a passkey, those bytes and a
     server-checked assertion here, a server-checked assertion under revoking and erasing. Do not
     paste one over another; the design book owns the wording, in

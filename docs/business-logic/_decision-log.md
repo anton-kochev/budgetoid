@@ -8,6 +8,81 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-09-18 — The factor-keypair grammar binds on the factor and names no account
+
+**Context:** the browser's half of the per-factor ECDH keypair needed a grammar. Four messages have
+to be agreed across implementations: the associated data of a wrapped private key, the associated
+data of the account's keys encapsulated to a factor, the associated data of the account's factor
+manifest, and the HKDF info the encapsulation key is derived through. The arrangement they replace
+bound two envelopes under one key-encryption key and told them apart with a `content`/`index`
+purpose selector.
+
+**Decision:** one label, `budgetoid/factor-keypair/v1`, opens all four, and every message joins its
+fields with a single `0x1F` between them and none at either end. The private-key message adds a
+`"private-key"` purpose field; the encapsulation message is that message **minus** the purpose
+field, which makes it a strict prefix of it; the manifest message carries the rotation epoch in
+decimal digits; and the HKDF info carries the factor identifier followed by the ephemeral public key
+and the recipient's public key, both raw, ephemeral first.
+
+**The messages are bytes rather than text**, which is forced and not stylistic: a 65-byte point
+pushed through UTF-8 comes out 129 bytes long, measured, and a version byte composed as text is
+correct at 1 and silently wrong from `0x80` up. The grammar's own version is therefore a raw byte,
+and it is a **third** version constant beside the AEAD suite's and the encapsulation suite's — all
+three spell `1` today, which is why only a source-text reading can tell them apart and why aliasing
+any two renumbers a suite nobody meant to touch.
+
+**There is deliberately no account identifier in any of these messages**, and the requirement was
+revised to match rather than the grammar bent to meet it. Recording the reason here is the point of
+the entry, because without it the absence reads as an oversight against a published specification.
+The client **cannot obtain one**: `GET /api/me` publishes the address and the ambient budget, and an
+account-keys response may never carry a user id — that value is what every row-level-security policy
+in the database is keyed on, and a member holding it puts it in a browser's network panel and a
+client log. And it would **defend nothing**: a factor identifier is a client-minted uuid, unique
+across the whole table, and a duplicate is refused at every write path, so one account's factor row
+cannot be presented as another's for the binding to catch.
+
+**Rejected — keeping the old grammar beside the new one.** Its label, its purpose selector and its
+builder are deleted, and its frozen vectors went with them. A factor now puts exactly one value
+under its key-encryption key, so the purpose selector would be a field over a set of one — and two
+live grammars are two grammars a later caller can reach, told apart by nothing in the bytes.
+
+**Rejected — a second `joinFields` written beside the new grammar.** The separator rule has one
+owner; a private copy is the defect that had just been fixed in the shared one, whose symptom was a
+value of the right width with the separator in the wrong place.
+
+---
+
+## 2026-09-18 — The factor manifest ships wired into registration and nowhere else
+
+**Context:** four server-side paths move an account's factor set and all four carry a manifest.
+Registration **files** the first at epoch 1; adding a passkey, regenerating the recovery-code card
+and revoking a passkey each **promote** one, sending the stored epoch plus one and a manifest
+re-sealed at that number, because the epoch is the manifest's own associated data.
+
+**Decision:** the client ships the manifest codec wired into **registration only**. It seals eleven
+public halves at epoch 1 and sends no rotation epoch, because on that path there is nothing stored
+for a supplied number to be judged against and the server derives the first generation itself. On
+the reading side the codec is wired into key custody, where opening the manifest is what confirms
+that the key an entry just yielded really is the account's **content** key.
+
+**The reason is that the three promoting paths have no client surface at all.** Nothing in this
+browser registers a second passkey, replaces a card of codes or revokes a credential — all three
+controls are specified, present and disabled — so a promotion would be an exported capability with
+no caller, which this codebase refuses by name. The epoch arithmetic those routes refuse on is
+exercised by the integration suite and by nothing a person can press.
+
+**`openFactorManifest` returns bytes and not parsed entries**, for the same reason. This slice needs
+only that the tag verified; comparing the set the manifest names against the set the server served
+is the next one, and a parser is what *it* will need. Shipping the parser now would be the same
+export with no production caller, one layer down.
+
+**What that leaves unheld, said plainly:** the server enforces a manifest's presence, its framing
+and its epoch, and can never read its contents — so a client may file a manifest naming nobody, or
+naming a set that disagrees with the factors it just wrote, and nothing on either side refuses it
+today. The comparison that closes it is the client's and is not built.
+
+---
+
 ## 2026-09-11 — A rotation stages its next keys beside the ones still in force
 
 **Context:** a content-key rotation re-encrypts every narrative field of an account. The API caps a

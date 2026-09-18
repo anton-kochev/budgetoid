@@ -329,11 +329,12 @@ describe('opening an envelope that is not the one that was sealed', () => {
     // Act, Assert
     // GCM is a stream cipher underneath, so a flipped ciphertext bit is a
     // flipped plaintext bit and nothing about the output's shape gives it away:
-    // a wrapped key stays 32 bytes and stays a perfectly usable AES key, and the
-    // only symptom is data that will not decrypt later, on a different request,
-    // with no way back. The tag is what makes this a refusal instead, and an
-    // implementation that decrypted without verifying one would pass every test
-    // above this line.
+    // the envelope keeps its exact width and so does the plaintext inside it,
+    // so a decrypt that skipped the tag would hand a caller bytes of precisely
+    // the shape it was expecting, and the only symptom is data that will not
+    // open later, on a different request, with no way back. The tag is what
+    // makes this a refusal instead, and an implementation that decrypted
+    // without verifying one would pass every test above this line.
     const ciphertextStart = VERSION_BYTES + ENVELOPE_NONCE_BYTES;
 
     for (

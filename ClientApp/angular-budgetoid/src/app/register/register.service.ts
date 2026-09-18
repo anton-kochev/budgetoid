@@ -36,9 +36,13 @@ import {
   importAesGcmKey,
   importHmacSha256Key,
   keyEncryptionKeyFromRecoveryCode,
-  wrapAccountKeys,
 } from '@app-core/security/account-keys';
 import { mintFactorId } from '@app-core/security/factor-id';
+import { mintFactorKeypair } from '@app-core/security/factor-keypair';
+import {
+  sealFactorManifest,
+  type FactorPublicKey,
+} from '@app-core/security/factor-manifest';
 import {
   mintRecoveryCodeSet,
   type RecoveryCode,
@@ -110,6 +114,20 @@ export type RegisterFailure =
   | 'refused'
   | 'conflict'
   | 'unknown';
+
+// The epoch the account's first factor manifest is sealed at.
+//
+// **A registration *files* a manifest; it does not promote one.** The three
+// paths that promote — adding a passkey, regenerating the card, revoking a
+// passkey — each move a generation and therefore send the epoch they are moving
+// to, which the server refuses unless it is the stored value plus one. This
+// path has nothing stored: the server derives the first epoch itself, which is
+// why {@link RegistrationRequestBody} carries no `rotationEpoch` member at all.
+// What the number is still needed for here is the *seal*: the epoch is the
+// manifest's associated data, so a client sealing at any other number writes a
+// manifest that opens at that number and at none of the ones a rotation will
+// ever ask for.
+const FIRST_ROTATION_EPOCH = 1;
 
 @Injectable()
 export class RegisterService {
@@ -301,7 +319,8 @@ export class RegisterService {
 
   /**
    * Registers the passkey, draws the account's keys, mints the card of codes,
-   * and wraps the keys under all eleven factors.
+   * mints a keypair for each of the eleven factors, and seals the manifest
+   * naming them.
    *
    * The order of the first three steps is the whole of this method's design and
    * each is argued where it happens. Nothing is posted here: what this produces
@@ -496,12 +515,12 @@ export class RegisterService {
   // Hands the account's keys to the service that holds them for the session.
   //
   // **No round trip, and that is the whole reason `adopt` exists.** This
-  // browser drew the pair, wrapped it eleven times and posted the envelopes a
-  // moment ago; asking the server to hand those envelopes back — to open them
-  // under a key-encryption key derived from a passkey this device has only just
-  // registered — would be a request whose entire purpose is to arrive back
-  // where it started, on the happiest path in the product, with a failure mode
-  // attached.
+  // browser drew the pair, encapsulated it to eleven factors and posted the
+  // envelopes a moment ago; asking the server to hand those envelopes back — to
+  // open them under a key-encryption key derived from a passkey this device has
+  // only just registered — would be a request whose entire purpose is to arrive
+  // back where it started, on the happiest path in the product, with a failure
+  // mode attached.
   //
   // **Called on the 201 and never at ceremony time**, which is the position a
   // reader will move it to. Adopting when the keys are drawn needs three
@@ -541,9 +560,21 @@ export class RegisterService {
     }
   }
 
-  // The ceremony, the keys, the codes and the eleven wraps — the whole of what
-  // has to happen between a challenge arriving and a person being shown ten
-  // codes.
+  // The ceremony, the keys, the codes, the eleven keypairs and the manifest —
+  // the whole of what has to happen between a challenge arriving and a person
+  // being shown ten codes.
+  //
+  // **The order of the last three steps is forced, and it is the thing a later
+  // reader will break.** All eleven encapsulations run *before* the two import
+  // doors, because `importAesGcmKey` zero-fills the material it is handed in a
+  // `finally`: move the doors above the loop and every factor after them
+  // encapsulates thirty-two zero bytes — which mints, opens, posts and creates
+  // an account whose every later read is against a key nobody drew. The
+  // manifest is sealed *after* the doors, because it needs the content key as a
+  // `CryptoKey` and there is nowhere else to get one; that makes the manifest
+  // the content key's first real use in this product. The two rules point in
+  // opposite directions, which is why the arrangement that looks tidiest —
+  // import once at the top, seal as you go — cannot be written at all.
   private async mintUnder(options: PasskeyCreationOptionsJson): Promise<void> {
     try {
       // **The device agrees first, and this departs from the story's written
@@ -577,15 +608,28 @@ export class RegisterService {
         const set = await mintRecoveryCodeSet();
 
         const passkeyFactorId = mintFactorId();
-        const passkeyKeys = await wrapAccountKeys(
+        const passkey = await mintFactorKeypair(
           ceremony.value.keyEncryptionKey,
-          keys,
           passkeyFactorId,
+          keys,
         );
 
-        // **One code's four members are produced in one scope, from one code.**
+        // Every factor's public key, in the order the eleven are minted, for
+        // the manifest below. **The point is collected here and never anywhere
+        // else**: it is lifted out of the PKCS#8 the private half was just
+        // imported from, so it is the point that private key really agrees
+        // under rather than a second value somebody would have to keep true.
+        //
+        // It does **not** go on the wire beside its factor. What has to be
+        // unforgeable is the set, so the eleven are named once, in a blob the
+        // server cannot read — see {@link RegistrationRequestBody}.
+        const publicKeys: FactorPublicKey[] = [
+          { factorId: passkeyFactorId, publicKey: passkey.publicKey },
+        ];
+
+        // **One code's five members are produced in one scope, from one code.**
         // The obvious implementation derives ten key-encryption keys into an
-        // array, wraps ten times into a second, and zips the results against
+        // array, mints ten keypairs into a second, and zips the results against
         // the ten factor ids at post time. That satisfies every type, every
         // count and every round trip.
         //
@@ -600,6 +644,15 @@ export class RegisterService {
         // It is the client-side twin of the argument `RegisterAccountHandler`
         // makes over its `wrappedAccountKeys` list, where the card's rows are
         // projected from the one validated list rather than zipped from three.
+        //
+        // **The public key now joins that scope**, and it is the member with
+        // the quietest failure of the five. It leaves this loop for the
+        // manifest rather than for the wire, so a point zipped against another
+        // factor's identifier is a manifest that names eleven real points and
+        // pairs two of them with the wrong factors. Every envelope still opens,
+        // the set still validates, the account is still created — and the
+        // rotation that stages one seal per named point seals two factors to
+        // keypairs nobody holds.
         //
         // The verifier is the one member that could float without consequence,
         // and naming which half is which matters more than the rule does: it
@@ -624,10 +677,10 @@ export class RegisterService {
           const code = set.codes[index];
           const verifier = set.verifiers[index];
           const factorId = mintFactorId();
-          const wrapped = await wrapAccountKeys(
+          const minted = await mintFactorKeypair(
             await keyEncryptionKeyFromRecoveryCode(code),
-            keys,
             factorId,
+            keys,
           );
 
           // The key-encryption key above is an expression and never a field:
@@ -644,7 +697,19 @@ export class RegisterService {
           // under a comment pointing at where it used to be, and a name
           // survives the next edit above it — though not a rename, which this
           // line has already been corrected for once.
-          codes.push({ verifier, factorId, ...wrapped });
+          //
+          // **Both envelopes by name, never a spread of what was minted.**
+          // `mintFactorKeypair` hands back the factor's public key beside them,
+          // and a spread would put a `Uint8Array` on the wire as a JSON object
+          // of numbered members — a per-factor public key the server has no
+          // column for and this design deliberately does not give it one.
+          codes.push({
+            verifier,
+            factorId,
+            wrappedPrivateKey: minted.wrappedPrivateKey,
+            encapsulatedAccountKeys: minted.encapsulatedAccountKeys,
+          });
+          publicKeys.push({ factorId, publicKey: minted.publicKey });
         }
 
         // **The account keys become keys here, and this is the last place
@@ -676,12 +741,16 @@ export class RegisterService {
         // and sending it through `importAesGcmKey` because that line is already
         // written hands back an object that cannot compute a single index and
         // cannot be corrected afterwards.
+        //
+        // **Below the loop, and nothing may move it above.** The doors
+        // zero-fill what they are handed, so an import that ran before the
+        // eleventh encapsulation would leave every factor after it holding
+        // thirty-two zero bytes in place of the account's content key —
+        // well-formed, openable, and wrong for the life of the account.
         const [contentKey, indexKey] = await Promise.all([
           importAesGcmKey(keys.contentKey),
           importHmacSha256Key(keys.indexKey),
         ]);
-
-        this.#accountKeys = { contentKey, indexKey };
 
         // Kept, and now belt to the doors' braces: both buffers were wiped by
         // the imports above, and the `finally` below wipes them again on the
@@ -690,6 +759,33 @@ export class RegisterService {
         // somebody replaces a door is what these cost nothing to prevent.
         keys.contentKey.fill(0);
         keys.indexKey.fill(0);
+
+        // **After the doors, because it needs the content key as a key**, and
+        // this is that key's first real use in the product. The manifest is the
+        // account's statement about which factors it has: every point collected
+        // above, sealed under a key the server does not hold and never will, at
+        // the one epoch a registration can write.
+        //
+        // `sealFactorManifest` orders the entries, folds the identifiers and
+        // refuses a repeat, so nothing here sorts or checks — and the set it is
+        // handed is the eleven this method just minted, in the order it minted
+        // them.
+        const manifest = await sealFactorManifest(
+          contentKey,
+          publicKeys,
+          FIRST_ROTATION_EPOCH,
+        );
+
+        // **Below the seal, and the two assignments are neighbours on purpose.**
+        // The field's own comment promises that the body and the keys are made
+        // in one breath and that an attempt which ended keeps neither. Assigned
+        // above `sealFactorManifest`, that promise was false for one statement:
+        // a seal that throws — a set too wide for the column, an epoch the
+        // grammar refuses — leaves the outer `catch` reporting `unknown` with
+        // the keys still on the service and `pending` still `null`, a state no
+        // reader downstream is written for. Nothing awaits between here and the
+        // body below, so the pair is set or neither is.
+        this.#accountKeys = { contentKey, indexKey };
 
         this.pending = {
           // Spread, and safe **only** because `webauthn-encoding.ts`'s
@@ -700,8 +796,13 @@ export class RegisterService {
           // key-encryption key is derived from.
           ...ceremony.value.payload,
           factorId: passkeyFactorId,
-          ...passkeyKeys,
+          // Both by name, for the reason the ten submissions above are: what
+          // the mint handed back carries the passkey factor's public key too,
+          // and that point belongs in the manifest and nowhere else.
+          wrappedPrivateKey: passkey.wrappedPrivateKey,
+          encapsulatedAccountKeys: passkey.encapsulatedAccountKeys,
           codes,
+          manifest,
         };
 
         this.codesSignal.set(set.codes);

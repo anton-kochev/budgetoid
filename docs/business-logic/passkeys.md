@@ -724,14 +724,17 @@ factor, and an account identifier derived from the challenge it just spent —
   authenticator signed, and the cookie that comes back is what carries the person into the app — the
   identity provider is not part of that exchange at all. **That leg's PRF output is spent rather
   than discarded**: the key-encryption key it derives is handed straight to
-  `AccountKeyCustodyService`, which reads the envelopes filed under the credential that just
-  authenticated and opens the account's two keys — see [account-keys.md](account-keys.md). What
-  still has no screen is the
+  `AccountKeyCustodyService`, which reads every factor the **account** holds — never only the
+  credential that just authenticated — tries each in turn until one opens, and then confirms the
+  content key it got against the account's manifest before reporting the account unlocked. See
+  [account-keys.md](account-keys.md). What still has no screen is the
   **re-authentication** the erasure, revocation and recovery-code-generation gates need, and the
   registration of a **further** passkey. Those two routes are reached today only by the integration
   suite. **Account creation is gated on a passkey, on the only path there is**, so **no account has
-  ever existed without one**. A signed-in person can **list** every credential the account holds and
-  **revoke** a passkey, the revocation gated by a fresh re-authentication exactly as erasure is.
+  ever existed without one**. A signed-in person can **list** every credential the account holds;
+  that list renders. **Revoking** one is a route and not yet a capability: it is gated by a fresh
+  re-authentication exactly as erasure is, that ceremony has no screen, and the Revoke control is
+  specified as present and disabled — so nobody but the integration suite reaches the route.
   Nothing **replaces** a passkey, and nothing removes or replaces the **federated** credential —
   that is the email change, and it is not built.
   - **The browser runs one more ceremony than the server has pools for, and it spends none of

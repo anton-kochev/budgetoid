@@ -16,9 +16,25 @@
 // the output width, and it is the *only* thing that pins the salt, since TC3's
 // expected output is unreachable with a salt of any other value. There is
 // deliberately no assertion that reads the salt out of the implementation.
+import { readFileSync } from 'node:fs';
+import { join, relative } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-import { hkdfSha256 } from './hkdf';
+import { listFiles } from '../../../production-bundle';
+import { hkdfSha256, hkdfSha256Over } from './hkdf';
+
+// `src/` rather than the build output, for the reason
+// `associated-data.spec.ts` gives at its own source-reading case: `src/` is what
+// a reviewer reads and what the rule is about, and reading it needs no prior
+// build.
+const modulePath = join(
+  process.cwd(),
+  'src',
+  'app',
+  '+core',
+  'security',
+  'hkdf.ts',
+);
 
 // RFC 5869 §A.3, Test Case 3: "with SHA-256 and zero-length salt/info".
 //   IKM  = 0x0b repeated 22 times
@@ -45,6 +61,30 @@ const NON_ASCII_INFO = 'budgetoid/ключ-é/v1';
 // UTF-8: 6275646765746f69642f d0ba d0bb d18e d187 2d c3a9 2f7631
 const NON_ASCII_OKM =
   '7bc098a971503df93e1a5bdd69b96b5c8b7de96ccfb064d0be9df08bf905fb9d';
+
+// An `info` that no string can carry: sixty-five bytes shaped like an
+// uncompressed P-256 point, leading with `0x04` and then walking from 0x81 up.
+// Every byte from 0x80 on is where UTF-8 widens one byte into two, so the string
+// spelling of these bytes is 129 bytes long — measured, and asserted below
+// rather than claimed.
+const POINT_LIKE_INFO = Uint8Array.from(
+  [...Array(65).keys()].map((at) => (at === 0 ? 0x04 : (0x80 + at) & 0xff)),
+);
+
+// The answer for it, computed outside this codebase by Node's own
+// `crypto.hkdfSync` — OpenSSL's HKDF, not the platform this module calls — over
+// the same 22-byte test-case-3 keying material and an empty salt. That
+// implementation reproduces the RFC's test case 3 above byte for byte, which is
+// what makes it worth quoting here: it is a second opinion that has already
+// answered a published question correctly.
+//
+// It is not ours to update either. A red result is the hash, the salt, the
+// expand loop or the *handling of a raw `info`* having changed, and the last of
+// those changes every encapsulated value this client has ever written.
+const POINT_LIKE_OKM =
+  '854ffa4c881c8bb8edc4818e5b8e02638f49aaed27b4db1c43a38ce5cdcf41e9';
+
+const utf8 = new TextEncoder();
 
 function toHex(bytes: Uint8Array): string {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join(
@@ -158,5 +198,131 @@ describe('HKDF-SHA-256 over an empty salt', () => {
     // rules out every other encoding of the same string, including a Latin-1
     // one that happens not to truncate.
     expect(toHex(fromMixed)).toBe(NON_ASCII_OKM);
+  });
+});
+
+// The same derivation, with the one encoding decision lifted out to the caller.
+//
+// `hkdfSha256` is expressed on top of this function rather than beside it, so
+// what the cases above pin — the hash, the empty salt, the expand loop, the
+// width — is pinned once for both spellings. What is left to check here is the
+// seam: that the bytes path answers a UTF-8 `info` exactly as the string path
+// does, and that it can express an `info` the string path cannot.
+describe('HKDF-SHA-256 over a bytes info', () => {
+  it('answers a UTF-8 info exactly as the string spelling does', async () => {
+    // Arrange
+    // Both frozen answers, not one. Test case 3's empty `info` is the published
+    // vector and says nothing about encoding; the non-ASCII label is the one
+    // that does, and a bytes path wired to a different hash or a different salt
+    // would fail the first while a path that re-encoded its `info` would fail
+    // the second.
+    const ikm = TEST_CASE_3_IKM;
+
+    // Act
+    const [empty, nonAscii, viaString] = await Promise.all([
+      hkdfSha256Over(ikm, new Uint8Array(0), TEST_CASE_3_LENGTH),
+      hkdfSha256Over(ikm, utf8.encode(NON_ASCII_INFO), 32),
+      hkdfSha256(ikm, NON_ASCII_INFO, 32),
+    ]);
+
+    // Assert
+    expect(toHex(empty)).toBe(TEST_CASE_3_OKM);
+    expect(toHex(nonAscii)).toBe(NON_ASCII_OKM);
+
+    // And the two spellings named against each other, so a day when both frozen
+    // answers are edited together still leaves one assertion saying the string
+    // path is this function under an encoder.
+    expect(toHex(viaString)).toBe(toHex(nonAscii));
+  });
+
+  it('derives over an info the string path could not express', async () => {
+    // Arrange
+    // **This is the whole reason the sibling exists.** IFR-020's info carries
+    // two raw 65-byte points, and a point pushed through UTF-8 comes out 129
+    // bytes with no error anywhere — the replacement character standing in for
+    // every byte that is not a code point. So the string path does not merely
+    // spell this `info` awkwardly, it derives a *different key*, and both sides
+    // of a scheme that made that mistake would agree with each other and with
+    // nothing else.
+    const asString = String.fromCharCode(...POINT_LIKE_INFO);
+
+    // Act
+    const [overBytes, overString] = await Promise.all([
+      hkdfSha256Over(TEST_CASE_3_IKM, POINT_LIKE_INFO, 32),
+      hkdfSha256(TEST_CASE_3_IKM, asString, 32),
+    ]);
+
+    // Assert
+    // The inflation first, measured rather than asserted about: sixty-five
+    // bytes in, one hundred and twenty-nine out. Without this the inequality
+    // below could be read as two arbitrary values differing.
+    expect(POINT_LIKE_INFO).toHaveLength(65);
+    expect(utf8.encode(asString)).toHaveLength(129);
+
+    // The independently computed answer, so this case pins the derivation and
+    // not only the difference between two paths.
+    expect(toHex(overBytes)).toBe(POINT_LIKE_OKM);
+    expect(toHex(overString)).not.toBe(POINT_LIKE_OKM);
+  });
+
+  it('is the only module that names the algorithm', () => {
+    // Arrange
+    // **The hole the key-import census cannot cover any more.** That rule is
+    // between files, and `factor-keypair.ts` now has standing to write
+    // `crypto.subtle.importKey` — so the expansion this module exists to own
+    // could be written back out beside its caller there, and nothing in that
+    // census would say a word. Measured: with the expansion re-inlined in
+    // `factor-keypair.ts`, all 587 cases in this folder passed.
+    //
+    // What cannot be hidden is the algorithm's name. Every route to an
+    // expansion — `importKey`, `deriveBits`, `deriveKey` — has to name it as a
+    // string, so the quoted literal is the needle. Prose says HKDF constantly
+    // and says it in prose; the quotes are what tell a mention from a call.
+    //
+    // Specs are exempt for `key-import-single-source.spec.ts`'s reason: this
+    // file names the algorithm in the sentence above, and a reference
+    // implementation in a spec is the only second opinion a derivation has.
+    const sourceDir = join(process.cwd(), 'src');
+    const needle = "'HKDF'";
+
+    // Act
+    const namers = listFiles(sourceDir)
+      .filter((path) => path.endsWith('.ts'))
+      .filter((path) => !path.endsWith('.spec.ts'))
+      .filter((path) => readFileSync(path, 'utf8').includes(needle))
+      .map((path) => relative(sourceDir, path))
+      .sort();
+
+    // Assert
+    // Named rather than counted, so a red bar says which module started
+    // expanding on its own instead of saying that some module did.
+    expect(namers).toEqual([join('app', '+core', 'security', 'hkdf.ts')]);
+  });
+
+  it('keeps one key import, so the string path is this function and not a copy', () => {
+    // Arrange
+    // A claim about the source text, which is where it has to be made: two
+    // expansions written side by side agree on every vector in this file on the
+    // day they are written, and `key-import-single-source.spec.ts` counts
+    // files rather than call sites inside one, deliberately. So the second copy
+    // this module could grow is caught here or by nothing.
+    const source = readFileSync(modulePath, 'utf8');
+
+    // Act
+    // The needle carries its open parenthesis, so what is counted is a call and
+    // not a mention: the module's own prose names the member twice, and a rule
+    // that counted those would be red the day it was written. The looser needle
+    // is what `key-import-single-source.spec.ts` uses, correctly — it asks which
+    // *files* carry the member and a comment in the wrong file is worth
+    // reporting. Here the question is how many times this module expands, and
+    // the failure direction is still the safe one: a comment writing the call
+    // out in full over-counts and reddens, it never hides a second expansion.
+    const imports = source.split('crypto.subtle.importKey(').length - 1;
+
+    // Assert
+    // A control first: the read reached this module rather than an empty string
+    // from a path that moved, which would report zero imports perfectly.
+    expect(source).toContain('export async function hkdfSha256Over(');
+    expect(imports).toBe(1);
   });
 });

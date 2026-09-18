@@ -68,14 +68,15 @@ const BACKUP_WINDOW =
 // What is left is three different missing pieces:
 //
 //   - **Register a passkey** waits on the account's keys **as bytes**, and on
-//     nothing else. A passkey is a factor, every factor stores its own wrapped
-//     copy of the content key and the index key, and wrapping takes the keys
-//     themselves rather than the ability to use them. Unlocking does not supply
-//     them: `unlock` takes the key-encryption key as an argument and hands it
-//     to custody in one statement, and custody keeps what it opened as two
-//     non-extractable `CryptoKey` objects behind no accessor. Bytes would mean
-//     unwrapping again under a key-encryption key *held long enough to wrap
-//     with*, which is exactly what the unlock path refuses to do.
+//     nothing else. A passkey is a factor, every factor carries the content key
+//     and the index key encapsulated to a public half of its own, and
+//     encapsulating takes the keys themselves rather than the ability to use
+//     them. Unlocking does not supply them: `unlock` takes the key-encryption
+//     key as an argument and hands it to custody in one statement, and custody
+//     keeps what it opened as two non-extractable `CryptoKey` objects behind no
+//     accessor. Bytes would mean opening a factor's pair again under a
+//     key-encryption key *held long enough to encapsulate with*, which is
+//     exactly what the unlock path refuses to do.
 //   - **Generate recovery codes** waits on those bytes **and** on a passkey
 //     assertion the *server* checks. A set is ten factors at once, so the first
 //     half is common ground; the second belongs to that route alone, and the
@@ -282,17 +283,42 @@ const UNLOCK_CEREMONY_FAILED =
   'Your device didn’t finish the passkey check. Nothing has changed.';
 const UNLOCK_UNKNOWN =
   'Budgetoid couldn’t finish unlocking. Nothing has changed — try again.';
-// Custody's three — facts about a *read* and a *factor*, and three because a
-// person's next move is three different things: present another factor, press
-// again in a minute, sign in again. Collapsing any two sends somebody down a
-// road that cannot help them, which is why the test over these compares them
-// against each other before it looks at the screen.
+// Custody's five — facts about a *read*, a *factor* and the account's own key
+// material, and five because a person's next move is five different things:
+// present another factor, press again in a minute, sign in again, reload the
+// page, and stop, because nothing they hold will open this account. Collapsing
+// any two sends somebody down a road that cannot help them, which is why the
+// test over these compares them against each other before it looks at the
+// screen.
 const CUSTODY_UNOPENED =
   'Budgetoid couldn’t open your account’s keys with that passkey. If this account has another passkey, try again and choose that one.';
 const CUSTODY_UNREACHABLE =
   'Budgetoid couldn’t reach the server. Try again in a minute.';
 const CUSTODY_UNAUTHENTICATED =
   'Budgetoid wouldn’t hand your keys back to this browser. Sign out and sign in again.';
+// The fourth, and the only one whose remedy is a reload. The server answered and
+// this tab could not read the answer — a fact about this read rather than about
+// the factor, the network or the session — so the sentence names the act that
+// can change it. It is deliberately not `unreachable`'s sentence with a
+// different verb: "try again in a minute" is advice that can never succeed here,
+// because the next minute runs this same bundle.
+//
+// **It offers the reload and no longer diagnoses the cause.** It used to end
+// *this tab is running an older version*, which is a guess the evidence cannot
+// carry: the boundary also refuses the retired bare array, where the tab is the
+// *newer* side and that sentence is simply false — and it is false in a way that
+// invites the reader to reload forever.
+const CUSTODY_UNRECOGNISED =
+  'Budgetoid couldn’t read what the server sent back. Reload the page — that’s the one thing here that can change the answer.';
+// The fifth, and the only one that offers no way forward at all, because there
+// is none. A factor opened and what came out does not agree with the account's
+// own manifest — and every factor of an account carries the same two keys, so
+// another passkey and all ten recovery codes produce the same pair, in every
+// browser, after every reload. `unopened`'s sentence would send this person
+// through their whole recovery card one code at a time; this one says plainly
+// that nothing they hold is the answer.
+const CUSTODY_INCONSISTENT =
+  'Something about this account’s keys doesn’t line up — no passkey or recovery code will change it.';
 // The section's two standing paragraphs, from the chapter's *What unlocking is
 // for*. They are not decoration and they are not a preamble: a person's records
 // are encrypted, and unlocking is the difference between a screen they can read
@@ -769,16 +795,16 @@ describe('SettingsComponent', () => {
     expect(normalize(section)).not.toContain(STALE_REGISTRATION_CLAIM);
   });
 
-  it("says the two key-wrapping controls wait on the account's keys as bytes", () => {
+  it("says the two factor-creating controls wait on the account's keys as bytes", () => {
     // Act
     const credentials = normalize(sectionFor(host, 'credentials-heading'));
     const recovery = normalize(sectionFor(host, 'recovery-heading'));
 
     // Assert
-    // These two both create a factor, every factor stores its own wrapped copy
-    // of the account's content key and index key, and wrapping takes those keys
-    // as **bytes**. That much is common ground and is why the pair is asserted
-    // in one test.
+    // These two both create a factor, every factor carries the account's
+    // content key and index key encapsulated to a public half of its own, and
+    // encapsulating takes those keys as **bytes**. That much is common ground
+    // and is why the pair is asserted in one test.
     //
     // **What blocks them is narrower than "the browser cannot do it" and
     // narrower than "this screen asks for no passkey", and these pins are what
@@ -1727,11 +1753,11 @@ describe('SettingsComponent', () => {
 
     // Assert
     // Present, so the section is honest about what it will eventually do, and
-    // disabled, because registering a passkey has to hand the new factor its
-    // own wrapped copy of the account's keys and nothing unwraps them yet. The
-    // sentence is what makes that state legible; the two tests below hold the
-    // parts of it that this assertion cannot — how many times it is said, and
-    // where.
+    // disabled, because registering a passkey has to encapsulate the account's
+    // keys to the new factor's public half and nothing on this screen holds
+    // them as bytes yet. The sentence is what makes that state legible; the two
+    // tests below hold the parts of it that this assertion cannot — how many
+    // times it is said, and where.
     expect(registerButton).not.toBeNull();
     expect(registerButton?.disabled).toBe(true);
     expect(
@@ -2868,26 +2894,39 @@ describe('SettingsComponent', () => {
     }
   });
 
-  it('says three different things for the three ways a factor can fail to open', () => {
+  it('says five different things for the five ways an unlock can fail', () => {
     // Arrange
-    // A `Record` over the union rather than a list of pairs, so a fourth word
+    // A `Record` over the union rather than a list of pairs, so a sixth word
     // added to `UnlockFailure` fails to compile here instead of arriving on a
-    // screen with no sentence behind it.
+    // screen with no sentence behind it. It did its job twice: `unrecognised`
+    // and `inconsistent` below are both words this file refused to compile
+    // without.
     const sentences: Record<UnlockFailure, string> = {
       unopened: CUSTODY_UNOPENED,
       unreachable: CUSTODY_UNREACHABLE,
       unauthenticated: CUSTODY_UNAUTHENTICATED,
+      unrecognised: CUSTODY_UNRECOGNISED,
+      inconsistent: CUSTODY_INCONSISTENT,
     };
     const failures = [
       'unopened',
       'unreachable',
       'unauthenticated',
+      'unrecognised',
+      'inconsistent',
     ] as const satisfies readonly UnlockFailure[];
 
     // The guard that makes the render assertions able to fail, and it comes
-    // first. **They are three because a person's next move is three different
-    // things** — present another factor, press again in a minute, sign in again
+    // first. **They are five because a person's next move is five different
+    // things** — present another factor, press again in a minute, sign in again,
+    // reload the page, and stop because nothing they hold will open this account
     // — and collapsing any two sends somebody down a road that cannot help them.
+    //
+    // **The pair this section exists for is `unopened` and `inconsistent`**, and
+    // the screen is where the difference has to land: a union member nothing
+    // renders is a distinction that exists in the type and nowhere a person can
+    // read it. One says *try your other passkey*, the other says *no passkey
+    // will help*, and until this case they were one sentence.
     // Compared as substrings in **both** directions rather than for inequality:
     // one sentence that contains another is the same defect with two extra words
     // on the end, and it would satisfy every `toContain` below.
@@ -3312,7 +3351,7 @@ describe('SettingsComponent', () => {
   // read one. Both directions are pinned, and they are two tests because they
   // fail for two different reasons — a refusal drawn as prose has lost a signal,
   // a wait drawn as a failure has gained a false one.
-  it('draws all eight refusals in the failure treatment', () => {
+  it('draws all ten refusals in the failure treatment', () => {
     // Arrange
     // `Record`s over the two unions rather than lists of pairs, so a word added
     // to either fails to compile here instead of arriving on the screen in
@@ -3328,6 +3367,8 @@ describe('SettingsComponent', () => {
       unopened: CUSTODY_UNOPENED,
       unreachable: CUSTODY_UNREACHABLE,
       unauthenticated: CUSTODY_UNAUTHENTICATED,
+      unrecognised: CUSTODY_UNRECOGNISED,
+      inconsistent: CUSTODY_INCONSISTENT,
     };
     const ceremonyFailures = [
       'unsupported',
@@ -3340,6 +3381,8 @@ describe('SettingsComponent', () => {
       'unopened',
       'unreachable',
       'unauthenticated',
+      'unrecognised',
+      'inconsistent',
     ] as const satisfies readonly UnlockFailure[];
 
     // Act & Assert
@@ -3349,7 +3392,7 @@ describe('SettingsComponent', () => {
       expectTreatment(ceremony[failure], FAILURE_CLASS, PROSE_CLASS);
     }
 
-    // Custody's three render only once the flow reports none — the precedence
+    // Custody's five render only once the flow reports none — the precedence
     // rule — so the flow's failure is cleared before this half runs.
     unlock.failure.set(null);
 

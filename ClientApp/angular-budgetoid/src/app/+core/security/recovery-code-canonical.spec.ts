@@ -24,7 +24,7 @@
 // mirrors the implementation agrees with any bug the implementation has; these
 // are an independent statement of the rule, and the last group ties that
 // statement back to the derivation that is already live.
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import { canonicalRecoveryCode } from './recovery-code-canonical';
 import {
@@ -38,6 +38,65 @@ import {
 // the printed `1` read off as an `l` and the printed `0` as an `o`.
 const PRINTED_CODE = '0123456789ABCDEFGHJKMNPQRS';
 const TYPED_BACK_CODE = ' ol234-56789-abcde-fghjk-mnpqrs ';
+
+// Spelled by code point rather than typed. `İ` and `ı` differ from `I` and `i`
+// by a dot that several typefaces render faintly and some editors normalise, and
+// a case whose expectation a reviewer cannot read character for character is a
+// case nobody can check — the rule `case-fold.spec.ts` and
+// `narrative-cipher.spec.ts` both keep.
+const DOTTED_CAPITAL_I = String.fromCharCode(0x0130);
+const DOTLESS_SMALL_I = String.fromCharCode(0x0131);
+
+// Captured before anything is replaced, and used by the replacement, so what is
+// simulated below is the platform's own Turkish mapping rather than a table
+// written here by somebody guessing at it.
+const REAL_TO_LOCALE_UPPER_CASE = String.prototype.toLocaleUpperCase;
+
+// A Turkish **host**, not a Turkish argument, and the distinction is the whole
+// reason this exists.
+//
+// `toLocaleUpperCase()` called with no argument is the form a real edit
+// produces — somebody reaches for the locale-aware method, not for a locale —
+// and it consults the host's default locale, which on this runner is `en-US`
+// and cannot be changed after start-up. **Measured: it answers `I` for `i` even
+// when the host's resolved default is `tr-TR`**, so no assertion about a value
+// can catch that edit on this machine. Replacing the method with one that
+// ignores what it was passed and answers as `tr` is what puts the hazard inside
+// reach of a test: an implementation that reaches for the locale-aware method
+// sees Turkish, and one that calls `toUpperCase` sees nothing at all.
+//
+// **This is a statement about the call, not about any real runtime.** No
+// browser behaves like this object; a Turkish-locale phone does, through a path
+// this runner cannot be put on. What the override buys is the ability to ask
+// which method the module called, in the only terms that matter downstream —
+// the text a key is derived from.
+function installTurkishDefaultLocale(): void {
+  Object.defineProperty(String.prototype, 'toLocaleUpperCase', {
+    configurable: true,
+    writable: true,
+    value: function turkishUpper(this: string): string {
+      return REAL_TO_LOCALE_UPPER_CASE.call(this, 'tr');
+    },
+  });
+}
+
+function restoreDefaultLocale(): void {
+  Object.defineProperty(String.prototype, 'toLocaleUpperCase', {
+    configurable: true,
+    writable: true,
+    value: REAL_TO_LOCALE_UPPER_CASE,
+  });
+}
+
+// The case below restores inside its own `finally`; this is the backstop, and it
+// is not ceremony. `restoreMocks` is not configured for this runner, so a
+// prototype left replaced would not be undone between cases — and it would not
+// fail loudly either. Every later case in the whole run would quietly be testing
+// a Turkish host, which is how one broken case becomes a file whose results
+// nobody can read.
+afterEach(() => {
+  restoreDefaultLocale();
+});
 
 describe('the canonical form of a recovery code', () => {
   it('is the identity on every code the generator can mint', () => {
@@ -171,18 +230,76 @@ describe('the canonical form of a recovery code', () => {
     // the phone whose locale differed from the one that minted the set would be
     // refused with the 401 a wrong code gets.
     //
-    // Asserted on the output rather than on the call, because the hazard is the
-    // value, and the value is observable whatever locale this runner has.
+    // Asserted on the output rather than on the call — and **on its own this
+    // case cannot catch the edit it argues against**, which is worth saying
+    // plainly rather than leaving a reader to assume otherwise. Measured on this
+    // runner: `'i'.toLocaleUpperCase()` answers `I` even with the host's
+    // resolved default locale set to `tr-TR`, so a module switched to the
+    // no-argument locale-sensitive form passes every assertion below. What this
+    // case holds is the *answer* — `i` reaches `1` and never a dotted `I` — on
+    // whatever locale the runner happens to have, which is the property a reader
+    // of the output cares about. The case after it holds the *call*, by putting
+    // a Turkish host underneath the module.
     const turkishHazard = 'i';
-    const dottedCapitalI = 'İ';
 
     // Act
     const canonical = canonicalRecoveryCode(turkishHazard);
 
     // Assert
     expect(canonical).toBe('1');
-    expect(canonical).not.toContain(dottedCapitalI);
+    expect(canonical).not.toContain(DOTTED_CAPITAL_I);
     expect(canonical).not.toBe(turkishHazard.toLocaleUpperCase('tr'));
+  });
+
+  it('answers the same under a Turkish host, because it never asks the locale', () => {
+    // Arrange
+    // **The pin the sentence above could not make.** `toUpperCase` is
+    // locale-independent by specification; `toLocaleUpperCase()` is not, and the
+    // difference is invisible on an `en-US` runner. Here the platform's default
+    // upper-casing is replaced with Turkish behaviour, so the two spellings of
+    // the call finally disagree: `i` upper-cases to `İ` under Turkish, and `İ`
+    // is in neither the alphabet nor the fold list, so it would survive
+    // canonicalisation and change the text both HKDF branches are derived from.
+    // One code typed on two phones would derive two verifiers and two
+    // key-encryption keys, and the phone whose locale differed from the one that
+    // minted the card would be refused with the `401` a wrong code gets — the
+    // only way back into the account, looking broken, saying nothing.
+    //
+    // `ı` is in the inputs and is deliberately **not** the discriminating one:
+    // Turkish upper-cases it to a plain `I`, which folds to `1` exactly as
+    // `toUpperCase` reaches it. It is here so the case says which character
+    // carries the hazard and which merely looks like it does.
+    const inputs = ['i', 'ilo', DOTLESS_SMALL_I, TYPED_BACK_CODE];
+
+    // The negative control, asserted *before* the fold runs and inside the same
+    // guard. Without the replacement having taken, this case compares two
+    // identical runs of one environment and passes whatever the module did — so
+    // a failure here reads as "the simulation is broken" rather than as a
+    // verdict on the module.
+    installTurkishDefaultLocale();
+
+    let underTurkish: readonly string[];
+
+    try {
+      expect('i'.toLocaleUpperCase()).toBe(DOTTED_CAPITAL_I);
+      underTurkish = inputs.map((input) => canonicalRecoveryCode(input));
+    } finally {
+      restoreDefaultLocale();
+    }
+
+    // Act
+    const underThisHost = inputs.map((input) => canonicalRecoveryCode(input));
+
+    // Assert
+    // The control again, from the other side: the prototype is back, so a later
+    // case in this file is not silently running on a Turkish host.
+    expect('i'.toLocaleUpperCase()).toBe('I');
+    expect(underTurkish).toEqual(underThisHost);
+
+    // Written out rather than compared only against each other. Two runs of a
+    // module that had stopped upper-casing altogether would also agree, and the
+    // answers are what the account depends on.
+    expect(underThisHost).toEqual(['1', '110', '1', PRINTED_CODE]);
   });
 
   it('is idempotent, so a second pass changes nothing', () => {

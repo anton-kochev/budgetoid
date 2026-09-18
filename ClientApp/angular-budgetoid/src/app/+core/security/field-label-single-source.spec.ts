@@ -348,7 +348,8 @@ describe('the narrative-field associated-data prefix', () => {
     // an anchor matching nothing is indistinguishable from a chapter that
     // dropped the grammar — a clean result either way. These three say the file
     // was found, that it is the chapter meant, and that exactly one line in it
-    // is the narrative grammar rather than the wrapped-key one beside it.
+    // is the narrative grammar rather than one of the factor-keypair grammar's
+    // three beside it.
     expect(chapter).toContain('**This chapter is normative.**');
     expect(chapter).toContain('### Two grammars, one join');
     expect(grammarLines).toHaveLength(1);

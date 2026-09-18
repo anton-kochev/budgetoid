@@ -58,7 +58,7 @@ export const routes: Routes = [
   //
   // The steps deliberately get no `children` array, and giving them one breaks two things
   // at once. A step is in-memory state — the account keys, the ten codes and the eleven
-  // wrapped envelopes live in a service the screen provides and that dies with it — so
+  // factors' envelopes live in a service the screen provides and that dies with it — so
   // Back would land on a step whose state is already gone. And `/register/codes` would
   // become a link somebody can open, or be sent, on a screen whose whole premise is that
   // ten codes were minted moments ago and are on it. The step is a signal inside

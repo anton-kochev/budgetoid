@@ -18,8 +18,8 @@
 // deny.
 //
 // **The row id is refused, never folded.** That is the one place this grammar
-// deliberately differs from the wrapped-key grammar next door, which folds
-// several spellings on the way in and says at its own fold why that tolerance
+// deliberately differs from the factor keypair's grammar next door, which folds
+// several spellings on the way in and says at that fold why the tolerance
 // stays. Here the value arrives from a row the client just read, in the one
 // spelling the row hands back, so there is nothing to be tolerant of — and a
 // fold would seal under a spelling that no later read can reproduce.
@@ -722,10 +722,10 @@ describe('the associated data of a narrative field', () => {
     };
 
     // Act & Assert
-    // Refused, not folded — deliberately unlike the wrapped-key grammar next
-    // door. The row hands back exactly one spelling, so anything sealed against
-    // another can never be rebuilt: both directions stop working permanently,
-    // with no error naming the cause.
+    // Refused, not folded — deliberately unlike the factor keypair's grammar
+    // next door. The row hands back exactly one spelling, so anything sealed
+    // against another can never be rebuilt: both directions stop working
+    // permanently, with no error naming the cause.
     expect(() => narrativeFieldAssociatedData(binding)).toThrow();
   });
 
@@ -1733,15 +1733,16 @@ describe('the table and column a narrative field is bound to', () => {
   // words, which no other client reproduces: the same permanent, silent damage
   // the row id is refused for, over the other two thirds of the binding.
   //
-  // **Why folding is wrong here even though `wrappedKeyAssociatedData` folds a
-  // uuid next door, and the two are not inconsistent.** A fold is a defence
-  // against a value arriving from *elsewhere* — the factor id there is minted by
-  // this client and nothing upstream hands that grammar a canonical spelling, so
-  // the fold is where one gets made. These two fields arrive from nowhere at
-  // all: they are chosen from a list **this module publishes**, in the spelling
-  // this module publishes them in. There is no second spelling in existence to
-  // be tolerant of, so a fold could only *invent* one — and it would invent it
-  // at the sealing end, which is exactly where the damage cannot be undone.
+  // **Why folding is wrong here even though the messages `factor-keypair.ts`
+  // builds fold a uuid next door, and the two are not inconsistent.** A fold is
+  // a defence against a value arriving from *elsewhere* — the factor id there is
+  // minted by this client and nothing upstream hands that grammar a canonical
+  // spelling, so the fold is where one gets made. These two fields arrive from
+  // nowhere at all: they are chosen from a list **this module publishes**, in
+  // the spelling this module publishes them in. There is no second spelling in
+  // existence to be tolerant of, so a fold could only *invent* one — and it
+  // would invent it at the sealing end, which is exactly where the damage cannot
+  // be undone.
   const MISCASED = [
     {
       what: 'a legal table with one capital letter',

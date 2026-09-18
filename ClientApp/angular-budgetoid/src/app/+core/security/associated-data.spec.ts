@@ -1,9 +1,9 @@
 // One join, shared by every associated-data grammar this client seals under.
 //
 // The separator and the join were private to `account-keys.ts`, where the
-// wrapped-key grammar is the only caller. A second grammar — the narrative
-// fields of the next story — is what makes them worth extracting: two copies of
-// "the fields are joined by 0x1F in UTF-8" drift, and drift here is silent.
+// wrapped-key grammar was the only caller. A second grammar — the narrative
+// fields — is what made them worth extracting: two copies of "the fields are
+// joined by 0x1F in UTF-8" drift, and drift here is silent.
 // Associated data is not carried inside an envelope; it is re-supplied from
 // wherever the envelope was found, so a byte that moves makes every envelope
 // already written unopenable with the same failure a corrupted key gives, and
@@ -13,8 +13,9 @@
 // join.** No prefix, no factor id, no purpose and no field name appears in this
 // file, and no vector is reproduced from anywhere. What a grammar is made of is
 // guarded where it belongs: by an independently-computed vector over the whole
-// string — the frozen 69-byte wrapped-key one already in `account-keys.spec.ts`
-// and the 80-byte narrative one arriving with the grammar that needs it, both
+// string — the factor-keypair grammar's frozen 78-byte private-key message and
+// 66-byte encapsulation message, and the narrative grammar's frozen 80-byte
+// one, each pinned by the spec of the module that seals under it and each
 // computed outside this codebase. So a failure here names the join, a failure
 // there names the format, and neither has to be read to understand the other.
 //

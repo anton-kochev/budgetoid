@@ -104,7 +104,10 @@ export type PasskeyCeremonyResult<TValue> =
   | { readonly ok: true; readonly value: TValue }
   | { readonly ok: false; readonly failure: PasskeyCeremonyFailure };
 
-/** A completed registration: what to send, and what to wrap the keys under. */
+/**
+ * A completed registration: what to send, and what the factor's private key is
+ * wrapped under.
+ */
 export interface PasskeyRegistrationCeremony {
   readonly payload: PasskeyRegistrationPayload;
   /**
@@ -114,7 +117,7 @@ export interface PasskeyRegistrationCeremony {
   readonly keyEncryptionKey: CryptoKey;
 }
 
-/** A completed sign-in: what to send, and what unwraps the account's keys. */
+/** A completed sign-in: what to send, and what opens the factor's keypair. */
 export interface PasskeyAssertionCeremony {
   readonly payload: PasskeyAssertionPayload;
   readonly keyEncryptionKey: CryptoKey;
@@ -154,10 +157,12 @@ export class WebauthnCeremonyService {
    * Registers a passkey and derives the key-encryption key that factor holds.
    *
    * The returned payload is the *registration's*, byte for byte. The caller
-   * completes it with the factor id it minted and the two envelopes it wrapped
-   * under {@link PasskeyRegistrationCeremony.keyEncryptionKey}; this method
-   * knows nothing about either, and deliberately: the account's keys are
-   * generated once and wrapped once per factor, one layer up.
+   * completes it with the factor id it minted and that factor's two envelopes:
+   * a private key *wrapped under*
+   * {@link PasskeyRegistrationCeremony.keyEncryptionKey}, and the account's two
+   * keys *encapsulated to* the public half that private key belongs to. This
+   * method knows nothing about either, and deliberately: the account's keys are
+   * generated once and encapsulated once per factor, one layer up.
    */
   public async createPasskey(
     options: PasskeyCreationOptionsJson,
@@ -211,10 +216,10 @@ export class WebauthnCeremonyService {
       // distinction the server has a member for. Letting the payload report
       // `create()`'s own word instead writes `null` for every authenticator
       // that derives only on the first assertion, and the server answers 400.
-      // By then the account's keys are sealed into twenty-two envelopes and ten
-      // recovery codes are on screen, so a device that works is told to throw
-      // them away — and every retry ends identically, because the
-      // authenticator's answer at enrolment never changes.
+      // By then eleven factors carry the account's keys and ten recovery codes
+      // are on screen, so a device that works is told to throw them away — and
+      // every retry ends identically, because the authenticator's answer at
+      // enrolment never changes.
       return {
         ok: true,
         value: {
@@ -466,8 +471,8 @@ export class WebauthnCeremonyService {
         ],
         // `evalByCredential` and not `eval`: keyed on anything else, the
         // authenticator derives for whatever credential it happened to offer,
-        // and the account's keys end up wrapped under a key the new passkey
-        // cannot reproduce.
+        // and this factor's private key ends up wrapped under a key the new
+        // passkey cannot reproduce — with the account's keys behind it.
         extensions: {
           prf: {
             evalByCredential: { [created.id]: { first: prfEvalInput() } },
@@ -552,9 +557,10 @@ function declinesPrf(results: AuthenticationExtensionsClientOutputs): boolean {
 
 // The value the extension is evaluated against, encoded fresh per call and read
 // off `account-keys.ts` rather than typed again. A second copy of the string is
-// a second place for it to drift, and the day it drifts every account that
-// wrapped its keys under the old value is locked out by a passkey that still
-// authenticates perfectly and simply hands back different bytes.
+// a second place for it to drift, and the day it drifts every account whose
+// factors wrapped their private keys under the old value is locked out by a
+// passkey that still authenticates perfectly and simply hands back different
+// bytes.
 function prfEvalInput(): Uint8Array<ArrayBuffer> {
   return utf8.encode(PASSKEY_PRF_EVAL_INPUT);
 }

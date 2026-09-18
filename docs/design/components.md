@@ -1031,6 +1031,13 @@ the credential registration and revocation controls already use on this screen.
   have to drop that clause, and the reader would be told two controls wait on the same thing when
   one waits on strictly more.
 
+  **A third fact holds it too and is deliberately not in the copy.** Replacing a set moves the
+  account's factor set on a generation, so the request carries a manifest re-sealed at the stored
+  epoch plus one — a *promotion*, which no path in this client has ever performed; registration
+  files the first manifest and sends no epoch. It stays out of the sentence because it names nothing
+  a person can do, recognise or wait for, and the copy rule here is that a disabled control explains
+  itself in terms of what the reader is owed rather than what the client has left to build.
+
   **The clause naming the second fact is what keeps the sentence true in front of the reader.** It
   does not say the browser cannot run a passkey check — `/register` creates a credential and
   `/welcome` asserts one — and, with the Account keys section immediately below, it may no longer
@@ -1069,20 +1076,29 @@ state, not an unfinished one, and *What replaces this when generation lands* abo
 arrives with the button — nothing here asks for it to be made live on its own. The client holds the
 generator that mints a code and derives its verifier from that code's canonical form, and the
 registration flow is its one caller; nothing on **this** screen calls it, and the API service has no
-member that posts a set. **The route is not the obstacle and neither is the client's ability to run
-a ceremony.** That route takes six members — five of a fresh WebAuthn assertion, which this client
-plainly produces, and ten whole code submissions, each carrying its own wrapped copy of the
-account's two keys.
+member that posts a set. **Neither the route, nor the client's ability to run a ceremony, nor any
+piece of the cryptography is the obstacle.** That route takes eight members — five of a fresh
+WebAuthn assertion, which this client plainly produces; ten whole code submissions, each carrying
+its own factor keypair; a manifest naming the factor set the request leaves behind; and the rotation
+epoch that manifest was sealed under. Seven of the eight have a live implementation and a live
+caller on the registration path. **The eighth is the epoch, and it is the one member registration
+cannot stand in for** — that path files a first manifest and sends no epoch at all, so no code in
+this client has ever computed the number this route wants, which is the stored generation plus one.
+It is the third wait below, named here as a member rather than left to be inferred from a count.
 
-**What this section waits on is two things, and the Account keys section below closes neither.**
-The first is the account's keys **as bytes**: `GET /api/me/account-keys` hands the envelopes back
-and the browser opens them, but what comes out is held as non-extractable key objects behind no
-accessor, and a wrap takes bytes. Reaching them means unwrapping again under a key-encryption key
-**held long enough to wrap with**, which is exactly what the unlock path refuses to do — it takes
-the key as an argument, hands it to custody in one statement and keeps no name for it. The second
+**What this section waits on is three things, and the Account keys section below closes none of
+them.** The first is the account's keys **as bytes**: `GET /api/me/account-keys` hands the envelopes
+back and the browser opens them, but what comes out is held as non-extractable key objects behind no
+accessor, and an encapsulation takes bytes. Reaching them means opening a factor again under a
+key-encryption key **held long enough to encapsulate with**, which is exactly what the unlock path
+refuses to do — it takes the key as an argument, hands what it opened to custody in one statement
+and keeps no name for either. The second
 is a passkey assertion the **server** verifies. Unlock's is minted locally and thrown away, so it
 is not that assertion and cannot become it; that is a different ceremony, with a server's challenge
-behind it, and this control waits on it exactly as Erase does. Redeeming a code has no surface in
+behind it, and this control waits on it exactly as Erase does. The third is a manifest
+**promotion** — this route moves a generation, so it carries the stored epoch plus one and a
+manifest re-sealed at that number, and nothing in this client has ever promoted one: registration
+files the first at epoch 1 and sends no epoch at all. Redeeming a code has no surface in
 the app at all.
 
 **The show-once surface exists and this section is not where it lives.** It is the last step of the
@@ -1169,7 +1185,7 @@ measured against exactly what the two keys open — no wider and no narrower.
   recovery-codes section's argument for a single column applies unchanged: one control, no rows,
   and nothing for a second column to carry.
 - **One `role="status"` region, in the DOM from first paint and empty at rest**, carrying every
-  line this section says: both waits, all eight refusals, and the line saying the keys are held.
+  line this section says: both waits, all ten refusals, and the line saying the keys are held.
   Why a region has to exist before it has content is argued in *A value read from the network*
   above and again in the recovery-codes chapter, and is not argued a third time here. `status` and
   never `alert`: the person asked for this, and assertive is reserved for a failure to save
@@ -1246,7 +1262,7 @@ the moment it is reached from a surface that does offer the control beside an op
 any window where a render has not caught up with custody — a `lock()` in the cancellation branch
 discards both keys, silently, with every pixel on the screen looking correct.
 
-### The three blocks, and the eleven lines inside them
+### The three blocks, and the thirteen lines inside them
 
 **Which block renders is `custody.status()`'s answer and only its.** Three values, three blocks,
 and nothing else is consulted to choose between them:
@@ -1302,17 +1318,29 @@ reading it is the drift the gate rule names.
 | `unopened` | "Budgetoid couldn’t open your account’s keys with that passkey. If this account has another passkey, try again and choose that one." | Inside the region, `--bud-over` |
 | `unreachable` | "Budgetoid couldn’t reach the server. Try again in a minute." | Inside the region, `--bud-over` |
 | `unauthenticated` | "Budgetoid wouldn’t hand your keys back to this browser. Sign out and sign in again." | Inside the region, `--bud-over` |
+| `unrecognised` | "Budgetoid couldn’t read what the server sent back. Reload the page — that’s the one thing here that can change the answer." | Inside the region, `--bud-over` |
+| `inconsistent` | "Something about this account’s keys doesn’t line up — no passkey or recovery code will change it." | Inside the region, `--bud-over` |
 
-The copy is the specification, not an example of it. **Eleven lines in twelve states**: the table's
-first row is the resting one and says nothing, because the control standing there is what says the
-account is locked.
+The copy is the specification, not an example of it. **Thirteen lines in fourteen states**: the
+table's first row is the resting one and says nothing, because the control standing there is what
+says the account is locked.
 
-**The eight refusals come from two sources, and neither union is derived from the other.** The
-first five are `AccountUnlockService`'s and are facts about a *device*; the last three are
-`AccountKeyCustodyService`'s and are facts about a *read* and a *factor*. The flow's union
+**`unrecognised`'s sentence names the act and never the cause, and the sentence to keep out is
+*this tab is running an older version*.** It reads as the more helpful line and it is a diagnosis
+the evidence cannot carry: the same refusal covers this bundle meeting the **retired bare-array
+response shape**, which is a newer client and an older route, where that clause is simply false and
+the remedy it offers is a loop — reload, get this same bundle back, be refused again. What is true
+either way is the act, so the act is what the copy carries. A reload is the only thing in the
+product that fetches different JavaScript from the static host, which is why *that's the one thing
+here that can change the answer* is a promise the screen can keep however the skew runs.
+
+**The ten refusals come from two sources, and neither union is derived from the other.** The first
+five are `AccountUnlockService`'s and are facts about a *device*; the last five are
+`AccountKeyCustodyService`'s and are facts about a *read*, a *factor*, an *answer* and — in one
+case — the account's own *key material*. The flow's union
 deliberately carries no member a key that opened nothing could be filed under — `unknown` is a
 rejection out of a method whose contract is to answer with a result, and nothing else — so the two
-cannot be quietly merged by a reader looking for somewhere to put an eighth word.
+cannot be quietly merged by a reader looking for somewhere to put an eleventh word.
 
 **The flow's failure wins, and custody's renders only when the flow reports none.** Both are
 readable at once, and the state that produces it is ordinary rather than contrived: press one is
@@ -1338,16 +1366,18 @@ replaces it, because four of its nine refusals are dead ends with somewhere else
 section has nowhere else: its one control is the way out of the state the section exists for, so
 removing it would leave an account locked with nothing on screen to change that. A second press is
 also a genuinely different attempt on most of these, because the authenticator rather than the
-screen chooses which credential answers. The one real dead end is `unsupported`, and its sentence
-carries the way out — a different browser — rather than the control doing it: a section with no
-control at all is a worse answer than a control whose sentence says not to press it.
+screen chooses which credential answers. **Two of the ten are real dead ends and each carries its
+own way out in its sentence rather than in the control.** `unsupported` names one — a different
+browser. `inconsistent` names none, because there is none: it is the only line in the table whose
+copy says out loud that nothing the person does here changes the answer. In both cases a section
+with no control at all is a worse answer than a control whose sentence says not to press it.
 
 **Colour is never the message** — every refusal above reads the same with `--bud-over` removed.
 
-### Three custody failures, three next steps
+### Five custody failures, and four next steps
 
-**They are three because a person's next move is three different things**, and collapsing any two
-sends somebody down a road that cannot help them. The rule is
+**They are five because a person's next move is four different things and, in one case, nothing at
+all** — and collapsing any two sends somebody down a road that cannot help them. The rule is
 [account-keys.md](../business-logic/account-keys.md)'s; this section renders it rather than
 re-arguing it.
 
@@ -1357,6 +1387,37 @@ re-arguing it.
 - `unauthenticated` — the server *answered*, and the answer was that this browser may not read
   these envelopes: a `401`, or the `403` the CSRF control gives. The way forward is neither of the
   other two, because retrying cannot change it and no other factor can either.
+- `unrecognised` — the server answered and this browser could not read the answer. The way forward
+  is to **reload the page**, and it is none of the other three.
+- `inconsistent` — a factor opened, and what came out of it does not agree with the account's own
+  manifest. **This is the one refusal with no way forward**, which is why it is a word rather than a
+  reuse of the nearest one.
+
+**The fourth word is the one a later author will fold into `unreachable`, and that is the one place
+it must not go.** The three above it are about the account, the factor or the network; this one is
+about **the answer** — what disagrees is the shape of the body, and a reload is the only act that
+fetches a different copy of the JavaScript from the static host. `unreachable`'s copy is *try again
+in a minute*, which is advice that can never succeed here: the next minute runs the same bundle
+against the same route and is refused the same way. A sentence that sends somebody round a loop with
+no exit is worse than a sentence that names an awkward remedy, and the remedy here is one press of a
+reload button. **What the word may not do is say which side is stale** — the same refusal covers a
+newer bundle reading the retired response shape — which is why it is `unrecognised` and why its copy
+names the act rather than the cause.
+
+**The fifth word is the one whose absence costs the most, because the nearest word is actively
+harmful over it.** Reported as `unopened`, the line offers another passkey. Every factor of an
+account encapsulates the same two keys, so a pair that will not open the manifest will not open it
+under any of them — not another passkey, not any of the ten recovery codes, not in another browser
+and not after a reload. Told to keep trying, somebody spends an entire recovery card on a door that
+cannot open, and the screen encourages them the whole way. So the sentence names the **material**
+and not the factor, states the dead end plainly, and offers no press: *no passkey or recovery code
+will change it* is the whole of what is true. Naming the material rather than the authenticator is
+also what lets the neighbouring states arriving with the factor-set comparison sit under this same
+word instead of adding two more rows to the table.
+
+**`unrecognised` and `unreachable` are indistinguishable from inside the flow and are told apart by
+the type the API boundary throws** — never by a message, because several are written there and a
+reading matched against one of them would quietly stop covering the rest.
 
 **The screen says "sign in again" and does not sign anybody out.** `AccountUnlockService` injects
 the ceremony and custody and **nothing else** — no `SessionService`, no `Router` — so the sentence
@@ -1371,6 +1432,13 @@ several sections up, under the label the sentence names.
 anywhere in the product, so "another way in" can offer another passkey and nothing else — the
 registration chapter's rule about a sentence naming a door the screen does not have. It gains its
 second clause the day redemption lands, and not before.
+
+**`inconsistent`'s sentence names a recovery code and does not break that rule**, which is worth one
+line so nobody "corrects" it into line with its neighbour. The rule is about **offering** a door the
+screen does not have. This sentence offers nothing: it names both kinds of factor in order to say
+that neither changes the answer, and a reader who has a card in a drawer needs to be told that
+before they go and fetch it. Narrowed to the passkey, the line would leave the recovery card looking
+like the thing still worth trying.
 
 ### The ceremony carries its own challenge, and the assertion is discarded
 
@@ -1459,9 +1527,9 @@ belongs to.
 ### What ships today
 
 **The section is on `/app/settings`, in its specified place between Recovery codes and Export, and
-everything above renders as written** — the three blocks, the eleven lines, the one `role="status"`
-region and the control that leaves when the keys are held. `AccountKeyCustodyService` holds the
-account's keys and publishes the three failure words;
+everything above renders as written** — the three blocks, the thirteen lines, the one
+`role="status"` region and the control that leaves when the keys are held.
+`AccountKeyCustodyService` holds the account's keys and publishes the five failure words;
 `WebauthnCeremonyService.deriveKeyFromLocalAssertion()` mints the challenge, runs the assertion and
 returns the key; `AccountUnlockService` joins the two, provided on the Settings component rather
 than at the root — it holds an *attempt*, and an attempt abandoned on a screen should die with the

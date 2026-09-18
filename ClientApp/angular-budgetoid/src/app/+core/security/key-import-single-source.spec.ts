@@ -1,5 +1,5 @@
-// **Outside specs, `crypto.subtle.importKey` is written in two files, and each
-// of the two has a reason.**
+// **Outside specs, `crypto.subtle.importKey` is written in three files, and each
+// of the three has a reason.**
 //
 //   * `account-keys.ts` — the two doors. `importAesGcmKey` and
 //     `importHmacSha256Key` each hold five decisions in one place: the
@@ -9,17 +9,23 @@
 //     derivation and hands back a key whose only usage is `deriveBits`, so
 //     nothing can seal, sign or export under it and nothing can mistake it for a
 //     key the account uses.
+//   * `factor-keypair.ts` — the two ECDH doors, onto a **factor's** keypair
+//     rather than the account's material. Neither key it imports can seal, sign
+//     or export, and neither is a value `account-keys.ts` has any business
+//     holding: an account has one content key and one index key, while a factor
+//     has a private half it agrees under and a public point somebody else hands
+//     it. The standing is written out in `owners` below.
 //
-// **The rule is not "exactly one file", and it never was.** Two files is what is
-// true, and the sentence worth defending is not a number but the absence of a
-// third writer: a hand-written `crypto.subtle.importKey` beside the caller that
-// needed it. That is four lines, it compiles, and it hands back a perfectly good
-// `CryptoKey` — while holding **none** of the five. Of the five, only a wrong
-// algorithm is ever mentioned by anything, and it is mentioned at the first call
-// rather than at the import, by which time the material has been wiped or not
-// according to nobody's rule. A width silently downgraded, a usage list widened
-// to `wrapKey`, an extractable key, and a copy of the bytes left on the heap all
-// work, forever, and are wrong for the life of the account.
+// **The rule is not "exactly one file", and it never was.** Three files is what
+// is true, and the sentence worth defending is not a number but the absence of a
+// writer with no standing: a hand-written `crypto.subtle.importKey` beside the
+// caller that needed it. That is four lines, it compiles, and it hands back a
+// perfectly good `CryptoKey` — while holding **none** of the five. Of the five,
+// only a wrong algorithm is ever mentioned by anything, and it is mentioned at
+// the first call rather than at the import, by which time the material has been
+// wiped or not according to nobody's rule. A width silently downgraded, a usage
+// list widened to `wrapKey`, an extractable key, and a copy of the bytes left on
+// the heap all work, forever, and are wrong for the life of the account.
 //
 // **Specs are exempt, and the exemption is not a convenience.** Both doors are
 // observed at the platform boundary — `account-keys.spec.ts` spies on
@@ -59,8 +65,12 @@
 //     and a new one reddens it. An unexported third import inside an owner is
 //     caught by nothing, which is why the call-site count is documented in that
 //     file's prose and deliberately **not** pinned here — pinning it would redden
-//     on the legitimate change (a fourth door, argued for) and stay green on the
-//     one that matters (a hand-written import in a seventh file).
+//     on the legitimate change (one more import inside a file that already has
+//     standing, argued for) and stay green on the one that matters, which is a
+//     hand-written import in a file that has none. **Three files own this call,
+//     so that file is the fourth** — the number is the size of `owners` below
+//     plus one, and it is written that way so a later reader can reconstruct it
+//     instead of taking it on faith.
 //   * It says nothing about *what* an owner's imports do. That is the door specs'
 //     work, and they do it by running the doors rather than by reading them.
 import {
@@ -78,7 +88,7 @@ import { listFiles } from '../../../production-bundle';
 
 const sourceDir = join(process.cwd(), 'src');
 
-// The two files that may write it, each with its standing named. A `Map` rather
+// The files that may write it, each with its standing named. A `Map` rather
 // than a `Set` because the reason is the point: a rule whose owners are a bare
 // list invites a red result to be answered by appending a line, and appending a
 // line is a diff nobody reads. A reason has to be written, and a reason somebody
@@ -96,6 +106,26 @@ const owners = new Map<string, string>([
   [
     join('app', '+core', 'security', 'hkdf.ts'),
     'HKDF input keying material, whose only usage is deriveBits — nothing can seal, sign or export under it',
+  ],
+  // The third standing, and it is written out rather than summarised because
+  // this entry is the one a reader is most likely to mistake for the doors next
+  // door. The keys here are a **factor's**, not the **account's** — a factor has
+  // a private half it agrees under and a public point handed to it by somebody
+  // else, where an account has one content key and one index key. Moving these
+  // two imports into `account-keys.ts` would put ECDH material through a file
+  // whose every decision is about symmetric account material, and moving that
+  // file's doors here would put the account's keys behind a factor's ceremony.
+  //
+  // Neither import can seal, sign or export: the private half is `pkcs8` with
+  // `deriveBits` and nothing else, non-extractable — which is the whole of the
+  // claim that a private key never leaves that module — and the peer point is
+  // `raw` with an **empty** usage list, imported through the one place that
+  // judges its encoding first, so no route from a point to an agreement skips
+  // IFR-019. The account key this module ends up with is not imported here at
+  // all: it goes through `importAesGcmKey`, which is the door.
+  [
+    join('app', '+core', 'security', 'factor-keypair.ts'),
+    "the two ECDH doors onto a factor's keypair: its private half as pkcs8, non-extractable, deriveBits only — and a peer public point as raw with no usages at all, imported after the encoding guard has judged it",
   ],
 ]);
 
@@ -136,7 +166,7 @@ function strangersAmong(carriers: readonly string[]): string[] {
 }
 
 describe('crypto.subtle.importKey', () => {
-  it('is written in both of the files that have standing to write it', () => {
+  it('is written in every file that has standing to write it', () => {
     // Arrange, Act
     const carriers = modulesImportingKeys(sourceDir);
 
@@ -166,7 +196,7 @@ describe('crypto.subtle.importKey', () => {
     // *where* a call was written — the location is the whole of the finding.
     expect(
       strangers,
-      `${needle} is written outside the two doors, in: ${strangers.join(', ')}`,
+      `${needle} is written where nothing gives it standing, in: ${strangers.join(', ')}`,
     ).toEqual([]);
   });
 
@@ -184,13 +214,14 @@ describe('crypto.subtle.importKey', () => {
 
     // **Beside an owner, in the owner's own directory.** That placement is the
     // case. An exemption keyed on the *directory* — `+core/security` is where
-    // both owners live, and "the security folder may import keys" is exactly the
-    // shape a later widening takes — reports a stranger planted a folder away
-    // just as happily as the right rule does, so the whole file passes on the
-    // broken shape. Beside an owner it does not. It is also where a copy would
-    // really be written: the next module that needs a key object is a neighbour
-    // of the one holding the doors, and it was one — `account-key-custody.service.ts`
-    // sits in this directory and reaches for both doors by importing them.
+    // all three owners live, and "the security folder may import keys" is
+    // exactly the shape a later widening takes — reports a stranger planted a
+    // folder away just as happily as the right rule does, so the whole file
+    // passes on the broken shape. Beside an owner it does not. It is also where
+    // a copy would really be written: the next module that needs a key object
+    // is a neighbour of the one holding the doors, and it was one —
+    // `account-key-custody.service.ts` sits in this directory and reaches for
+    // both doors by importing them.
     const stranger = join(dirname(firstOwner()), 'copy.ts');
 
     // A **spec** carrying the needle, and it must come back unreported. This is

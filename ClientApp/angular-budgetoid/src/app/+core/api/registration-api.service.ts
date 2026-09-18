@@ -17,7 +17,7 @@ import {
   REGISTRATION_PATH,
 } from '@app-core/interceptors/api-credentials.interceptor';
 import { EXPECTS_UNAUTHENTICATED } from '@app-core/interceptors/expects-unauthenticated.token';
-import type { WrappedAccountKeys } from '@app-core/security/account-keys';
+import type { FactorKeypairEnvelopes } from '@app-core/security/factor-keypair';
 import type { RecoveryCodeVerifier } from '@app-core/security/recovery-codes';
 import type {
   PasskeyCreationOptionsJson,
@@ -35,13 +35,19 @@ import type { Observable } from 'rxjs';
  * derives, on an independent branch, never leaves the browser, and the two
  * envelopes below are what that key sealed.
  *
- * `WrappedAccountKeys` is **extended, never re-declared**. That interface
- * already spells `wrappedContentKey` and `wrappedIndexKey` exactly as the wire
- * does, and it is what `wrapAccountKeys` returns; a local copy of those two
- * members would be a second spelling of the two values an account is opened
- * with, able to drift from the one the sealing code hands back.
+ * `FactorKeypairEnvelopes` is **extended, never re-declared**. That interface
+ * already spells `wrappedPrivateKey` and `encapsulatedAccountKeys` exactly as
+ * the wire does, and it is what `mintFactorKeypair` hands back; a local copy of
+ * those two members would be a second spelling of the two values an account is
+ * opened with, able to drift from the one the minting code produces.
+ *
+ * **The factor's public key is not a third member and never may be.** What has
+ * to be unforgeable is the *set*, so every point an account holds is named in
+ * one authenticated blob — the `manifest` below — and there is deliberately no
+ * per-row column for one. A member here would be a point the server could add a
+ * row for.
  */
-export interface RecoveryCodeSubmissionBody extends WrappedAccountKeys {
+export interface RecoveryCodeSubmissionBody extends FactorKeypairEnvelopes {
   readonly verifier: RecoveryCodeVerifier;
   /**
    * The factor this code's two envelopes were sealed against, in the one
@@ -56,8 +62,16 @@ export interface RecoveryCodeSubmissionBody extends WrappedAccountKeys {
  *
  * The passkey's three members are spread in from
  * {@link PasskeyRegistrationPayload}; the passkey factor's own two envelopes
- * arrive through {@link WrappedAccountKeys} for the reason the submission above
- * extends it.
+ * arrive through {@link FactorKeypairEnvelopes} for the reason the submission
+ * above extends it.
+ *
+ * **There is no `rotationEpoch` member, and a reader will try to add one for
+ * symmetry.** The three routes that *promote* a manifest carry an epoch because
+ * each moves a generation, and the server refuses anything that is not the
+ * stored value plus one. This route **files** the account's first manifest:
+ * there is no stored value to move and the server derives the first epoch
+ * itself, so a member here would be this client naming a generation nothing on
+ * the other side could disagree with.
  *
  * **The set member is `codes`, and `recoveryCodes` is not a synonym.** The
  * server's request-surface census refuses that token outright
@@ -71,9 +85,17 @@ export interface RecoveryCodeSubmissionBody extends WrappedAccountKeys {
  * identity.
  */
 export type RegistrationRequestBody = PasskeyRegistrationPayload &
-  WrappedAccountKeys & {
+  FactorKeypairEnvelopes & {
     readonly factorId: string;
     readonly codes: readonly RecoveryCodeSubmissionBody[];
+    /**
+     * The account's first factor manifest: the eleven factor identifiers and
+     * the eleven public keys, sealed under the account's content key. The
+     * server enforces presence, framing and epoch and can never read a byte of
+     * it — a manifest naming nobody stores and reads back — so what the named
+     * set says is this client's half to keep true.
+     */
+    readonly manifest: string;
   };
 
 // `BaseApiService` is deliberately not extended here, and the reason is the

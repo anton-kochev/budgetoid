@@ -56,8 +56,11 @@ everything.
 
 **The schema, the domain behaviour, the read a completion step will consult, and the handler that
 begins a run. No route, no client.** Nothing reaches `BeginKeyRotationHandler` over HTTP, so no
-rotation can be started, every `rotation_id` column in every database is `NULL`, and `key_rotations`,
-`key_rotation_seals` and `factor_manifests` are empty in all of them.
+rotation can be started, every `rotation_id` column in every database is `NULL`, and `key_rotations`
+and `key_rotation_seals` are empty in all of them. **`factor_manifests` is not**: registration files
+a row for every account it creates, at epoch 1, and three paths promote one afterwards — so the
+table a promotion will one day write into is the one table here that already holds a row per account
+and is the only one of the three a browser has ever caused to be written.
 
 Built: the `key_rotations` staging table and its `KeyRotation` entity, now carrying a staged
 **manifest** and a staged **epoch** rather than a factor and two envelopes; the `key_rotation_seals`
@@ -140,8 +143,10 @@ being SQL Server's rather than this server's.
   authoritative. Its bounds are `FactorManifest`'s, read off that type rather than restated, because
   this is the value a promotion writes into that row.
 - **Staged rotation epoch** — the generation the staged manifest will be filed at. At least `1`,
-  because **epoch 0 is the absence of a manifest row** — the state of every account in the product
-  today, and not an error — so a stored row claiming 0 would assert its own absence.
+  because **epoch 0 is the absence of a manifest row** — a state no account this product can create
+  reaches, since registration files a manifest in the same save as the account, and not an error
+  either — so a stored row claiming 0 would assert its own absence. What still answers 0 is a row a
+  test seeded by hand, which is why the floor is written rather than assumed.
 - **Rotation seal** — one row of `key_rotation_seals`, keyed `(user_id, factor_id)`, holding the next
   generation's content key and index key as one 64-byte plaintext **encapsulated to** that factor's
   public key. One per surviving factor per run: a rotation draws the new pair once and encapsulates it

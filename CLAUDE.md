@@ -280,9 +280,19 @@ Load-bearing rules. Each links the doc that argues it — **read that doc before
   forced the three codecs onto this class. **Nothing is persisted and nothing is shared across tabs**:
   a non-extractable `CryptoKey` is structured-cloneable, so IndexedDB and `BroadcastChannel` both
   *work* and both are refused. A page reload therefore locks the **account**, and the way back is
-  Unlock on `/app/settings`. `'unopened'`, `'unreachable'` and `'unauthenticated'` are three
-  different next steps for a person — collapsing any two sends somebody down a road that cannot help
-  them. Clearing has **one owner**, `SessionService.ended()`, never an `effect()`.
+  Unlock on `/app/settings`. `'unopened'`, `'unreachable'`, `'unauthenticated'`, `'unrecognised'` and
+  `'inconsistent'` are five different next steps for a person — collapsing any two sends somebody
+  down a road that cannot help them. **Every word reports what was observed and none names a cause**:
+  `'unrecognised'` is a body this client could not read, where a reload is the only act that can
+  change the answer and `'unreachable'`'s "try again in a minute" never succeeds — it is not
+  `'outdated'`, because the same refusal covers a *newer* bundle reading the retired body shape.
+  `'inconsistent'` is the account's manifest failing to open under the content key a factor handed
+  over, and it is the one failure **no factor can clear**: every factor encapsulates the same two
+  keys, so `'unopened'`'s "try another passkey" would send somebody through a whole recovery card.
+  The gate that raises it is a **self-check on this client's own encapsulation order, never a control
+  over the server** — `manifest: null` proceeds, so anything that can shape the response switches it
+  off.
+  Clearing has **one owner**, `SessionService.ended()`, never an `effect()`.
   [account-keys.md](docs/business-logic/account-keys.md),
   [sessions.md](docs/business-logic/sessions.md)
 - **A screenful of sealed columns is opened once per distinct ciphertext, and the driver owns the

@@ -4,10 +4,10 @@
 //
 // `HMAC-SHA-256(indexKey, prefix || 0x1F || table || 0x1F || column || 0x1F ||
 // budget id || 0x1F || normalized name)`, rendered as unpadded base64url. The
-// key is the account's index key, one per account, wrapped beside the content
-// key in every factor's row — `account-keys.ts` states why it is derived per
-// account and never per credential, and `importHmacSha256Key` is the one door
-// its bytes come through.
+// key is the account's index key, one per account, carried beside the content
+// key in the value every factor's row holds encapsulated to its own public half
+// — `account-keys.ts` states why it is derived per account and never per
+// credential, and `importHmacSha256Key` is the one door its bytes come through.
 //
 // **The budget is in the message because the key cannot be.** The index key is
 // drawn once per *account*, so an account holding two ledgers computes every
@@ -16,9 +16,10 @@
 // operator with full read access could read that repetition off two rows in two
 // tenancies without holding anything. NFR-014 refuses exactly that correlation.
 // Deriving a second index key per ledger would answer it too and was rejected
-// one layer up: every factor stores its own wrapped copy of the account's keys,
-// so a key per ledger is a wrapped pair per ledger per factor, and the day one
-// is added every envelope already written is missing it. A field in the message
+// one layer up: every factor carries the account's keys encapsulated to its own
+// public half, as one fixed-width plaintext of exactly two keys, so a key per
+// ledger widens that plaintext for every factor at once and the day a ledger is
+// added every value already stored is missing its key. A field in the message
 // costs one string and is a change no stored value has to survive — the
 // hyphenated identifier is served by `GET /api/me`, which is the one place this
 // browser can learn it, since the value is resolved from the session cookie and
@@ -71,14 +72,14 @@
 // configuration, no dependency, so a function is the whole of it.
 import { buildAssociatedData } from './associated-data';
 import { encodeBase64Url } from './base64url';
-// The same question the narrative grammar asks of its row id, and the same
-// question the wrapped-key grammar asks of its factor id — "is this *exactly*
-// the canonical spelling", not "does this parse as a UUID" — so it is the same
-// predicate, imported rather than restated. This is its third consumer, and a
-// third regular expression would be a third definition of one spelling: the half
-// that drifted would go on computing indexes that key perfectly and match
-// nothing a second client wrote. The alias is because a tenancy is not a factor;
-// the shape they have to be is.
+// The same question the narrative grammar asks of its row id — "is this
+// *exactly* the canonical spelling", not "does this parse as a UUID" — and the
+// same spelling the factor-keypair grammar folds its factor id to, so it is the
+// same predicate, imported rather than restated. This is its third consumer,
+// and a third regular expression would be a third definition of one spelling:
+// the half that drifted would go on computing indexes that key perfectly and
+// match nothing a second client wrote. The alias is because a tenancy is not a
+// factor; the shape they have to be is.
 import { isCanonicalFactorId as isCanonicalBudgetId } from './factor-id';
 import { normalizeNameForIndex } from './name-normalization';
 import type { NarrativeField } from './narrative-cipher';

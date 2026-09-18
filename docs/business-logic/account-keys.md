@@ -44,9 +44,8 @@ once.
 the widths it fixed and what it refused.
 
 **What is built today is the schema, the three server-side paths that bring a factor into existence
-and the fourth that takes one away, the one route that reads it all back — and a browser that has
-not followed.** Read that sentence at its full width, because the two
-halves disagree. The server refuses to register a passkey, issue a set of recovery codes, **or create
+and the fourth that takes one away, the one route that reads it all back, and the browser at both
+ends of it.** The server refuses to register a passkey, issue a set of recovery codes, **or create
 an account** unless the request carries, for every factor it brings into existence, a factor
 identifier, a wrapped private key of exactly 167 bytes and an encapsulated pair of exactly 158, and
 it files them in the same save as the credential. **All three demand a manifest beside them**, naming
@@ -58,16 +57,15 @@ promotes the manifest in the same `SaveChanges` that deletes the credential.
 back per factor, one level down inside an answer that also carries the account's manifest and the
 generation that manifest is in — see
 [The one route that hands them back](#the-one-route-that-hands-them-back).
-**The client still produces the arrangement this replaced**: `account-keys.ts` wraps each of the
-account's two keys under the factor's key-encryption key and `registration-api.service.ts` puts
-`wrappedContentKey` and `wrappedIndexKey` on the wire, which no route accepts any more. **It reads
-the old shape as well as writing it**, and carries two refusals for this route's answer of which
-only the first can fire: `MeApiService.getAccountKeys` throws on a body that is not an array, and
-then — behind that throw, so nothing from this route reaches it — demands `wrappedContentKey` and
-`wrappedIndexKey` on every entry. So no browser
-in this repository can currently register an account or open one, the client sections of this chapter
-describe what that browser does rather than what the server takes, and closing the gap is **work**
-rather than a departure anybody argued for.
+
+**The browser produces exactly that shape and reads it back.** `factor-keypair.ts` mints a factor's
+pair and opens one; `factor-manifest.ts` seals the account's list of public halves and opens it; the
+registration flow drives eleven of the first and one of the second in a single act, and custody runs
+the read half on every sign-in and on every unlock. **Of the four paths that move a factor set, one
+has a browser behind it** — registration, which *files* the account's first manifest. The three that
+*promote* one are server-built and client-unbuilt: nothing in this client registers a second passkey,
+replaces a card of codes or revokes a credential, so no browser has ever promoted a manifest and the
+epoch arithmetic those routes refuse on is exercised only by the integration suite.
 
 **`factor_manifests` has a writer on every path that changes an account's factor set;
 `key_rotation_seals` still has none, and the two must not
@@ -76,23 +74,23 @@ the same `SaveChanges` as the eleven `wrapped_account_keys` rows it names. Regis
 passkey, replacing a card of recovery codes and **revoking a passkey** each rewrite it and promote
 the epoch **in the same unit of work as the factor change itself**, which is the property the read
 beneath them rests on. The
-application role holds `SELECT`, `INSERT` and a two-column `UPDATE` on that table, and `SELECT` alone
-on `key_rotation_seals`, which stands in every database and is empty in all of them: no handler, no
-route, no repository and no read service names it. **Erasure is the one act that changes a factor
+application role holds `SELECT`, `INSERT` and a two-column `UPDATE` on that table. `key_rotation_seals`
+has a writer in the begin and **no route above it**, so it stands in every database and is empty in
+all of them. **Erasure is the one act that changes a factor
 set and owes no manifest**, because it leaves nobody for a list to describe. The key pair beneath it
 is in neither category: the pair is in the schema, refused by check constraints and required by
 every path that creates a factor. See
 [The manifest of factor public keys](#the-manifest-of-factor-public-keys) and
 [key-rotation.md](key-rotation.md).
 
-**The circle is closed on three paths, and each closes it differently** — on the arrangement the
-client still implements, which is the gap named above. `register.service.ts`
+**The circle is closed on three paths, and each closes it differently.** `register.service.ts`
 obtains a PRF output from a real authenticator, draws the account's keys, mints the set, derives
-eleven key-encryption keys and posts eleven pairs of envelopes, so an account created there really
-does own a content key and an index key that no server has seen — and on the `201` it hands the pair
-it already holds straight to custody, with no round trip. `sign-in.service.ts` takes the second
-route: the assertion's PRF branch gives it a key-encryption key, it hands that to custody, and
-custody reads the envelopes back and opens them. `AccountUnlockService`, on `/app/settings`, takes
+eleven key-encryption keys, mints a keypair under each, seals the manifest naming all eleven public
+halves and posts the lot, so an account created there really does own a content key and an index key
+that no server has seen — and on the `201` it hands the pair it already holds straight to custody,
+with no round trip. `sign-in.service.ts` takes the second route: the assertion's PRF branch gives it
+a key-encryption key, it hands that to custody, and custody reads the entries back, opens one and
+confirms the content key against the manifest. `AccountUnlockService`, on `/app/settings`, takes
 the third and is the only one reachable **inside** the app — see
 [The third way into custody](#the-third-way-into-custody). The other two write paths are still
 reached only by the integration suite.
@@ -270,8 +268,10 @@ erDiagram
     same argument from the other end: the path that skips a wipe is the path where something has
     already gone wrong, which is the worst moment to leave the value that unwraps the account lying
     in a buffer.
-  - **Enforced in**: the client, at three sites, each pinned by a spec that reads the buffer at the
-    platform boundary before and after the call →
+  - **Enforced in**: the client, over the **four kinds of buffer** that hold one long enough to
+    matter. Three are pinned by a spec that reads the buffer at the platform boundary before and
+    after the call; the fourth — the buffers `factor-keypair.ts` owns — is held where it is
+    written, by a `finally` per buffer, so a wipe deleted there reddens nothing →
     [What becomes of the bytes](#what-becomes-of-the-bytes).
 
 - **Every recovery factor MUST hold a key pair and a copy of the account's keys — every passkey, and
@@ -467,9 +467,7 @@ not part of the contract.**
 comes off a PRF output or a canonical recovery code by the branches below, and the vectors under
 [Frozen known-answer vectors](#frozen-known-answer-vectors) still hold. What a factor then does with
 that key **did** move — it unwraps a 167-byte private key rather than two 61-byte account keys — and
-the rest of this section, the envelope width, the nonce argument and the associated-data grammar,
-describes the arrangement **the browser in this repository still implements** rather than the one the
-routes accept. That gap is named under [Purpose](#purpose) and is work.
+the rest of this section describes the arrangement both sides now implement.
 
 | | Passkey factor | **One** recovery code |
 |---|---|---|
@@ -488,8 +486,8 @@ Nothing links a code's `recovery_code_hashes` row to its `wrapped_account_keys` 
 deliberate rather than missing: the link would have to live on the hash table, which is exempt from
 row-level security and holds a pinned column set. A client that has just redeemed a code reads the
 account's wrapped rows and **tries each in turn** — the associated data binds each pair to its own
-factor, so exactly one opens and the rest fail to authenticate. Twenty AEAD attempts is a cost
-nobody can measure.
+factor, so exactly one opens and the rest fail to authenticate. An entry costs two AEAD opens and
+one key agreement, so eleven of them is a cost nobody can measure.
 
 **Empty salt** means the zero-length octet string. HKDF-Extract is HMAC keyed on the salt and HMAC
 pads a short key with zeros to the block size, so a library taking `nil`, `""` or 32 zero bytes all
@@ -506,8 +504,17 @@ perfectly. Only `eval.first` is used; `eval.second` is not part of this contract
 **The canonical form of a recovery code**, in full, because a pointer at a source file is not a
 specification:
 
-1. Upper-case, with the **invariant** mapping — never a locale-sensitive one. A Turkish locale maps
-   `i` to `İ`, which no later step recognises.
+1. Upper-case by Unicode's **full** uppercase mapping, and **locale-independently** — two
+   requirements, and neither of them is the word *invariant*, which names a specific API — .NET's
+   `ToUpperInvariant` — that answers both of the cases below wrongly. **Full** means the step is
+   **not length-preserving**: `ß` `U+00DF` upper-cases to the two characters `SS`, and the dotless
+   `ı` `U+0131` upper-cases to `I`, which step 3 then folds to `1`. A simple mapping — one scalar
+   in, one scalar out — reaches neither answer, and a platform may offer nothing else: .NET has no
+   full-casing API at all, so the reproduction the server suite keeps carries the 103 code points
+   where the two mappings disagree as data. **Locale-independent** is the other half: a Turkish
+   locale maps `i` to `İ`, which no later step recognises. Both expansions are frozen rows in
+   [`vectors/recovery-code-v1.json`](vectors/recovery-code-v1.json), so an implementation that
+   reads *invariant* as an instruction reproduces neither.
 2. Remove every hyphen-minus `U+002D`, and every character in exactly this set: `U+0009`, `U+000A`,
    `U+000B`, `U+000C`, `U+000D`, `U+0020`, `U+00A0`, `U+1680`, `U+2000`–`U+200A`, `U+2028`,
    `U+2029`, `U+202F`, `U+205F`, `U+3000`, `U+FEFF`. Enumerated rather than named, because
@@ -526,41 +533,93 @@ differ only in HKDF's `info`.
 client implements it under are stated once in
 [ciphertext-envelope.md](ciphertext-envelope.md), because a second consumer now reads the same
 format and two copies of a layout drift silently. What belongs to *this* document is the one
-number that follows from the payload: over a 32-byte key the envelope is exactly **61 bytes** —
-a width, not a cap, because AES-GCM ciphertext is the length of its plaintext. That equality is
-the entity's own rule and is enforced on top of the shared framing, which carries a floor and no
-width at all.
+number that follows from the payload: over a **138-byte PKCS#8** P-256 private key the envelope is
+exactly **167 bytes** — a width, not a cap, because AES-GCM ciphertext is the length of its
+plaintext. That equality is the entity's own rule and is enforced on top of the shared framing,
+which carries a floor and no width at all. The account's manifest rides the same framing and takes
+a **band** instead, 29 to 4096, because its plaintext grows with the number of factors it names.
 
 **Nonce freshness is a rule of the format and is argued in
-[ciphertext-envelope.md](ciphertext-envelope.md).** What this document owns is why a repeat is
-especially cheap to reach in the arrangement this section describes: there **both of a factor's
-envelopes are *wrapped under* the same key-encryption key** — key over key, which is the verb that
-construction takes — so a counter starting at zero per factor repeats on the very next
-operation, and two GCM ciphertexts under one (key, nonce) give
-`C_content ⊕ C_index = contentKey ⊕ indexKey` — which destroys the independence of the two
-account keys that this design's whole correctness argument rests on.
+[ciphertext-envelope.md](ciphertext-envelope.md).** What this document owns is how little room the
+current arrangement leaves for a counter to look safe in. A factor puts exactly **one** value under
+its key-encryption key, `wrapped_private_key`; its `encapsulated_account_keys` is *encapsulated to*
+the public half, and the encapsulation framing carries its own ephemeral public key, so the AEAD
+beneath it runs under a key agreed **per encapsulation** rather than under the key-encryption key at
+all. One value under that key leaves no second ciphertext beside it to XOR against — which makes the
+repeat quieter rather than impossible: a client that re-derives a key-encryption key and re-wraps
+under it, with a counter reset to zero, collides with the first wrap and nothing says so. The
+requirement is unchanged and is held per (key, nonce) by the format, wherever the key came from.
 
-**The arrangement the routes take narrows that and does not retire the rule.** There a factor puts
-exactly **one** value under its key-encryption key, `wrapped_private_key`; its
-`encapsulated_account_keys` is *encapsulated to* the public half, and the encapsulation framing
-carries its own ephemeral public key, so the AEAD beneath it runs under a key agreed per
-encapsulation rather than under the key-encryption key at all. One value under that key leaves no
-second ciphertext beside it to XOR against. What does not change is the requirement: freshness is
-held per (key, nonce) by the format, wherever the key came from.
+#### The factor-keypair grammar
 
-**Associated data** of a wrapped key:
+**Four messages, one label, one join.** `⌷` below is a single `0x1F`, the ASCII unit separator, one
+between fields and none at either end.
 
 ```
-"budgetoid/wrapped-key/v1" || 0x1F || <factor id, lower-case hyphenated> || 0x1F || <"content" | "index">
+AAD, wrapped private key  = "budgetoid/factor-keypair/v1" ⌷ <version> ⌷ <factorId> ⌷ "private-key"
+AAD, encapsulated keys    = "budgetoid/factor-keypair/v1" ⌷ <version> ⌷ <factorId>
+AAD, manifest             = "budgetoid/factor-keypair/v1" ⌷ <version> ⌷ <rotationEpoch, decimal digits>
+HKDF info                 = "budgetoid/factor-keypair/v1" ⌷ <version> ⌷ <factorId>
+                               ⌷ <ephemeral public key, 65 raw> ⌷ <factor public key, 65 raw>
 ```
 
-UTF-8. `0x1F` is the ASCII unit separator and cannot occur in any of the three fields, so no length
-prefixes are needed. The factor id is **normalised** before it is used: the client accepts the
-spellings a `Guid` can be written in and folds them to the lower-case hyphenated form, and refuses
-anything that is not a UUID. **The server normalises nothing** — it refuses any spelling but that
-one, so the two sides agree on the bytes by the server never storing a value whose rendering differs
-from what it was sent. A client that normalises the other way, or not at all, is turned away at the
-write rather than discovering months later that its envelopes do not open.
+The label and every identifier are UTF-8. **The version byte and both public keys are raw and are
+never re-encoded**, which is why this grammar joins *bytes* where the narrative one joins strings: a
+65-byte point pushed through UTF-8 comes out 129 bytes long — measured, with no error anywhere — and
+a version composed as text is correct at 1 and silently wrong from `0x80` up, where UTF-8 widens one
+byte into two. The frozen file carries a `0x80` message for exactly that, and it is the only vector
+in it describing a version this scheme does not have.
+
+The encapsulation key is the P-256 raw agreement through HKDF-SHA-256 — empty salt, that info, 32
+bytes — imported as AES-256-GCM. **The encapsulation message is a strict prefix of the private-key
+message**, and that is the whole reason both are pinned: an implementation that forgets the purpose
+field does not produce garbage, it produces the *other* valid message of this same scheme, and a
+factor's two envelopes become interchangeable.
+
+**Both points go into the info, ephemeral first and recipient second.** Swapped, two matched
+implementations still agree with each other and with nothing else. Binding the recipient's point is
+what makes a substituted factor public key derive a different key — and **no vector can show it**;
+the file says so about itself.
+
+**Three version bytes are all `1` and none of them may be derived from another.** The AEAD suite's
+leads a wrapped private key and a sealed manifest; the encapsulation suite's leads an encapsulated
+value; and the **third** is this grammar's own, which appears inside every message above and inside
+the HKDF info and versions neither suite. All three spell the same byte today, which is precisely
+why only a source-text reading can tell them apart: a reader who aliases any two renumbers a suite
+nobody meant to touch, and nothing anywhere would say so.
+
+**There is deliberately no account identifier in any of these messages**, and the requirement was
+revised to match rather than the grammar bent to meet it. Two reasons, and the second is the one
+that makes the first affordable. The client **cannot obtain one**: `GET /api/me` publishes the
+address and the ambient budget, and an account-keys response may never carry a user id — that value
+is what every policy in the database is keyed on, and putting it in a body puts it in a browser's
+network panel and a client log. And it would **defend nothing**: a factor identifier is a
+client-minted uuid, unique across the whole table, and a duplicate is refused at every write path,
+so one account's factor row cannot be presented as another's in the first place. The instinct is to
+add one back for symmetry with the narrative grammar's row id; it buys no binding that the factor
+identifier does not already carry.
+
+The factor id is **normalised** before it is used: the client accepts the spellings a `Guid` can be
+written in and folds them to the lower-case hyphenated form, and refuses anything that is not a
+UUID. **The server normalises nothing** — it refuses any spelling but that one, so the two sides
+agree on the bytes by the server never storing a value whose rendering differs from what it was
+sent. A client that normalises the other way, or not at all, is turned away at the write rather than
+discovering months later that its envelopes do not open.
+
+**The epoch is decimal text and not a byte**, in the manifest's associated data and again at the
+head of the manifest's own plaintext. Eleven factors is the two characters `11`; a byte would put a
+ceiling of 255 into a format with no other reason for one, and the two spellings are
+indistinguishable at epoch 1, which is why the frozen file pins epoch 10 beside it.
+
+**The manifest plaintext is `count ⌷ factorId ⌷ publicKey ⌷ …`, entries ascending by the canonical
+spelling of the identifier.** The bytes have to be reproducible from a *set*, and a set has no
+order, so insertion order would make two clients holding one set write two different plaintexts. The
+sort is over the **text** and never over the identifier's bytes: .NET's `Guid.ToByteArray()` is
+mixed-endian, so a sort over raw UUID bytes agrees with this one on most sets and disagrees on some
+— and the frozen three-factor vector is one it disagrees on, which is the only reason that
+disagreement is visible anywhere. The count leads so that a truncated plaintext is a mismatch rather
+than a smaller set: without it, chopping the tail off a manifest yields a shorter manifest that
+parses, and the entry it drops is the authenticator somebody still has.
 
 ### Frozen known-answer vectors
 
@@ -571,6 +630,32 @@ The **blind index** and its normalization are not in this section: their frozen 
 computed under, the Unicode version the fold was read at and a digest of the shipped table. Four
 specs read that one artifact rather than transcribing it, which is what stops a second copy of a
 byte-level contract existing to drift from.
+
+The **factor keypair** is not in this section either, and for the same reason:
+[`vectors/factor-keypair-v1.json`](vectors/factor-keypair-v1.json) carries the four messages of the
+grammar above, the HKDF info, the encapsulation key, both stored values at 167 and 158, the manifest
+plaintext at three factors and at eleven, and the sealed manifest at epoch 1. It was **authored by a
+third implementation** — Node's OpenSSL-backed crypto — so that neither the browser's WebCrypto nor
+the server suite's `System.Security.Cryptography` can certify itself against it, and both reproduce
+every value in it.
+
+Three things in that file are worth meeting here rather than being reconstructed from it.
+
+- **The PKCS#8 is pinned, not the scalar.** A P-256 private key exported as PKCS#8 with its public
+  key included is exactly **138 bytes**, and the 65-byte uncompressed point sits at **offset 73** —
+  which is where a client lifts the factor's own public key from, satisfying the rule that the point
+  be derived from the opened private key and taken from nothing stored or transmitted. The width is
+  *enforced* rather than observed: an engine omitting the optional public-key field exports a shorter
+  structure, and a lift at 73 out of that reads a well-formed-looking 65 bytes that are not this
+  key's point.
+- **A second, wholly independent instance sits beside the first** — a different key-encryption key,
+  a different factor identifier, a different keypair and a different pair of account keys. Every
+  other vector shares one instance, so an implementation that ignores its arguments and returns the
+  frozen values passes all of them; it cannot pass both instances.
+- **What it cannot hold, stated in the file and again here**: it shows the bytes are *present*, never
+  that they *help*. The key-substitution property that binding both public keys into the info buys is
+  pinned **nowhere, by anybody** — no round trip can see it, because two matched implementations that
+  both dropped the recipient's point agree with each other perfectly.
 
 **Key-encryption key from a passkey factor**, observed through a seal because the key itself is
 non-extractable:
@@ -602,12 +687,6 @@ The verifier derived from that same code under `budgetoid/recovery-code/verifier
 `info`; a client that computes one correctly and the other wrongly has swapped the labels, and
 holding both vectors is the only way to see that.
 
-**Associated data** for factor `c1d2e3f4-5a6b-7c8d-9e0f-a1b2c3d4e5f6`, purpose `content`, 69 bytes:
-
-```
-6275646765746f69642f777261707065642d6b65792f76311f63316432653366342d356136622d376338642d396530662d6131623263336434653566361f636f6e74656e74
-```
-
 **Envelope**, independent of the account keys, with a fixed AES-256 key:
 
 | | |
@@ -632,9 +711,9 @@ compute a single index and cannot be corrected afterwards, since by then it is n
 the bytes are zeroes.
 
 **The number of doors is not the claim, and a reader who reads it as one will draw the wrong
-conclusion from a third.** What matters is that the count is not **zero**: the alternative to a
-door is not a weaker door, it is a `crypto.subtle.importKey` written out by hand beside the caller
-that needed it, holding **none** of the five decisions below. That is four lines, it compiles, and
+conclusion from the two ECDH imports one file over.** What matters is that the count is not
+**zero**: the alternative to a door is not a weaker door, it is a `crypto.subtle.importKey` written
+out by hand beside the caller that needed it, holding **none** of the five decisions below. That is four lines, it compiles, and
 it returns a perfectly good `CryptoKey`. Of the five, only a wrong *algorithm* is ever mentioned by
 anything — and it is mentioned at the first call rather than at the import, by which time the
 material has been wiped or not according to nobody's rule. A width silently downgraded, a usage
@@ -700,17 +779,42 @@ say it plainly — this rule is held **by construction**, by the shape of the co
 sitting on it, and **not by observation**. A reader who "tidies" the `await` away will find the
 whole suite agreeing with them, and nothing about the account will be worse.
 
-**Where the doors are written is pinned, and where they are *not* written is what the pin is for.**
-`key-import-single-source.spec.ts` reads the source tree and requires `crypto.subtle.importKey` to
-appear in exactly two non-spec files, each carrying its reason: `account-keys.ts`, holding the two
-doors, and `hkdf.ts`, which is **not** a door — it imports input keying material for a derivation
-and hands back a key whose only usage is `deriveBits`, so nothing can seal, sign or export under it.
-Two files, three call sites. Three limits are stated there rather than papered over: it catches a
-member access and not a call assembled at runtime; it is a rule *between* files, so a third door
-written **inside** `account-keys.ts` passes it and is caught only by that module's export census,
-and only if the door is exported; and it says nothing about what an owner's imports do. Specs are
-exempt, and that exemption is not a convenience — a non-extractable key has no witness but a spy at
-the platform boundary, so every spec that pins a door has to name the function.
+**Where the imports are written is pinned, and where they are *not* written is what the pin is
+for.** `key-import-single-source.spec.ts` reads the source tree and requires
+`crypto.subtle.importKey` to appear in exactly **three** non-spec files, each carrying its reason in
+the census itself rather than in a bare list: `account-keys.ts`, holding the two doors; `hkdf.ts`,
+which is **not** a door — it imports input keying material for a derivation and hands back a key
+whose only usage is `deriveBits`, so nothing can seal, sign or export under it; and
+`factor-keypair.ts`, which holds two more. **Three files, five call sites**, up from two and three.
+
+**The third file earns its standing on a distinction, and the number is the least interesting part
+of it.** What that module imports is a **factor's** keys and never the **account's**: a PKCS#8
+private half whose only usage is `deriveBits` and which is re-imported non-extractable, and a peer
+public point with an **empty** usage list. An account has one content key and one index key; a
+factor has a private half it agrees under and a public point somebody else hands it. Moving those
+two imports into `account-keys.ts` would put ECDH material through a file whose every decision is
+about symmetric account material, and moving that file's doors here would put the account's keys
+behind a factor's ceremony. The account key this module ends up with is **not** imported there at
+all — it goes through `importAesGcmKey`, which is the door. Say the distinction or the count is the
+only thing that moved and the reason is lost.
+
+Three limits are stated in the census rather than papered over: it catches a member access and not a
+call assembled at runtime; it is a rule *between* files, so a third door written **inside** an owner
+passes it; and it says nothing about what an owner's imports do. What catches the second is an
+**export** census, and three modules carry one — `account-keys.ts`, `factor-keypair.ts` and
+`factor-manifest.ts`, each comparing the keys of its own module namespace against a written-out set.
+**None of the three is filtered to functions**, so what is compared is the whole export surface
+rather than its callable part: an exported `const`, a class, an object and a fourth door all redden
+the same way, where a `typeof value === 'function'` filter is silent on every kind but the last.
+Two gaps
+follow and are named rather than assumed. A door written inside an owner and **not exported** is
+caught by nothing, on any of the three. And `hkdf.ts` is the one owner with no export census at all,
+so a hand-written import inside it has neither rule over it — which is the reason its standing in
+the owner list is written as narrowly as it is. The call-site count is
+deliberately **not** pinned there, because pinning it reddens on the legitimate change — a fourth
+door, argued for — and stays green on the one that matters, a hand-written import in a file with no
+standing. Specs are exempt, and that exemption is not a convenience — a non-extractable key has no
+witness but a spy at the platform boundary, so every spec that pins a door has to name the function.
 
 ### What becomes of the bytes
 
@@ -720,7 +824,7 @@ out of it — a property of WebCrypto rather than of anybody's care. Inside the 
 value is bytes, and what keeps *those* from outliving the call is an ordinary `fill(0)` that
 somebody wrote and somebody else can delete.
 
-Three buffers hold a secret long enough to matter, and each is cleared where it is consumed:
+Four kinds of buffer hold a secret long enough to matter, and each is cleared where it is consumed:
 
 - **The 64-byte draw inside `generateAccountKeys`** — the one buffer in which the content key and
   the index key sit together in the clear. The irony is exact, and it is why this wipe cannot be
@@ -745,13 +849,38 @@ Three buffers hold a secret long enough to matter, and each is cleared where it 
   one file over, about the same prologue, so this ordering is held **by construction** and not by
   observation: it stays for the stack trace, and because an earlier wipe would rest on a platform
   detail nothing here states and no test can observe. Hoist it and the suite stays green. The wipe
-  itself is not the negotiable part. One registration wraps two account keys under eleven factors,
-  so twenty-two of these pass through a single sign-up.
+  itself is not the negotiable part. One registration seals eleven private halves and one manifest,
+  so **twelve** of these pass through a single sign-up.
+- **The five buffers `factor-keypair.ts` owns**, which are the ones a reader will miss because that
+  module is not where key hygiene is argued. The **PKCS#8** of a freshly drawn private key is wiped
+  twice — once by the door that imports it and once by the frame that exported it, so a rejection out
+  of the seal in between does not leave a private key on the heap. The **raw ECDH agreement** goes
+  after the HKDF that consumes it. The **64-byte encapsulation plaintext** is hoisted expressly so it
+  can be wiped, because inline it would be a third copy of both account keys, once per factor, that
+  nothing names. The copies the mint's own **self-check** re-opened go next: that check runs the
+  whole read path against what it just wrote, which by definition makes a second copy of the pair.
+  - **And the fifth is `openFactorKeypair`'s own 64-byte plaintext, which none of the four sentences
+    above reaches.** Two of those four are shared — the PKCS#8 door and the raw agreement are on
+    both paths, and only the PKCS#8's *second* wipe belongs to the mint's frame alone — and the
+    other two are the mint's only, the encapsulation plaintext and the self-check copies. This one
+    exists on the **read** side and nowhere else: it is the buffer a decapsulation opens into,
+    holding the content key and the index key together in the clear before the two copies are cut
+    out of it. It is also the one that runs on the ordinary path, which is why leaving it unnamed
+    was the costliest omission in the group — a mint happens once, at registration, while this runs
+    on **every sign-in and every unlock**, once per entry tried. Its `finally` sits at the `return`,
+    and that position is what forces the two keys handed back to be **copies rather than views**: a
+    view would be zero-filled by the very line that is supposed to preserve it. Naming it here is
+    not tidiness. This whole group is held by a `finally` per buffer and by nothing that runs, so a
+    wipe deleted on the read side reddens exactly nothing, and this paragraph is the only thing
+    holding it.
 
-Each is pinned by a spec that takes the buffer at the platform boundary and reads it **twice** —
-once at the call, asserting it held key material that was not already zero, and once after. The
-first reading is what makes a green result impossible for an implementation that drew, derived or
-sealed nothing; the second is the rule. The two specs that spy on `crypto.subtle` **call through**
+The first three are pinned by a spec that takes the buffer at the platform boundary and reads it
+**twice** — once at the call, asserting it held key material that was not already zero, and once
+after. The first reading is what makes a green result impossible for an implementation that drew,
+derived or sealed nothing; the second is the rule. **The fourth is held where it is written**, by a
+`finally` per buffer with its argument beside it: that module's spec is driven by the frozen vectors
+and reaches `crypto.subtle` in three cases it names, none of them a reading of a buffer afterwards.
+So a wipe deleted there is a wipe nothing reddens. The two specs that spy on `crypto.subtle` **call through**
 rather than faking, because a buffer no real import and no real cipher ever consumed says nothing
 about what production does with one. What a spec cannot reach is the second buffer at the import: it
 observes the copy that crosses the boundary, and the material behind that copy is cleared in the
@@ -772,17 +901,27 @@ made.
 ### The one client that produces them
 
 There is exactly one place in this product where an account's keys exist **as bytes**, and it is the
-registration flow. Five rules govern what it does with them, and each is invisible when broken.
+registration flow. Six rules govern what it does with them, and each is invisible when broken.
 
 **The account keys are drawn once for the whole set, and stop being bytes as soon as the eleven
-wraps are done.** One `generateAccountKeys()` call sits outside every loop; the two buffers are
-zero-filled in a `finally`, so a wrap that rejects halfway does not leave them alive — and the draw
+mints are done.** One `generateAccountKeys()` call sits outside every loop; the two buffers are
+zero-filled in a `finally`, so a mint that rejects halfway does not leave them alive — and the draw
 those two buffers were split out of is wiped by `generateAccountKeys` itself, because this flow
 cannot name it. Drawing a pair **per factor** is the mistake worth naming: it satisfies every type,
 count, round trip and constraint the database holds, and it gives the second factor a second,
 incompatible account.
 
-**What the flow keeps past the wraps is two `CryptoKey` objects and never the bytes**, and the
+**The order of the last three steps is forced in two directions at once, which is why the tidiest
+arrangement cannot be written at all.** All eleven encapsulations run **before** the two import
+doors, because a door zero-fills the material it is handed in a `finally`: import first and every
+factor after it encapsulates thirty-two zero bytes — a value that mints, opens, posts and creates an
+account whose every later read is against a key nobody drew. The manifest is sealed **after** the
+doors, because it needs the content key as a `CryptoKey` and there is nowhere else to get one. So
+*import once at the top and seal as you go* is refused by the first rule, and *seal the manifest
+beside the eleven points* is refused by the second — and the arrangement that satisfies both makes
+the manifest **the content key's first real use in this product**.
+
+**What the flow keeps past the mints is two `CryptoKey` objects and never the bytes**, and the
 distinction is the whole of why keeping anything is defensible. The pair goes through both doors —
 the content key through the AES one, the index key through the HMAC one — in one statement that
 names no local for the material, and both doors zero-fill what they were handed on the rejecting
@@ -794,17 +933,26 @@ They are cleared by `restart()` and by every failure of the POST, beside the ass
 being navigated away from.
 
 **The eleven key-encryption keys are locals and never touch the service instance.** Each is an
-expression handed straight to the wrap, so none outlives the method whatever a later reader adds to
+expression handed straight to the mint, so none outlives the method whatever a later reader adds to
 the class. That is belt *and* braces with the non-extractable import above, deliberately, and
 neither half rests on the other. The wider rule the flow keeps: **a value is a signal only if a
 template renders it**, because a signal on an injectable is one `effect()` away from being logged by
 somebody debugging a re-render. The ten codes are the one secret published that way, because the
 screen that shows them has to read them from somewhere.
 
-**One code's four submitted members are produced in one scope, from one code** — its verifier, its
-factor identifier and its two envelopes, pushed together. The obvious implementation derives ten
-key-encryption keys into an array, wraps ten times into a second, and zips the results against the
-ten factor identifiers at post time.
+**One code's five values are produced in one scope, from one code** — its verifier, its factor
+identifier, its two envelopes and its **public key**, of which the first four are submitted and the
+fifth goes to the manifest. The obvious implementation derives ten key-encryption keys into an
+array, mints ten keypairs into a second, and zips the results against the ten factor identifiers at
+post time.
+
+**The public key is the member of the five with the quietest failure**, and it is the one that
+arrived with the keypair, so nothing in the older shape of this rule covers it. It leaves the loop
+for the manifest rather than for the wire, so a point zipped against another factor's identifier
+produces a manifest naming eleven real points with two of them paired to the wrong factors. Every
+envelope still opens, the set still validates, the account is still created, and the failure is a
+**rotation** — which stages one seal per named point, and would seal two factors to keypairs nobody
+holds.
 
 **What must never come apart is the factor identifier and the envelopes beside it**, because that
 identifier *is* the associated data both envelopes were sealed with. A submission holding one code's
@@ -818,7 +966,7 @@ of this paragraph.** It lands in `recovery_code_hashes`, which carries no `facto
 any kind to `wrapped_account_keys`, so a set whose ten verifiers were permuted against its ten
 identifier-and-envelope triples is indistinguishable from a correct one at redemption and forever
 after: the hash locates the credential, and the code's own key-encryption key opens whichever of
-that credential's ten envelope pairs it was sealed under. Building all four in one scope is still
+that credential's ten envelope pairs it was sealed under. Building all five in one scope is still
 the right shape, because a scope is cheaper than a rule about which members may be zipped — but the
 member that makes it load-bearing is the identifier, and a reader holding the wrong half will defend
 the wrong line.
@@ -831,6 +979,17 @@ companion predicate **reports and does not fold**: a caller wanting a canonical 
 That is the deliberate counterpart to `account-keys.ts` tolerating several spellings and folding
 them — folding defends against values arriving from elsewhere, while emitting one spelling is a
 property of the values this client creates.
+
+**The flow seals the manifest at epoch 1 and sends no rotation epoch, and a reader will try to add
+one for symmetry.** This path *files* a manifest; the three that *promote* one each move a
+generation, so each sends the number it is moving to and the server refuses anything but the stored
+value plus one. Here there is nothing stored, and the server derives the first epoch itself — which
+is why the request body carries no `rotationEpoch` member at all. The number is still needed on this
+side, because the epoch is the manifest's **associated data**: a client sealing at any other number
+writes a manifest that opens at that number and at none of the ones a rotation will ever ask for.
+The flow hands the eleven points over in the order it minted them and sorts nothing: ordering the
+entries, folding the identifiers and refusing a repeat are the codec's, so a caller assembling a
+card of ten beside a passkey has one rule to keep and not four.
 
 ### The one route that hands them back
 
@@ -1016,17 +1175,14 @@ own failure.
 was an enumeration oracle: a `404` would have told a caller that a guessed session id named a real
 row. That argument does **not** survive the widening, because nothing is narrowed by an identifier a
 caller could guess and an authenticated request can only ever ask about its own account. What holds
-it now is the client — the one this repository intends to have, because the one it ships cannot
-reach the question. `AccountKeyCustodyService` is written to read an empty list as `unopened` —
-"present another factor" — and to read a `404` as `unreachable`, whose advice is "try the same
+it now is the client, and both of its branches run on this route's answer.
+`AccountKeyCustodyService` reads an empty list as `unopened` —
+"present another factor" — and reads a `404` as `unreachable`, whose advice is "try the same
 factor again in a minute". A `404` would hand somebody whose account holds nothing openable the one
-instruction that can never work. **Neither branch runs on this route's answer today**:
-`MeApiService.getAccountKeys` throws on a body that is not an array, so the object this route hands
-back never reaches custody at all, and the shipped browser is broken end to end against it — it
-expects the bare array and the member names the write side stopped sending. What is argued here is
-the shape the route is held to and what the repaired client owes; it is not a path that runs.
-The refusals the client *does* tell apart are `401` and `403`, which are `unauthenticated`;
-a `404` is not among them precisely because it says nothing about this browser's session. **The
+instruction that can never work.
+The other refusals the client tells apart are `401` and `403`, which are `unauthenticated`, and a
+body it cannot read, which is `unrecognised`;
+a `404` is not among either precisely because it says nothing about this browser's session. **The
 array moving down a level changed none of that, and neither does the manifest arriving beside it**:
 an account holding no factor and no manifest is a `200` carrying no manifest, epoch `0` and an empty
 `factors`, and a `404` for the missing manifest would be the same mistake wearing a newer member's
@@ -1054,24 +1210,51 @@ account holding a passkey **and** a set of recovery codes, signed in with one of
 eleven factors.
 
 **The browser reads it in one place**, `MeApiService.getAccountKeys`, whose only caller is
-`AccountKeyCustodyService` — **and what it reads is the shape this route stopped answering**, so its
-**first** refusal now fires on every call: the collection check, against an object that is not an
-array. The per-entry check against members the write side stopped sending is **unreachable behind
-it**, because the collection check throws rather than falling through, so no body from this route
-ever reaches the entries. The capability to refuse twice is real and is what the rest of this
-paragraph argues for; the second refusal is dead code until the collection check stops firing. That
-is the same gap [Purpose](#purpose) names, arriving from the reading end, and what follows describes
-what that client does rather than what the route gives it.
-Two refusals are written rather than one, and both matter here more
-than on the neighbouring reads: a body that is not a list is a route or a proxy answering something
-else entirely, while an **entry** missing its identifier or one of its two envelopes is a version
+`AccountKeyCustodyService`, and it refuses **six** ways rather than one, because the six say six
+different things to whoever reads the message. The body is not an object at all — which is where the
+**retired** bare array now lands, so a client run against a server that still answers one says so
+here instead of reading `undefined` off an array's `factors` property and calling the account empty.
+The manifest is neither bytes nor `null`. The epoch is not a whole number from zero up. The manifest
+and the epoch **disagree with each other**. `factors` is
+not a list. Or an **entry** is missing its identifier or one of its two envelopes.
+
+**One of the six is not a member check at all, and that is why it had to be added rather than
+folded into either neighbour.** Taken separately the two members are well formed: any non-empty
+string is a legal manifest and `0` is a legal epoch. What ties them is the invariant the response
+type owns — `0` is the epoch of an account with no manifest row, because a stored generation starts
+at 1 and the column refuses anything lower — so a manifest beside `0`, and `null` beside a stored
+generation, are each faultless member by member and are a pair no account can be in. It is written
+as one comparison of the two **absences**, never as a wider check of either value, because widening
+either one is how a client ends up holding a second, weaker definition of what a manifest is.
+**Where it is caught is the point of it.** Left through, a manifest served beside `0` reaches
+`openFactorManifest`, whose associated data refuses an epoch below 1; that throw is caught by the
+gate in `AccountKeyCustodyService`, which reads it as a statement about the account's **key
+material**. Somebody would be told that nothing they hold will ever open this account, over two
+members of a body that merely disagreed with each other. Refused at the boundary it stays the
+boundary's own word, and a reload is the act that changes it.
+
+The entry check is the one that matters most and matters here more
+than on the neighbouring reads: a body that is not the right shape is a route or a proxy answering
+something else entirely, while an **entry** missing a member is a version
 skew on the right route. The per-entry check is what stops the second from being read as the first
 kind of failure — an absent member reaches `decodeBase64Url` as `undefined` and throws *inside the
 trial loop*, where a throw already means "this factor is not the one, try the next", so a malformed
 body would be answered with "present another factor" and an account would be declared unopenable by
 its own key custody with nothing naming the cause. It is deliberately **not** a check of the
-envelopes' shape: width, version byte and alphabet belong to the decoder and the envelope, and a
-second, weaker copy of them at the boundary would be a second definition of what an envelope is.
+envelopes' shape: width, version byte and alphabet belong to the decoder and the keypair codec, and
+a second, weaker copy of them at the boundary would be a second definition of what an envelope is.
+
+**All six throw one type of their own, `AccountKeyResponseError`, and the type is the whole point of
+it.** A body this client cannot read is a statement about *this read* — the remedy is a reload, and
+neither a retry nor another factor can change it — so custody branches on the type and answers
+`unrecognised` rather than letting it fall through to `unreachable`, whose advice is "try again in a
+minute" and can never succeed here. The branch is on the **type** and never on a message: six
+messages are written at that boundary and more will be, and a reading matched against one of them
+would quietly stop covering the rest.
+
+**`Array.isArray` is part of the first condition and not an afterthought.** An array *is* an object
+to `typeof`, so without it every member check below would run against a list and refuse for the
+wrong reason, three layers from the fact that matters.
 
 **The read carries `EXPECTS_UNAUTHENTICATED`, and that is custody's own rule enforced from the
 outside.** `AccountKeyCustodyService` never calls anything on `SessionService`, because a key that
@@ -1174,15 +1357,14 @@ a class, so it outlives the one section that decides whether to offer a press.
 reaches for nothing on it — which is also what keeps the two modules out of an import cycle.
 Publishing `anonymous` from a failed unlock would sign somebody out of an account they are
 demonstrably inside: the server answered, the session is live, and what failed is the factor they
-presented. The three failure words are **never collapsed** for the same reason `SignInService` keeps
+presented. The five failure words are **never collapsed** for the same reason `SignInService` keeps
 `refused` apart from `unknown` and `SessionService` keeps `anonymous` apart from `unreachable` — the
-same rule three times, because the mistake is available at all three:
+same rule three times over, because the mistake is available at all three:
 
 - `unopened` — the envelopes were read and none opened under the factor presented, including the
   case where the list came back empty. The way forward is another factor.
 - `unreachable` — no usable answer came back at all: a network that reached no server, a `5xx`, a
-  `404` this route never gives, a timeout, a body this client refused. The way forward is the same
-  factor again in a minute.
+  `404` this route never gives, a timeout. The way forward is the same factor again in a minute.
 - `unauthenticated` — the server *answered*, and the answer was that this browser may not read
   these envelopes: a `401`, or the `403` a locked session and the CSRF control give. Neither of the
   other two words is true of it. `unreachable`'s advice is to retry, and a `401` will not change on
@@ -1190,10 +1372,39 @@ same rule three times, because the mistake is available at all three:
   false by that word's own definition, since a `401` is a usable answer from a server that was
   reached. `unopened`'s advice is another factor, and the factor was never judged. The way forward
   is to sign in again, which is a third next step and therefore a third word.
+- `unrecognised` — the server answered and **this browser did not recognise the answer**. It is
+  `unauthenticated`'s sentence applied to a different refusal: a statement about *this read*, and
+  the only one of the five that is a statement about **the answer** rather than about the account,
+  the factor or the network. It used to fall to `unreachable`, and `unreachable` is false about it in
+  exactly the way it is false about a `401` — the server was reached and it answered — with the
+  additional cost that *try again in a minute* can **never** succeed here: the next minute runs the
+  same bundle against the same route and is refused the same way. The way forward is to **reload the
+  tab**, which is the one act that fetches a different copy of the JavaScript from the static host,
+  and that is a fourth next step and therefore a fourth word. The two are indistinguishable from
+  inside a `catch` and are told apart only by the type the API boundary throws, which is why that
+  type exists at all.
+  - **The word reports and never diagnoses, and the other four are why.** Each of them names what
+    was *observed* — nothing opened, nothing answered, the answer was a refusal, the two halves do
+    not agree. A word naming a **cause** is the one available mistake here, and the cause a reader
+    reaches for is *this tab is older than the route*. The evidence cannot carry it: the same
+    boundary refuses the **retired bare array**, which is a newer bundle meeting an older route, so
+    the claim is false half the time and nothing in a refused body says which side moved. The
+    reload is what survives that, because it is the only act available either way.
+- `inconsistent` — a factor opened, and what came out of it does not agree with the account's own
+  manifest. **It is the only one of the five that no act of the person's can clear**, which is
+  exactly why it is a word and not a reuse of the nearest one: every factor of an account
+  encapsulates the same two keys, so a pair that will not open this manifest will not open it under
+  another passkey, under any of the ten recovery codes, in another browser or after a reload. There
+  is no way forward to offer and the word says so.
 
 **The third word arrived with the context token above and is its other half.** While the read was
 unmarked, a `401` was answered by the interceptor navigating away, so whatever custody published
-about it was read by nobody; marked, this is the only place that answer is read at all. The
+about it was read by nobody; marked, this is the only place that answer is read at all. **The fourth
+is the same sentence applied to the refusal the API boundary makes about a body**, which was the one
+answer left falling through to `unreachable` after the third word landed. **The fifth is the one
+state whose nearest word is worse than no word at all** — reported as `unopened`, its remedy is
+*present another factor*, which over this state sends somebody through an entire recovery card on a
+door that cannot open; the gate below is where that trade is argued in full. The
 `401`/`403` reading is written out in `AccountKeyCustodyService` rather than borrowed from
 `SessionService.readingOf`, which makes the same judgement four lines away: importing it is the one
 thing this class may not do, because that edge closes the cycle and puts the rule above one call
@@ -1221,9 +1432,71 @@ nothing else is answered with one entry, so the list of one is what a reader opt
 eleven, of which exactly one opens under the factor just presented. What `entries[0]` does there is
 read some other factor's envelopes under this factor's key-encryption key: the open fails to
 authenticate, the loop that would have found the right pair is not there, and somebody who presented a
-valid factor is told their account cannot be opened. Twenty-two AEAD attempts is a cost nobody can
-measure. The associated data is rebuilt from `entry.factorId` and never from anything this client
-remembers, because that identifier **is** what the envelopes were sealed against.
+valid factor is told their account cannot be opened. Two AEAD opens and one key agreement per entry
+is a cost nobody can measure. The associated data is rebuilt from `entry.factorId` and never from
+anything this client remembers, because that identifier **is** what the envelopes were sealed
+against — and the **entry itself** is what is handed to the codec, rather than two members picked off
+it, so there is one spelling of the two envelopes from the wire to the open and no call site that can
+pass them in the wrong order.
+
+**Before an account is presented as unlocked, the content key is made to open the account's
+manifest — once, after the loop, and never inside it.** This is not decoration and it is not depth
+over a hazard something else already closes. A decapsulation that succeeds proves the 64 bytes are
+what was encapsulated to that factor, and proves **nothing whatever** about which half of them is
+which: the two keys sit in one plaintext told apart by position alone, with no separator, so a client
+that encapsulated them the other way round produces a value of exactly the right width leading with
+exactly the right version, which stores, reads back and opens. Neither side of the wire can see it —
+the server holds no key, and custody until this point has judged only whether the AEAD
+authenticated. The manifest is *sealed under the **content** key*, so opening it is the one runtime
+check anywhere, on either side, that a reversed pair fails.
+
+**Its position is what keeps two different failures apart, and the two now answer differently.**
+Inside the loop it would be a second reason an entry can be skipped, and the two would arrive at the
+same place by the same road: *no factor opened* — present another one — and *a factor opened and its
+content key is wrong*, which no other factor can help with, since every factor of an account
+encapsulates the same two keys. Outside it they are two branches with two causes, and each has a
+word. The second is **`inconsistent`**, not `unopened`: two branches sharing one word was the
+position this chapter used to argue, on the grounds that growing the copy table twice for one state
+cost more than reusing the nearest word, and that trade was the wrong way round. `unopened`'s remedy
+is *present another factor*, and here that is advice to spend a whole card of recovery codes on a
+door that cannot open — one altered byte in a stored manifest reported as a factor problem, in every
+browser, after every reload, with the screen encouraging the attempt each time. So the word is about
+the **material and not the factor**, deliberately, which is also what lets the states arriving with
+the served-set comparison sit under it rather than adding two more.
+
+**The epoch the gate opens under is the one the same response carried, so what it buys is a binding
+and not rollback detection.** `openFactorManifest` takes `rotationEpoch` as associated data, so a
+manifest sealed at one generation and presented as another fails to authenticate — that much is
+real, and it is what stops a blob from one generation being passed off as the current one *by
+anything that cannot also choose the number beside it*. Nothing here can choose otherwise: the
+client's only source of `rotationEpoch` is the body that carried the manifest, so a server serving a
+superseded pair serves a **self-consistent** one and this gate opens it. Read as rollback detection
+the check is an overclaim; read as a binding it is exactly what it is. Refusing a replay is story
+12.14's work and is unbuilt, and what it needs is a source for the number that is not the body being
+judged.
+
+**A missing manifest passes the gate, and that is a decision rather than a hole — but it is a
+bypass, and calling it anything softer misleads the next reader.** No account this product can
+create answers `null` — registration files the first manifest in the same save as the session — so
+the only rows that do are ones a test seeded by hand. Refusing them would turn a defensive read
+shape into a **permanent** lockout for exactly those accounts, changed by no factor, no reload and
+no sign-in, which is a far worse failure than the one the gate exists for. What follows from keeping
+the branch has to be said plainly: **this gate is not a control over the server.** Anything that can
+shape the response — the API, a proxy, anybody who has taken either — turns it off by answering
+`manifest: null`, and the `null` branch is where it goes off. What is left is a **self-check on this
+client's own encapsulation order**, made against a manifest an honest server hands back: it catches a
+build of this bundle that encapsulated the two account keys the wrong way round, which is a fault no
+width, no version byte and no round trip can see. It catches nothing an operator does, and it is not
+evidence that the served factor set is the account's. **What would make the manifest load-bearing
+against an operator is story 12.14, and it is unbuilt**: refusing a response that carries no
+manifest, and comparing the set the manifest names against the set that was served. Until it lands,
+the cost of reading this gate for more than it is, is that somebody deletes the `null` branch to
+"close the hole" — which closes nothing and locks every seeded account out permanently.
+
+What the gate reads is whether the tag verified and nothing else: the plaintext comes back as
+**bytes** and is never parsed here, because this class learning which factors an account holds is
+nobody's business, and a parser shipped ahead of the comparison that needs it would be an export
+with no production caller.
 
 **Registration transfers the keys as objects, and does not re-read them through the route.** On the
 `201` it calls `adopt`, handing over the two `CryptoKey`s it is already holding. The rejected
@@ -1772,8 +2045,9 @@ state of the session rather than of the screen.
 a rule stated in prose above. With no `SessionService` and no `Router` in reach, "a refused unlock
 never signs anybody out" is not something the flow is trusted to remember — it is something the
 flow cannot do. Its five refusals (`unsupported`, `cancelled`, `no-prf`, `ceremony-failed`,
-`unknown`) are facts about a **device** and are deliberately disjoint from custody's three, which
-are facts about a **read** and a **factor**; neither union is derived from the other, and neither
+`unknown`) are facts about a **device** and are deliberately disjoint from custody's five, which
+are facts about a **read**, a **factor**, an **answer** and the account's own **key material**;
+neither union is derived from the other, and neither
 carries a member the other's outcome could be filed under. The screen renders them, and
 [components.md](../design/components.md) owns which sentence each one gets.
 
@@ -1897,8 +2171,12 @@ can leave, since the role holds no `DELETE` on that table. **And it needs no wid
 the grant**: this promotion is `UPDATE (manifest, rotation_epoch)`, the two columns the
 role already holds on this table.
 
-**The client supplies the epoch and the server never computes one**, which reads like
-laxity and is the opposite. The epoch is bound into the manifest's **associated data**, so
+**On the three promoting paths the client supplies the epoch and the server never
+computes one**, which reads like laxity and is the opposite. Registration is the
+exception and not a counterexample: it files the first generation, so there is
+nothing stored for a supplied number to be judged against, the server uses
+`MinimumRotationEpoch` and the request carries no epoch member at all. Everywhere
+else the epoch is bound into the manifest's **associated data**, so
 the number stored has to be exactly the number the client sealed under; a server-computed
 value that ever diverged from it would leave a blob the client cannot open, on a row that
 passes every check there is. What the server owes is therefore not arithmetic but a
@@ -2112,11 +2390,19 @@ gets back out.
    copies. No further state exists — the keys live only in memory.
 2. **Deriving a key-encryption key.** From a PRF output, or from a code by way of its canonical
    form. An empty canonical form is refused, exactly as the verifier derivation refuses it.
-3. **Wrapping.** Each key is sealed under the factor's key-encryption key with its own associated
-   data, and rendered as unpadded base64url.
-4. **Unwrapping.** Each wire value is decoded and opened with the same associated data. A copy moved
-   to another factor, or to the other purpose, fails to authenticate rather than returning wrong
-   bytes.
+3. **Minting a factor's keypair.** An ECDH P-256 pair is drawn, its private half exported as PKCS#8
+   and *wrapped under* the factor's key-encryption key; the account's two keys go into one 64-byte
+   plaintext, content key first, *encapsulated to* the public half; and the point the manifest will
+   name is lifted out of that PKCS#8 at offset 73 rather than taken from the handle the draw
+   returned. Both values are rendered as unpadded base64url, and **the pair is opened again before it
+   is handed back** — a fault in the encapsulation is otherwise discovered by the person who needs
+   this factor, which is by definition the moment they have lost the others.
+4. **Opening one.** Each wire value is decoded, judged against its own exact width, and opened with
+   the same associated data. A copy moved to another factor, or the wrapped private key presented
+   under the encapsulation's message, fails to authenticate rather than returning wrong bytes.
+   **Sealing the manifest is the step beside these two**: every factor's public half, sorted by the
+   canonical spelling of its identifier, sealed under the account's content key at the epoch that
+   generation will be filed under.
 5. **Storing.** `POST /api/passkeys/registration` carries one `factorId`, `wrappedPrivateKey` and
    `encapsulatedAccountKeys`. `POST /api/me/recovery-codes` carries **ten** submissions, each a
    code's verifier beside that code's own factor identifier and that pair. `POST /api/registration`
@@ -2144,9 +2430,8 @@ gets back out.
    [The manifest of factor public keys](#the-manifest-of-factor-public-keys).
 
    **Steps 3 and 4 describe what the browser does and step 5 describes what the routes take, and
-   today those disagree** — the client wraps both account keys under the key-encryption key and sends
-   `wrappedContentKey` and `wrappedIndexKey`, which no handler here accepts. The server side is the
-   built one; the client side is the work. See [Purpose](#purpose).
+   the two now meet on `POST /api/registration`.** The other three write paths have no client at
+   all, so what they take is exercised by the integration suite alone.
 
    The set's ten identifiers must differ, and that rule lives in the handler rather than being left
    to the primary key: as a `23505` it would arrive *after* the previous set had already been
@@ -2169,8 +2454,8 @@ gets back out.
    **every** factor rather than the passkey ones, and materialising the rows `AsNoTracking` because
    `KeyRotationSeal.For` takes the loaded entity — and `BeginKeyRotationHandler` calls it on every
    begin, judging the seals a client staged against its keys in both directions. No route reaches
-   that handler. The browser's one caller is custody — still
-   written against the bare array this route used to answer. See
+   that handler. The browser's one caller is custody, which reads both levels off this answer: the
+   entries to try, and the manifest to confirm the content key against. See
    [The one route that hands them back](#the-one-route-that-hands-them-back).
 
 7. **Holding them, and spending them.** Both keys are imported through their own door and kept as
@@ -2257,22 +2542,33 @@ the database could have decrypted with it before redeeming too.
   database refuses the transposition before it is ever read back
 
 All of them are one symptom by design: the client learns the value is not usable and learns nothing
-about why. **The one failure that produces no symptom at all** is the account keys arriving in the
-wrong order inside the encapsulated plaintext — that opens perfectly and yields two keys used for
-each other's job.
+about why. **The failure that produces no symptom in any of that** is the account keys arriving in
+the wrong order inside the encapsulated plaintext — the pair opens perfectly and yields two keys used
+for each other's job. Nothing on the server can ever see it. What sees it is the client, one step
+later and by a different mechanism: the manifest is sealed under the **content** key, so a reversed
+pair fails to open it and the account is not presented as unlocked.
 
 **An unlock did not end in custody. What does the browser say?**
 
 - some entry opened → `unlocked`, and nothing is said at all
 - the read came back and no entry opened, **including an empty list** → `unopened`. The next step is
-  another factor. An empty list is not a third word: it means the account holds no wrapped rows this
-  request can see, and the four ways that happens are indistinguishable to a client, so a third word
-  would claim a difference this client was never told
-- the read never produced a usable answer — no server, a `5xx`, a `404`, a timeout, a body this
-  client refused → `unreachable`. The next step is the same factor again in a minute
+  another factor. An empty list is not a word of its own: it means the account holds no wrapped rows
+  this request can see, and the four ways that happens are indistinguishable to a client, so a fifth
+  word would claim a difference this client was never told
+- an entry opened and its content key did not open the account's manifest → `inconsistent`, and
+  **there is no next step**: every factor of an account encapsulates the same two keys, so a reversed
+  or damaged pair is reversed or damaged for all of them, in every browser and after every reload.
+  The word is about the account's key material rather than about the factor, which is what lets the
+  states arriving with the served-factor-set comparison file under it
+- the read never produced a usable answer — no server, a `5xx`, a `404`, a timeout → `unreachable`.
+  The next step is the same factor again in a minute
 - the server refused the read itself — a `401`, or the `403` a locked session or the CSRF control
   gives → `unauthenticated`. The next step is signing in again, and it is neither of the two above:
   retrying cannot help, and no other factor can either
+- the server answered and this client could not read the body → `unrecognised`. The next step is
+  reloading the tab, and it is none of the three above. **Not a claim about which side is stale**:
+  the same refusal covers this bundle meeting a newer route and this bundle meeting the retired
+  response shape, so the word names the answer rather than the version
 - **never**: sign the person out. No word here is a statement about the session
 
 ## Integration Points
@@ -2319,7 +2615,8 @@ each other's job.
   epoch **step** no declarative layer holds — the token beside it holds atomicity and never the
   arithmetic.
 - **[key-rotation.md](key-rotation.md)** — the one operation the key pair exists for, what a run
-  stages, and the guarantee the begin currently does without.
+  stages, and the half of the factor-set guarantee the begin holds over its seals rather than over
+  the manifest it cannot read.
 - **[data-isolation.md](../engineering/data-isolation.md)** — `wrapped_account_keys` is policed by
   `user_isolation`. Its `SELECT` grant now has two kinds of reader: the route above, and the two
   isolation tests, which do not become redundant beside it — an endpoint answering correctly says
@@ -2354,13 +2651,20 @@ each other's job.
 ## Edge Cases & Known Gotchas
 
 - **Every function in the module has a live caller, so "keep it, something is waiting" is not the
-  reason to keep any of it.** `/register` reaches `generateAccountKeys`, `wrapAccountKeys`,
-  `keyEncryptionKeyFromRecoveryCode` and both doors; the ceremony reaches
+  reason to keep any of it.** `/register` reaches `generateAccountKeys`,
+  `keyEncryptionKeyFromRecoveryCode` and both doors, and `mintFactorKeypair` and `sealFactorManifest`
+  one file over; the ceremony reaches
   `keyEncryptionKeyFromPasskey` on **all three** of its legs — `createPasskey`, `assertPasskey` and
   the local `deriveKeyFromLocalAssertion` an unlock runs, none of which lets the PRF output out of
-  the module; and `unwrapAccountKeys` is called by `AccountKeyCustodyService` on every passkey
+  the module; and `openFactorKeypair` and `openFactorManifest` are called by
+  `AccountKeyCustodyService` on every passkey
   sign-in and on every unlock, which is the same call from two screens and not two
-  implementations of it. **Nothing here is left standing on a spec alone**: `sealField`
+  implementations of it. **The retired grammar left rather than being kept beside the new one** —
+  the wrapped-key label, its purpose selector, its associated-data builder and the wrap and unwrap
+  either side of it are **deleted**, and its frozen vectors went with them. A second grammar kept
+  "in case" is a second grammar a later caller can reach, and the two spellings would be told apart
+  by nothing in the bytes. What stayed is the pair of key-encryption-key vectors, because that half
+  of the scheme genuinely did not move. **Nothing here is left standing on a spec alone**: `sealField`
   and `openField` use the content key and reach the codec one file over, `blindIndex` uses the index
   key and reaches the codec beside it, and all three are called by `/app/accounts`, the transaction
   form and both halves of `/app/categories`. **What that costs is the cheapness of changing any of

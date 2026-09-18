@@ -1543,15 +1543,34 @@ public sealed class AccountKeysEndpointTests
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
     }
 
-    /// <summary>The two members carrying an envelope, named once so no assertion spells either twice.</summary>
-    private static readonly string[] EnvelopeMembers = ["wrappedPrivateKey", "encapsulatedAccountKeys"];
-
     /// <summary>
-    /// Every member one row carries, in the order the census joins them. Spread from
-    /// <see cref="EnvelopeMembers" /> rather than typed again, so the two envelope names have one spelling
-    /// in this file and a rename cannot leave the census agreeing with a stale copy of itself.
+    /// Every member one row carries, read off
+    /// <c>docs/business-logic/vectors/account-keys-wire-v1.json</c>.
     /// </summary>
-    private static readonly string[] RowMembers = ["factorId", .. EnvelopeMembers];
+    /// <remarks>
+    /// <para>
+    /// <b>Read from the artifact rather than written out here, and the difference is the one the
+    /// artifact exists for.</b> This file's census is the strongest statement anybody makes about the
+    /// row: both directions, over a real response body, from a real host, with no reconstructed
+    /// serializer options and no reflection. Its expectation used to live beside it — which meant a
+    /// rename on the server could be greened by pasting the new spelling over the old, a diff that reads
+    /// in review as a test being updated alongside its code, while the browser went on reading the name
+    /// the server had stopped sending. Read from the shared file, the same paste has to move the
+    /// client's expectation too.
+    /// </para>
+    /// <para>
+    /// <b>It is a different subject from
+    /// <see cref="AccountKeyWireContractTests.AccountKeyEntry_BindsExactlyTheMembersTheContractNames" />,
+    /// which binds the same list, and the two are not one test written twice.</b> That one binds the
+    /// <em>record</em>, by reflection, with no database — it says the declared type agrees with the
+    /// artifact, and it says so about every branch of every projection that returns the type, including
+    /// branches no arrangement here reaches. This one binds the <em>bytes</em> — it is the only one of
+    /// the two that can see a <c>PropertyNamingPolicy</c> added to <c>Program.cs</c>, which that file
+    /// names as its own blind spot. Each catches an edit the other is blind to; neither subsumes the
+    /// other.
+    /// </para>
+    /// </remarks>
+    private static readonly IReadOnlyList<string> RowMembers = WireContract.Members("accountKeyEntry");
 
     /// <summary>
     /// The three members a row may never carry. Each is argued in the census's own remarks; listed here
@@ -1572,14 +1591,26 @@ public sealed class AccountKeysEndpointTests
     private static readonly string[] StandardAlphabetOnly = ["+", "/", "="];
 
     /// <summary>
-    /// The three members the response body carries, and no fourth.
+    /// The three members the response body carries, and no fourth — read off the same artifact
+    /// <see cref="RowMembers" /> is.
     /// </summary>
     /// <remarks>
-    /// Built from the three constants the rest of this file reads rather than spelled out again, so a
-    /// rename lands in one place and the census cannot end up agreeing with a stale copy of itself —
-    /// the arrangement <see cref="RowMembers" /> keeps one level down.
+    /// <para>
+    /// The same argument one level up, and it applies unchanged: an expectation this file owns can be
+    /// greened by pasting the server's new spelling over it, and the artifact is what makes that paste
+    /// move the browser's expectation with it.
+    /// </para>
+    /// <para>
+    /// <b><see cref="ManifestMember" />, <see cref="RotationEpochMember" /> and
+    /// <see cref="FactorsMember" /> stay where they are and are not folded into this.</b> They are used
+    /// to <em>index</em> a body — <c>body[ManifestMember]</c> — which is a different job from stating
+    /// what the whole set is: an indexer needs one name, and taking it out of a list read from a file
+    /// would mean indexing by position into somebody else's document. The census below is what holds the
+    /// three constants against the artifact, since a body carrying a member none of them names fails it.
+    /// </para>
     /// </remarks>
-    private static readonly string[] BodyMembers = [ManifestMember, RotationEpochMember, FactorsMember];
+    private static readonly IReadOnlyList<string> BodyMembers =
+        WireContract.Members("accountKeysResponse");
 
     /// <summary>
     /// Asserts both directions of one caller's answer: that the rows are exactly the factors that

@@ -41,10 +41,16 @@ opens it already holds, which is what makes it producible while nobody is holdin
 | Construction | Verb | Example |
 |---|---|---|
 | symmetric AEAD over data | *sealed under* | a narrative field is sealed under the content key |
-| symmetric AEAD over a key | *wrapped under* | an account key is wrapped under a factor's key-encryption key |
-| ECDH to a public key, then AEAD | *encapsulated to* | a value is encapsulated to a factor's public key |
+| symmetric AEAD over a key | *wrapped under* | a factor's private key is wrapped under that factor's key-encryption key |
+| ECDH to a public key, then AEAD | *encapsulated to* | the account's two keys are encapsulated to a factor's public key |
 
-Only the third is new. The word is **encapsulated** and not *sealed* because *sealed under*
+**The last two examples name one factor and are still two operations**, which is the pair a reader
+most needs to keep apart: the second puts the factor's *own* private half under a symmetric key that
+factor derives, and the third puts the *account's* content key and index key to the public half of
+that same pair. Two plaintexts, two protecting keys and two columns — `wrapped_private_key` and
+`encapsulated_account_keys` — so neither row is the other one read from the far end.
+
+Only the third verb is new. The word is **encapsulated** and not *sealed* because *sealed under*
 already names symmetric encryption at every other site in this repository, so "sealed **to** a
 public key" would have stood one preposition away from "sealed **under** a key" — two
 constructions whose confusion is silent, since both spellings compile, both sets of bytes
@@ -141,9 +147,13 @@ says anything about the other.** A factor's private key is wrapped on every regi
 unwrapped whenever a factor is presented; narrative fields are sealed on every write those screens
 make and opened on every read they answer. What either buys the other is nothing at all — a format
 exercised by one consumer is not a format checked for the other, since the two grammars differ and
-only the frozen vectors speak to both. **The encapsulation framing has columns and a decoder and
-still no writer in a browser**, because the client half of the key-pair reshape has not landed — see
-[account-keys.md](account-keys.md), which names that gap as work rather than as a decision.
+only the frozen vectors speak to both. **A third AEAD consumer arrived with the factor keypair**:
+the account's manifest, *sealed under* the content key, which registration writes and every factor
+presented opens — and it is the only value of this framing whose length rule is a **band** rather
+than a width, because its plaintext grows with the number of factors it names.
+**The encapsulation framing has a writer in the browser now.** A registration produces eleven
+values in it, one per factor, and opens one back on every sign-in and every unlock — see
+[account-keys.md](account-keys.md).
 
 **The server's format edge now has a column behind it.** Four types stand between a client's bytes
 and storage: `Domain/Security/NarrativeFieldLimits` (the two byte caps),
@@ -219,9 +229,10 @@ and which one applies is decided by whether the column has an index beside it.**
   second place the layout is stated.
 - **Encapsulated value** — the second byte sequence above, carrying an ephemeral public key
   between the version byte and the nonce. A type on the server — `EncapsulatedValueEnvelope`, a
-  floor, a version and a well-formedness rule — with two columns storing values in it and a decoder
-  at the edge, and **nothing anywhere that opens one**: opening takes the private half of the key it
-  was encapsulated to, and this server holds no private key of any kind. The **encapsulation
+  floor, a version and a well-formedness rule — with two columns storing values in it, a decoder
+  at the edge, and **nothing on this side that opens one**: opening takes the private half of the key
+  it was encapsulated to, and this server holds no private key of any kind. A browser does open one,
+  on every sign-in and every unlock, under a private half it has just unwrapped. The **encapsulation
   framing** is the byte layout; an **encapsulated value** is one sequence of bytes in it.
 - **Version byte** — the leading byte of either framing, `0x01` in both. **Outside the
   authenticated data on purpose.** GCM has no opinion about it, which is why the reader has to
@@ -624,8 +635,9 @@ too, and under every floor at or below 93, but 93 refused reads as an off-by-one
 of exactly the sibling's minimum names the sibling.
 
 **Why the second construction exists at all**, stated once so that nobody reads the splice as
-gratuitous: under the AEAD framing an account key is wrapped *symmetrically*, under a
-key-encryption key a factor derives, so whoever wraps holds the same key as whoever unwraps.
+gratuitous: the AEAD framing wraps *symmetrically*, so whoever wraps holds the same key as whoever
+unwraps — which is why the one value put under a factor's key-encryption key is that factor's own
+private half, produced at the single moment the factor was being held.
 **Encapsulating to** a factor's public half needs only that public half, which is what makes a
 value producible for a factor nobody is holding. That difference is the reason for the ephemeral
 point, and the point is the reason for a second layout.
@@ -729,17 +741,30 @@ separator goes **between** the fields, never around them, and no field is droppe
 empty — dropping one seals two different field lists to the same bytes, which is the one
 ambiguity a separator exists to remove.
 
-**A wrapped account key**, as the browser in this repository still builds it:
+**A factor keypair**, which binds values in **both** framings and is the grammar that replaced the
+wrapped-key one outright:
 
 ```
-"budgetoid/wrapped-key/v1" || 0x1F || <factor id, lower-case hyphenated> || 0x1F || <"content" | "index">
+"budgetoid/factor-keypair/v1" || 0x1F || <version> || 0x1F || <factorId> || 0x1F || "private-key"
+"budgetoid/factor-keypair/v1" || 0x1F || <version> || 0x1F || <factorId>
+"budgetoid/factor-keypair/v1" || 0x1F || <version> || 0x1F || <rotationEpoch, decimal digits>
 ```
 
-The third field made two envelopes under one key-encryption key non-interchangeable. A factor now
-wraps **one** value under that key — its own private half — so the field is a purpose selector over a
-set of one, and what the grammar for the new shape is has not been settled here because no client
-produces one yet. [account-keys.md](account-keys.md) names that gap; do not read this block as the
-contract for a key pair.
+The first binds a wrapped private key, the second an encapsulated pair of account keys, the third
+the account's manifest. **This grammar joins bytes where the narrative one joins strings**, and that
+is forced rather than stylistic: one of its messages — the HKDF info the encapsulation key is
+derived through — carries two raw 65-byte points, and a point pushed through UTF-8 comes out 129
+bytes long, measured. The version is a raw byte for the same reason, correct at 1 and silently wrong
+from `0x80` up. Both spellings are one join with one owner, which is what keeps "the fields are
+separated by `0x1F`, between and never around" from having two definitions.
+[account-keys.md](account-keys.md) owns the grammar, the HKDF info, the three version bytes that may
+not alias each other, and why no account identifier appears in any of these messages.
+
+The retired wrapped-key grammar — its label, its `content`/`index` purpose selector and the builder
+behind them — is **deleted** rather than kept beside this one, and its frozen vectors went with it. A
+factor now puts exactly one value under its key-encryption key, so a purpose selector would be a
+field over a set of one; and two grammars left standing are two grammars a later caller can reach,
+told apart by nothing in the bytes.
 
 **A narrative field:**
 
@@ -753,20 +778,22 @@ them is a silent, successful decryption. Without the table, a payee's name opens
 category's, since the two share the column word. Without the row, every row in a column is
 interchangeable with every other.
 
-`0x1F` cannot occur in any field of either grammar, which is what makes "no length prefixes
-are needed" a fact rather than a hope — and that claim belongs to each **grammar** rather than
-to the shared join, because only a grammar knows what its fields are: the wrapped-key one
-because its fields are a literal, a canonical UUID and one of two words; the narrative one
-because its fields are a literal, a table and a column looked up as a pair in a list this
-client owns, and a UUID. `buildAssociatedData` checks
+**"No length prefixes are needed" is a claim about a grammar and never about the shared join**,
+because only a grammar knows what its fields are — and the two answer it differently, which is worth
+meeting before the join is read as carrying it. The narrative grammar's fields are a literal, a table
+and a column looked up as a pair in a list this client owns, and a UUID, none of which can hold a
+`0x1F`. The factor-keypair grammar's cannot make that claim at all: a 65-byte point contains the
+separator often enough, and what makes its messages unambiguous is that **both points are fixed-width
+and the encoding is refused before the message is built** — which is the second reason the
+uncompressed-point guard runs where it does. `buildAssociatedData` checks
 nothing about a field's contents, deliberately: it could only refuse a value it cannot
 describe, or repair one — and the repair is worse, since it would silently change bytes a
 caller believed it had chosen.
 
-**The wrapped-key grammar folds a UUID's spelling. The narrative grammar refuses one. Both
+**The factor-keypair grammar folds a UUID's spelling. The narrative grammar refuses one. Both
 directions need stating, so that nobody makes one match the other.**
 
-*Why the wrapped-key grammar folds*: the factor id is minted by this client before any server
+*Why the factor-keypair grammar folds*: the factor id is minted by this client before any server
 has seen it, so nothing upstream hands that module a canonical value and its fold is the only
 place one is made. Folding is a **defence against a value arriving from elsewhere**.
 
@@ -1524,10 +1551,24 @@ ones already written here, not new ones written to fit them — and what the ser
 again exactly what it enforces. What still may not be inferred is any claim that something on this
 side can **open** one. Nothing can: that takes a private key, and the server holds none of any kind.
 
-### The vector index, which is kept in three places
+### The vector index, which is kept in four places
 
 Narrative-field vectors live in [`vectors/narrative-field-v1.json`](vectors/narrative-field-v1.json):
 one binding-only vector, one ASCII vector and the mixed-width vector.
+
+Factor-keypair vectors live in
+[`vectors/factor-keypair-v1.json`](vectors/factor-keypair-v1.json): the grammar's four messages, the
+HKDF info, the encapsulation key, both stored values at their exact widths, the manifest plaintext at
+three factors and at eleven, and the sealed manifest. **They were authored by a third
+implementation** — neither this client's WebCrypto nor the server suite's library — so that neither
+side can certify itself against them, and both reproduce every value. Two of the file's own remarks
+are contract rather than commentary and belong in any reader's hands before they open it. The
+`0x80`-versioned message is the **only** vector describing a version this scheme does not have, and
+it exists so that a message composed as text is caught by its *length* before such a version could
+ever ship. And the file states what it cannot hold: binding both public keys into the HKDF info is
+what makes a substituted factor public key derive a different key, and **no vector can show that** —
+it pins that the bytes are present, never that they help. [account-keys.md](account-keys.md) argues
+the scheme; the file is indexed here because the registry is one registry.
 
 Blind-index vectors live beside them in
 [`vectors/blind-index-v1.json`](vectors/blind-index-v1.json): ten frozen answers over four
@@ -1575,12 +1616,14 @@ that this grammar reads like the narrative one above it. The file says as much i
 words; a reader who trims the field as dead weight is choosing the migration that cannot be
 done.
 
-**Neither file is the complete registry.** The generic envelope vector, the two
-key-encryption-key vectors (the passkey branch and the recovery-code branch), the wrapped-key
-associated-data vector and the recovery-code verifier are still under
+**No one file is the complete registry.** The generic envelope vector, the two
+key-encryption-key vectors (the passkey branch and the recovery-code branch) and the recovery-code
+verifier are still under
 [Frozen known-answer vectors](account-keys.md#frozen-known-answer-vectors) in
-`account-keys.md`, because the specs that read them were outside the change that produced the
-JSON files. A second implementation needs all three.
+`account-keys.md`, because the specs that read them were outside the changes that produced the
+JSON files. **The wrapped-key associated-data vector that used to sit beside them is gone**, with
+the grammar it described; the two key-encryption-key vectors stayed, because that half of the scheme
+genuinely did not move. A second implementation needs all four places.
 
 Two rules the narrative JSON file states about itself and this chapter restates, because they
 are contract rather than commentary. **`plaintextUtf8Hex` is normative and `plaintextForHumans`
@@ -1591,8 +1634,8 @@ sequence is the contract. And **no separator anywhere is written as a character*
 silently swallowed twice, each time leaving a plausible-looking string with the separator
 simply gone.
 
-**The second of those reaches both files and the first does not**, which is the difference
-between them. The blind-index inputs are deliberately written as characters, because the
+**The second of those reaches every one of these files and the first does not**, which is the
+difference between them. The blind-index inputs are deliberately written as characters, because the
 spellings *are* the vector and there is nothing a caption could add to them; what they are
 checked against is the `normalizedUtf8Hex` beside them, the byte sequence every spelling in
 that group has to reach.
@@ -1640,10 +1683,12 @@ flipped bit anywhere, and bytes that authenticate but are not UTF-8. That last d
 `U+FFFD`, which reads as damaged text a person typed, is indistinguishable from it, and gets
 written straight back on the next save.
 
-**The server's step on a wrapped key**: decode base64url within
+**The server's step on a wrapped private key**: decode base64url within
 a ceiling — which the decoder applies to the encoded text and then to the buffer it produced — and
-then the floor and the version. `WrappedKeyEnvelope` reaches `CiphertextEnvelopeText` and adds its
-exact width on top.
+then the floor and the version. The edge type for that framing reaches `CiphertextEnvelopeText` and
+adds its exact width on top; the manifest's edge takes the same route and adds a **band** instead,
+because its plaintext is a list. An encapsulated value has an edge of its own and never that one,
+for the reason both floors exist.
 
 **The narrative side has its edge, eight columns, and traffic on seven of them.** A narrative value
 takes the same three steps and two more: `CiphertextEnvelopeText.TryDecode` with one of
@@ -1676,20 +1721,23 @@ for either arm to run on. **Storing is where the rules
 stop being reversible**, which is why they were agreed first and why nothing here may be relaxed to
 make a screen easier to write. Nothing on this side opens anything, and nothing ever will.
 
-**The encapsulation framing has no step in any of this.** No route decodes one, no converter maps
-one and no column stores one, so there is no arm above to describe and none below to run.
-`IsWellFormed` on that type has no production caller today.
+**The encapsulation framing's step is its own and is not in the list above.** It has no converter and
+no narrative arm: what it has is an edge of its own, two columns to land in, and four `CHECK`
+constraints across two tables refusing a value of the wrong width or the wrong version. Nothing on
+this side **opens** one, and nothing ever will — that takes a private key, and the server holds none
+of any kind.
 
 ## Decision Trees
 
 **Which framing do these bytes carry?**
 
-- they came out of one of the eight narrative columns, or out of `wrapped_account_keys` → the
-  AEAD framing.
-- they came out of anywhere else → **no column holds an encapsulated value today**, so the
-  question does not arise in this product yet. When one does, the answer is still *the column
-  they came from*, because nothing in the bytes says: both framings lead with `0x01`, and the
-  leading byte names a suite of a framing rather than a framing.
+- they came out of one of the eight narrative columns, out of `wrapped_account_keys.wrapped_private_key`,
+  or out of `factor_manifests.manifest` → the AEAD framing.
+- they came out of `wrapped_account_keys.encapsulated_account_keys` or
+  `key_rotation_seals.encapsulated_account_keys` → the encapsulation framing. The answer is *the
+  column they came from* and never the bytes: both framings lead with `0x01`, and the
+  leading byte names a suite of a framing rather than a framing. Note that **one table carries one
+  column of each**, which is why "the table it came from" is not a short way of saying this.
 - **never**: read the leading byte and decide from it. That is the mistake the two floors exist
   to make refusable — sliced by the shorter framing, a P-256 point's first twelve bytes become a
   nonce.
@@ -1697,20 +1745,25 @@ one and no column stores one, so there is no arm above to describe and none belo
 **Which grammar binds this value?** — *binds*, and not *seals*, because one of the two arms
 below is a wrap rather than a seal and the verbs are not interchangeable.
 
-- an account key wrapped under a recovery factor → the wrapped-key grammar, over the factor
-  id and the purpose. See [account-keys.md](account-keys.md).
+- a factor's private half, the account's keys encapsulated to that factor, or the account's
+  manifest → the **factor-keypair** grammar, over the factor id — or, for the manifest, over the
+  rotation epoch. One grammar, three messages, and it is the only one that binds values in **both**
+  framings. See [account-keys.md](account-keys.md).
 - free text in one of the eight columns → the narrative grammar, over the table, the column
   and the row id.
 - anything else → **there is no third grammar.** A new one is a new prefix, argued in the
-  chapter that owns the values it binds, never a field bolted onto one of these two. The
-  encapsulation framing has none of its own, because nothing produces one — a grammar is written
-  where a value is bound to where it lives, and no value lives anywhere yet.
+  chapter that owns the values it binds, never a field bolted onto one of these two — and the
+  factor-keypair one shows what "a field bolted on" costs, since two of its three messages are a
+  strict prefix pair and an implementation that drops the last field produces the *other* valid
+  message of the same scheme.
 
 **An envelope will not open. What does that mean?**
 
 - the wrong key → the tag does not verify
-- the right key, the wrong row, column, table, factor or purpose → the associated data
+- the right key, the wrong row, column, table, factor or rotation epoch → the associated data
   disagrees, and the tag does not verify
+- a wrapped private key presented under the encapsulation's message, which is its own message minus
+  the purpose field → the associated data disagrees, and the tag does not verify
 - the bytes were altered → the tag does not verify
 
 All three are **one indistinguishable failure by design**: a caller learns the value is
@@ -1794,9 +1847,11 @@ caller wrapping an open in a `catch` has to answer "is this column damaged?", an
 - **[recovery-codes.md](recovery-codes.md)** and **[passkeys.md](passkeys.md)** — where the
   key-encryption keys an account's copies are wrapped under come from. Neither reaches this
   format directly.
-- **[registration.md](registration.md)** — the one path a screen reaches that writes a
-  **wrapped-key** envelope: eleven factors, twenty-two wrapped keys, in one save. The other two
-  producers of one — registering a further passkey, and replacing a set of recovery codes — sit
+- **[registration.md](registration.md)** — the one path a screen reaches that writes a value in
+  either framing: eleven wrapped private keys, eleven encapsulated pairs and one sealed manifest, in
+  one save. The other three
+  producers — registering a further passkey, replacing a set of recovery codes, and revoking a
+  passkey — sit
   behind controls that are inert on `/app/settings`, so their handlers are reached only by the
   integration suite. Narrative envelopes come from a different set of handlers entirely — the
   create and update legs of the seven columns a route accepts, listed where the server's steps are
@@ -1835,8 +1890,9 @@ caller wrapping an open in a `catch` has to answer "is this column damaged?", an
   the only thing left refusing it. The two nets are not one rule stated twice: the server's answers a
   wire contract for every client, and this one answers *this* client's own drift a release earlier.
 
-  **The wrapped-key side is a companion here rather than a
-  counter-example**: `unwrapAccountKeys` is called on every passkey sign-in, and what each consumer
+  **The key-custody side is a companion here rather than a
+  counter-example**: `openFactorKeypair` is called on every passkey sign-in and every unlock, once
+  per entry until one opens, and what each consumer
   needs is the same pair — a route to hand it an envelope, and a class to hold what came out.
   **Nothing here may be relaxed to make a later screen easier to write.** The format is a contract
   with every client that will ever seal an envelope, and rows are written under it.
@@ -1851,8 +1907,9 @@ caller wrapping an open in a `catch` has to answer "is this column damaged?", an
   `0x01`.** The column is the only discriminator, so a helper that takes bytes and decides for
   itself is wrong however carefully it is written. `CiphertextEnvelopeText` names
   `CiphertextEnvelope.IsWellFormed` outright for that reason, and is the decode step for that
-  framing alone; there is no decoder for an encapsulated value, and one handed to this decoder
-  would be judged against a floor 65 bytes too low and pass. See
+  framing alone; the other framing's decoder is a **second member beside it** rather than a rule
+  passed into it — `EncapsulatedValueEnvelopeText` — and an encapsulated value handed to the
+  first would be judged against a floor 65 bytes too low and pass. See
   [the second framing](#the-second-framing-and-the-byte-that-cannot-tell-you-which-one-you-are-holding).
 - **Aliasing one framing's version constant to the other's reddens nothing on the day it is
   written**, and reflection cannot see the difference — measured, `IsLiteral` and
@@ -1931,8 +1988,8 @@ caller wrapping an open in a `catch` has to answer "is this column damaged?", an
   because the ceiling and the width are the same number. Written `< BlindIndexLength` rather
   than `!=`, it survives the whole suite — and `<` is the spelling that most looks like caution.
   It becomes wrong the day those two numbers diverge, which is why it stays written as an
-  inequality against the width rather than as a bound of its own. `WrappedKeyEnvelope` records
-  the same shape for its own upper bound, for the same reason.
+  inequality against the width rather than as a bound of its own. `WrappedPrivateKeyEnvelope`
+  records the same shape for its own upper bound, for the same reason.
 - **A cap over-admitting by a byte or two is width-dependent, so both caps are exercised.**
   Measured: for a ceiling of 1024 the decoder's text allowance is 1368 characters and a
   1025-byte envelope encodes to 1367; for 2560 the allowance is 3416 and a 2561-byte envelope

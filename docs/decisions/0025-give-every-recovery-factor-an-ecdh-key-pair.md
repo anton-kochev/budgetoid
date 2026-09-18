@@ -208,11 +208,15 @@ server can do nothing with what it holds.
   through `users → credentials → wrapped_account_keys`, because it carries a foreign key to each.
   PostgreSQL permits the two cascading paths that creates; the multiple-cascade-path restriction is
   SQL Server's, not this server's.
-- **The browser has not followed, and the gap is work rather than a decision.** `account-keys.ts`
-  still wraps both account keys under the factor's key-encryption key and
-  `registration-api.service.ts` still puts `wrappedContentKey` and `wrappedIndexKey` on the wire,
-  which no route accepts. So no browser in this repository can currently create an account or open
-  one. [account-keys.md](../business-logic/account-keys.md) names it where a reader will meet it.
+- **The browser has followed, and one of the four paths now has a client behind it.**
+  `factor-keypair.ts` mints a factor's pair and opens one, `factor-manifest.ts` seals the account's
+  list of public halves and opens it, and the registration flow drives eleven of the first and one
+  of the second in a single act; custody runs the read half on every sign-in and every unlock. The
+  retired grammar was **deleted** rather than kept beside the new one, and its frozen vectors went
+  with it. What has no client at all is the three paths that *promote* a manifest, so the epoch
+  arithmetic this decision argues for is exercised by the integration suite alone.
+  [account-keys.md](../business-logic/account-keys.md) names the grammar, the three version bytes
+  and the one check that catches the plaintext ordering in item 3.
 - **A column swap is refused and what replaces it is unreachable by any check here.** 167 bytes
   against 158, two framings and two version constants mean a transposition of the two payloads is
   refused by each column's own pair of constraints, where both values were once 61 bytes carrying one

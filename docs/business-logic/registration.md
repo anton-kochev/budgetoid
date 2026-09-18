@@ -36,12 +36,12 @@ the order its checks run in, and the one value it derives rather than chooses.
 path** establishes, is also a claim about every account in the schema — nothing else writes a `users`
 row.
 
-**The two sides of the path do not currently meet, and that is work rather than a departure anybody
-argued for.** The `/register` screen runs the ceremony, draws the account's keys, mints the set and
-posts the account — but it posts the arrangement these routes stopped accepting:
-`registration-api.service.ts` puts `wrappedContentKey` and `wrappedIndexKey` on the wire, which no
-member of `RegistrationRequest` binds, and it sends no `manifest` at all. What follows describes
-what the route takes; [account-keys.md](account-keys.md) owns the gap and what closing it costs.
+**The two sides of the path meet, and this is the one write path in the product where they do.** The
+`/register` screen runs the ceremony, draws the account's keys, mints the set, mints a keypair for
+each of the eleven factors, seals the manifest naming all eleven public halves and posts the body
+these routes take. The three routes that **promote** a manifest have no client surface at all, so
+what they take is exercised by the integration suite alone —
+[account-keys.md](account-keys.md) owns that asymmetry.
 
 The client's half of this act is the run of rules at the end of *Business Rules & Invariants*. What
 the screen looks like is the **Registration** chapter of [components.md](../design/components.md).
@@ -516,7 +516,8 @@ the *set*, so it is authenticated once.
 
 - **Rule**: **The device agrees before anything secret is minted.** On the client the order is: ask
   for the creation options, run the WebAuthn ceremony, and only then draw the account keys, mint the
-  ten codes and wrap eleven times.
+  ten codes, mint eleven factor keypairs, import the account's two keys and seal the manifest naming
+  the eleven public halves.
 - **Why**: this departs from the obvious order — mint the set first, then run the ceremony — and the
   departure is the point. **Cancelling the system passkey sheet is the most common thing that
   happens on that screen.** Minting first leaves that browser holding ten live recovery codes for a
@@ -533,6 +534,14 @@ the *set*, so it is authenticated once.
     word published, leaving the `unsupported` sentence to the screen that has one. Refusing on the
     introduction instead would be a third sentence for a state already spoken for, and would still
     have to be repeated below, because a restart re-enters through the passkey step.
+  - **The last three steps are ordered by force and not by preference**, which is the half a later
+    reader will rearrange. All eleven encapsulations run **before** the two key imports, because an
+    import zero-fills the material it is handed — hoisted above the loop, every factor after it
+    encapsulates thirty-two zero bytes, which mints, opens, posts and creates an account whose every
+    later read is against a key nobody drew. The manifest is sealed **after** those imports, because
+    it needs the content key as a key object. The two rules point in opposite directions, so the
+    arrangement that looks tidiest cannot be written at all — and the one that satisfies both makes
+    the manifest the content key's first real use in the product.
 - **Enforced in**: the statement order in `RegisterService.mintUnder`, argued at each line, and by
   `register.service.spec.ts` driving a refusing authenticator and asserting that nothing was
   published, no request was made and no code exists.
@@ -547,7 +556,8 @@ the *set*, so it is authenticated once.
   same body meets the undifferentiated challenge refusal with certainty. A retry control would look
   like a way out and be a way to be told no twice — and it would re-send a whole set's key custody
   to do it. A restart re-draws **everything**: a new challenge, a new passkey, new account keys, ten
-  new codes and eleven new factor identifiers. Nothing from the abandoned attempt is reused, and
+  new codes, eleven new factor identifiers, eleven new keypairs and a new manifest over the eleven
+  public halves those keypairs produced. Nothing from the abandoned attempt is reused, and
   nothing could be — the nonce is spent and the account keys were wiped.
 - **Enforced in**: `RegisterService.create` clearing the pending body on the `201` and on every
   failure alike, `RegisterService.restart` re-entering at the passkey step, and the screen offering
@@ -641,7 +651,8 @@ the *set*, so it is authenticated once.
   `RegisterComponent` lists `RegisterService` in its own `providers`.
 - **Why**: the two halves answer different questions and neither works alone.
   - **No `children`, because a step is in-memory state.** The account keys, the eleven
-    key-encryption keys, the ten codes and the eleven sealed envelopes live in a service that dies
+    key-encryption keys, the ten codes, the eleven factors' envelopes and the manifest over their
+    public halves live in a service that dies
     with the screen, so `/register/codes` as an address would break two things at once: Back would
     land on a step whose state is already gone, and the address would be a link somebody could open
     — or be sent — onto a screen whose whole premise is that ten codes were minted moments ago and
@@ -809,9 +820,9 @@ ELSE consume the nonce — from here every outcome has burnt it
   `sessionsEnded`.
 - **[Account Keys](account-keys.md)** — the eleven pairs of envelopes and the one spelling of a
   factor identifier. This is the **third** path that writes `wrapped_account_keys`, and the one that
-  **files** a `factor_manifests` row; adding a passkey and regenerating the card each **promote**
-  the one this path laid down, in the unit of work that changed the factor set. Revoking a passkey
-  still owes a manifest and writes none. That chapter owns the promotion rule, the epoch, and why
+  **files** a `factor_manifests` row; adding a passkey, regenerating the card and revoking a passkey
+  each **promote** the one this path laid down, in the unit of work that changed the factor set.
+  That chapter owns the promotion rule, the epoch, and why
   `manifest: null` survives in the read's shape without being a state anybody reaches.
 - **[Sessions](sessions.md)** — the **fourth** thing that establishes a session, and like the other
   three it mints a handle and sets the cookie.
@@ -836,16 +847,14 @@ ELSE consume the nonce — from here every outcome has burnt it
 
 ## Edge Cases & Known Gotchas
 
-- **What is built and what is not.** Both routes exist and the whole write is tested — the finish
-  leg is driven end to end by the integration suite, which is what the account-key and manifest
-  rules below are measured against. **What no browser in this repository can currently do is reach
-  it**: `/register` runs the ceremony and posts a body carrying the two members the routes stopped
-  accepting and no manifest, so it is refused at the first rung that reads a member it does not
-  send — well above the one that reads the manifest. A returning person signs in with a passkey
-  from `/welcome`, and the provider is not contacted on that path at all. What is **not** built
-  beside it is the rest of the client's passkey
+- **What is built and what is not.** Both routes exist, the whole write is tested end to end by the
+  integration suite, and **`/register` reaches them**: the screen runs the ceremony, mints eleven
+  factor keypairs, seals the manifest and posts the body the finish leg binds. A returning person
+  signs in with a passkey from `/welcome`, and the provider is not contacted on that path at all.
+  What is **not** built beside it is the rest of the client's passkey
   surface: nothing registers a second passkey, and nothing runs the fresh assertion the erasure,
-  revocation and recovery-code-generation gates need. **The unlock ceremony on `/app/settings` is
+  revocation and recovery-code-generation gates need — so **no browser has ever promoted a
+  manifest**, only filed one. **The unlock ceremony on `/app/settings` is
   not that assertion and cannot be mistaken for it**: it is minted in the browser, answered by no
   route and thrown away, so it satisfies no gate — see [account-keys.md](account-keys.md).
 - **Somebody who already has an account is refused at the options leg, and the passkey sheet never

@@ -10,9 +10,10 @@
 //     `{"prf":{}}` — a capability question with no input — so if this module
 //     does not merge `eval.first`, the ceremony completes, the authenticator
 //     reports `prf.enabled: true`, the registration is accepted, and no key is
-//     ever derived. If it merges the *wrong* input, every account that wrapped
-//     its keys under the old value is locked out by a passkey that goes on
-//     authenticating perfectly and simply hands back different bytes.
+//     ever derived. If it merges the *wrong* input, every account whose factors
+//     wrapped their private keys under the old value is locked out by a passkey
+//     that goes on authenticating perfectly and simply hands back different
+//     bytes.
 //
 //   * **There is no `allowCredentials` on the request options.** Sending one
 //     would mean the server first decided which credentials belong to the person
@@ -231,8 +232,9 @@ describe('the creation options handed to navigator.credentials.create', () => {
     // succeeds: the authenticator answers `enabled: true`, the server accepts
     // the registration, and there is no PRF output to derive a key from. If the
     // merge supplies a *different* string, it is worse than missing — every
-    // account whose keys were wrapped under the old value is locked out by a
-    // passkey that still authenticates and simply returns different bytes.
+    // account whose factors wrapped their private keys under the old value is
+    // locked out by a passkey that still authenticates and simply returns
+    // different bytes.
     expect(SERVER_CREATION_OPTIONS.extensions.prf).toEqual({});
 
     // Act

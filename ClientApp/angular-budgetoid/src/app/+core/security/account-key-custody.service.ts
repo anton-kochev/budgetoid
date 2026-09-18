@@ -2,10 +2,12 @@
 // place in this client that holds them past the ceremony that produced them.
 //
 // The account owns one content key and one index key; every recovery factor
-// stores its own wrapped copy of both. A browser that has just proved a factor
-// holds a key-encryption key and nothing else, so this service does the only
-// thing left: it reads that credential's envelopes, tries each in turn, and keeps
-// what came out as two `CryptoKey` objects. Three operations delegate to what it
+// holds a keypair that leads back to both — its private half wrapped under the
+// key-encryption key that factor derives, and the two keys encapsulated to its
+// public half. A browser that has just proved a factor holds a key-encryption
+// key and nothing else, so this service does the only thing left: it reads that
+// credential's envelopes, tries each in turn, and keeps what came out as two
+// `CryptoKey` objects. Three operations delegate to what it
 // holds — seal this field, open that one, index a value so a lookup can key on
 // it — and they are the whole reason no caller has any occasion to ask for a
 // key. All three have production callers now — one service per screen that
@@ -52,16 +54,24 @@
 import { HttpErrorResponse } from '@angular/common/http';
 import { Injectable, Signal, inject, signal } from '@angular/core';
 import {
+  AccountKeyResponseError,
   MeApiService,
+  type AccountKeyCustodyDto,
   type AccountKeyEntry,
 } from '@app-core/api/me-api.service';
 import { firstValueFrom } from 'rxjs';
 
-import {
-  importAesGcmKey,
-  importHmacSha256Key,
-  unwrapAccountKeys,
-} from './account-keys';
+import { importAesGcmKey, importHmacSha256Key } from './account-keys';
+// The read half of the factor keypair, and the only operation this class runs
+// over an entry. It takes the entry itself — `AccountKeyEntry` is composed from
+// the interface this function's parameter is typed by — so there is one spelling
+// of the two envelopes from the wire to the open.
+import { openFactorKeypair } from './factor-keypair';
+// The gate that confirms a content key really is the content key. It hands back
+// plaintext bytes this class never looks at: what is being asked is whether the
+// open *succeeded*, and reading the entries it authenticates would be this class
+// learning the account's factor set, which is nobody's business here.
+import { openFactorManifest } from './factor-manifest';
 // The index grammar: the operation the third member delegates to, the refusal
 // it opens with, and the binding as a **type — and never the list of four**.
 // Which pair a value belongs to, and which tenancy it is keyed inside, are the
@@ -132,17 +142,28 @@ import type {
 export type AccountKeyStatus = 'locked' | 'unlocking' | 'unlocked';
 
 /**
- * Why an unlock did not end in custody, and the three are **never** collapsed.
+ * Why an unlock did not end in custody, and the five are **never** collapsed.
  *
  *   * `unopened` — the keys were read and none of them opened under the factor
  *     presented. The way forward is another factor.
  *   * `unreachable` — no usable answer came back at all: a network that never
- *     reached a server, a 5xx, a timeout, a body this client refused. The way
- *     forward is the same factor again in a minute.
+ *     reached a server, a 5xx, a timeout. The way forward is the same factor
+ *     again in a minute.
  *   * `unauthenticated` — the server *answered*, and the answer was that this
  *     browser may not read these envelopes: a 401, or the 403 a locked session
  *     and the CSRF control give. The way forward is neither of the other two —
  *     signing in again is the only thing that changes it.
+ *   * `unrecognised` — the server answered and this browser did not recognise
+ *     the answer. Like `unauthenticated` it is a statement about **this read**
+ *     and not about the factor or the network, and its way forward is to
+ *     **reload this tab**: a reload is the one act in the product that fetches a
+ *     different copy of this JavaScript from the static host, so it is the only
+ *     thing that can change the answer.
+ *   * `inconsistent` — a factor opened, and what came out of it does not agree
+ *     with the account's own manifest. It is the only one of the five that no
+ *     act of the person's can clear: every factor of an account encapsulates the
+ *     same two keys, so another passkey and all ten recovery codes produce the
+ *     same pair, in every browser and after every reload.
  *
  * Collapsed, one person is sent hunting for a recovery card over a network that
  * blinked, and the other is sent around a loop that can only ever refuse them.
@@ -158,8 +179,55 @@ export type AccountKeyStatus = 'locked' | 'unlocking' | 'unlocked';
  * `unreachable` is false about it by that word's own definition, since a 401 is
  * a usable answer from a server that was reached. A rule its own vocabulary
  * contradicts is one somebody eventually "corrects" in the wrong direction.
+ *
+ * **The fourth word is that same sentence applied to the refusal
+ * `getAccountKeys` makes about a body.** It used to fall to `unreachable`, and
+ * `unreachable` is false about it in exactly the way it is false about a 401:
+ * the server was reached and it answered. What the person was told instead was
+ * *try again in a minute*, which cannot ever succeed — the next minute runs the
+ * same bundle against the same route, and it will refuse the same body. The two
+ * are indistinguishable from inside a `catch` and are told apart only by the
+ * type that boundary throws, which is why {@link AccountKeyResponseError} is a
+ * type at all rather than a message.
+ *
+ * **That fourth word is `unrecognised` and was `outdated`, and the rename is
+ * the difference between reporting and diagnosing.** The other four say what
+ * was *observed* — nothing opened, nothing answered, the answer was a refusal,
+ * the two halves disagree. `outdated` named a **cause**, and named it from
+ * evidence that cannot carry it: the boundary also refuses the retired bare
+ * array, which is a *newer* bundle reading an *older* route. There "this tab is
+ * running an older version" is false, and the remedy it offers — reload, get
+ * this same bundle again — is a loop. A reload is still the first thing to try,
+ * because it is the only act that can change the answer at all; what the word
+ * no longer does is assert which side is stale.
+ *
+ * **The fifth word is the one that had no way to exist.** A manifest that did
+ * not open was reported as `unopened`, whose remedy is *present another factor*
+ * — advice that cannot work, over a state that survives every reload in every
+ * browser. One altered byte in a stored manifest was therefore a permanent
+ * lockout with a screen telling the person to go and find another passkey. The
+ * word is about the **material and not the factor**, deliberately, so that
+ * story 12.14's neighbours — a served factor set that disagrees with the
+ * manifest's, an epoch rolled back — are the same word rather than two more.
  */
-export type UnlockFailure = 'unopened' | 'unreachable' | 'unauthenticated';
+export type UnlockFailure =
+  | 'unopened'
+  | 'unreachable'
+  | 'unauthenticated'
+  | 'unrecognised'
+  | 'inconsistent';
+
+// What one entry hands back when it is the factor: the account's two keys, as
+// key objects and never as material.
+//
+// It is not exported and never will be. The pair travels from the open, through
+// the gate that confirms it, to the two fields — three frames inside this file —
+// and a type anybody outside could write down is the first half of a member that
+// hands one out.
+interface HeldKeys {
+  readonly contentKey: CryptoKey;
+  readonly indexKey: CryptoKey;
+}
 
 @Injectable({ providedIn: 'root' })
 export class AccountKeyCustodyService {
@@ -185,7 +253,7 @@ export class AccountKeyCustodyService {
   readonly #api = inject(MeApiService);
 
   // **Two `CryptoKey` objects, and no field anywhere in this class is typed
-  // `Uint8Array`.** `unwrapAccountKeys` hands back bytes; those bytes are a local
+  // `Uint8Array`.** `openFactorKeypair` hands back bytes; those bytes are a local
   // that dies inside the import in the same statement that produces a key, and
   // the import zero-fills them on its way past. A field holding them would keep
   // the plaintext of both account keys alive for the life of the tab, on an
@@ -235,7 +303,8 @@ export class AccountKeyCustodyService {
     this.#failure.asReadonly();
 
   /**
-   * Reads this session's wrapped keys and opens them under `keyEncryptionKey`.
+   * Reads this session's factor keypairs and opens one under
+   * `keyEncryptionKey`.
    *
    * **It returns `void`, and that is enforcement rather than a signature that
    * happens to be convenient.** A `Promise<void>` is awaitable, and every caller
@@ -605,16 +674,17 @@ export class AccountKeyCustodyService {
     keyEncryptionKey: CryptoKey,
     generation: number,
   ): Promise<void> {
-    let entries: readonly AccountKeyEntry[];
+    let custody: AccountKeyCustodyDto;
 
     try {
-      entries = await firstValueFrom(this.#api.getAccountKeys());
+      custody = await firstValueFrom(this.#api.getAccountKeys());
     } catch (error: unknown) {
       // Never `unopened`: nothing about a read that did not come back says
       // anything about the factor the person presented, and telling them to go
-      // and find their recovery card over a version skew is the worse of the
-      // two wrong answers. A refused *body* is `unreachable` for exactly that
-      // reason — this client could not read what came back.
+      // and find their recovery card over a body nobody could read is the worse
+      // of the two wrong answers. A refused *body* is `unrecognised` — the
+      // server answered and this client did not recognise the answer, which is
+      // a fact about this read and not about the factor or the network.
       this.#fail(AccountKeyCustodyService.failureOf(error), generation);
 
       return;
@@ -636,50 +706,179 @@ export class AccountKeyCustodyService {
     // authenticate, which is the AEAD doing what the binding is for rather than
     // an error worth telling apart. Twenty attempts is a cost nobody can
     // measure.
-    for (const entry of entries) {
-      const held = await this.#open(keyEncryptionKey, entry);
+    let opened: HeldKeys | null = null;
 
-      if (held === null) {
-        continue;
+    for (const entry of custody.factors) {
+      opened = await this.#open(keyEncryptionKey, entry);
+
+      if (opened !== null) {
+        break;
       }
+    }
 
-      // Checked *after* the open and before the keys are published, because the
-      // world can have moved while the cipher ran.
-      if (generation !== this.#generation) {
-        return;
-      }
-
-      this.#hold(held.contentKey, held.indexKey);
+    if (opened === null) {
+      // **An empty list lands here, and it is `unopened` rather than an error.**
+      // The route answers no factors both for a session it cannot see and for an
+      // account carrying none, indistinguishably and on purpose — so there is
+      // nothing to tell apart, and inventing a fifth word would mean claiming a
+      // difference this client was never told. The next step is the same one
+      // every other `unopened` has: present another factor.
+      this.#fail('unopened', generation);
 
       return;
     }
 
-    // **An empty list lands here, and it is `unopened` rather than an error.**
-    // The route answers `[]` both for a session it cannot see and for a
-    // credential carrying no factors, indistinguishably and on purpose — so
-    // there is nothing to tell apart, and inventing a third word would mean
-    // claiming a difference this client was never told. The next step is the
-    // same one every other `unopened` has: present another factor.
-    this.#fail('unopened', generation);
+    // **The gate that confirms the content key is the content key, and it runs
+    // once, here, after the loop and never inside it.**
+    //
+    // Inside the loop it would be a second reason an entry can be skipped, and
+    // the two would be indistinguishable in the answer: "no factor opened"
+    // (`unopened`, present another one) and "a factor opened and its content key
+    // is wrong" (nothing another factor can help with) would arrive at the same
+    // place by the same road. Out here they are two branches with two causes.
+    //
+    // **What it does and does not buy.** A decapsulation that succeeds proves
+    // the 64 bytes are what was encapsulated to this factor, and it proves
+    // **nothing whatever** about which half of them is which. The two keys sit
+    // in one plaintext, told apart by position alone and with no separator — so
+    // a client that encapsulated them the other way round produces a value of
+    // exactly the right width, leading with exactly the right version byte,
+    // which stores, reads back, and opens. Neither side of the wire can see it:
+    // the server holds no key and this class judges nothing else but whether the
+    // AEAD authenticated. The manifest is sealed **under the content key**, so
+    // opening it is the one *runtime* check anywhere that a reversed pair fails.
+    //
+    // It is not the only check, and saying so is what keeps the branch below
+    // honest about its cost. The frozen vectors in
+    // `docs/business-logic/vectors/factor-keypair-v1.json` fail at build time on
+    // a pair written the other way round, so that defect does not reach a person
+    // — while this gate, wrong, locks an account in every browser under every
+    // factor forever. Which is why the refusal below is a word of its own rather
+    // than `unopened`, and why a failure to open is reported as a fact about the
+    // account's material rather than about the person's authenticator.
+    //
+    // A defence in depth over a fault that cannot easily ship is worth keeping
+    // and is not worth an ambiguous sentence on a screen.
+    if (!(await AccountKeyCustodyService.opensTheManifest(opened, custody))) {
+      // **`inconsistent`, and it is a word of its own because the remedy is the
+      // opposite of `unopened`'s.** `unopened` says *present another factor*.
+      // Every factor of this account encapsulates the same two keys, so a pair
+      // that will not open this manifest will not open it under any of them: no
+      // passkey, none of the ten recovery codes, no browser and no number of
+      // reloads. Reported as `unopened`, one altered byte in a stored manifest
+      // sends somebody to spend their whole recovery card on a door that cannot
+      // open, and the screen tells them to keep going.
+      //
+      // The word is about the **material rather than the factor**, which is
+      // what lets story 12.14 file its neighbours under it — a served factor
+      // set disagreeing with the manifest's, an epoch rolled back — instead of
+      // growing the screen's copy table a word at a time.
+      this.#fail('inconsistent', generation);
+
+      return;
+    }
+
+    // Checked *after* every cipher and before the keys are published, because
+    // the world can have moved while they ran.
+    if (generation !== this.#generation) {
+      return;
+    }
+
+    this.#hold(opened.contentKey, opened.indexKey);
   }
 
-  // One entry's two envelopes, opened and imported, or `null` if this is not the
+  // Whether the account's manifest opens under the content key an entry just
+  // handed over.
+  //
+  // **A missing manifest is `true`, and that is a decision rather than a gap.**
+  // No account this product can create answers one: registration files the first
+  // manifest at epoch 1 in the same `SaveChanges` as the session, so the only
+  // rows that answer `null` are ones written before that landed. Refusing them
+  // would turn a defensive read shape into a permanent lockout for exactly those
+  // seeded rows — a state no factor, no reload and no sign-in changes — which is
+  // a far worse failure than the one this gate is guarding against.
+  //
+  // **So it is a bypass, and what it bypasses has to be said plainly: this gate
+  // is not a control over the server.** Anything that can shape this response —
+  // the API, a proxy, anybody who has taken either — turns the gate off by
+  // answering `manifest: null`, and the branch above is where it goes off. What
+  // is left is a self-check on *this client's own* encapsulation order, made
+  // against a manifest an honest server hands back: it catches a build of this
+  // bundle that encapsulated the two account keys the wrong way round, which is
+  // a fault no width, no version byte and no round trip can see. It catches
+  // nothing an operator does, and it is not evidence that the served factor set
+  // is the account's.
+  //
+  // **Story 12.14 is what makes the manifest load-bearing against an
+  // operator**, by refusing a response that carries none and by comparing the
+  // set the manifest names against the set that was served. Until then a reader
+  // must not take this gate for more than it is — and the cost of taking it for
+  // more is that somebody deletes the `null` branch to "close the hole", which
+  // closes nothing and locks every seeded account out permanently.
+  //
+  // `static` because it reads nothing off the instance: what it is handed is the
+  // key this attempt opened and the body this attempt read, and neither has been
+  // published anywhere yet. Reading `#contentKey` instead would be reading a
+  // field that is still `null` at this point in the attempt.
+  //
+  // **`private static` and not `static #`, which the class header's rule would
+  // otherwise ask for.** A `static` ECMAScript private member on a decorated
+  // class is TS18036 — the decorator and the identifier cannot both be there —
+  // so the choice is this spelling or no `static` at all. `failureOf` below is
+  // spelled the same way for the same reason, and neither of them holds anything
+  // worth hiding: the two key fields are what `#` is for here, and both are
+  // instance fields.
+  private static async opensTheManifest(
+    opened: HeldKeys,
+    custody: AccountKeyCustodyDto,
+  ): Promise<boolean> {
+    if (custody.manifest === null) {
+      return true;
+    }
+
+    try {
+      await openFactorManifest(
+        opened.contentKey,
+        custody.manifest,
+        custody.rotationEpoch,
+      );
+
+      return true;
+    } catch {
+      // Silent and total, for `#open`'s reason. A reversed pair, a manifest
+      // sealed at another epoch, a replayed one from before a rotation and a
+      // single flipped bit are one symptom by design: there is no branch here
+      // that could act on the difference, and the plaintext is never looked at
+      // either way.
+      return false;
+    }
+  }
+
+  // One entry's keypair, opened and imported, or `null` if this is not the
   // factor.
   //
   // The `catch` is deliberately total and deliberately silent. A wrong factor, a
-  // swapped pair, a corrupted envelope and a value that is not base64url are one
-  // symptom by design — the client learns the value is not usable and learns
-  // nothing about why — and there is no branch here that could act on the
-  // difference even if the platform offered one.
+  // private half that did not unwrap, an ephemeral point the curve refuses, a
+  // corrupted envelope and a value that is not base64url are one symptom by
+  // design — the client learns the entry is not usable and learns nothing about
+  // why — and there is no branch here that could act on the difference even if
+  // the platform offered one.
   async #open(
     keyEncryptionKey: CryptoKey,
     entry: AccountKeyEntry,
-  ): Promise<{ contentKey: CryptoKey; indexKey: CryptoKey } | null> {
+  ): Promise<HeldKeys | null> {
     try {
-      const keys = await unwrapAccountKeys(
+      // **The entry itself, not two members picked off it.** `AccountKeyEntry`
+      // is composed from the interface this parameter is typed by, so the row
+      // that arrived is the argument — one spelling of the two envelopes from
+      // the wire to the open, and no call site that can pass them in the wrong
+      // order. The `factorId` beside it is the associated data both envelopes
+      // were bound with; it comes off this entry and never off anything this
+      // client remembered.
+      const keys = await openFactorKeypair(
         keyEncryptionKey,
-        entry,
         entry.factorId,
+        entry,
       );
 
       // **The bytes die inside the imports, in the statement that produces the
@@ -761,10 +960,25 @@ export class AccountKeyCustodyService {
       return 'unauthenticated';
     }
 
+    // **The refusal `getAccountKeys` makes over a body it could not read, and it
+    // is checked on the type rather than on a message.** It used to fall through
+    // to `unreachable` below, where the copy is "try again in a minute" — advice
+    // that cannot ever work, because the next minute runs this same bundle
+    // against that same route and gets refused the same way. A reload is the one
+    // act that can change the answer, and `unrecognised` is the word that stays
+    // true whichever side of the wire moved: this boundary refuses a body from a
+    // newer server *and* the retired bare array from an older one, so a word
+    // naming this tab as the stale side would be false half the time.
+    //
+    // The type and not a `message.includes(…)`: a message is prose, six of them
+    // are written at that boundary and more will be, and a reading that matched
+    // one of them would quietly stop covering the rest.
+    if (error instanceof AccountKeyResponseError) {
+      return 'unrecognised';
+    }
+
     // Status `0` for a request that never reached a server, every 5xx, a
-    // timeout, a `404` this route never gives, and the refusal `getAccountKeys`
-    // makes over a body it could not read — which is not an `HttpErrorResponse`
-    // at all and lands here for that reason as much as for its meaning.
+    // timeout, and a `404` this route never gives.
     return 'unreachable';
   }
 

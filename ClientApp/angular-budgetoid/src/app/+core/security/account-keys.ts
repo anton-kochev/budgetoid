@@ -1,8 +1,8 @@
 // The account owns **one** content key and **one** index key, and every recovery
-// factor holds its own wrapped copy of both. A passkey is one factor; a set of
-// recovery codes is another. Each factor derives its own key-encryption key from
-// whatever it can produce — PRF output, or a typed-back code — wraps the same two
-// account keys under it, and stores the two envelopes beside itself.
+// factor is a way back to those two and never a second pair. A passkey is one
+// factor; each of a card's ten codes is another. Each factor derives its own
+// key-encryption key from whatever it can produce — PRF output, or a typed-back
+// code — and that key is what this module exists to hand back.
 //
 // **The keys belong to the account, never to the credential that guards them.**
 // Reverse that and adding a passkey stops being a second way *in* and becomes a
@@ -13,11 +13,13 @@
 // late — the first factor still works, so nothing is noticed until it is gone or
 // until the two are used on different devices.
 //
-// What binds a wrapped copy to where it lives is the associated data, and it
-// names the factor *and* which of the two keys it is. Binding neither is IFR-009
-// in full: a wrapped copy lifted into another account's row opens there. Binding
-// only the factor leaves one factor's two envelopes interchangeable, which is the
-// column swap `wrappedKeyAssociatedData` exists to make fail.
+// **How a factor *carries* the account's keys is not this module's rule and is
+// no longer written here.** A factor holds an ECDH keypair: its private half
+// wrapped under the key-encryption key below, and the account's two keys
+// encapsulated to its public half. `factor-keypair.ts` owns both framings, the
+// associated data binding each to its factor, and the reading back. What is left
+// here is the account's own material — the draw, the two derivations and the two
+// doors — which is the half that did not move.
 //
 // **What leaves this module is a non-extractable `CryptoKey`, never bytes.**
 // That is a claim about the boundary and about nothing else. There is no API that
@@ -64,24 +66,28 @@
 // to `wrapKey`, an extractable key and a copy of the bytes left on the heap all
 // work, forever, and are wrong for the life of the account.
 //
-// **`crypto.subtle.importKey` is written in two non-spec files today, this one
-// and `hkdf.ts`, and in three places across them.** Both of this file's are
-// doors. `hkdf.ts`'s is not: it imports input keying material for a derivation
-// and gets back an `HKDF` key whose only usage is `deriveBits`, so nothing can
-// seal, sign or export under it and nothing can mistake it for a key the account
-// uses. That distinction — a usable cipher or MAC key, versus material on its
-// way through a derivation — is what "door" means here, and it is the reason the
-// third call is not a counter-example to the two.
+// **`crypto.subtle.importKey` is written in three non-spec files today — this
+// one, `hkdf.ts` and `factor-keypair.ts` — and in five places across them**, and
+// `key-import-single-source.spec.ts` names each file with its standing. Both of
+// this file's are doors. `hkdf.ts`'s is not: it imports input keying material
+// for a derivation and gets back an `HKDF` key whose only usage is `deriveBits`,
+// so nothing can seal, sign or export under it and nothing can mistake it for a
+// key the account uses. `factor-keypair.ts`'s two are a **factor's** ECDH
+// halves rather than the account's material — a private half that only agrees,
+// and a peer point with no usages at all. That distinction — a usable cipher or
+// MAC key, versus material on its way through a derivation or a key that is not
+// this account's — is what "door" means here, and it is the reason the other
+// three calls are not counter-examples to the two.
 //
-// **Every function here has a live caller, the unwrapping included.**
-// `register.service.ts` draws the account's keys and wraps them under a passkey
-// and under each of ten recovery codes; `webauthn-ceremony.service.ts` derives
-// the passkey branch's key-encryption key on every leg it runs — the two
-// ceremonies that are sent, and the local one behind the settings screen's
-// Unlock, which is minted and discarded there; and `unwrapAccountKeys` is
-// reached by `AccountKeyCustodyService` whenever a factor is presented, over the
-// entries `GET /api/me/account-keys` hands back. So "keep it, something is
-// waiting" is no longer the reason to keep any of it.
+// **Every function here has a live caller.** `register.service.ts` draws the
+// account's keys once and mints eleven factor keypairs over them — a passkey and
+// one per recovery code — deriving each code's key-encryption key here;
+// `webauthn-ceremony.service.ts` derives the passkey branch's key-encryption key
+// on every leg it runs, the two ceremonies that are sent and the local one behind
+// the settings screen's Unlock, which is minted and discarded there; and both
+// doors are reached by `AccountKeyCustodyService` on the bytes `openFactorKeypair`
+// hands back, over the entries `GET /api/me/account-keys` serves. So "keep it,
+// something is waiting" is no longer the reason to keep any of it.
 //
 // **Nothing in this product is encrypted, and what that leaves uncalled is
 // narrower than "anything that *uses* an opened key".** Both of the account's
@@ -101,10 +107,7 @@
 // Nothing here is a service and nothing here is injected. There is no state, no
 // configuration and no dependency, so a function is the whole of it; a class would
 // only add a way to hold key material alive past the ceremony that produced it.
-import { buildAssociatedData } from './associated-data';
-import { decodeBase64Url, encodeBase64Url } from './base64url';
 import { hkdfSha256 } from './hkdf';
-import { openEnvelope, sealEnvelope } from './key-envelope';
 import { canonicalRecoveryCode } from './recovery-code-canonical';
 import { RECOVERY_CODE_BRANCH_INFO } from './recovery-codes';
 
@@ -163,64 +166,13 @@ export const PASSKEY_PRF_EVAL_INPUT = 'budgetoid/passkey/prf-eval-input/v1';
 export const PASSKEY_KEY_ENCRYPTION_KEY_INFO =
   'budgetoid/passkey/key-encryption-key/v1';
 
-/**
- * The literal that opens the associated data of every wrapped key.
- *
- * Part of the definition of every envelope already written — associated data is
- * not carried inside an envelope, it is re-supplied from where the envelope was
- * found, so a changed prefix makes every stored copy unopenable with the same
- * failure a corrupted key gives.
- */
-export const WRAPPED_KEY_AAD_PREFIX = 'budgetoid/wrapped-key/v1';
-
-/** Which of the account's two keys a wrapped copy holds. */
-export type WrappedKeyPurpose = 'content' | 'index';
-
-/** The account's key material, unwrapped. */
+/** The account's key material, in the clear. */
 export interface AccountKeys {
   /** Encrypts what a person wrote. */
   readonly contentKey: Uint8Array;
   /** Keys the blind index over it. */
   readonly indexKey: Uint8Array;
 }
-
-/** One factor's copy of {@link AccountKeys}, as the two values cross the wire. */
-export interface WrappedAccountKeys {
-  /** Unpadded base64url over an envelope. */
-  readonly wrappedContentKey: string;
-  /** Unpadded base64url over an envelope. */
-  readonly wrappedIndexKey: string;
-}
-
-// The canonical spelling, and the ways a caller may write it. **The client
-// mints these identifiers**, and that is the decision ADR 0018 §4 exists to
-// record: a server-minted one was refused, because letting a caller choose
-// `credentials.id` instead would retire ADR 0014's first leg. So nothing
-// upstream hands this module a normalised value — the fold below is the only
-// place one is made.
-//
-// **The hazard is case, not braces.** Associated data is re-supplied from where
-// the envelope was found rather than carried inside it, so the spelling a
-// factor is bound under has to be the spelling every later read reproduces.
-// The server keeps a uuid and renders it back lower-case hyphenated, so a
-// client that binds an upper-case rendering seals two envelopes whose
-// associated data nothing will ever rebuild — permanently, with nothing
-// anywhere naming the cause. Folding here is what keeps this client from being
-// that client.
-//
-// The server no longer accepts any other spelling at all: `CanonicalFactorId`
-// parses with `"D"` and then compares the submitted text ordinally against
-// `parsed.ToString("D")`, so upper-case hex, surrounding whitespace, the bare
-// 32-digit form and the brace- and parenthesis-wrapped ones are each refused
-// with a 400. Against that contract the tolerance below is dead: a caller that
-// mints one of those spellings has its request refused whatever this module
-// folded it to. It stays because it is the half of the rule this module can
-// hold on its own — the refusal is a fact about today's server, while these
-// envelopes are sealed here, before any server has seen the value.
-const HYPHENATED_UUID =
-  /^([0-9a-f]{8})-([0-9a-f]{4})-([0-9a-f]{4})-([0-9a-f]{4})-([0-9a-f]{12})$/;
-const BARE_UUID =
-  /^([0-9a-f]{8})([0-9a-f]{4})([0-9a-f]{4})([0-9a-f]{4})([0-9a-f]{12})$/;
 
 const utf8 = new TextEncoder();
 
@@ -340,96 +292,13 @@ export async function keyEncryptionKeyFromRecoveryCode(
 }
 
 /**
- * Builds the associated data one wrapped copy is bound to:
- *
- * ```text
- * "budgetoid/wrapped-key/v1" || 0x1F || <factor id> || 0x1F || <purpose>
- * ```
- *
- * in UTF-8.
- *
- * `factorId` is normalised to the canonical lower-case hyphenated spelling and
- * **refused** if it is not a UUID. Both halves are load-bearing: without the
- * normalisation, two spellings of one factor are two different bindings and the
- * envelope written under one will not open under the other; without the refusal, a
- * free-form label — "the passkey on my phone" — reintroduces every ambiguity the
- * separators exist to remove, in a value written once and read back forever.
- *
- * `purpose` is in here so that one factor's two envelopes are not interchangeable.
- * Swap the two stored columns without it and both still open, both still yield 32
- * usable bytes, and the account quietly acquires a second index keyspace in which
- * everything written before the swap is invisible.
- */
-export function wrappedKeyAssociatedData(
-  factorId: string,
-  purpose: WrappedKeyPurpose,
-): Uint8Array {
-  // The join and the separator are `associated-data.ts`'s, shared with the one
-  // other grammar this client seals under. What stays here is what this grammar
-  // is made of: these three fields, in this order — and the claim that none of
-  // them can contain the separator, which is why `canonicalFactorId` checks the
-  // only one whose shape a caller chooses.
-  return buildAssociatedData(
-    WRAPPED_KEY_AAD_PREFIX,
-    canonicalFactorId(factorId),
-    purpose,
-  );
-}
-
-/**
- * Wraps both account keys under one factor's key-encryption key.
- *
- * Two envelopes, each bound to `factorId` and to its own purpose, each rendered as
- * unpadded base64url — the wire form `decodeBase64Url` and the server's decoder
- * both accept, and the one every other secret this client sends already uses.
- *
- * The keys are the *account's*: the caller generates them once and wraps them once
- * per factor. Generating a fresh pair here per factor would pass every round trip
- * and lose the account's whole history the first time the other factor is used.
- */
-export async function wrapAccountKeys(
-  kek: CryptoKey,
-  keys: AccountKeys,
-  factorId: string,
-): Promise<WrappedAccountKeys> {
-  const [wrappedContentKey, wrappedIndexKey] = await Promise.all([
-    wrapOne(kek, keys.contentKey, factorId, 'content'),
-    wrapOne(kek, keys.indexKey, factorId, 'index'),
-  ]);
-
-  return { wrappedContentKey, wrappedIndexKey };
-}
-
-/**
- * Opens both wrapped copies under one factor's key-encryption key, or rejects.
- *
- * Rejects on a copy that belongs to another factor, on the two copies presented in
- * each other's place, and on any of the refusals `openEnvelope` and
- * `decodeBase64Url` make. The first two are GCM's authentication failing over the
- * associated data this module built, which is the whole point of building it:
- * neither is distinguishable from corruption, and neither yields bytes.
- */
-export async function unwrapAccountKeys(
-  kek: CryptoKey,
-  wrapped: WrappedAccountKeys,
-  factorId: string,
-): Promise<AccountKeys> {
-  const [contentKey, indexKey] = await Promise.all([
-    unwrapOne(kek, wrapped.wrappedContentKey, factorId, 'content'),
-    unwrapOne(kek, wrapped.wrappedIndexKey, factorId, 'index'),
-  ]);
-
-  return { contentKey, indexKey };
-}
-
-/**
  * Imports {@link ACCOUNT_KEY_BYTES} of raw material as a non-extractable AES-GCM
  * key, wipes the material, or rejects.
  *
  * **The one place in this client where bytes become an AES-GCM key, whichever
  * key they are.** Both key-encryption-key derivations above go through it, and so
  * does anything that has to turn one of the account's own keys — which
- * {@link generateAccountKeys} and {@link unwrapAccountKeys} hand back as
+ * {@link generateAccountKeys} and `openFactorKeypair` hand back as
  * `Uint8Array`, never as a key object — into something a cipher will take. That
  * makes it, like {@link importHmacSha256Key} beside it, a place where five
  * decisions are taken together: the algorithm, the width, the usage list, the
@@ -583,66 +452,6 @@ export async function importHmacSha256Key(
     owned.fill(0);
     material.fill(0);
   }
-}
-
-async function wrapOne(
-  kek: CryptoKey,
-  key: Uint8Array,
-  factorId: string,
-  purpose: WrappedKeyPurpose,
-): Promise<string> {
-  const envelope = await sealEnvelope(
-    kek,
-    key,
-    wrappedKeyAssociatedData(factorId, purpose),
-  );
-
-  return encodeBase64Url(envelope);
-}
-
-function unwrapOne(
-  kek: CryptoKey,
-  wrapped: string,
-  factorId: string,
-  purpose: WrappedKeyPurpose,
-): Promise<Uint8Array> {
-  return openEnvelope(
-    kek,
-    decodeBase64Url(wrapped),
-    wrappedKeyAssociatedData(factorId, purpose),
-  );
-}
-
-// Folds a factor id to its canonical spelling, or throws.
-//
-// `toLowerCase`, never `toLocaleLowerCase`: the latter maps `I` to `ı` under a
-// Turkish locale, which would fold one factor id to two different bindings on two
-// phones — the same trap `recovery-code-canonical.ts` names in the other
-// direction.
-//
-// Braces and parentheses come off before the shape is checked, and the shape is
-// then the whole of the validation: eight, four, four, four and twelve hex digits.
-// Deliberately no check of the version or variant nibbles — this module is not the
-// authority on which UUIDs the server may mint, and a rule invented here would
-// start refusing valid factor ids the day that authority changes its mind, with an
-// error naming nothing a caller could act on.
-function canonicalFactorId(factorId: string): string {
-  const lowered = factorId.toLowerCase();
-  const unwrapped =
-    (lowered.startsWith('{') && lowered.endsWith('}')) ||
-    (lowered.startsWith('(') && lowered.endsWith(')'))
-      ? lowered.slice(1, -1)
-      : lowered;
-
-  const groups = HYPHENATED_UUID.exec(unwrapped) ?? BARE_UUID.exec(unwrapped);
-
-  if (groups === null) {
-    throw new Error(
-      'A wrapped key can only be bound to a factor id that is a UUID.',
-    );
-  }
-
-  return groups.slice(1).join('-');
 }
 
 // Refuses material that is not exactly `ACCOUNT_KEY_BYTES` wide.

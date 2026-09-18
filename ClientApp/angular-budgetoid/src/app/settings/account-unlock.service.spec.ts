@@ -466,7 +466,7 @@ describe('AccountUnlockService', () => {
   async function accountKeysRead(): Promise<TestRequest> {
     const request = await eventually(
       () => http.match(ACCOUNT_KEYS_URL)[0] ?? null,
-      "the read of this account's wrapped keys",
+      "the read of this account's factor keypairs",
     );
     seen.push(request.request.urlWithParams);
 
@@ -533,7 +533,7 @@ describe('AccountUnlockService', () => {
     await press();
 
     const read = await accountKeysRead();
-    read.flush([]);
+    read.flush({ manifest: null, rotationEpoch: 0, factors: [] });
 
     await eventually(
       () => custody.unlockFailure(),
@@ -993,7 +993,7 @@ describe('AccountUnlockService', () => {
     // opened" answer; what matters here is only that custody has finished, so
     // neither half is running any more.
     const read = await accountKeysRead();
-    read.flush([]);
+    read.flush({ manifest: null, rotationEpoch: 0, factors: [] });
 
     await eventually(
       () => custody.unlockFailure(),

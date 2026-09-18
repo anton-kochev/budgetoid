@@ -1,7 +1,7 @@
 import { HttpContext } from '@angular/common/http';
 import { Injectable } from '@angular/core';
 import { EXPECTS_UNAUTHENTICATED } from '@app-core/interceptors/expects-unauthenticated.token';
-import type { WrappedAccountKeys } from '@app-core/security/account-keys';
+import type { FactorKeypairEnvelopes } from '@app-core/security/factor-keypair';
 import { map, Observable } from 'rxjs';
 import { BaseApiService } from './base-api.service';
 
@@ -94,26 +94,113 @@ export interface CredentialSummary {
 }
 
 // One factor's row of `wrapped_account_keys`, as the three members cross the
-// wire: the identifier the two envelopes were sealed against, and the envelopes.
-// Nothing else — no credential id, no user id, no registration instant — and the
-// route is specified never to grow one.
+// wire: the identifier the factor's keypair was bound to, its private half
+// wrapped under the key-encryption key that factor derives, and the account's
+// two keys encapsulated to its public half. Nothing else — no credential id, no
+// user id, no registration instant — and the route is specified never to grow
+// one. The manifest and the epoch are **not** here and must never be copied
+// down: both are true of the account rather than of a factor, so they live on
+// {@link AccountKeyCustodyDto} one level up, and a per-row copy would be eleven
+// copies of one value kept consistent by nobody.
 //
-// **Composed from `WrappedAccountKeys` rather than restating its two members**,
-// which is the whole reason this file reaches into `+core/security` at all. That
-// interface is what `unwrapAccountKeys` takes, so an entry read here is passed
-// straight to it; two hand-written copies of `wrappedContentKey` and
-// `wrappedIndexKey` would let one be renamed while the other went on compiling
-// against a body it no longer describes. The import is `import type`, so nothing
-// of the crypto module reaches the bundle this file already sits in.
+// **Composed from `FactorKeypairEnvelopes` rather than restating its two
+// members**, which is the whole reason this file reaches into `+core/security`
+// at all. That interface is what `openFactorKeypair` takes, so an entry read
+// here is passed straight to it; two hand-written copies of `wrappedPrivateKey`
+// and `encapsulatedAccountKeys` would let one be renamed while the other went on
+// compiling against a body it no longer describes. The import is `import type`,
+// so nothing of the crypto module reaches the bundle this file already sits in.
 //
 // An intersection rather than an `interface extends`: there is one member to
 // add, and the composition says so without inventing a hierarchy.
-export type AccountKeyEntry = WrappedAccountKeys & {
+export type AccountKeyEntry = FactorKeypairEnvelopes & {
   // The canonical lower-case hyphenated spelling the row was stored in. It **is**
-  // the associated data both envelopes were sealed with, so it travels beside
+  // the associated data both envelopes were bound with, so it travels beside
   // them and is never derived, normalised or prettified on the way past.
   readonly factorId: string;
 };
+
+/**
+ * The whole account-key read: the account's manifest and the generation it is
+ * in, then one entry per recovery factor.
+ *
+ * **`manifest` is `string | null` and never `''`.** An empty string is a legal
+ * base64url rendering of zero bytes, so spelling an absent manifest that way
+ * makes "there is no manifest" indistinguishable from "there is one and it
+ * authenticates an empty set" — and the two have different answers. The server
+ * skips its encoder rather than feeding it an empty span for exactly that
+ * reason, so `''` is a spelling this route does not emit and this client
+ * refuses; accepting it would let a later server start emitting it unnoticed.
+ *
+ * `rotationEpoch` is `0` when there is no manifest row. A stored generation
+ * starts at 1 and the column refuses anything lower, so `0` is a number no row
+ * can hold — which is what lets one integer say "there is nothing stored"
+ * without a second member to disambiguate it.
+ *
+ * **That last sentence is a refusal and not only a description.** `manifest`
+ * and `rotationEpoch` say the same thing twice, so a body in which they
+ * disagree — a manifest beside `0`, or `null` beside a stored generation — is
+ * refused by {@link MeApiService.getAccountKeys} rather than handed on. Each
+ * member is well formed on its own, which is exactly why nothing else catches
+ * it, and what it costs downstream is an account declared unopenable.
+ */
+export interface AccountKeyCustodyDto {
+  readonly manifest: string | null;
+  readonly rotationEpoch: number;
+  readonly factors: readonly AccountKeyEntry[];
+}
+
+/**
+ * What this boundary throws when the account-key body is not one it can read.
+ *
+ * **A type rather than a bare `Error`, because one consumer has to tell this
+ * refusal apart from every other way the read can fail.**
+ * `AccountKeyCustodyService` turns a failed read into a word a person acts on,
+ * and a body this client cannot parse is a statement about *this browser's
+ * bundle* — the remedy is a reload, not a retry and not another factor. Thrown
+ * as an `Error`, it is indistinguishable from a network that blinked and lands
+ * on `unreachable`, whose advice is "try again in a minute": a loop that can
+ * never succeed, because nothing about the next minute changes which JavaScript
+ * this tab is running.
+ *
+ * It carries no member of its own and never will. What the consumer branches on
+ * is the type; what a reader needs is the message, and every throw below writes
+ * its own.
+ */
+export class AccountKeyResponseError extends Error {}
+
+// The account's manifest as the wire is allowed to spell it: bytes, or nothing
+// at all.
+//
+// **`''` is refused, and that refusal is the whole function.** `null` and `''`
+// are the two spellings of "no manifest" a reader will treat as equivalent, and
+// they are not: an empty string decodes to zero bytes, which is a manifest of
+// length zero, which is a value this client would then try to open and would
+// blame the account's content key for. The server argues the same distinction
+// from its own side and skips its encoder rather than handing back `''` — so
+// refusing the spelling it refuses to emit costs nothing today and is the only
+// thing that catches a later server that starts emitting it.
+//
+// It is deliberately **not** a check that the string is base64url, or of any
+// width: that is `openFactorManifest`'s rule, and a second, weaker copy of it
+// here would be a second definition of what a manifest is.
+function isManifestWire(manifest: unknown): manifest is string | null {
+  return (
+    manifest === null || (typeof manifest === 'string' && manifest.length > 0)
+  );
+}
+
+// Which generation of the manifest is in force — `0` when there is none.
+//
+// Whole and not negative, for `isRecoveryCodeCount`'s reason:
+// `Number.isInteger` also refuses `NaN` and both infinities, each of which is a
+// JSON number to a parser and none of which is a generation. A fractional or
+// negative epoch reaches `openFactorManifest` as associated data, where it
+// authenticates nothing and fails with a message about a manifest that did not
+// open — a refusal three layers away from the member that was wrong.
+function isRotationEpoch(epoch: unknown): epoch is number {
+  return typeof epoch === 'number' && Number.isInteger(epoch) && epoch >= 0;
+}
 
 // The boundary check `isRecoveryCodeCount` argues for, on a body where a
 // coercion is even quieter.
@@ -124,14 +211,18 @@ export type AccountKeyEntry = WrappedAccountKeys & {
 // one, try the next" — so a malformed body would be read as a person presenting
 // the wrong factor and answered with "present another factor". That is the
 // failure this refusal exists to prevent: not a wrong pixel, but the account
-// declared unopenable by its own key custody, with nothing naming the cause.
+// declared unopenable by its own key custody, with nothing naming the cause. A
+// version skew is how it really arrives — a server that renamed a member, or
+// added one this bundle does not know, is a bundle problem with a reload as its
+// remedy, and it must not be reported as a factor problem with "present another
+// one" as its remedy.
 //
 // So the check is per entry and not merely over the collection, unlike
 // `getCredentials` — a credential row is total in what it renders and a
 // malformed entry spoils one row, while here an entry has no partial use at all.
 // It is deliberately **not** a check of the envelopes' shape: width, version
-// byte and alphabet are `decodeBase64Url`'s and `openEnvelope`'s rules, and a
-// second, weaker copy of them here would be a second definition of what an
+// byte and alphabet are `decodeBase64Url`'s and `openFactorKeypair`'s rules, and
+// a second, weaker copy of them here would be a second definition of what an
 // envelope is.
 function isAccountKeyEntry(entry: unknown): entry is AccountKeyEntry {
   return (
@@ -139,10 +230,10 @@ function isAccountKeyEntry(entry: unknown): entry is AccountKeyEntry {
     entry !== null &&
     'factorId' in entry &&
     typeof entry.factorId === 'string' &&
-    'wrappedContentKey' in entry &&
-    typeof entry.wrappedContentKey === 'string' &&
-    'wrappedIndexKey' in entry &&
-    typeof entry.wrappedIndexKey === 'string'
+    'wrappedPrivateKey' in entry &&
+    typeof entry.wrappedPrivateKey === 'string' &&
+    'encapsulatedAccountKeys' in entry &&
+    typeof entry.encapsulatedAccountKeys === 'string'
   );
 }
 
@@ -238,18 +329,20 @@ export class MeApiService extends BaseApiService {
   // collapsing them is the one defect this whole path is shaped to prevent.
   //
   // There is deliberately **no** counterpart that generates a set, and the
-  // reason has moved twice. `POST /api/me/recovery-codes` takes six members:
+  // reason has moved twice. `POST /api/me/recovery-codes` takes eight members:
   // the five of a fresh WebAuthn assertion, which this client *can* now
-  // produce — `webauthn-ceremony.service.ts` runs one — and ten whole code
-  // submissions, each carrying its own wrapped copy of the account's content
-  // key and index key. That sixth member is no longer blocked on the *server*:
-  // `getAccountKeys` below reads the envelopes, and
-  // `account-key-custody.service.ts` opens them on every passkey sign-in. It is
-  // blocked on what custody keeps — two non-extractable `CryptoKey` objects
-  // behind no accessor — while a wrap takes bytes. Getting bytes means
-  // unwrapping again under a key-encryption key derived from a factor somebody
-  // presents there and then, which is a ceremony — but not the one this route
-  // wants.
+  // produce — `webauthn-ceremony.service.ts` runs one — ten whole code
+  // submissions, each carrying a factor id, that code's wrapped private key and
+  // the account's two keys encapsulated to its public half, and — because ten
+  // factors leave and ten arrive — the account's factor manifest beside the
+  // rotation epoch it is written under. The submissions are no longer blocked
+  // on the *server*: `getAccountKeys` below reads the envelopes, and
+  // `account-key-custody.service.ts` opens them on every passkey sign-in. They
+  // are blocked on what custody keeps — two non-extractable `CryptoKey` objects
+  // behind no accessor — while an encapsulation takes the account's keys as
+  // bytes. Getting those bytes means opening a factor again under a
+  // key-encryption key derived from one somebody presents there and then, which
+  // is a ceremony — but not the one this route wants.
   //
   // **That distinction is what is left, and it is narrower than "the settings
   // screen runs no ceremony".** It runs one: the **Unlock** control asserts a
@@ -278,13 +371,15 @@ export class MeApiService extends BaseApiService {
     );
   }
 
-  // The wrapped account keys filed under the credential that opened this
-  // session — one entry for a passkey, ten for a set of recovery codes, and an
-  // **empty array** for a session the server cannot see. That last one is not an
-  // error and must never be turned into one here: never established, already
-  // ended and belonging to somebody else are one indistinguishable answer on
-  // purpose, and a caller that told them apart would rebuild the enumeration
-  // oracle the route refuses to be.
+  // The account's key custody: its manifest, the generation that manifest is in,
+  // and one entry per recovery factor — one for a passkey, ten for a card of
+  // recovery codes, and an **empty `factors` array** for a session the server
+  // cannot see. That last one is not an error and must never be turned into one
+  // here: never established, already ended and belonging to somebody else are one
+  // indistinguishable answer on purpose, and a caller that told them apart would
+  // rebuild the enumeration oracle the route refuses to be. `manifest: null`
+  // beside `rotationEpoch: 0` and no factors is a perfectly ordinary 200, and is
+  // also what an account registered before the manifest landed answers forever.
   //
   // **It carries `EXPECTS_UNAUTHENTICATED`, and that is not `getMe()`'s case
   // turned around — it is custody's own rule, enforced from the outside.**
@@ -318,24 +413,83 @@ export class MeApiService extends BaseApiService {
   // in. A `context?` parameter would advertise the opposite, and the next
   // caller that omitted it would restore the defect silently.
   //
-  // The list is `readonly` from here down for the reason `getCredentials`'s is:
-  // its order is the server's statement, and nothing in the client sorts,
-  // filters or appends to it. The consumer walks the whole of it — see
-  // `account-key-custody.service.ts`, which tries each entry in turn under its
-  // own `factorId`.
-  public getAccountKeys(): Observable<readonly AccountKeyEntry[]> {
+  // The factor list is `readonly` from here down for the reason
+  // `getCredentials`'s is: its order is the server's statement, and nothing in
+  // the client sorts, filters or appends to it. The consumer walks the whole of
+  // it — see `account-key-custody.service.ts`, which tries each entry in turn
+  // under its own `factorId`.
+  //
+  // **The body used to be the bare array `factors` now holds, and the client
+  // reading the old spelling is what this method is.** A wrapper is refused and
+  // an array is accepted exactly the wrong way round on a version skew, so the
+  // two shapes swap places here in one edit rather than one of them being
+  // tolerated "for now": a boundary that took either is a boundary that has
+  // stopped saying which server it is talking to.
+  public getAccountKeys(): Observable<AccountKeyCustodyDto> {
     return this.get<unknown>(
       'api/me/account-keys',
       new HttpContext().set(EXPECTS_UNAUTHENTICATED, true),
     ).pipe(
       map((body) => {
-        // Two refusals rather than one, because the two say different things to
-        // whoever reads the message: a body that is not a list is a route or a
-        // proxy answering something else entirely, while a malformed entry is a
-        // version skew on a route that *is* the right one.
-        if (!Array.isArray(body)) {
-          throw new Error(
-            'The account-key response did not arrive as a list of factors.',
+        // Six refusals rather than one, because they say six different things
+        // to whoever reads the message. This first one is the route or a proxy
+        // answering something else entirely — **and it is what the retired shape
+        // now lands on**: a bare array is the answer the previous server gave, so
+        // a client running against one says so here instead of reading `undefined`
+        // off an array's `factors` property and calling the account empty.
+        //
+        // `Array.isArray` is part of the condition and not an afterthought: an
+        // array *is* an object to `typeof`, so without it every one of the
+        // member checks below would run against a list and refuse for the wrong
+        // reason, three layers from the fact that matters.
+        if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+          throw new AccountKeyResponseError(
+            "The account-key response did not arrive as an account's key custody.",
+          );
+        }
+
+        if (!('manifest' in body) || !isManifestWire(body.manifest)) {
+          throw new AccountKeyResponseError(
+            'The account-key response carried no readable manifest.',
+          );
+        }
+
+        if (
+          !('rotationEpoch' in body) ||
+          !isRotationEpoch(body.rotationEpoch)
+        ) {
+          throw new AccountKeyResponseError(
+            'The account-key response carried no usable rotation epoch.',
+          );
+        }
+
+        // **The two read together, which neither of the refusals above can
+        // do.** `isManifestWire` admits any non-empty string and
+        // `isRotationEpoch` admits `0`; the invariant that ties them is on
+        // {@link AccountKeyCustodyDto} — `0` is the epoch of an account with no
+        // manifest row, because a stored generation starts at 1 and the column
+        // refuses anything lower. So a manifest beside `0`, and `null` beside a
+        // stored generation, are each well formed member by member and are a
+        // pair no account can be in.
+        //
+        // **Refused here, three layers from where the skew would otherwise
+        // land.** A manifest served beside `0` reaches `openFactorManifest`,
+        // whose associated data refuses an epoch below 1 — and that throw is
+        // caught by the gate in `AccountKeyCustodyService`, which turns it into
+        // a statement about the account's *key material*. Somebody would be
+        // told nothing they hold will ever open this account, over two members
+        // of a body that merely disagreed with each other. The type thrown here
+        // is what keeps it on this boundary's own word instead: the answer is
+        // one this client cannot read, and a reload is the act that changes it.
+        if ((body.manifest === null) !== (body.rotationEpoch === 0)) {
+          throw new AccountKeyResponseError(
+            'The account-key response disagreed with itself about whether the account has a manifest.',
+          );
+        }
+
+        if (!('factors' in body) || !Array.isArray(body.factors)) {
+          throw new AccountKeyResponseError(
+            'The account-key response did not carry a list of factors.',
           );
         }
 
@@ -347,15 +501,19 @@ export class MeApiService extends BaseApiService {
         // malformed body and a caller would be a runtime guard nothing in the
         // types required. Named as `unknown[]`, the narrowing `every` performs
         // is what makes the return type true.
-        const entries: readonly unknown[] = body;
+        const factors: readonly unknown[] = body.factors;
 
-        if (!entries.every(isAccountKeyEntry)) {
-          throw new Error(
+        if (!factors.every(isAccountKeyEntry)) {
+          throw new AccountKeyResponseError(
             'The account-key response carried a factor missing its identifier or one of its two envelopes.',
           );
         }
 
-        return entries;
+        return {
+          manifest: body.manifest,
+          rotationEpoch: body.rotationEpoch,
+          factors,
+        };
       }),
     );
   }

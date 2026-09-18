@@ -39,14 +39,18 @@ async function registrationBody(): Promise<RegistrationRequestBody> {
     attestationObject: 'YXR0ZXN0YXRpb24',
     clientExtensionResults: { prf: { enabled: true } },
     factorId: '3f2504e0-4f89-41d3-9a0c-0305e82c3301',
-    wrappedContentKey: 'AQIDBAUGBwgJCgsMDQ4PEA',
-    wrappedIndexKey: 'EA8ODQwLCgkIBwYFBAMCAQ',
+    wrappedPrivateKey: 'AQIDBAUGBwgJCgsMDQ4PEA',
+    encapsulatedAccountKeys: 'EA8ODQwLCgkIBwYFBAMCAQ',
     codes: set.verifiers.map((verifier, index) => ({
       verifier,
       factorId: `3f2504e0-4f89-41d3-9a0c-0305e82c33${String(index).padStart(2, '0')}`,
-      wrappedContentKey: `AQIDBAUGBwgJCgsMDQ4PE${index}`,
-      wrappedIndexKey: `EA8ODQwLCgkIBwYFBAMCA${index}`,
+      wrappedPrivateKey: `AQIDBAUGBwgJCgsMDQ4PE${index}`,
+      encapsulatedAccountKeys: `EA8ODQwLCgkIBwYFBAMCA${index}`,
     })),
+    // One blob per account rather than one per factor, and the widths here are
+    // nobody's: this file is about the request around the body, and what a
+    // manifest has to be is `factor-manifest.ts`'s rule and the server's.
+    manifest: 'ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8',
   };
 }
 

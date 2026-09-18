@@ -113,9 +113,12 @@ export interface PasskeyClientExtensionResultsJson {
 /**
  * The three members of `CompleteRegistrationCommand` this module can build.
  *
- * The other three — `factorId`, `wrappedContentKey` and `wrappedIndexKey` — are
- * the caller's: they come from `account-keys.ts` and from a factor identifier
- * the client mints, and neither is anything an authenticator response contains.
+ * The other five are the caller's, and each has its own source: `factorId` is
+ * minted by `factor-id.ts`, `wrappedPrivateKey` and `encapsulatedAccountKeys`
+ * come from `factor-keypair.ts`, `manifest` from `factor-manifest.ts` over the
+ * whole factor set, and `rotationEpoch` is one past the generation the server
+ * last reported. Not one of them is anything an authenticator response contains,
+ * which is why the count here is three and not eight.
  */
 export interface PasskeyRegistrationPayload {
   readonly clientDataJson: string;
@@ -147,8 +150,9 @@ const utf8 = new TextEncoder();
  * output to derive a key from. It is read off `account-keys.ts` and never typed
  * again here, because a second copy of the string agrees with the first for
  * exactly as long as nobody edits one of them — and the day they part, every
- * account whose keys were wrapped under the old value is locked out by a passkey
- * that still authenticates perfectly and simply hands back different bytes.
+ * account whose factors wrapped their private keys under the old value is
+ * locked out by a passkey that still authenticates perfectly and simply hands
+ * back different bytes.
  *
  * Throws whatever `decodeBase64Url` throws. Every binary member is decoded and
  * none is repaired: a challenge quietly padded out is a ceremony bound to bytes
@@ -215,12 +219,12 @@ export function toCreationOptions(
  * **No `prf` extension either, and that is a decision rather than an
  * oversight.** This function is a translation of what the server sent, and the
  * server sends no extensions on this leg. The evaluation input a sign-in needs
- * in order to unwrap the account's keys is merged on top by
- * `webauthn-ceremony.service.ts`, where the derivation that consumes the output
- * lives — so a secret is derived only where something is about to use it, and a
- * caller that wants an assertion without deriving anything still has one. The
- * day a second caller needs the input, it merges it the same way; this function
- * stays a translation.
+ * in order to unwrap the private key that opens the account's keys is merged on
+ * top by `webauthn-ceremony.service.ts`, where the derivation that consumes the
+ * output lives — so a secret is derived only where something is about to use
+ * it, and a caller that wants an assertion without deriving anything still has
+ * one. The day a second caller needs the input, it merges it the same way;
+ * this function stays a translation.
  *
  * Throws whatever `decodeBase64Url` throws, for the reason
  * {@link toCreationOptions} does.
