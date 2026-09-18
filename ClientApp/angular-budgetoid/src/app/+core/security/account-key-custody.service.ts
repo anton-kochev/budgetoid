@@ -58,6 +58,7 @@ import {
   MeApiService,
   type AccountKeyCustodyDto,
   type AccountKeyEntry,
+  type MeDto,
 } from '@app-core/api/me-api.service';
 import { firstValueFrom } from 'rxjs';
 
@@ -67,11 +68,60 @@ import { importAesGcmKey, importHmacSha256Key } from './account-keys';
 // the interface this function's parameter is typed by — so there is one spelling
 // of the two envelopes from the wire to the open.
 import { openFactorKeypair } from './factor-keypair';
-// The gate that confirms a content key really is the content key. It hands back
-// plaintext bytes this class never looks at: what is being asked is whether the
-// open *succeeded*, and reading the entries it authenticates would be this class
-// learning the account's factor set, which is nobody's business here.
-import { openFactorManifest } from './factor-manifest';
+// The gate that confirms a content key really is the content key, and the
+// account's own statement of which factors exist.
+//
+// **The set it hands back is read, and that is now exactly this class's
+// business.** It was not while the manifest was a self-check on this client's
+// encapsulation order: the only question then was whether the open *succeeded*,
+// and walking the entries would have been this class learning something it had
+// no use for. What changed is that the rows beside the manifest are not
+// evidence — an operator who can write the database can add a row of their own,
+// wrapped under a key-encryption key they chose, and every envelope in it is
+// correctly framed and opens perfectly under it. The blob is sealed under a key
+// this server has never held, so the set it declares is the only unforgeable
+// statement of which factors the account has, and comparing that statement
+// against what was served cannot be done without reading one of them.
+//
+// **What it learns is factor *identifiers* and nothing else** — no credential
+// id, no kind, no instant — and only in order to compare two sets that arrived
+// in one response. The points travel back beside the identifiers and nothing
+// here reads one.
+//
+// **`FactorManifestWireError` comes across beside it, as a value, because
+// `instanceof` is the check.** Two of that function's refusals are made before
+// any cipher runs — a wire string its strict decoder will not read, and a sealed
+// width outside the window that module reads by, both ends of which are the API
+// edge's to the byte and whose floor the stored rule sits below on purpose, as
+// `manifestRefusal` argues further down — and neither has observed a byte of
+// the account's key material. Those two leave as this type and everything
+// from the tag onwards does not, which is the whole of what the gate below is
+// offered and the whole of what it needs: one word for a body that arrived in a
+// shape this bundle cannot read, another for material that disagrees with
+// itself.
+//
+// **On the type and never on a message**, which is `failureOf`'s rule further
+// down applied to the other boundary this class reads. Several sentences are
+// thrown for those two refusals and more will be written; a reading pinned to
+// one of them stops covering the rest in silence, and a rewording somewhere else
+// becomes the edit that turns a reload into a permanent dead end.
+import {
+  FactorManifestWireError,
+  openFactorManifest,
+  type FactorPublicKey,
+} from './factor-manifest';
+// This device's memory of how far an account has already moved, which is the
+// one thing on this path that no value carried by a response can supply.
+//
+// Whoever can replay a manifest can replay the epoch beside it, and the pair
+// verifies exactly as it did the day it was written — so the only party that can
+// tell a stale `(manifest, epoch)` from a current one is a party that watched
+// the account pass it, and on a browser that party is a device. Two functions
+// and no service: there is no state here beyond the store.
+import {
+  highestRotationEpochSeen,
+  recordRotationEpochSeen,
+} from './rotation-epoch-record';
 // The index grammar: the operation the third member delegates to, the refusal
 // it opens with, and the binding as a **type — and never the list of four**.
 // Which pair a value belongs to, and which tenancy it is keyed inside, are the
@@ -205,10 +255,33 @@ export type AccountKeyStatus = 'locked' | 'unlocking' | 'unlocked';
  * not open was reported as `unopened`, whose remedy is *present another factor*
  * — advice that cannot work, over a state that survives every reload in every
  * browser. One altered byte in a stored manifest was therefore a permanent
- * lockout with a screen telling the person to go and find another passkey. The
- * word is about the **material and not the factor**, deliberately, so that
- * story 12.14's neighbours — a served factor set that disagrees with the
- * manifest's, an epoch rolled back — are the same word rather than two more.
+ * lockout with a screen telling the person to go and find another passkey.
+ *
+ * **The word is about the material and not about the factor, and that is what
+ * let its four neighbours land on it rather than growing this union.** A
+ * response carrying no manifest at all, a manifest whose tag did not verify, a
+ * served factor set disagreeing with the set the manifest declares, and an epoch
+ * below one this device has already watched the account pass are one observation
+ * — the account's material does not agree with itself — and they share one next
+ * step, which is that nothing this person holds changes it. Five words for five
+ * next steps, and these four are one.
+ *
+ * **Where the fourth word and the fifth meet is the manifest, and the line
+ * between them is whether a cipher ran.** A manifest that arrived in a shape
+ * this bundle cannot read — a wire value its decoder refuses, a sealed width
+ * outside the window this bundle reads by, both ends of which are the API
+ * edge's and whose floor the stored rule sits below, as the gate below sets out
+ * layer by layer — is `unrecognised` like every other body
+ * this client could not read: no key was touched, so nothing whatever about the
+ * account's material was observed, and a reload is the one act that changes the
+ * answer. Everything from the tag onwards is `inconsistent`, because a plaintext
+ * that authenticated was written by somebody holding the content key, and a
+ * refusal over it is this client's own writer disagreeing with this client's own
+ * reader. Told to a version skew, *nothing you hold will change this* is a
+ * permanent lockout over a state one reload clears, which is the same mistake
+ * the `unopened`/`inconsistent` split was made to stop one layer up. What holds
+ * the line is a type the manifest module throws, never a sentence either side
+ * agrees to keep.
  */
 export type UnlockFailure =
   | 'unopened'
@@ -228,6 +301,26 @@ interface HeldKeys {
   readonly contentKey: CryptoKey;
   readonly indexKey: CryptoKey;
 }
+
+// What the gate over the account's material answers with, where `null` is the
+// whole of "it agrees with itself".
+//
+// **A boolean is what stood here, and it could not carry this.** Two of
+// `openFactorManifest`'s refusals happen before a cipher runs and are facts about
+// the answer this read brought back rather than about the account's keys, so the
+// gate has two words to give and a predicate has one. Returning the word itself,
+// rather than a second boolean beside the first, is what keeps the caller from
+// re-deriving a reading the gate already made.
+//
+// **Two of the five and never the other three, taken from `UnlockFailure` with
+// `Extract` rather than written out again.** A member renamed over there leaves
+// this alias with nothing to answer and every return below stops compiling,
+// where a second spelling would be a union that quietly stopped agreeing with
+// the one the service publishes. The three it leaves out are answers this gate is
+// in no position to give: nothing about the factor a person presented, the
+// network, or a request the server refused is visible from inside a body that has
+// already arrived.
+type ManifestRefusal = Extract<UnlockFailure, 'inconsistent' | 'unrecognised'>;
 
 @Injectable({ providedIn: 'root' })
 export class AccountKeyCustodyService {
@@ -661,7 +754,8 @@ export class AccountKeyCustodyService {
       : { state: 'locked' };
   }
 
-  // The read and the trial, off the main path because `unlock` returns nothing.
+  // The two reads and the trial, off the main path because `unlock` returns
+  // nothing.
   //
   // **It never calls anything on `SessionService`.** A key that will not open is
   // not a session that ended: the person is signed in, the server answered, and
@@ -670,14 +764,49 @@ export class AccountKeyCustodyService {
   // the `unreachable` branch it would do it over one blinked request, which is
   // precisely the reading that class's fourth state exists to refuse. The
   // failure is published as a state, and the state is the handling.
+  //
+  // **Which account this is arrives from the API, and the identity read is a
+  // step of the gate rather than an errand beside it.** The epoch record below
+  // is filed per account, and the only per-account identifier a browser ever
+  // holds is the budget the session is scoped by. `SessionService` publishes it
+  // as a signal four characters away, and reading that signal is the tempting
+  // edge this whole class is built on the other side of — that class injects
+  // this one, so the edge closes a cycle. It would also be wrong on its own
+  // terms: the signal is `null` at the instant `unlock()` is called on the
+  // sign-in path, because `established()` starts its own read without awaiting
+  // it and sign-in unlocks on the line after, so the first unlock of every
+  // session would be filed under nothing.
   async #attempt(
     keyEncryptionKey: CryptoKey,
     generation: number,
   ): Promise<void> {
-    let custody: AccountKeyCustodyDto;
+    let answers: readonly [AccountKeyCustodyDto, MeDto];
 
     try {
-      custody = await firstValueFrom(this.#api.getAccountKeys());
+      // **Two reads, one `try`, one reading of what went wrong — and the
+      // sharing is the property rather than a saving of three lines.** A second
+      // `catch` written over the identity read, for a log line or a message of
+      // its own, would answer a refused identity read with whatever word that
+      // catch happened to pick — and `unreachable` is the one it would most
+      // plausibly pick, false by that word's own definition over a server that
+      // was reached and answered.
+      //
+      // **Cases pin that mapping over the identity read specifically, which is
+      // what makes a split here go red rather than quiet**: a pair over 401 and
+      // 403 asserting `unauthenticated`, beside one over a request that never
+      // arrived asserting `unreachable`. What the sharing buys on top of them is
+      // the rest of the reading, which no case can reach from this side. Routed
+      // through `failureOf`, "a 401 or a 403 is `unauthenticated`, a body this
+      // client cannot read is `unrecognised`, and everything else is
+      // `unreachable`" is true of both reads **by construction**: there is one
+      // reading of a failed read in this class, and both reads go through it.
+      //
+      // Together rather than in series, because neither answer is an input to
+      // the other request and somebody is waiting in front of a screen for both.
+      answers = await Promise.all([
+        firstValueFrom(this.#api.getAccountKeys()),
+        firstValueFrom(this.#api.getSessionOwner()),
+      ]);
     } catch (error: unknown) {
       // Never `unopened`: nothing about a read that did not come back says
       // anything about the factor the person presented, and telling them to go
@@ -690,22 +819,50 @@ export class AccountKeyCustodyService {
       return;
     }
 
-    // **Every entry, in turn, each under its own `factorId`.** A passkey session
-    // is answered with one entry and a recovery-code session with ten, so the
-    // list of one is the case a reader will optimise into `entries[0]` — and it
-    // works, forever, on every passkey account in the product. What it does to
-    // the other kind is read code #1's envelopes under code #7's key-encryption
-    // key: the open fails to authenticate, the loop that would have found the
-    // right pair is not there, and somebody who redeemed a valid code is told
-    // their account cannot be opened. The loop is written now, against a list of
-    // one, for exactly that reason.
+    const [custody, owner] = answers;
+    // Read as `unknown`, because a declared response type is an assertion about
+    // JSON rather than a check of it, and `''` is the absence of an answer
+    // wearing the type of one.
+    const budgetId: unknown = owner.budgetId;
+
+    // **A 200 carrying no budget is `unrecognised`, and it is refused here
+    // rather than shrugged off.** `SessionService` reads the same absence as
+    // `null` and carries on, deliberately: a body that says there is a session
+    // and whose it is still says that with one member missing, and taking the
+    // session status down over a version skew would sign somebody out. This
+    // path cannot make that trade. An unlock that does not learn which account
+    // it is opening can record nothing, and an unlock that records nothing
+    // cannot refuse a replay — so shrugging here would hand an operator a way
+    // to switch the rollback refusal off for every browser at once, by dropping
+    // one member from a response nothing else on this path reads.
+    //
+    // `unrecognised` and not `unreachable`, by that word's own definition: the
+    // server was reached and it answered. What was observed is an answer this
+    // client could not read, and a reload is the one act that changes it.
+    if (typeof budgetId !== 'string' || budgetId.length === 0) {
+      this.#fail('unrecognised', generation);
+
+      return;
+    }
+
+    // **Every entry, in turn, each under its own `factorId`.** An account
+    // holding one passkey and nothing else is answered with one entry, so the
+    // list of one is what a reader optimises into `entries[0]` — and it works,
+    // forever, on that kind of account. The route answers the whole account
+    // rather than the session's own credential, so an ordinary account — a
+    // passkey beside a card of ten codes — is answered with **eleven**, of
+    // which exactly one opens under the factor just presented. What `entries[0]`
+    // does there is read some other factor's envelopes under this factor's
+    // key-encryption key: the open fails to authenticate, the loop that would
+    // have found the right pair is not there, and somebody who presented a
+    // valid factor is told their account cannot be opened.
     //
     // The associated data is rebuilt from `entry.factorId` and never from
     // anything this client remembers, because that identifier *is* what the two
     // envelopes were sealed against. Exactly one entry opens; the rest fail to
     // authenticate, which is the AEAD doing what the binding is for rather than
-    // an error worth telling apart. Twenty attempts is a cost nobody can
-    // measure.
+    // an error worth telling apart. Two AEAD opens and one key agreement per
+    // entry is a cost nobody can measure.
     let opened: HeldKeys | null = null;
 
     for (const entry of custody.factors) {
@@ -728,55 +885,76 @@ export class AccountKeyCustodyService {
       return;
     }
 
-    // **The gate that confirms the content key is the content key, and it runs
-    // once, here, after the loop and never inside it.**
+    // **The gate, and it runs once, here, after the loop and never inside it.**
     //
     // Inside the loop it would be a second reason an entry can be skipped, and
     // the two would be indistinguishable in the answer: "no factor opened"
-    // (`unopened`, present another one) and "a factor opened and its content key
-    // is wrong" (nothing another factor can help with) would arrive at the same
-    // place by the same road. Out here they are two branches with two causes.
+    // (`unopened`, present another one) and "a factor opened and the account's
+    // material does not agree with itself" (nothing another factor can help
+    // with) would arrive at the same place by the same road. Out here they are
+    // two branches with two causes.
     //
-    // **What it does and does not buy.** A decapsulation that succeeds proves
-    // the 64 bytes are what was encapsulated to this factor, and it proves
-    // **nothing whatever** about which half of them is which. The two keys sit
-    // in one plaintext, told apart by position alone and with no separator — so
-    // a client that encapsulated them the other way round produces a value of
-    // exactly the right width, leading with exactly the right version byte,
-    // which stores, reads back, and opens. Neither side of the wire can see it:
-    // the server holds no key and this class judges nothing else but whether the
-    // AEAD authenticated. The manifest is sealed **under the content key**, so
-    // opening it is the one *runtime* check anywhere that a reversed pair fails.
+    // **The cost of that order, written down rather than left to be
+    // discovered.** Somebody who presents the wrong factor to a response
+    // somebody else has shaped is told `unopened` — *present another factor* —
+    // because the loop runs first and the loop's verdict about that factor is
+    // true. It is the cheaper of the two mistakes. The alternative announces
+    // that this account's material is not to be trusted to a browser that has
+    // not yet shown it holds anything of the account's at all, over a factor
+    // nothing has judged.
+    // **The word comes back from the gate rather than being decided here, and
+    // that is the change a boolean could not carry.** Almost everything it
+    // judges is `inconsistent`, and that is a word of its own because the remedy
+    // is the opposite of `unopened`'s. `unopened` says *present another factor*.
+    // Every factor of this account encapsulates the same two keys, so a pair
+    // that will not open this manifest will not open it under any of them: no
+    // passkey, none of the ten recovery codes, no browser and no number of
+    // reloads. The same is true of the three refusals beside that one — a
+    // response carrying no manifest, a served set that disagrees with the
+    // declared one, an epoch this device has already watched the account pass —
+    // because none of them is a fact about the person's authenticator either.
+    // Reported as `unopened`, any of the four sends somebody to spend their
+    // whole recovery card on a door that cannot open, with the screen telling
+    // them to keep going.
     //
-    // It is not the only check, and saying so is what keeps the branch below
-    // honest about its cost. The frozen vectors in
-    // `docs/business-logic/vectors/factor-keypair-v1.json` fail at build time on
-    // a pair written the other way round, so that defect does not reach a person
-    // — while this gate, wrong, locks an account in every browser under every
-    // factor forever. Which is why the refusal below is a word of its own rather
-    // than `unopened`, and why a failure to open is reported as a fact about the
-    // account's material rather than about the person's authenticator.
-    //
-    // A defence in depth over a fault that cannot easily ship is worth keeping
-    // and is not worth an ambiguous sentence on a screen.
-    if (!(await AccountKeyCustodyService.opensTheManifest(opened, custody))) {
-      // **`inconsistent`, and it is a word of its own because the remedy is the
-      // opposite of `unopened`'s.** `unopened` says *present another factor*.
-      // Every factor of this account encapsulates the same two keys, so a pair
-      // that will not open this manifest will not open it under any of them: no
-      // passkey, none of the ten recovery codes, no browser and no number of
-      // reloads. Reported as `unopened`, one altered byte in a stored manifest
-      // sends somebody to spend their whole recovery card on a door that cannot
-      // open, and the screen tells them to keep going.
-      //
-      // The word is about the **material rather than the factor**, which is
-      // what lets story 12.14 file its neighbours under it — a served factor
-      // set disagreeing with the manifest's, an epoch rolled back — instead of
-      // growing the screen's copy table a word at a time.
-      this.#fail('inconsistent', generation);
+    // **The one answer that is not that word is a manifest no cipher ever
+    // reached**, where `inconsistent`'s *nothing you hold will change this* is a
+    // sentence about a state this browser never observed, told to somebody a
+    // reload would have let straight in. The gate owns which of the two it is,
+    // because it is the only frame that sees what the manifest module threw; all
+    // this frame may do is publish it.
+    const refusal = await AccountKeyCustodyService.manifestRefusal(
+      opened,
+      custody,
+      budgetId,
+    );
+
+    if (refusal !== null) {
+      this.#fail(refusal, generation);
 
       return;
     }
+
+    // **The epoch is recorded here: after every refusal above, and before the
+    // generation check below. Both halves are decisions.**
+    //
+    // **After the refusals**, because a record written from a body nothing has
+    // judged is an oracle rather than an observation. An operator answering
+    // `rotationEpoch: 9999` beside anything at all would push this device's
+    // high-water mark past every epoch the account will ever reach, and this
+    // browser would then refuse the account's own genuine manifest forever,
+    // with copy that offers the person nothing to do. One request, and that
+    // browser is finished with that account.
+    //
+    // **Before the generation check**, because the two answer different
+    // questions. That check is about whether *this attempt* may publish keys
+    // into a world that has moved on from it; this line is about what the
+    // **device** observed, and the device observed this account at this epoch
+    // whatever happened next. The record only ever rises, so writing it costs a
+    // later attempt nothing — while the other order would let anybody able to
+    // time a `lock()` against an unlock in flight suppress the observation, and
+    // suppressing observations is the whole of the attack this memory answers.
+    recordRotationEpochSeen(budgetId, custody.rotationEpoch);
 
     // Checked *after* every cipher and before the keys are published, because
     // the world can have moved while they ran.
@@ -787,34 +965,138 @@ export class AccountKeyCustodyService {
     this.#hold(opened.contentKey, opened.indexKey);
   }
 
-  // Whether the account's manifest opens under the content key an entry just
-  // handed over.
+  // Which word the account's material earns, or `null` when it agrees with
+  // itself: the manifest against the content key an entry just handed over,
+  // against what this device has already watched this account pass, and against
+  // the rows served beside it.
   //
-  // **A missing manifest is `true`, and that is a decision rather than a gap.**
-  // No account this product can create answers one: registration files the first
-  // manifest at epoch 1 in the same `SaveChanges` as the session, so the only
-  // rows that answer `null` are ones written before that landed. Refusing them
-  // would turn a defensive read shape into a permanent lockout for exactly those
-  // seeded rows — a state no factor, no reload and no sign-in changes — which is
-  // a far worse failure than the one this gate is guarding against.
+  // **Four refusals, one word, and they are ordered rather than arranged.** Each
+  // reads something the one before it proved: there is a manifest, it opened, so
+  // the epoch it was sealed at is the epoch of a blob somebody holding the
+  // content key really wrote, and the set it declares is that same blob's.
   //
-  // **So it is a bypass, and what it bypasses has to be said plainly: this gate
-  // is not a control over the server.** Anything that can shape this response —
-  // the API, a proxy, anybody who has taken either — turns the gate off by
-  // answering `manifest: null`, and the branch above is where it goes off. What
-  // is left is a self-check on *this client's own* encapsulation order, made
-  // against a manifest an honest server hands back: it catches a build of this
-  // bundle that encapsulated the two account keys the wrong way round, which is
-  // a fault no width, no version byte and no round trip can see. It catches
-  // nothing an operator does, and it is not evidence that the served factor set
-  // is the account's.
+  // **A fifth reading sits inside the second and earns the other word, and it is
+  // not a fifth refusal.** Before any cipher runs, `openFactorManifest` turns
+  // away a wire string its strict decoder will not read and a sealed value
+  // outside **its own** width window.
   //
-  // **Story 12.14 is what makes the manifest load-bearing against an
-  // operator**, by refusing a response that carries none and by comparing the
-  // set the manifest names against the set that was served. Until then a reader
-  // must not take this gate for more than it is — and the cost of taking it for
-  // more is that somebody deletes the `null` branch to "close the hole", which
-  // closes nothing and locks every seeded account out permanently.
+  // **Both ends of that window are the API edge's, to the byte.** Four handlers
+  // reach that edge — the one that creates an account, the one that finishes a
+  // passkey registration, the one that regenerates the code card, and the one
+  // that revokes a passkey — and each hands its manifest member to a single
+  // decoder, which measures the *decoded* bytes against this framing's floor of
+  // 29, its version byte, and the entity's ceiling of 4096. The ceiling is
+  // exact rather than slack: that decoder measures a second time once the
+  // buffer exists, because a gate over the encoded length overshoots by a byte
+  // or two. So a width this module would refuse is a width the request would be
+  // refused for, and 29 **is** a number the server enforces. What a sentence
+  // about it owes a reader is *which* layer.
+  //
+  // **The stored rule is wider at the bottom, and that is a division of labour
+  // rather than a disagreement.** The column admits anything from one byte up —
+  // `length(manifest) between 1 and 4096` — and the entity behind it restates
+  // that floor and that ceiling and nothing narrower, because what a check over
+  // a blob can state declaratively is that the bytes are there, never what they
+  // frame. A one-byte value is not a short manifest; it is not an envelope at
+  // all, and the floor that knows so is this framing's, applied where the bytes
+  // arrive. Nothing sealed is involved on either side of that: 29 is a *total
+  // length*, so the edge measures it without reading a byte of what the account
+  // encrypted.
+  //
+  // Both shorthands cost more than the clause they save — the window written as
+  // the column's, and 29 written as a number no server could hold. A reader who
+  // checks one sentence in a file like this against the layer it points at and
+  // finds it false stops trusting every other sentence in it, including the
+  // ones holding the split below.
+  //
+  // Neither refusal has touched a key, so neither is a statement about this
+  // account's material at all — they are facts about the shape of the answer
+  // this read brought back, which is `unrecognised`'s own definition, and the
+  // way forward is the reload that word asks for. Filed under `inconsistent`
+  // they are a permanent dead end with advice that can never work, over a state
+  // a different bundle clears on its first try.
+  //
+  // **Told apart by the type the module throws, and never by what it says.** The
+  // alternative is this function re-applying that module's decoder and width
+  // rules above its own `try` — a second, weaker definition of what a manifest
+  // is, sitting one file from the one that runs, drifting the day either moves.
+  // A reading matched on message text is worse again: it pins prose, and there is
+  // more than one sentence on each side of the line.
+  //
+  // **The four that are `inconsistent` stay one observation, and this change may
+  // not grow a second word among them.** An absent manifest, a tag that did not
+  // verify, an epoch rolled back and a set disagreement are told apart by nobody
+  // here on purpose — they share one next step, and a person offered four
+  // shades of *nothing you hold will change this* is being handed a diagnosis
+  // this client cannot make.
+  //
+  // **1. A response carrying no manifest is refused, and this branch let such a
+  // body straight through until the story that closed it.** The bypass was right
+  // while the manifest was a
+  // self-check on *this client's own* encapsulation order: an adversary who
+  // could shape the response lost nothing by switching a check off that only
+  // ever caught a build of this bundle, and refusing `null` would have locked
+  // out rows written before the first manifest landed — a permanent lockout no
+  // factor, no reload and no sign-in clears, over a defect the frozen keypair
+  // vectors catch in the suite anyway. Both halves of that are now false, and
+  // neither quietly. The three refusals below are the ones an operator has to
+  // get past, and **every one of them is switched off by a body answering
+  // `null`** — so the bypass was not one branch of this gate, it was the gate.
+  //
+  // **What holds the refusal is not that the server would decline to send a
+  // `null`; it sends one quite readily.** The read behind this body answers 200
+  // carrying a `null` manifest, a zero epoch and an empty factor list for an
+  // account that holds neither, and that route's own prose spends a paragraph
+  // arguing a 404 there would be the mistake. A missing manifest row is a 500
+  // only where one is being *promoted* to the next epoch — another route,
+  // another question, and not the read this gate is judging. What is true
+  // instead is that no account this product brings into existence can be in
+  // that state: registration files the first manifest at epoch 1 in the same
+  // save as the session, and each of the four paths that move a factor set
+  // carries one. So a `null` arriving here cannot be describing an account the
+  // product made; it is a response somebody shaped, and a response somebody
+  // shaped is the one thing this gate exists to refuse.
+  //
+  // What that costs, plainly: a row that genuinely predates manifests is now
+  // permanently unopenable in every browser — no factor, no reload and no
+  // sign-in changes it, and nothing the person does either. That is accepted
+  // because no such row can exist in a product that has never stood a
+  // production environment up, and because the alternative leaves the gate
+  // switchable off by the very party it is pointed at.
+  //
+  // **2. A manifest that reached the cipher and did not open**, which is the
+  // check that proves the content key is the content key — and the refusals ahead
+  // of the cipher, which prove nothing of the sort, are the paragraph above.
+  // A decapsulation that succeeds proves the 64
+  // bytes are what was encapsulated to this factor and **nothing whatever**
+  // about which half of them is which: the two keys sit in one plaintext, told
+  // apart by position alone and with no separator, so a client that
+  // encapsulated them the other way round produces a value of exactly the right
+  // width, leading with exactly the right version byte, which stores, reads back
+  // and opens. The manifest is sealed *under the content key*, so opening it is
+  // the one runtime check anywhere that a reversed pair fails.
+  //
+  // **3. An epoch below one this device has already watched this account
+  // reach.** Every check above passes on a replayed `(manifest, epoch)` pair,
+  // because it is not forged — it is correctly sealed, correctly framed, opens
+  // under the content key and declares a set that really was this account's, and
+  // it is simply from before. Whoever can replay the manifest can replay the
+  // epoch beside it, so no value in the response can tell; only a party that
+  // watched the account move past it can, and on a browser that party is a
+  // device. Not-lower rather than strictly-higher: an account that has not
+  // rotated answers the same epoch on every unlock.
+  //
+  // **4. A served set that is not exactly the set the manifest declares, both
+  // directions.** Opening the manifest says nothing about *who else* can open
+  // this account. The rows beside it are not evidence — an operator who can
+  // write the database can add one of their own, wrapped under a key-encryption
+  // key they chose — while the blob is sealed under a key the server has never
+  // held, so the set it declares is the only unforgeable statement of which
+  // factors exist. The two directions are two different events and neither is
+  // the other's mirror: a **served** factor the manifest does not account for is
+  // a row somebody added, and a **declared** factor that was not served is a row
+  // somebody removed or a set this client is being shown half of. Checked one
+  // way only, the other event passes cleanly.
   //
   // `static` because it reads nothing off the instance: what it is handed is the
   // key this attempt opened and the body this attempt read, and neither has been
@@ -828,30 +1110,83 @@ export class AccountKeyCustodyService {
   // spelled the same way for the same reason, and neither of them holds anything
   // worth hiding: the two key fields are what `#` is for here, and both are
   // instance fields.
-  private static async opensTheManifest(
+  private static async manifestRefusal(
     opened: HeldKeys,
     custody: AccountKeyCustodyDto,
-  ): Promise<boolean> {
+    budgetId: string,
+  ): Promise<ManifestRefusal | null> {
     if (custody.manifest === null) {
-      return true;
+      return 'inconsistent';
     }
 
+    let declared: readonly FactorPublicKey[];
+
     try {
-      await openFactorManifest(
+      declared = await openFactorManifest(
         opened.contentKey,
         custody.manifest,
         custody.rotationEpoch,
       );
+    } catch (error: unknown) {
+      // **The one distinction this `catch` draws, and it is drawn on the type.**
+      // A value this browser could not read at all was refused before the cipher
+      // ran, so nothing about the account's keys was observed — which is what
+      // makes it a report about this read and not about the material, and what
+      // makes a reload the act that can change it.
+      if (error instanceof FactorManifestWireError) {
+        return 'unrecognised';
+      }
 
-      return true;
-    } catch {
-      // Silent and total, for `#open`'s reason. A reversed pair, a manifest
-      // sealed at another epoch, a replayed one from before a rotation and a
-      // single flipped bit are one symptom by design: there is no branch here
-      // that could act on the difference, and the plaintext is never looked at
-      // either way.
-      return false;
+      // Silent and total past that line, for `#open`'s reason. A reversed pair, a
+      // manifest sealed at another epoch, a replayed one from before a rotation,
+      // a single flipped bit and every plaintext the grammar forbids are one
+      // symptom by design: every one of them came off bytes somebody holding the
+      // content key wrote, and there is no branch here that could act on the
+      // difference between them.
+      return 'inconsistent';
     }
+
+    const seen = highestRotationEpochSeen(budgetId);
+
+    // A device holding no record of this account answers `null`, and that is
+    // first-visit rather than a refusal — it cannot detect a rollback at all
+    // (ASM-016). This memory narrows the window; it does not close it.
+    if (seen !== null && custody.rotationEpoch < seen) {
+      return 'inconsistent';
+    }
+
+    // **Two `every`s over two sets, never two lists walked in step.** The
+    // manifest's own order is fixed by its grammar, but the response's is not:
+    // the read behind this body sorts on the factor id today and says outright
+    // that what it owes is that determinism and nothing about the particular
+    // sequence. A positional comparison passes on any response whose rows happen
+    // to arrive in the manifest's own order — which is exactly what today's sort
+    // hands it, so nothing short of that sort changing would ever surface the
+    // defect — and then refuses whoever it lands on with a word telling the
+    // person nothing they hold can help.
+    //
+    // **Set equality and not a count, and what that admits is stated rather
+    // than papered over.** Two served rows carrying one identifier satisfy both
+    // directions. That is the right answer rather than a hole: the manifest
+    // holds one public key per identifier and every path that stages a seal
+    // keys on the identifier, so a duplicate row buys whoever wrote it nothing
+    // it did not already have.
+    //
+    // **A rule does forbid the duplicate, so the tempting justification — that a
+    // count would refuse a response nothing forbids — is not available.** The
+    // factor identifier is the primary key of the table these rows come from,
+    // table-wide rather than scoped per owner, and the read projects one row per
+    // stored record: two served rows under one identifier is a response that
+    // store cannot produce. Only the argument changes. A count is refused
+    // because it measures cardinality where the rule is about a set, and the
+    // sentence above carries that on its own.
+    const declaredIds = new Set(declared.map((factor) => factor.factorId));
+    const servedIds = new Set(custody.factors.map((entry) => entry.factorId));
+
+    return declared.every((factor) => servedIds.has(factor.factorId)) &&
+      custody.factors.every((entry) => declaredIds.has(entry.factorId))
+      ? null
+      : 'inconsistent';
   }
 
   // One entry's keypair, opened and imported, or `null` if this is not the

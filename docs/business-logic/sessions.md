@@ -474,6 +474,15 @@ required members. A third writer is a decision rather than a refactor.
     **every anonymous cold load** to `/welcome` from inside the initializer, before any route
     activates — so `/register`, the address the identity provider redirects back to, is unreachable
     by URL.
+    - **A second caller asks the same question and needs the same suppression for a different
+      reason.** An unlock reads `GET /api/me` beside the account's keys, to learn the budget its
+      rotation-epoch record is filed under, and it reaches it through this member. It is **not** a
+      browser holding no session — it is signed in, demonstrably — so the sentence above does not
+      cover it and must not be stretched to. What covers it is `AccountKeyCustodyService`'s own rule:
+      a key that will not open is not a session that ended, and neither is an identity read that was
+      refused mid-unlock. Both of the unlock's reads therefore carry the token, and custody publishes
+      one word about the pair rather than letting the interceptor navigate. See
+      [account-keys.md](account-keys.md).
 
   The **await** is what keeps every guard synchronous — bootstrapping cannot finish while the answer
   is outstanding — and `core.providers.spec.ts` pins both halves separately, because a
@@ -530,9 +539,10 @@ required members. A third writer is a decision rather than a refactor.
   `401`** is a statement about a token this product does not issue — the app reaches the identity
   provider through the same `HttpClient`, so a sign-out would be caused by a third party. And a
   **request whose `401` is its own answer** carries the token: the anonymous ceremony routes, the
-  session probe, and `GET /api/me/account-keys`. For the first two there is no session yet, so
-  there is none to end. **The third is the one that does not fit that sentence**, and it carries the
-  token anyway: `AccountKeyCustodyService` is its only caller and never calls anything on
+  session probe, and **both reads an unlock makes** — `GET /api/me/account-keys` and the
+  `GET /api/me` beside it. For the first two there is no session yet, so
+  there is none to end. **The unlock's pair is what does not fit that sentence**, and both carry the
+  token anyway: `AccountKeyCustodyService` is the caller and never calls anything on
   `SessionService`, because a key that will not open is not a session that ended — unmarked, the
   request made that call through this interceptor instead, over an edge no import graph shows, and
   raced a just-signed-in person off `/app` and onto a `/welcome` that had nothing to say. If the
@@ -546,12 +556,24 @@ required members. A third writer is a decision rather than a refactor.
   list is a second definition of the anonymous surface, and the first route to move leaves it ending
   the session of somebody who mistyped a recovery code. `app.config.spec.ts` carries a registration
   pin for this interceptor too, independent of the credentials one.
-  - **Four callers set it, in three services, and they are one class rather than a list.**
-    `RegistrationApiService` on both legs, `SignInApiService` on both assertion legs, and
-    `MeApiService` on the session probe — the probe being the one nobody would think to call a
-    ceremony. What they share is that the browser holds no session to lose and the `401` is the
-    route's answer to *this request*; `getMe()` is the counterexample on the same route and carries
-    no token. `RegistrationApiService` builds a **fresh** `HttpContext` per call, because that
+  - **Which members set it is a rule and deliberately not a tally.** A number written in prose is a
+    second copy of the list standing beside it, kept in step by nobody and reddening nothing when
+    the two disagree — and it is the number that rots, because a member added to a service is added
+    without the sentence two files away being opened. So the rule carries it: a member sets the
+    token when the `401` it may collect is **that route's verdict on that request** rather than a
+    session ending. `RegistrationApiService` sets it on both legs,
+    `SignInApiService` on both assertion legs, and `MeApiService` on `getSessionOwner()` **and**
+    `getAccountKeys()`. `getMe()` is the counterexample — the same route as `getSessionOwner()`,
+    asked as somebody already signed in — and carries none; nor does `endSession()`, whose `401`
+    means the session it presented had already ended. **The rule is about the member and not about
+    who calls it**, which is what keeps it true now that `getSessionOwner()` has a second caller.
+    Most of the members are the plain case: the browser holds no session to lose.
+    `getAccountKeys()` is the one that is not, and it carries the token on custody's own argument
+    rather than on that one: a key
+    that will not open is not a session that ended, so a refusal mid-unlock is custody's to publish
+    and not the interceptor's to navigate on, and the `GET /api/me` the same unlock makes rides the
+    same reasoning through `getSessionOwner()`. `RegistrationApiService` builds a **fresh**
+    `HttpContext` per call, because that
     object is mutable and a shared one would be read and written by every registration request in
     the visit. What the token buys there is concrete: without it, a `401` on the second leg
     navigates the person to `/welcome` mid-flow, away from a screen showing ten recovery codes they

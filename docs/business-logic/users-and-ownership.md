@@ -413,7 +413,15 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
     budget, is computed in a browser under a key this server has never held, and every other field
     of that message is a constant the client already owns or a word somebody typed — the budget
     alone is resolved server-side from the session cookie and named in no request and no other
-    response. Withhold it and no name can be written to a blind-indexed column at all.
+    response. **Two contracts need it now, and the second is what makes withholding the member
+    worse than it reads.** The budget is also the only per-account identifier a browser ever holds —
+    an account id is derived server-side and never served, and a credential id names one factor
+    rather than the account — so it is the key a device files its record of the account's rotation
+    generation under, and an unlock that cannot learn which account it is opening records nothing
+    and can therefore refuse no replay. Withhold it and no name can be written to a blind-indexed
+    column **and no account can be unlocked at all**: an absent budget is a shrug to the client's
+    session probe and a refusal to the read that is about to publish keys. See
+    [account-keys.md](account-keys.md).
   - **A user id fails that test and stays unpublished, which is what makes it a rule.** It is
     equally underivable and equally undisplayed, and no client-side computation needs it, so the
     only thing publishing it would buy is a value a later route could be persuaded to accept. The
@@ -433,8 +441,11 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
     authenticated *as that account* would file it as an ordinary missing resource, the one shape
     nobody investigates.
 - **Enforced in**: `GetSignedInUserHandler` reads `IUserContext.UserId` and never an id from the
-  request — `GetSignedInUserQuery` carries no member and may not gain one. It projects the single
-  column through `IUserAccountReadService.FindEmailAsync`; `user_isolation` on `users` is what makes
+  request — `GetSignedInUserQuery` carries no member and may not gain one. **The two members come
+  from two places and neither is the request**: the address is the one column
+  `IUserAccountReadService.FindEmailAsync` projects, and the budget is the ambient one the
+  authentication step resolved before any handler ran.
+  `user_isolation` on `users` is what makes
   another account's id answer nothing rather than answer theirs, so the id predicate is an index
   seek rather than the thing doing the scoping. The route declares no authorization metadata of its
   own, which is now what *gates* it rather than what leaves it open: it inherits the fallback
@@ -442,18 +453,30 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
   gets the anonymous `401`. `SignedInUserEndpointTests` carries the pair that makes the read
   meaningful — a second account established *after* the first, each asking for itself, asserted in
   both directions, because with one account every wrong answer and the right one are the same value.
+  **The same pair runs over the budget**, and it is the riskier of the two: that value has a second
+  table it could be read out of, so an unfiltered query or one ending in a `First()` is
+  indistinguishable from the right answer until a second account exists. Both halves compare against
+  the **whole payload**, so a stranger's value arriving in a member nobody read is a finding rather
+  than an absence.
 - **Example**: a person registered as `old@example.com` changes their Google address and signs in
-  again. `GET /api/me` answers `{"email":"old@example.com"}`.
+  again. `GET /api/me` answers the stored address beside the ambient budget's identifier —
+  `{"budgetId": …, "email": "old@example.com"}`.
   `SignedInUserEndpointTests.Me_ForASubjectWhoseProviderAddressChanged_RespondsWithTheStoredAddress`
-  drives that sequence — two clients on one subject carrying different claims — and asserts both
-  that the stored address is returned **and** that the claim's address appears nowhere in the body.
-  Without the second half, an endpoint echoing the claim passes: in every other test the claim and
-  the stored row hold the same string.
+  drives it: the account is registered under one address, the same subject's later token is presented
+  to the one path that writes an address, the `409` is asserted so the attempt is known to have
+  reached that path at all, and the account is then read back. It asserts both that the stored
+  address is returned **and** that the provider's newer address appears nowhere in the body — the
+  second half because a widened projection carrying it would satisfy the first. An **echo** of the
+  claim is caught elsewhere for free: the session cookie's principal carries no address of any kind,
+  so a handler reading an `email` claim would answer empty for every caller alive.
 - **Counterexample**: a response carrying `id` or `createdAtUtc` is exactly the widening this rule
-  refuses. `Me_ResponseCarriesTheEmailAndNothingElse` enumerates the arriving members and joins
-  them, so it reports `"createdAtUtc, email"` rather than that a count moved — the member to delete
-  is named in the failure. It is a pin, green the day it was written, watched fail against a
-  deliberately widened record before it was trusted.
+  refuses. `Me_ResponseCarriesTheEmailAndNothingElse` enumerates the arriving members, orders them
+  and joins them, and compares the whole string against `budgetId, email` — so a leaked
+  `createdAtUtc` reports `budgetId, createdAtUtc, email` rather than that a count moved, and the
+  member to delete is named in the failure. It is a pin, green the day it was written, watched fail
+  against a deliberately widened record before it was trusted. **Widening the expectation is the
+  cheapest way to fake it**, so the member that was admitted was admitted by the rule above and the
+  next one has to satisfy the same rule or be refused.
 - **Source**: `[SOURCE: user-story]`
 
 ---

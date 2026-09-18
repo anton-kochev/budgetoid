@@ -988,9 +988,13 @@ ELSE                                                               ← first iss
       factors and files ten, so it carries a manifest **and** the generation that manifest moves to
       — the stored epoch plus one, re-sealed at that number, because the epoch is the manifest's own
       associated data. Registration *files* the only manifest any browser has ever written, at epoch
-      1, and sends no epoch at all. Nothing in this client reads a stored epoch and seals against
-      it, and a client that re-sent a manifest under a bumped number without re-sealing would
-      produce one nothing can open, at exactly the moment somebody is replacing the card they lost.
+      1, a number it chooses rather than reads, and sends no epoch at all. **This client reads
+      epochs and seals against none of them**, which is the half that holds the route shut: custody
+      takes the served epoch as the associated data a manifest is opened under, and keeps a
+      per-device high-water mark of the highest generation it has watched an account reach. Neither
+      is a number anything here seals a new manifest at, and a client that re-sent a manifest
+      under a bumped number without re-sealing would produce one nothing can open, at exactly the
+      moment somebody is replacing the card they lost. See [account-keys.md](account-keys.md).
 
     **Three different things hold the screen's inert controls off and it says all three in
     different words** — the keys as bytes under registering a passkey, those bytes and a

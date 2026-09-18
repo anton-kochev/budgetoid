@@ -81,6 +81,20 @@ a screen displays it but that the client cannot derive it and cannot complete it
 cryptographic contract without it. A user id fails that on the second clause and stays unpublished,
 as do a session id, a credential id and a creation timestamp.
 
+**Amended: a second consumer arrived, and the cost of withholding the member is no longer the one
+this decision names.** The criterion above is untouched and the Decision's sentence is still true of
+the blind-index *message* — the budget remains the one field of that message a client cannot derive.
+What widened is what else depends on the member being there. The budget is the only per-account
+identifier a browser ever holds, an account id being derived server-side and never served and a
+credential id naming one factor rather than the account, so it is the key a device files its record
+of the account's rotation generation under. An unlock that cannot learn which account it is opening
+records nothing and can therefore refuse no replay, which is why that read treats a `200` carrying no
+budget as a body it does not recognise rather than shrugging at the absence as a session probe does.
+The consequence of narrowing this response is therefore an account that cannot be unlocked as well as
+a name that cannot be indexed. The paragraph above is left as written, because it records what was
+decided; this one is what the member is now load-bearing for. See
+[account-keys.md](../business-logic/account-keys.md).
+
 **A write whose budget is not yet known does not happen, and answers `unreachable` rather than
 `locked`.** No factor can produce a budget, so `locked`'s advice — present another factor — cannot
 come true; the only cause is a read that did not land.

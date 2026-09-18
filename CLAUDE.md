@@ -132,8 +132,11 @@ because every one of these is something a reader will otherwise simplify away.
   factor set and all four carry a manifest** — registration inserts the first at epoch 1; adding a
   passkey, regenerating the code card and revoking a passkey each *promote* it, in the unit of work
   that path already had. Erasure owes none: there is nobody left for one to describe.
-  A manifest is *sealed under* the content key, so the server enforces **presence, framing
-  (29–4096) and epoch, never contents**: a manifest naming nobody stores and reads back.
+  A manifest is *sealed under* the content key, so the server enforces **presence, framing and
+  epoch, never contents**: a manifest naming nobody stores and reads back. **The band's two ends
+  belong to two layers** — `FactorManifestEnvelope` refuses below the AEAD framing's 29-byte floor
+  and above 4096 at the edge, while the stored rule is `length(manifest) between 1 and 4096`, so
+  the ceiling agrees to the byte and the floor is only the column saying a `bytea` is not empty.
   **The client supplies the epoch**, because it is the manifest's associated data — the server
   only refuses anything that is not stored + 1. That refusal is `FactorManifest.Promote`, an
   **instance** method on a *loaded* entity: `For(...)` is detached, so `For(...) + Update()` emits
@@ -286,12 +289,23 @@ Load-bearing rules. Each links the doc that argues it — **read that doc before
   `'unrecognised'` is a body this client could not read, where a reload is the only act that can
   change the answer and `'unreachable'`'s "try again in a minute" never succeeds — it is not
   `'outdated'`, because the same refusal covers a *newer* bundle reading the retired body shape.
-  `'inconsistent'` is the account's manifest failing to open under the content key a factor handed
-  over, and it is the one failure **no factor can clear**: every factor encapsulates the same two
-  keys, so `'unopened'`'s "try another passkey" would send somebody through a whole recovery card.
-  The gate that raises it is a **self-check on this client's own encapsulation order, never a control
-  over the server** — `manifest: null` proceeds, so anything that can shape the response switches it
-  off.
+  **A manifest this client cannot *read* is `'unrecognised'` too** — a wire string the strict decoder
+  refuses, or a sealed value outside this client's width window — because both refusals precede the
+  cipher and observe no key material; everything from the tag onward stays `'inconsistent'`, and the
+  line is `FactorManifestWireError`, never a message.
+  `'inconsistent'` is the account's material failing to agree with itself, and it is the one failure
+  **no factor can clear**: every factor encapsulates the same two keys, so `'unopened'`'s "try
+  another passkey" would send somebody through a whole recovery card. **The gate that raises it is a
+  control over the server, and it is four ordered refusals answering that one word** — a response
+  carrying no manifest, a manifest that does not open under the content key a factor handed over, an
+  epoch below the highest this device has recorded for the account, and a served factor set that is
+  not the manifest's own set in **both** directions. **`manifest: null` is refused**, so nothing able
+  to shape the response switches the gate off. **The order is the property**: an epoch is worth
+  comparing only once the manifest has authenticated it as its own associated data, and the record
+  rises only after all four have passed — advancing it from an unjudged body is an oracle, not an
+  observation. That record is `rotation-epoch-record.ts`, `localStorage`, one key per `budgetId`,
+  rising only; learning the `budgetId` is why an unlock reads `GET /api/me` beside the keys, since
+  custody may not inject `SessionService` — that class injects custody, and the edge would be a cycle.
   Clearing has **one owner**, `SessionService.ended()`, never an `effect()`.
   [account-keys.md](docs/business-logic/account-keys.md),
   [sessions.md](docs/business-logic/sessions.md)

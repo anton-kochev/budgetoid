@@ -1334,6 +1334,18 @@ either way is the act, so the act is what the copy carries. A reload is the only
 product that fetches different JavaScript from the static host, which is why *that's the one thing
 here that can change the answer* is a promise the screen can keep however the skew runs.
 
+**A second source now raises this word and the sentence covers it unchanged, which is recorded here
+rather than answered with an edit.** A manifest this browser cannot **read** — a wire string the
+strict decoder refuses, or a sealed value outside the width window this bundle reads by — lands on
+`unrecognised` and not on `inconsistent`. Both refusals are made before any cipher runs, so neither
+has observed a byte of the account's key material and neither is a statement about it: what happened
+is that the server answered and this browser could not read the answer, which is word for word what
+the line already says, and a reload is the act it already names. **It is covered because the copy
+names the act and not the cause** — the same property that keeps *this tab is running an older
+version* out of it. A sentence written for the older, narrower source would have had to be replaced
+here; this one does not, and changing it to mention a manifest would put a piece of the wire format
+in front of somebody who can do nothing with it.
+
 **The ten refusals come from two sources, and neither union is derived from the other.** The first
 five are `AccountUnlockService`'s and are facts about a *device*; the last five are
 `AccountKeyCustodyService`'s and are facts about a *read*, a *factor*, an *answer* and — in one
@@ -1412,8 +1424,25 @@ and not after a reload. Told to keep trying, somebody spends an entire recovery 
 cannot open, and the screen encourages them the whole way. So the sentence names the **material**
 and not the factor, states the dead end plainly, and offers no press: *no passkey or recovery code
 will change it* is the whole of what is true. Naming the material rather than the authenticator is
-also what lets the neighbouring states arriving with the factor-set comparison sit under this same
-word instead of adding two more rows to the table.
+also what lets the three neighbouring observations sit under this same word instead of adding rows
+to the table: **four different things now raise it** — a response carrying no manifest, a manifest
+that **reached the cipher** and would not open, an epoch below one this device has watched the
+account pass, and a served factor set that is not the one the manifest names. A manifest that never
+reached the cipher is `unrecognised`, for the reason that row gives.
+
+**The sentence was re-checked against all four and stays exactly as written, which is worth
+recording rather than leaving to be re-derived.** Three of the four are what the line has always
+described: nothing the person holds changes them. The fourth — the rolled-back epoch — has one act
+behind it that would: **clearing this browser's site data** drops the record the refusal compares
+against, and the account then opens. The copy is still accurate, because its claim is narrower than
+*nothing will change it* — it says **no passkey or recovery code** will, and neither will. Naming
+the wider act is refused, and not on grounds of length: the record is the whole of the rollback
+defence, so advice to clear site data is advice to switch it off, handed to the one person in the
+product who has just been shown evidence it may be doing its job. It is also advice that destroys
+nothing and fixes nothing in the far commoner reading, where the manifest genuinely does not agree
+with itself. A line that repairs a symptom by removing the control is not a way forward, and
+[voice](voice.md)'s rule about naming a door the screen does not have applies to a door it must not
+open.
 
 **`unrecognised` and `unreachable` are indistinguishable from inside the flow and are told apart by
 the type the API boundary throws** — never by a message, because several are written there and a

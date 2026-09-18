@@ -39,12 +39,10 @@ import {
   importHmacSha256Key,
   keyEncryptionKeyFromRecoveryCode,
 } from '@app-core/security/account-keys';
-import { UNIT_SEPARATOR } from '@app-core/security/associated-data';
 import { decodeBase64Url, encodeBase64Url } from '@app-core/security/base64url';
 import { isCanonicalFactorId } from '@app-core/security/factor-id';
 import {
   ENCAPSULATED_ACCOUNT_KEYS_BYTES,
-  FACTOR_PUBLIC_KEY_BYTES,
   WRAPPED_PRIVATE_KEY_BYTES,
   openFactorKeypair,
   type FactorKeypairEnvelopes,
@@ -748,84 +746,18 @@ async function pairFrom(
   };
 }
 
-// The factor set the manifest names, read out of the plaintext it seals.
-//
-// **Structural, never a split on the separator.** A public key is 65 raw bytes
-// and `0x1F` occurs inside one often enough that splitting would shear entries
-// apart — over eleven points it is not a hypothetical. So this takes the count
-// up to the first separator, then alternates: an identifier up to the next
-// separator (an identifier is hex and hyphens, so it holds none), one
-// separator, exactly {@link FACTOR_PUBLIC_KEY_BYTES} bytes, and either the end
-// or one more separator.
-//
-// A private reader rather than `factor-manifest.spec.ts`'s, deliberately: that
-// file is the format's own spec and this one is a *consumer* asking what the
-// register flow sealed. A shared reader would agree with whatever the format
-// produced, which is the one thing a consumer must not do.
-const SEPARATOR_BYTE = UNIT_SEPARATOR.charCodeAt(0);
-
-// `fatal`, so bytes that are not UTF-8 throw here instead of arriving as
-// U+FFFD — a replacement character in an identifier compares unequal to
-// everything and says nothing about why.
-const manifestDecoder = new TextDecoder('utf-8', { fatal: true });
-
-interface ManifestEntry {
-  readonly factorId: string;
-  readonly publicKey: Uint8Array;
-}
-
-interface ParsedManifest {
-  /** As it was written — text, not a number: the count leads the plaintext. */
-  readonly count: string;
-  readonly entries: readonly ManifestEntry[];
-}
-
-function parseManifest(plaintext: Uint8Array): ParsedManifest {
-  const countEnd = plaintext.indexOf(SEPARATOR_BYTE);
-
-  if (countEnd < 0) {
-    return { count: manifestDecoder.decode(plaintext), entries: [] };
-  }
-
-  const count = manifestDecoder.decode(plaintext.subarray(0, countEnd));
-  const entries: ManifestEntry[] = [];
-
-  let at = countEnd + 1;
-
-  while (at < plaintext.length) {
-    const identifierEnd = plaintext.indexOf(SEPARATOR_BYTE, at);
-
-    if (identifierEnd < 0) {
-      throw new Error('A manifest entry carries no public key.');
-    }
-
-    const publicKeyStart = identifierEnd + 1;
-    const publicKeyEnd = publicKeyStart + FACTOR_PUBLIC_KEY_BYTES;
-
-    if (publicKeyEnd > plaintext.length) {
-      throw new Error("A manifest entry's public key is cut short.");
-    }
-
-    entries.push({
-      factorId: manifestDecoder.decode(plaintext.subarray(at, identifierEnd)),
-      publicKey: Uint8Array.from(
-        plaintext.subarray(publicKeyStart, publicKeyEnd),
-      ),
-    });
-
-    at = publicKeyEnd;
-
-    if (at < plaintext.length) {
-      if (plaintext[at] !== SEPARATOR_BYTE) {
-        throw new Error('A manifest entry is not followed by a separator.');
-      }
-
-      at += 1;
-    }
-  }
-
-  return { count, entries };
-}
+// **This file used to carry its own structural reader of the manifest
+// plaintext, and it is gone because there is no longer a plaintext to read.**
+// `openFactorManifest` answers the factor set, so the bytes never surface. The
+// reader's argument — that a *consumer* asking what the register flow sealed
+// must not share the format spec's own parser — pointed at
+// `factor-manifest.spec.ts`'s reader, and it still holds against that one.
+// Rebuilding a private reader here now would mean opening the envelope by hand
+// and restating the associated-data grammar beside it, which this codebase
+// refuses for a reason no consumer convenience outweighs. What a symmetric
+// defect in the format would cost this file is covered where it belongs:
+// `factor-manifest.spec.ts` holds both sides against frozen bytes computed by a
+// third implementation.
 
 // The manifest the body carries, as a string, refused rather than coerced: a
 // body with no manifest reaches the opener as `undefined` otherwise, and GCM's
@@ -1598,20 +1530,24 @@ describe('RegisterService', () => {
       const { contentKey } = await pairFrom(factors[1], await keyOf(1, codes));
 
       // Act
-      const manifest = parseManifest(
-        await openFactorManifest(
-          contentKey,
-          manifestOf(body),
-          FIRST_ROTATION_EPOCH,
-        ),
+      const named = await openFactorManifest(
+        contentKey,
+        manifestOf(body),
+        FIRST_ROTATION_EPOCH,
       );
 
       // Assert
       expect(factors).toHaveLength(FACTOR_COUNT);
-      // The count leads the plaintext as decimal text, so a truncated manifest
-      // is a mismatch rather than a smaller set.
-      expect(manifest.count).toBe(String(FACTOR_COUNT));
-      expect(manifest.entries).toHaveLength(FACTOR_COUNT);
+      // **The count is no longer asserted here, because it can no longer
+      // disagree.** It still leads the plaintext as decimal text, so a truncated
+      // manifest is a mismatch rather than a smaller set — but that rule now
+      // lives inside `openFactorManifest`, which refuses a plaintext whose
+      // entries do not number its count in either direction. The call above
+      // *resolving at all* is therefore the proof that the field said eleven,
+      // and the length below carries the whole property more strongly than the
+      // old comparison did: a disagreeing count can no longer be observed, it
+      // throws. Restoring an assertion here would compare a value to itself.
+      expect(named).toHaveLength(FACTOR_COUNT);
 
       // **Set equality in both directions.** A manifest missing a code's factor
       // is a rotation that will stage no seal for it — the silent orphaning of
@@ -1620,7 +1556,7 @@ describe('RegisterService', () => {
       // unforgeable. Sorted, because the manifest orders its entries and the
       // body's order is the order the eleven were minted in.
       expect(
-        [...manifest.entries.map((entry) => entry.factorId)].sort(),
+        [...named.map((entry) => entry.factorId)].sort(),
         'the manifest does not name exactly the factors the body posts.',
       ).toEqual([...factors.map((factor) => factor.factorId)].sort());
     });
@@ -1637,12 +1573,10 @@ describe('RegisterService', () => {
       const body = objectBodyOf(request);
       const factors = factorsOf(body);
       const { contentKey } = await pairFrom(factors[1], await keyOf(1, codes));
-      const manifest = parseManifest(
-        await openFactorManifest(
-          contentKey,
-          manifestOf(body),
-          FIRST_ROTATION_EPOCH,
-        ),
+      const manifest = await openFactorManifest(
+        contentKey,
+        manifestOf(body),
+        FIRST_ROTATION_EPOCH,
       );
 
       // Act & Assert
@@ -1657,7 +1591,7 @@ describe('RegisterService', () => {
           factor.factorId,
           factor.envelopes,
         );
-        const named = manifest.entries.find(
+        const named = manifest.find(
           (entry) => entry.factorId === factor.factorId,
         );
 

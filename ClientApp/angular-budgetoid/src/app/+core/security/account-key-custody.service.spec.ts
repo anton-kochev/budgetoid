@@ -32,6 +32,7 @@ import {
   MeApiService,
   type AccountKeyCustodyDto,
   type AccountKeyEntry,
+  type MeDto,
 } from '@app-core/api/me-api.service';
 import { SessionService } from '@app-core/session/session.service';
 import { readFileSync } from 'node:fs';
@@ -47,14 +48,55 @@ import {
   type AccountKeys,
 } from './account-keys';
 import { AccountKeyCustodyService } from './account-key-custody.service';
+// The one definition of the `0x1F` rule in this client, used here to assemble
+// two messages by hand — a manifest plaintext and the associated data it is
+// sealed against. Borrowed rather than restated for the reason `factor-manifest.
+// ts` borrows it: a private join here would be a second spelling of the rule,
+// and a message this file assembled differently would fail a tag rather than
+// reach the refusal a case is about.
+import { joinFields } from './associated-data';
+// The wire form both halves of a manifest cross in. Needed here because the
+// cases below hand the service values `sealFactorManifest` would never emit, so
+// the encode cannot come from that module's own writer.
+import { encodeBase64Url } from './base64url';
 // The write half of the factor keypair, used here as a fixture builder and
 // never stubbed: an entry that production's own mint produced is the only
 // fixture that can prove production's own open reads it.
-import { mintFactorKeypair } from './factor-keypair';
+//
+// The label and the version byte travel with it for the hand-sealed cases
+// below. They are **this** module's constants — the ones `factor-manifest.ts`
+// imports to build its own associated data — so what this file assembles is a
+// second *assembly* of that message and never a second copy of either value.
+import {
+  FACTOR_KEYPAIR_LABEL,
+  FACTOR_KEYPAIR_VERSION,
+  mintFactorKeypair,
+} from './factor-keypair';
 // The write half of the manifest, for the gate that confirms a content key is
 // the content key. Sealed here under the very key the fixtures encapsulate, so
 // a case that reverses the pair has something real to fail against.
+//
+// **It stays the only symbol this file takes from that module, deliberately.**
+// The refusals a manifest can make are exercised below through the *service*,
+// by arranging a body and reading the word it publishes — never by naming a
+// type or a constant of the module that throws. A spec that reached for one
+// would be asserting how a split is spelled instead of which failure it
+// reports, and an import that failed to resolve takes the whole suite down
+// rather than one case with it: the unit-test builder type-checks the project
+// before a single case runs.
 import { sealFactorManifest } from './factor-manifest';
+// The envelope layout, for the two hand-built values below: the version byte a
+// reader accepts, and the floor a sealed value cannot go under.
+//
+// **The manifest's own floor is this one to the byte** — `factor-manifest.ts`
+// says so where it declares it — so the cases that stand on either side of it
+// take the number from the module that owns the arithmetic rather than from the
+// module that restates it.
+import {
+  ENVELOPE_VERSION,
+  MINIMUM_ENVELOPE_BYTES,
+  sealEnvelope,
+} from './key-envelope';
 // The four indexed pairs as a **value**, which the service may not hold and this
 // file must. Every blind-index case below is driven from this array rather than
 // from a pair typed out here: a suite built from entry zero is passed by an
@@ -83,6 +125,18 @@ import {
   sealNarrativeField,
   type NarrativeFieldBinding,
 } from './narrative-cipher';
+// The device's memory of how far an account has already moved, driven through
+// its own two exports rather than through the store underneath them.
+//
+// **Arranged and read through the module, never through a key spelled here.**
+// One key per account is that module's decision and `rotation-epoch-record.
+// spec.ts` is where the spelling is pinned; a second copy in this file would
+// agree with any key custody invented, including a single shared one — which is
+// the defect the case about two accounts exists to catch.
+import {
+  highestRotationEpochSeen,
+  recordRotationEpochSeen,
+} from './rotation-epoch-record';
 // The whole module as an object, for one rule and one only: which of the
 // codec's exports are *data* rather than operations is a question about the
 // codec, and answering it by hand here would put the very list this file
@@ -107,6 +161,34 @@ import type {
 const FIRST_FACTOR_ID = 'c1d2e3f4-5a6b-7c8d-9e0f-a1b2c3d4e5f6';
 const SECOND_FACTOR_ID = '0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0';
 const THIRD_FACTOR_ID = '7a6b5c4d-3e2f-4a1b-8c9d-0e1f2a3b4c5d';
+// A fourth, and it exists for exactly one arrangement: the substitution below
+// needs a served set the same size as the manifest's, which takes three of the
+// account's own and one that is not.
+const FOURTH_FACTOR_ID = '2b3c4d5e-6f70-8192-a3b4-c5d6e7f80912';
+
+// The account this browser is inside, as the identity read answers it.
+//
+// **A second budget identifier in this file, and it is not `BUDGET_ID`.** That
+// one is the tenancy the frozen blind-index answers were computed in and is read
+// off the vector file, so it moves the day that file does — and what it keys is
+// a *value*, inside a message. This one is the key the epoch record is filed
+// under, which is a fact about this session and about nothing in the codec. They
+// are the same kind of identifier doing two unrelated jobs, and one constant
+// serving both would let a change to a vector file silently move where a
+// device's memory of an account lives.
+//
+// It is declared here rather than beside `BUDGET_ID` because the stub below
+// closes over it.
+const SESSION_BUDGET_ID = '01a05f2c-7b19-7c3d-8e4f-5a6b7c8d9e0f';
+
+// A second account, for the rule that one device's memory of one account says
+// nothing about another.
+const OTHER_BUDGET_ID = '0192f4c1-6d2a-7e88-9b31-2c4d5e6f7a80';
+
+const SESSION_OWNER: MeDto = {
+  budgetId: SESSION_BUDGET_ID,
+  email: 'owner@budgetoid.test',
+};
 
 class MeApiStub {
   // No manifest, epoch zero and no factors by default, which is the whole answer
@@ -115,6 +197,16 @@ class MeApiStub {
   public getAccountKeys = vi.fn(
     (): Observable<AccountKeyCustodyDto> => of(custodyOf([])),
   );
+
+  // **The identity read, and it is custody's own.** The epoch record is filed
+  // per account, and the only per-account identifier a browser holds is the
+  // budget this session is scoped by — which is `null` on the sign-in path at
+  // the instant `unlock()` is called, because `SessionService.established()`
+  // starts its own read without awaiting it and sign-in unlocks on the next
+  // line. So custody asks rather than borrowing, and it asks *this* route: the
+  // one member carrying `EXPECTS_UNAUTHENTICATED`, whose 401 is this call's own
+  // answer rather than a session ending.
+  public getSessionOwner = vi.fn((): Observable<MeDto> => of(SESSION_OWNER));
 }
 
 // **The one collaborator this service must never acquire.** It is provided so
@@ -126,6 +218,14 @@ class MeApiStub {
 class SessionStub {
   public ended = vi.fn((): void => undefined);
   public established = vi.fn((): void => undefined);
+
+  // **The member the identity read makes tempting, and the trap is only a trap
+  // while it is here.** `SessionService` publishes the budget as a signal, so a
+  // custody that injected it would read `session.budgetId()` and touch neither
+  // counter above — the census would report nothing at all while the edge it
+  // exists to refuse had been added. A signal is a call, so a spy shaped like
+  // one records the read.
+  public budgetId = vi.fn((): string | null => SESSION_BUDGET_ID);
 }
 
 // Flushes the turns a real WebCrypto call resolves on. Node's implementation
@@ -793,6 +893,12 @@ describe('AccountKeyCustodyService', () => {
   let custody: AccountKeyCustodyService;
 
   beforeEach(() => {
+    // jsdom's `localStorage` is per test *file* and not per case, so a rotation
+    // epoch a successful unlock recorded is an invisible fixture for every case
+    // after it — and the cases below turn on what this device has and has not
+    // seen. Cleared here rather than in the describes that record, because every
+    // successful unlock in this file writes one.
+    localStorage.clear();
     api = new MeApiStub();
     session = new SessionStub();
     TestBed.configureTestingModule({
@@ -827,17 +933,23 @@ describe('AccountKeyCustodyService', () => {
     //
     // Second rather than first, and with a third behind it, so neither "take the
     // head" nor "take the last" reaches this assertion.
+    //
+    // **The body carries a manifest naming all three**, which is what every
+    // account this product can create answers. It is not what this case is
+    // about — the gate has a describe of its own below — but a manifest-less
+    // body is refused now, so a fixture without one would redden this case for
+    // a reason it makes no claim about.
     const keys = generateAccountKeys();
     const kek = await keyEncryptionKey(0x11);
     const otherKek = await keyEncryptionKey(0x22);
 
-    const entries = [
-      await entryFor(otherKek, FIRST_FACTOR_ID, keys),
-      await entryFor(kek, SECOND_FACTOR_ID, keys),
-      await entryFor(otherKek, THIRD_FACTOR_ID, keys),
+    const factors = [
+      await factorFor(otherKek, FIRST_FACTOR_ID, keys),
+      await factorFor(kek, SECOND_FACTOR_ID, keys),
+      await factorFor(otherKek, THIRD_FACTOR_ID, keys),
     ];
 
-    api.getAccountKeys.mockReturnValue(of(custodyOf(entries)));
+    api.getAccountKeys.mockReturnValue(of(await custodyWith(keys, factors)));
 
     // Act
     custody.unlock(kek);
@@ -866,16 +978,18 @@ describe('AccountKeyCustodyService', () => {
     const kek = await keyEncryptionKey(0x33);
     const otherKek = await keyEncryptionKey(0x44);
 
-    const entries = [
-      await entryFor(otherKek, FIRST_FACTOR_ID, keys),
-      await entryFor(kek, SECOND_FACTOR_ID, keys),
+    const factors = [
+      await factorFor(otherKek, FIRST_FACTOR_ID, keys),
+      await factorFor(kek, SECOND_FACTOR_ID, keys),
     ];
 
     // The guard that keeps the arrangement honest: equal ids here would make the
     // case pass on the implementation it exists to refuse.
-    expect(entries[0].factorId).not.toBe(entries[1].factorId);
+    expect(factors[0].entry.factorId).not.toBe(factors[1].entry.factorId);
 
-    api.getAccountKeys.mockReturnValue(of(custodyOf(entries)));
+    // A manifest naming both, for the reason the case above states: the body
+    // this case is about is one an account really answers.
+    api.getAccountKeys.mockReturnValue(of(await custodyWith(keys, factors)));
 
     // Act
     custody.unlock(kek);
@@ -1211,24 +1325,54 @@ describe('AccountKeyCustodyService', () => {
       expect(custody.unlockFailure()).toBe('inconsistent');
     });
 
-    it('unlocks on an account whose manifest is absent', async () => {
+    // **A response carrying no manifest is refused, and this case replaces one
+    // that asserted the opposite** — `unlocks on an account whose manifest is
+    // absent`, which stood here until this story and which proceeded on `null`.
+    //
+    // That case was right while the manifest was a self-check: the gate could
+    // only ever catch this client's own encapsulation order, so switching it off
+    // cost an adversary nothing and refusing `manifest: null` would have locked
+    // out rows written before the first manifest landed — a permanent lockout no
+    // factor, no reload and no sign-in clears, over a defect the frozen keypair
+    // vectors catch in the suite anyway. **In the suite and not in the build**:
+    // nothing `ng build` compiles reads `factor-keypair-v1.json`. Its readers are
+    // `factor-keypair.spec.ts`, `factor-manifest.spec.ts` and the C# integration
+    // suite, and `tsconfig.app.json` lists `src/main.ts` alone, so no production
+    // compilation ever sees them. The property is real; what holds it is a red
+    // bar, and a sentence promising a broken build promises a gate nobody owns.
+    //
+    // Both halves of that argument are now false, and neither of them quietly.
+    //
+    //   * **The gate is load-bearing against an operator**, which is what the
+    //     three refusals beside this one are for: a served factor the manifest
+    //     does not name, a manifest naming a factor that was not served, an
+    //     epoch below one this device has watched the account pass. Every one of
+    //     them is switched off by a body answering `null`, so the bypass is not
+    //     one branch of the gate — it is the gate.
+    //   * **No account this product brings into existence can be in that
+    //     state.** What holds the refusal is *not* that the server would decline
+    //     to send a `null` — it sends one quite readily. The read behind this
+    //     body answers a 200 carrying a `null` manifest at epoch `0`, that
+    //     route's own prose spends a paragraph arguing a 404 there would be the
+    //     mistake, and
+    //     `AccountKeys_ForAnAccountWithNoManifest_AreNullAtEpochZeroAndNeverANotFound`
+    //     pins exactly that. What is true instead is that registration files the
+    //     first manifest at epoch 1 in the same save as the account, and each of
+    //     the four paths that move a factor set carries one — so a `null`
+    //     reaching this gate cannot be describing an account the product made.
+    //     It is a response somebody shaped, and that is the one thing this gate
+    //     exists to refuse.
+    //
+    // `inconsistent` and not a sixth word. What was observed is that the
+    // account's material does not agree with itself — the same statement the
+    // reversed pair, the altered byte and the rolled-back epoch make — and the
+    // remedy is the same one: nothing this person holds changes it.
+    it('refuses an account whose response carries no manifest', async () => {
       // Arrange
-      // **`manifest: null` proceeds, and that is a decision rather than a gap.**
-      // No account this product can create answers one — registration files the
-      // first manifest at epoch 1 in the same save as the session — so the only
-      // rows that answer `null` were written before that landed. Refusing them
-      // would turn a defensive read shape into a permanent lockout for exactly
-      // those rows, which no factor, no reload and no sign-in changes.
-      //
-      // **And this case is the measurement of what the gate is worth against an
-      // adversary: nothing.** Whoever can shape this response can send `null`
-      // and switch the gate off, which is precisely what happens here. What the
-      // gate does check is this client's *own* encapsulation order, against a
-      // manifest an honest server hands back — a self-check, not a control over
-      // the server. Story 12.14 is what makes the manifest load-bearing against
-      // an operator, by refusing a response that does not carry one.
+      // A factor that really opens, so `unopened` is not available as an answer
+      // and the word under test cannot be reached by the loop failing.
       const keys = generateAccountKeys();
-      const kek = await keyEncryptionKey(0x93);
+      const kek = await keyEncryptionKey(0xa0);
 
       api.getAccountKeys.mockReturnValue(
         of(custodyOf([await entryFor(kek, FIRST_FACTOR_ID, keys)])),
@@ -1239,8 +1383,8 @@ describe('AccountKeyCustodyService', () => {
       await settled(custody);
 
       // Assert
-      expect(custody.status()).toBe('unlocked');
-      expect(custody.unlockFailure()).toBeNull();
+      expect(custody.status()).toBe('locked');
+      expect(custody.unlockFailure()).toBe('inconsistent');
     });
 
     // **The gate runs once, after the trial loop, and never inside it.**
@@ -1347,6 +1491,1297 @@ describe('AccountKeyCustodyService', () => {
     });
   });
 
+  // **Two of `openFactorManifest`'s refusals happen before any cipher runs, and
+  // neither of them is a statement about the account's key material.**
+  //
+  //   * `decodeBase64Url(wire)` throws on a manifest string that is not unpadded
+  //     base64url — padding, the standard alphabet's `+` and `/`, any character
+  //     outside `A–Z a–z 0–9 - _`, a length no encoding can have, a final group
+  //     no encoder would emit.
+  //   * `requireManifestWidth` throws on a sealed value outside the width
+  //     window, and that window is **the API edge's too, to the byte at both
+  //     ends**: every request carrying a manifest is measured there against this
+  //     framing's floor of 29, its version byte and the entity's ceiling of
+  //     4096. The stored rule, `length(manifest) between 1 and 4096`, is wider
+  //     at the bottom on purpose — "this `bytea` is not empty" is the whole of
+  //     what a column can state declaratively about a blob, and 29 is a total
+  //     length rather than a byte inside the sealed value, so the floor is
+  //     applied where the bytes arrive rather than where they are stored.
+  //
+  // Both are facts about **the shape of the answer this read brought back**, and
+  // this client has nowhere else to observe either: `me-api.service.ts` checks
+  // neither on purpose. `isManifestWire` admits every non-empty string and says
+  // outright that base64url and width are `openFactorManifest`'s rule, because
+  // "a second, weaker copy of it here would be a second definition of what a
+  // manifest is". So whatever custody makes of that throw is the whole of what
+  // the product makes of it.
+  //
+  // **Reported as `inconsistent`, a server that moved the manifest's wire form
+  // becomes a permanent lockout with advice that can never work.**
+  // `inconsistent`'s screen says that no passkey and no recovery code will
+  // change it — true of a reversed pair, of an altered byte and of a replayed
+  // epoch, and false of a version skew, where the one act that can change the
+  // answer is a reload. The word for that already exists and is `unrecognised`:
+  // its own definition is a body this client could not read, whose way forward
+  // is to **reload this tab**, because a reload is the only act in the product
+  // that fetches a different copy of this JavaScript. It is what the identity
+  // read's missing `budgetId` and the boundary's refused body already get, and
+  // filing these two under `inconsistent` is story 12.13's defect reintroduced
+  // one layer down.
+  //
+  // **The precedent for the split is in this class already.** `openField`
+  // re-throws `NarrativeFieldMisuseError` out of its `catch` rather than
+  // swallowing a caller's defect into `unreadable`, for exactly this reason: a
+  // refusal made about the *call*, before any cipher ran, is not a claim about
+  // the value the column holds.
+  //
+  // **Every case below is behaviour over the service and names nothing of how
+  // the split is spelled** — a body whose manifest is malformed in a stated way,
+  // an unlock, the word that was published. The reason is written at the
+  // `factor-manifest.ts` import at the head of this file: a case reaching for
+  // the type such a split would throw pins a spelling rather than a report, and
+  // an import that fails to resolve takes every file in the suite down instead
+  // of reddening one case.
+  //
+  // **The refusals come with controls, and the controls are the half that makes
+  // the describe mean anything.** A split routing *every* manifest failure to
+  // `unrecognised` satisfies each refusal below perfectly; what refuses it is
+  // the pair of cases that keep answering `inconsistent` for a manifest that got
+  // past the decoder and the width window. Said without a tally, for the reason
+  // written above `ROW_ID_SPELLINGS`.
+  describe('a manifest this browser could not read at all', () => {
+    const utf8 = new TextEncoder();
+
+    // Restored after every case rather than in a `finally` around each act, for
+    // the reason the narrative-field describe gives at its own: the acts here
+    // are fire-and-forget and a `finally` could not bracket them anyway, so the
+    // restore is moved to where it runs whatever the case did. Only the last
+    // rows below spy on anything; the restore is cheap and no case may leave
+    // `crypto.subtle` stubbed for the ones after it.
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    // An account with nothing else wrong with it: one factor, served and
+    // openable under the key handed back, a manifest naming exactly it, at an
+    // epoch this device has never watched it pass. The manifest's wire form is
+    // the only thing left for a case to change, which is what makes the word
+    // each case asserts attributable to that change and to nothing else.
+    //
+    // The content key comes back beside the body because two of the cases seal
+    // their own manifest under it. It is imported from a **copy**, for
+    // `custodyWith`'s reason: `importAesGcmKey` wipes the material it is handed
+    // and the same bytes have to reach the entries.
+    async function anOtherwiseImpeccableAccount(seed: number): Promise<{
+      served: AccountKeyCustodyDto;
+      presented: CryptoKey;
+      contentKey: CryptoKey;
+      factorId: string;
+      publicKey: Uint8Array;
+    }> {
+      const keys = generateAccountKeys();
+      const kek = await keyEncryptionKey(seed);
+      const factor = await factorFor(kek, FIRST_FACTOR_ID, keys);
+      const contentKey = await importAesGcmKey(
+        Uint8Array.from(keys.contentKey),
+      );
+
+      return {
+        served: await custodyWith(keys, [factor]),
+        presented: kek,
+        contentKey,
+        factorId: factor.entry.factorId,
+        publicKey: factor.publicKey,
+      };
+    }
+
+    // The manifest the account really answers, or a throw.
+    //
+    // `manifest` is `string | null` on the wire and a `?? ''` here would quietly
+    // turn a case that means to alter one character into a width refusal over
+    // zero bytes — the same colour of bar for a different reason.
+    function manifestOf(served: AccountKeyCustodyDto): string {
+      if (served.manifest === null) {
+        throw new Error(
+          'The fixture served no manifest, so there was nothing for this case to malform.',
+        );
+      }
+
+      return served.manifest;
+    }
+
+    // A manifest sealed the way `sealFactorManifest` seals one, over a plaintext
+    // this file chose.
+    //
+    // **Needed because no legal writer can produce an illegal plaintext.**
+    // `sealFactorManifest` folds a caller's spelling, sorts a caller's order and
+    // refuses a repeat, so every plaintext it emits is one the reader accepts —
+    // and the refusal the last case is about lives *after* the tag has verified.
+    // The only way to reach it is to seal the bytes here.
+    //
+    // **The associated data is assembled from the constants their owners
+    // export, and neither is restated.** The label and the version byte are
+    // `factor-keypair.ts`', which is where `factor-manifest.ts` takes them from
+    // as well, and the join is `associated-data.ts`'. What is second here is the
+    // *assembly*, and the control case is what holds it: a message this file got
+    // wrong fails the tag, which would make the refusal case green for a reason
+    // that has nothing whatever to do with the grammar.
+    async function sealedUnder(
+      contentKey: CryptoKey,
+      plaintext: Uint8Array,
+      rotationEpoch: number,
+    ): Promise<string> {
+      return encodeBase64Url(
+        await sealEnvelope(
+          contentKey,
+          plaintext,
+          manifestAssociatedData(rotationEpoch),
+        ),
+      );
+    }
+
+    // `label ‖ 0x1F ‖ version ‖ 0x1F ‖ rotationEpoch`, decimal digits — the
+    // message a manifest is sealed against.
+    //
+    // **Assembled once and read twice**: by the seal above, and by the cipher
+    // spy at the foot of this describe, which has to tell the call that opens
+    // the manifest apart from the two that ran before it. Two assemblies would
+    // be two chances to get one message wrong, and the halves would disagree
+    // without either of them looking wrong.
+    function manifestAssociatedData(rotationEpoch: number): Uint8Array {
+      return joinFields(
+        utf8.encode(FACTOR_KEYPAIR_LABEL),
+        Uint8Array.of(FACTOR_KEYPAIR_VERSION),
+        utf8.encode(String(rotationEpoch)),
+      );
+    }
+
+    // `count ‖ 0x1F ‖ factorId ‖ 0x1F ‖ publicKey` — the grammar's own shape for
+    // an account holding one factor, with the count supplied so that a case can
+    // write one the entries do not agree with. The point goes in raw and is
+    // never re-encoded, for the reason the module gives: pushed through UTF-8 a
+    // 65-byte point comes out 129 bytes long with no error anywhere.
+    function onEntryPlaintext(
+      count: string,
+      factorId: string,
+      publicKey: Uint8Array,
+    ): Uint8Array {
+      return joinFields(utf8.encode(count), utf8.encode(factorId), publicKey);
+    }
+
+    // Nothing was observed and nothing was written. Every refusal below runs
+    // before `recordRotationEpochSeen`, and a word that refused a body while
+    // filing the epoch beside it would hand whoever shaped that body the oracle
+    // the record exists to deny them — one request, and the device's high-water
+    // mark is past every epoch the account will ever reach.
+    //
+    // `localStorage` beside the reading, because the reading cannot see a record
+    // filed under some other key, and a record this device cannot read back is
+    // one that still denies a legitimate manifest the day the spelling is
+    // corrected.
+    function expectTheDeviceRememberedNothing(): void {
+      expect(highestRotationEpochSeen(SESSION_BUDGET_ID)).toBeNull();
+      expect(localStorage.length).toBe(0);
+    }
+
+    // **A wire string the strict decoder refuses.** Neither row is exotic: `+`
+    // is what a peer emitting standard base64 sends, and `=` is what one that
+    // pads sends — the two shapes of "the other side's encoder changed", which
+    // is a version skew and nothing else. A reload is the only act that can
+    // change the answer, and it is the only act `unrecognised` asks for.
+    //
+    // The character is **replaced** rather than appended, so the value keeps the
+    // width the account's own manifest had. A case that changed both would be
+    // answered by either refusal and could not say which one it drove.
+    it.each([
+      { how: 'a character outside the URL-safe alphabet', character: '+' },
+      { how: 'the padding an unpadded encoding never carries', character: '=' },
+    ])(
+      'reports a manifest carrying $how as unrecognised',
+      async ({ character }) => {
+        // Arrange
+        const { served, presented } = await anOtherwiseImpeccableAccount(0xc0);
+        const manifest = manifestOf(served);
+        const at = Math.floor(manifest.length / 2);
+
+        api.getAccountKeys.mockReturnValue(
+          of({
+            ...served,
+            manifest: `${manifest.slice(0, at)}${character}${manifest.slice(at + 1)}`,
+          }),
+        );
+
+        // Act
+        custody.unlock(presented);
+        await settled(custody);
+
+        // Assert
+        // **`unrecognised`, and the account stays locked.** Nothing about this
+        // answer says anything about the factor that was presented or about the
+        // keys the account holds — no cipher ran at all — so `inconsistent`'s
+        // *nothing you hold will change this* is a sentence about a state this
+        // browser never observed, offered to somebody a reload would have let
+        // straight in.
+        expect(custody.status()).toBe('locked');
+        expect(custody.unlockFailure()).toBe('unrecognised');
+        expectTheDeviceRememberedNothing();
+      },
+    );
+
+    it('reports a sealed manifest below the width floor as unrecognised', async () => {
+      // Arrange
+      // One byte under the floor, which `factor-manifest.ts` states is the AEAD
+      // envelope's own floor to the byte — so the number is taken from
+      // `key-envelope.ts`, which owns that arithmetic, rather than from the
+      // module that restates it. The value is legal base64url, so the decoder
+      // hands it over and the width check is the only thing that can refuse it.
+      const { served, presented } = await anOtherwiseImpeccableAccount(0xc1);
+
+      api.getAccountKeys.mockReturnValue(
+        of({
+          ...served,
+          manifest: encodeBase64Url(new Uint8Array(MINIMUM_ENVELOPE_BYTES - 1)),
+        }),
+      );
+
+      // Act
+      custody.unlock(presented);
+      await settled(custody);
+
+      // Assert
+      expect(custody.status()).toBe('locked');
+      expect(custody.unlockFailure()).toBe('unrecognised');
+      expectTheDeviceRememberedNothing();
+    });
+
+    it('reports a sealed manifest above the width ceiling as unrecognised', async () => {
+      // Arrange
+      // One byte over the ceiling the server stores. The number is written out
+      // rather than imported, and that is the one literal in this describe: the
+      // rule has exactly one owner in `factor-manifest.ts`, and nothing in this
+      // file may resolve a symbol from that module beyond the writer it already
+      // takes — see the import at the head of the file. The cost is a number
+      // that goes stale silently if the ceiling moves; what it buys is that a
+      // split which has not been written yet cannot take the suite down.
+      const { served, presented } = await anOtherwiseImpeccableAccount(0xc2);
+
+      api.getAccountKeys.mockReturnValue(
+        of({ ...served, manifest: encodeBase64Url(new Uint8Array(4097)) }),
+      );
+
+      // Act
+      custody.unlock(presented);
+      await settled(custody);
+
+      // Assert
+      expect(custody.status()).toBe('locked');
+      expect(custody.unlockFailure()).toBe('unrecognised');
+      expectTheDeviceRememberedNothing();
+    });
+
+    // **The control that decides whether the split is a distinction or a
+    // rename, and it is the most important case in this describe.** A gate that
+    // answered `unrecognised` for everything `openFactorManifest` throws passes
+    // all three refusals above and is refused here — and what it would have done
+    // in production is tell somebody holding a genuinely inconsistent account to
+    // reload, forever, over a state no reload touches.
+    //
+    // **Exactly at the floor, and that is a second thing this case holds.** The
+    // window is inclusive at both ends: a sealed value of the envelope's own
+    // minimum width is a legal manifest that simply did not open. Written `<=`
+    // instead of `<`, the width check would answer `unrecognised` here, and this
+    // is the only case in the file that would see it.
+    //
+    // The neighbouring describe already arranges a tag failure — one character
+    // of a 310-byte manifest altered — and this one is not a copy of it: that
+    // case is about an altered byte reaching the *word*, this one is about which
+    // side of the decode-and-width split a tag failure falls on, and a control
+    // that lives three describes away from the rule it controls is one somebody
+    // deletes as a duplicate.
+    it('still answers inconsistent for a manifest at the floor whose tag does not verify', async () => {
+      // Arrange
+      // A version byte a reader accepts, a zero nonce and a zero tag: legal
+      // base64url, exactly the minimum width, and no ciphertext between them.
+      // Everything before the cipher passes; the cipher is what refuses it.
+      const { served, presented } = await anOtherwiseImpeccableAccount(0xc3);
+      const atTheFloor = new Uint8Array(MINIMUM_ENVELOPE_BYTES);
+      atTheFloor[0] = ENVELOPE_VERSION;
+
+      api.getAccountKeys.mockReturnValue(
+        of({ ...served, manifest: encodeBase64Url(atTheFloor) }),
+      );
+
+      // Act
+      custody.unlock(presented);
+      await settled(custody);
+
+      // Assert
+      expect(custody.status()).toBe('locked');
+      expect(custody.unlockFailure()).toBe('inconsistent');
+      expectTheDeviceRememberedNothing();
+    });
+
+    // **The hand-sealed control, and the case below it cannot be read without
+    // this one.** It proves that a manifest this file sealed itself — under the
+    // account's own content key, against an associated-data message this file
+    // assembled — is one the service accepts. Without it, a message assembled
+    // wrongly here would fail the tag, the case below would report
+    // `inconsistent` for that reason instead of the one it names, and the two
+    // would be indistinguishable from outside.
+    it('unlocks on a hand-sealed manifest whose plaintext the grammar accepts', async () => {
+      // Arrange
+      const { served, presented, contentKey, factorId, publicKey } =
+        await anOtherwiseImpeccableAccount(0xc4);
+
+      api.getAccountKeys.mockReturnValue(
+        of({
+          ...served,
+          manifest: await sealedUnder(
+            contentKey,
+            onEntryPlaintext('1', factorId, publicKey),
+            served.rotationEpoch,
+          ),
+        }),
+      );
+
+      // Act
+      custody.unlock(presented);
+      await settled(custody);
+
+      // Assert
+      expect(custody.status()).toBe('unlocked');
+      expect(custody.unlockFailure()).toBeNull();
+    });
+
+    // **An authenticated plaintext that breaks the grammar is `inconsistent`,
+    // and the reasoning is the whole point of the split.** The tag verified, so
+    // these bytes were written by somebody holding the account's content key —
+    // which is this client, or another client of this product. A grammar refusal
+    // over them is therefore this client's own writer being wrong about a format
+    // it owns both halves of: a statement about the account's material, not
+    // about the wire the answer arrived on. A reload fetches a different bundle
+    // and changes nothing about a blob already sealed.
+    //
+    // The break is a count that disagrees with the entries, which is what a
+    // chopped tail looks like — the one direction the count field exists to
+    // catch. It differs from the control above by a single character of the
+    // plaintext, so nothing about how either was sealed is in play.
+    it('still answers inconsistent when an authenticated plaintext breaks the grammar', async () => {
+      // Arrange
+      const { served, presented, contentKey, factorId, publicKey } =
+        await anOtherwiseImpeccableAccount(0xc5);
+
+      api.getAccountKeys.mockReturnValue(
+        of({
+          ...served,
+          manifest: await sealedUnder(
+            contentKey,
+            onEntryPlaintext('2', factorId, publicKey),
+            served.rotationEpoch,
+          ),
+        }),
+      );
+
+      // Act
+      custody.unlock(presented);
+      await settled(custody);
+
+      // Assert
+      expect(custody.status()).toBe('locked');
+      expect(custody.unlockFailure()).toBe('inconsistent');
+      expectTheDeviceRememberedNothing();
+    });
+
+    // **The gate tells the two kinds of failure apart by the type, and every
+    // case above is satisfied by a gate that matched the label instead.**
+    // Measured, and that is why these rows exist: matching
+    // `error.name === 'FactorManifestWireError'` passes all six cases above and
+    // the whole of this file. The only thing that caught it was a census three
+    // files away which forbids the word `name` in the service's source for an
+    // entirely unrelated reason — an accident, not a rule about how errors are
+    // matched, and one nobody may rely on. A `message.includes(…)` match is the
+    // same defect with no accident standing in front of it at all.
+    //
+    // **Why no case above can see it.** Over every input the product can
+    // produce, matching the type and matching the label are the same function:
+    // the only errors carrying that name *are* instances, and every other
+    // refusal is a bare `Error`. So the difference is invisible until an
+    // impostor exists — an error that wears the label and is not the type — and
+    // nothing in the ceremony makes one. These rows make one.
+    //
+    // **The injection is at the platform cipher and nowhere nearer**, which is
+    // the same boundary the narrative-field cases force an interleaving at. The
+    // service is driven through `unlock` and read through `unlockFailure`;
+    // nothing reaches inside it, nothing stubs `factor-manifest.ts`, and no
+    // symbol of that module is named here. `openEnvelope` does not catch what
+    // `crypto.subtle.decrypt` rejects with and neither does `openFactorManifest`,
+    // so the impostor arrives at the gate's own `catch` exactly as thrown.
+    //
+    // **What the arrangement is, in the product's terms**: a manifest whose tag
+    // did not verify, whose failure happens to be labelled like a wire refusal.
+    // The right answer is the module's own doctrine and not this file's opinion
+    // — these bytes went through the cipher, so whatever they are they are a
+    // statement about the account's material, and `inconsistent` is the word.
+    // A gate reading the label sends that person to reload, forever.
+    //
+    // **Stated limits.** The impostor is not a body a browser produces: a real
+    // `decrypt` rejects with an `OperationError`, so this is a mutation the
+    // rows are built to kill rather than a scenario somebody will meet. And the
+    // two sentences are quoted from the module as it throws them today, which
+    // is what a message match would be written against — reword the module and
+    // these rows keep passing while quietly ceasing to kill anything.
+    it.each([
+      {
+        // The measured one.
+        how: 'the wire type’s own name',
+        label: 'FactorManifestWireError',
+        sentence: 'The cipher would not open these bytes.',
+      },
+      {
+        how: 'the width refusal’s sentence',
+        label: 'Error',
+        sentence:
+          'A sealed factor manifest is between 29 and 4096 bytes, not 3.',
+      },
+      {
+        how: 'the decoder refusal’s sentence',
+        label: 'Error',
+        sentence:
+          'A sealed factor manifest arrives as unpadded base64url, and this value is not.',
+      },
+      // Read as a list rather than as a tally, for the reason written above
+      // `ROW_ID_SPELLINGS`: what holds is that each lie a gate could be fooled
+      // by has a row, not that there are three of them.
+    ])(
+      'still answers inconsistent when a cipher failure wears $how',
+      async ({ label, sentence }) => {
+        // Arrange
+        // The body is served untouched — this is the impeccable account, and
+        // the only thing wrong with it is a cipher that will refuse one call.
+        const { served, presented } = await anOtherwiseImpeccableAccount(0xc6);
+        const impostor = new Error(sentence);
+
+        impostor.name = label;
+
+        // **Matched on the message the call is bound to, never on a call
+        // count.** An unlock decrypts twice per entry before it reaches the
+        // manifest, so a spy that failed the third call would be pinned to how
+        // many factors the fixture serves and would move the day one is added.
+        // The manifest's message is the only one in the ceremony whose third
+        // field is a decimal epoch; the two before it carry a 36-character
+        // factor id there.
+        //
+        // **A spy watching for the wrong bytes reddens rather than passes**:
+        // it would call through on every call, the manifest would open, the
+        // account would unlock, and `unlockFailure` would answer `null`.
+        const realDecrypt = crypto.subtle.decrypt;
+        const boundToTheManifest = manifestAssociatedData(served.rotationEpoch);
+
+        vi.spyOn(crypto.subtle, 'decrypt').mockImplementation(
+          (algorithm, key, data) => {
+            if (opensTheManifest(algorithm, boundToTheManifest)) {
+              return Promise.reject(impostor);
+            }
+
+            return realDecrypt.call(crypto.subtle, algorithm, key, data);
+          },
+        );
+
+        api.getAccountKeys.mockReturnValue(of(served));
+
+        // Act
+        custody.unlock(presented);
+        await settled(custody);
+
+        // Assert
+        // `inconsistent`, and **not** `unopened`: a factor did open, which is
+        // what makes the word attributable to the gate and to nothing else.
+        expect(custody.status()).toBe('locked');
+        expect(custody.unlockFailure()).toBe('inconsistent');
+        expectTheDeviceRememberedNothing();
+      },
+    );
+
+    // Whether this cipher call is the one that opens the manifest.
+    //
+    // `algorithm` is `unknown` because the platform's own parameter is a union
+    // that includes a bare string, so there is no member to read until it has
+    // been narrowed — and narrowing it here is cheaper than writing that union
+    // out, which would be a copy of a lib declaration kept true by nobody.
+    function opensTheManifest(
+      algorithm: unknown,
+      associatedData: Uint8Array,
+    ): boolean {
+      if (
+        typeof algorithm !== 'object' ||
+        algorithm === null ||
+        !('additionalData' in algorithm)
+      ) {
+        return false;
+      }
+
+      const { additionalData } = algorithm;
+
+      return (
+        ArrayBuffer.isView(additionalData) &&
+        sameBytes(bytesOf(additionalData), associatedData)
+      );
+    }
+
+    // A view's bytes, without copying them. The envelope hands the cipher a
+    // `Uint8Array` over its own buffer, and this reads that same memory back
+    // rather than asserting anything about which kind of view arrived.
+    function bytesOf(view: ArrayBufferView): Uint8Array {
+      return new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+    }
+
+    // Byte equality, width first. `toEqual` is not available here — this runs
+    // inside a stub rather than inside an assertion — and a comparison that
+    // only walked the shorter of the two would call a prefix a match.
+    function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
+      return (
+        left.length === right.length &&
+        left.every((byte, at) => byte === right[at])
+      );
+    }
+  });
+
+  // **The manifest's set and the served set are compared, in both directions,
+  // and a disagreement is the account's material disagreeing with itself.**
+  //
+  // Opening the manifest proves the content key is the content key. It proves
+  // nothing at all about *who else* can open this account, and that is the half
+  // the comparison adds: the manifest is one authenticated blob per account,
+  // sealed under a key this server has never held, so the set it names is the
+  // only unforgeable statement of which factors exist. The rows beside it are
+  // not — an operator who can write the database can add a row of their own,
+  // wrapped under a key-encryption key they chose, and every envelope in it is
+  // correctly framed and opens perfectly under it.
+  //
+  // So the refusals run both ways and neither direction is the other's mirror:
+  //
+  //   * a **served factor the manifest does not name** is the row somebody
+  //     added. Checked in one direction only — "every factor the manifest names
+  //     was served" — it passes, because the attacker's row is an addition and
+  //     nothing the manifest names has gone missing.
+  //   * a **manifest naming a factor that was not served** is a row somebody
+  //     removed, or a set this client is being shown half of. Checked the other
+  //     way only — "every factor served is named" — it passes for the same
+  //     reason in reverse.
+  //
+  // `inconsistent` for both, and for the reason the whole word exists: the
+  // remedy is not another factor, because every factor of this account
+  // encapsulates the same two keys and none of them changes what the server is
+  // willing to serve.
+  describe("the served factor set is compared against the manifest's", () => {
+    // A body whose manifest names one set and whose response serves another.
+    //
+    // `custodyWith` seals over the factors it is handed and serves those same
+    // ones, which is the agreement case — so the served list is replaced
+    // afterwards rather than that helper growing a fifth parameter no case but
+    // these three would pass.
+    async function bodyNaming(
+      keys: AccountKeys,
+      named: readonly { entry: AccountKeyEntry; publicKey: Uint8Array }[],
+      served: readonly { entry: AccountKeyEntry; publicKey: Uint8Array }[],
+      rotationEpoch = 1,
+    ): Promise<AccountKeyCustodyDto> {
+      const body = await custodyWith(keys, named, rotationEpoch);
+
+      return { ...body, factors: served.map(({ entry }) => entry) };
+    }
+
+    it('refuses a served factor the manifest does not name', async () => {
+      // Arrange
+      // The shape of an added row: the account's own factor, named by the
+      // manifest and openable by the person presenting it, beside a second row
+      // the manifest says nothing about. The intruder's row is minted under a
+      // key-encryption key of its own, which is what an operator enrolling
+      // themselves would have — it is a perfectly well formed factor, and that
+      // is the point.
+      const keys = generateAccountKeys();
+      const kek = await keyEncryptionKey(0xa1);
+      const intruderKek = await keyEncryptionKey(0xa2);
+
+      const mine = await factorFor(kek, FIRST_FACTOR_ID, keys);
+      const intruder = await factorFor(intruderKek, SECOND_FACTOR_ID, keys);
+
+      api.getAccountKeys.mockReturnValue(
+        of(await bodyNaming(keys, [mine], [mine, intruder])),
+      );
+
+      // Act
+      custody.unlock(kek);
+      await settled(custody);
+
+      // Assert
+      // The factor presented opened, and the manifest opened under what it
+      // handed over — so neither `unopened` nor a failure of the gate's first
+      // half is available here, and only the comparison can reach this word.
+      expect(custody.status()).toBe('locked');
+      expect(custody.unlockFailure()).toBe('inconsistent');
+    });
+
+    it('refuses a manifest naming a factor the server did not serve', async () => {
+      // Arrange
+      // The other direction, and it is a different event: a row removed, or a
+      // response carrying half the set. A person whose recovery card is quietly
+      // gone from the response would otherwise unlock, see nothing, and find out
+      // the day they needed a code.
+      const keys = generateAccountKeys();
+      const kek = await keyEncryptionKey(0xa3);
+      const otherKek = await keyEncryptionKey(0xa4);
+
+      const mine = await factorFor(kek, FIRST_FACTOR_ID, keys);
+      const withheld = await factorFor(otherKek, SECOND_FACTOR_ID, keys);
+
+      api.getAccountKeys.mockReturnValue(
+        of(await bodyNaming(keys, [mine, withheld], [mine])),
+      );
+
+      // Act
+      custody.unlock(kek);
+      await settled(custody);
+
+      // Assert
+      expect(custody.status()).toBe('locked');
+      expect(custody.unlockFailure()).toBe('inconsistent');
+    });
+
+    // **The substitution, and it is the one arrangement in this file that a
+    // count cannot pass.**
+    //
+    // Measured: replacing the two `every`s with `declaredIds.size ===
+    // servedIds.size` leaves every other case in this file green — deliberately
+    // said without a count, for the reason stated forty lines above
+    // `ROW_ID_SPELLINGS`: a number written into a sentence goes stale the first
+    // time a case is added or dropped and nothing reddens about it.
+    // The two cases above are the reason — one is an **addition** and the
+    // other a **removal**, so each changes the size of the served set, and a
+    // cardinality check refuses both by accident, for a reason that has nothing
+    // to do with what either case is about.
+    //
+    // A swap is what the threat model actually describes, and it is the whole of
+    // the story's sentence: *an operator who can write the database still cannot
+    // add a factor that opens my account.* Adding a row is not what such an
+    // operator has to do. They write a row for a factor they control **and**
+    // drop one of the account's own, and the response then carries exactly as
+    // many factors as the manifest names — `{A, B, EVIL}` against a manifest
+    // naming `{A, B, C}`. Every other check in this gate passes: the factor
+    // presented opens, the manifest opens under what it handed over, the epoch
+    // is not below anything this device has watched. A count passes too, and the
+    // account unlocks for an authenticator its owner never enrolled.
+    //
+    // Set equality refuses it twice over, and either direction on its own would
+    // be enough: the intruder is served and not named, and the dropped factor is
+    // named and not served. That is not redundancy here — it is the same pair of
+    // events the two cases above are each about, arriving together.
+    it('refuses a served factor substituted for one the manifest names', async () => {
+      // Arrange
+      const keys = generateAccountKeys();
+      const kek = await keyEncryptionKey(0xb3);
+      const otherKek = await keyEncryptionKey(0xb4);
+      const intruderKek = await keyEncryptionKey(0xb5);
+
+      // The account's own three: the factor being presented, a second the person
+      // also holds, and the one the operator takes out of the response.
+      const mine = await factorFor(kek, FIRST_FACTOR_ID, keys);
+      const alsoMine = await factorFor(otherKek, SECOND_FACTOR_ID, keys);
+      const dropped = await factorFor(otherKek, THIRD_FACTOR_ID, keys);
+      // A perfectly well formed factor wrapped under a key-encryption key the
+      // operator chose, which is what enrolling themselves gives them. Nothing
+      // about the row is malformed, and that is the point.
+      const intruder = await factorFor(intruderKek, FOURTH_FACTOR_ID, keys);
+
+      const named = [mine, alsoMine, dropped];
+      const served = [mine, alsoMine, intruder];
+
+      // **The arrangement's own two guards, and the first is the reason this
+      // case exists.** Equal sizes are what makes a cardinality check blind
+      // here; unequal sets are what makes set equality able to see it. Without
+      // the pair, a fixture that drifted into one of the two cases above would
+      // go on passing while pinning nothing new.
+      expect(
+        served,
+        'the two sets are different sizes, so a cardinality check would refuse this response and the case pins nothing a count does not already catch.',
+      ).toHaveLength(named.length);
+      expect(
+        new Set(served.map(({ entry }) => entry.factorId)),
+        'the served set is the set the manifest names, so there is no substitution to refuse.',
+      ).not.toEqual(new Set(named.map(({ entry }) => entry.factorId)));
+
+      api.getAccountKeys.mockReturnValue(
+        of(await bodyNaming(keys, named, served)),
+      );
+
+      // Act
+      custody.unlock(kek);
+      await settled(custody);
+
+      // Assert
+      // The factor presented opened and the manifest opened under what it handed
+      // over, so neither `unopened` nor the gate's first half is available — only
+      // the comparison can reach this word.
+      expect(custody.status()).toBe('locked');
+      expect(custody.unlockFailure()).toBe('inconsistent');
+    });
+
+    // **Set equality, and the order either set arrived in is not part of it.**
+    //
+    // The manifest's own order is not a free variable: the grammar names the
+    // factors ascending by the canonical spelling of the identifier, and
+    // `sealFactorManifest` sorts whatever it is handed — a manifest in any other
+    // order does not open at all. So the order that *can* vary is the response's,
+    // and it varies for ordinary reasons: the server has no order to promise
+    // here, and a row inserted by a later enrolment arrives wherever the query
+    // put it.
+    //
+    // A comparison written as two lists walked in step is therefore green on
+    // every account that happens to be served ascending — which is most of
+    // them — and refuses the rest with a word that tells the person nothing
+    // they hold can help.
+    it.each([
+      { how: 'in the order the manifest names them', reversed: false },
+      { how: 'in the opposite order', reversed: true },
+    ])(
+      'unlocks when the two sets are equal, served $how',
+      async ({ reversed }) => {
+        // Arrange
+        const keys = generateAccountKeys();
+        const kek = await keyEncryptionKey(0xa5);
+        const otherKek = await keyEncryptionKey(0xa6);
+
+        const first = await factorFor(kek, FIRST_FACTOR_ID, keys);
+        const second = await factorFor(otherKek, SECOND_FACTOR_ID, keys);
+
+        // The order the manifest will name them in, derived by the rule the
+        // grammar states rather than assumed off these two constants.
+        const ascending = [first, second].sort((left, right) =>
+          left.entry.factorId < right.entry.factorId ? -1 : 1,
+        );
+        const served = reversed ? [...ascending].reverse() : ascending;
+
+        // The guard that keeps the reversed arrangement honest: with equal ids
+        // there would be no second order to serve.
+        expect(first.entry.factorId).not.toBe(second.entry.factorId);
+
+        // The seal is handed the factors jumbled on purpose — it sorts, so both
+        // rows below name the same manifest and the only thing that differs
+        // between them is the response.
+        api.getAccountKeys.mockReturnValue(
+          of(await bodyNaming(keys, [second, first], served)),
+        );
+
+        // Act
+        custody.unlock(kek);
+        await settled(custody);
+
+        // Assert
+        expect(custody.status()).toBe('unlocked');
+        expect(custody.unlockFailure()).toBeNull();
+      },
+    );
+  });
+
+  // **What this device has already watched this account pass, and the one
+  // attack it answers.**
+  //
+  // An operator who can write the database serves back an old `(manifest,
+  // epoch)` pair the account genuinely was in once. It is correctly sealed,
+  // correctly framed, opens under the content key and names a factor set that
+  // really was this account's — because it is not fake, it is simply from
+  // before. Every check above passes on it. Replayed, it reinstates a factor the
+  // person revoked: the manifest names it, the row is served, the two sets
+  // agree, and the browser goes on treating a retired authenticator as one of
+  // the account's own.
+  //
+  // Nothing in the cryptography can see that, and no value carried by the
+  // response can either — whoever can replay the manifest can replay the epoch
+  // beside it, and the pair verifies exactly as it did the day it was written.
+  // The only party able to tell is one that watched the account move past it,
+  // and on a browser that party is a device. Hence a per-device high-water mark,
+  // and hence ASM-016: a device that has never seen the account cannot detect a
+  // rollback at all. This narrows the window; it does not close it.
+  describe('the rotation epoch this device has already seen', () => {
+    it('records the highest epoch it has seen for this account', async () => {
+      // Arrange
+      // Seven rather than one, so that a record written from a constant, from
+      // the manifest's floor or from the count of anything is a different number
+      // from the one asserted.
+      const keys = generateAccountKeys();
+      const kek = await keyEncryptionKey(0xa7);
+      const factor = await factorFor(kek, FIRST_FACTOR_ID, keys);
+
+      api.getAccountKeys.mockReturnValue(
+        of(await custodyWith(keys, [factor], 7)),
+      );
+
+      // Act
+      custody.unlock(kek);
+      await settled(custody);
+
+      // Assert
+      // The unlock succeeded first, or "the record is 7" would be a claim about
+      // an attempt that never reached the keys.
+      expect(custody.status()).toBe('unlocked');
+      expect(highestRotationEpochSeen(SESSION_BUDGET_ID)).toBe(7);
+    });
+
+    it('refuses a manifest at an epoch below the one recorded', async () => {
+      // Arrange
+      // **The whole point of the memory.** The body is impeccable: the manifest
+      // opens, it was sealed at the epoch it is served beside, and it names
+      // exactly the factor that was served. It is simply from before — and this
+      // device watched the account reach 9.
+      recordRotationEpochSeen(SESSION_BUDGET_ID, 9);
+
+      const keys = generateAccountKeys();
+      const kek = await keyEncryptionKey(0xa8);
+      const factor = await factorFor(kek, FIRST_FACTOR_ID, keys);
+
+      api.getAccountKeys.mockReturnValue(
+        of(await custodyWith(keys, [factor], 3)),
+      );
+
+      // Act
+      custody.unlock(kek);
+      await settled(custody);
+
+      // Assert
+      expect(custody.status()).toBe('locked');
+      expect(custody.unlockFailure()).toBe('inconsistent');
+
+      // And the record did not move. A refusal that also wrote what it refused
+      // would be a defence that disarms itself on the second attempt.
+      expect(highestRotationEpochSeen(SESSION_BUDGET_ID)).toBe(9);
+    });
+
+    it.each([
+      { why: 'the epoch it recorded', recorded: 5, served: 5 },
+      { why: 'an epoch above it', recorded: 5, served: 9 },
+    ])('accepts a manifest at $why', async ({ recorded, served }) => {
+      // Arrange
+      // **Not-lower, never strictly-higher.** An account that has not rotated
+      // answers the same epoch on every unlock, and a browser refusing the epoch
+      // it recorded a minute ago would lock every returning visitor out of an
+      // account nothing has happened to. The upper row is the ordinary case of a
+      // rotation this device has not seen yet.
+      recordRotationEpochSeen(SESSION_BUDGET_ID, recorded);
+
+      const keys = generateAccountKeys();
+      const kek = await keyEncryptionKey(0xa9);
+      const factor = await factorFor(kek, FIRST_FACTOR_ID, keys);
+
+      api.getAccountKeys.mockReturnValue(
+        of(await custodyWith(keys, [factor], served)),
+      );
+
+      // Act
+      custody.unlock(kek);
+      await settled(custody);
+
+      // Assert
+      expect(custody.status()).toBe('unlocked');
+      expect(custody.unlockFailure()).toBeNull();
+    });
+
+    // **Nothing is recorded from an attempt that did not reach the keys, and
+    // this is the only case in the file that catches it.**
+    //
+    // An implementation that writes the record from `custody.rotationEpoch` as
+    // soon as the body arrives — before a factor has opened, before the manifest
+    // has opened, before the sets have been compared — passes every case above
+    // in every arrangement. What it has built is an oracle: an operator serving
+    // `rotationEpoch: 9999` beside anything at all pushes this device's
+    // high-water mark past every epoch the account will ever reach, and the
+    // browser then refuses the account's own genuine manifest forever, with copy
+    // that offers the person nothing to do. One request, and that browser is
+    // finished with that account.
+    //
+    // So the write belongs after the last refusal and nowhere else, and the
+    // epoch a refused attempt carried is never an observation.
+    it.each([
+      {
+        // **The epoch is 7 and not the 0 `custodyOf` gives, and that is what
+        // makes this row pin custody rather than the store.**
+        //
+        // A manifest-less body served beside `rotationEpoch: 0` is refused by
+        // the record's own floor — 0 is the server's "no manifest row" sentinel
+        // and the store will not keep it — so a custody that wrote the epoch
+        // before the gate would have been turned away by the store, this row
+        // would have stayed green, and the rule it is named for would have been
+        // held by a module it is not about. Measured: it was the only one of the
+        // four that a record moved above the gate did not redden.
+        //
+        // Seven is a legitimate arrangement rather than a contrivance. A `null`
+        // manifest arriving here is not an old account — not because the server
+        // withholds one, which it does not, but because registration files the
+        // first manifest at epoch 1 in the same save as the account and every
+        // path that moves a factor set carries one — so it is a response
+        // somebody shaped, and
+        // somebody shaping a response chooses the epoch beside it. Seven beside
+        // a `null` manifest is exactly the oracle this row is about: one request,
+        // and the device's high-water mark is past every epoch the account will
+        // ever reach.
+        why: 'a response carrying no manifest',
+        arrange: async (): Promise<{
+          served: AccountKeyCustodyDto;
+          presented: CryptoKey;
+        }> => {
+          const keys = generateAccountKeys();
+          const kek = await keyEncryptionKey(0xaa);
+
+          return {
+            served: {
+              ...custodyOf([await entryFor(kek, FIRST_FACTOR_ID, keys)]),
+              rotationEpoch: 7,
+            },
+            presented: kek,
+          };
+        },
+      },
+      {
+        why: 'a manifest that did not open',
+        arrange: async (): Promise<{
+          served: AccountKeyCustodyDto;
+          presented: CryptoKey;
+        }> => {
+          const keys = generateAccountKeys();
+          const kek = await keyEncryptionKey(0xab);
+          const factor = await factorFor(kek, FIRST_FACTOR_ID, keys);
+
+          return {
+            // Sealed under the account's index key, which is what a client that
+            // encapsulated the two halves the wrong way round looks like from
+            // here.
+            served: await custodyWith(keys, [factor], 7, keys.indexKey),
+            presented: kek,
+          };
+        },
+      },
+      {
+        why: 'a factor set that disagreed with the manifest',
+        arrange: async (): Promise<{
+          served: AccountKeyCustodyDto;
+          presented: CryptoKey;
+        }> => {
+          const keys = generateAccountKeys();
+          const kek = await keyEncryptionKey(0xac);
+          const intruderKek = await keyEncryptionKey(0xad);
+          const mine = await factorFor(kek, FIRST_FACTOR_ID, keys);
+          const intruder = await factorFor(intruderKek, SECOND_FACTOR_ID, keys);
+          const body = await custodyWith(keys, [mine], 7);
+
+          return {
+            served: { ...body, factors: [mine.entry, intruder.entry] },
+            presented: kek,
+          };
+        },
+      },
+      {
+        // **The row that cannot be strengthened, and the weakness is stated
+        // rather than papered over with an assertion that would look like one.**
+        //
+        // This attempt returns at `unopened`, inside the trial loop's verdict and
+        // *before* the gate exists to be moved past — so a record written
+        // anywhere from the gate downwards is unreachable on this branch and
+        // this row is green whichever of those placements is chosen. What it
+        // does still catch is the earliest placement, the one the paragraph
+        // above is about: a record written as soon as the body arrives, before
+        // any factor has been tried. That is a real mutant and this row reddens
+        // on it — it is simply not the *only* row that does.
+        //
+        // The honest alternative would be to assert that the record was not
+        // *called*, which is a claim about how the method is written rather than
+        // about what the device remembered, and the file would then redden on a
+        // refactor that changed nothing anybody can observe. A stated weakness
+        // is worth more than that.
+        why: 'a factor set none of which opened',
+        arrange: async (): Promise<{
+          served: AccountKeyCustodyDto;
+          presented: CryptoKey;
+        }> => {
+          const keys = generateAccountKeys();
+          const kek = await keyEncryptionKey(0xae);
+          const presented = await keyEncryptionKey(0xaf);
+          const factor = await factorFor(kek, FIRST_FACTOR_ID, keys);
+
+          return {
+            served: await custodyWith(keys, [factor], 7),
+            presented,
+          };
+        },
+      },
+    ])(
+      'records nothing from an attempt refused over $why',
+      async ({ arrange }) => {
+        // Arrange
+        const { served, presented } = await arrange();
+
+        api.getAccountKeys.mockReturnValue(of(served));
+
+        // Act
+        custody.unlock(presented);
+        await settled(custody);
+
+        // Assert
+        // The attempt really did fail, or every assertion below holds over a
+        // service that unlocked and recorded nothing.
+        expect(custody.status()).toBe('locked');
+        expect(custody.unlockFailure()).not.toBeNull();
+
+        expect(highestRotationEpochSeen(SESSION_BUDGET_ID)).toBeNull();
+
+        // And nothing was written anywhere else either. The reading above cannot
+        // see a record filed under some other key — a factor id, a shared key, the
+        // epoch alone — and a record this device cannot read back is one that
+        // still permanently denies a legitimate manifest the day the key spelling
+        // is corrected.
+        expect(localStorage.length).toBe(0);
+      },
+    );
+
+    it("keeps one account's record out of another's", async () => {
+      // Arrange
+      // Two accounts on one device, which is an ordinary thing: a person with a
+      // second budget, or two people sharing a browser. A high-water mark kept
+      // in one variable rather than one key per account refuses the second
+      // account's perfectly genuine manifest because the first has rotated
+      // further — and there is nothing the person can do about it in either
+      // account.
+      const mine = generateAccountKeys();
+      const kek = await keyEncryptionKey(0xb0);
+      const factor = await factorFor(kek, FIRST_FACTOR_ID, mine);
+
+      api.getAccountKeys.mockReturnValue(
+        of(await custodyWith(mine, [factor], 9)),
+      );
+
+      custody.unlock(kek);
+      await settled(custody);
+      // The first unlock really did happen and really was recorded, or the
+      // assertions below hold over a device that has seen nothing at all.
+      expect(custody.status()).toBe('unlocked');
+      expect(highestRotationEpochSeen(SESSION_BUDGET_ID)).toBe(9);
+
+      // The second account, whose identity read answers a different budget.
+      const theirs = generateAccountKeys();
+      const otherKek = await keyEncryptionKey(0xb1);
+      const otherFactor = await factorFor(otherKek, SECOND_FACTOR_ID, theirs);
+
+      api.getSessionOwner.mockReturnValue(
+        of({ ...SESSION_OWNER, budgetId: OTHER_BUDGET_ID }),
+      );
+      api.getAccountKeys.mockReturnValue(
+        of(await custodyWith(theirs, [otherFactor], 2)),
+      );
+
+      // Act
+      custody.unlock(otherKek);
+      await settled(custody);
+
+      // Assert
+      // Epoch 2 is below the 9 this device watched the *other* account reach, so
+      // a single shared high-water mark refuses this unlock outright.
+      expect(custody.status()).toBe('unlocked');
+      expect(custody.unlockFailure()).toBeNull();
+
+      // Both records, both ways: a shared key answers 2 for the first account,
+      // and a record that ignored the account it was filed under answers 9 for
+      // the second.
+      expect(highestRotationEpochSeen(SESSION_BUDGET_ID)).toBe(9);
+      expect(highestRotationEpochSeen(OTHER_BUDGET_ID)).toBe(2);
+    });
+  });
+
+  // **The account the record is filed under is read here, from the API, and the
+  // read is part of the unlock rather than beside it.**
+  //
+  // The epoch record is per account, and the only per-account identifier a
+  // browser ever holds is the budget this session is scoped by. It cannot be
+  // derived, it is in no other response this path reads, and — the reason this
+  // read exists at all — it is `null` on the sign-in path at the moment
+  // `unlock()` is called: `SessionService.established()` starts its own read
+  // without awaiting it, and sign-in unlocks on the line after. Borrowing the
+  // signal would file the first unlock of every session under nothing.
+  //
+  // So an unlock that cannot learn which account it is opening cannot record
+  // anything, and an unlock that records nothing cannot refuse a replay — which
+  // makes the identity read a step of the gate and not an optimisation. It
+  // refuses rather than proceeding, and the words are the ones `failureOf`
+  // already gives the other read: what was observed is a read that did not
+  // arrive, or an answer this client could not read.
+  describe('the account the epoch record is filed under', () => {
+    // A body nothing else in the attempt can refuse, so that the identity read
+    // is the only thing left that can decide these cases.
+    async function anImpeccableAccount(): Promise<CryptoKey> {
+      const keys = generateAccountKeys();
+      const kek = await keyEncryptionKey(0xb2);
+      const factor = await factorFor(kek, FIRST_FACTOR_ID, keys);
+
+      api.getAccountKeys.mockReturnValue(
+        of(await custodyWith(keys, [factor], 4)),
+      );
+
+      return kek;
+    }
+
+    it('stays locked and says unreachable when the identity read never answered', async () => {
+      // Arrange
+      // Status `0` — the request never reached a server. The envelopes are fine,
+      // the factor is fine and the manifest is fine; what is missing is the one
+      // thing that says which account's memory this is. **Never `unopened`**,
+      // which would send somebody hunting for a recovery card over a network
+      // that blinked, and never a silent unlock, which is this defence switched
+      // off by a dropped request.
+      const kek = await anImpeccableAccount();
+
+      api.getSessionOwner.mockReturnValue(
+        throwError(() => new HttpErrorResponse({ status: 0 })),
+      );
+
+      // Act
+      custody.unlock(kek);
+      await settled(custody);
+
+      // Assert
+      expect(custody.status()).toBe('locked');
+      expect(custody.unlockFailure()).toBe('unreachable');
+
+      // Nothing was recorded, because nothing knew what to record it against.
+      expect(localStorage.length).toBe(0);
+
+      // And still nothing on `SessionService`. A read of this route that did not
+      // arrive says nothing whatever about who is asking.
+      expect(session.ended).not.toHaveBeenCalled();
+      expect(session.established).not.toHaveBeenCalled();
+    });
+
+    // **A refused identity read is `unauthenticated`, and until this case that
+    // mapping held only by construction.**
+    //
+    // The two reads share one `try` and one `catch`, so today every word
+    // `failureOf` gives is true of both of them without anything asserting it.
+    // That is the property the sharing exists for — and it is one refactor from
+    // gone: a second `catch` written over the identity read, for a message or a
+    // log line, satisfies this whole file while answering a refused identity
+    // read with whatever word that catch happens to pick. `unreachable` is the
+    // one it would most plausibly pick, and it is false by its own definition —
+    // the server was reached and it answered — while the advice it carries, *try
+    // again in a minute*, sends somebody round a loop that ends the same way
+    // every time. Signing in again is the only thing that changes a 401.
+    //
+    // **Both statuses, because they are two different events that must land on
+    // one word.** A 401 is a session that is over; the 403 is what a locked
+    // session and the `X-Budgetoid-Client` control give, on a cookie that is
+    // perfectly alive. Neither is a fact about the factor the person presented
+    // and neither is a network that blinked.
+    it.each([
+      { why: 'the session is over', status: 401 },
+      { why: 'the request was refused outright', status: 403 },
+    ])(
+      'stays locked and says unauthenticated when $why',
+      async ({ status }) => {
+        // Arrange
+        // An account nothing else in the attempt can refuse, so the identity
+        // read is the only thing left that can decide this case.
+        const kek = await anImpeccableAccount();
+
+        api.getSessionOwner.mockReturnValue(
+          throwError(() => new HttpErrorResponse({ status })),
+        );
+
+        // Act
+        custody.unlock(kek);
+        await settled(custody);
+
+        // Assert
+        expect(custody.status()).toBe('locked');
+        expect(custody.unlockFailure()).toBe('unauthenticated');
+
+        // Nothing was recorded, because nothing knew what to record it against.
+        expect(localStorage.length).toBe(0);
+
+        // **And still nothing on `SessionService`, which is the half a reader
+        // will want to "finish".** This is the one refusal in the file that
+        // really does mean the person has to sign in again, so it is the one
+        // place where publishing `anonymous` from here looks correct. It is not:
+        // only the interceptor and the sign-out path may move that status, and a
+        // custody that moved it would be deciding, from one read, that somebody
+        // is out of an account they may well still be inside.
+        expect(session.ended).not.toHaveBeenCalled();
+        expect(session.established).not.toHaveBeenCalled();
+      },
+    );
+
+    // **An answer carrying no budget is `unrecognised`, and it is the word for
+    // exactly what was observed**: the server answered, and this client could
+    // not read the answer. `unreachable` would be false — the server was reached
+    // — and its advice, *try again in a minute*, cannot help, because the next
+    // minute runs this bundle against that route and gets the same body.
+    //
+    // The three bodies are the three shapes a skew produces, and `SessionService`
+    // reads all three the same way one layer up: a missing member, a member of
+    // the wrong type, and the empty string, which is the absence of an answer
+    // wearing the type of one.
+    it.each([
+      { why: 'a body naming no budget', body: {} },
+      { why: 'a budget that is not a spelling at all', body: { budgetId: 42 } },
+      { why: 'an empty budget', body: { budgetId: '' } },
+    ])('stays locked and says unrecognised for $why', async ({ body }) => {
+      // Arrange
+      const kek = await anImpeccableAccount();
+
+      api.getSessionOwner.mockReturnValue(
+        of({ email: SESSION_OWNER.email, ...body } as MeDto),
+      );
+
+      // Act
+      custody.unlock(kek);
+      await settled(custody);
+
+      // Assert
+      // **Refused and not proceeded with.** An unlock that shrugged and skipped
+      // the record here would hand an operator a way to switch the rollback
+      // refusal off for every browser at once, by dropping one member from a
+      // response nothing else in this path reads.
+      expect(custody.status()).toBe('locked');
+      expect(custody.unlockFailure()).toBe('unrecognised');
+      expect(localStorage.length).toBe(0);
+    });
+
+    it('asks the API who this is, and asks SessionService nothing', async () => {
+      // Arrange
+      // **The edge that must not close, and the identity read is what makes it
+      // tempting.** `SessionService` already holds the budget as a signal, four
+      // characters away — and it injects this class, so custody reaching back
+      // puts the two in a cycle and leaves the rule this whole class is built on
+      // (a key that will not open is not a session that ended) one call away
+      // from being undone by somebody reusing what was already there.
+      //
+      // The counter is what makes the assertion a census rather than a guess
+      // about which member somebody would have reached for: `budgetId` is read
+      // by a call, exactly as `ended` and `established` are.
+      const kek = await anImpeccableAccount();
+
+      // Act
+      custody.unlock(kek);
+      await settled(custody);
+
+      // Assert
+      expect(custody.status()).toBe('unlocked');
+
+      // The positive half: it did ask, and it asked the route whose 401 is this
+      // call's own answer rather than a session ending.
+      expect(api.getSessionOwner).toHaveBeenCalled();
+
+      // And the negative half, every member of it.
+      expect(session.budgetId).not.toHaveBeenCalled();
+      expect(session.ended).not.toHaveBeenCalled();
+      expect(session.established).not.toHaveBeenCalled();
+    });
+  });
+
   it('returns nothing at all from unlock, and nothing anybody can await', async () => {
     // Arrange
     api.getAccountKeys.mockReturnValue(of(custodyOf([])));
@@ -1445,10 +2880,18 @@ describe('AccountKeyCustodyService', () => {
     // The entry is one that **opens**: an entry that failed would leave the
     // service locked for the wrong reason and this case would pass on a module
     // with no counter in it at all.
+    //
+    // The body carries a manifest, and here that is load-bearing rather than
+    // cosmetic: over a manifest-less one this case would stay green while the
+    // generation counter was gone, because the gate would refuse the attempt
+    // before the counter was ever consulted. What must be dropped is a pair that
+    // really did open an account whose material is entirely in order.
     const keys = generateAccountKeys();
     const kek = await keyEncryptionKey(0x7f);
     const answer = new Subject<AccountKeyCustodyDto>();
-    const entries = [await entryFor(kek, FIRST_FACTOR_ID, keys)];
+    const body = await custodyWith(keys, [
+      await factorFor(kek, FIRST_FACTOR_ID, keys),
+    ]);
 
     api.getAccountKeys.mockReturnValue(answer);
 
@@ -1459,7 +2902,7 @@ describe('AccountKeyCustodyService', () => {
     custody.lock();
     expect(custody.status()).toBe('locked');
 
-    answer.next(custodyOf(entries));
+    answer.next(body);
     answer.complete();
 
     // Long enough for the read, both opens and both imports to have finished —
@@ -1494,11 +2937,19 @@ describe('AccountKeyCustodyService', () => {
     // is an object naming `'HMAC'`. `'HKDF'` imports are ignored for the reason
     // `account-keys.spec.ts` gives — a branch on a call index would silently move
     // the moment a derivation was added anywhere below.
+    //
+    // The fixtures carry a manifest and are built **before** the spy below is
+    // installed, so the seal's own import is outside the census. Opening a
+    // manifest imports nothing — it is one `decrypt` under a key custody is
+    // already holding — so the three buffers counted below are the same three
+    // they were while this body carried none.
     const keys = generateAccountKeys();
     const kek = await keyEncryptionKey(0x80);
-    const entries = [await entryFor(kek, FIRST_FACTOR_ID, keys)];
+    const body = await custodyWith(keys, [
+      await factorFor(kek, FIRST_FACTOR_ID, keys),
+    ]);
 
-    api.getAccountKeys.mockReturnValue(of(custodyOf(entries)));
+    api.getAccountKeys.mockReturnValue(of(body));
 
     const realImportKey = crypto.subtle.importKey;
     const live: Uint8Array[] = [];
@@ -1606,9 +3057,11 @@ describe('AccountKeyCustodyService', () => {
     // Arrange
     const keys = generateAccountKeys();
     const kek = await keyEncryptionKey(0x84);
-    const entries = [await entryFor(kek, FIRST_FACTOR_ID, keys)];
+    const body = await custodyWith(keys, [
+      await factorFor(kek, FIRST_FACTOR_ID, keys),
+    ]);
 
-    api.getAccountKeys.mockReturnValue(of(custodyOf(entries)));
+    api.getAccountKeys.mockReturnValue(of(body));
 
     // Installed after the fixtures, so the key-encryption key and the two
     // envelopes above — which go through the doors themselves — are not in the

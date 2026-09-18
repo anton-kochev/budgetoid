@@ -193,8 +193,12 @@ server can do nothing with what it holds.
   and skipped the ten would have satisfied the old check. It is weaker in one respect, and that half
   is still open: the manifest's own named set is authenticated by a key this server does not hold, so
   a client may stage a manifest that disagrees with its seals. **FR-123 is held over the seals and
-  not over the manifest**; the residual is the client's, comparing the factor set the server serves
-  it against the manifest it opened. Nothing is exposed meanwhile — no route reaches the handler.
+  not over the manifest**; the residual is the client's, and only one half of it has a holder.
+  `AccountKeyCustodyService` compares the factor set the server serves against the set the manifest
+  it just opened names, in both directions, on every sign-in and every unlock — that is the **read**
+  half. The **staging** half is unheld anywhere: no client stages a manifest, because no route
+  reaches the handler, so nothing compares a staged manifest's named set against the seals submitted
+  beside it. Nothing is exposed meanwhile, for the same reason.
   [key-rotation.md](../business-logic/key-rotation.md#what-the-begin-checks-and-the-half-of-fr-123-nothing-here-holds)
 - **The baseline was regenerated and this one *drops* columns.** Earlier rebaselines collapsed a
   chain of additions, which an additive migration could in principle have expressed; this one removes

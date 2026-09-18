@@ -13,15 +13,23 @@
 // shape it does not recognise, including a `lengthBytes` that disagrees with its
 // own `hex`. There is deliberately no skip and no default.
 //
-// **This file parses the frozen plaintext for itself, and that is deliberate.**
-// `openFactorManifest` hands back bytes, never entries — comparing the named set
-// against the set the server served is a later story, and an exported parser
-// with no production caller is the export this codebase refuses by name. So the
-// reader below is the spec's own: it walks the framing structurally rather than
-// splitting on the separator, because a 65-byte public key holds a `0x1F` with
-// probability 0.225 and a split would shear such an entry in half. That is not
-// a calculation about hypothetical points — one of the three frozen ones
-// contains the byte, and four of the eleven do.
+// **This file parses the frozen plaintext for itself, and that is deliberate —
+// now that `openFactorManifest` parses one too.** It answers the factor set
+// rather than the bytes, so the reader below is no longer a stand-in for a
+// parser this module lacks; it is the *second* implementation, and its whole
+// value is that it was not written by whoever wrote the first. The cases that
+// assert bytes therefore open the envelope directly, and the cases that assert
+// entries go through the production door — see the two blocks that say so where
+// they are.
+//
+// It walks the framing structurally rather than splitting on the separator,
+// because a 65-byte public key holds a `0x1F` with probability 0.2216 and a
+// split would shear such an entry in half. **Sixty-four free bytes and not
+// sixty-five**: the leading byte of an uncompressed point is always `0x04`, so
+// the figure is `1 - (255/256) ** 64` = 0.2216, and the 0.2246 that `** 65`
+// gives is about a point this format cannot carry. That is not a calculation
+// about hypothetical points either — one of the three frozen ones contains the
+// byte, and four of the eleven do.
 //
 // **The order case is the one that cannot be written any other way.** Entries
 // ascend by the *canonical spelling* of the factor identifier, and the frozen
@@ -50,6 +58,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { importAesGcmKey } from './account-keys';
 import { UNIT_SEPARATOR } from './associated-data';
 import { decodeBase64Url, encodeBase64Url } from './base64url';
+import { canonicalFactorId, isCanonicalFactorId } from './factor-id';
 import { FACTOR_PUBLIC_KEY_BYTES } from './factor-keypair';
 import {
   FACTOR_MANIFEST_MAX_BYTES,
@@ -59,6 +68,7 @@ import {
   type FactorPublicKey,
 } from './factor-manifest';
 import * as factorManifestModule from './factor-manifest';
+import { openEnvelope, sealEnvelope } from './key-envelope';
 
 // ---------------------------------------------------------------------------
 // The frozen vectors.
@@ -110,10 +120,30 @@ interface FrozenPointCase {
   readonly encodingGuardRefuses: boolean;
 }
 
+/**
+ * One manifest **plaintext** — the value a reader is handed once the tag has
+ * verified. Not an envelope, and not an input to the cipher.
+ *
+ * It is deliberately not a {@link FrozenVector}. `emptyPlaintext` is zero bytes,
+ * so its `hex` is the empty string, and {@link requireHex} refuses one on
+ * purpose: every other value in this file would be a defect at zero length. A
+ * row that is exactly what it claims to be must not take the spec down.
+ */
+interface FrozenPlaintextCase {
+  readonly name: string;
+  readonly why: string;
+  readonly lengthBytes: number;
+  readonly hex: string;
+}
+
 interface FrozenVectorFile {
   readonly contentKeyHex: string;
   readonly vectors: readonly FrozenVector[];
   readonly pointCases: readonly FrozenPointCase[];
+  /** The plaintexts a manifest reader must refuse. */
+  readonly plaintextRefusals: readonly FrozenPlaintextCase[];
+  /** The one that is well formed and names nobody. */
+  readonly zeroFactors: FrozenPlaintextCase;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -297,6 +327,39 @@ function parsePointCase(value: unknown): FrozenPointCase {
   };
 }
 
+// Lower-case hex of an even length, **including none of it**. The one caller is
+// the plaintext-refusal section, whose `emptyPlaintext` row is legitimately zero
+// bytes; `requireHex` stays strict for everything else because an empty value
+// anywhere else in this file is a corruption.
+function requirePlaintextHex(
+  source: Record<string, unknown>,
+  key: string,
+  what: string,
+): string {
+  const value = source[key];
+
+  if (typeof value !== 'string' || !/^([0-9a-f]{2})*$/.test(value)) {
+    throw new Error(`${what} carries a ${key} that is not lower-case hex.`);
+  }
+
+  return value;
+}
+
+function parsePlaintextCase(value: unknown, what: string): FrozenPlaintextCase {
+  if (!isRecord(value)) {
+    throw new Error(`${what} is not an object.`);
+  }
+
+  const name = requireString(value, 'name', what);
+  const why = requireString(value, 'why', name);
+  const hex = requirePlaintextHex(value, 'hex', `${name}: ${why}`);
+  const lengthBytes = requireNumber(value, 'lengthBytes', `${name}: ${why}`);
+
+  requireAgreedLength(hex, lengthBytes, `${name}: ${why}`);
+
+  return { name, why, lengthBytes, hex };
+}
+
 function parseVectorFile(text: string): FrozenVectorFile {
   const parsed: unknown = JSON.parse(text);
 
@@ -312,6 +375,12 @@ function parseVectorFile(text: string): FrozenVectorFile {
     'The vector file',
   );
   const pointCases = pointValidation['cases'];
+  const plaintextRefusals = requireRecord(
+    parsed,
+    'manifestPlaintextRefusals',
+    'The vector file',
+  );
+  const refusalCases = plaintextRefusals['cases'];
 
   if (!Array.isArray(vectors) || vectors.length === 0) {
     throw new Error('The vector file lists no vectors.');
@@ -321,10 +390,26 @@ function parseVectorFile(text: string): FrozenVectorFile {
     throw new Error('The vector file lists no point-validation cases.');
   }
 
+  if (!Array.isArray(refusalCases) || refusalCases.length === 0) {
+    throw new Error('The vector file lists no manifest plaintext refusals.');
+  }
+
   return {
     contentKeyHex: requireHex(inputs, 'contentKeyHex', 'inputs'),
     vectors: vectors.map((vector: unknown) => parseVector(vector)),
     pointCases: pointCases.map((entry: unknown) => parsePointCase(entry)),
+    plaintextRefusals: refusalCases.map((entry: unknown) =>
+      parsePlaintextCase(entry, 'A manifest plaintext refusal'),
+    ),
+    // **Read from its own key and never from the refusal list.** The file keeps
+    // `zeroFactors` outside `cases` on purpose — a manifest naming nobody parses
+    // cleanly and is answered one layer up by set equality — and a reader that
+    // flattened the two into one list would let it be filed as a refusal, which
+    // is the specific mistake the file warns about in place.
+    zeroFactors: parsePlaintextCase(
+      plaintextRefusals['positiveEdgeCase'],
+      'The manifest plaintext positive edge case',
+    ),
   };
 }
 
@@ -358,6 +443,24 @@ function frozenPointCase(name: string): FrozenPointCase {
 
   if (found.length !== 1) {
     throw new Error(`${found.length} point cases are named ${name}, not one.`);
+  }
+
+  return found[0];
+}
+
+// One malformed plaintext, by name, refusing anything but a single hit — a name
+// that stopped matching must take the case down rather than arrive as
+// `undefined` and seal nothing. A refusal case that silently became a seal of
+// zero bytes would be a green case asserting the wrong refusal.
+function frozenPlaintextCase(name: string): FrozenPlaintextCase {
+  const found = VECTOR_FILE.plaintextRefusals.filter(
+    (entry) => entry.name === name,
+  );
+
+  if (found.length !== 1) {
+    throw new Error(
+      `${found.length} manifest plaintext cases are named ${name}, not one.`,
+    );
   }
 
   return found[0];
@@ -556,6 +659,51 @@ afterEach(() => {
 });
 
 // ---------------------------------------------------------------------------
+// The plaintext, read off the envelope rather than off the manifest reader.
+//
+// **Every case that asserts bytes opens the envelope directly, and that is a
+// decision rather than a convenience.** What those cases assert is a fact about
+// the plaintext — the count as decimal text, both separators of every entry,
+// every point raw and unre-encoded — and a comparison of parsed *entries* could
+// not see a changed separator, a count composed as one byte, or a stray byte
+// between two fields. That is the whole of what they exist to catch.
+// `openEnvelope` is the door `factor-manifest.ts` itself opens envelopes
+// through, so nothing is invented here and no byte-returning member is added to
+// that module for a test's benefit — an export with no production caller is the
+// export this codebase refuses by name.
+//
+// **It reaches past the width window on purpose, and nothing is lost.** The
+// 29–4096 rule belongs to the manifest reader and `openEnvelope` has no opinion
+// about it; the two cases under "the width window" below are the ones that hold
+// it, and they go through `openFactorManifest` and assert its wording. No case
+// here is leaning on that refusal.
+//
+// The associated data is the file's frozen message, never rebuilt, for the
+// reason this file gives everywhere else: a second spelling of that grammar
+// would be kept true by nobody. **That is what pins these cases to the two
+// epochs the file freezes a message for.**
+
+const MANIFEST_AD = frozenVector('manifestAssociatedData', 'epoch 1:');
+const MANIFEST_AD_TEN = frozenVector('manifestAssociatedData', 'epoch 10:');
+
+// The epoch each frozen message is the message *for*, read rather than typed: a
+// case spelling `1` beside a vector that moved would fail with a tag error
+// naming nothing.
+const MANIFEST_EPOCH = MANIFEST_AD.rotationEpoch ?? 0;
+const MANIFEST_EPOCH_TEN = MANIFEST_AD_TEN.rotationEpoch ?? 0;
+
+async function plaintextOf(
+  wire: string,
+  associatedData: FrozenVector,
+): Promise<Uint8Array> {
+  return await openEnvelope(
+    contentKey,
+    decodeBase64Url(wire),
+    fromHex(associatedData.hex),
+  );
+}
+
+// ---------------------------------------------------------------------------
 // The plaintext.
 
 describe('sealFactorManifest', () => {
@@ -572,10 +720,11 @@ describe('sealFactorManifest', () => {
     const factors = inSuppliedOrder(factorsOf(THREE_FACTORS), supplied);
 
     // Act
-    const opened = await openFactorManifest(
-      contentKey,
-      await sealFactorManifest(contentKey, factors, 1),
-      1,
+    // The epoch is the frozen message's own, so the seal and the associated data
+    // the assertion opens under cannot drift apart.
+    const opened = await plaintextOf(
+      await sealFactorManifest(contentKey, factors, MANIFEST_EPOCH),
+      MANIFEST_AD,
     );
 
     // Assert
@@ -614,10 +763,9 @@ describe('sealFactorManifest', () => {
     );
 
     // Act
-    const opened = await openFactorManifest(
-      contentKey,
-      await sealFactorManifest(contentKey, factors, 1),
-      1,
+    const opened = await plaintextOf(
+      await sealFactorManifest(contentKey, factors, MANIFEST_EPOCH),
+      MANIFEST_AD,
     );
 
     // Assert
@@ -638,10 +786,9 @@ describe('sealFactorManifest', () => {
     expect(factors).toHaveLength(11);
 
     // Act
-    const opened = await openFactorManifest(
-      contentKey,
-      await sealFactorManifest(contentKey, factors, 1),
-      1,
+    const opened = await plaintextOf(
+      await sealFactorManifest(contentKey, factors, MANIFEST_EPOCH),
+      MANIFEST_AD,
     );
 
     // Assert
@@ -667,13 +814,14 @@ describe('openFactorManifest', () => {
     const epoch = SEALED.rotationEpoch ?? 0;
 
     expect(epoch).toBeGreaterThan(0);
+    // And it is the epoch the frozen associated-data message below is the
+    // message *for*. A sealed vector that moved to an epoch the file states no
+    // message for would otherwise fail as a tag error naming nothing, which is
+    // the failure the comment above is about.
+    expect(epoch).toBe(MANIFEST_EPOCH);
 
     // Act
-    const opened = await openFactorManifest(
-      contentKey,
-      toWire(SEALED.hex),
-      epoch,
-    );
+    const opened = await plaintextOf(toWire(SEALED.hex), MANIFEST_AD);
 
     // Assert
     // **This is the case that certifies the whole read path against another
@@ -706,7 +854,19 @@ describe('openFactorManifest', () => {
 });
 
 // ---------------------------------------------------------------------------
-// The width window the server enforces.
+// The width window, whose two ends are the API edge's as well as this module's.
+//
+// **Both ends match the layer that enforces them, to the byte.** Every request
+// carrying a manifest — a registration, an added passkey, a regenerated card, a
+// revoked passkey — hands it to one decoder at the API edge, and that decoder
+// measures the decoded bytes against this framing's floor, its version byte and
+// the entity's ceiling of 4096. A value this module refuses to write is a value
+// that request would be refused for. **The stored rule is wider at the bottom
+// on purpose**: `length(manifest) between 1 and 4096` is the column saying
+// "this `bytea` is not empty", which is the whole of what a column can state
+// declaratively about a blob, and the entity restates exactly that. 29 is a
+// total length rather than a byte inside the sealed blob, so the floor is
+// applied where the bytes arrive, without anything sealed being read.
 
 describe('the width window', () => {
   it(`refuses a sealed value below ${FACTOR_MANIFEST_MIN_BYTES} bytes in its own words, not the envelope's`, async () => {
@@ -1018,13 +1178,21 @@ describe('a sealed manifest', () => {
     // Act
     // Sealed twice over one set, which is the only way to see the nonce from
     // out here: the two wire values must differ and the two plaintexts must not.
+    //
+    // **Epoch 10 and not the 7 this case used to name**, because the plaintext is
+    // read off the envelope and the associated data for that read is the file's
+    // frozen message rather than one rebuilt here — so the epoch has to be one
+    // the file states a message for. Ten is the better of the two: it is the
+    // multi-digit one, so the round trip carries the decimal-text rule as well.
+    // Nothing in the assertions named 7, and the epoch binding itself is held by
+    // its own case above.
     const [first, second] = await Promise.all([
-      sealFactorManifest(contentKey, factors, 7),
-      sealFactorManifest(contentKey, factors, 7),
+      sealFactorManifest(contentKey, factors, MANIFEST_EPOCH_TEN),
+      sealFactorManifest(contentKey, factors, MANIFEST_EPOCH_TEN),
     ]);
     const [openedFirst, openedSecond] = await Promise.all([
-      openFactorManifest(contentKey, first, 7),
-      openFactorManifest(contentKey, second, 7),
+      plaintextOf(first, MANIFEST_AD_TEN),
+      plaintextOf(second, MANIFEST_AD_TEN),
     ]);
 
     // Assert
@@ -1053,6 +1221,596 @@ describe('a sealed manifest', () => {
 });
 
 // ---------------------------------------------------------------------------
+// What a reader is handed once the tag has verified.
+//
+// **Every case below goes through `openFactorManifest`, never through a parser
+// called by hand.** A check that exists but was never wired into the open-then-
+// read path refuses nothing, and calling the parser directly is exactly how that
+// goes unnoticed until somebody sends a forged manifest. So each case seals the
+// frozen malformed plaintext itself — with the product's own `sealEnvelope`,
+// under the frozen content key, against the frozen associated-data message — and
+// hands the result to the reader the product uses. The tag is therefore correct
+// on every one of them, which is the whole point: **six of these are exactly 310
+// bytes**, the width of the frozen positive. No width check, no version byte and
+// no round trip can tell them apart from the real manifest. Only a refusal
+// inside the reader catches them.
+//
+// **The associated data is read, not rebuilt** — {@link MANIFEST_AD}, for the
+// reason given where it is declared. The case above already pins that message as
+// the bytes `sealFactorManifest` hands the cipher, so sealing against it is
+// sealing against the product's own. Nothing asserts that separately here and
+// nothing needs to: every case carries a legal control, and a wrong message
+// would fail the control rather than the refusal.
+
+// A plaintext sealed the way the product seals one, handed back on the wire.
+async function sealPlaintext(hex: string): Promise<string> {
+  return encodeBase64Url(
+    await sealEnvelope(contentKey, fromHex(hex), fromHex(MANIFEST_AD.hex)),
+  );
+}
+
+function refusalWire(name: string): Promise<string> {
+  return sealPlaintext(frozenPlaintextCase(name).hex);
+}
+
+// The frozen three-factor manifest, sealed here rather than taken from
+// `manifestSealed`, so a refusal and its control differ in the plaintext alone
+// and in nothing about how either was sealed.
+function legalWire(): Promise<string> {
+  return sealPlaintext(THREE_FACTORS.hex);
+}
+
+// The rejection's value, for the one case that has to say what kind of failure
+// it was rather than only that there was one.
+function reasonValue(outcome: Outcome): unknown {
+  return outcome.status === 'rejected' ? outcome.reason : undefined;
+}
+
+// **The bridge between what the reader returns today and what it owes.** It
+// reads the answer through `unknown` and refuses everything it does not
+// recognise, the way `additionalDataOf` reads a cipher argument: a cast would
+// let a `Uint8Array` — which is what this module hands back before story 12.14 —
+// arrive as an empty list and read as a manifest naming nobody.
+function factorSetOf(value: unknown, what: string): readonly FactorPublicKey[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`${what} did not answer a list of factors.`);
+  }
+
+  return value.map((entry: unknown, index: number) => {
+    if (!isRecord(entry)) {
+      throw new Error(`${what} carries a non-entry at ${index}.`);
+    }
+
+    const factorId = entry['factorId'];
+    const publicKey = entry['publicKey'];
+
+    if (typeof factorId !== 'string') {
+      throw new Error(`${what} carries an entry with no factorId at ${index}.`);
+    }
+
+    if (!(publicKey instanceof Uint8Array)) {
+      throw new Error(
+        `${what} carries an entry with no publicKey at ${index}.`,
+      );
+    }
+
+    return { factorId, publicKey };
+  });
+}
+
+// An answered set in the shape this file's own reader produces, so the two can
+// be compared entry by entry — identifiers *and* points. A comparison of the
+// identifiers alone goes green on a reader that hands back the right names
+// attached to the wrong keys, which is the set an account would then rotate to.
+function namedSet(entries: readonly FactorPublicKey[]): readonly ParsedEntry[] {
+  return entries.map((entry) => ({
+    factorId: entry.factorId,
+    publicKeyHex: toHex(entry.publicKey),
+  }));
+}
+
+// The same shape, off a frozen plaintext, by this file's structural walk.
+function namedSetOf(vector: FrozenVector): readonly ParsedEntry[] {
+  return parseManifestPlaintext(fromHex(vector.hex)).entries;
+}
+
+describe('reading a manifest back', () => {
+  it('refuses a plaintext whose entries do not number its count, in either direction', async () => {
+    // Arrange
+    // **Both are 310 bytes — the width of the real manifest — and both
+    // authenticate.** Low is the direction that costs somebody an authenticator:
+    // a reader that loops `count` times and stops never sees the third entry, so
+    // the account quietly stops naming a factor that still opens it. High is the
+    // direction the count field was added for: a reader that walks to the end of
+    // the buffer and never compares cannot see truncation at all.
+    const [legal, low, high] = await Promise.all([
+      legalWire(),
+      refusalWire('countLow'),
+      refusalWire('countHigh'),
+    ]);
+
+    // Act
+    const [control, tooFew, tooMany] = await settleAll(
+      openFactorManifest(contentKey, legal, MANIFEST_EPOCH),
+      openFactorManifest(contentKey, low, MANIFEST_EPOCH),
+      openFactorManifest(contentKey, high, MANIFEST_EPOCH),
+    );
+
+    // Assert
+    // The control first, and it is in every case below for the same reason: a
+    // reader that refused every manifest would pass the two refusals alone.
+    expect(control.status, 'the frozen three-factor manifest').toBe(
+      'fulfilled',
+    );
+    expectRefused(tooFew, 'a count naming one fewer entry than are carried');
+    expectRefused(tooMany, 'a count naming one more entry than are carried');
+  });
+
+  it('refuses a final entry with fewer than a whole public key left', async () => {
+    // Arrange
+    // The last point is 20 bytes short. `subarray(at, at + 65)` never throws —
+    // it answers a short array — so the width has to be checked *after* the
+    // slice, and a reader that takes 65 bytes and trusts the take reports a
+    // factor holding a 45-byte key.
+    const truncated = frozenPlaintextCase('truncatedEntry');
+
+    expect(truncated.lengthBytes).toBeLessThan(THREE_FACTORS.lengthBytes);
+
+    const [legal, short] = await Promise.all([
+      legalWire(),
+      sealPlaintext(truncated.hex),
+    ]);
+
+    // Act
+    const [control, refusal] = await settleAll(
+      openFactorManifest(contentKey, legal, MANIFEST_EPOCH),
+      openFactorManifest(contentKey, short, MANIFEST_EPOCH),
+    );
+
+    // Assert
+    expect(control.status, 'the frozen three-factor manifest').toBe(
+      'fulfilled',
+    );
+    expectRefused(refusal, 'an entry whose public key is cut short');
+  });
+
+  it('refuses a plaintext it did not consume to the last byte', async () => {
+    // Arrange
+    // A shaved fourth entry on the end with the count left alone. A reader that
+    // stops after `count` entries never looks at it, and then the bytes it
+    // authenticated and the bytes it read are not the same bytes — which is the
+    // gap anything downstream is entitled to assume does not exist.
+    const [legal, trailing] = await Promise.all([
+      legalWire(),
+      refusalWire('trailingBytes'),
+    ]);
+
+    // Act
+    const [control, refusal] = await settleAll(
+      openFactorManifest(contentKey, legal, MANIFEST_EPOCH),
+      openFactorManifest(contentKey, trailing, MANIFEST_EPOCH),
+    );
+
+    // Assert
+    expect(control.status, 'the frozen three-factor manifest').toBe(
+      'fulfilled',
+    );
+    expectRefused(refusal, 'bytes left over past the last entry');
+  });
+
+  it('refuses entries that do not ascend by the canonical spelling of the factor id', async () => {
+    // Arrange
+    // Entries one and two exchanged: same width, same set, same three points.
+    //
+    // **This case asserts a refusal and must never assert the order that comes
+    // back.** A reader that *sorted* what it read instead of refusing would
+    // satisfy an order assertion and look correct — and from that moment no
+    // second implementation can reproduce these bytes from the set they name,
+    // because the order is the only thing making the plaintext a function of the
+    // set. The ordering rule is only observable as a refusal.
+    const outOfOrder = frozenPlaintextCase('outOfOrder');
+
+    // The arrangement, off the vector rather than off this file's description of
+    // it: the same three identifiers as the positive, in a different order.
+    expect(
+      namedSetOf(THREE_FACTORS).map((entry) => entry.factorId),
+    ).not.toEqual(
+      parseManifestPlaintext(fromHex(outOfOrder.hex)).entries.map(
+        (entry) => entry.factorId,
+      ),
+    );
+
+    const [legal, unordered] = await Promise.all([
+      legalWire(),
+      sealPlaintext(outOfOrder.hex),
+    ]);
+
+    // Act
+    const [control, refusal] = await settleAll(
+      openFactorManifest(contentKey, legal, MANIFEST_EPOCH),
+      openFactorManifest(contentKey, unordered, MANIFEST_EPOCH),
+    );
+
+    // Assert
+    expect(control.status, 'the frozen three-factor manifest').toBe(
+      'fulfilled',
+    );
+    expectRefused(refusal, 'entries out of ascending order');
+  });
+
+  it('refuses a factor named twice, and says which one, rather than leaving the ordering rule to catch it', async () => {
+    // Arrange
+    // **Not redundant with the ordering case, and the reason is one character.**
+    // Entry two carries entry one's identifier, so the two are *equal* rather
+    // than descending: a reader comparing with `<` refuses this on the ordering
+    // and never reaches a duplicate check, but relaxing that comparison to `<=`
+    // — which reads as a harmless tidy-up — makes the ordering hold and leaves a
+    // distinct duplicate refusal as the only thing left. Without one, a `Map`
+    // keyed on the identifier lets the last write win, the count still agrees
+    // with the number of entries read, and a factor the account serves goes
+    // unnamed.
+    //
+    // So the case asks for the refusal **by name**, which an ordering refusal
+    // has no reason to give. That is this module's own convention on the writing
+    // side — `requireDistinct` names the offender because a set arrives from
+    // somewhere and "a duplicate" without the value is a refusal nobody can act
+    // on — and it is the assertion that separates the two rules here.
+    const duplicate = frozenPlaintextCase('duplicateFactorId');
+    const named = parseManifestPlaintext(fromHex(duplicate.hex)).entries.map(
+      (entry) => entry.factorId,
+    );
+    const repeated = named[0];
+
+    expect(named.filter((factorId) => factorId === repeated)).toHaveLength(2);
+
+    const [legal, twice] = await Promise.all([
+      legalWire(),
+      sealPlaintext(duplicate.hex),
+    ]);
+
+    // Act
+    const [control, refusal] = await settleAll(
+      openFactorManifest(contentKey, legal, MANIFEST_EPOCH),
+      openFactorManifest(contentKey, twice, MANIFEST_EPOCH),
+    );
+
+    // Assert
+    expect(control.status, 'the frozen three-factor manifest').toBe(
+      'fulfilled',
+    );
+    expectRefused(refusal, 'a factor named twice');
+    expect(reasonOf(refusal)).toContain(repeated);
+  });
+
+  it('refuses an identifier in any spelling but the canonical one, rather than folding it', async () => {
+    // Arrange
+    // Entry one upper-cased, same width. **Folding it is the defect**: the
+    // manifest is a value two implementations must be able to reproduce from one
+    // set, and a reader that accepts a second spelling has given that set two
+    // plaintexts. The fold belongs on the *writing* side, where a caller's
+    // spelling is an input; on the reading side the bytes are the contract.
+    const nonCanonical = frozenPlaintextCase('nonCanonicalFactorId');
+    const [named] = parseManifestPlaintext(fromHex(nonCanonical.hex)).entries;
+
+    // The arrangement through the one owner of that spelling, so a case built on
+    // a vector that drifted into some other malformation fails here rather than
+    // passing for the wrong reason: this identifier is not canonical, and it
+    // folds to the identifier the positive carries.
+    expect(isCanonicalFactorId(named.factorId)).toBe(false);
+    expect(canonicalFactorId(named.factorId)).toBe(
+      namedSetOf(THREE_FACTORS)[0].factorId,
+    );
+
+    const [legal, misspelled] = await Promise.all([
+      legalWire(),
+      sealPlaintext(nonCanonical.hex),
+    ]);
+
+    // Act
+    const [control, refusal] = await settleAll(
+      openFactorManifest(contentKey, legal, MANIFEST_EPOCH),
+      openFactorManifest(contentKey, misspelled, MANIFEST_EPOCH),
+    );
+
+    // Assert
+    expect(control.status, 'the frozen three-factor manifest').toBe(
+      'fulfilled',
+    );
+    expectRefused(refusal, 'an identifier in a non-canonical spelling');
+  });
+
+  it('refuses a public key that is not an uncompressed point, which nothing below the reader will do', async () => {
+    // Arrange
+    // Entry one's **own** point, re-prefixed `0x04` to `0x06` under the parity
+    // rule — same x, same y, same width, on the curve. The prefix is not
+    // borrowed from a sibling entry on purpose: with a borrowed point two
+    // entries would share coordinates, and a reader refusing a repeated public
+    // key would turn this away for a reason that has nothing to do with
+    // encoding.
+    //
+    // **The platform is not the refusal here.** The Act below imports these very
+    // bytes through WebCrypto and they are accepted, so a reader that takes 65
+    // bytes positionally and hands them to `importKey` builds a working key from
+    // a point every other client re-derives a different key from. Only the
+    // encoding guard refuses it.
+    const hybrid = frozenPlaintextCase('hybridPoint');
+    const point = fromHex(
+      parseManifestPlaintext(fromHex(hybrid.hex)).entries[0].publicKeyHex,
+    );
+
+    expect(point).toHaveLength(FACTOR_PUBLIC_KEY_BYTES);
+    expect(point[0]).toBe(0x06);
+
+    const [legal, reprefixed] = await Promise.all([
+      legalWire(),
+      sealPlaintext(hybrid.hex),
+    ]);
+
+    // Act
+    const [control, refusal, platform] = await settleAll(
+      openFactorManifest(contentKey, legal, MANIFEST_EPOCH),
+      openFactorManifest(contentKey, reprefixed, MANIFEST_EPOCH),
+      crypto.subtle.importKey(
+        'raw',
+        point,
+        { name: 'ECDH', namedCurve: 'P-256' },
+        false,
+        [],
+      ),
+    );
+
+    // Assert
+    // The platform's answer first, because it is what makes the refusal mean
+    // something. If this ever starts rejecting, the case has stopped being about
+    // the guard and somebody must be told rather than left with a green bar.
+    expect(platform.status, 'WebCrypto on the hybrid point').toBe('fulfilled');
+    expect(control.status, 'the frozen three-factor manifest').toBe(
+      'fulfilled',
+    );
+    expectRefused(refusal, 'a manifest carrying a hybrid-encoded point');
+    // The guard's own words — `requireUncompressedPoint` is IFR-019 and it is
+    // imported. A local `length !== 65` written beside the reader passes every
+    // other assertion in this case and fails this one.
+    expect(reasonOf(refusal)).toContain('uncompressed point');
+  });
+
+  it('refuses a separator at either end', async () => {
+    // Arrange
+    // The grammar puts one separator between fields and none at either end.
+    // Leading is the dangerous half: a split-based reader produces a zero-length
+    // first field, `Number('')` is 0, and the value arrives as a manifest naming
+    // nobody rather than as a malformed one. Trailing is the quiet half — a
+    // reader that trims or ignores it has given one factor set a second
+    // spelling.
+    const [legal, leading, trailing] = await Promise.all([
+      legalWire(),
+      refusalWire('leadingSeparator'),
+      refusalWire('trailingSeparator'),
+    ]);
+
+    // Act
+    const [control, atTheFront, atTheBack] = await settleAll(
+      openFactorManifest(contentKey, legal, MANIFEST_EPOCH),
+      openFactorManifest(contentKey, leading, MANIFEST_EPOCH),
+      openFactorManifest(contentKey, trailing, MANIFEST_EPOCH),
+    );
+
+    // Assert
+    expect(control.status, 'the frozen three-factor manifest').toBe(
+      'fulfilled',
+    );
+    expectRefused(atTheFront, 'a separator before the count');
+    expectRefused(atTheBack, 'a separator after the last public key');
+  });
+
+  it('refuses a count that is not decimal digits, and one with a leading zero', async () => {
+    // Arrange
+    // **`+3` is the discriminating one.** `Number('+3')` and `parseInt('+3')`
+    // are both 3, measured, so every reader that *coerces* the count accepts it
+    // and only one that requires decimal digits refuses it. A count of `+`
+    // alone would prove nothing — `Number('+')` is `NaN`, so a coercing reader
+    // refuses that too, for free and for the wrong reason.
+    //
+    // `03` is the same rule from the other side: `Number('03')` is 3, so one
+    // factor set would have two valid plaintexts — the exact property the
+    // decimal spelling exists to prevent.
+    const [legal, signed, padded] = await Promise.all([
+      legalWire(),
+      refusalWire('countNotDigits'),
+      refusalWire('countLeadingZero'),
+    ]);
+
+    // Act
+    const [control, notDigits, leadingZero] = await settleAll(
+      openFactorManifest(contentKey, legal, MANIFEST_EPOCH),
+      openFactorManifest(contentKey, signed, MANIFEST_EPOCH),
+      openFactorManifest(contentKey, padded, MANIFEST_EPOCH),
+    );
+
+    // Assert
+    expect(control.status, 'the frozen three-factor manifest').toBe(
+      'fulfilled',
+    );
+    expectRefused(notDigits, 'a count carrying a sign');
+    expectRefused(leadingZero, 'a count with a leading zero');
+  });
+
+  it('refuses a count too large to be entries, without sizing a container from it', async () => {
+    // Arrange
+    // A count of 999,999,999,999,999 over three entries. The refusal that
+    // matters is the one that comes from *comparing* the count against what was
+    // read, not from failing to allocate for it.
+    //
+    // **What the second assertion can and cannot say.** Measured: `new
+    // Array(n)`, `Array.from({ length: n })`, `new Uint8Array(n)` and `a.length
+    // = n` all throw a `RangeError` on this value, and nothing else on this path
+    // does — so a `RangeError` here is a reader that sized a container from the
+    // declared count before it had read an entry. It does **not** catch a reader
+    // that allocates successfully for a merely large count, which no vector in
+    // this file exercises; the honest claim is the narrow one, and it is the
+    // strongest one available without reaching into the allocator.
+    const astronomical = frozenPlaintextCase('countAstronomical');
+    const declared = Number(
+      parseManifestPlaintext(fromHex(astronomical.hex)).count,
+    );
+
+    expect(declared).toBeGreaterThan(2 ** 32);
+
+    const [legal, enormous] = await Promise.all([
+      legalWire(),
+      sealPlaintext(astronomical.hex),
+    ]);
+
+    // Act
+    const [control, refusal] = await settleAll(
+      openFactorManifest(contentKey, legal, MANIFEST_EPOCH),
+      openFactorManifest(contentKey, enormous, MANIFEST_EPOCH),
+    );
+
+    // Assert
+    expect(control.status, 'the frozen three-factor manifest').toBe(
+      'fulfilled',
+    );
+    expectRefused(refusal, 'a count no buffer could hold');
+    expect(
+      reasonValue(refusal),
+      'the count was allocated for',
+    ).not.toBeInstanceOf(RangeError);
+  });
+
+  it('refuses a plaintext of no bytes at all', async () => {
+    // Arrange
+    // There is no count field to read. **Nothing beneath the reader turns this
+    // away**: sealed, it is a 29-byte envelope, which is the framing floor to
+    // the byte and therefore inside the width window this module enforces — so
+    // the width check cannot be what refuses it.
+    const empty = frozenPlaintextCase('emptyPlaintext');
+
+    expect(empty.lengthBytes).toBe(0);
+
+    const [legal, nothing] = await Promise.all([
+      legalWire(),
+      sealPlaintext(empty.hex),
+    ]);
+
+    expect(decodeBase64Url(nothing)).toHaveLength(FACTOR_MANIFEST_MIN_BYTES);
+
+    // Act
+    const [control, refusal] = await settleAll(
+      openFactorManifest(contentKey, legal, MANIFEST_EPOCH),
+      openFactorManifest(contentKey, nothing, MANIFEST_EPOCH),
+    );
+
+    // Assert
+    expect(control.status, 'the frozen three-factor manifest').toBe(
+      'fulfilled',
+    );
+    expectRefused(refusal, 'a plaintext of no bytes');
+  });
+
+  it('opens the frozen three-factor manifest into the three entries it names, in the frozen order', async () => {
+    // Arrange
+    // **The sealed value from the file, not one this spec sealed.** The nonce,
+    // the ciphertext and the tag were computed outside this codebase, so a
+    // reader that agreed only with this client's own writer cannot pass.
+    const epoch = SEALED.rotationEpoch ?? 0;
+
+    expect(epoch).toBe(MANIFEST_EPOCH);
+
+    // Act
+    const opened: unknown = await openFactorManifest(
+      contentKey,
+      toWire(SEALED.hex),
+      epoch,
+    );
+
+    // Assert
+    expect(
+      Array.isArray(opened),
+      'openFactorManifest answers the set the manifest names',
+    ).toBe(true);
+
+    const entries = factorSetOf(opened, 'the frozen three-factor manifest');
+
+    // Identifiers *and* points, in order. A reader returning the right number of
+    // wrong entries fails here; one returning a byte count never reaches it.
+    expect(namedSet(entries)).toEqual(namedSetOf(THREE_FACTORS));
+    // And the order once more against the list the file states for itself,
+    // rather than against this file's walk of the same bytes — so a red bar says
+    // which order came out.
+    expect(entries.map((entry) => entry.factorId)).toEqual(
+      THREE_FACTORS.expectedOrder,
+    );
+    expect(entries).toHaveLength(3);
+  });
+
+  it('opens the frozen eleven-factor manifest into all eleven', async () => {
+    // Arrange
+    // A passkey and a card of ten, which is what a registration writes — and the
+    // vector that holds the count as *text*, since `11` is two characters. It is
+    // also where splitting on the separator stops being a hypothetical: four of
+    // these eleven points contain a `0x1F`, so a split sees 29 fields where
+    // there are 23 and shears four entries in half.
+    const wire = await sealPlaintext(ELEVEN_FACTORS.hex);
+
+    // Act
+    const opened: unknown = await openFactorManifest(
+      contentKey,
+      wire,
+      MANIFEST_EPOCH,
+    );
+
+    // Assert
+    expect(
+      Array.isArray(opened),
+      'openFactorManifest answers the set the manifest names',
+    ).toBe(true);
+
+    const entries = factorSetOf(opened, 'the frozen eleven-factor manifest');
+
+    expect(entries).toHaveLength(11);
+    expect(namedSet(entries)).toEqual(namedSetOf(ELEVEN_FACTORS));
+    // Every point back raw and whole. A reader that sheared one on a separator
+    // hands back a short key, and a `toEqual` over the pair would say only that
+    // 11 entries differ.
+    for (const entry of entries) {
+      expect(entry.publicKey).toHaveLength(FACTOR_PUBLIC_KEY_BYTES);
+      expect(entry.publicKey[0]).toBe(0x04);
+    }
+  });
+
+  it('opens a manifest naming nobody into an empty set', async () => {
+    // Arrange
+    // **This one is not a refusal, and filing it as one is how somebody makes
+    // the parser reject it.** The count `0` and no entries is well formed; what
+    // turns it away is set equality one layer up, against the account's live
+    // factor set. Make the grammar refuse it and an account midway through
+    // losing its last factor cannot be read at all — the one moment its owner
+    // most needs to see what is left.
+    const zero = VECTOR_FILE.zeroFactors;
+
+    expect(zero.name).toBe('zeroFactors');
+    expect(zero.lengthBytes).toBe(1);
+
+    const wire = await sealPlaintext(zero.hex);
+
+    // Act
+    const opened: unknown = await openFactorManifest(
+      contentKey,
+      wire,
+      MANIFEST_EPOCH,
+    );
+
+    // Assert
+    expect(
+      Array.isArray(opened),
+      'openFactorManifest answers the set the manifest names',
+    ).toBe(true);
+    expect(factorSetOf(opened, 'a manifest naming nobody')).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // The module surface.
 //
 // **The backstop `key-import-single-source.spec.ts` names, for this module.**
@@ -1069,22 +1827,46 @@ describe('a sealed manifest', () => {
 // with: a content key arrives as a parameter, is used inside one call and is
 // never stored — so the reachability walk that file runs has no subject here,
 // and a census that names every export is what would report one appearing.
+//
+// **A closed list, and that is the whole of its value.** A name arriving here is
+// a deliberate act somebody had to sign off, and the signature is the edit that
+// adds it. A sixth reddens this case, which is what a new export is meant to
+// cost.
 
 describe('the module surface', () => {
   it('offers these names and no others, whatever kind of value each one is', () => {
     // Arrange
     const expected = [
-      // The window the server enforces, restated so this client refuses a value
-      // before the server does. Both ends are open because the screens that
-      // assemble a factor set read them.
+      // The width window, restated in full at the describe that stands cases on
+      // either side of it. Both ends are the API edge's to the byte, restated
+      // here so this client refuses a value before the request carrying it
+      // would be refused; the floor is the AEAD envelope's own, and the stored
+      // rule is wider at the bottom on purpose, `between 1 and 4096` being what
+      // a column can state declaratively about a blob. Both ends are open
+      // because the screens that assemble a factor set read them.
       'FACTOR_MANIFEST_MIN_BYTES',
       'FACTOR_MANIFEST_MAX_BYTES',
-      // The two functions, and no parser beside them. `openFactorManifest`
-      // hands back bytes on purpose — comparing the named set against the
-      // served set is story 12.14's, and an exported parser with no production
-      // caller is the export this codebase refuses by name. **A third name here
-      // is that parser arriving early**, which is the change this census exists
-      // to make visible.
+      // **The one type this module hands a caller, and a type is the only honest
+      // way to carry what it carries.** `openFactorManifest` refuses twice
+      // before any cipher runs — a wire string that is not unpadded base64url,
+      // and a sealed value outside the width window — and neither refusal has
+      // observed a byte of the account's key material. So the unlock gate
+      // catches this type and publishes `unrecognised`, *reload this tab*, while
+      // every other refusal from that call — a tag that does not verify, every
+      // grammar refusal on an **authenticated** plaintext — stays a bare `Error`
+      // and stays `inconsistent`. The alternative is matching a message:
+      // messages are prose, several of them exist on each side of the line, and
+      // a caller matching one would quietly stop covering the rest. This file
+      // already makes that argument for `NarrativeFieldMisuseError` and
+      // `AccountKeyResponseError`; this is the third time it has been made and
+      // the reasoning has not moved.
+      'FactorManifestWireError',
+      // The two functions, and **still no parser beside them**, which is the
+      // thing this census now holds. `openFactorManifest` parses the plaintext
+      // and answers the factor set, so the parser exists — it is simply not a
+      // name. Exporting it, or a door back to the bytes beside it, would be the
+      // export with no production caller that this codebase refuses by name, and
+      // a third function here is what that arriving would look like.
       'sealFactorManifest',
       'openFactorManifest',
     ].sort();

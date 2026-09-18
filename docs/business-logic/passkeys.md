@@ -725,9 +725,12 @@ factor, and an account identifier derived from the challenge it just spent —
   identity provider is not part of that exchange at all. **That leg's PRF output is spent rather
   than discarded**: the key-encryption key it derives is handed straight to
   `AccountKeyCustodyService`, which reads every factor the **account** holds — never only the
-  credential that just authenticated — tries each in turn until one opens, and then confirms the
-  content key it got against the account's manifest before reporting the account unlocked. See
-  [account-keys.md](account-keys.md). What still has no screen is the
+  credential that just authenticated — tries each in turn until one opens, and then puts what came
+  out through a gate of **four ordered refusals** over the account's manifest before reporting the
+  account unlocked. Confirming the content key against that manifest is the second of the four, and
+  on its own it was a check the served body could switch off; the four together are what a response
+  somebody shaped has to get past. [account-keys.md](account-keys.md) owns them, and the order they
+  run in is the security property. What still has no screen is the
   **re-authentication** the erasure, revocation and recovery-code-generation gates need, and the
   registration of a **further** passkey. Those two routes are reached today only by the integration
   suite. **Account creation is gated on a passkey, on the only path there is**, so **no account has
@@ -739,9 +742,11 @@ factor, and an account identifier derived from the challenge it just spent —
   that is the email change, and it is not built.
   - **The browser runs one more ceremony than the server has pools for, and it spends none of
     them.** `deriveKeyFromLocalAssertion` on the same service is what the Account keys section of
-    `/app/settings` runs to unlock an account: it mints its own 32-byte challenge, asserts, throws
-    the signed response away and returns only the key-encryption key it derived. **No route is
-    called and no challenge row is written.** Both candidate pools were rejected rather than chosen
+    `/app/settings` runs to obtain a key-encryption key for an unlock: it mints its own 32-byte
+    challenge, asserts, throws the signed response away and returns only the key it derived. **That
+    ceremony calls no route and writes no challenge row.** The unlock around it makes two reads of
+    its own — the account's key material, and which account this is — and neither carries anything
+    the authenticator signed. Both candidate pools were rejected rather than chosen
     between: `authentication` is minted anonymously and would put an anonymous route under a screen
     deep inside the app, and `reauthentication` is the pool **three** sensitive acts spend — the
     gotcha below counts them — so every press of Unlock would leave behind a live nonce good for

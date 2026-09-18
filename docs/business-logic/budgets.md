@@ -287,9 +287,13 @@ erDiagram
     The rule forbids a route from *accepting* a budget; it never rested on the client not knowing
     which budget it is in. Nothing reads a budget from a request — not a query filter, not the
     `budget_isolation` policy, not a handler — so a client holding the value has nowhere to spend
-    it, and the test above is what keeps that true. It is published because the blind index over a
-    name carries the budget and is computed in a browser, and the budget is the one field of that
-    message the client cannot derive. See [account-keys.md](account-keys.md).
+    it, and the test above is what keeps that true. **Two things in the browser need the value, and
+    they are not one reason stated twice.** The blind index over a name carries the budget and is
+    computed in a browser, where the budget is the one field of that message the client cannot
+    derive. Beside it, the budget is the only per-account identifier a browser ever holds, so it is
+    also what a device files its record of the account's rotation generation under. Withhold it and
+    no name reaches a blind-indexed column and no account can be unlocked. See
+    [account-keys.md](account-keys.md).
 
 - **Per-owner budget-name uniqueness MUST NOT be reintroduced, and the unique index MUST NOT be
   deleted.** Both halves of that sentence are load-bearing and they point in opposite directions.

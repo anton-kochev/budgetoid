@@ -8,6 +8,288 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-09-18 — The rotation-epoch record's key is not authenticated, and the loudness argument is withdrawn
+
+**Context:** the entry *The rotation-epoch record is keyed on the budget, and one key per account*
+closes with an honest-limit paragraph: `budgetId` is not unforgeable, but lying about it is **loud**,
+because the budget is the blind-index tenancy and a substituted value breaks every indexed lookup in
+the product at once. Entries here are not edited, so the correction is filed rather than applied.
+
+**That claim was true when it was written and is false now, and the change that made it false is the
+unlock reading `GET /api/me` for itself.** The unlock's read of that route is not the read an index
+is keyed from. `SessionService` makes its own and its answer is the tenancy every blind index in the
+product carries; the unlock makes another, because custody may not inject that class — it injects
+custody, so the edge closes a cycle, and the signal is empty at the instant sign-in calls `unlock`
+besides. An operator who answers custody's read with one budget and the session's read with the true
+one leaves every indexed lookup matching and every uniqueness comparison intact, and files this
+account's high-water mark under a name nothing will ever compare against.
+
+**The second half of the old argument does not survive on its own either.** Even where a substituted
+tenancy did reach an index, it would not be loud: a value computed under material the account does
+not hold **matches no row**, so the lookup comes back empty rather than failing — a silence over data
+that is all still sitting there, which this repository argues at length everywhere else and argued
+against itself here.
+
+**Decision:** the limit is accepted and recorded as one. The key the record is filed under is
+unauthenticated, and both directions of a substitution are reachable. Serving a budget this device
+has never seen makes the record miss, the gate takes its **first-visit** branch, and a replayed
+`(manifest, epoch)` pair is **accepted**. Filing under a budget belonging to an account this device
+*has* opened raises that account's high-water mark instead, and that account is then refused on this
+device permanently, with copy offering the person nothing to do.
+
+**What would close it, named so that nobody reads the gap as the plan.** The account identifier
+belongs **inside** the manifest's sealed plaintext, where a party holding the content key
+authenticates it and no response can choose it. That is a format change across every implementation
+of the manifest grammar, and none of it is built, proposed here or scheduled by this entry.
+
+**Rejected — taking the budget from `SessionService`, so that the record and the index key off one
+answer.** It would restore the loudness argument, and that is the honest thing to say about it. It is
+still refused on the two grounds the chapter already gives and neither has moved: `SessionService`
+injects custody, so the edge closes a cycle; and the signal is empty at the instant sign-in calls
+`unlock`, because the session read starts without being awaited and the unlock happens on the next
+line — so the first unlock of every session would be filed under nothing, which is a defence switched
+off on the one path everybody takes.
+
+**Rejected — refusing when the two answers disagree.** It needs custody to hold the session's copy to
+compare against, which is that same edge under another name. And a disagreement is what an ordinary
+change of budget will look like on the day a second one becomes creatable, so the refusal would be
+aimed at a state the product intends to have.
+
+**Affected areas:** [account-keys.md](account-keys.md), [key-rotation.md](key-rotation.md).
+
+---
+
+## 2026-09-18 — An unlock asks two routes, and neither answer is optional
+
+**Context:** the rollback refusal is filed per account, and the only per-account identifier a browser
+holds arrives on `GET /api/me`. Custody reads `GET /api/me/account-keys` for the envelopes and the
+manifest. It cannot get the budget from `SessionService`, which publishes it four characters away:
+that class injects custody, so the edge closes a cycle — and the signal is still empty at the instant
+sign-in calls `unlock`, because the session read starts without being awaited and the unlock happens
+on the next line. So the budget has to come from the API, on a second request.
+
+**Decision:** the unlock issues both reads **together**, and a failure of either ends the attempt.
+Neither answer is an input to the other and somebody is waiting in front of a screen for both, so
+they run concurrently rather than in series; both go through **one** reading of a failed read, so *a
+401 or 403 is `unauthenticated`, a body this client could not read is `unrecognised`, everything else
+is `unreachable`* is true of both by construction.
+
+**One reading and not two `catch` blocks, because nothing would have caught the second one being
+wrong.** No case anywhere pins a 401 arriving from the identity read specifically, so a second
+`catch` written over it satisfies the whole suite while answering a refused identity read with
+whatever word that block happened to pick.
+
+**A 200 carrying no budget is `unrecognised` here, where `SessionService` shrugs at the same
+absence.** That class reads it as `null` and carries on deliberately — a body that says there is a
+session and whose it is still says that with one member missing, and taking the session status down
+over a version skew signs somebody out. This path cannot make that trade: an unlock that does not
+learn which account it is opening records nothing, and an unlock that records nothing cannot refuse a
+replay. Shrugging would hand an operator a way to switch the rollback refusal off for every browser
+at once, by dropping one member from a response nothing else on this path reads.
+
+**The new failure mode, stated rather than discovered:** an account now needs two routes to answer
+before it can be opened. A deployment that serves key material and refuses the identity read leaves
+every browser locked, reporting a word about a read rather than about a factor. That is the right
+report — nothing about it is the person's authenticator — and it is a real widening of what an unlock
+depends on.
+
+**Rejected — deriving the identifier from the keys the unlock just opened.** It removes the request
+and it is circular: the gate the identifier is for runs *before* those keys are published, and the
+one value such a derivation could use is the index key, which a rotation replaces.
+
+**Rejected — recording the epoch under a single device-wide key.** One key for every account this
+browser has seen makes the first account's epoch the floor for the second, so somebody holding two
+accounts is locked out of the younger one by the older one's generation count.
+
+**Affected areas:** [account-keys.md](account-keys.md), [sessions.md](sessions.md).
+
+---
+
+## 2026-09-18 — The rotation-epoch record is keyed on the budget, and one key per account
+
+**Context:** the per-device high-water mark has to be filed under something that names the account.
+A browser holds three candidates and two of them are not the account: an account id is derived
+server-side and never served, and a credential id names one factor. The budget the session is scoped
+by is what is left, and it is already published on `GET /api/me` for the blind index's message.
+
+**Decision:** the store is `localStorage`, **one key per account**, spelled
+`budgetoid-rotation-epoch:<budgetId>`, holding decimal digits and nothing else.
+
+**One key per account, never one JSON map.** A map is a read-modify-write, so two tabs opening two
+accounts lose an update between them — and the loser is the **lower** record, which is the one
+direction this defence cannot afford. A map is also a *shape*: an attacker who can write this store
+chooses the object a `JSON.parse` reader then walks. A key each is a single write per account and one
+string to validate.
+
+**Rejected — a pseudonym derived from the account's own index key**, which is the answer a reader
+reaches for and the one that defeats the control. **A rotation replaces the index key too**, so a
+record filed under it would reset on exactly the event FR-126 exists to detect: the device would lose
+its memory at the moment the memory was about to be spent, and would then accept the very replay the
+record was written to refuse. The property wanted here is *stable across a rotation*, which is the
+opposite of what a key-derived name has.
+
+**The honest limit, because the entry is worth nothing without it:** `budgetId` is not unforgeable.
+The same operator that serves the manifest serves `GET /api/me`, so a response naming a different
+budget files this account's epoch under a name nothing will compare against — a first visit, forever.
+What makes that loud rather than quiet is that the budget is the **blind-index tenancy**: it is a
+field of the message every indexed name in the product is keyed under, so a substituted value breaks
+every lookup and every uniqueness comparison immediately and visibly. The defence is not that the
+value cannot be lied about; it is that lying about it costs the liar the product.
+
+**The parse is a security decision and is written out rather than coerced.** Every coercion in the
+language is looser and each is looser in a way that costs something: an empty string and whitespace
+read as 0, a hexadecimal spelling gives a second spelling of one epoch, an exponent form is an
+integer by the language's own predicate while sitting past the point where adding one changes it, and
+a trailing-garbage parse silently truncates. The floor is **1**, because 0 is the server's *no
+manifest row* answer: a stored 0 is never an observation, and letting one through hands the refusal a
+high-water mark below every real epoch, which is having no memory at all, silently.
+
+**A store that throws reads as "this device has not seen the account", never as a refusal.**
+Blocked-storage modes throw on the read as well as the write, so an escaping throw would turn a
+manifest this client can perfectly well open into a failure and lock private browsing out of the
+product. A browser that cannot remember is permanently in the first-visit state the entry above
+already accepts.
+
+**Affected areas:** [account-keys.md](account-keys.md), [key-rotation.md](key-rotation.md).
+
+---
+
+## 2026-09-18 — ASM-016 accepted: a rollback is refused by devices that watched the account move
+
+**Context:** every cryptographic check on the unlock path passes on a **replayed** `(manifest, epoch)`
+pair, because such a pair is not forged. It is correctly sealed, correctly framed, opens under the
+account's content key and declares a set that really was this account's — it is simply from before.
+Whoever can replay the manifest can replay the epoch beside it, so no value in the response can tell
+the two apart. The only party that can is one that watched the account move past that generation, and
+on a browser that party is a device.
+
+**Decision:** the browser keeps a per-device high-water mark of the highest rotation epoch it has
+seen for an account, and the unlock refuses a response whose epoch is below it. **ASM-016 is accepted
+with it:** a device that has never seen the account cannot detect a rollback at all, so the record
+**narrows the window and does not close it**. A device holding no record treats the response as a
+first visit and judges it on the other three refusals.
+
+**Not-lower rather than strictly-higher**, because an account that has not rotated answers the same
+epoch on every unlock.
+
+**The consequence that must be recorded plainly, because it will be reported as a defect.** A
+database restore that rewinds the manifest is **indistinguishable from an attack** — it is the same
+bytes, correctly sealed, at a generation the account genuinely held. Every device that saw the later
+epoch will refuse the restored one and report `inconsistent`, which is a dead end with no press
+behind it. The repair is for the person to clear that browser's site data, which drops the record and
+lets the account open. **There is no design that separates the two cases**: the restore and the
+replay are byte-identical and arrive by the same route. It is inherent to rollback detection rather
+than a flaw to engineer around, and the operational reading is that rewinding this product's database
+is a customer-visible act.
+
+**Rejected — recording the epoch before the manifest is judged.** It is the ordering a reader will
+reach for, and it converts the memory into an oracle: an operator answering an absurd epoch beside
+anything at all pushes the mark past every generation the account will ever reach, and that browser
+then refuses the account's own genuine manifest forever, with copy offering the person nothing to do.
+One request, and that browser is finished with that account. So the record is written only after all
+four refusals have passed — and the epoch is worth comparing at all only once the manifest has
+authenticated it as its own associated data.
+
+**Rejected — refusing when the device holds no record.** It is what "close the window" would mean,
+and it locks out every new device, every reinstall and every private window in the product, over a
+state that is overwhelmingly the ordinary one.
+
+**Rejected — a server-side epoch floor.** The server already refuses anything but stored + 1 on a
+promotion. That is arithmetic about a *write*; a rollback is a *read* served by the party being
+watched, so a check it performs on itself is worth nothing here.
+
+**Affected areas:** [account-keys.md](account-keys.md), [key-rotation.md](key-rotation.md),
+[components.md](../design/components.md).
+
+---
+
+## 2026-09-18 — The absent-manifest bypass is closed, and the gate's order is the security property
+
+**Context:** the unlock confirmed a factor's content key by opening the account's manifest, and a
+response carrying **no** manifest proceeded. The entry below this one argued that bypass and argued
+it correctly for what the check then was: a self-check on this client's own encapsulation order,
+where an operator able to shape the response lost nothing by switching off a check that only ever
+caught a build of this bundle. It also recorded that `openFactorManifest` answered bytes rather than
+parsed entries, and that the comparison closing the requirement was the client's and unbuilt.
+
+**Decision:** the manifest becomes **load-bearing against an operator**. After a factor opens and
+before the keys are published, four refusals run in one order and all four report the existing word
+`inconsistent`: a response carrying no manifest; a manifest that does not open under the content key
+that factor handed over; an epoch below the highest this device has recorded for the account; and a
+served factor set that is not exactly the set the manifest names, compared in **both** directions.
+`openFactorManifest` now answers the factors it names, and its walk refuses every shape the grammar
+forbids.
+
+**The bypass was not one branch of the gate — it was the gate.** Every refusal above is switched off
+by a body answering nothing for the manifest, so the party the gate is pointed at could turn it off
+with one member. That is what moved, and it is why the earlier entry's reasoning does not survive its
+own premise changing.
+
+**What closing it costs, said plainly:** an account whose manifest row really went missing cannot be
+opened in this client at all, and no act of the person's changes that. It is paid against a state no
+account this product creates can be in — registration files the first generation in the same save as
+the session, all four paths that move a factor set carry one, and a promoting path meeting a missing
+row answers `500` rather than filing one. **The route's own `null` spelling stays**, because it is
+the honest description of a row a test seeded by hand; what changed is only what the browser does
+with that answer, and refusing it is not a claim that the read would.
+
+**The order is the rule and not an arrangement.** Each refusal reads something the one before it
+established. The epoch's place is the one a reader will move: it is the manifest's **associated
+data**, so it is worth comparing only once the manifest has opened at it. Compared first, it is an
+unauthenticated integer out of the body being judged — and the record advanced from it is the oracle
+the entry above refuses.
+
+**The gate runs once, after the trial loop, never inside it.** Inside, "no factor opened" and "a
+factor opened and the account's material does not agree with itself" arrive at one place by one road,
+and their remedies are opposites. The cost of that order is accepted and written down: somebody
+presenting the wrong factor to a shaped response is told `unopened`, because the loop's verdict about
+that factor is true. It is the cheaper mistake — the alternative announces that an account's material
+is untrustworthy to a browser that has not yet shown it holds anything of the account's.
+
+**No sixth word.** `inconsistent` was minted for exactly these neighbours: all four are statements
+about the account's **material** rather than about the factor, and all four share one next step,
+which is that nothing the person holds changes it.
+
+**The parser refuses and never repairs, and the two tempting repairs are the two that cost the format
+its meaning.** Folding a non-canonical identifier, or sorting entries found out of order, each accept
+a second plaintext for one set — and from that moment the manifest stops being a function of the set
+it names, so no second implementation can reproduce its bytes. Both are folds on the writing side,
+where a caller's spelling and a caller's order are inputs rather than the contract. A manifest naming
+nobody parses cleanly on purpose: the set comparison one layer up is what turns it away, and a parser
+that refused it would make an account midway through losing its last factor unreadable at the one
+moment its owner needs to see what is left.
+
+**Six frozen refusals are exactly the width of a legal manifest, which is the whole argument for
+parsing rather than measuring.** `manifestPlaintextRefusals` in the factor-keypair vectors carries
+fourteen malformed plaintexts and six of them are the same length as the frozen three-factor
+positive. They authenticate, because a consumer seals each one itself. No width check, no version
+byte and no round trip can tell any of the six from the real manifest, so a reader that opens the
+envelope and trusts what falls out returns a factor set the account does not have. The width of a
+manifest is never evidence about its contents.
+
+**Rejected — comparing the sets positionally.** The manifest's order is fixed by its grammar and the
+response's is not, so a positional walk is green on every account the query happens to serve
+ascending and refuses the rest with a word telling the person nothing they hold can help.
+
+**Rejected — comparing counts.** Two served rows carrying one identifier satisfy both directions of
+set equality, and that is the right answer rather than a hole: the manifest holds one public key per
+identifier and every path keys on the identifier, so a duplicate row buys whoever wrote it nothing.
+A count would refuse a response no rule forbids the server from sending.
+
+**Two claims in the entry below are superseded rather than reversed, and it is recorded here because
+entries are not edited.** `openFactorManifest` returning bytes was argued as "the parser belongs to
+the story that needs it"; that story is this one, and the parser arrived with its consumer exactly as
+that entry said it should. And its closing sentence — that a client may be served a set disagreeing
+with its manifest and nothing refuses it — is now false **for the read** and remains true **for a
+rotation's staging**, which has no client at either end. [key-rotation.md](key-rotation.md) holds
+that half and names it as unheld.
+
+**Affected areas:** [account-keys.md](account-keys.md), [key-rotation.md](key-rotation.md),
+[components.md](../design/components.md),
+[frontend testing](../engineering/frontend-testing.md).
+
+---
+
 ## 2026-09-18 — The factor-keypair grammar binds on the factor and names no account
 
 **Context:** the browser's half of the per-factor ECDH keypair needed a grammar. Four messages have

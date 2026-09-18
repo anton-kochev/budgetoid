@@ -450,7 +450,13 @@ role holds no `DELETE` there of any shape.
 ---
 
 - **Rule**: The backup window is erasure's one physical limit. Erased rows persist in point-in-time
-  database backups for up to seven days and in no other location.
+  database backups for up to seven days, and in no other location **this service holds**.
+  - **That scope is the claim and is narrower than it reads at a glance.** Every gate on this page
+    answers for rows in this database: the schema vocabulary, the row count and the route table each
+    read something the service owns. What a **browser** keeps of its own is outside all three — the
+    erasure path issues no instruction to a client, and no cascade reaches a device. So a sentence
+    promising that nothing survives an erasure *anywhere* would be a promise about somebody else's
+    storage, made by a handler that cannot see it.
 - **Why**: erasure is irreversible *as an offered capability* and time-bounded *as a physical fact*,
   and both sentences are true at once. A point-in-time restore rebuilds the whole database as an
   operator action against the whole service — it cannot be aimed at one account, and it is reachable

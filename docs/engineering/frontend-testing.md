@@ -24,23 +24,45 @@ only the ones it has — each bundle-reading spec opens with a case whose whole 
 `expectProductionBuild()` and carries none. Nothing enforces this: `eslint.config.js` declares no
 rule for it and the runner has no opinion, so it is held by review, like the import above it.
 
+**A spec that touches `localStorage` clears it in a `beforeEach`, and owes no `afterEach`.**
+Measured: jsdom's store is fresh per test **file** and shared across every case inside one, so a
+value written by one case is an invisible fixture for the next and nothing carries between files.
+The `beforeEach` is therefore the one that is owed — `rotation-epoch-record.spec.ts` is the shape —
+and an `afterEach` clear would be a second wipe of a store the next file never sees. Note the
+neighbouring rule it is **not**: `restoreMocks` is unconfigured, so a spy installed on
+`Storage.prototype` really does survive from case to case within a file and really does need
+`vi.restoreAllMocks()` in an `afterEach`. Two different lifetimes, opposite obligations, and one
+spec commonly needs both.
+
 ## Build before test
 
 **`npm test` needs a prior `npm run build`.** Several specs assert over the emitted production
 bundle rather than over `src/`, because the sources are not what the browser runs — the builder
 inlines, rewrites and tree-shakes on the way out, and a rule about what *ships* can only be proven
-against the output. **Which specs those are is a property, not a list: every spec that imports
-`expectProductionBuild` from `src/production-bundle.ts`** — a naming that outlives the next one
-added. Today it holds `no-external-origins.spec.ts` and `no-devtools.spec.ts` (see
-[no third-party origins](no-third-party-origins.md), which owns their argument),
-`focus-ring.spec.ts`, `security-headers.spec.ts`, `no-profile-scope.spec.ts` and
-`registration-redirect-uri.spec.ts`.
+against the output.
+
+**Which specs those are is a property, and this chapter carries the property rather than a roster of
+them: it is every spec that imports `expectProductionBuild` from `src/production-bundle.ts`.** That
+import is the membership test and the only one — a spec joins the set by writing it and leaves by
+deleting it, with nothing to update here either way. A list beside that would be a second copy of a
+fact the import already states, kept in step by nobody and reddening nothing when the two disagree,
+and the copy that rots is always the written one: a spec is added to `src/` without a chapter two
+directories away being opened. What a reader wanting the set should do is search for that identifier,
+which answers correctly on the day it is asked. The arguments for the individual rules live with the
+rules rather than here: [no third-party origins](no-third-party-origins.md) owns two of them, and
+[accessibility](../design/accessibility.md) and [color](../design/color.md) each own one.
 
 They share one precondition through `src/production-bundle.ts` rather than restating — and drifting —
 in each of them. `expectProductionBuild()` fails with the command to run when `dist/` is missing,
 **and** requires a hashed `main-*.js` in the emitted `index.html`: `outputHashing: all` is
 production-only, so an unhashed entry point means a development build is sitting in `dist/` and the
 whole set would pass too easily.
+
+**Not every one of them is a bundle *scan*, which is why "reads the production build" is the
+membership test rather than "greps the output".** One of them stands a real component up in jsdom
+and injects the emitted global stylesheet into the page so the cascade it measures is the one a
+browser is served; it needs `dist/` for that reason rather than to read strings out of it. A rule
+worded around scanning would have quietly excluded it.
 
 Hence build before test in CI, and `npm run build && npm test` locally.
 

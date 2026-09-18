@@ -31,6 +31,7 @@ import {
 import { isSignal, signal, type Signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { Router, provideRouter } from '@angular/router';
+import type { MeDto } from '@app-core/api/me-api.service';
 import { AccountKeyCustodyService } from '@app-core/security/account-key-custody.service';
 import {
   WebauthnCeremonyService,
@@ -59,10 +60,32 @@ import { AccountUnlockService } from './account-unlock.service';
 import * as unlockModule from './account-unlock.service';
 
 const API_ORIGIN = 'https://api.test';
-// The one address this flow reaches, and it does not reach it itself: custody
+// The two addresses this flow reaches, and it reaches neither itself: custody
 // does, because the flow handed it a key. The ceremony sends nothing at all —
 // its challenge is this client's own and no server ever sees it.
+//
+// **The second one is custody's identity read, and it is a step of custody's
+// gate rather than an errand beside it.** The per-device rotation-epoch record
+// is filed per account, the only per-account identifier a browser holds is the
+// budget the session is scoped by, and custody asks the API for it rather than
+// injecting `SessionService` — which injects custody, so the edge would be a
+// cycle. It is named here because the census below is a closed list and the
+// flow's own claim is that *it* addresses nothing: two addresses that both
+// belong to custody say that as well as one did.
 const ACCOUNT_KEYS_URL = `${API_ORIGIN}/api/me/account-keys`;
+const SESSION_OWNER_URL = `${API_ORIGIN}/api/me`;
+
+// What the identity read answers.
+//
+// **Answered truthfully rather than with `{}`, and that is not tidiness.**
+// Custody refuses a 200 carrying no budget with `unrecognised` and stops there —
+// before the trial loop — so a stub body without one would replace every
+// ordinary custody ending below with a refusal about a body, and the cases
+// asserting `unopened` would be asserting it about a branch they never reach.
+const SESSION_OWNER: MeDto = {
+  budgetId: '01a05f2c-7b19-7c3d-8e4f-5a6b7c8d9e0f',
+  email: 'owner@budgetoid.test',
+};
 
 // Every own property the service carries, named once so the structural census
 // has something to be red against. Listed rather than derived: the point of a
@@ -473,6 +496,40 @@ describe('AccountUnlockService', () => {
     return request;
   }
 
+  // The other read custody makes, in the same `Promise.all` as the one above.
+  //
+  // **It has to be answered wherever an attempt is driven to its end**, because
+  // custody takes both answers together: a case that flushes the envelopes and
+  // leaves this one outstanding waits forever on a custody that is still inside
+  // one `await`. Left outstanding by every caller that is standing *in* that
+  // window on purpose.
+  //
+  // **Exactly one, asserted rather than assumed, and this is not pedantry.**
+  // `match` removes *everything* it matched and hands back a list, so a second
+  // outstanding read of this same route is taken off the backend by a caller
+  // reaching for `[0]` and then never answered — and the attempt that was
+  // waiting on it hangs, with the failure arriving as a timeout somewhere else
+  // entirely. `SessionService.established()` really does start one, which is how
+  // this was found; a case that arranges an established session drains it in its
+  // own Arrange, where it belongs.
+  async function identityRead(): Promise<TestRequest> {
+    const matched = await eventually(() => {
+      const requests = http.match(SESSION_OWNER_URL);
+
+      return requests.length === 0 ? null : requests;
+    }, 'the read of which account this is');
+
+    expect(
+      matched.map((request) => request.request.urlWithParams),
+      'two reads of the identity route were outstanding at once, so answering one of them silently drops the other.',
+    ).toHaveLength(1);
+
+    const [request] = matched;
+    seen.push(request.request.urlWithParams);
+
+    return request;
+  }
+
   // **The behavioural half of "a refused unlock leaves the session intact".**
   //
   // Every ending is driven, because the temptation is not spread evenly: the
@@ -490,6 +547,15 @@ describe('AccountUnlockService', () => {
     // this screen's control exists for, and `'authenticated'` is the reading
     // that must survive every branch below.
     session.established();
+
+    // **`established()` starts a read of `/api/me` of its own and does not await
+    // it** — the budget is the one fact the establishing leg's answer does not
+    // carry — so that route has a request outstanding on it before this flow has
+    // done anything. Answered here, in the Arrange it belongs to, so the
+    // identity read answered at the foot of this case is custody's and not the
+    // session's. Left standing, it is the one that `identityRead` picks up,
+    // custody's own is quietly removed with it, and the attempt never ends.
+    (await identityRead()).flush(SESSION_OWNER);
 
     const words: readonly PasskeyCeremonyFailure[] = [
       'unsupported',
@@ -534,6 +600,10 @@ describe('AccountUnlockService', () => {
 
     const read = await accountKeysRead();
     read.flush({ manifest: null, rotationEpoch: 0, factors: [] });
+    // Answered beside it rather than left hanging: custody takes both answers
+    // in one `Promise.all`, so an unanswered identity read is an attempt that
+    // never ends and a wait below that never returns.
+    (await identityRead()).flush(SESSION_OWNER);
 
     await eventually(
       () => custody.unlockFailure(),
@@ -994,6 +1064,10 @@ describe('AccountUnlockService', () => {
     // neither half is running any more.
     const read = await accountKeysRead();
     read.flush({ manifest: null, rotationEpoch: 0, factors: [] });
+    // And the identity read beside it, for the reason `identityRead` states:
+    // custody takes both answers together, so one of them left outstanding is
+    // an attempt that never finishes and a reading that never falls.
+    (await identityRead()).flush(SESSION_OWNER);
 
     await eventually(
       () => custody.unlockFailure(),
@@ -1041,8 +1115,16 @@ describe('AccountUnlockService', () => {
     expect(service.failure()).toBeNull();
   });
 
-  // The census. One request left this browser and it was not this flow's — it
-  // is custody going for the envelopes the key it was handed can open.
+  // The census. Two requests left this browser and **neither was this flow's** —
+  // both are custody's, one going for the envelopes the key it was handed can
+  // open and one asking which account those envelopes belong to, so that the
+  // rollback record has something to be filed under.
+  //
+  // **The list stays closed, and it was widened by exactly one address.** What
+  // this case is about is not how many requests an unlock costs — it is that
+  // this flow addresses nothing at all: no profile read, no options leg, no
+  // challenge. A widening to a prefix, a `Set`, or a count would answer the
+  // first question and stop answering the second.
   it('reaches the account-key route and no other address', async () => {
     // Arrange
     // Act
@@ -1050,8 +1132,10 @@ describe('AccountUnlockService', () => {
 
     const read = await accountKeysRead();
 
+    await identityRead();
+
     // Assert
-    expect(seen).toEqual([ACCOUNT_KEYS_URL]);
+    expect(seen).toEqual([ACCOUNT_KEYS_URL, SESSION_OWNER_URL]);
 
     // Origins, not prefixes: `https://api.test.attacker.example` is a name
     // anybody can register and `startsWith` admits it, which is the rule
@@ -1063,7 +1147,7 @@ describe('AccountUnlockService', () => {
     }
 
     // And nothing else left at all. `match` removes what it returns, so an
-    // empty list here is every request the flow made beyond the one above — a
+    // empty list here is every request the flow made beyond the two above — a
     // profile read, an options leg, a challenge. Mapped to addresses rather
     // than counted, because a census that fails with "expected 1 to be 0" makes
     // the reader go and find out what the one was.

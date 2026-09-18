@@ -487,9 +487,20 @@ factors.
 value for exactly the account's live factor set. It holds nothing about the set named inside the
 staged manifest: those bytes are authenticated by a key this server does not hold, so a client may
 stage a manifest naming a different set than its seals and nothing on this side refuses it. **FR-123
-is held over the seals and not over the manifest.** The residual is the client's to hold — it
-compares the factor set the server serves it against the manifest it opened — and a sentence anywhere
-reading as though the requirement were now closed server-side would be the overclaim to avoid.
+is held over the seals and not over the manifest.**
+
+**One half of the residual now has a client-side holder, and it is not the half a rotation needs.**
+`AccountKeyCustodyService` opens the manifest `GET /api/me/account-keys` hands back and compares the
+set it names against the factor rows served beside it, set equality in both directions, refusing a
+response carrying no manifest at all — so *the set the server serves is the set the account's own
+manifest declares* is checked by the one party holding the content key, on every sign-in and every
+unlock. That is the **reading** half, and it is the residual of the read rather than of a run.
+**The staging half is untouched and has no holder anywhere.** No route reaches the begin, so no
+client stages anything, and nothing on either side of the wire compares a staged manifest's named set
+against the seals submitted with it. A run that staged a manifest naming one set and seals covering
+another would be refused by nothing, and the client that first begins a run owes that comparison
+before it posts. A sentence reading as though FR-123 were now closed — on this side or on the
+client's — loses exactly the half that nothing holds.
 
 **Nothing is exposed meanwhile, and that is what makes the residual affordable.** No route reaches
 `BeginKeyRotationHandler`, so no request can begin a run at all. It is also what will make it easy to
