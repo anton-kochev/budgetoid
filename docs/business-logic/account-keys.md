@@ -75,8 +75,8 @@ passkey, replacing a card of recovery codes and **revoking a passkey** each rewr
 the epoch **in the same unit of work as the factor change itself**, which is the property the read
 beneath them rests on. The
 application role holds `SELECT`, `INSERT` and a two-column `UPDATE` on that table. `key_rotation_seals`
-has a writer in the begin and **no route above it**, so it stands in every database and is empty in
-all of them. **Erasure is the one act that changes a factor
+has a writer in the begin and, since `POST /api/me/key-rotation` shipped, **a route above it** — so it
+is a table a browser can now cause to be written. **Erasure is the one act that changes a factor
 set and owes no manifest**, because it leaves nobody for a list to describe. The key pair beneath it
 is in neither category: the pair is in the schema, refused by check constraints and required by
 every path that creates a factor. See
@@ -2675,13 +2675,14 @@ gets back out.
    eleven for an ordinary account — with an empty `factors` when it holds none, and no manifest at
    epoch 0 for an account with no `factor_manifests` row, which no route can produce. Both levels
    come off **one** statement, so what a
-   caller compares describes one instant. It is the only read of `wrapped_account_keys` any route
-   in the product can reach, which is not the same as the only one written down:
-   `KeyRotationRepository.ListFactorsAsync` reads that table too — filtered on `user_id` alone, over
-   **every** factor rather than the passkey ones, and materialising the rows `AsNoTracking` because
-   `KeyRotationSeal.For` takes the loaded entity — and `BeginKeyRotationHandler` calls it on every
-   begin, judging the seals a client staged against its keys in both directions. No route reaches
-   that handler. The browser's one caller is custody, which reads both levels off this answer and
+   caller compares describes one instant. It is not the only read of `wrapped_account_keys` a route
+   can reach: `KeyRotationRepository.ListFactorsAsync` reads that table too — filtered on `user_id`
+   alone, over **every** factor rather than the passkey ones, and materialising the rows
+   `AsNoTracking` because `KeyRotationSeal.For` takes the loaded entity — and
+   `BeginKeyRotationHandler` calls it on every begin, judging the seals a client staged against its
+   keys in both directions. `POST /api/me/key-rotation` reaches it, and that read serves no client:
+   it answers the gate and nothing of it is serialised. This route is still the only one that hands
+   any of it back. The browser's one caller is custody, which reads both levels off this answer and
    spends all three members: the entries to try, the manifest to confirm the content key against and
    to name the account's factor set, and the epoch to compare against what this device has already
    watched the account reach. **That unlock reads `GET /api/me` in the same breath**, because the

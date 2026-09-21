@@ -54,13 +54,14 @@ everything.
 
 ## What is built today
 
-**The schema, the domain behaviour, the read a completion step will consult, and the handler that
-begins a run. No route, no client.** Nothing reaches `BeginKeyRotationHandler` over HTTP, so no
-rotation can be started, every `rotation_id` column in every database is `NULL`, and `key_rotations`
-and `key_rotation_seals` are empty in all of them. **`factor_manifests` is not**: registration files
-a row for every account it creates, at epoch 1, and three paths promote one afterwards — so the
-table a promotion will one day write into is the one table here that already holds a row per account
-and is the only one of the three a browser has ever caused to be written.
+**The schema, the domain behaviour, the read a completion step will consult, the handler that begins
+a run, and — new — the one route that reaches it. No client.** `POST /api/me/key-rotation` stages a
+run, so `key_rotations` and `key_rotation_seals` can now hold rows a browser caused to be written.
+Nothing else moves: every `rotation_id` column in every database is still `NULL`, because the chunk
+that stamps one is unbuilt, and nothing promotes a staged generation into
+`wrapped_account_keys`. **`factor_manifests` was never empty**: registration files a row for every
+account it creates, at epoch 1, and three paths promote one afterwards — so the table a promotion
+will one day write into is the one table here that has held a row per account from the start.
 
 Built: the `key_rotations` staging table and its `KeyRotation` entity, now carrying a staged
 **manifest** and a staged **epoch** rather than a factor and two envelopes; the `key_rotation_seals`
@@ -70,10 +71,15 @@ completeness gate — `Application.KeyRotations.IRotationCompletenessReadService
 implementation — which is registered and which nothing calls; and the begin —
 `BeginKeyRotationHandler` over `Domain.Users.IKeyRotationRepository` and
 `Application.KeyRotations.IRotationInventoryReadService` — which writes **the staging row and one
-seal per factor in one save** and which holds the factor-set gate over those seals. All of it is
-registered, and none of it is reachable over HTTP.
+seal per factor in one save** and which holds the factor-set gate over those seals; and the begin's
+route, `POST /api/me/key-rotation` in `Api.Endpoints.KeyRotationEndpoints`, which answers **200**
+with the inventory and the chunk budget, decodes the staged manifest before the command is built —
+the one manifest-carrying route where the decode is the endpoint's, because
+`BeginKeyRotationCommand.StagedManifest` is bytes where its three siblings carry text — and declares
+no authorization metadata of its own, so the fallback policy covers it and a locked session is
+refused.
 
-Not built: the routes that begin, continue and complete a rotation; the chunk that reseals rows; the
+Not built: the routes that continue and complete a rotation; the chunk that reseals rows; the
 promotion that files the manifest and copies each seal into
 `wrapped_account_keys.encapsulated_account_keys`; the client that does the actual encryption. Do not
 state any of those in the present tense until they ship.
@@ -400,20 +406,25 @@ particular way and neither table is granted a `DELETE` besides. The two go in on
 committed without its seals, or seals committed without their row, is a staged generation that
 cannot be completed.
 
-**That upsert has a window, and saying otherwise would be the overclaim to avoid here.** Find-then-add
-is two statements, so two begins racing from different requests both find no staged row, both add, and
-the loser takes `23505` on `PK_key_rotations` — measured against the test container at READ COMMITTED,
-which is what `DbContextTransactionalExecutor` opens since it names no isolation level. The retrying
-execution strategy does not cover it: that is two requests, not two attempts of one. `user_id` being the
-primary key holds the *rule* — an account cannot store two rotations — but a key raising a violation and
-an application translating it are different claims, and nothing translates this one today.
+**That upsert has a window, and the adapter closes it by converging rather than refusing.**
+Find-then-add is two statements, so two begins racing from different requests both find no staged row,
+both add, and the loser takes `23505` — measured against the test container at READ COMMITTED, which is
+what `DbContextTransactionalExecutor` opens since it names no isolation level. The retrying execution
+strategy does not cover it: that is two requests, not two attempts of one. `user_id` being the primary
+key holds the *rule* — an account cannot store two rotations — and `KeyRotationRepository.StageAsync`
+is what turns the violation into the answer the sequential case gives: detach what the rolled-back
+attempt queued, re-read, copy the values over, save once more. **One bounded retry, never a loop**: the
+only state the re-read can find that the first attempt did not is a row a competing request committed,
+and no path holds a `DELETE` that could take it away again.
 
-Nothing raises it today either, because no route reaches the handler. When one lands, the answer is to
-**converge rather than refuse**: catch the violation, re-read, copy the values over and save once more.
-A `409` would break this section's own promise at the one moment it is under load, and last-begin-wins
-is already the rule — the concurrent case should simply answer like the sequential one. The commit that
-makes a begin route reachable owes that, and `RepositoryAttributionCensusTests` is where it is recorded
-so the next person to touch the route reads it in a census rather than in a backlog.
+**Both primary keys are named in that filter, and a narrowing written against one of them translates
+half these races.** The staging row and its seals go in **one** batch, so whether the violation reports
+`PK_key_rotations` or `PK_key_rotation_seals` depends on statement order inside that batch — both were
+observed, by forcing each arm in turn. A `409` would break this section's own promise at the one moment
+it is under load, and last-begin-wins is already the rule, so the concurrent case answers exactly like
+the sequential one: **the surviving generation is one run's whole, never a blend of two.** That is what
+makes the retry re-run the whole converge rather than only the statements its own attempt had not
+reached.
 
 **The begin makes the completeness gate's scope refusal early.** The same set equality over owned
 budgets, in the same spelling, thrown as the same `RotationScopeException` — a rotation that cannot
@@ -495,16 +506,15 @@ set it names against the factor rows served beside it, set equality in both dire
 response carrying no manifest at all — so *the set the server serves is the set the account's own
 manifest declares* is checked by the one party holding the content key, on every sign-in and every
 unlock. That is the **reading** half, and it is the residual of the read rather than of a run.
-**The staging half is untouched and has no holder anywhere.** No route reaches the begin, so no
-client stages anything, and nothing on either side of the wire compares a staged manifest's named set
-against the seals submitted with it. A run that staged a manifest naming one set and seals covering
-another would be refused by nothing, and the client that first begins a run owes that comparison
-before it posts. A sentence reading as though FR-123 were now closed — on this side or on the
-client's — loses exactly the half that nothing holds.
+**The staging half is untouched and has no holder anywhere.** Nothing on either side of the wire
+compares a staged manifest's named set against the seals submitted with it. A run that stages a
+manifest naming one set and seals covering another is refused by nothing, and the client that first
+begins a run owes that comparison before it posts. A sentence reading as though FR-123 were now
+closed — on this side or on the client's — loses exactly the half that nothing holds.
 
-**Nothing is exposed meanwhile, and that is what makes the residual affordable.** No route reaches
-`BeginKeyRotationHandler`, so no request can begin a run at all. It is also what will make it easy to
-forget: the day a route is added, the paragraph above is the thing that has to be answered first.
+**That residual is now reachable, which is what changed.** `POST /api/me/key-rotation` stages a run,
+so a disagreeing manifest can be stored today rather than only in principle. No client posts one yet,
+because none is built; when one is, the comparison above is the thing it has to be written with.
 
 ### Clearing too little is silent data loss
 
@@ -538,8 +548,10 @@ stateDiagram-v2
     Staged --> Staged: interrupted — both generations still on file, resumable
 ```
 
-Only the `None` state exists in the product today; nothing can reach `Staged`, because no route reaches
-the handler that writes a staging row.
+`None` and `Staged` both exist in the product today — `POST /api/me/key-rotation` is the one edge that
+moves an account between them, and a second begin is the self-loop on `Staged`. Nothing leaves
+`Staged`: the chunk that reseals rows and the completion that promotes are unbuilt, so an account that
+begins a run stays there until another begin replaces the staged generation.
 
 ## Edge Cases & Known Gotchas
 

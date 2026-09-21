@@ -337,6 +337,7 @@ app.MapPasskeyEndpoints();
 app.MapAccountErasureEndpoints();
 app.MapCredentialEndpoints();
 app.MapAccountKeyEndpoints();
+app.MapKeyRotationEndpoints();
 app.MapRecoveryCodeEndpoints();
 app.MapDataExportEndpoints();
 app.MapSignedInUserEndpoints();

@@ -1199,11 +1199,24 @@ public sealed class KeyMaterialSecrecyTests
     /// authoring one unavoidable.
     /// </para>
     /// <para>
-    /// The WebAuthn assertion's five members recur on four request records — erasure, revocation,
-    /// sign-in, and issuing a card — and each copy is entered separately rather than pointed at a shared
-    /// argument. That is deliberate in the same way the two hash columns above are: the day one of those
-    /// routes takes a sixth member, the entry beside it is where a reader looks, and a shared argument
-    /// would have to be widened in a place that answers for four routes at once.
+    /// The WebAuthn assertion's five members recur on five request records — erasure, revocation,
+    /// sign-in, issuing a card, and beginning a rotation — and each copy is entered separately rather
+    /// than pointed at a shared argument. That is deliberate in the same way the two hash columns above
+    /// are: the day one of those routes takes a sixth member, the entry beside it is where a reader
+    /// looks, and a shared argument would have to be widened in a place that answers for five routes at
+    /// once.
+    /// </para>
+    /// <para>
+    /// <b>Those copies are word for word identical, and that is a decision rather than five authors
+    /// being lazy.</b> The members themselves are byte-identical across the five records on purpose —
+    /// a caller comparing the gates must learn nothing from a difference between them — so five
+    /// separately worded arguments for one value would be four fabricated distinctions, and a reader
+    /// diffing two entries would find a difference that says nothing about either route. Nothing in
+    /// <see cref="CompareToTextArguments" /> asks these strings to differ: an entry is judged
+    /// non-blank and at least <see cref="MinimumCarriesLength" /> long and never against its
+    /// neighbours. Where a route's copy of a recurring member really does carry a different argument —
+    /// <c>Manifest</c> on each of the four routes that reseal one — the entry says what differs and
+    /// nothing else does.
     /// </para>
     /// </remarks>
     private static IReadOnlyList<TextMemberArgument> TextMemberArguments { get; } =
@@ -1436,6 +1449,46 @@ public sealed class KeyMaterialSecrecyTests
             "base64url over an assertion signature, verified with a published public key"),
         new("CredentialEndpoints.RevocationRequest", "UserHandle",
             "base64url over the sixteen bytes of the account id the authenticator kept"),
+        new("KeyRotationEndpoints.BeginRotationRequest", "AuthenticatorData",
+            "base64url over the authenticator's signed bytes: a relying-party hash, flags and a counter"),
+        new("KeyRotationEndpoints.BeginRotationRequest", "ClientDataJson",
+            "base64url over the JSON the browser signed — type, challenge, origin — a public transcript"),
+        new("KeyRotationEndpoints.BeginRotationRequest", "CredentialId",
+            "base64url over the authenticator's opaque handle, which selects a key and is not one"),
+        new("KeyRotationEndpoints.BeginRotationRequest", "Manifest",
+            "base64url over an AEAD envelope of 29 to 4096 bytes SEALED UNDER the account's content key, "
+            + "listing every recovery factor and its PUBLIC half, staged here as the list the run this "
+            + "request opens will file when it completes. The same value and the same argument as "
+            + "PasskeyEndpoints.RegistrationRequest.Manifest — this server cannot open it, so what the "
+            + "list contains is held by the authentication tag and by the client that can verify it, and "
+            + "a private key arriving in this member would be a secret the operator could reach with "
+            + "nothing able to notice. WHAT IS DIFFERENT ON THIS ROUTE IS WHERE THE FRAMING IS JUDGED, "
+            + "and it is why this entry is not a copy of its three siblings: the command this body "
+            + "becomes carries the manifest as BYTES where the revocation's, the card's and "
+            + "registration's all carry text, so the wire string has stopped existing by the time the "
+            + "Application ring sees it and the alphabet, the framing floor and the ceiling are applied "
+            + "at the endpoint instead — the one manifest-carrying route where that decode sits outside "
+            + "a handler. It moves the refusal and not the verdict: a decode one ring out is still a "
+            + "decode of FRAMING, which is the whole of what any ring on this side can judge about a "
+            + "value sealed under a key this server has never held"),
+        new("KeyRotationEndpoints.BeginRotationRequest", "Signature",
+            "base64url over an assertion signature, verified with a published public key"),
+        new("KeyRotationEndpoints.BeginRotationRequest", "UserHandle",
+            "base64url over the sixteen bytes of the account id the authenticator kept"),
+        new("KeyRotationEndpoints.SealRequest", "EncapsulatedAccountKeys",
+            "base64url over a 158-byte encapsulation of BOTH of the NEXT generation's account keys as "
+            + "one plaintext, content key first, ENCAPSULATED TO one factor's PUBLIC half — the same "
+            + "suite and the same width as PasskeyEndpoints.RegistrationRequest.EncapsulatedAccountKeys, "
+            + "arriving one per factor the account holds rather than one per request. IT IS KEY MATERIAL "
+            + "AND THAT IS THIS ROUTE RATHER THAN A LEAK, on the argument "
+            + "AccountKeyEntry.EncapsulatedAccountKeys makes running the other way: producing one needs "
+            + "a public key and nothing else, and opening one needs the private half of that factor's "
+            + "pair, which crosses this wire only WRAPPED UNDER a key-encryption key a browser derives "
+            + "from a recovery factor — an authenticator's prf output, or a recovery code — that never "
+            + "reaches this server at all. So the operator holding every one of these, for every factor "
+            + "of every account, opens none of them. The two halves inside the plaintext are a contract "
+            + "with the client that nothing on this side can check: a reversed pair is the right width, "
+            + "the right version, stores and reads back"),
         new("Optional`1", "Value",
             "the payload of the wrapper a partial update uses; whatever the member holding it carries, "
             + "argued at that member"),

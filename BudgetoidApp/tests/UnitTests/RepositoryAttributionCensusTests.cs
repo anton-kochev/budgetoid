@@ -13,9 +13,11 @@ namespace UnitTests;
 /// bucket is called "pinned elsewhere", and a reader will take that as parity with the repositories
 /// <c>RepositoryConstraintAttributionTests</c> covers — a translation of the repository's own
 /// constraint <b>and</b> a control proving a stranger's violation is not dressed up in its message.
-/// Two entries do not have both halves today. Writing only the file name would hide that behind a
-/// bucket name, which is the same shape of claim this whole census exists to stop: a word that reads
-/// as complete and is not.
+/// Two entries do not have both halves today — the two whose <c>factor_id</c> narrowing is
+/// translated only over HTTP — and a third, <c>KeyRotationRepository</c>, holds both halves in
+/// <b>two different files</b>, which is why its <paramref name="PinnedIn" /> names two. Writing only
+/// the file name would hide either shape behind a bucket name, which is the same claim this whole
+/// census exists to stop: a word that reads as complete and is not.
 /// </para>
 /// </remarks>
 /// <param name="Repository">The type name exactly as the Infrastructure assembly declares it.</param>
@@ -133,10 +135,13 @@ public sealed record AttributionCensus(
 /// <b>What is not claimed is that the thirteen are now uniformly covered</b> — only that every entry says
 /// which halves it holds. <c>SessionRepository</c> holds neither and says so, because it translates
 /// nothing; <c>SessionTokenRepository</c> says the stronger version of that, having no <c>catch</c> at
-/// all over a member that writes nothing; and <c>KeyRotationRepository</c> says a third version again,
-/// having no <c>catch</c> over a member that <b>does</b> write — so the absence there is a translation
-/// this product owes from the commit that gives it a reachable caller, rather than one it will never
-/// owe. The five in <see cref="CoveredByAttributionTests" /> hold both by that file's
+/// all over a member that writes nothing; and <c>KeyRotationRepository</c> holds <b>both</b> halves but
+/// in two files and says so — its <c>StageAsync</c> gained the two-name narrowing that entry once
+/// recorded as owed, in the commit that mapped a begin route, so the translation is pinned over HTTP by
+/// the route's own tests while the mis-attribution control is at the repository layer, where a
+/// stranger's violation can be staged into the save at all. What that entry still refuses to claim is
+/// the retry, which nothing in the suite deterministically runs.
+/// The five in <see cref="CoveredByAttributionTests" /> hold both by that file's
 /// own definition. The next repository to land here still has to be argued about by a person, which is the
 /// property that survives every one of these lines being correct today.
 /// </para>
@@ -212,11 +217,16 @@ public sealed class RepositoryAttributionCensusTests
     /// <c>UserRepository</c>, which now holds only one narrowing because the insert that carried its
     /// other one was deleted with the provisioning path; and <c>RegistrationRepository</c>, which holds
     /// both halves on all four of its narrowings, the second half being <b>one</b> test rather than
-    /// four. Three — <c>SessionRepository</c>, <c>SessionTokenRepository</c> and
-    /// <c>KeyRotationRepository</c> — have nothing to attribute at all, which is a different statement
-    /// and each says so in its own words, the third of them naming what would change that. The
-    /// remaining two of the three that write <c>wrapped_account_keys</c> each gained a <c>factor_id</c>
-    /// narrowing whose two halves are not both in the file named beside it.
+    /// four. Two — <c>SessionRepository</c> and <c>SessionTokenRepository</c> — have nothing to
+    /// attribute at all, which is a different statement and each says so in its own words.
+    /// <c>KeyRotationRepository</c> used to be a third of those and is not any more: its
+    /// <c>StageAsync</c> now narrows a <c>23505</c> on two primary-key names, so that entry has been
+    /// rewritten twice — first from an absence into a gap, and now from a gap into <b>both halves in
+    /// two files</b>: the translation pinned over HTTP by <c>KeyRotationBeginEndpointTests</c>, the
+    /// mis-attribution control at the repository layer in <c>KeyRotationRepositoryTests</c>, and the
+    /// limits of the pin — the retry, which nothing runs deterministically — written out rather than
+    /// left to the bucket name. The remaining two of the three that write <c>wrapped_account_keys</c> each
+    /// gained a <c>factor_id</c> narrowing whose two halves are not both in the file named beside it.
     /// </para>
     /// <para>
     /// <b>The <c>UserRepository</c> entry is the one to read before trusting the shape of this
@@ -238,40 +248,88 @@ public sealed class RepositoryAttributionCensusTests
     [
         new(
             nameof(KeyRotationRepository),
-            "KeyRotationSchemaTests and KeyRotationSealSchemaTests",
-            "nothing to attribute today, and it is a THIRD form of that sentence rather than a copy of "
-            + "SessionTokenRepository's. Like that one it has NO CATCH AT ALL — no constraint-name "
-            + "filter, no entries-based narrowing, nothing for a mis-attribution control to aim at. "
-            + "UNLIKE IT, THIS REPOSITORY WRITES: StageAsync is an UPSERT over key_rotations AND a "
-            + "PER-KEY CONVERGE over key_rotation_seals in the same SaveChanges — it reads the account's "
-            + "staged row and adds one or copies onto it, then reads that account's seals and, for each "
-            + "submitted seal, adds a row where the factor had none and rewrites "
-            + "encapsulated_account_keys where it had one, deleting nothing — so 'the statement writes "
-            + "nothing' is not available as the reason. TWO UNIQUE VIOLATIONS ARE NOW REACHABLE BEHIND "
-            + "THE ONE ABSENT CATCH, and they are the same defect one table apart. The first is the rule "
-            + "KeyRotationSchemaTests holds: Database_RefusesASecondRotationForOneAccount stages a "
-            + "second rotation for one account with a different rotation id, a different staged "
-            + "manifest, a different epoch and a later instant, and asserts the refusal is 23505 naming "
-            + "PK_key_rotations, the primary key over user_id. The second is PK_key_rotation_seals, the "
-            + "composite key over (user_id, factor_id), held by "
-            + "KeyRotationSealSchemaTests.Database_RefusesASecondSealForOneFactor — and it arrives as a "
-            + "WHOLE SET of them rather than one row, because a begin stages one seal per factor and "
-            + "eleven is an ordinary account. THE PATH TO BOTH IS IN StageAsync's OWN SHAPE, and no test "
-            + "in the suite stages it: every branch reads first and writes second, so at READ COMMITTED "
-            + "two begins from different requests can both see nothing and both Add, and the loser meets "
-            + "one of those two 23505s with nothing between it and GlobalExceptionHandler — which has no "
-            + "case for a DbUpdateException, so it answers 500 with a title about an unexpected error "
-            + "rather than 'you already have a rotation running' and the resumable run behind it. WHICH "
-            + "OF THE TWO ARRIVES IS NOT A THING A CALLER CAN PREDICT, which is the argument for the "
-            + "catch being by NAME when it lands: the parent and the children go in one batch, so the "
-            + "loser's answer depends on statement order inside it, and a filter written against "
-            + "PK_key_rotations alone would translate half the races and pass the rest through as a 500. "
-            + "UNREACHABLE TODAY ONLY BECAUSE NO ROUTE REACHES BeginKeyRotationHandler — the handler is "
-            + "registered in Application.DependencyInjection and mapped nowhere, so the race has no way "
-            + "to be started twice. WHAT CHANGES THIS ENTRY IS THE COMMIT THAT MAKES A BEGIN ROUTE "
-            + "REACHABLE, not a story number and not the day somebody feels the catch is overdue: from "
-            + "that commit the narrowing is a translation this repository owes, and this entry is then "
-            + "a gap rather than an absence"),
+            "KeyRotationBeginEndpointTests and KeyRotationRepositoryTests",
+            "BOTH HALVES, IN TWO FILES, AND THE SPLIT IS THE SHAPE OF THIS ENTRY: the translation is "
+            + "pinned over HTTP by KeyRotationBeginEndpointTests, because a begin has a caller only "
+            + "there, and the mis-attribution control is at the repository layer in "
+            + "KeyRotationRepositoryTests, because a stranger's violation has to be STAGED into the save "
+            + "and cannot be provoked from outside. This entry has been rewritten twice: it once said "
+            + "there was NO CATCH AT ALL, and then that the catch existed with its mis-attribution half "
+            + "owed and absent. Both of those sentences are now false, and both have been replaced "
+            + "rather than softened. "
+            + "WHAT IS THERE: StageAsync catches a DbUpdateException whose inner PostgresException "
+            + "carries the unique-violation SQLSTATE and whose ConstraintName is EITHER "
+            + "PK_key_rotations OR PK_key_rotation_seals, and it CONVERGES rather than conflicting — "
+            + "detach the rolled-back attempt's Added rows, re-read the account's staged row and its "
+            + "seals, copy the submitted generation onto them, and save once more — ONE BOUNDED RETRY "
+            + "and never a loop, because the only state the re-read can find that the first attempt did "
+            + "not is a row the request that beat this one committed. "
+            + "NEVER A 409, and that is the port's own promise rather than a preference: begin is the "
+            + "repair path a refused completion is answered by, so a conflict raised at the one moment "
+            + "the path is under load would leave a client holding a staged row it cannot replace and a "
+            + "run it cannot finish, with no route that removes either. "
+            + "THE TRANSLATION IS PINNED FROM THE OUTSIDE, because the convergence is only observable "
+            + "where a begin has a caller — the repository-layer file beside it can stage a violation "
+            + "but cannot stage a RACE: KeyRotationBeginEndpointTests."
+            + "BeginKeyRotation_FromTwoConcurrentRequests_ConvergesOnOneStagedRotation posts two whole "
+            + "begins of one account at once and asserts that NEITHER answers 500, that exactly one "
+            + "staged rotation survives, and that its seals are ONE generation's rather than a blend of "
+            + "two — the last being the half a retry written at the wrong ring fails. "
+            + "BeginKeyRotation_Twice_ReplacesTheStagedGenerationAndItsSeals is the sequential statement "
+            + "of the same promise, over a path where no violation is raised at all. "
+            + "WHAT THAT PIN DOES NOT HOLD, said here rather than left for the next reader to discover: "
+            + "NO TEST IN THE SUITE DETERMINISTICALLY EXERCISES THE RETRY. The concurrency test cannot "
+            + "force two Task.WhenAll requests to interleave, so it is green over a repository whose "
+            + "catch was deleted outright — it can only lose toward a false pass, never toward a false "
+            + "failure, and its own remarks say so. Do not read this bucket as covering the retry. "
+            + "TWO FACTS ARE MEASURED RATHER THAN REASONED, by mutations run against a forced race that "
+            + "is not in the suite and that nothing standing reproduces. First, BOTH CONSTRAINT NAMES "
+            + "ARE GENUINELY REACHABLE: narrowing the filter to either name alone reddened the "
+            + "sequential replacement test under that race, which is the executable form of the "
+            + "parent-and-children-in-one-batch argument — which of the two reports the violation "
+            + "depends on statement order inside the batch and is not a thing a caller can predict. "
+            + "Second, THE DETACH IS LOAD BEARING: without it the re-read resolves through EF's identity "
+            + "map to the instances the failed save left Added, so the converge finds its own objects, "
+            + "takes them for the staged row, changes nothing, and re-issues the very INSERT that "
+            + "raised. "
+            + "THE MIS-ATTRIBUTION CONTROL IS KeyRotationRepositoryTests."
+            + "StageAsync_WhenATrackedRowBreaksAnotherUniqueRule_LetsTheViolationEscape, written to the "
+            + "shape PasskeyRepositoryTests, RecoveryCodeRepositoryTests and RegistrationRepositoryTests "
+            + "already hold: a tracked row breaking an unrelated unique rule in the same SaveChanges, "
+            + "asserted to ESCAPE rather than be converged away. It tracks a second users row carrying "
+            + "the seeded account's address — IX_users_email, unique TABLE-WIDE REGARDLESS OF OWNER, so "
+            + "it is keyed on a value a STRANGER holds — and hands StageAsync a begin that is beyond "
+            + "reproach: no rotation staged for the account and one factor with no seal against it, so "
+            + "neither name the filter carries is breakable by the act itself. "
+            + "THE RULE HAD TO COME FROM ANOTHER TABLE, and that is forced rather than preferred. "
+            + "key_rotations is keyed on user_id and declares no index at all — its configuration says "
+            + "in as many words that rotation_id is deliberately NOT unique — and key_rotation_seals "
+            + "holds its composite key, two check constraints and two foreign keys, with no unique index "
+            + "among them. The two names in the when clause are therefore the WHOLE of the unique rules "
+            + "those two tables have, so a control staged on a neighbouring rule of the same table — the "
+            + "shape the deleted UserRepository control had — is not merely weaker here, it is "
+            + "unreachable. "
+            + "THE VIOLATION HAS TO BE STAGED and cannot be produced from the outside, which is why all "
+            + "four of these controls live at the repository layer rather than over HTTP: the save "
+            + "covers the WHOLE change tracker rather than this method's two tables, and the begin path "
+            + "as it stands leaves nothing else pending in it — the reauthentication gate flushes the "
+            + "signature counter in a save of its own before StageAsync is entered, so that row is "
+            + "Unchanged by then. "
+            + "IT ASSERTS THE SAVE COUNT BESIDE THE EXCEPTION, AND WITHOUT THAT LINE IT WOULD BE A "
+            + "DECORATION. The three sibling controls can stop at 'something escaped' because their "
+            + "repositories answer a swallowed violation with a VALUE — false, or one of four outcomes — "
+            + "so widening their filters turns a throw into a return. This one CONVERGES instead: "
+            + "widened, the catch detaches the rolled-back attempt's Added rotation and seals, re-reads, "
+            + "re-adds and saves again, and the stranger's row is still Added through all of it because "
+            + "the detach loop is typed to this method's own two entities — so the second save raises "
+            + "the SAME violation under the SAME constraint name and every assertion about the escaping "
+            + "exception stays green. MEASURED: with the ConstraintName clause removed and only the "
+            + "SQLSTATE left, this test fails on the attempt count alone, at two. WIDENING THE `when` "
+            + "CLAUSE TO THE BARE SQLSTATE IS THE SINGLE CHANGE THIS ENTRY WAS ASKING SOMEBODY TO MAKE "
+            + "IMPOSSIBLE, AND IT IS IMPOSSIBLE NOW. "
+            + "WHAT IT STILL DOES NOT PIN IS THE RETRY, which is the limit stated above and which this "
+            + "control does not close: it pins that the filter is NARROW, never that the convergence "
+            + "behind it RUNS. Do not read this entry as covering both"),
         new(
             nameof(PasskeyRepository),
             "PasskeyRepositoryTests",

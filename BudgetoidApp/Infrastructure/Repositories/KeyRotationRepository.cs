@@ -1,7 +1,9 @@
 using Domain.Users;
 using Infrastructure.Persistence;
+using Infrastructure.Persistence.Configurations;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
+using Npgsql;
 
 namespace Infrastructure.Repositories;
 
@@ -73,6 +75,88 @@ public sealed class KeyRotationRepository(BudgetoidDbContext dbContext) : IKeyRo
         ArgumentNullException.ThrowIfNull(rotation);
         ArgumentNullException.ThrowIfNull(seals);
 
+        try
+        {
+            await ConvergeAsync(rotation, seals, cancellationToken);
+        }
+        // THE RACE THE UPSERT BELOW CANNOT WIN ON ITS OWN, AND IT CONVERGES RATHER THAN CONFLICTING.
+        // Two begins of one account from two requests read the staged row at READ COMMITTED, both find
+        // nothing, and both Add. The loser's INSERT blocks on the winner's index entry and meets 23505
+        // the moment the winner commits. Nothing stood between that and GlobalExceptionHandler, which
+        // has no case for a DbUpdateException, so it was a 500 titled about an unexpected error for a
+        // person who did nothing but press the button in two tabs.
+        //
+        // A 409 IS THE WRONG ANSWER AND IS NOT AVAILABLE HERE. This port promises replacement because
+        // begin is the repair path — a completion that refuses because the account's live factor set
+        // moved is answered by a begin carrying the corrected set — and a conflict raised at the one
+        // moment the path is under load would leave a client holding a staged row it cannot replace and
+        // a run it cannot finish, with no route that removes either. So the answer is the same answer a
+        // second begin gets when it is not racing: re-read, copy the values over, save again.
+        //
+        // BOTH PRIMARY KEYS ARE NAMED, AND A FILTER WRITTEN AGAINST ONE OF THEM TRANSLATES HALF THESE
+        // RACES AND PASSES THE REST THROUGH AS A 500. The parent and its children go in ONE batch, so
+        // which of the two constraints reports the violation depends on statement order inside that
+        // batch and is not a thing a caller — or this method — can predict.
+        //
+        // NARROWED ON THE CONSTRAINT NAMES RATHER THAN ON THE SQLSTATE ALONE, the rule every translated
+        // exception in this folder follows: this save carries two unique rules and a composite foreign
+        // key, so a bare 23505 catch would retry a violation this method does not model. In particular
+        // FK_key_rotation_seals_wrapped_account_keys raises 23503 for a factor revoked mid-request, and
+        // that must stay loud rather than be re-attempted against a set that really is wrong.
+        catch (DbUpdateException exception) when (exception.InnerException is PostgresException
+        {
+            SqlState: PostgresErrorCodes.UniqueViolation,
+            ConstraintName: KeyRotationConfiguration.PrimaryKeyName
+            or KeyRotationSealConfiguration.PrimaryKeyName,
+        })
+        {
+            // ONE BOUNDED RETRY AND NEVER A LOOP. There is exactly one state the re-read can find that
+            // the first attempt did not: a row committed by the request that beat this one. A second
+            // 23505 after that would mean the row vanished between the re-read and the save, which
+            // needs a DELETE on key_rotations that the application role does not hold — so a loop would
+            // spin on something that cannot happen while a lost race stays a 500 either way.
+            //
+            // THE ROLLED-BACK ATTEMPT'S INSERTS ARE DETACHED FIRST, AND WITHOUT THIS THE RETRY IS A
+            // SECOND COPY OF THE SAME FAILURE. EF leaves an Added entity Added after a failed save, and
+            // the re-read resolves to the tracked instance by identity rather than to the row it just
+            // materialised — so the converge below would find its own Added object, take it for the
+            // staged row, change nothing, and re-issue the very INSERT that raised. Only the Added ones
+            // go: anything this attempt loaded and marked Modified is rewritten idempotently on the
+            // second pass, and the two type arguments keep this to the tables a begin writes.
+            //
+            // The save that raised was rolled back to the savepoint EF takes before SaveChanges when a
+            // transaction is already open — ITransactionalExecutor has opened one by the time this runs
+            // — so the enclosing transaction is usable rather than aborted, and the re-read below sees
+            // the winner's committed row.
+            foreach (EntityEntry entry in dbContext.ChangeTracker
+                         .Entries<KeyRotation>()
+                         .Cast<EntityEntry>()
+                         .Concat(dbContext.ChangeTracker.Entries<KeyRotationSeal>())
+                         .Where(tracked => tracked.State == EntityState.Added)
+                         .ToList())
+            {
+                entry.State = EntityState.Detached;
+            }
+
+            await ConvergeAsync(rotation, seals, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// One pass of the upsert: the staged row added or copied onto, one seal per submitted factor added
+    /// or rewritten, and a single save covering both.
+    /// </summary>
+    /// <remarks>
+    /// Separated from <see cref="StageAsync" /> so the convergence above re-runs the whole of it rather
+    /// than a repair written a second time — a retry that re-issued only the statements its own attempt
+    /// had not reached would leave the surviving generation a blend of two runs, which is the one
+    /// outcome worse than the 500 it replaces.
+    /// </remarks>
+    private async Task ConvergeAsync(
+        KeyRotation rotation,
+        IReadOnlyList<KeyRotationSeal> seals,
+        CancellationToken cancellationToken)
+    {
         // AN UPSERT, BECAUSE THE PORT PROMISES REPLACEMENT. Begin is the repair path — a completion
         // that refuses because the live factor set moved is answered by a begin carrying the corrected
         // set — so a second begin has to go through. A blind Add passes every case in
