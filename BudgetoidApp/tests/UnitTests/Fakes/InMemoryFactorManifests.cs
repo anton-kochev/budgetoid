@@ -113,6 +113,28 @@ public sealed class InMemoryFactorManifests
     /// </summary>
     public void Discard() => _tracked.Clear();
 
+    /// <summary>
+    /// Files every materialised instance's current value as the stored row and forgets the instance,
+    /// which is what committing a unit of work and ending the request scope do between two requests.
+    /// </summary>
+    /// <remarks>
+    /// <b>Nothing a handler does calls this, and nothing ever should.</b> This type models no save —
+    /// see its remarks — so a test needing <em>two</em> requests has to say where the first one's
+    /// commit happened, and this is that sentence. It is deliberately not folded into whatever the
+    /// handler calls to save: a fake that committed on the handler's own call would be a fake that
+    /// cannot express a replayed unit of work, where the abandoned attempt's UPDATE went back with its
+    /// transaction and the stored row still holds the old generation.
+    /// </remarks>
+    public void Commit()
+    {
+        foreach ((Guid userId, FactorManifest tracked) in _tracked)
+        {
+            _rows[userId] = new Row(tracked.Manifest.ToArray(), tracked.RotationEpoch);
+        }
+
+        _tracked.Clear();
+    }
+
     /// <summary>One stored row: the bytes and the generation they belong to.</summary>
     private sealed record Row(byte[] Manifest, int RotationEpoch);
 }

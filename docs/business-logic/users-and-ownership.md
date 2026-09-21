@@ -601,9 +601,12 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
     `wrapped_account_keys`, `key_rotations` and `factor_manifests` hold no `DELETE` of any shape.
     **That is a list of absent `DELETE`s and not a list of read-only tables**, which is the reading
     to guard against at both ends of it: `key_rotations` holds `INSERT` and a column-listed `UPDATE`
-    and still no `DELETE`, because staging a rotation is an upsert and clearing the staging waits
-    for the completion step; `factor_manifests` holds `SELECT` and nothing else, because nothing
-    writes a manifest at all.
+    and still no `DELETE`, because staging a rotation is an upsert and **nothing clears the
+    staging** — a completion promotes the staged generation and leaves the row standing, since until
+    the live rows are overwritten the staged seals are the only copies of the new generation;
+    `factor_manifests` holds `INSERT` and `UPDATE (manifest, rotation_epoch)` and no `DELETE`,
+    because registration files a manifest and four paths promote one, and none of them removes a row
+    that the cascade from `users` is the only legitimate way out of.
     Two of the absences would cost something real to fill. `passkey_public_keys` is
     exempt from row-level security, so a `DELETE` there would be **unpoliced**, and one statement
     carrying the wrong id would remove somebody else's only way in with nothing to catch it. On

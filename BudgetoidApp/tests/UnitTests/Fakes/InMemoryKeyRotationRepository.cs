@@ -3,8 +3,9 @@ using Domain.Users;
 namespace UnitTests.Fakes;
 
 /// <summary>
-/// The staging side of a content-key rotation, held in memory: every factor an account holds, and the
-/// one staged generation — a row and its per-factor seals — that account has in flight.
+/// The staging side of a content-key rotation, held in memory: every factor an account holds, the one
+/// staged generation — a row and its per-factor seals — that account has in flight, and the one
+/// <c>factor_manifests</c> row a completion promotes.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -59,19 +60,72 @@ namespace UnitTests.Fakes;
 /// application could really have written, and the two envelopes it carries are at the exact widths and
 /// versions that factory refuses to bend.
 /// </para>
+/// <para>
+/// <b>THE TWO FACTOR READS ARE NOT INTERCHANGEABLE, AND THIS FAKE IS BUILT SO THAT SWAPPING THEM
+/// FAILS.</b> <see cref="ListFactorsAsync" /> is <c>AsNoTracking</c> in production, so it materialises
+/// a <b>fresh, detached</b> instance on every call here too: a caller that mutated one would be
+/// mutating an object no save will ever look at, which in production is a <c>200</c> that moved
+/// nothing. <see cref="TrackFactorsAsync" /> is the identity map — the same instance every time, for
+/// the reason <see cref="InMemoryFactorManifests.Find" /> gives about the manifest — so a completion
+/// that promotes through it is promoting what the save will flush. Modelled this way, the whole
+/// promotion is invisible through <see cref="FactorOf" /> when a handler reads the wrong member, which
+/// is exactly what a reader of the production code cannot see.
+/// </para>
+/// <para>
+/// <b>Nothing here commits, and that is the shared model rather than an omission.</b>
+/// <see cref="PromoteAsync" /> counts its call and files nothing, exactly as
+/// <see cref="InMemoryFactorManifests" /> holds no save and as
+/// <c>InMemoryPasskeyRepository.DeletePasskeyAsync</c> declines to file the manifest it is handed: the
+/// promoted instances are already visible through <see cref="FactorOf" /> and
+/// <see cref="FactorManifestOf" />, and what a save does in production is commit them.
+/// <see cref="DiscardTrackedEntities" /> is the rollback, for
+/// <see cref="InMemoryFactorManifests.Discard" />'s reason — an abandoned attempt's UPDATE went back
+/// with its transaction, so the stored row still holds <c>N</c> and the surviving attempt promotes it
+/// exactly once. <b>The cost, stated so nobody reads a green bar as covering it:</b> a handler that
+/// promoted every entity and never called <see cref="PromoteAsync" /> at all would satisfy every
+/// byte-level read below, which is why <see cref="PromoteCallCount" /> and
+/// <see cref="ObserveAtPromote" /> exist and why the cases that matter assert both.
+/// </para>
 /// </remarks>
 public sealed class InMemoryKeyRotationRepository : IKeyRotationRepository
 {
     private readonly Dictionary<Guid, KeyRotation> _staged = [];
     private readonly Dictionary<Guid, List<KeyRotationSeal>> _stagedSeals = [];
-    private readonly Dictionary<Guid, Dictionary<Guid, WrappedAccountKeys>> _passkeyFactors = [];
-    private readonly Dictionary<Guid, Dictionary<Guid, WrappedAccountKeys>> _recoveryCodeFactors = [];
+    private readonly Dictionary<Guid, List<Guid>> _passkeyFactors = [];
+    private readonly Dictionary<Guid, List<Guid>> _recoveryCodeFactors = [];
+
+    /// <summary>
+    /// Every <c>wrapped_account_keys</c> row as the database holds it, keyed on the factor because
+    /// <c>factor_id</c> is that table's primary key — so two rows claiming one factor is unreachable
+    /// here for the same reason it is unreachable there.
+    /// </summary>
+    private readonly Dictionary<Guid, FactorRow> _factorRows = [];
+
+    /// <summary>
+    /// The instances the change tracker is holding, which is what a promotion mutates and what a save
+    /// flushes. See the type's remarks for why this is separate from <see cref="_factorRows" />.
+    /// </summary>
+    private readonly Dictionary<Guid, WrappedAccountKeys> _trackedFactors = [];
+
+    /// <summary>
+    /// The account's one <c>factor_manifests</c> row, delegated rather than modelled again — see
+    /// <see cref="InMemoryFactorManifests" />, which owns the identity map and the rollback that a
+    /// second copy would be a second chance to get wrong.
+    /// </summary>
+    private readonly InMemoryFactorManifests _manifests = new();
 
     /// <summary>
     /// How many times a rotation was staged, whatever it replaced. Zero is what a refusal that
     /// happened before any write has to leave behind.
     /// </summary>
     public int StageCallCount { get; private set; }
+
+    /// <summary>
+    /// How many times a completion asked for its promotion to be saved. Zero is what every refusal has
+    /// to leave behind, and it is <b>not</b> what says a promotion happened — see the type's remarks,
+    /// where what this fake cannot see about a save is written out.
+    /// </summary>
+    public int PromoteCallCount { get; private set; }
 
     /// <summary>Every account's staged row, which is at most one each.</summary>
     public IReadOnlyCollection<KeyRotation> Staged => _staged.Values;
@@ -95,6 +149,26 @@ public sealed class InMemoryKeyRotationRepository : IKeyRotationRepository
     /// different things to a test about where a write happened.
     /// </summary>
     public bool? ObservationAtStage { get; private set; }
+
+    /// <summary>
+    /// The same device at the far end of a run: asked once, at the moment <see cref="PromoteAsync" />
+    /// is entered.
+    /// </summary>
+    /// <remarks>
+    /// The question worth asking there is which side of the transactional delegate the promotion
+    /// landed on. A promotion outside the unit of work is the one write in this product that cannot be
+    /// undone by anything — it overwrites the only copies of the generation still in force — so a
+    /// rollback that left it standing would leave the account sealed under a key no stored value
+    /// encapsulates.
+    /// </remarks>
+    public Func<bool>? ObserveAtPromote { get; set; }
+
+    /// <summary>
+    /// What <see cref="ObserveAtPromote" /> answered, or <see langword="null" /> when nothing was ever
+    /// promoted — a different failure from a promotion made on the wrong side of the delegate, so both
+    /// have to be nameable.
+    /// </summary>
+    public bool? ObservationAtPromote { get; private set; }
 
     /// <summary>
     /// The same device at the other end of the handler: asked once, at the moment
@@ -132,12 +206,19 @@ public sealed class InMemoryKeyRotationRepository : IKeyRotationRepository
     /// The kind is a seeding convenience and no longer a visibility rule — see the type's remarks. What
     /// lands is a <see cref="WrappedAccountKeys" /> row built through its own factory, because that is
     /// what <see cref="KeyRotationSeal.For" /> is handed.
+    /// <para>
+    /// <paramref name="encapsulatedFiller" /> is what a completion test needs and a begin test does
+    /// not: the promotion overwrites this row's encapsulated value, so the bytes it starts with have to
+    /// be chosen to differ from the bytes the staged seal carries, or "promoted" and "left alone" read
+    /// the same. Left unset it is derived from the factor id, which is what every existing caller
+    /// wants.
+    /// </para>
     /// </remarks>
-    public void SeedPasskeyFactor(Credential passkey, Guid factorId)
+    public void SeedPasskeyFactor(Credential passkey, Guid factorId, byte? encapsulatedFiller = null)
     {
         ArgumentNullException.ThrowIfNull(passkey);
 
-        Seed(_passkeyFactors, passkey, factorId);
+        Seed(_passkeyFactors, passkey, factorId, encapsulatedFiller);
     }
 
     /// <summary>
@@ -145,18 +226,71 @@ public sealed class InMemoryKeyRotationRepository : IKeyRotationRepository
     /// account holds — a row of <c>wrapped_account_keys</c> that really is there, and that this port
     /// <b>does</b> answer with, because a begin that skipped it would orphan the card.
     /// </summary>
-    public void SeedRecoveryCodeFactor(Credential recoveryCodes, Guid factorId)
+    /// <remarks>
+    /// <inheritdoc cref="SeedPasskeyFactor" path="/remarks/para" />
+    /// </remarks>
+    public void SeedRecoveryCodeFactor(
+        Credential recoveryCodes,
+        Guid factorId,
+        byte? encapsulatedFiller = null)
     {
         ArgumentNullException.ThrowIfNull(recoveryCodes);
 
-        Seed(_recoveryCodeFactors, recoveryCodes, factorId);
+        Seed(_recoveryCodeFactors, recoveryCodes, factorId, encapsulatedFiller);
     }
 
     /// <summary>The recovery-code factors seeded on <paramref name="userId" />, oldest first.</summary>
     public IReadOnlyList<Guid> RecoveryCodeFactorsOf(Guid userId) =>
-        _recoveryCodeFactors.TryGetValue(userId, out Dictionary<Guid, WrappedAccountKeys>? factors)
-            ? [.. factors.Keys]
-            : [];
+        _recoveryCodeFactors.TryGetValue(userId, out List<Guid>? factors) ? [.. factors] : [];
+
+    /// <summary>
+    /// Every factor <paramref name="userId" /> holds, passkeys first — the set a completion's
+    /// both-directions comparison is measured against.
+    /// </summary>
+    public IReadOnlyList<Guid> FactorsOf(Guid userId) =>
+    [
+        .. OrderedFactorIds(_passkeyFactors, userId),
+        .. OrderedFactorIds(_recoveryCodeFactors, userId),
+    ];
+
+    /// <summary>
+    /// Takes a factor row away, the way a revocation takes one away mid-run.
+    /// </summary>
+    /// <remarks>
+    /// It leaves the staged seal standing, which in production the composite
+    /// <c>ON DELETE CASCADE</c> from <c>wrapped_account_keys</c> would not — so an arrangement built on
+    /// this is modelling a cascade that did not fire, and a case using it says so. What the arrangement
+    /// is <em>for</em> is the other direction of the set comparison: without it, "a seal naming a
+    /// factor the account no longer holds" is unreachable and the comparison could be written as one
+    /// direction with nothing to notice.
+    /// </remarks>
+    public void RemoveFactor(Guid factorId)
+    {
+        if (!_factorRows.Remove(factorId, out FactorRow? row))
+        {
+            throw new InvalidOperationException("No such factor was seeded.");
+        }
+
+        _trackedFactors.Remove(factorId);
+        OrderedFactorIdsFor(_passkeyFactors, row.Credential.UserId).Remove(factorId);
+        OrderedFactorIdsFor(_recoveryCodeFactors, row.Credential.UserId).Remove(factorId);
+    }
+
+    /// <summary>
+    /// The encapsulated account keys <paramref name="factorId" /> would hold if this unit of work
+    /// committed now — the tracked instance's value when one has been materialised, and the stored
+    /// row's otherwise.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="InMemoryFactorManifests.Current" />'s rule on the other half of a promotion, and the
+    /// one read a completion test is really about: a refusal has to leave <b>every</b> one of these
+    /// byte-identical, because a status assertion alone is satisfied by a handler that promoted and
+    /// then threw.
+    /// </remarks>
+    public byte[]? FactorOf(Guid factorId) =>
+        _trackedFactors.TryGetValue(factorId, out WrappedAccountKeys? tracked)
+            ? tracked.EncapsulatedAccountKeys.ToArray()
+            : _factorRows.TryGetValue(factorId, out FactorRow? row) ? [.. row.EncapsulatedAccountKeys] : null;
 
     /// <summary>
     /// The seals <paramref name="userId" /> currently has staged, in the order the last
@@ -198,6 +332,58 @@ public sealed class InMemoryKeyRotationRepository : IKeyRotationRepository
         _stagedSeals[userId] = [.. seals];
     }
 
+    /// <summary>Files the account's one manifest row, the way registration left it.</summary>
+    public void SeedFactorManifest(Guid userId, byte[] manifest, int rotationEpoch) =>
+        _manifests.Seed(userId, manifest, rotationEpoch);
+
+    /// <summary>
+    /// The manifest the account would hold if this unit of work committed now, or
+    /// <see langword="null" /> when it holds none.
+    /// </summary>
+    public (byte[] Manifest, int RotationEpoch)? FactorManifestOf(Guid userId) =>
+        _manifests.Current(userId);
+
+    /// <summary>
+    /// Forgets every materialised factor row — and every manifest instance with them — which is what
+    /// clearing the change tracker does to them.
+    /// </summary>
+    /// <remarks>
+    /// The rollback a replay needs, and the reason a completion converges instead of meeting
+    /// <c>FactorManifest.Promote</c>'s own refusal on its second attempt.
+    /// <see cref="InMemoryFactorManifests" /> carries the argument in full.
+    /// </remarks>
+    public void DiscardTrackedEntities()
+    {
+        _trackedFactors.Clear();
+        _manifests.Discard();
+    }
+
+    /// <summary>
+    /// Files every materialised row's current value as the stored row and forgets the instance, which
+    /// is what committing a unit of work and ending the request scope do between two requests.
+    /// </summary>
+    /// <remarks>
+    /// <b>Nothing a handler does calls this, and nothing ever should.</b> This fake models no save —
+    /// see the type's remarks — so a test needing a <em>second</em> request has to say where the first
+    /// one's commit happened, and this is that sentence. Folding it into
+    /// <see cref="PromoteAsync" /> instead would make a replayed unit of work inexpressible: the
+    /// abandoned attempt's UPDATE went back with its transaction, so the stored row still holds the old
+    /// generation and the surviving attempt has to be able to promote it.
+    /// </remarks>
+    public void Commit()
+    {
+        foreach ((Guid factorId, WrappedAccountKeys tracked) in _trackedFactors)
+        {
+            _factorRows[factorId] = _factorRows[factorId] with
+            {
+                EncapsulatedAccountKeys = tracked.EncapsulatedAccountKeys.ToArray(),
+            };
+        }
+
+        _trackedFactors.Clear();
+        _manifests.Commit();
+    }
+
     /// <inheritdoc />
     public Task<IReadOnlyDictionary<Guid, WrappedAccountKeys>> ListFactorsAsync(
         Guid userId,
@@ -206,31 +392,120 @@ public sealed class InMemoryKeyRotationRepository : IKeyRotationRepository
         // Asked first, before an answer is assembled: see ObserveAtListFactors.
         ObservationAtListFactors = ObserveAtListFactors?.Invoke();
 
-        // The UNION of the two seedings, which is the whole of the port's contract. Written as an
-        // explicit Add rather than a merge that overwrites, so a test that seeded one factor id under
-        // both kinds fails loudly here — factor_id is the primary key of wrapped_account_keys, and two
-        // rows claiming one factor is a database that has lost that key rather than a case to pick a
-        // winner in.
+        // FRESH INSTANCES, BECAUSE THE PRODUCTION READ IS AsNoTracking. A caller that mutated one of
+        // these would be mutating an object no save will look at, and modelling that here is what makes
+        // a completion promoting through this member fail rather than pass. The UNION of the two
+        // seedings, which is the whole of the port's contract, and written as an explicit Add so a
+        // factor id seeded under both kinds fails loudly — factor_id is the primary key of
+        // wrapped_account_keys, and two rows claiming one factor is a database that has lost that key
+        // rather than a case to pick a winner in.
         Dictionary<Guid, WrappedAccountKeys> answer = [];
 
-        foreach (KeyValuePair<Guid, WrappedAccountKeys> factor in FactorsOf(_passkeyFactors, userId))
+        foreach (Guid factorId in FactorsOf(userId))
         {
-            answer.Add(factor.Key, factor.Value);
-        }
-
-        foreach (KeyValuePair<Guid, WrappedAccountKeys> factor in FactorsOf(_recoveryCodeFactors, userId))
-        {
-            answer.Add(factor.Key, factor.Value);
+            answer.Add(factorId, Materialise(_factorRows[factorId]));
         }
 
         return Task.FromResult<IReadOnlyDictionary<Guid, WrappedAccountKeys>>(answer);
     }
+
+    /// <inheritdoc cref="ListFactorsAsync" />
+    /// <remarks>
+    /// THE IDENTITY MAP, which is the whole difference from the member above: the same instance every
+    /// time, so a promotion is visible to the save that follows it.
+    /// <see cref="InMemoryFactorManifests.Find" /> makes the same argument about the manifest, and its
+    /// last sentence is the one that matters here — a member handing back a fresh entity per call would
+    /// leave every test of the promotion passing over a handler that promoted nothing.
+    /// </remarks>
+    public Task<IReadOnlyDictionary<Guid, WrappedAccountKeys>> TrackFactorsAsync(
+        Guid userId,
+        CancellationToken cancellationToken = default)
+    {
+        Dictionary<Guid, WrappedAccountKeys> answer = [];
+
+        foreach (Guid factorId in FactorsOf(userId))
+        {
+            if (!_trackedFactors.TryGetValue(factorId, out WrappedAccountKeys? tracked))
+            {
+                tracked = Materialise(_factorRows[factorId]);
+                _trackedFactors[factorId] = tracked;
+            }
+
+            answer.Add(factorId, tracked);
+        }
+
+        return Task.FromResult<IReadOnlyDictionary<Guid, WrappedAccountKeys>>(answer);
+    }
+
+    /// <summary>
+    /// The seals <paramref name="userId" /> has staged, keyed on the factor each was encapsulated to.
+    /// </summary>
+    /// <remarks>
+    /// Keyed rather than listed because a completion's question is a lookup — which seal does this
+    /// factor adopt — and because <c>key_rotation_seals</c> is keyed on <c>(user_id, factor_id)</c>, so
+    /// the key of this dictionary cannot collide for the same reason two rows cannot. The
+    /// <c>Add</c> is deliberate for that reason.
+    /// </remarks>
+    public Task<IReadOnlyDictionary<Guid, KeyRotationSeal>> ListStagedSealsAsync(
+        Guid userId,
+        CancellationToken cancellationToken = default)
+    {
+        Dictionary<Guid, KeyRotationSeal> answer = [];
+
+        foreach (KeyRotationSeal seal in SealsOf(userId))
+        {
+            answer.Add(seal.FactorId, seal);
+        }
+
+        return Task.FromResult<IReadOnlyDictionary<Guid, KeyRotationSeal>>(answer);
+    }
+
+    /// <summary>
+    /// The account's manifest row as the tracker holds it, or <see langword="null" /> when the account
+    /// holds none.
+    /// </summary>
+    /// <remarks>
+    /// The third verbatim copy of a member two other ports already declare, which is the shape
+    /// production keeps on purpose — see <c>IRecoveryCodeRepository.FindFactorManifestAsync</c>, where
+    /// the duplication is argued rather than apologised for.
+    /// </remarks>
+    public Task<FactorManifest?> FindFactorManifestAsync(
+        Guid userId,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(_manifests.Find(userId));
 
     /// <inheritdoc />
     public Task<KeyRotation?> FindStagedRotationAsync(
         Guid userId,
         CancellationToken cancellationToken = default) =>
         Task.FromResult(_staged.GetValueOrDefault(userId));
+
+    /// <summary>
+    /// The one save a completion makes: the promoted manifest and every promoted factor row, together.
+    /// </summary>
+    /// <remarks>
+    /// Both arguments are required and neither is filed anywhere here, which is not the omission it
+    /// looks like — it is <c>InMemoryPasskeyRepository.DeletePasskeyAsync</c>'s stance on the manifest
+    /// it is handed. Every instance named has already been mutated in place and is already visible
+    /// through <see cref="FactorOf" /> and <see cref="FactorManifestOf" />; what a save does in
+    /// production is commit it. They are still taken and still null-checked, because a handler reaching
+    /// this line without them is one that promoted nothing, and that is the failure worth naming.
+    /// </remarks>
+    public Task PromoteAsync(
+        FactorManifest factorManifest,
+        IReadOnlyList<WrappedAccountKeys> factors,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(factorManifest);
+        ArgumentNullException.ThrowIfNull(factors);
+
+        PromoteCallCount++;
+
+        // Asked first, before anything is counted as done: see ObserveAtPromote.
+        ObservationAtPromote = ObserveAtPromote?.Invoke();
+
+        return Task.CompletedTask;
+    }
 
     /// <inheritdoc />
     public Task StageAsync(
@@ -261,29 +536,48 @@ public sealed class InMemoryKeyRotationRepository : IKeyRotationRepository
     /// </summary>
     private static readonly DateTime SeedInstant = new(2026, 9, 10, 11, 12, 13, DateTimeKind.Utc);
 
-    private static Dictionary<Guid, WrappedAccountKeys> FactorsOf(
-        Dictionary<Guid, Dictionary<Guid, WrappedAccountKeys>> seeded,
+    private static IReadOnlyList<Guid> OrderedFactorIds(
+        Dictionary<Guid, List<Guid>> seeded,
         Guid userId) =>
-        seeded.TryGetValue(userId, out Dictionary<Guid, WrappedAccountKeys>? factors) ? factors : [];
+        seeded.TryGetValue(userId, out List<Guid>? factors) ? factors : [];
 
-    private static void Seed(
-        Dictionary<Guid, Dictionary<Guid, WrappedAccountKeys>> seeded,
-        Credential credential,
-        Guid factorId)
+    private static List<Guid> OrderedFactorIdsFor(Dictionary<Guid, List<Guid>> seeded, Guid userId)
     {
-        if (!seeded.TryGetValue(credential.UserId, out Dictionary<Guid, WrappedAccountKeys>? factors))
+        if (!seeded.TryGetValue(userId, out List<Guid>? factors))
         {
             factors = [];
-            seeded[credential.UserId] = factors;
+            seeded[userId] = factors;
         }
 
-        factors[factorId] = WrappedAccountKeys.For(
-            credential,
-            factorId,
-            WrappedPrivateKey(Filler(factorId)),
-            EncapsulatedAccountKeys(Filler(factorId)),
-            SeedInstant);
+        return factors;
     }
+
+    private void Seed(
+        Dictionary<Guid, List<Guid>> seeded,
+        Credential credential,
+        Guid factorId,
+        byte? encapsulatedFiller)
+    {
+        byte filler = encapsulatedFiller ?? Filler(factorId);
+
+        if (!_factorRows.TryAdd(
+                factorId,
+                new FactorRow(credential, factorId, filler, EncapsulatedAccountKeys(filler))))
+        {
+            throw new InvalidOperationException("That factor is already seeded.");
+        }
+
+        OrderedFactorIdsFor(seeded, credential.UserId).Add(factorId);
+    }
+
+    /// <summary>Builds the entity a stored row stands for, through its own factory and never by reflection.</summary>
+    private static WrappedAccountKeys Materialise(FactorRow row) =>
+        WrappedAccountKeys.For(
+            row.Credential,
+            row.FactorId,
+            WrappedPrivateKey(row.Filler),
+            row.EncapsulatedAccountKeys,
+            SeedInstant);
 
     /// <summary>
     /// A well-formed <c>wrapped_private_key</c>: the AEAD framing's version byte, then
@@ -322,7 +616,8 @@ public sealed class InMemoryKeyRotationRepository : IKeyRotationRepository
     /// </summary>
     /// <remarks>
     /// Nothing in this fake compares them — it exists so that a row read back under the wrong factor is
-    /// visible by eye rather than being two identical buffers.
+    /// visible by eye rather than being two identical buffers. A completion test wants a value it
+    /// chose instead, which is what the seeding overloads' filler parameter is for.
     /// </remarks>
     private static byte Filler(Guid factorId) => factorId.ToByteArray()[0];
 
@@ -334,4 +629,11 @@ public sealed class InMemoryKeyRotationRepository : IKeyRotationRepository
 
         return payload;
     }
+
+    /// <summary>One stored <c>wrapped_account_keys</c> row: what it was filed with, and what it holds now.</summary>
+    private sealed record FactorRow(
+        Credential Credential,
+        Guid FactorId,
+        byte Filler,
+        byte[] EncapsulatedAccountKeys);
 }

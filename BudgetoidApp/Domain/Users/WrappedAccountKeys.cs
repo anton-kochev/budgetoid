@@ -420,6 +420,95 @@ public sealed class WrappedAccountKeys
     }
 
     /// <summary>
+    /// Adopts <paramref name="seal"/>'s encapsulated account keys as this factor's, which is the one act
+    /// in the product that destroys a generation still in force.
+    /// </summary>
+    /// <param name="seal">
+    /// The staged seal this rotation encapsulated to <em>this</em> factor's public key.
+    /// </param>
+    /// <remarks>
+    /// <para>
+    /// <b>Call this only on an instance loaded through the tracker, never on one built by
+    /// <see cref="For"/>.</b> A detached row mutated here is an object no save will look at — the
+    /// request answers 200, every byte stays where it was, and the account is left holding the
+    /// superseded generation while its manifest says otherwise. It is the hazard
+    /// <see cref="FactorManifest.Promote"/> spends a paragraph on, and it lands harder here: there is no
+    /// concurrency token on this row to turn a detached promotion into an exception.
+    /// </para>
+    /// <para>
+    /// <b>It takes the loaded seal rather than a <see cref="Guid"/> and a buffer, and that is what gives
+    /// it something to refuse.</b> The seal states an owner and a factor of its own, so this member has
+    /// two independent statements of each — the row's and the seal's — and can refuse when they
+    /// disagree. It is <see cref="KeyRotationSeal.For"/>'s argument one ring further on, and it is worth
+    /// more here: that factory's mistake is a row that fails to insert, and this one's is a row
+    /// overwritten with a value only somebody else's private key can open. Twelve well-formed rows, no
+    /// exception, no SQLSTATE, and an account that opens with none of them.
+    /// </para>
+    /// <para>
+    /// <b>The two refusals are separate and each carries one key, because they are two different
+    /// mistakes.</b> A foreign <em>owner</em> with a matching factor id is another account's run reaching
+    /// into this one, which a member comparing factors alone waves straight through. A foreign
+    /// <em>factor</em> of this same account is the near miss a completion makes by pairing its seals and
+    /// its factors positionally — every identifier belongs to the right account and every row still ends
+    /// up holding somebody else's ciphertext.
+    /// </para>
+    /// <para>
+    /// <b>Neither the width nor the framing version is re-checked, and that is deliberate.</b>
+    /// <see cref="KeyRotationSeal"/> reads both bounds off this type rather than restating them, so a
+    /// value that reached a seal is already at this column's width carrying this column's version — a
+    /// second pair of checks here would be the copy that drifts, and the one that drifts is the one that
+    /// accepts what the other refuses at the one moment the old generation has already gone.
+    /// </para>
+    /// <para>
+    /// <b>Nothing else on the row moves.</b> A rotation changes which keys the account is sealed under;
+    /// it does not touch the factor's own key pair, whose private half is wrapped under a key-encryption
+    /// key this run never had — which is the whole reason a rotation needs no authenticator but the one
+    /// already in the person's hand. A promotion writing <see cref="WrappedPrivateKey"/> too would need a
+    /// value for it that nobody staged.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ArgumentNullException">No seal was supplied.</exception>
+    /// <exception cref="ValidationException">
+    /// The seal was staged by another account's rotation, or for another factor.
+    /// </exception>
+    public void Promote(KeyRotationSeal seal)
+    {
+        // Both identifiers are read off the seal, so there is nothing to compare without one. No user
+        // typed this; a caller handed over nothing — and a member that read a missing seal as "nothing
+        // to adopt" would answer success to a factor it left behind.
+        ArgumentNullException.ThrowIfNull(seal);
+
+        // Collected rather than thrown one at a time, and keyed on the column the disagreement is about,
+        // as For and KeyRotationSeal.For both key theirs.
+        Dictionary<string, string[]> errors = new();
+
+        if (seal.UserId != UserId)
+        {
+            errors[nameof(UserId)] =
+                ["A factor may only adopt a seal staged by its own account's rotation."];
+        }
+
+        // NOT an else-if, and not folded into the comparison above. The two are independent facts and a
+        // caller that got both wrong is told both; more to the point, a seal naming this factor under
+        // another owner and one naming another factor under this owner are the two directions that have
+        // to fail differently, and a single combined check could satisfy itself on either.
+        if (seal.FactorId != FactorId)
+        {
+            errors[nameof(FactorId)] = ["A factor may only adopt the seal staged for itself."];
+        }
+
+        if (errors.Count > 0)
+        {
+            throw new ValidationException(errors);
+        }
+
+        // Copied, not aliased, the rule For keeps for both of its envelopes. A ReadOnlyMemory<byte> is a
+        // view over a buffer the seal still owns, and the two rows would then share one array — after
+        // which anything that rewrote the seal's value would silently rewrite a promotion already made.
+        EncapsulatedAccountKeys = seal.EncapsulatedAccountKeys.ToArray();
+    }
+
+    /// <summary>
     /// Says what is wrong with <paramref name="envelope"/> as a wrapped private key, or
     /// <see langword="null"/> if it is well-formed.
     /// </summary>

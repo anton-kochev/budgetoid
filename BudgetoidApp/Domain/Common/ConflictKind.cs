@@ -152,4 +152,52 @@ public enum ConflictKind
     /// </para>
     /// </remarks>
     FactorSetMoved,
+
+    /// <summary>
+    /// The rotation the caller asked to complete still has rows that have not been re-sealed under its
+    /// new keys.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The remedy is an act on a different resource</b> — send the outstanding chunks — which is what
+    /// separates it from every kind about the request itself and puts it beside
+    /// <see cref="LastPasskey"/> in shape. Nothing the caller sent was wrong: the identifier is the run
+    /// the account really has staged, and the work is simply not finished.
+    /// </para>
+    /// <para>
+    /// <b>Deliberately not <see cref="FactorSetMoved"/>, and the two are refused one step apart on the
+    /// same route.</b> That one asks for a whole new ceremony because the account's factors changed under
+    /// the run. This one asks for the chunks the client already knows it owes, after which the very same
+    /// request succeeds. Folding them would send somebody with two chunks left to send back to the
+    /// beginning of a rotation that is nearly done.
+    /// </para>
+    /// </remarks>
+    RotationIncomplete,
+
+    /// <summary>
+    /// The rotation the caller asked to complete has already been promoted, and the generation it staged
+    /// is the one in force.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>It exists because the staging row outlives the run.</b> A completion deletes nothing — the
+    /// application role holds no <c>DELETE</c> on either rotation table, and a tidy-up run a moment early
+    /// would destroy the only copies of a generation rows have already been rewritten under — so a
+    /// re-sent request finds the same row carrying the same identifier it is quoting, and "is this the
+    /// staged run" answers yes for a run that finished minutes ago.
+    /// </para>
+    /// <para>
+    /// <b>The remedy is nothing at all, and that is the point of giving it a member.</b> Without one, a
+    /// re-sent completion would reach <c>FactorManifest.Promote</c> and be refused as a <c>400</c> about
+    /// the caller's arithmetic — which tells a client whose first request succeeded and whose response was
+    /// lost that its number is wrong, where the truth is that the work is done. The second promotion would
+    /// otherwise be harmless in the bytes and wrong in every word.
+    /// </para>
+    /// <para>
+    /// <b>Deliberately not <see cref="RotationIncomplete"/>'s opposite in name only.</b> That one is a
+    /// run that cannot yet be promoted; this one is a run that no longer can, because there is nothing
+    /// left to promote.
+    /// </para>
+    /// </remarks>
+    RotationAlreadyCompleted,
 }

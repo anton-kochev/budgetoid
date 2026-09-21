@@ -14,8 +14,9 @@ namespace UnitTests;
 /// <c>RepositoryConstraintAttributionTests</c> covers — a translation of the repository's own
 /// constraint <b>and</b> a control proving a stranger's violation is not dressed up in its message.
 /// Two entries do not have both halves today — the two whose <c>factor_id</c> narrowing is
-/// translated only over HTTP — and a third, <c>KeyRotationRepository</c>, holds both halves in
-/// <b>two different files</b>, which is why its <paramref name="PinnedIn" /> names two. Writing only
+/// translated only over HTTP — and a third, <c>KeyRotationRepository</c>, holds <b>two catches of two
+/// different shapes</b> whose halves are spread over <b>two different files</b>, which is why its
+/// <paramref name="PinnedIn" /> names two. Writing only
 /// the file name would hide either shape behind a bucket name, which is the same claim this whole
 /// census exists to stop: a word that reads as complete and is not.
 /// </para>
@@ -137,13 +138,15 @@ public sealed record AttributionCensus(
 /// nothing; <c>SessionTokenRepository</c> says the stronger version of that, having no <c>catch</c> at
 /// all over a member that writes nothing; <c>NarrativeResealRepository</c> says a third version, having
 /// no <c>catch</c> at all over a member that <em>does</em> write, which is the one of the three that
-/// will stop being true the day somebody adds a filter to it; and <c>KeyRotationRepository</c> holds
-/// <b>both</b> halves but
-/// in two files and says so — its <c>StageAsync</c> gained the two-name narrowing that entry once
-/// recorded as owed, in the commit that mapped a begin route, so the translation is pinned over HTTP by
-/// the route's own tests while the mis-attribution control is at the repository layer, where a
-/// stranger's violation can be staged into the save at all. What that entry still refuses to claim is
-/// the retry, which nothing in the suite deterministically runs.
+/// will stop being true the day somebody adds a filter to it; and <c>KeyRotationRepository</c> now
+/// carries <b>two catches of two different shapes</b> and says which halves each one has. Its
+/// <c>StageAsync</c> gained the two-name narrowing that entry once recorded as owed, in the commit that
+/// mapped a begin route, so the translation is pinned over HTTP by the route's own tests while the
+/// mis-attribution control is at the repository layer, where a stranger's violation can be staged into
+/// the save at all — and what that half still refuses to claim is the retry, which nothing in the suite
+/// deterministically runs. Its <c>PromoteAsync</c> narrows on EF's <em>entries</em> rather than on
+/// anything PostgreSQL says, because a concurrency failure carries no SQLSTATE and no constraint name,
+/// and both directions of that one are pinned in the repository file with no race in either.
 /// The five in <see cref="CoveredByAttributionTests" /> hold both by that file's
 /// own definition. The next repository to land here still has to be argued about by a person, which is the
 /// property that survives every one of these lines being correct today.
@@ -225,13 +228,17 @@ public sealed class RepositoryAttributionCensusTests
     /// statement and each says so in its own words: a <c>catch</c> narrowed by no constraint name, no
     /// <c>catch</c> over a member that writes nothing, and no <c>catch</c> over a member that writes.
     /// <c>KeyRotationRepository</c> used to be a third of those and is not any more: its
-    /// <c>StageAsync</c> now narrows a <c>23505</c> on two primary-key names, so that entry has been
-    /// rewritten twice — first from an absence into a gap, and now from a gap into <b>both halves in
-    /// two files</b>: the translation pinned over HTTP by <c>KeyRotationBeginEndpointTests</c>, the
-    /// mis-attribution control at the repository layer in <c>KeyRotationRepositoryTests</c>, and the
-    /// limits of the pin — the retry, which nothing runs deterministically — written out rather than
-    /// left to the bucket name. The remaining two of the three that write <c>wrapped_account_keys</c> each
-    /// gained a <c>factor_id</c> narrowing whose two halves are not both in the file named beside it.
+    /// <c>StageAsync</c> now narrows a <c>23505</c> on two primary-key names and its <c>PromoteAsync</c>
+    /// narrows a concurrency failure on EF's entries, so that entry has been rewritten three times —
+    /// from an absence into a gap, from a gap into <b>both halves in two files</b>, and now into
+    /// <b>two catches</b> whose narrowings are not the same kind of thing: the begin translation pinned
+    /// over HTTP by <c>KeyRotationBeginEndpointTests</c>, its mis-attribution control at the repository
+    /// layer in <c>KeyRotationRepositoryTests</c>, the promotion's <em>both</em> directions in that same
+    /// file and needing no race, and the limits of each — the begin's retry, which nothing runs
+    /// deterministically, and the promotion's state clause, which nothing in the product can produce —
+    /// written out rather than left to the bucket name. The remaining two of the three that write
+    /// <c>wrapped_account_keys</c> each gained a <c>factor_id</c> narrowing whose two halves are not
+    /// both in the file named beside it.
     /// </para>
     /// <para>
     /// <b>The <c>UserRepository</c> entry is the one to read before trusting the shape of this
@@ -254,16 +261,22 @@ public sealed class RepositoryAttributionCensusTests
         new(
             nameof(KeyRotationRepository),
             "KeyRotationBeginEndpointTests and KeyRotationRepositoryTests",
-            "BOTH HALVES, IN TWO FILES, AND THE SPLIT IS THE SHAPE OF THIS ENTRY: the translation is "
-            + "pinned over HTTP by KeyRotationBeginEndpointTests, because a begin has a caller only "
-            + "there, and the mis-attribution control is at the repository layer in "
-            + "KeyRotationRepositoryTests, because a stranger's violation has to be STAGED into the save "
-            + "and cannot be provoked from outside. This entry has been rewritten twice: it once said "
-            + "there was NO CATCH AT ALL, and then that the catch existed with its mis-attribution half "
-            + "owed and absent. Both of those sentences are now false, and both have been replaced "
-            + "rather than softened. "
-            + "WHAT IS THERE: StageAsync catches a DbUpdateException whose inner PostgresException "
-            + "carries the unique-violation SQLSTATE and whose ConstraintName is EITHER "
+            "TWO CATCHES OF TWO DIFFERENT SHAPES, AND THE CENSUS CANNOT SEE THE DIFFERENCE — WHICH IS "
+            + "WHY THIS ENTRY NAMES BOTH. StageAsync narrows a DbUpdateException on what PostgreSQL "
+            + "says: a SQLSTATE and a constraint name. PromoteAsync narrows a "
+            + "DbUpdateConcurrencyException, which says NEITHER of those — there is no violation, only a "
+            + "statement that matched fewer rows than EF expected — so its only available narrowing is "
+            + "the ENTRIES EF could not account for. A reader who takes 'narrowed on ConstraintName' as "
+            + "this class's habit and writes the next filter that way will be writing a clause that "
+            + "cannot match, because the property is null on every exception that reaches it. BOTH "
+            + "HALVES EXIST FOR BOTH CATCHES, and they are pinned in different places and with "
+            + "different strength, so read the four statements below rather than the bucket name. This "
+            + "entry has been rewritten three times: it once said there was NO CATCH AT ALL, then that "
+            + "the catch existed with its mis-attribution half owed and absent, and then that StageAsync "
+            + "was the whole of the file. All three are now false and each has been replaced rather "
+            + "than softened. "
+            + "WHAT IS THERE, FIRST CATCH: StageAsync catches a DbUpdateException whose inner "
+            + "PostgresException carries the unique-violation SQLSTATE and whose ConstraintName is EITHER "
             + "PK_key_rotations OR PK_key_rotation_seals, and it CONVERGES rather than conflicting — "
             + "detach the rolled-back attempt's Added rows, re-read the account's staged row and its "
             + "seals, copy the submitted generation onto them, and save once more — ONE BOUNDED RETRY "
@@ -334,7 +347,44 @@ public sealed class RepositoryAttributionCensusTests
             + "IMPOSSIBLE, AND IT IS IMPOSSIBLE NOW. "
             + "WHAT IT STILL DOES NOT PIN IS THE RETRY, which is the limit stated above and which this "
             + "control does not close: it pins that the filter is NARROW, never that the convergence "
-            + "behind it RUNS. Do not read this entry as covering both"),
+            + "behind it RUNS. Do not read this entry as covering both. "
+            + "WHAT IS THERE, SECOND CATCH: PromoteAsync catches a DbUpdateConcurrencyException when "
+            + "IsManifestPromotionLost holds — every entry EF could not account for is a FactorManifest "
+            + "AND is Modified, with the entry count tested first so an exception attributable to no "
+            + "entry cannot satisfy the All vacuously — and TRANSLATES it to "
+            + "ConflictException(ConflictKind.FactorSetMoved), a 409 rather than the 500 an untranslated "
+            + "concurrency failure would be. The rule is EF optimistic concurrency over "
+            + "factor_manifests.rotation_epoch: the completion's one save promotes the manifest and every "
+            + "factor together, and the manifest's UPDATE carries WHERE rotation_epoch = @original, so a "
+            + "registration or a recovery-code issue that committed between this request's read and its "
+            + "write matches nothing. THE FACTOR ROWS ARE NOT IN THE FILTER AND CANNOT BE — "
+            + "wrapped_account_keys carries no concurrency token of any kind, so no conflict is ever "
+            + "attributable to one of them and a filter written to tolerate them would be tolerating a "
+            + "state this provider cannot produce. "
+            + "THIS CATCH IS THE ONE HALF OF THIS CLASS WITH BOTH DIRECTIONS IN ONE FILE AND NEITHER OF "
+            + "THEM DEPENDENT ON A RACE, which is the strongest statement anything in this entry makes. "
+            + "KeyRotationRepositoryTests.PromoteAsync_WhenTheStoredGenerationMovedFirst_"
+            + "RaisesFactorSetMoved commits the overtaking promotion on a context of its own, IN ORDER, "
+            + "between the read and the write — optimistic concurrency over one stored integer needs no "
+            + "interleaving to stage — and asserts the member a client branches on, that the surviving "
+            + "manifest is the racer's BYTES rather than its epoch (both promotions write the same "
+            + "number, so the epoch tells the two apart not at all), and that the factor never adopted "
+            + "its seal, which is what the sentence 'nothing here was written' owes somebody whose "
+            + "account keys these are. "
+            + "THE MIS-ATTRIBUTION CONTROL IS KeyRotationRepositoryTests.PromoteAsync_"
+            + "WhenAStrangersRowLosesItsOwnRowCount_LetsTheFailureEscape: a bare users row the act's "
+            + "context holds as Modified, deleted underneath it, so its UPDATE matches nothing and EF "
+            + "attributes the shortfall to an entry that is not a manifest. It asserts the escape AND "
+            + "reads the entries off the escaping exception, because 'something other than a "
+            + "ConflictException escaped' is satisfied by a catch that was deleted outright — naming "
+            + "what EF attributed the failure to is what says the predicate LOOKED and declined, and it "
+            + "is the line that would fail if somebody relaxed All to Any, which reads as a tightening "
+            + "and is the exact opposite. "
+            + "WHAT THE PROMOTION HALF DOES NOT PIN: the STATE clause. A manifest conflicting in any "
+            + "state but Modified would have to be Deleted, and no route, repository or grant in the "
+            + "product removes one — the application role holds no DELETE on factor_manifests at all — so "
+            + "that half is unreachable from anything this path can produce and is carried on the "
+            + "argument in the predicate's own remarks rather than by a test"),
         new(
             nameof(NarrativeResealRepository),
             "ResealChunkTests",

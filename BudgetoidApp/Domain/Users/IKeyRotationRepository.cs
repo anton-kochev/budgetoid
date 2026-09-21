@@ -83,10 +83,139 @@ public interface IKeyRotationRepository
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// The same set <see cref="ListFactorsAsync" /> answers, <b>tracked</b> — the instances a promotion
+    /// mutates and a save flushes.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>THE TWO READS ARE NOT INTERCHANGEABLE AND THE NAMES ARE WHAT SAY SO.</b>
+    /// <see cref="ListFactorsAsync" /> is <c>AsNoTracking</c>, which is what makes it safe to materialise
+    /// an entity on a table this role holds no <c>DELETE</c> on; this one is the identity map, and it
+    /// exists because <see cref="WrappedAccountKeys.Promote" /> has to be called on the instance the save
+    /// will look at. A completion that promoted through the untracked read would mutate objects nothing
+    /// flushes, emit not one <c>UPDATE</c>, and answer <c>200</c> having moved nothing — no exception, no
+    /// SQLSTATE, and an account whose manifest names a generation none of its factors holds. Two members
+    /// with one name and a <see langword="bool" /> would leave a reader picking between them by coin
+    /// flip, which is why they are two.
+    /// </para>
+    /// <para>
+    /// <b>What a caller owes in exchange</b> is the care every tracked read on this aggregate owes: these
+    /// rows may be mutated and saved, and they may never be removed. The application role holds no
+    /// <c>DELETE</c> on <c>wrapped_account_keys</c> at all, so a tracked row EF later decides to cascade
+    /// into dies with <c>42501</c> — the hazard <c>GenerateRecoveryCodesHandler</c> carries at length.
+    /// </para>
+    /// <para>
+    /// <b>Every other sentence <see cref="ListFactorsAsync" /> writes applies here unchanged</b> — every
+    /// factor and not only the passkeys, keyed on the factor because <c>factor_id</c> is the primary key,
+    /// the owner predicate written rather than left to <c>user_isolation</c>, and an <em>empty</em> answer
+    /// read as a query that lost its scoping rather than as an account holding no factor.
+    /// </para>
+    /// </remarks>
+    Task<IReadOnlyDictionary<Guid, WrappedAccountKeys>> TrackFactorsAsync(
+        Guid userId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The seals <paramref name="userId" /> currently has staged, keyed on the factor each was
+    /// encapsulated to.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Keyed rather than listed, because the caller's question is a lookup</b> — which seal does
+    /// <em>this</em> factor adopt. A list would make a completion search for each factor's seal, and the
+    /// shortest spelling of that search is no search at all: walk the two sequences side by side and zip
+    /// them. That gives every row a well-formed value of the right width and the right version that only
+    /// some other factor's private key can open, and neither set carries an <c>ORDER BY</c> for the zip
+    /// to be right about. The key cannot collide for the reason two rows cannot:
+    /// <c>key_rotation_seals</c> is keyed on <c>(user_id, factor_id)</c> and an account has at most one
+    /// run.
+    /// </para>
+    /// <para>
+    /// <b>It answers the account's staged seals and never a particular run's</b>, because there is only
+    /// ever one: the seals hang off a parent keyed on the account. A caller that needs to know
+    /// <em>which</em> run staged them asks <see cref="FindStagedRotationAsync" />, which is the member
+    /// carrying the identifier.
+    /// </para>
+    /// <para>
+    /// <b>An empty answer is the dangerous one here too.</b> Two empty sets compare equal, so a read that
+    /// lost its owner predicate agrees with an account holding no factor — and <c>user_isolation</c> makes
+    /// a wrong query answer empty rather than wrong. The predicate is written.
+    /// </para>
+    /// </remarks>
+    Task<IReadOnlyDictionary<Guid, KeyRotationSeal>> ListStagedSealsAsync(
+        Guid userId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The account's one <c>factor_manifests</c> row, <b>tracked</b>, or <see langword="null" /> when it
+    /// holds none.
+    /// </summary>
+    /// <remarks>
+    /// <b>The third verbatim copy of a member two other ports already declare, and the duplication is
+    /// argued rather than apologised for</b> — see <see cref="IRecoveryCodeRepository" />, where the same
+    /// member is written out beside <see cref="IPasskeyRepository" />'s: each repository owns the
+    /// statements its own catches read, and a shared one would be a fourth place for a caller to reach a
+    /// row through a port that knows nothing about the save it is about to ride on. Tracked, and
+    /// <c>AsNoTracking</c> may never be added: <see cref="FactorManifest.Promote" /> compares against the
+    /// stored generation and EF builds <c>WHERE rotation_epoch = @original</c> from the value snapshotted
+    /// at load, so a detached instance guards nothing and writes nothing.
+    /// </remarks>
+    Task<FactorManifest?> FindFactorManifestAsync(
+        Guid userId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Saves the promoted <paramref name="factorManifest" /> and every promoted factor in
+    /// <paramref name="factors" /> as one unit.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>THIS SIGNATURE IS THE ONLY PLACE IN THE PRODUCT THAT SAYS THESE ROWS AND THIS MANIFEST MOVE
+    /// TOGETHER.</b> Nothing else states it — not a constraint, not a policy, not a check anywhere below.
+    /// A manifest promoted without its factors is an account whose one authenticated statement of its
+    /// factor set describes a generation no factor holds; factors promoted without their manifest is the
+    /// mirror, and every client that reads the manifest to decide what to encapsulate to is then working
+    /// from a set that no longer matches what it can open. Both are unreachable by anything the person
+    /// can do next, which is why the two arguments are one call and not two.
+    /// </para>
+    /// <para>
+    /// <b>Both arguments are taken even though an implementation does not have to file either.</b> Every
+    /// instance named here was loaded through this port and mutated in place, so a tracker already knows
+    /// about them and the save is the whole of the work —
+    /// <c>IPasskeyRepository.DeletePasskeyAsync</c> takes its manifest on exactly that footing. What the
+    /// parameters buy is that a caller reaching this line without them is a caller that promoted nothing,
+    /// and that is the failure worth refusing at the signature.
+    /// </para>
+    /// <para>
+    /// <b>It is where a lost promotion becomes a conflict.</b> The concurrency token on
+    /// <c>factor_manifests.rotation_epoch</c> fires when another change to the account's factor set landed
+    /// between this call's read and its write, and an implementation answers that with
+    /// <c>ConflictKind.FactorSetMoved</c> — the same remedy the two paths that <em>move</em> a factor set
+    /// already raise, because the caller's next act is identical: read the account's keys back and run the
+    /// ceremony again. It is deliberately not the <c>400</c>
+    /// <see cref="FactorManifest.Promote" /> raises over the same rule: that caller's epoch was never one
+    /// greater than the stored generation, and this caller's was, at the moment it was read.
+    /// </para>
+    /// <para>
+    /// <b>It deletes nothing, and the staging row is deliberately left standing.</b> The role holds no
+    /// <c>DELETE</c> on either rotation table, and the reason is this step: until the live rows are
+    /// overwritten the staged seals are the only copies of the new generation, so a tidy-up that ran a
+    /// moment early would destroy a generation the account has already been rewritten under. What
+    /// therefore has to tell a finished run from a live one is the epoch, and that is the caller's check
+    /// rather than this member's.
+    /// </para>
+    /// </remarks>
+    Task PromoteAsync(
+        FactorManifest factorManifest,
+        IReadOnlyList<WrappedAccountKeys> factors,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// The rotation <paramref name="userId" /> currently has staged, or <see langword="null" /> when it
     /// has none.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// <b>It is not the thing a begin consults before staging, and must not become it.</b>
     /// <c>key_rotations.user_id</c> is the primary key precisely so that "at most one rotation in
     /// flight per account" is held declaratively; a handler that read this and then decided whether to
@@ -95,6 +224,14 @@ public interface IKeyRotationRepository
     /// this member is for is the steps <em>after</em> a begin — a chunk saying which run it is
     /// continuing, and a completion saying which staged generation it is promoting — each of which has
     /// a rotation identifier to check the answer against.
+    /// </para>
+    /// <para>
+    /// <b>A row here no longer means a run is in flight, and a completion is what changed that.</b>
+    /// <see cref="PromoteAsync" /> deletes nothing, so a finished run leaves its row standing carrying
+    /// the identifier the client is still quoting. What tells the two apart is the epoch: a live run's
+    /// <see cref="KeyRotation.StagedRotationEpoch" /> is above the generation the account's manifest
+    /// holds, and a completed one's is equal to it.
+    /// </para>
     /// </remarks>
     Task<KeyRotation?> FindStagedRotationAsync(
         Guid userId,

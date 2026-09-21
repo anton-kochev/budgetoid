@@ -1,3 +1,4 @@
+using Domain.Common;
 using Domain.Users;
 using Infrastructure.Persistence;
 using Infrastructure.Persistence.Configurations;
@@ -9,6 +10,22 @@ namespace Infrastructure.Repositories;
 
 public sealed class KeyRotationRepository(BudgetoidDbContext dbContext) : IKeyRotationRepository
 {
+    // ONE FACT ABOUT ONE ROW, NOW REACHED FROM FOUR SAVES: registration of a passkey and revocation of
+    // one in PasskeyRepository, RecoveryCodeRepository.AddSetAsync, and the completion below. Every path
+    // that moves an account's factor generation can lose this race. The sentence is duplicated rather
+    // than shared for the reason this folder gives about its predicates — each repository owns what its
+    // own catches say — so changing one means changing all of them.
+    //
+    // IT DOES NOT BLAME THE CALLER, AND THAT IS THE WHOLE CARE THIS SENTENCE NEEDS. Their epoch was the
+    // stored generation plus one when the begin staged it; a concurrent registration or issue committed
+    // in between and took that generation. A sentence implying a malformed request would send somebody
+    // whose arithmetic was right off to correct it — which is the 400 FactorManifest.Promote raises for
+    // the caller whose arithmetic was wrong, and the two are deliberately different answers.
+    private const string FactorSetMovedMessage =
+        "Another change to this account's recovery factors landed first, so its manifest is now at a "
+        + "later generation and nothing here was written. Read the account's keys back, seal a manifest "
+        + "over the generation it reports, and run the ceremony again.";
+
     /// <inheritdoc />
     public async Task<IReadOnlyDictionary<Guid, WrappedAccountKeys>> ListFactorsAsync(
         Guid userId,
@@ -54,6 +71,158 @@ public sealed class KeyRotationRepository(BudgetoidDbContext dbContext) : IKeyRo
         // has lost that key, not a case to pick a winner in.
         return factors.ToDictionary(factor => factor.FactorId);
     }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyDictionary<Guid, WrappedAccountKeys>> TrackFactorsAsync(
+        Guid userId,
+        CancellationToken cancellationToken = default)
+    {
+        // THE ABSENCE OF AsNoTracking IS THE WHOLE DIFFERENCE FROM THE MEMBER ABOVE, AND IT IS THE POINT
+        // OF THIS ONE. WrappedAccountKeys.Promote mutates a row, and a mutation on a detached entity is
+        // an object no SaveChanges will look at: no UPDATE is emitted, the request answers 200, and the
+        // account keeps the superseded generation while its manifest says it moved. Nothing anywhere
+        // reports that. Two members rather than a bool parameter, so that the choice is made by a name a
+        // reader can look up rather than by an argument at a call site.
+        //
+        // WHAT THE NEVER-MATERIALISE RULE ASKS IN EXCHANGE IS SATISFIED RATHER THAN EXEMPTED. The hazard
+        // that rule names is a tracked row EF later decides to CASCADE INTO: the application role holds
+        // no DELETE on wrapped_account_keys at all, so such a statement dies with 42501. Nothing on this
+        // path can produce one — the only entities in this save are these rows, marked Modified by the
+        // promotion, and the account's factor_manifests row. Rows leave this table only by the cascade
+        // from credentials or from users, neither of which is reachable from a completion.
+        //
+        // The owner predicate is written rather than left to user_isolation, the rule this file keeps
+        // everywhere: a query that lost its scoping answers EMPTY rather than wrong, and empty here
+        // compares equal to an empty seal set — after which a completion promotes nothing and reports
+        // success.
+        List<WrappedAccountKeys> factors = await dbContext.WrappedAccountKeys
+            .Where(keys => keys.UserId == userId)
+            .ToListAsync(cancellationToken);
+
+        // ToDictionary rather than a lookup, for the listing's reason: factor_id is the primary key of
+        // wrapped_account_keys, so the read cannot answer one factor twice, and if it ever did this
+        // throws rather than silently picking a winner.
+        return factors.ToDictionary(factor => factor.FactorId);
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyDictionary<Guid, KeyRotationSeal>> ListStagedSealsAsync(
+        Guid userId,
+        CancellationToken cancellationToken = default)
+    {
+        // AsNoTracking, UNLIKE THE SEAL READ INSIDE ConvergeAsync, and the difference is what each caller
+        // does with the rows. That one loads them to WRITE them, so tracking is what an UPDATE is issued
+        // from. A completion only copies bytes out of these into the factor rows, so a tracked seal would
+        // be an entity in a save that has no statement to make about it — and this table is granted no
+        // DELETE either, so an entity riding along in a save it has no business in is the shape that
+        // meets 42501 the day something starts cascading.
+        //
+        // The owner predicate is written for the same reason as everywhere else in this file: an empty
+        // answer here compares equal to an account with no factors, and user_isolation makes a query
+        // that lost its scoping empty rather than wrong.
+        List<KeyRotationSeal> seals = await dbContext.KeyRotationSeals
+            .AsNoTracking()
+            .Where(seal => seal.UserId == userId)
+            .ToListAsync(cancellationToken);
+
+        // Keyed on the factor because the caller's question is a lookup, and the key cannot collide for
+        // the reason two rows cannot: key_rotation_seals is keyed on (user_id, factor_id). ToDictionary
+        // throws rather than overwriting if it ever did, which is the right direction.
+        return seals.ToDictionary(seal => seal.FactorId);
+    }
+
+    /// <inheritdoc />
+    public Task<FactorManifest?> FindFactorManifestAsync(
+        Guid userId,
+        CancellationToken cancellationToken = default) =>
+        // PasskeyRepository.FindFactorManifestAsync and RecoveryCodeRepository.FindFactorManifestAsync
+        // verbatim, and the sameness is the point: one row of one table, read to be promoted, now reached
+        // from the third path that moves a generation. Tracked — no AsNoTracking may be added — because
+        // FactorManifest.Promote reads the stored generation and EF builds
+        // WHERE rotation_epoch = @original from the value snapshotted at load.
+        //
+        // SingleOrDefault because user_id is the primary key. The predicate names the row rather than
+        // scoping the statement: factor_manifests carries the user_isolation policy, so another account's
+        // manifest is not reachable from this connection.
+        dbContext.FactorManifests
+            .SingleOrDefaultAsync(manifest => manifest.UserId == userId, cancellationToken);
+
+    /// <inheritdoc />
+    public async Task PromoteAsync(
+        FactorManifest factorManifest,
+        IReadOnlyList<WrappedAccountKeys> factors,
+        CancellationToken cancellationToken = default)
+    {
+        // Neither argument is read, and both are still required. Every instance named has already been
+        // mutated in place and the tracker knows about it, so the save below is the whole of the work —
+        // PasskeyRepository.DeletePasskeyAsync takes its manifest on exactly that footing. What the
+        // parameters buy is that a caller reaching this line without them promoted nothing, and that is
+        // the failure worth refusing at the signature rather than discovering as a 200 that moved no row.
+        ArgumentNullException.ThrowIfNull(factorManifest);
+        ArgumentNullException.ThrowIfNull(factors);
+
+        try
+        {
+            // ONE SAVE, so the promoted manifest and every promoted factor land together or not at all.
+            // A manifest committed without its factors is an account whose one authenticated statement
+            // of its factor set describes a generation no factor holds; the mirror is worse, because the
+            // rows it overwrote were the only copies of the generation still in force. The transaction
+            // the caller opened is what holds this write together with the rest of its unit of work;
+            // this save is what makes the write happen inside it.
+            //
+            // NOTHING IS DELETED, and the staging row and its seals are deliberately left standing. The
+            // role holds no DELETE on either rotation table, so a tidy-up here would answer 42501 rather
+            // than tidying — and it would be wrong even if it were granted, because until this save
+            // commits the staged seals are the only copies of the new generation. What tells a finished
+            // run from a live one afterwards is the epoch, which is the caller's check.
+            await dbContext.SaveChangesAsync(cancellationToken);
+        }
+        // THE RACE THIS SAVE CAN LOSE, AND THE ONLY ONE IT CAN: two changes to the account's factor
+        // generation started from the same manifest. A passkey registered or a card issued between this
+        // request's read and its write moved the row to N + 1, so the promotion's
+        // WHERE rotation_epoch = N matches nothing and EF raises. Left alone it is a 500 telling a caller
+        // who did everything right that the server broke.
+        //
+        // NARROWED BY THE ENTRIES, the shape PasskeyRepository, RecoveryCodeRepository and
+        // UserRepository all use for their own: a concurrency conflict carries no SQLSTATE and no
+        // constraint name, so "every conflicting row is the manifest this call promoted" is this catch's
+        // equivalent of a constraint-name filter. SaveChangesAsync flushes everything the scoped context
+        // is tracking, so a conflict over some other entity riding along must propagate — a 500 naming
+        // the real failure beats a confident, specific, false "the factor set moved".
+        //
+        // THE FACTOR ROWS ARE NOT IN THE FILTER AND CANNOT BE. wrapped_account_keys carries no
+        // concurrency token of any kind, so a conflict can never be attributed to one of them; a filter
+        // written to tolerate them would be tolerating a state this provider cannot produce.
+        //
+        // No detach on the way out: this throws, the unit of work unwinds, and nothing replays a
+        // ConflictException.
+        catch (DbUpdateConcurrencyException exception) when (IsManifestPromotionLost(exception))
+        {
+            // Deliberately not the 400 FactorManifest.Promote raises over the same rule — that caller's
+            // epoch was never one greater than stored, and this caller's was at the moment it was read.
+            // And deliberately the SAME member the two paths that move a factor set already raise, for
+            // the reason ConflictKind states: a member names a remedy, and the remedy here is identical —
+            // read the account's keys back, seal a manifest over the generation it now reports, and run
+            // the ceremony again.
+            throw new ConflictException(FactorSetMovedMessage, ConflictKind.FactorSetMoved);
+        }
+    }
+
+    /// <summary>
+    /// True when the conflict is only about the <see cref="FactorManifest"/> this call promoted. The
+    /// count test is not redundant: an exception EF could not attribute to any entry would otherwise
+    /// satisfy the predicate vacuously.
+    /// </summary>
+    /// <remarks>
+    /// Spelled out here rather than shared with <c>PasskeyRepository</c>'s copy, the rule this folder
+    /// keeps: each repository owns the predicates its own catches read. The state is half of the filter —
+    /// the manifest is the one entity in this save that could be anything but <c>Modified</c>, and a
+    /// conflict attributed to a row in another state is not the lost promotion this models.
+    /// </remarks>
+    private static bool IsManifestPromotionLost(DbUpdateConcurrencyException exception) =>
+        exception.Entries.Count > 0
+        && exception.Entries.All(entry =>
+            entry.Entity is FactorManifest && entry.State == EntityState.Modified);
 
     /// <inheritdoc />
     public Task<KeyRotation?> FindStagedRotationAsync(

@@ -54,14 +54,15 @@ everything.
 
 ## What is built today
 
-**The schema, the domain behaviour, the read a completion step will consult, the handler that begins
-a run, the handler that re-seals a chunk of rows, and — new — the route that carries one. No
-client.** `POST /api/me/key-rotation` stages a run and `POST /api/me/key-rotation/chunks` re-seals a
-batch of rows, so `key_rotations`, `key_rotation_seals` and the six `rotation_id` stamp columns can
-all now hold values a browser caused to be written. Nothing promotes a staged generation into
-`wrapped_account_keys`. **`factor_manifests` was never empty**: registration files a row for every
-account it creates, at epoch 1, and three paths promote one afterwards — so the table a promotion
-will one day write into is the one table here that has held a row per account from the start.
+**The schema, the domain behaviour, the completeness gate, the handler that begins a run, the handler
+that re-seals a chunk of rows, the routes that carry both, and — new — the handler that completes a
+run. No route to it, and no client.** `POST /api/me/key-rotation` stages a run and
+`POST /api/me/key-rotation/chunks` re-seals a batch of rows, so `key_rotations`,
+`key_rotation_seals` and the six `rotation_id` stamp columns can all now hold values a browser caused
+to be written. **The promotion exists and nothing a browser can reach calls it**: no route maps to
+`CompleteKeyRotationHandler`, so no request promotes a staged generation into `wrapped_account_keys`.
+**`factor_manifests` was never empty**: registration files a row for every account it creates, at
+epoch 1, and three paths promoted one before this; the completion is the fourth.
 
 Built: the `key_rotations` staging table and its `KeyRotation` entity, now carrying a staged
 **manifest** and a staged **epoch** rather than a factor and two envelopes; the `key_rotation_seals`
@@ -87,11 +88,16 @@ the same class as the begin, which answers **204** with an empty body, **decodes
 before the command is built** — the same asymmetry the begin has, for the same reason, since
 `ResealRowsCommand` carries decoded `IndexedName` and `NarrativeField` values rather than text — and
 declares **no authorization metadata and no re-authentication gate**, so the fallback policy covers
-it and a locked session is refused.
+it and a locked session is refused; and the completion — `CompleteKeyRotationHandler` over the same
+repository and the completeness gate — which promotes the manifest and copies every staged seal into
+its own factor's `wrapped_account_keys.encapsulated_account_keys` in **one save inside one unit of
+work**, behind [six ordered refusals](#completing-a-run-the-order-is-the-property).
+`Domain.Users.WrappedAccountKeys.Promote` is the member that overwrites a live factor, and
+`IKeyRotationRepository.PromoteAsync` is the only place in the product that says those rows and that
+manifest move together.
 
-Not built: the route that completes a rotation; the promotion that files the manifest and copies each
-seal into `wrapped_account_keys.encapsulated_account_keys`; the client that does the actual
-encryption. Do not state any of those in the present tense until they ship.
+Not built: the route that completes a rotation; the client that does the actual encryption. Do not
+state either in the present tense until it ships.
 
 **The begin can write its row, and `key_rotations` still holds no `DELETE` of any shape.**
 `app-role-grants.sql` grants `SELECT`, `INSERT` and a column-listed `UPDATE` over `rotation_id`,
@@ -172,8 +178,8 @@ being SQL Server's rather than this server's.
   version rather than a second copy of either. It records no instant — a seal lives entirely inside
   one run, and the run carries `started_at_utc`.
 - **Rotation identifier** — a `uuid` minted when a rotation begins, carried on the staging row and
-  stamped onto every row a chunk rewrites. It is how a completion step tells a finished rewrite from
-  an unfinished one, and it is **not** a key, a secret, or anything derived from one.
+  stamped onto every row a chunk rewrites. It is how a completion tells a finished rewrite from an
+  unfinished one, and it is **not** a key, a secret, or anything derived from one.
 - **Rotation stamp** — the nullable `rotation_id` column on each of the six narrative-bearing tables:
   `budgets`, `accounts`, `payees`, `category_groups`, `categories`, `transactions`.
 - **Reseal member** — the one member on each of those six entities that replaces narrative values
@@ -311,11 +317,10 @@ so the bytes differ either way, and the associated data that binds a ciphertext 
 rebuilt from context rather than carried inside the envelope. So a chunk **tells** it, by stamping the
 in-flight rotation's identifier onto each row it rewrites.
 
-What a completion step will be able to conclude from a full set of stamps is narrow and worth stating
-before anybody relies on it: **every narrative-bearing row was written by a statement this rotation
-issued.** Not that the bytes are correct — that needs the key, so it is the browser's to prove. What
-it buys is the one property that matters: the destructive promotion cannot run while a row is
-unwritten.
+What a completion concludes from a full set of stamps is narrow and worth stating before anybody
+relies on it: **every narrative-bearing row was written by a statement this rotation issued.** Not
+that the bytes are correct — that needs the key, so it is the browser's to prove. What it buys is the
+one property that matters: the destructive promotion cannot run while a row is unwritten.
 
 ### The completeness gate is presence-aware
 
@@ -376,9 +381,14 @@ non-converging rotation [Clearing too much](#clearing-too-much-is-a-rotation-tha
 describes. A throw says the server cannot answer, which is what is true.
 
 **The refusal lives in the read rather than in a handler, and that is the one place it departs from the
-export.** `ExportDataHandler` throws because it exists and is the export's only caller. Rotation's
-completion route is unbuilt, so a guard placed in a handler that does not exist yet guards nothing and
-the first handler written would have to remember it — for a mistake with no repair path. It surfaces as
+export.** `ExportDataHandler` throws because it exists and is the export's only caller. The gate was
+written before its caller was, so a guard placed in a handler that did not exist yet would have guarded
+nothing and the first handler written would have had to remember it — for a mistake with no repair
+path. That handler now exists and **deliberately does not catch it**: `RotationScopeException` derives
+from `InvalidOperationException`, so a broad catch in `CompleteKeyRotationHandler` would take it by
+accident and promote over rows the read never saw.
+`HandleAsync_WhenTheGateRefusesForScope_LetsTheRefusalEscapeAndPromotesNothing` is what holds that, and
+it asserts the refusal *escapes* rather than becoming a conflict. It surfaces as
 a bodyless `500` on the catch-all handler, with **no `IExceptionHandler` of its own**, for every reason
 `ExportCompletenessException` gives; the message names counts and never budget identifiers, because the
 Development branch of `GlobalExceptionHandler` echoes it into the response body.
@@ -582,6 +592,83 @@ answering `403` would confirm to a caller reaching into another budget that the 
 names a real row. The handler resolves every arm before it mutates one, so a chunk naming a stranger's
 row last still leaves the caller's own rows unstamped.
 
+### Completing a run: the order is the property
+
+`CompleteKeyRotationHandler` is the one step of a rotation that destroys something. Every other step
+is recoverable — a begin that goes wrong is replaced by another begin, a chunk that goes wrong is
+re-sent — while this one overwrites `encapsulated_account_keys` for every factor the account holds,
+which are the only copies of the generation still in force. Run while a single narrative row is still
+sealed under the old content key, that row is unreadable **forever**: nothing is thrown, no SQLSTATE
+is raised, nothing is logged, and there is no repair path.
+
+Six refusals stand in front of it, **in this order**, all inside one transactional delegate that opens
+with `IPersistenceState.DiscardTrackedEntities()`:
+
+1. **Is a rotation staged at all, and is it the one quoted?** One refusal rather than two, the chunk's
+   reason: splitting them would put "this account has no rotation in flight" into the body of a
+   request that was already wrong, and the client's next act is the same either way. A `400` keyed on
+   `RotationId`.
+2. **Everything downstream uses the *staged* identifier and never the caller's.** They are equal on
+   that line, and reaching for the caller's below is still the defect: the completeness gate takes a
+   rotation identifier and has no idea which run an account has staged, so a handler that passed the
+   caller's through can be handed an **abandoned** run whose stamps happen to be a full house, be told
+   *complete*, and destroy the live keys on another run's evidence. Measured: the substitution alone
+   reddens nothing — it only bites once the guard above is weakened, which is exactly why the guard is
+   worth keeping honest.
+3. **The staged generation must be *above* the one the manifest holds.** A completion deletes nothing,
+   so "staged" no longer means "in flight": the finished run's row is still there carrying the
+   identifier the client is quoting. The epoch gap is what tells the two apart, and a re-sent request
+   is answered `409 rotation_already_completed`. Without it the request would fall through to
+   `FactorManifest.Promote` and be refused as a `400` about the caller's arithmetic — which tells a
+   client whose first request succeeded and whose response was lost that its number is wrong.
+4. **The completeness gate, asked with the staged identifier.** A `false` is
+   `409 rotation_incomplete`, whose remedy is an act on a different resource: send the outstanding
+   chunks. A `RotationScopeException` is **not** caught — see
+   [the gate refuses rather than rotating half an account](#the-gate-refuses-rather-than-rotating-half-an-account).
+5. **The account's live factors are exactly the set the run staged a seal for, in both directions.**
+   A factor with no seal is the orphaning the whole slice exists to prevent, arriving at the moment it
+   becomes irreversible; a seal naming a factor the account no longer holds reaches for a row that is
+   not there. Answered `409 factor_set_moved`, because the remedy is the one that member already
+   names — begin the rotation again carrying the corrected set.
+6. **A missing `factor_manifests` row is a `500` on purpose**, the refusal revocation makes in the same
+   words. Registration has written one for every account since the table existed, so there is no
+   account this can legitimately find nothing for; filing a first one here would let a completion
+   establish the account's factor set under bytes and an epoch nothing upstream agreed to.
+
+Then the manifest is promoted **before** the factors, so a `Promote` refusal over an epoch that is
+above the stored generation without being exactly one above it leaves no rewritten row behind it. Each
+factor then adopts **its own** seal, **by key and never positionally**: neither read carries an
+`ORDER BY`, and a zip gives every row a well-formed 158-byte value of the right version that only some
+*other* factor's private key can open — twelve good rows, no exception, no SQLSTATE, and an account
+that opens with none of them. `WrappedAccountKeys.Promote` refuses a seal whose owner or factor
+disagrees with the row's, which is the second line rather than the first.
+
+**The discard at the top of the delegate is not optional.** The unit of work is replayed under a
+retrying execution strategy against a change tracker the rollback did not empty, so a completion that
+did not discard meets its own promoted manifest on the second attempt — already at `N + 1` — and
+`FactorManifest.Promote` refuses it. A **valid** completion would be answered with a `400` about the
+caller's arithmetic because the database blinked.
+
+**The staging row and its seals are left standing, and that is the grant rather than a preference.**
+The role holds no `DELETE` on either rotation table, so a tidy-up would answer `42501`; and it would
+be wrong even if granted, because until this save commits the staged seals are the only copies of the
+new generation.
+
+**The promotion needs no new grant.** `wrapped_account_keys` has held
+`UPDATE (encapsulated_account_keys)` since it was created and `factor_manifests` has held
+`UPDATE (manifest, rotation_epoch)` since registration first promoted one, so a `42501` on this path
+would mean the promotion reached for a column outside those lists rather than a privilege nobody
+granted yet.
+
+**One race remains and it is translated, not hidden.** A passkey registered or a card issued between
+this request's read of the manifest and its write moves the generation, so the promotion's
+`WHERE rotation_epoch = N` matches nothing and EF raises. `KeyRotationRepository.PromoteAsync` answers
+that with `409 factor_set_moved` — the same member the two paths that *move* a factor set already
+raise, because the caller's next act is identical — narrowed by the conflicting entries, so a conflict
+over some other entity riding along on the same `SaveChanges` propagates as the `500` it is. It is
+deliberately not the `400` `FactorManifest.Promote` raises over the same rule: that caller's epoch was
+never one greater than the stored generation, and this caller's was, at the moment it was read.
+
 ### Clearing too little is silent data loss
 
 A second browser tab holding the **old** content key can rename a payee this rotation already
@@ -610,15 +697,19 @@ stateDiagram-v2
     [*] --> None
     None --> Staged: a rotation begins — the staging row and one seal per surviving factor, in one save
     Staged --> Staged: a chunk reseals rows and stamps them
-    Staged --> None: completion promotes each seal and the manifest, then clears the staging
+    Staged --> Completed: completion promotes each seal and the manifest, in one save
     Staged --> Staged: interrupted — both generations still on file, resumable
 ```
 
 `None` and `Staged` both exist in the product today — `POST /api/me/key-rotation` is the one edge that
 moves an account between them, and a second begin is the self-loop on `Staged`. The chunk self-loop is
 walkable now: `POST /api/me/key-rotation/chunks` reaches `ResealRowsHandler`, so a browser can stamp
-rows. Nothing leaves `Staged`: the completion that promotes is unbuilt, so an account that begins a run
-stays there until another begin replaces the staged generation.
+rows. **`Completed` is not a row state and there is no edge back to `None`**: a completion deletes
+nothing, so the staging row survives its own run and what distinguishes the two states is the epoch —
+`Staged` is a staged generation above the manifest's, `Completed` is one equal to it, and a re-sent
+completion is refused on exactly that comparison. **No route walks that edge**: `CompleteKeyRotationHandler`
+exists and nothing a browser can reach calls it, so an account that begins a run stays in `Staged`
+until another begin replaces the staged generation.
 
 ## Edge Cases & Known Gotchas
 
