@@ -55,12 +55,10 @@ everything.
 ## What is built today
 
 **The schema, the domain behaviour, the read a completion step will consult, the handler that begins
-a run, the one route that reaches it, and — new — the handler that re-seals a chunk of rows. No
-client.** `POST /api/me/key-rotation` stages a run, so `key_rotations` and `key_rotation_seals` can
-now hold rows a browser caused to be written. The chunk stops one step short of that: it writes a
-row's new ciphertext and its `rotation_id` together, and **no route reaches it**, so every
-`rotation_id` column in every database is still `NULL` — for want of a caller now, rather than for
-want of the code. Nothing promotes a staged generation into
+a run, the handler that re-seals a chunk of rows, and — new — the route that carries one. No
+client.** `POST /api/me/key-rotation` stages a run and `POST /api/me/key-rotation/chunks` re-seals a
+batch of rows, so `key_rotations`, `key_rotation_seals` and the six `rotation_id` stamp columns can
+all now hold values a browser caused to be written. Nothing promotes a staged generation into
 `wrapped_account_keys`. **`factor_manifests` was never empty**: registration files a row for every
 account it creates, at epoch 1, and three paths promote one afterwards — so the table a promotion
 will one day write into is the one table here that has held a row per account from the start.
@@ -84,12 +82,16 @@ refused; and the chunk that re-seals rows — `ResealRowsHandler` over
 account actually has staged, **resolves every row across all five arms before it mutates one**,
 **drives each arm from the command and never from what the port answered**, and writes all five arms
 in **one save inside one unit of work**. It has **five arms and no budget arm**, for the reason the
-`rotation_id` grant bullet below gives.
+`rotation_id` grant bullet below gives; and the chunk's route, `POST /api/me/key-rotation/chunks` in
+the same class as the begin, which answers **204** with an empty body, **decodes every sealed member
+before the command is built** — the same asymmetry the begin has, for the same reason, since
+`ResealRowsCommand` carries decoded `IndexedName` and `NarrativeField` values rather than text — and
+declares **no authorization metadata and no re-authentication gate**, so the fallback policy covers
+it and a locked session is refused.
 
-Not built: the routes that continue and complete a rotation, including the one that would carry a
-chunk to `ResealRowsHandler`; the promotion that files the manifest and copies each seal into
-`wrapped_account_keys.encapsulated_account_keys`; the client that does the actual encryption. Do not
-state any of those in the present tense until they ship.
+Not built: the route that completes a rotation; the promotion that files the manifest and copies each
+seal into `wrapped_account_keys.encapsulated_account_keys`; the client that does the actual
+encryption. Do not state any of those in the present tense until they ship.
 
 **The begin can write its row, and `key_rotations` still holds no `DELETE` of any shape.**
 `app-role-grants.sql` grants `SELECT`, `INSERT` and a column-listed `UPDATE` over `rotation_id`,
@@ -222,6 +224,10 @@ being SQL Server's rather than this server's.
 - **`Budget.ResealName` must not be made public, and `Domain.csproj`'s `InternalsVisibleTo` must not
   be widened to reach it.** ASM-004 says no command may change a budget's name; the access level is
   what makes that a compile error rather than a review note.
+- **The chunk route must not re-enforce `MaxChunkBytes`, must not gate on a fresh assertion, and must
+  not answer with a count.** All three are argued in
+  [Carrying a chunk](#carrying-a-chunk-what-the-route-owes-and-the-three-things-it-must-not-add).
+  `MaxChunkBytes` is published by the begin and enforced by nobody but the host's body cap.
 
 ## Business Rules & Invariants
 
@@ -523,6 +529,59 @@ closed — on this side or on the client's — loses exactly the half that nothi
 so a disagreeing manifest can be stored today rather than only in principle. No client posts one yet,
 because none is built; when one is, the comparison above is the thing it has to be written with.
 
+### Carrying a chunk: what the route owes, and the three things it must not add
+
+`POST /api/me/key-rotation/chunks` takes the run's identifier and five arrays — accounts, payees,
+category groups, categories, transactions — each entry naming a row by `id` and carrying that row's
+new `name`, `nameKey` and `description` as its table allows. It answers **204 with an empty body**.
+
+**The decode is the route's, and the `Try` shape is what separates a `400` from a `500`.**
+`ResealRowsCommand` carries decoded `IndexedName` and `NarrativeField` values where the five sibling
+*create* commands carry the wire's strings, so by the time the command exists the text is gone and
+the decode has nowhere further in to live. That matters beyond tidiness: `NarrativeField.Sealed`
+refuses a malformed envelope with `ArgumentException` and `IndexedName.Of` refuses a wrong-width
+blind index with the same type, and **nothing in `Api` maps `ArgumentException`** — it reaches
+`GlobalExceptionHandler` as an unexpected error and answers `500`. So the route runs
+`CiphertextEnvelopeText.TryDecode` and `BlindIndexText.TryDecode` first, which cover alphabet,
+ceiling, floor and version between them, and hands those factories only values they have already been
+proved to accept. Three implementations are told apart by one request: strict behind the `Try`
+answers `400`, a lenient decoder accepts a padded standard-base64 index and answers `204`, and a
+strict decoder with no `Try` in front of it faults with `500`.
+
+**`id` is a uuid and not base64url text, which is the one place a chunk parts company with the create
+bodies it otherwise resembles.** A create carries the row identifier as text because the client minted
+it and it is the associated data the envelope beside it was sealed against. A chunk names a row that
+already exists and whose identifier this server rendered, so it follows the *update* paths: the
+identifier selects a row, and nothing is sealed against what the body says about it.
+
+**Three things the route must not grow.**
+
+- **A second `MaxChunkBytes` ceiling.** That number is a budget the begin *publishes* so a client can
+  size its batches under the 64 KB request-body cap; enforcing it again here would refuse bodies that
+  are legal under that cap and split one condition across a `400` from the delegate and a `413` from
+  the server. **Enforcement is the host's, and the published number stays advice.**
+- **A re-authentication gate.** A full session already writes these very columns through the ordinary
+  create and update routes; what a chunk adds is the stamp, which is read only by a completion, and a
+  completion cannot promote anything a gated begin did not stage. A prompt per chunk would also break
+  the feature outright — a rotation of a real account is dozens of requests, so it would be dozens of
+  authenticator taps.
+- **A count in the response.** A chunk is all-or-nothing in one save, so there is no partial-accept
+  number to report, and a "rows remaining" member would be a second denominator able to disagree with
+  the inventory the begin already published.
+
+**Every entry of every arm is forwarded, in the caller's order, and nothing is de-duplicated.** A
+`FirstOrDefault()` or a `Take(1)` in the mapping answers `204` to a chunk of two hundred rows having
+re-sealed one, after which the client counts all two hundred as done and the completeness gate refuses
+a run nobody can finish. A `DistinctBy` on the row identifier reads like housekeeping and turns a
+chunk naming one row twice under two different envelopes into a chunk naming it once, with nothing
+saying which entry was dropped — the argument the begin's seal array makes, on a different identifier.
+
+**A row of another budget is `404` and no arm of the caller's own is rewritten.** The five entities
+carry the `BudgetIsolation` query filter, so a foreign row is *invisible* rather than forbidden;
+answering `403` would confirm to a caller reaching into another budget that the identifier it guessed
+names a real row. The handler resolves every arm before it mutates one, so a chunk naming a stranger's
+row last still leaves the caller's own rows unstamped.
+
 ### Clearing too little is silent data loss
 
 A second browser tab holding the **old** content key can rename a payee this rotation already
@@ -556,9 +615,9 @@ stateDiagram-v2
 ```
 
 `None` and `Staged` both exist in the product today — `POST /api/me/key-rotation` is the one edge that
-moves an account between them, and a second begin is the self-loop on `Staged`. The chunk self-loop
-exists as `ResealRowsHandler` and no route carries a chunk to it, so nothing a browser can do walks
-it. Nothing leaves `Staged`: the completion that promotes is unbuilt, so an account that begins a run
+moves an account between them, and a second begin is the self-loop on `Staged`. The chunk self-loop is
+walkable now: `POST /api/me/key-rotation/chunks` reaches `ResealRowsHandler`, so a browser can stamp
+rows. Nothing leaves `Staged`: the completion that promotes is unbuilt, so an account that begins a run
 stays there until another begin replaces the staged generation.
 
 ## Edge Cases & Known Gotchas

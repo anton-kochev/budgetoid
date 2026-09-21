@@ -1475,6 +1475,92 @@ public sealed class KeyMaterialSecrecyTests
             "base64url over an assertion signature, verified with a published public key"),
         new("KeyRotationEndpoints.BeginRotationRequest", "UserHandle",
             "base64url over the sixteen bytes of the account id the authenticator kept"),
+        new("KeyRotationEndpoints.ResealedAccountRequest", "Name",
+            "base64url over the AEAD envelope holding one account's name, re-sealed under the NEXT "
+            + "generation's content key. The same kind of value as "
+            + "AccountEndpoints.UpdateAccountRequest.Name and the same verdict, and what is this route's "
+            + "own is that BOTH generations of the key are ones this server has never held: the one the "
+            + "row is sealed under now, and the one the browser drew this envelope under. An operator "
+            + "watching a whole rotation go by sees every narrative value in the account cross the wire "
+            + "twice and can open neither copy. THERE IS NO ROW IDENTIFIER MEMBER TO ARGUE FOR BESIDE "
+            + "THIS ONE, which is the difference from the create bodies: a create carries Id as text "
+            + "because it is the associated data the envelope was sealed against, while a chunk names a "
+            + "row this server already rendered an identifier for, so the arm's id is a uuid and never "
+            + "reaches this census at all"),
+        new("KeyRotationEndpoints.ResealedAccountRequest", "NameKey",
+            "base64url over the 32-byte blind index recomputed over the SAME name re-sealed beside it, "
+            + "under the NEXT generation's index key. A keyed digest and not an envelope — nothing to "
+            + "open and no way back to the text — and NOT NARRATIVE: a blind index has a kind of its own "
+            + "in this product precisely so nobody reads it as a person's typing. Not key material "
+            + "either: it is an output taken UNDER a key, and the index key itself crosses this wire "
+            + "only sealed, as the second half of KeyRotationEndpoints.SealRequest's 64-byte plaintext. "
+            + "It rides this arm because a rotation replaces the index key as well as the content key, "
+            + "so a chunk carrying the envelope alone would leave the row indexed under a generation "
+            + "nothing can recompute — invisible on this side for ever, because recomputing a digest "
+            + "needs a key this server does not have"),
+        new("KeyRotationEndpoints.ResealedCategoryGroupRequest", "Description",
+            "base64url over the AEAD envelope holding a person's own note about one of their category "
+            + "groups, re-sealed under the NEXT generation's content key — or ABSENT, which on this "
+            + "route does NOT clear the note the way the PUT body next door does. It is the one member "
+            + "of this arm whose absence is judged rather than obeyed: NarrativeReseal refuses a reseal "
+            + "that changes whether the column holds a value in either direction, so leaving it out of "
+            + "an entry whose row holds a note is a 400 and not a way to skip the column. Contents "
+            + "remain unreadable here as everywhere — sealed in the browser under a key derived from a "
+            + "recovery factor this server never sees"),
+        new("KeyRotationEndpoints.ResealedCategoryGroupRequest", "Name",
+            "base64url over the AEAD envelope holding the name of one category group, re-sealed under "
+            + "the NEXT generation's content key. Ciphertext this server cannot open, on the arm where "
+            + "the row carries TWO narrative members against one identifier — so a chunk that named this "
+            + "group and got either half wrong costs the group its name AND the note filed against it, "
+            + "with every constraint satisfied and nothing red"),
+        new("KeyRotationEndpoints.ResealedCategoryGroupRequest", "NameKey",
+            "base64url over the 32-byte blind index recomputed over the SAME name re-sealed beside it, "
+            + "under the NEXT generation's index key. A keyed digest, not an envelope, and NOT "
+            + "NARRATIVE. What it buys on this table is the narrowest of any blind index the product "
+            + "carries — nothing looks a group up by name, so it exists only to refuse a second group "
+            + "under a name this budget already holds — which is exactly why a rotation that dropped it "
+            + "would be quiet: the account goes on working until somebody creates a group and the "
+            + "collision that should have fired does not"),
+        new("KeyRotationEndpoints.ResealedCategoryRequest", "Description",
+            "base64url over the AEAD envelope holding a person's own note about one of their "
+            + "categories, re-sealed under the NEXT generation's content key — or ABSENT, judged rather "
+            + "than obeyed for the reason its category-group sibling states: on this route an absent "
+            + "note means the row holds none, and supplying one for a row that does, or omitting one "
+            + "for a row that does not, is a refusal rather than an edit"),
+        new("KeyRotationEndpoints.ResealedCategoryRequest", "Name",
+            "base64url over the AEAD envelope holding the name of one category, re-sealed under the "
+            + "NEXT generation's content key. Ciphertext this server can neither read nor measure "
+            + "characters in, and a rotation does not change that in either direction — this route "
+            + "moves which key a value is sealed under and never what the value says"),
+        new("KeyRotationEndpoints.ResealedCategoryRequest", "NameKey",
+            "base64url over the 32-byte blind index recomputed over the SAME name re-sealed beside it, "
+            + "under the NEXT generation's index key. A keyed digest, not an envelope, and NOT "
+            + "NARRATIVE. It is what IX_categories_budget_id_name_key enforces one-name-per-budget "
+            + "over, the case folding having moved into the client's normalisation before the HMAC — so "
+            + "the index this member carries was folded, normalised and taken on the far side of the "
+            + "wire, and no constraint on this side can be written to any step of it"),
+        new("KeyRotationEndpoints.ResealedPayeeRequest", "Name",
+            "base64url over the AEAD envelope holding one payee's name, re-sealed under the NEXT "
+            + "generation's content key. It is not who they say they paid as they typed it; nothing on "
+            + "this route is. Sealed in the browser under a key derived from a recovery factor this "
+            + "server never sees, and re-sealed under a second such key the server has never seen "
+            + "either"),
+        new("KeyRotationEndpoints.ResealedPayeeRequest", "NameKey",
+            "base64url over the 32-byte blind index recomputed over the SAME name re-sealed beside it, "
+            + "under the NEXT generation's index key. A keyed digest, not an envelope, and NOT "
+            + "NARRATIVE. THIS IS THE ARM WHERE DROPPING IT BITES SOONEST: the server used to fold a "
+            + "payee name's case and re-read the table and can do neither now, so deduplication of "
+            + "counterparties rests entirely on this value — a rotation that carried the envelope and "
+            + "left the index behind leaves find-or-create finding nothing, and the next transaction "
+            + "against each existing counterparty mints a duplicate"),
+        new("KeyRotationEndpoints.ResealedTransactionRequest", "Description",
+            "base64url over the AEAD envelope holding a person's own note about one transaction, "
+            + "re-sealed under the NEXT generation's content key — and the WHOLE of that row's "
+            + "narrative, since transactions carry no name. Absence is judged rather than obeyed, as on "
+            + "the two arms above, which is why a note-less transaction — what most rows of a real "
+            + "account are — is a row a chunk never names at all rather than one it sends an empty "
+            + "entry for. Unreadable here as everywhere: the key was derived in a browser from a "
+            + "recovery factor this server has never seen"),
         new("KeyRotationEndpoints.SealRequest", "EncapsulatedAccountKeys",
             "base64url over a 158-byte encapsulation of BOTH of the NEXT generation's account keys as "
             + "one plaintext, content key first, ENCAPSULATED TO one factor's PUBLIC half — the same "
