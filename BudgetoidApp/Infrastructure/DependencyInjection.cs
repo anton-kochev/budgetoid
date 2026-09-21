@@ -15,6 +15,7 @@ using Domain.Budgets;
 using Domain.Categories;
 using Domain.CategoryGroups;
 using Domain.Payees;
+using Domain.Security;
 using Domain.Sessions;
 using Domain.Transactions;
 using Domain.Users;
@@ -42,6 +43,7 @@ public static class DependencyInjection
         services.AddScoped<IRecoveryCodeRepository, RecoveryCodeRepository>();
         services.AddScoped<IRegistrationRepository, RegistrationRepository>();
         services.AddScoped<IKeyRotationRepository, KeyRotationRepository>();
+        services.AddScoped<INarrativeResealRepository, NarrativeResealRepository>();
 
         // Scoped like every other writer over the DbContext, and for the same reason: it holds the
         // scoped BudgetoidDbContext, so a longer lifetime would keep one request's context alive

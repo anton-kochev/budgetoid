@@ -763,9 +763,36 @@ GRANT UPDATE (name) ON budgets TO budgetoid_app;
 -- immutable, if it ever is, by leaving BOTH off the list. Every blind-indexed name column that follows
 -- wants the same pair, and a review that finds one half of one on an UPDATE list has found the defect
 -- without needing to know which table it was looking at.
+-- rotation_id JOINS FIVE OF THESE SIX LISTS, AND THE SIXTH IS REFUSED RATHER THAN FORGOTTEN. This is
+-- the argument for all five; the blocks below point at it and do not restate it.
+--
+-- A content-key rotation rewrites a narrative column and stamps the row with the run that rewrote it,
+-- and the two happen in ONE statement, because each reseal member takes the row's new value and writes
+-- the stamp beside it — there is no overload that writes a stamp alone. So the column cannot be
+-- withheld while the narrative half is granted: EF names both, PostgreSQL refuses the whole statement,
+-- and the chunk cannot run at all.
+--
+-- MEASURED BEFORE IT WAS GRANTED, with the control that makes it a fact about a COLUMN rather than
+-- about a table. On the app-role connection, against each of the five:
+--   update accounts set name = ..., name_key = ..., rotation_id = ...  -> 42501, permission denied
+--   update accounts set rotation_id = ...                              -> 42501
+--   update accounts set name = ..., name_key = ...                     -> UPDATE 1
+-- The third line is the control: the identical statement with rotation_id dropped from the SET list
+-- succeeds on the same connection, so the refusal is this grant and not the budget_isolation policy.
+-- As on categories above, 42501 names the TABLE and never the column, so the message alone points at
+-- nothing; that is why the statements are written out here rather than summarised.
+--
+-- budgets IS DELIBERATELY NOT THE SIXTH. Its block below grants UPDATE (name) and nothing else, and
+-- FR-099 requires exactly that — the application role holds UPDATE on budgets.name AND ON NO OTHER
+-- COLUMN. Adding rotation_id there would satisfy a chunk and break the requirement, so the budget arm
+-- is refused rather than missing: Budget.ResealName is internal and visible only to Infrastructure,
+-- which turns the refusal into a compile error instead of a runtime 42501. Nothing is lost today,
+-- because no route names a budget and every budgets.name is NULL, so the presence-aware completeness
+-- gate never has a budget row outstanding. The day a naming screen ships, that commit owes the sixth
+-- arm, this grant, and an argument against FR-099 as written — in that order.
 REVOKE ALL ON accounts FROM budgetoid_app;
 GRANT SELECT, INSERT, DELETE ON accounts TO budgetoid_app;
-GRANT UPDATE (name, name_key, type, opening_balance) ON accounts TO budgetoid_app;
+GRANT UPDATE (name, name_key, type, opening_balance, rotation_id) ON accounts TO budgetoid_app;
 
 -- category_groups: budget_id and created_at_utc immutable by omission.
 --
@@ -801,7 +828,9 @@ GRANT UPDATE (name, name_key, type, opening_balance) ON accounts TO budgetoid_ap
 -- so a REVOKE cannot take back what a table-wide grant handed out.
 REVOKE ALL ON category_groups FROM budgetoid_app;
 GRANT SELECT, INSERT, DELETE ON category_groups TO budgetoid_app;
-GRANT UPDATE (name, name_key, description, position) ON category_groups TO budgetoid_app;
+-- rotation_id is the fifth entry for the reason the accounts block argues once for all five.
+GRANT UPDATE (name, name_key, description, position, rotation_id)
+    ON category_groups TO budgetoid_app;
 
 -- categories: budget_id and created_at_utc immutable by omission; category_group_id is
 -- updatable — moving a category between groups is a real operation, and the composite
@@ -831,7 +860,8 @@ GRANT UPDATE (name, name_key, description, position) ON category_groups TO budge
 -- ZERO until the route bodies were fixed. A broken grant would have shipped green.
 REVOKE ALL ON categories FROM budgetoid_app;
 GRANT SELECT, INSERT, DELETE ON categories TO budgetoid_app;
-GRANT UPDATE (name, name_key, description, position, category_group_id)
+-- rotation_id joins for the reason the accounts block argues once for all five.
+GRANT UPDATE (name, name_key, description, position, category_group_id, rotation_id)
     ON categories TO budgetoid_app;
 
 -- payees: no DELETE — no delete path exists. budget_id and created_at_utc immutable by
@@ -854,14 +884,19 @@ GRANT UPDATE (name, name_key, description, position, category_group_id)
 -- so a REVOKE cannot take back what a table-wide grant handed out.
 REVOKE ALL ON payees FROM budgetoid_app;
 GRANT SELECT, INSERT ON payees TO budgetoid_app;
-GRANT UPDATE (name, name_key) ON payees TO budgetoid_app;
+-- rotation_id joins for the reason the accounts block argues once for all five.
+GRANT UPDATE (name, name_key, rotation_id) ON payees TO budgetoid_app;
 
 -- transactions: budget_id (rule X1) and created_at_utc immutable by omission. The updatable
 -- references (account_id, payee_id, category_id) are each half of a composite foreign key
 -- that includes budget_id, so a repoint can only land inside the same budget.
 REVOKE ALL ON transactions FROM budgetoid_app;
 GRANT SELECT, INSERT, DELETE ON transactions TO budgetoid_app;
-GRANT UPDATE (amount, date, description, account_id, payee_id, category_id)
+-- rotation_id joins for the reason the accounts block argues once for all five. This is the arm where
+-- it matters most: transactions is the largest table an account holds, so it is the one a rotation
+-- spends most of its chunks on, and a withheld stamp here stalls the run with the most rows already
+-- rewritten.
+GRANT UPDATE (amount, date, description, account_id, payee_id, category_id, rotation_id)
     ON transactions TO budgetoid_app;
 
 -- __EFMigrationsHistory: SELECT lets the role read migration state (applied/pending checks).

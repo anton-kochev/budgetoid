@@ -450,6 +450,25 @@ public sealed class AppRoleGrantMatrixTests
         // rule this line replaced was "a budgets row is never updated at all", so a reader arriving here
         // from app-role-grants.sql's rule B2 or from an older test name is reading a rule that moved
         // rather than a list that drifted.
+        //
+        // rotation_id IS ABSENT FROM THIS LIST AND ITS ABSENCE IS THE DECISION, NOT AN OVERSIGHT — WHICH
+        // IS WHY THIS LINE SAYS SO WHILE THE FIVE BELOW SAY THE OPPOSITE. A content-key rotation stamps
+        // every row it re-seals with the run that rewrote it, and five tables gained the column on their
+        // UPDATE lists for that. budgets is the sixth table carrying one and it did not, because FR-099
+        // is precise about this role and this table: UPDATE on budgets.name AND ON NO OTHER COLUMN.
+        // Granting a sixth would satisfy a chunk and break the requirement, so the budget arm of the
+        // rotation is REFUSED rather than missing — Budget.ResealName is internal, Domain's internals go
+        // to Infrastructure alone, and the Application ring therefore cannot write a sixth arm at all.
+        // The refusal is a compile error rather than the 42501 this list would otherwise produce, which
+        // is the direction worth having: nothing reaches a running database to be diagnosed from a
+        // message that names only the table.
+        //
+        // Nothing is lost by it today. No route names a budget, every budgets.name in every database is
+        // NULL, and the completeness gate that decides when a rotation may promote is presence-aware, so
+        // a budget row is never counted as outstanding. The day a naming screen ships, that commit owes
+        // the sixth arm, this grant and an argument against FR-099 as written, in that order — and a
+        // reader who arrives here first and simply adds the column will have done the second without the
+        // third.
         ("budgets", ["name"]),
         // TWO columns, and the entry is as much about the THIRD that is not on it. user_id is the whole
         // of PK_factor_manifests and it is the column user_isolation appends its predicate over, so one
@@ -485,7 +504,26 @@ public sealed class AppRoleGrantMatrixTests
         // measured for the whole time the grant named one column, which is why that case now writes
         // both halves in one statement. Removing either column from this list is therefore not a
         // narrowing of what may be edited; it is the rename path going away.
-        ("accounts", ["name", "name_key", "type", "opening_balance"]),
+        //
+        // rotation_id IS THE FIFTH COLUMN AND THIS IS THE ONE ENTRY THAT ARGUES IT; THE OTHER FOUR POINT
+        // HERE. A rotation chunk re-seals a narrative column and stamps the row with the run that
+        // rewrote it, and the two arrive in ONE statement rather than two — every reseal member takes
+        // the row's new value and writes the stamp beside it, and there is no overload that writes a
+        // stamp on its own. So the stamp cannot be withheld while the narrative half is granted: EF
+        // names both columns, PostgreSQL refuses the whole statement, and a chunk cannot run at all.
+        // That is the same coupling the name/name_key argument above makes, reaching a third column.
+        //
+        // IT WAS MEASURED BEFORE IT WAS GRANTED, WITH THE CONTROL THAT MAKES IT A FACT ABOUT A COLUMN
+        // RATHER THAN ABOUT A TABLE. On the app-role connection, against each of the five: the reseal
+        // statement naming the narrative pair and the stamp was refused; the stamp on its own was
+        // refused; and the identical statement with the stamp dropped from the SET list succeeded. The
+        // third is what says the refusal is this grant and not the budget_isolation policy — and it had
+        // to be run, because 42501 names the TABLE and never the column, so the message alone points at
+        // nothing. The grants file carries those statements and they are not restated here.
+        //
+        // The sixth table carrying this column is budgets, and it is deliberately NOT on the list. Its
+        // entry above is where that reason lives.
+        ("accounts", ["name", "name_key", "type", "opening_balance", "rotation_id"]),
         // The same name/name_key pair the accounts line above argues, and a THIRD column that makes a
         // half grant harder to see here than on either neighbour. This table's update writes three
         // columns the client sealed or keyed — the narrative pair `name` and `description`, plus the
@@ -518,7 +556,13 @@ public sealed class AppRoleGrantMatrixTests
         // — `position` shares this list, so a three-column control cannot tell a four-column grant from
         // a three-column one — and `categories` needed its own for the same reason and did not have one
         // at all until this slice.
-        ("category_groups", ["name", "name_key", "description", "position"]),
+        //
+        // rotation_id is the fifth column, for the reason the accounts entry above argues once for all
+        // five and does not get restated here. What this table adds to that argument is the quietness
+        // the paragraph above already measures: a chunk here writes `name`, `name_key`, `description`
+        // and the stamp together, so a withheld stamp is loud on any chunk at all — the description's
+        // quiet direction has no counterpart on this column, because no reseal ever leaves it out.
+        ("category_groups", ["name", "name_key", "description", "position", "rotation_id"]),
         // name_key JOINS THIS LIST IN THE SAME COMMIT THAT MEASURED ITS ABSENCE, and the entry is
         // written rather than corrected into agreement, because THE MATRIX IS A MIRROR AND NOT A JUDGE.
         // This census reads the database's grant matrix and asserts it equals the list above; that
@@ -540,7 +584,14 @@ public sealed class AppRoleGrantMatrixTests
         // four at FIVE columns — category_group_id is here because a category can be moved between
         // groups — so its raw control in TenancySchemaTests has to name five in one statement, for the
         // reason category_groups needed four.
-        ("categories", ["name", "name_key", "description", "position", "category_group_id"]),
+        //
+        // rotation_id joins for the reason the accounts entry above argues once for all five, taking
+        // this list to six columns. The length is the thing to read carefully rather than a fact about
+        // size: a list this wide reads like the table-wide grant it must never become, and budget_id
+        // and created_at_utc are immutable BY OMISSION from it — column privileges are additive, so no
+        // REVOKE can take back what a table-wide GRANT UPDATE would hand out.
+        ("categories",
+            ["name", "name_key", "description", "position", "category_group_id", "rotation_id"]),
         // The same pair, on the same terms, and it is ONE entry rather than two facts sitting beside
         // each other for the reason the accounts line above states: Payee.Rename takes an IndexedName
         // and offers no spelling for half a name, so a rename is one UPDATE naming both columns and a
@@ -553,8 +604,20 @@ public sealed class AppRoleGrantMatrixTests
         // statement outright rather than half-applying it, which is what keeps that state unreachable
         // from here; the reason it is written down is that the ONE-COLUMN PROBE is what hid this exact
         // defect on accounts, and TenancySchemaTests now spells both columns out for that reason.
-        ("payees", ["name", "name_key"]),
-        ("transactions", ["amount", "date", "description", "account_id", "payee_id", "category_id"]),
+        //
+        // rotation_id joins for the reason the accounts entry above argues once for all five. It is
+        // the same pair-travels-together coupling one column further out: Payee.Reseal takes the
+        // IndexedName and writes the stamp beside it, so a chunk naming a payee is one UPDATE over all
+        // three and a list short by the stamp refuses the whole of it.
+        ("payees", ["name", "name_key", "rotation_id"]),
+        // rotation_id joins for the reason the accounts entry above argues once for all five, and THIS
+        // IS THE ARM WHERE A WITHHELD STAMP COSTS THE MOST. transactions is the largest table an
+        // account holds by a wide margin, so a rotation spends most of its chunks here — a run that
+        // could not stamp this table would stall with more rows already rewritten than the other four
+        // arms hold between them, and the completeness gate would refuse it for ever with the account
+        // sitting part under each content key.
+        ("transactions",
+            ["amount", "date", "description", "account_id", "payee_id", "category_id", "rotation_id"]),
     ];
 
     [Test]

@@ -103,12 +103,12 @@ public sealed record AttributionCensus(
 /// see <c>Discovery_IsBlindToARepositoryOutsideTheNamespace</c>, which is a permanent demonstration
 /// rather than a defect to fix by widening the scan. Widening only moves the blind spot; what covers
 /// it instead is <c>Discovery_FindsExactlyTheRepositoriesTheNamespaceDeclares</c>, which pins the
-/// thirteen names, so a repository that leaves the namespace goes red there rather than quietly leaving
+/// fourteen names, so a repository that leaves the namespace goes red there rather than quietly leaving
 /// the census with nothing to count.
 /// </para>
 /// <para>
 /// <b>A gap this recorded, closed, and then partly reopened by a deletion.</b> Narrowing on
-/// <c>PostgresException.ConstraintName</c> is the house rule — ten of the thirteen repositories do it,
+/// <c>PostgresException.ConstraintName</c> is the house rule — ten of the fourteen repositories do it,
 /// and two of those spell it inside a helper rather than in the <c>when</c> clause. Having a narrowed
 /// <c>catch</c> is not the same as having it <i>tested from both sides</i>, and
 /// <see cref="PinnedElsewhere" /> says per entry which halves exist. It once said, for three entries,
@@ -132,10 +132,13 @@ public sealed record AttributionCensus(
 /// one that hides a gap it does have, and the second is only easier to notice.
 /// </para>
 /// <para>
-/// <b>What is not claimed is that the thirteen are now uniformly covered</b> — only that every entry says
+/// <b>What is not claimed is that the fourteen are now uniformly covered</b> — only that every entry says
 /// which halves it holds. <c>SessionRepository</c> holds neither and says so, because it translates
 /// nothing; <c>SessionTokenRepository</c> says the stronger version of that, having no <c>catch</c> at
-/// all over a member that writes nothing; and <c>KeyRotationRepository</c> holds <b>both</b> halves but
+/// all over a member that writes nothing; <c>NarrativeResealRepository</c> says a third version, having
+/// no <c>catch</c> at all over a member that <em>does</em> write, which is the one of the three that
+/// will stop being true the day somebody adds a filter to it; and <c>KeyRotationRepository</c> holds
+/// <b>both</b> halves but
 /// in two files and says so — its <c>StageAsync</c> gained the two-name narrowing that entry once
 /// recorded as owed, in the commit that mapped a begin route, so the translation is pinned over HTTP by
 /// the route's own tests while the mis-attribution control is at the repository layer, where a
@@ -149,8 +152,8 @@ public sealed record AttributionCensus(
 /// Sabotaged in four directions before it was believed, each on synthetic input so the proof is
 /// permanent rather than a sentence about a change that was reverted: a repository in neither set, one
 /// in both, a set naming a repository that does not exist, and — the control without which the first
-/// three could all pass while the real census checked nothing — the live thirteen classified against
-/// two <b>empty</b> sets, which must report all thirteen unlisted.
+/// three could all pass while the real census checked nothing — the live fourteen classified against
+/// two <b>empty</b> sets, which must report all fourteen unlisted.
 /// </para>
 /// <para>
 /// It lives in <c>UnitTests</c> because <c>UnitTests.csproj</c> already references Infrastructure, so
@@ -212,13 +215,15 @@ public sealed class RepositoryAttributionCensusTests
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Read <see cref="AttributionPin.PinsWhat" /> on each, not the bucket name. Three of the eight are
+    /// Read <see cref="AttributionPin.PinsWhat" /> on each, not the bucket name. Three of the nine are
     /// pinned in both directions on every narrowing they hold — <c>TransactionRepository</c>;
     /// <c>UserRepository</c>, which now holds only one narrowing because the insert that carried its
     /// other one was deleted with the provisioning path; and <c>RegistrationRepository</c>, which holds
     /// both halves on all four of its narrowings, the second half being <b>one</b> test rather than
-    /// four. Two — <c>SessionRepository</c> and <c>SessionTokenRepository</c> — have nothing to
-    /// attribute at all, which is a different statement and each says so in its own words.
+    /// four. Three — <c>SessionRepository</c>, <c>SessionTokenRepository</c> and
+    /// <c>NarrativeResealRepository</c> — have nothing to attribute at all, which is a different
+    /// statement and each says so in its own words: a <c>catch</c> narrowed by no constraint name, no
+    /// <c>catch</c> over a member that writes nothing, and no <c>catch</c> over a member that writes.
     /// <c>KeyRotationRepository</c> used to be a third of those and is not any more: its
     /// <c>StageAsync</c> now narrows a <c>23505</c> on two primary-key names, so that entry has been
     /// rewritten twice — first from an absence into a gap, and now from a gap into <b>both halves in
@@ -330,6 +335,58 @@ public sealed class RepositoryAttributionCensusTests
             + "WHAT IT STILL DOES NOT PIN IS THE RETRY, which is the limit stated above and which this "
             + "control does not close: it pins that the filter is NARROW, never that the convergence "
             + "behind it RUNS. Do not read this entry as covering both"),
+        new(
+            nameof(NarrativeResealRepository),
+            "ResealChunkTests",
+            "NOTHING TO ATTRIBUTE, AND IT IS A THIRD SPELLING OF THAT SENTENCE RATHER THAN A COPY OF "
+            + "EITHER SESSION ONE. SessionRepository has a catch narrowed by no constraint name; "
+            + "SessionTokenRepository has no catch at all over a member that writes nothing. This class "
+            + "has NO CATCH ANYWHERE IN IT over six members, one of which WRITES — so a violation is "
+            + "genuinely reachable here and is deliberately not translated. "
+            + "WHAT THE CLASS IS: five reads keyed on the row identifiers a rotation chunk named, plus "
+            + "SaveAsync. It holds no rule of its own. Whether the chunk names the run in flight, "
+            + "whether a reseal may change what a nullable narrative column holds, and what a row the "
+            + "read could not answer for means are ALL ResealRowsHandler's — including the "
+            + "NotFoundException, which is raised by the caller and not here, because a row filtered out "
+            + "by BudgetIsolation and a row simply not asked for are the same observation at this layer "
+            + "and only the caller holds the list that tells them apart. A loader with no rules has "
+            + "nothing to translate a violation INTO, which is why the absent filter is the right shape "
+            + "rather than an omission. "
+            + "WHAT SaveAsync CAN STILL RAISE, said plainly because 'no catch' reads as 'no violation' "
+            + "and here it is not: a 42501 the day a rotation_id leaves one of the five GRANT UPDATE "
+            + "column lists, and any constraint the five tables carry. Every one of them leaves as the "
+            + "DbUpdateException EF threw, wearing no message this repository invented — which is the "
+            + "one property a mis-attribution control exists to protect and is here held by the absence "
+            + "of a catch rather than by a test. "
+            + "WHAT ResealChunkTests PINS is the class's other half, and the file is named because that "
+            + "is where this adapter is driven against a real PostgreSQL on the least-privilege role: "
+            + "ResealChunk_LoadsOnlyTheRowsTheChunkNames asks ListPayeesAsync and ListTransactionsAsync "
+            + "directly, out of a budget holding a sibling beside each named row, which is the one place "
+            + "the identifier predicate is observable at all — a handler driving from the command writes "
+            + "to none of an over-fetch, so the surplus is invisible on disk. "
+            + "ResealChunk_StampsEveryRowItRewrites_InOneTransaction and "
+            + "ResealChunk_WhenTheUnitOfWorkIsAbandoned_LeavesEveryRowAsItWas exercise SaveAsync over "
+            + "that role in both directions. "
+            + "WHAT IS NOT HELD, AND IT IS THE HALF THIS CENSUS EXISTS TO MAKE SOMEBODY WRITE DOWN: "
+            + "THERE IS NO MIS-ATTRIBUTION CONTROL AND THERE IS NO TRANSLATION PIN, because there is no "
+            + "filter for either to be about. No case stages a stranger's violation into SaveAsync, and "
+            + "one written today would measure nothing — a save with no catch over it propagates "
+            + "whatever it meets whether or not anybody asserts so. THE DAY A catch IS ADDED HERE THIS "
+            + "ENTRY IS FALSE AND BOTH HALVES BECOME OWED; do not read the bucket name as covering a "
+            + "filter that did not exist when it was written. "
+            + "THREE ALTERNATIVES WERE CONSIDERED AND REJECTED, and the third is the one this census was "
+            + "built to catch. An internal class would have kept it out of the census entirely — "
+            + "Discovery_IsBlindToARepositoryOutsideTheNamespace is a permanent demonstration that "
+            + "visibility is a blind spot — so nobody would ever have had to say any of the above. "
+            + "Declaring the six members on an existing repository would have spread one chunk's reads "
+            + "across five classes, and each of those already narrows a 23505 of its own, so this "
+            + "catch-free save would have arrived under a filter argued about renames. MOVING IT TO "
+            + "Infrastructure.Persistence IS THE DEFECT THIS FILE NAMES IN ITS OWN REMARKS: the scan is "
+            + "scoped by namespace, so a repository placed outside Infrastructure.Repositories is not "
+            + "discovered, not unlisted, and not red — the census would have gone on passing with one "
+            + "fewer subject. Discovery_FindsExactlyTheRepositoriesTheNamespaceDeclares is the line that "
+            + "would have caught the move and it only works because the names are pinned there, which is "
+            + "why this type is named in BOTH places"),
         new(
             nameof(PasskeyRepository),
             "PasskeyRepositoryTests",
@@ -564,6 +621,7 @@ public sealed class RepositoryAttributionCensusTests
             nameof(CategoryGroupRepository),
             nameof(CategoryRepository),
             nameof(KeyRotationRepository),
+            nameof(NarrativeResealRepository),
             nameof(PasskeyRepository),
             nameof(PayeeRepository),
             nameof(RecoveryCodeRepository),

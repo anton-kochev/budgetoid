@@ -55,10 +55,12 @@ everything.
 ## What is built today
 
 **The schema, the domain behaviour, the read a completion step will consult, the handler that begins
-a run, and — new — the one route that reaches it. No client.** `POST /api/me/key-rotation` stages a
-run, so `key_rotations` and `key_rotation_seals` can now hold rows a browser caused to be written.
-Nothing else moves: every `rotation_id` column in every database is still `NULL`, because the chunk
-that stamps one is unbuilt, and nothing promotes a staged generation into
+a run, the one route that reaches it, and — new — the handler that re-seals a chunk of rows. No
+client.** `POST /api/me/key-rotation` stages a run, so `key_rotations` and `key_rotation_seals` can
+now hold rows a browser caused to be written. The chunk stops one step short of that: it writes a
+row's new ciphertext and its `rotation_id` together, and **no route reaches it**, so every
+`rotation_id` column in every database is still `NULL` — for want of a caller now, rather than for
+want of the code. Nothing promotes a staged generation into
 `wrapped_account_keys`. **`factor_manifests` was never empty**: registration files a row for every
 account it creates, at epoch 1, and three paths promote one afterwards — so the table a promotion
 will one day write into is the one table here that has held a row per account from the start.
@@ -77,10 +79,15 @@ with the inventory and the chunk budget, decodes the staged manifest before the 
 the one manifest-carrying route where the decode is the endpoint's, because
 `BeginKeyRotationCommand.StagedManifest` is bytes where its three siblings carry text — and declares
 no authorization metadata of its own, so the fallback policy covers it and a locked session is
-refused.
+refused; and the chunk that re-seals rows — `ResealRowsHandler` over
+`Domain.Security.INarrativeResealRepository` — which checks the chunk against the rotation the
+account actually has staged, **resolves every row across all five arms before it mutates one**,
+**drives each arm from the command and never from what the port answered**, and writes all five arms
+in **one save inside one unit of work**. It has **five arms and no budget arm**, for the reason the
+`rotation_id` grant bullet below gives.
 
-Not built: the routes that continue and complete a rotation; the chunk that reseals rows; the
-promotion that files the manifest and copies each seal into
+Not built: the routes that continue and complete a rotation, including the one that would carry a
+chunk to `ResealRowsHandler`; the promotion that files the manifest and copies each seal into
 `wrapped_account_keys.encapsulated_account_keys`; the client that does the actual encryption. Do not
 state any of those in the present tense until they ship.
 
@@ -549,9 +556,10 @@ stateDiagram-v2
 ```
 
 `None` and `Staged` both exist in the product today — `POST /api/me/key-rotation` is the one edge that
-moves an account between them, and a second begin is the self-loop on `Staged`. Nothing leaves
-`Staged`: the chunk that reseals rows and the completion that promotes are unbuilt, so an account that
-begins a run stays there until another begin replaces the staged generation.
+moves an account between them, and a second begin is the self-loop on `Staged`. The chunk self-loop
+exists as `ResealRowsHandler` and no route carries a chunk to it, so nothing a browser can do walks
+it. Nothing leaves `Staged`: the completion that promotes is unbuilt, so an account that begins a run
+stays there until another begin replaces the staged generation.
 
 ## Edge Cases & Known Gotchas
 
@@ -624,6 +632,14 @@ begins a run stays there until another begin replaces the staged generation.
   where the set of factors a run stages a value for is judged against the account's live factors. The
   block keeps its own record of having missed rather than being quietly overwritten, which is the
   same reason this bullet exists.
-- **The six `rotation_id` columns have no `GRANT UPDATE` yet either**, and that is deliberate for the
-  same reason. The first handler to reseal a row will fail loudly with `42501` until the six column
-  lists are widened, which is the fail-closed direction.
+- **`rotation_id` is on five of the six `GRANT UPDATE` column lists, and the sixth is refused rather
+  than forgotten.** The five arrived with the chunk that writes them, after the fail-closed direction
+  had been observed rather than predicted: the same `UPDATE` with `rotation_id` dropped from the `SET`
+  list succeeded on the same connection, which is what made the refusal a fact about the column
+  instead of about the table — `42501` names only the table, never the column that was missing.
+  `budgets` is the sixth and stays at `UPDATE (name)`, because FR-099 requires the application role to
+  hold `UPDATE` on `budgets.name` and on no other column. A budget arm would satisfy a chunk and break
+  that requirement, so the chunk has five arms; `Budget.ResealName` being `internal` and visible only
+  to Infrastructure turns the refusal into a compile error rather than a runtime `42501`. Nothing is
+  lost while every `budgets.name` is `NULL` and the gate is presence-aware, so no budget row is ever
+  outstanding.
