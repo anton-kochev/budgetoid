@@ -54,13 +54,14 @@ everything.
 
 ## What is built today
 
-**The schema, the domain behaviour, the completeness gate, the handler that begins a run, the handler
-that re-seals a chunk of rows, the routes that carry both, and — new — the handler that completes a
-run. No route to it, and no client.** `POST /api/me/key-rotation` stages a run and
-`POST /api/me/key-rotation/chunks` re-seals a batch of rows, so `key_rotations`,
-`key_rotation_seals` and the six `rotation_id` stamp columns can all now hold values a browser caused
-to be written. **The promotion exists and nothing a browser can reach calls it**: no route maps to
-`CompleteKeyRotationHandler`, so no request promotes a staged generation into `wrapped_account_keys`.
+**The schema, the domain behaviour, the completeness gate, the three handlers a run needs, and — new
+— the route that completes one. The whole server side of a rotation is now reachable over HTTP. No
+client.** `POST /api/me/key-rotation` stages a run, `POST /api/me/key-rotation/chunks` re-seals a
+batch of rows, and `POST /api/me/key-rotation/completion` promotes the staged generation, so
+`key_rotations`, `key_rotation_seals`, the six `rotation_id` stamp columns, `wrapped_account_keys`
+and `factor_manifests` can all now hold values a browser caused to be written. **What is missing is
+the client**, which is the half that holds the keys: nothing in this repository encrypts, so no
+browser can produce the manifest a begin stages or the envelopes a chunk carries.
 **`factor_manifests` was never empty**: registration files a row for every account it creates, at
 epoch 1, and three paths promoted one before this; the completion is the fourth.
 
@@ -94,10 +95,30 @@ its own factor's `wrapped_account_keys.encapsulated_account_keys` in **one save 
 work**, behind [six ordered refusals](#completing-a-run-the-order-is-the-property).
 `Domain.Users.WrappedAccountKeys.Promote` is the member that overwrites a live factor, and
 `IKeyRotationRepository.PromoteAsync` is the only place in the product that says those rows and that
-manifest move together.
+manifest move together; and the completion's route,
+`POST /api/me/key-rotation/completion` in the same class as the other two, which answers **204**
+carrying nothing, **binds one member — `rotationId` — and judges none of it**, and declares **no
+authorization metadata and no re-authentication gate**, so the fallback policy covers it and a locked
+session is refused.
 
-Not built: the route that completes a rotation; the client that does the actual encryption. Do not
-state either in the present tense until it ships.
+**The completion route hands back nothing, and that is the one decision the route makes.** Not a body
+member, not an `ETag`, not a `Location`, not a header of its own: a client's rotation-epoch record may
+rise only after the four-refusal gate over `GET /api/me/account-keys` has passed — see
+[account-keys.md](account-keys.md) — and the promoted generation returned from here would be a number
+a client could advance its record from having judged nothing, an oracle rather than an observation.
+A header carries it as surely as a body does, `W/"2"` as surely as `2`. The client re-reads the
+account keys and advances there.
+
+**There is no re-authentication on the completion, and the absence is argued rather than inherited.**
+The destructive act and the authorizing act are two legs of one operation and the authorization was
+created at the begin. A caller holding a session and no authenticator reaches exactly two outcomes:
+completing a run before the client meant to, which the completeness gate refuses, or completing a
+finished run, which is what the legitimate client was about to do. Neither is a capability the begin's
+gate did not already grant, and a prompt here would fall at the one moment a person has the most to
+lose by abandoning the request.
+
+Not built: the client that does the actual encryption. Do not state it in the present tense until it
+ships.
 
 **The begin can write its row, and `key_rotations` still holds no `DELETE` of any shape.**
 `app-role-grants.sql` grants `SELECT`, `INSERT` and a column-listed `UPDATE` over `rotation_id`,
@@ -707,9 +728,9 @@ walkable now: `POST /api/me/key-rotation/chunks` reaches `ResealRowsHandler`, so
 rows. **`Completed` is not a row state and there is no edge back to `None`**: a completion deletes
 nothing, so the staging row survives its own run and what distinguishes the two states is the epoch —
 `Staged` is a staged generation above the manifest's, `Completed` is one equal to it, and a re-sent
-completion is refused on exactly that comparison. **No route walks that edge**: `CompleteKeyRotationHandler`
-exists and nothing a browser can reach calls it, so an account that begins a run stays in `Staged`
-until another begin replaces the staged generation.
+completion is refused on exactly that comparison. **`POST /api/me/key-rotation/completion` walks that
+edge**, so every edge in the diagram is now reachable from a browser; an account reaches `Completed`
+by that route and leaves it only by beginning another run.
 
 ## Edge Cases & Known Gotchas
 

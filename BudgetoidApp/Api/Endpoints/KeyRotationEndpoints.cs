@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using Application.KeyRotations.BeginKeyRotation;
+using Application.KeyRotations.CompleteKeyRotation;
 using Application.KeyRotations.ResealRows;
 using Application.Passkeys;
 using Application.Passkeys.Reauthentication;
@@ -10,11 +11,18 @@ using Microsoft.AspNetCore.Http.HttpResults;
 namespace Api.Endpoints;
 
 /// <summary>
-/// The routes of a content-key rotation. Two today: the begin, which stages the next generation's
-/// manifest and one copy of the new account keys per factor the account holds, and the chunk, which
-/// carries a batch of rows a client has re-sealed under that generation.
+/// The routes of a content-key rotation. Three: the begin, which stages the next generation's
+/// manifest and one copy of the new account keys per factor the account holds; the chunk, which
+/// carries a batch of rows a client has re-sealed under that generation; and the completion, which
+/// promotes what the begin staged into the account's live rows.
 /// </summary>
 /// <remarks>
+/// <para>
+/// <b>The completion decodes nothing, which is the one thing it has in common with neither of the
+/// others.</b> Its body carries a single identifier the binder has already produced, and every refusal
+/// a completion can make is about the account's own rows rather than about the caller's bytes. So the
+/// two paragraphs below are about the begin and the chunk and do not reach it.
+/// </para>
 /// <para>
 /// <b>THE BEGIN DECODES THE MANIFEST, AND IT IS THE ONLY ONE OF THE FOUR MANIFEST-CARRYING ROUTES
 /// THAT DOES. READ THIS BEFORE "TIDYING" THE DECODE DOWN INTO THE COMMAND.</b>
@@ -229,8 +237,94 @@ public static class KeyRotationEndpoints
             return TypedResults.NoContent();
         });
 
+        // THE SAME THREE ABSENCES AS THE TWO ROUTES ABOVE. No RequireAuthorization — the fallback
+        // policy already covers every route that declares nothing, and restating it here would stop
+        // the one line that defines the anonymous surface being the only one. Never AllowAnonymous.
+        // And no AllowsLockedSessionAttribute: a completion overwrites the only live copies of the
+        // account's content key, so a session opened by the federated credential reaching it would be
+        // a caller who cannot hold that key deciding which generation of it the account keeps.
+        //
+        // AND NO GATE OF ITS OWN, WHICH IS A DECISION AND NOT AN OMISSION — the argument the chunk
+        // above makes, sharpened. The destructive act and the authorizing act are two legs of one
+        // operation, and the authorization was created at the begin: a caller holding a session and no
+        // authenticator reaches exactly two outcomes here, completing a run before the client meant to,
+        // which the completeness gate refuses, or completing a finished run, which is what the
+        // legitimate client was about to do. Neither is a capability the begin's gate did not grant. A
+        // prompt on this line would also fall at the one moment a person has the most to lose by
+        // abandoning the request, with a rotation half applied behind it.
+        //
+        // 204, AND NOTHING HANDS BACK THE PROMOTED GENERATION — NOT A BODY MEMBER, NOT AN ETag, NOT A
+        // Location, NOT A HEADER OF THIS ROUTE'S OWN. docs/business-logic/account-keys.md requires a
+        // client's rotation-epoch record to rise only after the four-refusal gate over
+        // GET /api/me/account-keys has passed, and a number returned from here is one a client could
+        // advance its record from having judged nothing — an oracle rather than an observation, which
+        // is the whole of what that rule exists to prevent. A header is as good an oracle as a body:
+        // W/"2" is the epoch in a client's hands as surely as 2 is. The client re-reads the account
+        // keys and advances there. A 200 carrying the staged manifest would be the same defect wearing
+        // a status code, and a 201 would promise a resource no route serves.
+        //
+        // AND THE TEST THAT SWEEPS FOR IT CANNOT HOLD THE WHOLE RULE, SO THIS LINE IS WHERE THE REST OF
+        // IT LIVES. KeyRotationCompletionEndpointTests compares each header value WHOLE against the
+        // promoted epoch — it has to, because a Date header contains the digits of almost any small
+        // number and a containment test would report every response ever sent. Measured: a header
+        // carrying "epoch=2" passes all five of its cases. So a composite value, a cookie, or any other
+        // spelling that merely CONTAINS the generation is outside the sweep and is refused here, by
+        // this route writing no header at all.
+        //
+        // "/completion" AND NOT "/completions". The split the chunk's own comment sets out: a
+        // completion names one act finishing one run, the way "/erasure" and "/revocation" do, rather
+        // than the collection a POST appends to that a chunk is.
+        group.MapPost("/completion", async Task<NoContent> (
+            CompleteRotationRequest request,
+            CompleteKeyRotationHandler handler,
+            CancellationToken cancellationToken) =>
+        {
+            // NOTHING IS JUDGED ON THIS LINE, AND THE ABSENCE IS THE ROUTE. Every refusal a completion
+            // can make is about the account's own rows — which run is staged, whether the generation
+            // has already been promoted, whether a row is still outstanding, whether the factor set
+            // moved — and not one of them can be read off a body carrying a single identifier. The two
+            // routes above decode because their commands carry Domain values the wire's text has
+            // stopped being by then; this command carries a Guid the binder already produced.
+            await handler.HandleAsync(
+                new CompleteKeyRotationCommand(request.RotationId),
+                cancellationToken);
+
+            return TypedResults.NoContent();
+        });
+
         return endpoints;
     }
+
+    /// <summary>
+    /// The run being finished, and deliberately nothing else.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>ONE MEMBER, AND EVERY OTHER CANDIDATE IS REFUSED FOR THE REASON
+    /// <see cref="CompleteKeyRotationCommand" /> GIVES.</b> The staged manifest, the generation it is
+    /// filed at and the value each factor adopts were all fixed by the begin and are on file already;
+    /// carried again here they would be a second statement of the same values, able to disagree with
+    /// the staged one at the one moment a disagreement cannot be undone. A <c>manifest</c>, a
+    /// <c>rotationEpoch</c> or a <c>seals</c> array added beside <see cref="RotationId" /> would bind,
+    /// be forwarded nowhere, and redden nothing — which is why the wire shape is stated here rather
+    /// than inferred from what the handler happens to read.
+    /// </para>
+    /// <para>
+    /// <b>No account is named and none ever may be</b>, the rule every command on this path states: the
+    /// only identity a completion acts on is the session's, because a user id on this body would be an
+    /// account a caller could choose for the one write in the product that nothing can put back.
+    /// </para>
+    /// <para>
+    /// <b><see cref="RotationId" /> is not <c>required</c></b>, for the reason
+    /// <see cref="SealRequest" /> gives about its own members. A body of <c>{}</c> binds it to
+    /// <see cref="Guid.Empty" />, which reaches the handler's first refusal and is answered a 400 keyed
+    /// on <c>RotationId</c> — the member a caller can correct. Marked <c>required</c> the framework
+    /// would key its own 400 on the missing member instead, so a caller could no longer tell a stale
+    /// identifier from a malformed body by the key it gets back.
+    /// </para>
+    /// </remarks>
+    /// <param name="RotationId">The run being completed, as the begin staged it.</param>
+    private sealed record CompleteRotationRequest(Guid RotationId);
 
     /// <summary>
     /// Turns the seals a caller sent into the command's own, or returns <see langword="false" /> when one

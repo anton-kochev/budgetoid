@@ -40,8 +40,11 @@ namespace Application.KeyRotations.CompleteKeyRotation;
 /// most to lose by abandoning the request.
 /// </para>
 /// <para>
-/// <b>No route reaches this handler yet.</b> The route that carries a completion owes the request shape
-/// and nothing this handler does not already hold.
+/// <b><c>POST /api/me/key-rotation/completion</c> reaches this handler, and it adds nothing.</b> That
+/// route binds one identifier and forwards it: it judges no member, holds no gate of its own, and
+/// answers 204 carrying nothing — not a body and not a header — because the promoted generation is a
+/// number a client may only learn by re-reading <c>GET /api/me/account-keys</c> through the gate
+/// <c>docs/business-logic/account-keys.md</c> puts over it.
 /// </para>
 /// </remarks>
 public sealed class CompleteKeyRotationHandler(
