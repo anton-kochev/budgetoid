@@ -2897,7 +2897,13 @@ pair fails to open it and the account is not presented as unlocked.
 ## Edge Cases & Known Gotchas
 
 - **Every function in the module has a live caller, so "keep it, something is waiting" is not the
-  reason to keep any of it.** `/register` reaches `generateAccountKeys`,
+  reason to keep any of it — with one exception, named rather than left to be found.**
+  `encapsulateAccountKeysTo` is reached only from inside the module, by the mint, which now spells
+  itself as a call to it; it is *exported* for a caller that is not built. The reason it is exported
+  early is that the two entry points differ in exactly the thing that matters — the mint draws the
+  keypair it encapsulates to, and the absent caller holds nothing of the factor but a public key it
+  read out of a manifest — and folding the second back into the first is how a call site comes to
+  name a point of its own. `/register` reaches `generateAccountKeys`,
   `keyEncryptionKeyFromRecoveryCode` and both doors, and `mintFactorKeypair` and `sealFactorManifest`
   one file over; the ceremony reaches
   `keyEncryptionKeyFromPasskey` on **all three** of its legs — `createPasskey`, `assertPasskey` and

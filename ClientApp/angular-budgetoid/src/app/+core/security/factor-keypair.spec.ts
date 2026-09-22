@@ -70,6 +70,7 @@ import {
   FACTOR_PUBLIC_KEY_BYTES,
   FACTOR_PUBLIC_KEY_OFFSET,
   WRAPPED_PRIVATE_KEY_BYTES,
+  encapsulateAccountKeysTo,
   mintFactorKeypair,
   openFactorKeypair,
   requireUncompressedPoint,
@@ -641,6 +642,14 @@ const SECOND_ACCOUNT_KEYS = {
   indexKey: fromHex(SECOND.indexKeyHex),
 };
 
+// The next generation of the account's two keys, for the rotation cases below.
+// The second instance's pair does the job because it is a pair no factor in
+// this file was minted over, and its two halves differ from one another —
+// which is the whole of what the order assertion has to work with. Nothing of
+// that instance's private material is touched: a rotation holds account keys
+// and public keys and nothing else, and so does every case that uses this.
+const NEXT_GENERATION_ACCOUNT_KEYS = SECOND_ACCOUNT_KEYS;
+
 // The encapsulation framing, for the one case that has to look inside a value
 // this spec did not receive an answer for: `version(1) ‖ ephemeral point(65) ‖
 // nonce(12) ‖ ciphertext ‖ tag(16)`. The point width is the module's own
@@ -1088,6 +1097,242 @@ describe('mintFactorKeypair', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Encapsulating to a point this suite did not draw — the rotation's half of a
+// mint.
+//
+// **A rotation holds the next generation of the account's two keys and a set of
+// public keys, and nothing else.** No private half, no key-encryption key, no
+// authenticator in the room — that is the entire reason a factor carries a
+// keypair instead of its own copy of both account keys. So every case here
+// takes the factor's point the way a rotation takes it, out of a value that
+// stands for the account's factor manifest, and pairs what it stages with the
+// wrapped private key that is *already* stored. That pair was never written
+// together, which is what no case above could produce.
+
+describe('encapsulateAccountKeysTo', () => {
+  it("stages a value that opens beside the factor's live wrapped private key", async () => {
+    // Arrange
+    // The factor, enrolled some time ago: its wrapped private key is stored and
+    // its public key is named in the account's manifest. The mint here stands
+    // in for that history, and the only thing carried out of it into the act
+    // below is the point — copied, so that nothing of the minted object can be
+    // read through it.
+    const minted = await mintFactorKeypair(
+      keyEncryptionKey,
+      VECTOR_FILE.inputs.factorId,
+      FROZEN_ACCOUNT_KEYS,
+    );
+    const factorPublicKey = Uint8Array.from(minted.publicKey);
+
+    // Act
+    const staged = await encapsulateAccountKeysTo(
+      VECTOR_FILE.inputs.factorId,
+      NEXT_GENERATION_ACCOUNT_KEYS,
+      factorPublicKey,
+    );
+    const opened = await openFactorKeypair(
+      keyEncryptionKey,
+      VECTOR_FILE.inputs.factorId,
+      {
+        wrappedPrivateKey: minted.wrappedPrivateKey,
+        encapsulatedAccountKeys: staged,
+      },
+    );
+
+    // Assert
+    // The keys that came back are the *next* generation, not the ones this
+    // factor was minted over — so the value really was opened rather than the
+    // mint's own answer arriving by another road.
+    expect(toHex(opened.contentKey)).toBe(SECOND.contentKeyHex);
+    expect(toHex(opened.indexKey)).toBe(SECOND.indexKeyHex);
+    expect(SECOND.contentKeyHex).not.toBe(VECTOR_FILE.inputs.contentKeyHex);
+    // The width the column takes, through the strict decoder, so the wire form
+    // is pinned as unpadded base64url at the same time.
+    expect(decodeBase64Url(staged)).toHaveLength(
+      ENCAPSULATED_ACCOUNT_KEYS_BYTES,
+    );
+  });
+
+  it('puts the content key first, which is the one thing a round trip cannot see', async () => {
+    // Arrange
+    // **A reversed pair is the right width, the right version, it stores, it
+    // reads back and it opens.** The frozen vectors make that argument for the
+    // mint; it has to be made again here, because this path builds the same
+    // 64-byte plaintext from its own arguments and a transposition in it would
+    // pass every other case in this section.
+    const minted = await mintFactorKeypair(
+      keyEncryptionKey,
+      VECTOR_FILE.inputs.factorId,
+      FROZEN_ACCOUNT_KEYS,
+    );
+    const factorPublicKey = Uint8Array.from(minted.publicKey);
+
+    // Act
+    const staged = await encapsulateAccountKeysTo(
+      VECTOR_FILE.inputs.factorId,
+      NEXT_GENERATION_ACCOUNT_KEYS,
+      factorPublicKey,
+    );
+    const opened = await openFactorKeypair(
+      keyEncryptionKey,
+      VECTOR_FILE.inputs.factorId,
+      {
+        wrappedPrivateKey: minted.wrappedPrivateKey,
+        encapsulatedAccountKeys: staged,
+      },
+    );
+
+    // Assert
+    // The arrangement first: two halves that were the same value could not tell
+    // an order from its reverse, and this case would pass on either.
+    expect(SECOND.contentKeyHex).not.toBe(SECOND.indexKeyHex);
+    expect(toHex(opened.contentKey)).toBe(SECOND.contentKeyHex);
+    expect(toHex(opened.contentKey)).not.toBe(SECOND.indexKeyHex);
+    expect(toHex(opened.indexKey)).toBe(SECOND.indexKeyHex);
+    expect(toHex(opened.indexKey)).not.toBe(SECOND.contentKeyHex);
+  });
+
+  it('binds the value to the factor id it was staged under, and to no other', async () => {
+    // Arrange
+    // **The point is held still and only the id moves.** Staging twice to one
+    // public key, under two ids, is the one arrangement in which the refusal
+    // can only be the binding: the key agreement, the key-encryption key and
+    // the private half that opens are the same factor's in both halves of the
+    // pair. A case that also swapped the factor would be refused for two
+    // reasons and would say which of them neither.
+    const minted = await mintFactorKeypair(
+      keyEncryptionKey,
+      VECTOR_FILE.inputs.factorId,
+      FROZEN_ACCOUNT_KEYS,
+    );
+    const factorPublicKey = Uint8Array.from(minted.publicKey);
+    const openAs = async (staged: string): Promise<unknown> =>
+      openFactorKeypair(keyEncryptionKey, VECTOR_FILE.inputs.factorId, {
+        wrappedPrivateKey: minted.wrappedPrivateKey,
+        encapsulatedAccountKeys: staged,
+      });
+
+    // Act
+    const [anotherFactorsId, itsOwnId] = await settleAll(
+      encapsulateAccountKeysTo(
+        OTHER_FACTOR_ID,
+        NEXT_GENERATION_ACCOUNT_KEYS,
+        factorPublicKey,
+      ).then(openAs),
+      encapsulateAccountKeysTo(
+        VECTOR_FILE.inputs.factorId,
+        NEXT_GENERATION_ACCOUNT_KEYS,
+        factorPublicKey,
+      ).then(openAs),
+    );
+
+    // Assert
+    // The control first, and it is what makes the refusal mean anything: the
+    // same point, the same keys and the same wrapped private key open when the
+    // id agrees.
+    expect(OTHER_FACTOR_ID).not.toBe(VECTOR_FILE.inputs.factorId);
+    expect(itsOwnId.status, 'a value staged under its own factor id').toBe(
+      'fulfilled',
+    );
+    expectRefused(anotherFactorsId, "a value staged under another factor's id");
+  });
+
+  it('leaves the mint exactly where it was, as one of its two callers', async () => {
+    // Arrange
+    // The mint is now a caller of this function rather than a second spelling
+    // of it, and what that must not have cost is anything about the value it
+    // produces: same grammar, same associated data, same framing, and a fresh
+    // ephemeral pair per call rather than one the caller supplies. The two
+    // values below are built over the *same* account keys and the same point,
+    // so everything an implementation is allowed to repeat is repeated.
+    const minted = await mintFactorKeypair(
+      keyEncryptionKey,
+      VECTOR_FILE.inputs.factorId,
+      FROZEN_ACCOUNT_KEYS,
+    );
+    const factorPublicKey = Uint8Array.from(minted.publicKey);
+
+    // Act
+    const staged = await encapsulateAccountKeysTo(
+      VECTOR_FILE.inputs.factorId,
+      FROZEN_ACCOUNT_KEYS,
+      factorPublicKey,
+    );
+    const fromTheMint = await openFactorKeypair(
+      keyEncryptionKey,
+      VECTOR_FILE.inputs.factorId,
+      minted,
+    );
+    const fromTheStaging = await openFactorKeypair(
+      keyEncryptionKey,
+      VECTOR_FILE.inputs.factorId,
+      {
+        wrappedPrivateKey: minted.wrappedPrivateKey,
+        encapsulatedAccountKeys: staged,
+      },
+    );
+
+    // Assert
+    expect(toHex(fromTheMint.contentKey)).toBe(
+      VECTOR_FILE.inputs.contentKeyHex,
+    );
+    expect(toHex(fromTheMint.indexKey)).toBe(VECTOR_FILE.inputs.indexKeyHex);
+    expect(toHex(fromTheStaging.contentKey)).toBe(
+      VECTOR_FILE.inputs.contentKeyHex,
+    );
+    expect(toHex(fromTheStaging.indexKey)).toBe(VECTOR_FILE.inputs.indexKeyHex);
+    // Two calls over identical arguments, and the ephemeral point is drawn per
+    // call in both of them: a shared one would hand two factors the same
+    // AES-GCM (key, nonce) pair.
+    expect(ephemeralPointOf(staged)).not.toBe(
+      ephemeralPointOf(minted.encapsulatedAccountKeys),
+    );
+  });
+
+  it("refuses account keys of any width but the account's", async () => {
+    // Arrange
+    // **A short content key does not produce a short value.** The plaintext is
+    // one fixed-width buffer split by position, so sixteen bytes of content key
+    // leave sixteen zero bytes behind them and shift nothing: the value is the
+    // right width, it stores, it reads back and it opens, into a content key
+    // that is half padding. `mintFactorKeypair` refuses that before it draws
+    // anything; this entry point has no draw in front of it and no caller of
+    // its own to lean on, so it refuses here.
+    const minted = await mintFactorKeypair(
+      keyEncryptionKey,
+      VECTOR_FILE.inputs.factorId,
+      FROZEN_ACCOUNT_KEYS,
+    );
+    const factorPublicKey = Uint8Array.from(minted.publicKey);
+    const halfAKey = {
+      contentKey: FROZEN_ACCOUNT_KEYS.contentKey.slice(0, 16),
+      indexKey: FROZEN_ACCOUNT_KEYS.indexKey,
+    };
+
+    // Act
+    const [short, whole] = await settleAll(
+      encapsulateAccountKeysTo(
+        VECTOR_FILE.inputs.factorId,
+        halfAKey,
+        factorPublicKey,
+      ),
+      encapsulateAccountKeysTo(
+        VECTOR_FILE.inputs.factorId,
+        FROZEN_ACCOUNT_KEYS,
+        factorPublicKey,
+      ),
+    );
+
+    // Assert
+    expect(halfAKey.contentKey.length).toBeLessThan(
+      FROZEN_ACCOUNT_KEYS.contentKey.length,
+    );
+    expect(whole.status, "the account's own two keys").toBe('fulfilled');
+    expectRefused(short, 'a content key of half the width');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // The point guard.
 
 describe('requireUncompressedPoint — IFR-019 encoding only, never IFR-023 curve validation', () => {
@@ -1517,14 +1762,19 @@ describe('the module surface', () => {
       // The two ceremonies.
       'mintFactorKeypair',
       'openFactorKeypair',
+      // The half of a mint that a rotation performs on its own: a factor's
+      // public key is the only thing an absent authenticator leaves behind, so
+      // the path that encapsulates to one has to be reachable without the
+      // ceremony that draws it.
+      'encapsulateAccountKeysTo',
       // The encoding guard, open because `factor-manifest.ts` calls it rather
       // than writing a second `length !== 65` beside its own loop. It is the
       // one rule in this module with a second caller.
       'requireUncompressedPoint',
-      // **Ten names and no eleventh.** `drawFactorPkcs8`,
+      // **Eleven names and no twelfth.** `drawFactorPkcs8`,
       // `importFactorPrivateKey`, `encapsulationKey` and `sealEncapsulated` are
       // deliberately not here: each of the four is a step of a ceremony that
-      // only means anything in the order the two exported ones run it, and the
+      // only means anything in the order the exported ones run it, and the
       // first of them is the only frame in this codebase that ever holds an
       // extractable private key.
     ].sort();

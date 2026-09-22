@@ -471,6 +471,100 @@ export async function openFactorKeypair(
 }
 
 /**
+ * Encapsulates the account's two keys to one factor's public key, or rejects.
+ *
+ * **This is the half of a mint that a rotation performs on its own.** A
+ * rotation carries the *next* generation of the account's two keys to every
+ * factor the account has, and all it holds of each of them is the public key
+ * the account's factor manifest names — no private half, no key-encryption key,
+ * and no authenticator in the room. {@link mintFactorKeypair} cannot answer for
+ * it, because that ceremony *draws* the keypair it encapsulates to, which is
+ * exactly the act a rotation must not perform on a factor that already exists.
+ * The value this returns is meant to be paired with the wrapped private key
+ * already stored for `factorId`, and the two open together although they were
+ * never written together.
+ *
+ * The answer is unpadded base64url over {@link ENCAPSULATED_ACCOUNT_KEYS_BYTES}
+ * bytes, the form the column takes and the server's own decoder accepts.
+ *
+ * **Exactly two things have to agree for it to open, and neither is checked
+ * here because neither can be**: `factorId`, which binds both the associated
+ * data and the HKDF info, and `factorPublicKey`, which is the point the
+ * recipient's private half agrees under. This side holds nothing of the factor
+ * but its point, so a point belonging to somebody else produces a value of
+ * exactly the right width that nobody can ever open. What keeps a set of these
+ * honest is the manifest the points were read out of — authenticated under a
+ * key the server does not hold — and not anything available in this frame.
+ *
+ * **What it does not do is re-open what it wrote, and that is not an
+ * omission.** {@link mintFactorKeypair} does (FR-134) because it is holding the
+ * private half it has just drawn; there is no private half here to read a value
+ * back with, for any factor, ever. The check stays where the material for it
+ * exists rather than moving to where it would have to be faked.
+ *
+ * `async` is load-bearing for {@link openFactorKeypair}'s reason: the width
+ * refusal below is a `throw`, and a synchronous throw from a function whose
+ * signature promises a `Promise` escapes past every caller's `catch` on the
+ * result.
+ */
+export async function encapsulateAccountKeysTo(
+  factorId: string,
+  keys: AccountKeys,
+  factorPublicKey: Uint8Array,
+): Promise<string> {
+  // The mint refuses these widths too, one draw earlier. Refusing again is not
+  // a second opinion: this is an entry point in its own right, and the value a
+  // short key produces is the most expensive kind of wrong — the plaintext is
+  // one fixed-width buffer split by position, so a short content key pads
+  // itself out with zeroes and the result stores, reads back and opens.
+  requireAccountKeyPair(keys);
+
+  // The ephemeral pair is drawn **non-extractable**: its public half is
+  // exportable regardless (the platform makes every generated public key so,
+  // measured), and its private half is needed for exactly one agreement and
+  // must survive nothing. It is also drawn *per call* — a caller that reused one
+  // ephemeral pair, or one nonce, across the factors of one rotation passes
+  // every round trip and hands two factors the same AES-GCM `(key, nonce)`
+  // pair, which surrenders the plaintext of both and the authentication subkey
+  // with it. Which is why it is drawn here rather than taken as an argument:
+  // there is no way for a caller to supply one.
+  const ephemeral = await crypto.subtle.generateKey(ECDH_P256, false, [
+    'deriveBits',
+  ]);
+  const ephemeralPublicKey = new Uint8Array(
+    await crypto.subtle.exportKey('raw', ephemeral.publicKey),
+  );
+
+  const key = await encapsulationKey({
+    factorId,
+    ephemeralPublicKey,
+    factorPublicKey,
+    privateKey: ephemeral.privateKey,
+    peerPublicKey: factorPublicKey,
+  });
+
+  // Content key first, no separator. Hoisted so it can be wiped: inline it would
+  // be a third copy of both of the account's keys that nothing names, one per
+  // factor, for the life of the tab.
+  const plaintext = new Uint8Array(ACCOUNT_KEYS_PLAINTEXT_BYTES);
+  plaintext.set(keys.contentKey, CONTENT_KEY_OFFSET);
+  plaintext.set(keys.indexKey, INDEX_KEY_OFFSET);
+
+  try {
+    return encodeBase64Url(
+      await sealEncapsulated(
+        key,
+        ephemeralPublicKey,
+        plaintext,
+        encapsulatedAccountKeysAssociatedData(factorId),
+      ),
+    );
+  } finally {
+    plaintext.fill(0);
+  }
+}
+
+/**
  * Refuses a point in any encoding but the uncompressed 65-byte one.
  *
  * **IFR-019 and exactly IFR-019**: a length and a leading byte, synchronously,
@@ -650,54 +744,21 @@ async function encapsulationKey(
   }
 }
 
-// Seals the account's two keys to a factor's public key and frames the result.
+// The mint's own spelling of {@link encapsulateAccountKeysTo}, over the private
+// half it has just drawn.
 //
-// The ephemeral pair is drawn **non-extractable**: its public half is exportable
-// regardless (the platform makes every generated public key so, measured), and
-// its private half is needed for exactly one agreement and must survive nothing.
-// It is also drawn *per call* — a mint that reused one ephemeral pair, or one
-// nonce, under one key-encryption key passes every round trip and hands two
-// factors the same AES-GCM `(key, nonce)` pair, which surrenders the plaintext of
-// both and the authentication subkey with it.
-async function encapsulateAccountKeys(
+// It exists so that the mint never names a point of its own: the one it
+// encapsulates to is the one `importFactorPrivateKey` lifted out of this key's
+// PKCS#8, carried here as the half it belongs to rather than as a loose array a
+// call site could transpose. A rotation has no such companion — a public key is
+// exactly the thing an absent authenticator leaves behind — which is why the
+// exported one takes the point on its own.
+function encapsulateAccountKeys(
   factorId: string,
   keys: AccountKeys,
   factor: FactorPrivateHalf,
 ): Promise<string> {
-  const ephemeral = await crypto.subtle.generateKey(ECDH_P256, false, [
-    'deriveBits',
-  ]);
-  const ephemeralPublicKey = new Uint8Array(
-    await crypto.subtle.exportKey('raw', ephemeral.publicKey),
-  );
-
-  const key = await encapsulationKey({
-    factorId,
-    ephemeralPublicKey,
-    factorPublicKey: factor.publicKey,
-    privateKey: ephemeral.privateKey,
-    peerPublicKey: factor.publicKey,
-  });
-
-  // Content key first, no separator. Hoisted so it can be wiped: inline it would
-  // be a third copy of both of the account's keys that nothing names, one per
-  // factor, for the life of the tab.
-  const plaintext = new Uint8Array(ACCOUNT_KEYS_PLAINTEXT_BYTES);
-  plaintext.set(keys.contentKey, CONTENT_KEY_OFFSET);
-  plaintext.set(keys.indexKey, INDEX_KEY_OFFSET);
-
-  try {
-    return encodeBase64Url(
-      await sealEncapsulated(
-        key,
-        ephemeralPublicKey,
-        plaintext,
-        encapsulatedAccountKeysAssociatedData(factorId),
-      ),
-    );
-  } finally {
-    plaintext.fill(0);
-  }
+  return encapsulateAccountKeysTo(factorId, keys, factor.publicKey);
 }
 
 // `version ‖ ephemeral point ‖ nonce ‖ ciphertext ‖ tag`.
