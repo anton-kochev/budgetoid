@@ -56,9 +56,9 @@ everything.
 
 **The schema, the domain behaviour, the completeness gate, the handlers a run needs, the three routes
 that walk one, the read that resumes an interrupted one, a typed client for all four, the material a
-run carries, and — new — the driver that spends it. A browser can now begin a rotation and walk it
-to its 204. What is still missing is the screen that presses the button and the leg that picks up an
-interrupted run.** `POST /api/me/key-rotation` stages a run,
+run carries, and the driver that spends it — now from either end. A browser can begin a rotation and
+walk it to its 204, and a browser that lost one to a reload can pick it up and finish it. What is
+still missing is the screen that presses either button.** `POST /api/me/key-rotation` stages a run,
 `POST /api/me/key-rotation/chunks` re-seals a batch of rows,
 `POST /api/me/key-rotation/completion` promotes the staged generation, and
 `GET /api/me/key-rotation` hands a staged run back to a client that lost it — so `key_rotations`,
@@ -127,7 +127,7 @@ against those lists, and `KeyRotationWireContractTests` reflects over the server
 camel-cases their property names through the serializer the API ships, and compares them against the
 same lists as **sets in both directions**. Neither may be deleted on the grounds that the other
 covers the contract, because a list one side alone reads pins one side alone; and the driver that
-walks a run — `KeyRotationService`, root-provided, whose one entry point `begin()` assembles the
+walks a run — `KeyRotationService`, root-provided, whose entry point `begin()` assembles the
 material from one passkey assertion, posts the begin, reads the published inventory, collects every
 narrative row across the five arms, re-seals each under the next content key and recomputes each
 blind index under the next index key, posts them in chunks sized by the published budget, and posts
@@ -137,14 +137,48 @@ in ECMAScript `#` fields with no accessor, publishes a phase, a numerator over a
 refusal word as signals, and keeps **no per-row progress record anywhere** — the chunk route answers
 no count and the resume read carries none, and a client-side one would be a second numerator able to
 disagree with the server's completeness gate. Its numerator counts **rows carried by a chunk the
-server answered 204**, never rows collected, sealed or queued. Two refusals are its own and both
-abort before a chunk is posted: an inventory naming a budget row, which no chunk arm can stamp and
-which no account in this product can produce, and an arm whose collected rows are **fewer** than the
-count the begin published, which is a client that cannot see rows the gate will count. Collecting
-**more** than was published is legal and raises the denominator — rows created between the begin and
-the collection are sealed under the generation being replaced, so a chunk has to visit them. Rows
-created after a collection make the completion answer `rotation_incomplete`, and the remedy is
-bounded: **three collect-and-send passes, then a named failure**, never a loop.
+server answered 204**, never rows collected, sealed or queued. Two refusals are its own on either
+press and both abort before a chunk is posted: an inventory naming a budget row, which no chunk arm
+can stamp and which no account in this product can produce, and an arm whose collected rows are
+**fewer** than the count the inventory published, which is a client that cannot see rows the gate will
+count. Collecting **more** than was published is legal and raises the denominator — rows created
+between the begin and the collection are sealed under the generation being replaced, so a chunk has to
+visit them. Rows created after a collection make the completion answer `rotation_incomplete`, and the
+remedy is bounded: **three collect-and-send passes, then a named failure**, never a loop.
+
+**A run is picked up from the other end by the same driver, and the leg that does it posts no begin.**
+`KeyRotationService.resume()` reads `GET /api/me/key-rotation` first — an account with nothing staged
+has no key material worth reading — and answers `rotation: null` by going back to rest with no word at
+all, because each of the six says what became of a *run* and none of them is true of one that is not
+there. Where there is a run it reads the account keys, hands both answers to
+`key-rotation-material.ts`, which recovers the staged generation rather than minting one, and then
+drives the identical collection, chunking and completion a begin drives — **quoting the `rotationId`
+the server handed back**, minting no epoch and drawing no identifier, because the rows the interrupted
+run stamped are rows this run really has done and the completeness gate counts a row only under the
+run that stamped it. Both generations are live for the length of it, which is what the staging tables
+are for: a resumed collection meets an account that is part one generation and part the other. The bar
+starts again at zero and the whole account is carried again — the server publishes no per-row progress,
+the resume read carries none, and a client-side one is refused.
+
+**One refusal is the resume's own, it is made before the first list read, and both directions are the
+rule.** A staged seal naming a factor the account no longer holds, and a live factor the staged run
+sealed nothing for, are both `factors-moved`. The completion would refuse such a run anyway — the gate
+above compares the staged seal set against the live factors in both directions and answers
+`factor_set_moved` — but by then a whole account has been collected, re-sealed and sent under a
+generation the promotion will not accept. The comparison costs one pass over two short lists off the
+two reads the resume has already made. It is **not** the comparison `key-rotation-material.ts` makes:
+that one judges the staged seals against the **staged** manifest, which on a resume is the set as it
+stood when the run began, so the two agree perfectly while neither of them is the set the account holds
+now.
+
+**Which control a section draws is a read of its own.** `KeyRotationService.readStagedRotation()`
+publishes the staged run's `startedAtUtc` and nothing else of it, on a `staged` signal — the record
+beside that date carries one copy of the next generation's account keys per factor, which is not a
+thing a screen binds. A read that did not happen publishes "nothing to finish" rather than a word, for
+the same reason the null answer gets none, and it costs little: a begin made over a run that is really
+there picks that run up. A run that reached its 204 clears the signal, and so does a `factors-moved` —
+that word's copy tells somebody to start again rather than to finish, and a control labelled **Finish
+rotating** underneath it would be a screen disagreeing with itself.
 
 **The completion route hands back nothing, and that is the one decision the route makes.** Not a body
 member, not an `ETag`, not a `Location`, not a header of its own: a client's rotation-epoch record may
@@ -163,9 +197,20 @@ gate did not already grant, and a prompt here would fall at the one moment a per
 lose by abandoning the request.
 
 Not built: the screen — no key-rotation section renders on `/app/settings`, no control exists, and
-nothing runs the passkey ceremony a begin is authorized by; and the leg that picks up an interrupted
-run, which reads `GET /api/me/key-rotation` and drives the chunks and the completion without posting
-a begin at all. Do not state either of them in the present tense until it ships.
+nothing runs the passkey ceremony either press is authorized by; and the repair a `factors-moved`
+points at. Do not state either of them in the present tense until it ships.
+
+**That second one is a gap and is written down as work rather than described as a design.** The
+remedy a moved factor set needs is a begin carrying the **corrected** set, and `begin()` does half of
+it: it carries the staged generation forward rather than minting one, which is what keeps the rows an
+interrupted run already re-sealed readable. What it does not do is re-encapsulate that generation to
+the live set or re-seal the manifest over it — `key-rotation-material.ts`' recovering arm restates the
+staged manifest and the staged seals byte for byte, and argues for that in its own words. So a begin
+made after a factor set moved posts a seal set naming the factors that were there when the run began,
+the begin's own factor-set gate refuses it as a `400`, and the client's word is `unrecognised`:
+measured by pressing `begin()` against that state in the driver's fake, which models that gate. What
+would close it is a change to that arm and to nothing else, and no third entry point: two ways to start
+a run is how a caller holding a staged run reaches the minting one.
 
 **The begin can write its row, and `key_rotations` still holds no `DELETE` of any shape.**
 `app-role-grants.sql` grants `SELECT`, `INSERT` and a column-listed `UPDATE` over `rotation_id`,

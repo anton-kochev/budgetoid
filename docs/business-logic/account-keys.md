@@ -2471,8 +2471,12 @@ authentication tag. **That check is built and runs on every unlock** —
 `AccountKeyCustodyService.manifestRefusal`, set equality in both directions beside a
 refusal of a response carrying no manifest at all, argued at
 [The one class that holds them](#the-one-class-that-holds-them). A rotation makes the same
-comparison a second time and adds the one nothing else anywhere makes — its own seal set
-against the set the manifest it is filed under declares — in `key-rotation-material.ts`;
+comparison a second time and adds **two** nothing else anywhere makes: its own seal set
+against the set the manifest it is filed under declares, in `key-rotation-material.ts`; and,
+where a run is being picked up rather than begun, the **staged** seal set against the
+account's **live** factor set, in `KeyRotationService` — the two sets are equal on the day a
+run begins and part company the moment a factor is enrolled or revoked while it is in flight,
+which no comparison over one instant's answer can see.
 [key-rotation.md](key-rotation.md) holds that half, including what is still true of the
 server: it can read no byte of a manifest and so judges no set named inside one.
 **This is a decision, not a gap**, and it is the same shape as the

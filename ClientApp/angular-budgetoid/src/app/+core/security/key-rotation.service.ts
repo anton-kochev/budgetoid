@@ -1,5 +1,5 @@
-// What drives a key rotation: one press, one run, and every sealed value in the
-// account rewritten under a generation this tab draws and hands to every factor.
+// What drives a key rotation: a press, one run, and every sealed value in the
+// account rewritten under a generation every factor ends up holding.
 //
 // The order is the act. Assemble the material from one ceremony and the two
 // reads; post the begin, which stages the manifest and one seal per factor and
@@ -8,6 +8,16 @@
 // the next index key; post them in chunks; post the completion. **It stops at
 // the 204.** Taking custody of the promoted generation is a step of its own and
 // is not taken here.
+//
+// **Two presses and one run, because an interruption leaves nothing in the
+// browser.** A rotation that lost its tab survives as server state alone — a
+// staging row, a staged epoch, one seal per factor and a stamp on every row a
+// chunk reached — so `resume()` walks back from that and from one fresh
+// ceremony, and `begin()` is the only one of the two that posts a begin or
+// draws a generation. Everything after the material is one path: the same
+// collection, the same chunking, the same completion, under the identifier the
+// server hands back. What differs is entirely in how the run's four values are
+// got, and that is `key-rotation-material.ts`' half.
 //
 // **`key-rotation-material.ts` owns the run's domain rules and this file owns
 // none of them.** Which generation is minted and which is recovered, the four
@@ -61,6 +71,7 @@ import {
   type ResealedNamedRowBody,
   type ResealedTransactionBody,
   type RotationInventoryDto,
+  type StagedRotationDto,
 } from '@app-core/api/key-rotation-api.service';
 import { MeApiService } from '@app-core/api/me-api.service';
 import { PayeesApiService } from '@app-core/api/payees-api.service';
@@ -145,6 +156,27 @@ export interface KeyRotationProgress {
   readonly records: number;
 }
 
+/**
+ * A run this account has staged and not finished, as the screen that offers to
+ * finish it needs it.
+ *
+ * **One member, and the run's identifier is deliberately not one of them.** The
+ * chapter's section draws either **Rotate keys** or **Finish rotating** with the
+ * date the run started in the line above it, so the date is the whole of what a
+ * screen renders from this. {@link KeyRotationService.resume} reads the
+ * identifier out of the server's own answer at the moment it quotes it, rather
+ * than from a signal a screen has been holding since the page loaded — which
+ * over the length of a run is one value able to disagree with what is really
+ * staged.
+ */
+export interface StagedRotation {
+  /**
+   * When the run was begun, as the server wrote it. It stays a string all the
+   * way to whatever renders it; nothing here parses a calendar.
+   */
+  readonly startedAtUtc: string;
+}
+
 // How many times a run collects, sends and asks to finish before it gives up.
 //
 // **Bounded, and the bound is the rule.** Rows created after a collection make
@@ -201,6 +233,79 @@ interface Collection {
   readonly categoryGroups: readonly OpenedDescribedRow[];
   readonly categories: readonly OpenedDescribedRow[];
   readonly transactions: readonly OpenedNotedRow[];
+}
+
+// Where a press leaves the phase when it did not throw: at its 204, or back at
+// rest because there was nothing to do. The two in between are phases a run
+// passes through and never ends in.
+type RestingPhase = Extract<KeyRotationPhase, 'idle' | 'finished'>;
+
+// What a screen draws from a staged run, or `null` for an account with nothing
+// in flight.
+//
+// **A projection and not the record**, for the reason the registration payload
+// projects `getClientExtensionResults()` rather than forwarding it: what a
+// screen needs is one date, and the record beside it carries one copy of the
+// next generation's account keys per factor. Handed to a signal, those would be
+// key material on an object every injector in the app can reach, held for as
+// long as a section is on screen, and — being strings — serializable by every
+// inspector there is.
+function stagedRotationOf(
+  staged: StagedRotationDto | null,
+): StagedRotation | null {
+  return staged === null ? null : { startedAtUtc: staged.startedAtUtc };
+}
+
+// The one refusal a resume makes that a begin cannot, made before anything is
+// opened and long before anything is posted.
+//
+// **The server will refuse this run's completion anyway, and that is too
+// late.** `factor_set_moved` arrives after a whole account has been collected,
+// re-sealed and sent — every row rewritten under a generation whose seal set
+// the promotion will not accept. The comparison below costs one pass over two
+// short lists and is made before the first list read.
+//
+// **Both directions, and they are two different events.**
+//
+//   * A staged seal naming a factor the account no longer holds — an
+//     authenticator revoked while the run was in flight.
+//   * A live factor the run staged no seal for — one enrolled while it was in
+//     flight. The resume read leaves such a factor **out** of `seals` rather
+//     than filling it in from its live row, so the absence is the signal; a
+//     filled-in value would be the right width, the right version and the
+//     generation this run is *replacing*, and a client that adopted it would
+//     believe that factor already holds the new keys.
+//
+// Checked one way only, the other passes cleanly — and it is not the same
+// comparison `key-rotation-material.ts` makes either. That module's fourth
+// refusal judges the **staged** seals against the **staged** manifest, which on
+// a resume is the set as it was when the run began: the two agree perfectly
+// while neither of them is the set the account holds now.
+//
+// **The served list is what this compares against, unauthenticated, and that is
+// safe in this direction only.** A set the manifest has not vouched for cannot
+// be used here to make a run *proceed* — the material's own second refusal
+// still has to find the served set equal to the one the live manifest declares
+// — so the worst a shaped response does is refuse a run, which is a thing any
+// server can do by answering anything at all.
+function requireTheFactorSetHeldStill(
+  sealed: readonly { readonly factorId: string }[],
+  live: readonly { readonly factorId: string }[],
+): void {
+  const sealedIds = new Set(sealed.map((seal) => seal.factorId));
+  const liveIds = new Set(live.map((entry) => entry.factorId));
+
+  if (
+    sealed.every((seal) => liveIds.has(seal.factorId)) &&
+    live.every((entry) => sealedIds.has(entry.factorId))
+  ) {
+    return;
+  }
+
+  throw new KeyRotationRefusal(
+    'factors-moved',
+    'The factors this account holds are not the ones the staged run sealed for, so finishing it would leave one of them holding nothing.',
+  );
 }
 
 // A refusal this driver makes, carrying the word a screen renders. Local,
@@ -284,6 +389,8 @@ export class KeyRotationService {
   #current: AccountKeyGeneration | null = null;
   #next: AccountKeyGeneration | null = null;
 
+  readonly #staged = signal<StagedRotation | null>(null);
+
   readonly #phase = signal<KeyRotationPhase>('idle');
   readonly #progress = signal<KeyRotationProgress>({ resealed: 0, records: 0 });
   readonly #failure = signal<KeyRotationFailure | null>(null);
@@ -295,6 +402,20 @@ export class KeyRotationService {
 
   public readonly failure: Signal<KeyRotationFailure | null> =
     this.#failure.asReadonly();
+
+  /**
+   * The run there is to finish, or `null` when there is none — which is what
+   * decides **which control the section draws**.
+   *
+   * It is `null` until something reads it: a browser that has just loaded knows
+   * of no run, and an interrupted rotation survives as server state alone. Four
+   * places write it: {@link readStagedRotation}, {@link resume}'s own read, and
+   * the two moments below where this service knows without reading — a run it
+   * drove to its 204, and a refusal after which the section's own copy tells
+   * somebody to start again rather than to finish.
+   */
+  public readonly staged: Signal<StagedRotation | null> =
+    this.#staged.asReadonly();
 
   /**
    * Whether a run is in flight.
@@ -327,16 +448,125 @@ export class KeyRotationService {
    * on a button handler is one `catch` away from a silent one.
    */
   public async begin(ceremony: PasskeyAssertionCeremony): Promise<void> {
+    await this.#press(async () => this.#drive(ceremony));
+  }
+
+  /**
+   * Reads whether this account has a run to finish, and publishes it.
+   *
+   * **It is the read the section makes before it draws anything**, because a
+   * rotation that was interrupted survives only as server state — a staging
+   * row, a staged epoch and one seal per factor, and nothing in the browser. It
+   * posts nothing, opens nothing and touches no key material: what it answers
+   * decides which of two controls a person is offered, and that question has no
+   * cryptography in it.
+   *
+   * **A read that did not happen publishes "nothing to finish", and no word.**
+   * The six refusal words each say what became of a *run*, and there is no run
+   * here to have become anything — a sentence about a rotation that stopped,
+   * rendered at rest before anybody pressed anything, would be false. What the
+   * failed read costs is one wrongly-drawn control, and that costs little:
+   * {@link begin} makes this very read again and carries a staged generation
+   * forward rather than minting one, so a press of **Rotate keys** over a run
+   * that is really there picks that run up — under its own identifier, and
+   * without touching the staged seals' generation — as long as the account's
+   * factor set held still. A 401 is not swallowed by this —
+   * `sessionExpiryInterceptor` owns that answer for every request in the
+   * product and acts on it whatever this method does with the rejection.
+   */
+  public async readStagedRotation(): Promise<void> {
+    try {
+      const state = await firstValueFrom(this.#rotations.getRotationState());
+
+      this.#staged.set(stagedRotationOf(state.rotation));
+    } catch {
+      this.#staged.set(null);
+    }
+  }
+
+  /**
+   * Picks up the run this account has staged and drives it to its completion,
+   * or publishes the word it stopped on.
+   *
+   * `ceremony` is what a passkey assertion just yielded, and **the whole
+   * ceremony rather than the key it carries**, though nothing here posts its
+   * payload: the chunk and the completion carry no assertion, because the
+   * authorization for this run was created by the begin and is on file. What
+   * the parameter's type buys is that a resume cannot be driven from a key
+   * something other than an authenticator produced — the account's own content
+   * key, say, which custody holds and which opens none of the staged seals but
+   * would be the right shape to try.
+   *
+   * **Nothing is begun, no epoch is minted and no identifier is drawn.** The
+   * staged seals are the only copy of the generation every row the interrupted
+   * run already re-sealed is sealed under; a begin overwrites them in place, so
+   * a resume that posted one would take those rows' only key with it. This
+   * quotes the run the server hands back and re-collects, re-seals and completes
+   * under it.
+   *
+   * It resolves rather than rejecting, always — {@link begin}'s rule, for
+   * {@link begin}'s reason.
+   */
+  public async resume(ceremony: PasskeyAssertionCeremony): Promise<void> {
+    await this.#press(async () => this.#pickUp(ceremony));
+  }
+
+  // The envelope both presses share: the phase, the bar, the word, and the two
+  // generations ending with the run.
+  //
+  // **One owner, because these are the whole of what a screen binds.** A second
+  // copy inside the resume would be five chances for the two controls to
+  // publish different things about one act, and the two of them are one act
+  // with two entry points.
+  //
+  // The leg answers with the phase it ended in. `'finished'` is a run that
+  // reached its 204; `'idle'` is a press that found there was nothing to do,
+  // which is not a failure and gets no word.
+  async #press(leg: () => Promise<RestingPhase>): Promise<void> {
     this.#phase.set('collecting');
     this.#progress.set({ resealed: 0, records: 0 });
     this.#failure.set(null);
 
     try {
-      await this.#drive(ceremony);
-      this.#phase.set('finished');
+      const resting = await leg();
+
+      if (resting === 'finished') {
+        // **The one place this service may say so without reading it.** The
+        // staged generation is the live one now and this client is the reason,
+        // so "there is nothing to finish" is an observation rather than a guess
+        // — and a section still offering **Finish rotating** over a run that
+        // has just completed sends somebody through a whole account again.
+        this.#staged.set(null);
+      }
+
+      this.#phase.set(resting);
     } catch (error: unknown) {
+      const failure = this.#wordFor(error);
+
+      if (failure === 'factors-moved') {
+        // **The section stops offering to finish, because its own copy says to
+        // start again.** *Start it again from here* over a control labelled
+        // **Finish rotating** is a screen disagreeing with itself, and pressing
+        // that control meets the same refusal for ever: the staged seals name a
+        // set the account no longer has, and no read changes that.
+        //
+        // **What the control it draws instead cannot do yet.** `begin()` does
+        // carry the recovered generation forward rather than minting one — that
+        // is what would make the word's *the records already re-encrypted stay
+        // that way* true — but it **restates** the staged manifest and the
+        // staged seals byte for byte, which is `key-rotation-material.ts`'
+        // stated rule for its recovering arm. So a begin made here posts a seal
+        // set naming the old factors, the begin's own factor-set gate refuses
+        // it, and the word is `unrecognised` (measured). Closing that is a
+        // change to the recovering arm — re-encapsulate the recovered
+        // generation to the live set and re-seal the manifest over it — and
+        // belongs in the commit that makes the repair reachable, not in a third
+        // entry point here.
+        this.#staged.set(null);
+      }
+
       this.#phase.set('idle');
-      this.#failure.set(this.#wordFor(error));
+      this.#failure.set(failure);
     } finally {
       // **The generations end with the run.** The step that hands the promoted
       // pair to `AccountKeyCustodyService` is a commit of its own and would take
@@ -347,19 +577,8 @@ export class KeyRotationService {
     }
   }
 
-  async #drive(ceremony: PasskeyAssertionCeremony): Promise<void> {
-    const budgetId = this.#session.budgetId();
-
-    if (budgetId === null) {
-      // No factor supplies a budget, so a ceremony cannot clear this and the
-      // word that offers one would be a road that cannot help. `SessionService`
-      // argues the same answer for every write that meets it.
-      throw new KeyRotationRefusal(
-        'unreachable',
-        'This browser has not been told which budget it is in, so nothing can be keyed.',
-      );
-    }
-
+  async #drive(ceremony: PasskeyAssertionCeremony): Promise<RestingPhase> {
+    const budgetId = this.#budget();
     const custody = await firstValueFrom(this.#keys.getAccountKeys());
     const state = await firstValueFrom(this.#rotations.getRotationState());
     const material = await assembleKeyRotationMaterial(
@@ -389,21 +608,86 @@ export class KeyRotationService {
       }),
     );
 
-    // **A tripwire that costs nothing today and refuses a run that could never
-    // finish.** The chunk route has five arms and no budget arm — FR-099 keeps
-    // `budgets` at `UPDATE (name)`, so a sixth arm would break a requirement —
-    // and `budgets.name` is `NULL` on every row this product creates, so the
-    // published count is 0 on every account there is. The day it is not, no
-    // chunk this client can send stamps that row and the completeness gate
-    // refuses forever; better not begun than begun and unfinishable.
-    if (begun.inventory.budgets !== 0) {
+    await this.#run(rotationId, budgetId, begun.inventory, begun.maxChunkBytes);
+
+    return 'finished';
+  }
+
+  // The resume: everything a begin does except begin.
+  //
+  // **The walk is back from what the server holds, and the order is the whole
+  // of it.** The state read comes first and costs one request, because an
+  // account with nothing staged has nothing for a ceremony to open and no key
+  // material worth reading. Then the account keys, then the refusal below, then
+  // the material — which pairs the factor's **live** wrapped private key
+  // against its **live** encapsulated value for the generation in force and
+  // against the **staged** one for the generation replacing it, out of the one
+  // ceremony this press ran. Then the run, quoting the identifier the server
+  // handed back.
+  //
+  // **The rows an interrupted run already rewrote are why both generations are
+  // needed at once**, and `#open` is where that is spent: a resumed collection
+  // meets an account that is part one generation and part the other.
+  async #pickUp(ceremony: PasskeyAssertionCeremony): Promise<RestingPhase> {
+    const budgetId = this.#budget();
+    const state = await firstValueFrom(this.#rotations.getRotationState());
+    const staged = state.rotation;
+
+    this.#staged.set(stagedRotationOf(staged));
+
+    if (staged === null) {
+      // **Nothing to finish, and no word.** The run this press was offering to
+      // pick up is not on file: either another tab completed it, or this
+      // section was drawn from a read that has since gone stale. Every one of
+      // the six words says a *run* failed, and none of them is true of a run
+      // that is not there — so the phase goes back to rest, the signal above
+      // has just republished that there is nothing staged, and the control the
+      // section draws becomes **Rotate keys**.
+      return 'idle';
+    }
+
+    const custody = await firstValueFrom(this.#keys.getAccountKeys());
+
+    requireTheFactorSetHeldStill(staged.seals, custody.factors);
+
+    const material = await assembleKeyRotationMaterial(
+      ceremony.keyEncryptionKey,
+      custody,
+      state,
+    );
+
+    this.#current = material.current;
+    this.#next = material.next;
+
+    await this.#run(
+      // Quoted, never minted: the rows the interrupted run stamped carry this
+      // identifier, and the completeness gate counts a row as done only under
+      // the run that stamped it.
+      staged.rotationId,
+      budgetId,
+      staged.inventory,
+      staged.maxChunkBytes,
+    );
+
+    return 'finished';
+  }
+
+  // The tenancy a blind index is keyed inside.
+  //
+  // No factor supplies a budget, so a ceremony cannot clear this and the word
+  // that offers one would be a road that cannot help. `SessionService` argues
+  // the same answer for every write that meets it.
+  #budget(): string {
+    const budgetId = this.#session.budgetId();
+
+    if (budgetId === null) {
       throw new KeyRotationRefusal(
-        'unrecognised',
-        `The begin published ${String(begun.inventory.budgets)} budget rows to re-seal, and no chunk this client sends can carry one.`,
+        'unreachable',
+        'This browser has not been told which budget it is in, so nothing can be keyed.',
       );
     }
 
-    await this.#run(rotationId, budgetId, begun.inventory, begun.maxChunkBytes);
+    return budgetId;
   }
 
   async #run(
@@ -412,6 +696,25 @@ export class KeyRotationService {
     inventory: RotationInventoryDto,
     maxChunkBytes: number,
   ): Promise<void> {
+    // **A tripwire that costs nothing today and refuses a run that could never
+    // finish.** The chunk route has five arms and no budget arm — FR-099 keeps
+    // `budgets` at `UPDATE (name)`, so a sixth arm would break a requirement —
+    // and `budgets.name` is `NULL` on every row this product creates, so the
+    // published count is 0 on every account there is. The day it is not, no
+    // chunk this client can send stamps that row and the completeness gate
+    // refuses forever; better not driven than driven and unfinishable.
+    //
+    // **Here rather than beside the begin, because both presses spend an
+    // inventory.** A begin reads it off the answer to its own post and a resume
+    // off the staged run, and a refusal written on one path only would let the
+    // other walk an account it could never finish.
+    if (inventory.budgets !== 0) {
+      throw new KeyRotationRefusal(
+        'unrecognised',
+        `The inventory published ${String(inventory.budgets)} budget rows to re-seal, and no chunk this client sends can carry one.`,
+      );
+    }
+
     for (let pass = 1; pass <= COLLECTION_PASSES; pass += 1) {
       this.#phase.set('collecting');
 

@@ -201,6 +201,12 @@ interface MintedFactor {
 interface Fixture {
   readonly contentKey: CryptoKey;
   readonly indexKey: CryptoKey;
+  // **The generation in force as bytes, kept rather than wiped**, because a
+  // factor enrolled while a run is in flight has to be minted against the very
+  // keys every other factor of this account already holds — and there is no way
+  // back to them through the two key objects above, which are imported
+  // non-extractable. One case reads it; nothing else may.
+  readonly keyMaterial: AccountKeys;
   readonly factors: readonly MintedFactor[];
   readonly manifest: string;
   readonly accounts: readonly StoredNamedRow[];
@@ -251,8 +257,35 @@ async function mintFactor(
   };
 }
 
+// One manifest over a set of factors, sealed under the account's content key at
+// `epoch`.
+//
+// **The one place in this file that writes a factor's public key into an
+// object**, which is why the fixture and the two moved-set cases below all come
+// through here rather than each building their own. Specs are outside
+// `factor-public-key-single-source.spec.ts`' census deliberately — a fixture
+// point is not a production path — and one site is still fewer than three.
+function manifestOver(
+  contentKey: CryptoKey,
+  factors: readonly MintedFactor[],
+  epoch: number,
+): Promise<string> {
+  return sealFactorManifest(
+    contentKey,
+    factors.map((factor) => ({
+      factorId: factor.factorId,
+      publicKey: factor.point,
+    })),
+    epoch,
+  );
+}
+
 async function buildFixture(): Promise<Fixture> {
   const keys = generateAccountKeys();
+  const keyMaterial: AccountKeys = {
+    contentKey: Uint8Array.from(keys.contentKey),
+    indexKey: Uint8Array.from(keys.indexKey),
+  };
   const contentKey = await contentKeyOf(keys);
   const indexKey = await indexKeyOf(keys);
   const texts = new Map<string, string>();
@@ -341,14 +374,7 @@ async function buildFixture(): Promise<Fixture> {
     });
   }
 
-  const manifest = await sealFactorManifest(
-    contentKey,
-    factors.map((factor) => ({
-      factorId: factor.factorId,
-      publicKey: factor.point,
-    })),
-    EPOCH,
-  );
+  const manifest = await manifestOver(contentKey, factors, EPOCH);
 
   // The draw's own bytes end here: both key objects were imported from copies,
   // and nothing below this line reads them.
@@ -358,6 +384,7 @@ async function buildFixture(): Promise<Fixture> {
   return {
     contentKey,
     indexKey,
+    keyMaterial,
     factors,
     manifest,
     accounts,
@@ -395,6 +422,8 @@ class FakeServer {
   public readonly beginBodies: BeginRotationRequestBody[] = [];
   public readonly chunkBodies: ResealChunkRequestBody[] = [];
   public readonly completionBodies: CompleteRotationRequestBody[] = [];
+  /** How many times the account-key read has been made. */
+  public accountKeyReads = 0;
 
   public manifest: string;
   public rotationEpoch = EPOCH;
@@ -442,6 +471,8 @@ class FakeServer {
   // -- the account-key read -------------------------------------------------
 
   public accountKeys(): Observable<AccountKeyCustodyDto> {
+    this.accountKeyReads += 1;
+
     if (this.refuseAccountKeys !== null) {
       return throwError(() => this.refuseAccountKeys);
     }
@@ -754,6 +785,20 @@ class FakeServer {
     return of(undefined);
   }
 
+  /**
+   * Forgets every request made so far, so that what a **later** browser posted
+   * stands on its own.
+   *
+   * It moves no account state: the staging row, the seals and every stamp
+   * survive, which is the whole of what an interrupted run leaves behind.
+   */
+  public forgetEveryRequest(): void {
+    this.beginBodies.length = 0;
+    this.chunkBodies.length = 0;
+    this.completionBodies.length = 0;
+    this.accountKeyReads = 0;
+  }
+
   /** Rows carrying a narrative value and not stamped with this run. */
   public outstanding(rotationId: string): number {
     const bearing: { readonly rotationId: string | null }[] = [
@@ -1057,14 +1102,85 @@ function rowsIn(chunk: ResealChunkRequestBody): number {
   );
 }
 
+function rowsCarriedBy(chunks: readonly ResealChunkRequestBody[]): number {
+  return chunks.reduce((total, chunk) => total + rowsIn(chunk), 0);
+}
+
+// The run the fake has on file, or a harness fault: every case below that reads
+// one has just arranged for one to be there.
+function stagedRun(): StagedRun {
+  const staged = server.staged;
+
+  if (staged === null) {
+    throw new Error('the fake holds no staged run');
+  }
+
+  return staged;
+}
+
+// How many narrative-bearing rows carry this run's stamp.
+function rowsAlreadyDone(): number {
+  return NARRATIVE_ROWS - server.outstanding(stagedRun().rotationId);
+}
+
+// A fresh copy of the account's own key material, for the one case that mints a
+// factor after the fixture was built. Fresh, because every door that takes an
+// `AccountKeys` wipes what it was handed.
+function accountKeys(): AccountKeys {
+  return {
+    contentKey: Uint8Array.from(fixture.keyMaterial.contentKey),
+    indexKey: Uint8Array.from(fixture.keyMaterial.indexKey),
+  };
+}
+
+// The browser after a reload: a new injector, a new service instance, and
+// nothing of the run in flight but what the fake still holds.
+function freshDriver(): KeyRotationService {
+  TestBed.resetTestingModule();
+  configureTestBed();
+
+  return TestBed.inject(KeyRotationService);
+}
+
+// A first run that got part-way and stopped.
+//
+// It leaves the staging row and one seal per factor on file, `at - 1` chunks of
+// rows re-sealed under the staged generation and stamped, and the rest still
+// under the generation in force — then forgets every request, so that what a
+// resuming browser posts stands on its own.
+async function interruptedRun(
+  at: number,
+  maxChunkBytes: number,
+): Promise<KeyRotationService> {
+  server.maxChunkBytes = maxChunkBytes;
+  server.refuseChunk = { at, error: new HttpErrorResponse({ status: 0 }) };
+
+  const interrupted = driver();
+
+  await interrupted.begin(ceremonyUnder(firstFactor()));
+
+  // A harness check and not an assertion: every case below is *about* what
+  // happens next, and one built on a run that finished or never staged would
+  // pass while testing nothing.
+  if (interrupted.failure() !== 'unreachable' || server.staged === null) {
+    throw new Error('the interruption these cases are built on did not happen');
+  }
+
+  server.refuseChunk = null;
+  server.forgetEveryRequest();
+
+  return interrupted;
+}
+
 beforeAll(async () => {
   fixture = await buildFixture();
 }, 60000);
 
-beforeEach(() => {
-  server = new FakeServer(fixture);
-  session = new SessionStub();
-
+// The providers, as a function rather than inline, because a resume needs them
+// stood up a **second** time over the same fake: `KeyRotationService` is
+// root-provided, so the only way to a driver that holds nothing of the last run
+// is a new injector.
+function configureTestBed(): void {
   TestBed.configureTestingModule({
     providers: [
       {
@@ -1109,6 +1225,13 @@ beforeEach(() => {
       },
     ],
   });
+}
+
+beforeEach(() => {
+  server = new FakeServer(fixture);
+  session = new SessionStub();
+
+  configureTestBed();
 });
 
 describe('a whole account through one rotation', () => {
@@ -1589,5 +1712,236 @@ describe('what the service publishes while it runs', () => {
     ]);
     expect(service.phase()).toBe('finished');
     expect(service.running()).toBe(false);
+  });
+});
+
+// The leg that picks up a run a browser lost.
+//
+// **Every case here throws the driver away.** A resume's whole claim is that it
+// walks back from *server* state — a staging row, a staged epoch, one seal per
+// factor and a set of stamps — with nothing in the browser: custody is locked,
+// the service is a fresh instance and the generation the interrupted run staged
+// is gone from this tab. A case that resumed on the same instance would be
+// asserting against two `#` fields it cannot see and that the first run left
+// behind.
+describe('a run picked up after a reload', () => {
+  it('finishes a run this browser never began, and leaves every column under the generation that run staged', async () => {
+    // Arrange — a first run that re-sealed part of the account and then stopped.
+    const interrupted = await interruptedRun(3, 400);
+    const staged = stagedRun();
+    const done = rowsAlreadyDone();
+
+    // Neither half may be empty, or this is not the state a resume walks back
+    // from: some rows carry the staged generation and the rest carry the one
+    // still in force.
+    expect(done).toBeGreaterThan(0);
+    expect(done).toBeLessThan(NARRATIVE_ROWS);
+    expect(server.rotationEpoch).toBe(EPOCH);
+
+    const resumed = freshDriver();
+
+    expect(resumed).not.toBe(interrupted);
+
+    // Act
+    await resumed.resume(ceremonyUnder(firstFactor()));
+
+    // Assert
+    expect(resumed.failure()).toBeNull();
+    expect(resumed.phase()).toBe('finished');
+    // Nothing was begun again: the run that finished is the run that was
+    // staged, promoted one epoch above where it started.
+    expect(server.beginBodies).toHaveLength(0);
+    expect(server.rotationEpoch).toBe(EPOCH + 1);
+    expect(server.manifest).toBe(staged.manifest);
+    // There is nothing left to finish, so the section draws Rotate keys again.
+    expect(resumed.staged()).toBeNull();
+
+    const { contentKey } = await adoptedGeneration(firstFactor());
+    let opened = 0;
+
+    for (const field of NARRATIVE_FIELDS) {
+      const cells = cellsFor(field);
+      const pair = `${field.table}.${field.column}`;
+
+      if (field.table === 'budgets') {
+        expect(cells, pair).toHaveLength(0);
+        continue;
+      }
+
+      expect(cells.length, pair).toBeGreaterThan(0);
+
+      for (const cell of cells) {
+        const binding = { ...field, rowId: cell.rowId };
+
+        await expect(
+          openNarrativeField(contentKey, cell.wire, binding),
+          pair,
+        ).resolves.toBe(textOf(field, cell.rowId));
+        // And none of them under the generation this run replaced — including
+        // the rows the interrupted browser never reached.
+        await expect(
+          openNarrativeField(fixture.contentKey, cell.wire, binding),
+          pair,
+        ).rejects.toThrow();
+        opened += 1;
+      }
+    }
+
+    expect(opened).toBe(12);
+  });
+
+  it('publishes the date the staged run began, which is what the section draws beside the control', async () => {
+    // Arrange
+    await interruptedRun(1, MAX_CHUNK_BYTES);
+
+    const service = freshDriver();
+
+    // Assert — before the read, a browser that just loaded knows of nothing.
+    expect(service.staged()).toBeNull();
+
+    // Act
+    await service.readStagedRotation();
+
+    // Assert
+    expect(service.staged()).toEqual({ startedAtUtc: '2026-02-03T04:05:06Z' });
+    // A read and nothing else: the control has not been pressed.
+    expect(server.beginBodies).toHaveLength(0);
+    expect(server.chunkBodies).toHaveLength(0);
+    expect(server.accountKeyReads).toBe(0);
+  });
+
+  it('has nothing to finish when the server holds no staged run', async () => {
+    // Arrange
+    const service = driver();
+
+    // Act
+    await service.readStagedRotation();
+    await service.resume(ceremonyUnder(firstFactor()));
+
+    // Assert
+    expect(service.staged()).toBeNull();
+    // Nothing became of a run, because there was none: a word here would say
+    // one failed.
+    expect(service.failure()).toBeNull();
+    expect(service.phase()).toBe('idle');
+    expect(server.beginBodies).toHaveLength(0);
+    expect(server.chunkBodies).toHaveLength(0);
+    expect(server.completionBodies).toHaveLength(0);
+    // Not a byte of the account's key material was read either. The press stops
+    // at the one read that says there is nothing to pick up.
+    expect(server.accountKeyReads).toBe(0);
+  });
+
+  it('refuses a staged seal naming a factor this account no longer holds', async () => {
+    // Arrange — a run staged for four factors, and one of them revoked since.
+    // The live manifest moves with the factor set, exactly as the path that
+    // revokes a passkey moves it, or the refusal under test is not the one that
+    // fires.
+    await interruptedRun(1, MAX_CHUNK_BYTES);
+
+    const revoked = fixture.factors[FACTOR_COUNT - 1];
+    const surviving = fixture.factors.filter((factor) => factor !== revoked);
+
+    server.entries.delete(revoked.factorId);
+    server.manifest = await manifestOver(fixture.contentKey, surviving, EPOCH);
+
+    const resumed = freshDriver();
+
+    // Act
+    await resumed.resume(ceremonyUnder(firstFactor()));
+
+    // Assert
+    expect(resumed.failure()).toBe(word('factors-moved'));
+    // Before the run and not at the end of it: a whole account has not been
+    // re-sealed for a completion the server was always going to refuse.
+    expect(server.chunkBodies).toHaveLength(0);
+    expect(server.completionBodies).toHaveLength(0);
+    expect(server.rotationEpoch).toBe(EPOCH);
+    // The way forward is a fresh begin rather than another attempt to finish,
+    // so the section stops offering to finish.
+    expect(resumed.staged()).toBeNull();
+  });
+
+  it('refuses a live factor the staged run sealed nothing for', async () => {
+    // Arrange — a run staged for four factors, and a fifth enrolled since. The
+    // resume read leaves that factor out of `seals` rather than filling it in,
+    // so the absence is the whole of the signal.
+    await interruptedRun(1, MAX_CHUNK_BYTES);
+
+    const enrolled = await mintFactor(0x55, accountKeys());
+
+    server.entries.set(enrolled.factorId, { ...enrolled.entry });
+    server.manifest = await manifestOver(
+      fixture.contentKey,
+      [...fixture.factors, enrolled],
+      EPOCH,
+    );
+
+    const resumed = freshDriver();
+
+    // Act
+    await resumed.resume(ceremonyUnder(firstFactor()));
+
+    // Assert
+    expect(resumed.failure()).toBe(word('factors-moved'));
+    expect(server.chunkBodies).toHaveLength(0);
+    expect(server.completionBodies).toHaveLength(0);
+    expect(server.rotationEpoch).toBe(EPOCH);
+    expect(resumed.staged()).toBeNull();
+  });
+
+  it('quotes the run the server holds and mints no epoch of its own', async () => {
+    // Arrange
+    await interruptedRun(1, MAX_CHUNK_BYTES);
+
+    const staged = stagedRun();
+    const resumed = freshDriver();
+
+    // Act
+    await resumed.resume(ceremonyUnder(firstFactor()));
+
+    // Assert
+    expect(resumed.failure()).toBeNull();
+    expect(server.beginBodies).toHaveLength(0);
+    expect(server.chunkBodies.length).toBeGreaterThan(0);
+
+    for (const chunk of server.chunkBodies) {
+      expect(chunk.rotationId).toBe(staged.rotationId);
+    }
+
+    expect(server.completionBodies.map((body) => body.rotationId)).toEqual([
+      staged.rotationId,
+    ]);
+    // The staged epoch is the one the interrupted run filed, and it is the one
+    // the account ends up at. A resume that minted its own would be two steps.
+    expect(stagedRun().rotationEpoch).toBe(EPOCH + 1);
+    expect(server.rotationEpoch).toBe(EPOCH + 1);
+  });
+
+  it('starts the bar at zero and carries the whole account again', async () => {
+    // Arrange
+    await interruptedRun(3, 400);
+
+    const done = rowsAlreadyDone();
+    const resumed = freshDriver();
+    const seen: number[] = [];
+
+    server.onChunk = (): void => {
+      seen.push(resumed.progress().resealed);
+    };
+
+    // Act
+    await resumed.resume(ceremonyUnder(firstFactor()));
+
+    // Assert
+    expect(resumed.failure()).toBeNull();
+    expect(done).toBeGreaterThan(0);
+    // The chapter specifies this rather than tolerating it, and the consequence
+    // block on the screen warns about it: the server publishes no per-row
+    // progress, the resume read carries none, and a client-side one is refused.
+    expect(seen[0]).toBe(0);
+    expect(resumed.progress().records).toBe(NARRATIVE_ROWS);
+    expect(resumed.progress().resealed).toBe(NARRATIVE_ROWS);
+    expect(rowsCarriedBy(server.chunkBodies)).toBe(NARRATIVE_ROWS);
   });
 });

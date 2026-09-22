@@ -1935,13 +1935,26 @@ being counted, and sits outside the region. Nothing here is communicated by colo
 key-rotation section renders on `/app/settings`, no control exists, and the notice takes no input.
 What exists is the server side of the act — the four routes, the staging generation, the
 completeness gate and the promotion, all argued in
-[key-rotation.md](../business-logic/key-rotation.md) — and, now, the driver that walks one.
-`KeyRotationService.begin()` takes a passkey assertion and runs a whole rotation to its 204: it
-publishes the three phase words, the numerator and denominator the progress line above specifies,
-and the six refusal words in the table above. It keeps no per-row progress record anywhere, for the
-reason this chapter gives. What nothing does yet is *press* it — there is no section, no checkbox
-and no button — and the leg that picks up an interrupted run is not built either, so **Finish
-rotating** is still a control this chapter specifies and nothing draws.
+[key-rotation.md](../business-logic/key-rotation.md) — and the driver that walks one, now from
+either end. `KeyRotationService.begin()` takes a passkey assertion and runs a whole rotation to its
+204; `resume()` takes one and finishes a run this browser never began, quoting the identifier the
+server hands back rather than beginning anything. Both publish the three phase words, the numerator
+and denominator the progress line above specifies, and the six refusal words in the table above, and
+a resumed run starts its bar at zero exactly as the consequence block warns. They keep no per-row
+progress record anywhere, for the reason this chapter gives. `readStagedRotation()` is the read that
+decides **which** control there is to draw: it publishes the date the staged run began, which is the
+line this chapter puts above **Finish rotating**. What nothing does yet is *press* either of them —
+there is no section, no checkbox and no button — so both controls, the date line and the phase
+region are still things this chapter specifies and nothing draws.
+
+**One departure, and it is under `factors-moved`.** The rule above says the restart must carry the
+interrupted run's own generation forward and that `begin()` is where it happens. It does carry the
+generation forward. What it does not yet do is re-encapsulate that generation to the **corrected**
+factor set or re-seal the manifest over it, so a begin pressed after this refusal is itself refused,
+and the word a person would see is `unrecognised` rather than a run that starts. The driver publishes
+"nothing to finish" on this refusal regardless, so the control a section would draw is the right one;
+what is missing is behind it. [key-rotation.md](../business-logic/key-rotation.md) records what
+closing it takes.
 
 **What the placement claim above costs today**: the Account keys section and **What we can read**
 are adjacent on the screen, and the sentence in that chapter naming its neighbours is written for
