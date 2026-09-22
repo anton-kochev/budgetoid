@@ -66,8 +66,13 @@ drives a run.** `POST /api/me/key-rotation` stages a run,
 lost to a reload. **What is missing is what drives a run.** `key-rotation-api.service.ts` names the
 four routes and mirrors every request and response record member for member; it is a transport, so
 it holds no key, runs no cipher, makes no refusal of its own and reads no conflict — and nothing
-calls it. The half nobody has built is what it would carry: minting the next generation,
-encapsulating it to every factor's public key and re-sealing every narrative row. `me-api.service.ts`
+calls it. **The material a run carries is assembled now, and nothing carries it.**
+`key-rotation-material.ts` takes a key-encryption key and the two reads and answers with both
+generations of the account's keys, the factor set its own manifest declares, the epoch the next
+manifest is filed at, that manifest, and one seal per factor — minting the next generation when the
+resume read says nothing is staged and recovering the staged one when it does. It is framework-free:
+no injectable, no signal, no HTTP. What nobody has built is what spends it — no screen, and nothing
+that re-seals a narrative row or posts a chunk. `me-api.service.ts`
 argues, over the sibling route that replaces a card of codes, why the account's own keys are not
 something custody can be asked for today.
 **`factor_manifests` was never empty**: registration files a row for every account it creates, at
@@ -140,8 +145,8 @@ finished run, which is what the legitimate client was about to do. Neither is a 
 gate did not already grant, and a prompt here would fall at the one moment a person has the most to
 lose by abandoning the request.
 
-Not built: anything that drives a run — no screen, no service that mints the next generation, no path
-that re-seals a row. Do not state any of it in the present tense until it ships.
+Not built: anything that drives a run — no screen, no path that re-seals a row, and nothing that
+posts to any of the four routes. Do not state any of it in the present tense until it ships.
 
 **The begin can write its row, and `key_rotations` still holds no `DELETE` of any shape.**
 `app-role-grants.sql` grants `SELECT`, `INSERT` and a column-listed `UPDATE` over `rotation_id`,
@@ -580,16 +585,20 @@ set it names against the factor rows served beside it, set equality in both dire
 response carrying no manifest at all — so *the set the server serves is the set the account's own
 manifest declares* is checked by the one party holding the content key, on every sign-in and every
 unlock. That is the **reading** half, and it is the residual of the read rather than of a run.
-**The staging half is untouched and has no holder anywhere.** Nothing on either side of the wire
-compares a staged manifest's named set against the seals submitted with it. A run that stages a
-manifest naming one set and seals covering another is refused by nothing, and the client that first
-begins a run owes that comparison before it posts. A sentence reading as though FR-123 were now
-closed — on this side or on the client's — loses exactly the half that nothing holds.
+**The staging half has no holder on this side and never can have one.** Nothing the server sees
+compares a staged manifest's named set against the seals submitted with it: those bytes are
+authenticated by a key it does not hold, so a run that stages a manifest naming one set and seals
+covering another is refused by nothing here. A sentence reading as though FR-123 were now closed on
+*this* side loses exactly the half that nothing here holds.
 
-**That residual is now reachable, which is what changed.** `POST /api/me/key-rotation` stages a run,
-so a disagreeing manifest can be stored today rather than only in principle. No client posts one yet:
-the transport that addresses the route is built and nothing calls it; when something does, the
-comparison above is the thing it has to be written with.
+**What changed is that the client owes that comparison and now makes it.**
+`key-rotation-material.ts` assembles a run's material and opens the manifest that run is filed under
+— under the very generation its seals carry, at the very epoch it is filed at — and compares the set
+it names against the seal set, in both directions. On a resume that judges what a previous begin
+really posted; on a begin it is a self-check over what is about to be posted, which is why the
+manifest is opened again rather than compared against the list it was built from. Nothing posts yet:
+the transport that addresses the route is built and nothing calls it. The comparison being made
+before a body exists is the point — a client that made it afterwards would be reading an echo.
 
 ### Carrying a chunk: what the route owes, and the three things it must not add
 

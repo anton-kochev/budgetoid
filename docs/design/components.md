@@ -1840,6 +1840,11 @@ shape as completing a run early. So the restart carries the recovered keys forwa
 what makes the sentence's last clause true. A fresh generation is minted in exactly one case: the
 resume read said there is no rotation.
 
+**What holds that rule is a shape rather than a check.** `key-rotation-material.ts` takes the resume
+read itself and decides on `rotation === null`, so there is no flag to pass and no second entry point
+to pick the wrong one of — the one case that may mint is the only case in which minting is
+reachable. Nothing else enforces it, on either side of the wire.
+
 **`unfinished` is bounded, and the sentence is what the person sees after the bound is spent.** Rows
 created after a collection make the completion answer that the run is incomplete, and the remedy is
 to collect and send again — three passes, then this word. An unbounded loop is the same

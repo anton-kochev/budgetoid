@@ -1051,12 +1051,13 @@ better, and the three refusals above lose nothing.
 now runs.** `AccountKeyCustodyService` refuses a response carrying no manifest and refuses a served
 factor set that is not the set the manifest names, in both directions — and that comparison means
 nothing unless both halves describe one instant. Two routes would let a factor be enrolled between
-them and hand somebody two correct answers to report to a person as tampering. **The caller is the
-unlock and not a rotation**, which is the part worth reading exactly: nothing in this client rotates
-anything, so the pair is spent on confirming that the account's material agrees with itself rather
-than on choosing what to encapsulate a new generation to. The route was shaped for that second
-caller ahead of it, and the first caller to arrive needed the same shape — which is the argument for
-settling it early rather than a lucky outcome.
+them and hand somebody two correct answers to report to a person as tampering. **The read now has
+both callers the pair was shaped for**, and they spend it differently: the unlock spends it on
+confirming that the account's material agrees with itself, while `key-rotation-material.ts` spends
+it on the same confirmation *and* on the set it is about to encapsulate a new generation to — which
+is why the second caller makes the first's comparison again rather than trusting that custody
+already did. The route was shaped for that second caller ahead of it, and the first caller to arrive
+needed the same shape — which is the argument for settling it early rather than a lucky outcome.
 
 **One member is necessary for that and does not achieve it, and the difference is the kind a later
 reader takes for a guarantee.** Two awaited queries behind one port member are two autocommitted
@@ -1488,7 +1489,7 @@ pass them in the wrong order.
 
 **Before an account is presented as unlocked, its material is made to agree with itself — four
 refusals, in one order, answering one word.** They run once, after the trial loop and never inside
-it, and `AccountKeyCustodyService.agreesWithTheManifest` is the whole of them. Each reads something
+it, and `AccountKeyCustodyService.manifestRefusal` is the whole of them. Each reads something
 the one before it established: there is a manifest; it opened under the content key this factor
 handed over; so the epoch it was sealed at is the epoch of a blob somebody holding that key really
 wrote; and the set it declares is that same blob's.
@@ -2467,11 +2468,14 @@ back, passes every constraint and reddens nothing, for the life of the account. 
 that matters — the served factor set against the set the manifest names — belongs to the
 client, because only a client holding the content key can open the blob and verify its
 authentication tag. **That check is built and runs on every unlock** —
-`AccountKeyCustodyService.agreesWithTheManifest`, set equality in both directions beside a
+`AccountKeyCustodyService.manifestRefusal`, set equality in both directions beside a
 refusal of a response carrying no manifest at all, argued at
-[The one class that holds them](#the-one-class-that-holds-them). Where it does **not** run
-is a rotation, which has no client at either end; [key-rotation.md](key-rotation.md) holds
-that half. **This is a decision, not a gap**, and it is the same shape as the
+[The one class that holds them](#the-one-class-that-holds-them). A rotation makes the same
+comparison a second time and adds the one nothing else anywhere makes — its own seal set
+against the set the manifest it is filed under declares — in `key-rotation-material.ts`;
+[key-rotation.md](key-rotation.md) holds that half, including what is still true of the
+server: it can read no byte of a manifest and so judges no set named inside one.
+**This is a decision, not a gap**, and it is the same shape as the
 content-key-first ordering inside the encapsulated plaintext: the next reader will try to
 close it by parsing the manifest on this side, and there is nothing on this side to parse
 with. `FactorManifestEnvelope` carries the argument beside the code.
@@ -2686,10 +2690,15 @@ gets back out.
    `BeginKeyRotationHandler` calls it on every begin, judging the seals a client staged against its
    keys in both directions. `POST /api/me/key-rotation` reaches it, and that read serves no client:
    it answers the gate and nothing of it is serialised. This route is still the only one that hands
-   any of it back. The browser's one caller is custody, which reads both levels off this answer and
+   any of it back. The browser has two callers and custody is the one with an injector: it reads both
+   levels off this answer and
    spends all three members: the entries to try, the manifest to confirm the content key against and
    to name the account's factor set, and the epoch to compare against what this device has already
-   watched the account reach. **That unlock reads `GET /api/me` in the same breath**, because the
+   watched the account reach. `key-rotation-material.ts` is the other and spends the first two the
+   same way and the third differently — a rotation files the next manifest at the epoch beside them
+   plus one, and records nothing, because rising a device's high-water mark is custody's act and only
+   after its own four refusals have passed. **That unlock reads `GET /api/me` in the same
+   breath**, because the
    epoch record is filed per account and the ambient budget is the only per-account identifier a
    browser holds. See
    [The one route that hands them back](#the-one-route-that-hands-them-back) and

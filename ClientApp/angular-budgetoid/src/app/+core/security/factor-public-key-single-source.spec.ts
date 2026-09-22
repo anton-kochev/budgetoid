@@ -16,10 +16,14 @@
 //
 // **Why a census and not a behavioural test.** FR-131's only live consumer is a
 // key rotation, which encapsulates the account's new keys to every factor's
-// public point. **Rotation does not exist** — there is no client surface for it
-// and no route reaches `BeginKeyRotationHandler` — so there is no behaviour to
-// drive and nothing to assert a result about. What can be held today is the
-// *absence*: no code path assembles a factor's public key anywhere but here.
+// public point. **That consumer exists now** — `key-rotation-material.ts`
+// assembles a run's material, and its own spec drives the behaviour, including
+// a factor the manifest names with a point the platform refuses. What that
+// module is **not** is an owner below: it reads every point off
+// `openFactorManifest`'s answer and builds none, which is the shape this census
+// exists to keep it in. The thing no behaviour can drive is the *absence*, and
+// that is what is held here: no code path assembles a factor's public key
+// anywhere but in the three files named below.
 //
 // **Outside specs, a factor's public key is constructed in three files, and each
 // of the three has a reason.**
@@ -148,12 +152,14 @@ const sourceDir = join(process.cwd(), 'src');
 // has to write is a reason somebody has to mean.
 //
 // The fix for a red result is almost never an entry here. It is a call to
-// `openFactorManifest`, which is what the one consumer outside these three —
-// `account-key-custody.service.ts`, which compares the account's declared set
-// against what the route served — already does, and which is why that file names
-// `factorId` repeatedly and builds not one point. No count: the claim that
-// carries this sentence is the second half, and a number written into the first
-// goes stale the next time that file is edited with nothing going red.
+// `openFactorManifest`, which is what the consumers outside these three already
+// do — `account-key-custody.service.ts` compares the account's declared set
+// against what the route served, and `key-rotation-material.ts` encapsulates a
+// run's next generation to each point that call answered with. Both name
+// `factorId` repeatedly and build not one point, which is exactly why neither
+// is listed below. No count: the claim that carries this sentence is the second
+// half, and a number written into the first goes stale the next time one of
+// those files is edited with nothing going red.
 const owners = new Map<string, string>([
   // FR-132, and the entry a reader is most likely to think belongs beside the
   // manifest's. It is the *origin* of the bytes rather than a reading of them:
