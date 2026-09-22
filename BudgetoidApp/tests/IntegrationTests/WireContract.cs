@@ -3,45 +3,87 @@ using System.Text.Json;
 namespace IntegrationTests;
 
 /// <summary>
-/// <c>docs/business-logic/vectors/account-keys-wire-v1.json</c>, parsed rather than trusted — the one
-/// file the browser's suite and this one both read.
+/// The wire vectors under <c>docs/business-logic/vectors/</c>, parsed rather than trusted — the files
+/// the browser's suite and this one both read.
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>It sits one level above the solution, and a run that cannot find it throws rather than skips.</b>
+/// <b>They sit one level above the solution, and a run that cannot find one throws rather than skips.</b>
 /// The rule is <see cref="ClientKeyCustodyTests" />'s and the reason is the same: "the test ran from a
-/// published output with no source tree" must never read as a pass. Deleting the artifact fails four
-/// client spec files loudly, and it fails every reader here the same way.
+/// published output with no source tree" must never read as a pass. Deleting an artifact fails the
+/// client spec files that read it loudly, and it fails every reader here the same way.
 /// </para>
 /// <para>
-/// <b>It is a file of its own rather than a private class inside one test, because it has two readers
-/// and the second one is the point.</b> <see cref="AccountKeyWireContractTests" /> binds the server's
-/// <em>records</em> to these member sets by reflection; <see cref="AccountKeysEndpointTests" /> binds
-/// the <em>bytes a real host emitted</em> to the same sets. Each was previously satisfied by an
-/// expectation living in its own file, which is the arrangement the artifact exists to end: an
+/// <b>It is a file of its own rather than a private class inside one test, because every artifact it
+/// carries has two readers and the second one is the point.</b>
+/// <see cref="AccountKeyWireContractTests" /> binds the server's <em>records</em> to
+/// <see cref="AccountKeys" />' member sets by reflection; <see cref="AccountKeysEndpointTests" /> binds
+/// the <em>bytes a real host emitted</em> to the same sets; <see cref="KeyRotationWireContractTests" />
+/// does the first of those against <see cref="KeyRotation" />. Each was previously satisfied by an
+/// expectation living in its own file, which is the arrangement the artifacts exist to end: an
 /// expectation a suite owns can be greened by pasting the actual over it, and the paste reads in review
 /// as a test being updated beside its code. Read from here, the same paste has to move a file the
 /// browser reads too.
 /// </para>
 /// <para>
-/// Parsed once into a <see cref="JsonDocument" /> held for the life of the process. Nothing mutates it
-/// and every reader sees the same bytes, so a copy per caller would buy isolation from nothing.
+/// <b>Two artifacts and never one, and neither may absorb the other.</b> They freeze different routes —
+/// four messages of key custody against fourteen of a rotation of it — and a reader looking for one
+/// message should find one file naming it. What they share is this reader, so the locating walk, the
+/// prose filter and the repeat refusal are written once rather than copied into a second class that
+/// would then drift.
+/// </para>
+/// <para>
+/// Each is parsed once into a <see cref="JsonDocument" /> held for the life of the process. Nothing
+/// mutates them and every reader sees the same bytes, so a copy per caller would buy isolation from
+/// nothing. <b>Both are parsed on first touch of either</b>, because the two initializers of a class
+/// with no static constructor run together — which is the behaviour wanted rather than a cost: both
+/// files are owed, and a run that can read only one of them has bound half of what this suite claims.
 /// </para>
 /// </remarks>
-internal static class WireContract
+internal sealed class WireContract
 {
-    private const string RelativePath = "docs/business-logic/vectors/account-keys-wire-v1.json";
-
-    private static readonly JsonDocument Document =
-        JsonDocument.Parse(File.ReadAllText(LocateFrom(AppContext.BaseDirectory)));
+    /// <summary>
+    /// <c>account-keys-wire-v1.json</c> — the four messages that carry an account's key custody, and the
+    /// five named widths their binary members may hold.
+    /// </summary>
+    public static WireContract AccountKeys { get; } =
+        new("docs/business-logic/vectors/account-keys-wire-v1.json");
 
     /// <summary>
-    /// The absolute path of the artifact, walking up from <paramref name="startDirectory" />.
+    /// <c>key-rotation-wire-v1.json</c> — the fourteen messages the four key-rotation routes carry.
+    /// </summary>
+    /// <remarks>
+    /// <b>It carries no <c>widths</c> object and one must never be added</b>, so
+    /// <see cref="Width" /> and <see cref="WidthNames" /> throw against it by design rather than by
+    /// accident. Every binary member it names is one of two values already frozen next door —
+    /// <c>encapsulatedAccountKeys</c> at exactly 158 bytes and the manifest's 29-to-4096 band — and a
+    /// second copy of either number here would be one fact able to disagree with itself, silently,
+    /// because each file would go on agreeing with the suite that reads it.
+    /// <see cref="KeyRotationWireContractTests.TheKeyRotationVector_CarriesNoWidths" /> is what keeps
+    /// that absence a gate rather than a comment.
+    /// </remarks>
+    public static WireContract KeyRotation { get; } =
+        new("docs/business-logic/vectors/key-rotation-wire-v1.json");
+
+    private readonly string _relativePath;
+
+    private readonly JsonDocument _document;
+
+    private WireContract(string relativePath)
+    {
+        _relativePath = relativePath;
+        _document = JsonDocument.Parse(
+            File.ReadAllText(LocateFrom(AppContext.BaseDirectory, relativePath)));
+    }
+
+    /// <summary>
+    /// The absolute path of <paramref name="relativePath" />, walking up from
+    /// <paramref name="startDirectory" />.
     /// </summary>
     /// <exception cref="InvalidOperationException">No ancestor holds it.</exception>
-    public static string LocateFrom(string startDirectory)
+    public static string LocateFrom(string startDirectory, string relativePath)
     {
-        string relative = RelativePath.Replace('/', Path.DirectorySeparatorChar);
+        string relative = relativePath.Replace('/', Path.DirectorySeparatorChar);
 
         for (DirectoryInfo? directory = new(startDirectory);
              directory is not null;
@@ -56,7 +98,7 @@ internal static class WireContract
         }
 
         throw new InvalidOperationException(
-            $"No ancestor of '{startDirectory}' holds {RelativePath}. It is the only thing binding "
+            $"No ancestor of '{startDirectory}' holds {relativePath}. It is the only thing binding "
             + "this server's wire records to the browser that reads them; a run that cannot read it "
             + "has bound nothing, and it must not be mistaken for a run that agreed with it.");
     }
@@ -69,9 +111,9 @@ internal static class WireContract
     /// set comparison, and a set absorbs a repeat — so a list naming <c>factorId</c> twice would compare
     /// equal to one naming it once, and the seven-member message driven from it would look like eight.
     /// </remarks>
-    public static IReadOnlyList<string> Members(string message)
+    public IReadOnlyList<string> Members(string message)
     {
-        JsonElement entry = Child(Child(Document.RootElement, "messages"), message);
+        JsonElement entry = Child(Child(_document.RootElement, "messages"), message);
 
         if (!entry.TryGetProperty("members", out JsonElement listed)
             || listed.ValueKind != JsonValueKind.Array
@@ -101,9 +143,9 @@ internal static class WireContract
     }
 
     /// <summary>The integer at <paramref name="property" /> of a named width.</summary>
-    public static int Width(string member, string property)
+    public int Width(string member, string property)
     {
-        JsonElement entry = Child(Child(Document.RootElement, "widths"), member);
+        JsonElement entry = Child(Child(_document.RootElement, "widths"), member);
 
         return entry.TryGetProperty(property, out JsonElement value)
                && value.ValueKind == JsonValueKind.Number
@@ -113,18 +155,28 @@ internal static class WireContract
     }
 
     /// <summary>The messages the artifact carries.</summary>
-    public static IReadOnlyList<string> MessageNames() =>
-        NamesUnder(Child(Document.RootElement, "messages"));
+    public IReadOnlyList<string> MessageNames() =>
+        NamesUnder(Child(_document.RootElement, "messages"));
 
     /// <summary>The widths the artifact carries.</summary>
-    public static IReadOnlyList<string> WidthNames() =>
-        NamesUnder(Child(Document.RootElement, "widths"));
+    public IReadOnlyList<string> WidthNames() =>
+        NamesUnder(Child(_document.RootElement, "widths"));
+
+    /// <summary>Whether the artifact carries a <c>widths</c> object at all.</summary>
+    /// <remarks>
+    /// Present so an artifact specified to carry <em>no</em> widths can pin that absence, which
+    /// <see cref="WidthNames" /> cannot: its throw says "this file has no widths" for a file that is
+    /// supposed to have none and for a file whose widths were deleted, and those are opposite reports.
+    /// </remarks>
+    public bool CarriesWidths() =>
+        _document.RootElement.TryGetProperty("widths", out JsonElement widths)
+        && widths.ValueKind == JsonValueKind.Object;
 
     /// <summary>
     /// The property names of <paramref name="owner" /> that are not prose.
     /// </summary>
     /// <remarks>
-    /// The artifact carries its own argument inline under keys opening with an underscore — the
+    /// The artifacts carry their own argument inline under keys opening with an underscore — the
     /// convention <c>factor-keypair-v1.json</c> already uses — and those are commentary rather than
     /// entries. The filter is on the leading character rather than on a list of known prose keys, so a
     /// new paragraph does not redden a census about members.
@@ -141,13 +193,13 @@ internal static class WireContract
     /// In place of <c>GetProperty(...)</c>, whose <see cref="KeyNotFoundException" /> names the key and
     /// says nothing about what the file is. The whole argument for reading a shared artifact rather than
     /// restating it is that the other suite reads the same one; the matching refusal is one that says
-    /// which part of it went missing.
+    /// which part of it went missing, and which file it went missing from.
     /// </remarks>
-    private static JsonElement Child(JsonElement owner, string property) =>
+    private JsonElement Child(JsonElement owner, string property) =>
         owner.TryGetProperty(property, out JsonElement value)
         && value.ValueKind == JsonValueKind.Object
             ? value
             : throw new InvalidOperationException(
-                $"The wire contract carries no object at '{property}'. It is read by this suite and "
+                $"'{_relativePath}' carries no object at '{property}'. It is read by this suite and "
                 + "by the browser's; a case that cannot find its half has bound nothing.");
 }

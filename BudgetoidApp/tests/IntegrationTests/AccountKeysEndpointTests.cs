@@ -1570,7 +1570,8 @@ public sealed class AccountKeysEndpointTests
     /// other.
     /// </para>
     /// </remarks>
-    private static readonly IReadOnlyList<string> RowMembers = WireContract.Members("accountKeyEntry");
+    private static readonly IReadOnlyList<string> RowMembers =
+        WireContract.AccountKeys.Members("accountKeyEntry");
 
     /// <summary>
     /// The three members a row may never carry. Each is argued in the census's own remarks; listed here
@@ -1610,7 +1611,7 @@ public sealed class AccountKeysEndpointTests
     /// </para>
     /// </remarks>
     private static readonly IReadOnlyList<string> BodyMembers =
-        WireContract.Members("accountKeysResponse");
+        WireContract.AccountKeys.Members("accountKeysResponse");
 
     /// <summary>
     /// Asserts both directions of one caller's answer: that the rows are exactly the factors that

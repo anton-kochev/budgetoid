@@ -157,7 +157,7 @@ public sealed class AccountKeyWireContractTests
     public async Task RegistrationRequest_BindsExactlyTheMembersTheContractNames()
     {
         // Arrange
-        IReadOnlyList<string> contract = WireContract.Members("registrationRequest");
+        IReadOnlyList<string> contract = WireContract.AccountKeys.Members("registrationRequest");
         Type record = NestedRecord(typeof(RegistrationEndpoints), "RegistrationRequest");
 
         // Act
@@ -189,7 +189,7 @@ public sealed class AccountKeyWireContractTests
     public async Task RecoveryCodeSubmission_BindsExactlyTheMembersTheContractNames()
     {
         // Arrange
-        IReadOnlyList<string> contract = WireContract.Members("recoveryCodeSubmission");
+        IReadOnlyList<string> contract = WireContract.AccountKeys.Members("recoveryCodeSubmission");
         Type request = NestedRecord(typeof(RegistrationEndpoints), "RegistrationRequest");
 
         // Act
@@ -213,7 +213,7 @@ public sealed class AccountKeyWireContractTests
     public async Task AccountKeysResponse_BindsExactlyTheMembersTheContractNames()
     {
         // Arrange
-        IReadOnlyList<string> contract = WireContract.Members("accountKeysResponse");
+        IReadOnlyList<string> contract = WireContract.AccountKeys.Members("accountKeysResponse");
         Type record = NestedRecord(typeof(AccountKeyEndpoints), "AccountKeysResponse");
 
         // Act
@@ -248,7 +248,7 @@ public sealed class AccountKeyWireContractTests
     public async Task AccountKeyEntry_BindsExactlyTheMembersTheContractNames()
     {
         // Arrange
-        IReadOnlyList<string> contract = WireContract.Members("accountKeyEntry");
+        IReadOnlyList<string> contract = WireContract.AccountKeys.Members("accountKeyEntry");
         Type response = NestedRecord(typeof(AccountKeyEndpoints), "AccountKeysResponse");
 
         // Act
@@ -348,7 +348,7 @@ public sealed class AccountKeyWireContractTests
     public async Task ExactWidth_IsWhatTheServerConstantHolds(string member, int serverWidth)
     {
         // Arrange
-        int frozen = WireContract.Width(member, "exactBytes");
+        int frozen = WireContract.AccountKeys.Width(member, "exactBytes");
 
         // Act
         int actual = serverWidth;
@@ -395,7 +395,7 @@ public sealed class AccountKeyWireContractTests
     public async Task AccountKeysPlaintextWidth_IsWhatTheTwoPinnedConstantsLeaveBetweenThem()
     {
         // Arrange
-        int frozen = WireContract.Width("accountKeysPlaintext", "exactBytes");
+        int frozen = WireContract.AccountKeys.Width("accountKeysPlaintext", "exactBytes");
 
         // Act
         int plaintext =
@@ -420,8 +420,8 @@ public sealed class AccountKeyWireContractTests
     public async Task ManifestBand_IsWhatTheServerConstantsHold()
     {
         // Arrange
-        int frozenFloor = WireContract.Width("manifest", "minimumBytes");
-        int frozenCeiling = WireContract.Width("manifest", "maximumBytes");
+        int frozenFloor = WireContract.AccountKeys.Width("manifest", "minimumBytes");
+        int frozenCeiling = WireContract.AccountKeys.Width("manifest", "maximumBytes");
 
         // Act
         int floor = CiphertextEnvelope.MinimumLength;
@@ -447,7 +447,7 @@ public sealed class AccountKeyWireContractTests
     public async Task Messages_AreExactlyTheSetThisFileBinds()
     {
         // Arrange
-        IReadOnlyList<string> contract = WireContract.MessageNames();
+        IReadOnlyList<string> contract = WireContract.AccountKeys.MessageNames();
 
         // Act
         string[] unbound = [.. contract.Except(BoundMessages, StringComparer.Ordinal).Order(StringComparer.Ordinal)];
@@ -475,7 +475,7 @@ public sealed class AccountKeyWireContractTests
     public async Task Widths_AreExactlyTheSetThisFileAccountsFor()
     {
         // Arrange
-        IReadOnlyList<string> contract = WireContract.WidthNames();
+        IReadOnlyList<string> contract = WireContract.AccountKeys.WidthNames();
 
         // Act
         string[] unaccounted = [.. contract.Except(NamedWidths, StringComparer.Ordinal).Order(StringComparer.Ordinal)];

@@ -55,16 +55,21 @@ everything.
 ## What is built today
 
 **The schema, the domain behaviour, the completeness gate, the handlers a run needs, the three routes
-that walk one, and — new — the read that resumes an interrupted one. The whole server side of a
-rotation is now reachable over HTTP. No client.** `POST /api/me/key-rotation` stages a run,
+that walk one, the read that resumes an interrupted one, and — new — a typed client for all four.
+The whole server side of a rotation is reachable over HTTP, and a browser can now address it. Nothing
+drives a run.** `POST /api/me/key-rotation` stages a run,
 `POST /api/me/key-rotation/chunks` re-seals a batch of rows,
 `POST /api/me/key-rotation/completion` promotes the staged generation, and
 `GET /api/me/key-rotation` hands a staged run back to a client that lost it — so `key_rotations`,
 `key_rotation_seals`, the six `rotation_id` stamp columns, `wrapped_account_keys` and
 `factor_manifests` can all now hold values a browser caused to be written, and none of that work is
-lost to a reload. **What is missing is the client**, which is the half that holds the keys: nothing
-in this repository encrypts, so no browser can produce the manifest a begin stages or the envelopes
-a chunk carries.
+lost to a reload. **What is missing is what drives a run.** `key-rotation-api.service.ts` names the
+four routes and mirrors every request and response record member for member; it is a transport, so
+it holds no key, runs no cipher, makes no refusal of its own and reads no conflict — and nothing
+calls it. The half nobody has built is what it would carry: minting the next generation,
+encapsulating it to every factor's public key and re-sealing every narrative row. `me-api.service.ts`
+argues, over the sibling route that replaces a card of codes, why the account's own keys are not
+something custody can be asked for today.
 **`factor_manifests` was never empty**: registration files a row for every account it creates, at
 epoch 1, and three paths promoted one before this; the completion is the fourth.
 
@@ -108,7 +113,16 @@ same class as the three posts, which answers **200 always** carrying `rotation: 
 is staged, drives its `seals` off `key_rotation_seals` rather than off the account's live factors,
 tells a finished run from a live one by **the epoch** rather than by the staging row's existence,
 and writes `Cache-Control: no-store` on both answers. It declares the same three absences as the
-routes beside it.
+routes beside it; and the client's transport for all four — `KeyRotationApiService`, four members
+over `BaseApiService`, carrying `EXPECTS_UNAUTHENTICATED` on none of them because a 401 on any of
+these is a session that ended — beside
+[`vectors/key-rotation-wire-v1.json`](vectors/key-rotation-wire-v1.json), which freezes the whole
+member set of each of the fourteen messages those four routes carry. That file has two readers and
+the second one is the point: `key-rotation-api.service.spec.ts` compares the browser's own types
+against those lists, and `KeyRotationWireContractTests` reflects over the server's own records,
+camel-cases their property names through the serializer the API ships, and compares them against the
+same lists as **sets in both directions**. Neither may be deleted on the grounds that the other
+covers the contract, because a list one side alone reads pins one side alone.
 
 **The completion route hands back nothing, and that is the one decision the route makes.** Not a body
 member, not an `ETag`, not a `Location`, not a header of its own: a client's rotation-epoch record may
@@ -126,8 +140,8 @@ finished run, which is what the legitimate client was about to do. Neither is a 
 gate did not already grant, and a prompt here would fall at the one moment a person has the most to
 lose by abandoning the request.
 
-Not built: the client that does the actual encryption. Do not state it in the present tense until it
-ships.
+Not built: anything that drives a run — no screen, no service that mints the next generation, no path
+that re-seals a row. Do not state any of it in the present tense until it ships.
 
 **The begin can write its row, and `key_rotations` still holds no `DELETE` of any shape.**
 `app-role-grants.sql` grants `SELECT`, `INSERT` and a column-listed `UPDATE` over `rotation_id`,
@@ -573,8 +587,9 @@ begins a run owes that comparison before it posts. A sentence reading as though 
 closed — on this side or on the client's — loses exactly the half that nothing holds.
 
 **That residual is now reachable, which is what changed.** `POST /api/me/key-rotation` stages a run,
-so a disagreeing manifest can be stored today rather than only in principle. No client posts one yet,
-because none is built; when one is, the comparison above is the thing it has to be written with.
+so a disagreeing manifest can be stored today rather than only in principle. No client posts one yet:
+the transport that addresses the route is built and nothing calls it; when something does, the
+comparison above is the thing it has to be written with.
 
 ### Carrying a chunk: what the route owes, and the three things it must not add
 

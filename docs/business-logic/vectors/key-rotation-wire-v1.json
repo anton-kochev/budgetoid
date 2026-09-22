@@ -1,0 +1,298 @@
+{
+  "_what": [
+    "The member names of every request and response of the four routes that walk a content-key rotation, frozen in one file that both suites read.",
+    "Names are given in the spelling that crosses the wire — camelCase — because that is the only spelling the two sides share. The server writes PascalCase records and camel-cases them at the serializer; the client declares the wire spelling directly. A test on either side compares against the list here after converting its own side's names, never against the other side's source.",
+    "The sibling of `account-keys-wire-v1.json`, which holds the four messages that carry an account's key custody. This one holds the fourteen that carry a rotation of it. Neither file may absorb the other: they freeze different routes, and a reader looking for one message should find one file naming it."
+  ],
+  "_whyItExists": [
+    "Nothing in this repository binds the two sides. There is no OpenAPI artifact, no generated client and no captured fixture, so the shape of a request is asserted twice — once by a record and once by an interface — and the two assertions never meet.",
+    "That is not a theoretical gap. It is what `account-keys-wire-v1.json` was written for: the backend moved a factor from its own copy of the account's keys to an ECDH keypair, both suites stayed green, and the client went on sending members no route bound. Every test on both sides passed throughout, because each side was checking itself.",
+    "A rotation is the widest surface in the product for that failure to arrive on. It is fourteen messages across four routes, five of them arms of one body that differ from each other by one member; the client that drives it holds the only copy of a generation half the account is already sealed under; and the run is long enough that a skew is discovered in the middle of one rather than at the start."
+  ],
+  "_theDesignProperty": [
+    "It can only be greened by editing a file BOTH suites read.",
+    "That is the whole point and it is worth stating as a property rather than as a convention. A contract test whose expectation lives in the suite that also produces the value can be satisfied by pasting the actual over the expected, and the paste is invisible in review because the diff looks like a test being updated alongside the code it tests. Here, the same paste moves the other suite's expectation too — so renaming a member on one side and 'fixing the test' reddens the other side."
+  ],
+  "_whatThisCannotHold": [
+    "It binds NAMES, and nothing else. It is not a check of semantics, and — unlike its sibling — it carries no widths either.",
+    "It would not catch the server changing what it DOES with a member: a `seals` array de-duplicated on its way into the command, a `stagedManifest` served from the live row rather than the staged one, a `description` read as an instruction to clear a column. Every one of those keeps the name and is wrong.",
+    "It would equally not catch the ORDER of a list being lost. `seals` and the five chunk arms are arrays precisely because a repeated identifier must survive binding and be refused rather than absorbed, and nothing about a member name says so.",
+    "That limit is accepted rather than worked around. A file that tried to hold semantics as well would be a second, weaker copy of what the entity types, the decoders and the handlers already refuse, and the copy is the one that drifts."
+  ],
+  "_theWidthsLiveInTheSiblingFile": [
+    "There is no `widths` object here and one must not be added. Every binary member below is one of two values whose width is already frozen next door: `encapsulatedAccountKeys` is exactly 158 bytes and `manifest` — here as `manifest` on the begin and `stagedManifest` on the read — is the 29-to-4096 band, both pinned in `account-keys-wire-v1.json`, which in turn points at `factor-keypair-v1.json` for the known answers themselves.",
+    "A second copy of 158 in this file would be one fact able to disagree with itself, and the disagreement would be silent: each file would go on agreeing with the suite that reads it. The narrative envelopes a chunk carries are bounded by `NarrativeFieldLimits` rather than by a width, and a blind index has one legal width its own decoder owns, so neither is a number this file could add without inventing it here."
+  ],
+  "_bothReadersExist": [
+    "Two readers, and the second one is the point. The client's is `key-rotation-api.service.spec.ts`, which asserts the body its service posts, and the response shapes its types declare, against these sets. The server's is `KeyRotationWireContractTests`, which reflects over the records in `Api.Endpoints.KeyRotationEndpoints`, camel-cases their property names through the serializer the API ships, and compares them against the same sets.",
+    "One reader alone pins one side to a list and leaves the other side free to rename, which is exactly the arrangement that let the last change through — so neither may be deleted on the grounds that the other covers the contract."
+  ],
+  "_setEqualityInBothDirections": [
+    "Each list below is the WHOLE set of members, and a reader is expected to compare it as a set in both directions rather than as a subset.",
+    "A missing-member check alone passes on a side that has grown a member the other does not bind. That is the live failure mode here rather than a tidiness rule: `completeRotationRequest` is specified never to grow a second member, `stagedSealResponse` never to grow a third, and a subset comparison is precisely what would not notice one arriving."
+  ],
+  "_theFiveArmsAreFiveMessages": [
+    "The chunk's five arms are listed as five messages even though two pairs of them carry identical member sets today. They are not one message used five times.",
+    "What they have in common is an accident of which columns each table holds: `accounts` and `payees` carry a required name, `categories` and `category_groups` carry a note beside it, and `transactions` carries only the note. Folded into one list, a column added to one table would either widen all five or redden a comparison against four tables it says nothing about."
+  ],
+  "messages": {
+    "beginRotationRequest": {
+      "_what": [
+        "The body of `POST /api/me/key-rotation`. It opens a run: which run, which generation, one seal per factor the account holds, and the assertion that authorizes it.",
+        "`KeyRotationEndpoints.BeginRotationRequest` on the server. On the client it is `BeginRotationRequestBody`, composed rather than written out: the five assertion members arrive from `PasskeyAssertionPayload` and four are declared in place."
+      ],
+      "_theAssertionMembersAreSharedWithThreeOtherGates": [
+        "`credentialId`, `clientDataJson`, `authenticatorData`, `signature` and `userHandle` are byte-identical to the erasure's, the revocation's and the code regeneration's, members and all.",
+        "A caller comparing the four gates must learn nothing from a difference between them, so a renamed member here — or a `null` user handle coerced to an empty string on the way past — would make one gate answer differently from the other three for a caller holding a stolen handle. One spelling on each side is what holds it."
+      ],
+      "_sealsIsAnArrayAndThatIsTheRule": [
+        "`seals` is an ARRAY and never an object keyed on the factor. A JSON object makes a repeated factor id unconstructible on the wire — the binder drops the repeat, last wins — so a begin naming twelve factors in thirteen seals would arrive as twelve, satisfy the server's set comparison against the account's twelve live factors perfectly, answer 200, and leave the account one seal short of what its client believed it sent.",
+        "The refusal that catches it is the server's duplicate-factor check, and it can only fire on a shape that preserves the repeat. Nothing in a member name says any of this, which is why it is written here beside the name rather than left to a reader."
+      ],
+      "_noUserIdAndNoAccount": [
+        "There is no `userId` and no account of any spelling, and neither may ever be added. The only identity a rotation acts on is the session's.",
+        "An account a caller could name on this body would be somebody else's keys, moved by a request that authenticated as a different person — over the one write in the product that nothing can put back."
+      ],
+      "route": "POST /api/me/key-rotation",
+      "direction": "request",
+      "members": [
+        "rotationId",
+        "manifest",
+        "rotationEpoch",
+        "seals",
+        "credentialId",
+        "clientDataJson",
+        "authenticatorData",
+        "signature",
+        "userHandle"
+      ]
+    },
+    "rotationSealRequest": {
+      "_what": [
+        "One factor's copy of the next generation's account keys, as the wire carries it IN. It appears once per factor inside `beginRotationRequest.seals`.",
+        "`KeyRotationEndpoints.SealRequest` on the server. On the client it is `RotationSealBody`, which is also the type the read hands back — see `stagedSealResponse`."
+      ],
+      "_twoMembersAndNoThird": [
+        "Two members, and the pair is the whole of what a seal honestly is: which factor, and the value encapsulated to it.",
+        "A `wrappedPrivateKey` beside them is refused: a rotation moves the ACCOUNT's two keys and never a factor's own private half, which stays wrapped under the key-encryption key that factor derives and belongs to the route that serves factors. A public key is refused for the reason `accountKeyEntry` refuses one — what must be unforgeable is the SET, named in one authenticated blob."
+      ],
+      "_theOrderInsideTheValueIsNotHere": [
+        "`encapsulatedAccountKeys` carries the next generation's content key and index key as one 64-byte plaintext, CONTENT KEY FIRST, encapsulated to that factor's public key.",
+        "That order is a client contract no server-side check can reach: a reversed pair is the right width, carries the right version, stores, reads back and opens. This file pins the member's name and nothing about what is inside it."
+      ],
+      "route": "inside POST /api/me/key-rotation",
+      "direction": "request",
+      "members": ["factorId", "encapsulatedAccountKeys"]
+    },
+    "keyRotationBegunResponse": {
+      "_what": [
+        "The whole answer of `POST /api/me/key-rotation`: what a client drives the rest of the run with.",
+        "`Application.KeyRotations.BeginKeyRotation.KeyRotationBegun` on the server, served straight out rather than through a response record of the API's own — six counts restated at the edge would be six numbers able to disagree with the six `RotationInventory` declares. `KeyRotationBegunDto` on the client."
+      ],
+      "_itEchoesNeitherTheRunNorTheManifest": [
+        "There is no `rotationId`, no `manifest` and no `rotationEpoch`, and a reader will try to add one for symmetry with `stagedRotationResponse`. It is refused.",
+        "The caller minted the first and sent the other two a moment ago, so repeating them adds nothing and invites a client to read the echo as confirmation that the server agreed — which on this path it would, because the values are stored verbatim or the request was refused. The resume read echoes all three precisely because ITS caller sent none of them.",
+        "There is also no status member. A begin that returned is a begin that staged, so a flag saying so is one nothing could ever set to false."
+      ],
+      "route": "POST /api/me/key-rotation",
+      "direction": "response",
+      "members": ["inventory", "maxChunkBytes"]
+    },
+    "rotationInventory": {
+      "_what": [
+        "How many rows carrying a narrative value each of the six narrative-bearing tables holds — the denominator a client divides its progress by. It appears inside `keyRotationBegunResponse` and again inside `stagedRotationResponse`.",
+        "`Application.KeyRotations.BeginKeyRotation.RotationInventory` on the server, `RotationInventoryDto` on the client."
+      ],
+      "_countsAndNothingElse": [
+        "Six counts, and the closure is the rule rather than today's shape. This is the one place on this path where somebody reaches for 'and the names of the payees, so the screen can say which one it is on' — every narrative column in the product is a sealed envelope the server cannot open, so the useful version of that member cannot exist and the useless version would ship ciphertext to a progress bar."
+      ],
+      "_sixMembersRatherThanAMap": [
+        "Six named members rather than a dictionary keyed on a table name. A map lets a table go missing with nothing failing, and the client reads each of these as its own progress bar — so a member the response forgot is a rotation that reports itself finished with a table still to go.",
+        "The counts are PRESENCE-AWARE: they count rows that carry a narrative value, which is the same population the completeness gate asks about. A transaction with no note has nothing to re-seal and a chunk never visits it, so counting it here would hand a client a denominator it can never reach."
+      ],
+      "route": "inside POST /api/me/key-rotation and GET /api/me/key-rotation",
+      "direction": "response",
+      "members": [
+        "accounts",
+        "payees",
+        "categoryGroups",
+        "categories",
+        "transactions",
+        "budgets"
+      ]
+    },
+    "resealChunkRequest": {
+      "_what": [
+        "The body of `POST /api/me/key-rotation/chunks`: the run it continues, and the rows a client has re-sealed under that run's generation.",
+        "`KeyRotationEndpoints.ResealChunkRequest` on the server, `ResealChunkRequestBody` on the client."
+      ],
+      "_fiveArmsAndNoBudgetArm": [
+        "Five arms, and the absent sixth is a decision rather than a gap. A budget arm would need `rotation_id` on the `budgets` `GRANT UPDATE` column list, where the requirement is `name` and no other column.",
+        "On the server the refusal is a compile error rather than a runtime `42501`, because the member that would re-seal a budget's name is internal to its own ring. On this side the absence is held by this list."
+      ],
+      "_arraysRatherThanObjects": [
+        "Every arm is an ARRAY, for `beginRotationRequest.seals`' reason applied to a row identifier: a JSON object keyed on the row makes a repeated identifier unconstructible, so a chunk naming one row twice under two different envelopes would arrive as one with nothing saying so.",
+        "A missing arm binds as an empty one rather than being refused — most chunks of a real rotation carry one or two — so a client that has no payees to send omits the member or sends `[]`, and both mean the same thing. That is why a reader binding this list must compare the set of members the client SENDS, which is all five, rather than inferring the set from one request's contents."
+      ],
+      "_noCountAndNoAccount": [
+        "There is no 'rows in this chunk' and no 'rows remaining'. The begin published a per-table inventory and a chunk budget; a count here would be a second denominator able to disagree with it — on a screen, a progress bar that never reaches the end.",
+        "No account is named and none may be: the rows a chunk may reach are the ambient budget's, resolved from the session."
+      ],
+      "route": "POST /api/me/key-rotation/chunks",
+      "direction": "request",
+      "members": [
+        "rotationId",
+        "accounts",
+        "payees",
+        "categoryGroups",
+        "categories",
+        "transactions"
+      ]
+    },
+    "resealedAccountEntry": {
+      "_what": [
+        "One account row's new values, one level down inside `resealChunkRequest.accounts`.",
+        "`KeyRotationEndpoints.ResealedAccountRequest` on the server. On the client it is `ResealedNamedRowBody`, one type shared with the payee arm because the two member sets are equal — see `_theFiveArmsAreFiveMessages` for why the LISTS are still two."
+      ],
+      "_theIndexRidesBesideTheEnvelope": [
+        "`name` is the sealed envelope and `nameKey` is the blind index over the same text. Two members because they are two columns, and the server can check neither against the other.",
+        "The index is here at all because a rotation replaces the INDEX key as well as the content key, so every blind index in the account has to be recomputed under the new one. A client that re-sealed the envelope and carried the old index would write rows that are perfectly readable and findable by nothing."
+      ],
+      "_idIsTheServersOwnRendering": [
+        "`id` is the identifier this server rendered, not base64url text — the one place a chunk parts company with the create bodies it otherwise resembles.",
+        "A create carries the row identifier as text because the client minted it and it is the associated data the envelope beside it was sealed against. A chunk names a row that already exists, so the identifier selects a row and nothing is sealed against what this body says about it.",
+        "There is no per-entry stamp on this record or any of its four siblings. The run is `resealChunkRequest.rotationId`, one level up, because a run stamps every row it rewrites with the same identifier — a per-entry stamp would be a second place for one chunk to disagree with itself, invisible until a completeness gate refused a run that looked finished."
+      ],
+      "route": "inside POST /api/me/key-rotation/chunks",
+      "direction": "request",
+      "members": ["id", "name", "nameKey"]
+    },
+    "resealedPayeeEntry": {
+      "_what": [
+        "One payee row's new values, one level down inside `resealChunkRequest.payees`. The member set of `resealedAccountEntry`, for the same reasons.",
+        "`KeyRotationEndpoints.ResealedPayeeRequest` on the server, `ResealedNamedRowBody` on the client."
+      ],
+      "route": "inside POST /api/me/key-rotation/chunks",
+      "direction": "request",
+      "members": ["id", "name", "nameKey"]
+    },
+    "resealedCategoryGroupEntry": {
+      "_what": [
+        "One category-group row's new values, one level down inside `resealChunkRequest.categoryGroups`.",
+        "`KeyRotationEndpoints.ResealedCategoryGroupRequest` on the server. On the client it is `ResealedDescribedRowBody`, one type shared with the category arm."
+      ],
+      "_descriptionIsNullableAndItsAbsenceIsJudged": [
+        "`description` is the note under the next generation's content key, and it is nullable: a row that holds no note carries `null`, and a missing member means the same thing to the route.",
+        "It is NOT a way to clear the column. The server refuses a reseal that changes whether a row holds a note in either direction, so omitting it for a row that holds one is a refusal rather than an edit — which is what separates this body from the update body on the same table.",
+        "The client sends the member always, `null` included, rather than omitting it. That is a client decision and it is made for this file's sake: an arm whose member set depended on which rows a chunk happened to name could not be compared against a list at all."
+      ],
+      "route": "inside POST /api/me/key-rotation/chunks",
+      "direction": "request",
+      "members": ["id", "name", "nameKey", "description"]
+    },
+    "resealedCategoryEntry": {
+      "_what": [
+        "One category row's new values, one level down inside `resealChunkRequest.categories`. The member set of `resealedCategoryGroupEntry`, for the same reasons.",
+        "`KeyRotationEndpoints.ResealedCategoryRequest` on the server, `ResealedDescribedRowBody` on the client."
+      ],
+      "route": "inside POST /api/me/key-rotation/chunks",
+      "direction": "request",
+      "members": ["id", "name", "nameKey", "description"]
+    },
+    "resealedTransactionEntry": {
+      "_what": [
+        "One transaction row's new value, one level down inside `resealChunkRequest.transactions`.",
+        "`KeyRotationEndpoints.ResealedTransactionRequest` on the server, `ResealedTransactionBody` on the client."
+      ],
+      "_aNoteAndNoName": [
+        "Two members, because `transactions` has no name. It is the only arm whose whole narrative is a nullable column — which is why a note-less transaction, what most rows of a real account are, is a row a chunk never names at all rather than one it sends an empty entry for.",
+        "A `name` or a `nameKey` added here would bind nowhere and redden nothing on the server, which is why the absence is pinned as a list rather than left to the record's shape."
+      ],
+      "route": "inside POST /api/me/key-rotation/chunks",
+      "direction": "request",
+      "members": ["id", "description"]
+    },
+    "completeRotationRequest": {
+      "_what": [
+        "The body of `POST /api/me/key-rotation/completion`: the run being finished, and deliberately nothing else.",
+        "`KeyRotationEndpoints.CompleteRotationRequest` on the server, `CompleteRotationRequestBody` on the client."
+      ],
+      "_oneMemberAndNoSecond": [
+        "One member, and every other candidate is refused. The staged manifest, the generation it is filed at and the value each factor adopts were all fixed by the begin and are on file already.",
+        "Carried again here they would be a second statement of the same values, able to disagree with the staged one at the one moment a disagreement cannot be undone. A `manifest`, a `rotationEpoch` or a `seals` array added beside `rotationId` would BIND on the server, be forwarded nowhere, and redden nothing — which is exactly why the shape is stated in this file rather than inferred from what the handler happens to read."
+      ],
+      "_theCompletionAnswersNoBodyAtAll": [
+        "There is no completion RESPONSE message in this file, and its absence is a rule rather than an omission. The route answers 204 carrying nothing: not a body member, not an `ETag`, not a `Location`, not a header of its own.",
+        "A client's rotation-epoch record may rise only after the four-refusal gate over `GET /api/me/account-keys` has passed, so a promoted generation returned from here is a number a client could advance its record from having judged nothing — an oracle rather than an observation. A header carries it as surely as a body does: `W/\"2\"` is the epoch in a client's hands as surely as `2` is."
+      ],
+      "route": "POST /api/me/key-rotation/completion",
+      "direction": "request",
+      "members": ["rotationId"]
+    },
+    "keyRotationStateResponse": {
+      "_what": [
+        "The whole answer of `GET /api/me/key-rotation`: the run in flight, or nothing.",
+        "`KeyRotationEndpoints.KeyRotationStateResponse` on the server, `KeyRotationStateDto` on the client."
+      ],
+      "_oneMemberThatIsPresentAndNull": [
+        "A wrapper carrying one member rather than the staged run served bare, and the member is the point. A bare body would have to spell 'nothing in flight' as a literal `null` document — which a client has to guard before it may read anything — or as `{}`, which is indistinguishable from a run whose members all went missing.",
+        "A named member that is present and `null` says both halves: the shape did not change, and there is no run.",
+        "`null` and never an empty staged run. An object carrying an empty seal array is a run naming no factor, a state no path in the product produces, and a client acting on it would resume by re-encapsulating the account's keys to nobody.",
+        "200 and never 404, because every client here reads a failed read as 'try again in a minute' — advice that for an account which has simply never begun a rotation never succeeds."
+      ],
+      "_noSecondMemberSayingWhetherARunIsInFlight": [
+        "The presence of `rotation` IS that fact. A flag beside it would be one statement able to disagree with the other, on the one read a client consults when it has already lost track of what it was doing."
+      ],
+      "route": "GET /api/me/key-rotation",
+      "direction": "response",
+      "members": ["rotation"]
+    },
+    "stagedRotationResponse": {
+      "_what": [
+        "One staged run as a resuming client needs it back, one level down inside `keyRotationStateResponse.rotation`.",
+        "`KeyRotationEndpoints.StagedRotationResponse` on the server, `StagedRotationDto` on the client."
+      ],
+      "_itEchoesWhatTheBegunResponseRefusesTo": [
+        "It carries `stagedRotationEpoch` and `stagedManifest` where `keyRotationBegunResponse` deliberately carries neither, and the asymmetry is the whole difference between the two answers.",
+        "A begin's caller sent those values a moment ago, so repeating them invites it to read the echo as agreement. THIS caller sent nothing: it is a client that lost the run to a reload, and these are the values it no longer has.",
+        "`stagedManifest` is byte for byte what the begin staged. Handing it back discloses what its live sibling on `GET /api/me/account-keys` discloses — how many factors the account is about to hold, and which public keys they are — and it is sealed under the account's content key, which this server has never held."
+      ],
+      "_noMemberMayCarryProgress": [
+        "Not 'rows remaining', not a percentage, not a list of stamped row ids. `inventory` is the denominator and the client holds the numerator; a count computed here would be a progress bar able to disagree with the completeness gate, which is the one number that decides whether the run may be completed.",
+        "`maxChunkBytes` is republished rather than left out, because a resuming client needs it exactly as the client that began the run did."
+      ],
+      "route": "inside GET /api/me/key-rotation",
+      "direction": "response",
+      "members": [
+        "rotationId",
+        "stagedRotationEpoch",
+        "stagedManifest",
+        "startedAtUtc",
+        "inventory",
+        "maxChunkBytes",
+        "seals"
+      ]
+    },
+    "stagedSealResponse": {
+      "_what": [
+        "One factor's staged copy of the next generation's account keys, as the wire carries it BACK. It appears once per staged seal inside `stagedRotationResponse.seals`.",
+        "`KeyRotationEndpoints.StagedSealResponse` on the server. On the client there is no separate type: `RotationSealBody` is what the begin posts and what this read hands back."
+      ],
+      "_theMirrorOfTheRequestSealMemberForMember": [
+        "The same two members as `rotationSealRequest`, and that is deliberate rather than incidental: this is the value that member put on file coming back out — the same suite, the same framing, the same width — so a client that built a seal set and lost it reads back what it sent, under names it has already written code against.",
+        "The two lists are kept separate all the same, because the two RECORDS are separate on the server and a reflection test binds records. A rename on one of them reddens against its own list and leaves the other standing, which is the report a reader needs."
+      ],
+      "_theEntrySetIsWhatTheRunStaged": [
+        "One entry per factor THIS RUN staged a value for, which is not always the set of factors the account holds now. A factor with no staged seal is LEFT OUT.",
+        "Never carried with a `null` value, which is a seal a client cannot use and will skip, and never filled in from that factor's live `encapsulated_account_keys`, which is a well-formed value of the right width and version carrying the generation the run is replacing. Absence is the only answer that leaves a client able to tell what really happened.",
+        "That is a fact about the SET rather than about the member names, and this file pins the names. It is written here because a reader binding `seals` will otherwise assume the array is the account's factor set."
+      ],
+      "_noThirdMember": [
+        "A `credentialId` is the join `account-keys.md` deliberately withholds. A `wrappedPrivateKey` belongs to the factor rather than to a run, and is on the route that serves factors. A per-entry stamp or instant would be a second statement of what `stagedRotationResponse.startedAtUtc` already says once."
+      ],
+      "route": "inside GET /api/me/key-rotation",
+      "direction": "response",
+      "members": ["factorId", "encapsulatedAccountKeys"]
+    }
+  }
+}
