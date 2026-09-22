@@ -1,8 +1,28 @@
-<!-- One paragraph, two sentences: the fact, then the way forward. They stay in
-     one flow because the second is the remedy for the first and a reader hears
-     them as one thought. The link is the last words of the sentence, so its
-     accessible name is the word somebody is looking for in the navigation. -->
-<p class="lan-copy">
-  This tab can&rsquo;t read your account yet. Unlock it in
-  <a class="lan-link" routerLink="/app/settings">Settings</a>.
-</p>
+<!-- One paragraph per reason, two sentences each: the fact, then the way
+     forward. They stay in one flow because the second is the remedy for the
+     first and a reader hears them as one thought. The link is the last words of
+     the sentence, so its accessible name is the word somebody is looking for in
+     the navigation.
+
+     A `@switch` and not two `@if`s, so a third reason added to the union
+     arrives as a paragraph nobody wrote rather than as two branches somebody
+     has to remember to keep exclusive. -->
+@switch (reason()) {
+  @case ('locked') {
+    <p class="lan-copy">
+      This tab can&rsquo;t read your account yet. Unlock it in
+      <a class="lan-link" routerLink="/app/settings">Settings</a>.
+    </p>
+  }
+  @case ('rotating') {
+    <!-- The run's own sentence. It names no press: pressing Unlock mid-run
+         gets the generation that is on its way out and the list stays half
+         dashes, so what it offers instead is the place the run can be watched
+         — named for the same reason Settings is named in the line above. -->
+    <p class="lan-copy">
+      Budgetoid is giving this account new keys. Your records come back when it
+      finishes &mdash; watch it in
+      <a class="lan-link" routerLink="/app/settings">Settings</a>.
+    </p>
+  }
+}

@@ -34,6 +34,13 @@ import {
   type UnlockFailure,
 } from '@app-core/security/account-key-custody.service';
 import {
+  KeyRotationService,
+  type KeyRotationFailure,
+  type KeyRotationPhase,
+  type KeyRotationProgress,
+  type StagedRotation,
+} from '@app-core/security/key-rotation.service';
+import {
   NARRATIVE_DESCRIPTION_CHARACTERS,
   NARRATIVE_NAME_CHARACTERS,
 } from '@app-shared/narrative-field-caps';
@@ -211,9 +218,56 @@ function exposed(component: CategoriesComponent): Exposed {
   return component as unknown as Exposed;
 }
 
+// The driver, stubbed for the two signals this screen reads and refusing
+// everything a screen has no business calling.
+//
+// **Two settable facts and not one**, because "a run is in flight" is two
+// different observations: `running` is a run this tab is walking, and `staged`
+// is a run on file — one begun in another tab, or one that survived this
+// browser's reload and was read back by the application initializer.
+class KeyRotationStub
+  implements Pick<KeyRotationService, keyof KeyRotationService>
+{
+  readonly #running = signal(false);
+  readonly #staged = signal<StagedRotation | null>(null);
+
+  public readonly running: Signal<boolean> = this.#running.asReadonly();
+  public readonly staged: Signal<StagedRotation | null> =
+    this.#staged.asReadonly();
+  public readonly phase: Signal<KeyRotationPhase> =
+    signal<KeyRotationPhase>('idle').asReadonly();
+  public readonly progress: Signal<KeyRotationProgress> =
+    signal<KeyRotationProgress>({ records: 0, resealed: 0 }).asReadonly();
+  public readonly failure: Signal<KeyRotationFailure | null> =
+    signal<KeyRotationFailure | null>(null).asReadonly();
+
+  public setRunning(running: boolean): void {
+    this.#running.set(running);
+  }
+
+  public setStaged(staged: StagedRotation | null): void {
+    this.#staged.set(staged);
+  }
+
+  public begin(): never {
+    throw new Error('the categories screen may not begin a rotation');
+  }
+
+  public resume(): never {
+    throw new Error('the categories screen may not resume a rotation');
+  }
+
+  public readStagedRotation(): never {
+    throw new Error(
+      'the categories screen may not read the staged rotation — the application initializer does',
+    );
+  }
+}
+
 describe('CategoriesComponent', () => {
   let categories: CategoriesServiceStub;
   let custody: CustodyStub;
+  let rotations: KeyRotationStub;
   let fixture: ComponentFixture<CategoriesComponent>;
 
   function host(): HTMLElement {
@@ -273,6 +327,7 @@ describe('CategoriesComponent', () => {
   beforeEach(async () => {
     categories = new CategoriesServiceStub();
     custody = new CustodyStub();
+    rotations = new KeyRotationStub();
     await TestBed.configureTestingModule({
       imports: [CategoriesComponent],
       providers: [
@@ -280,6 +335,7 @@ describe('CategoriesComponent', () => {
         provideRouter([]),
         { provide: CategoriesService, useValue: categories },
         { provide: AccountKeyCustodyService, useValue: custody },
+        { provide: KeyRotationService, useValue: rotations },
       ],
     }).compileComponents();
     fixture = TestBed.createComponent(CategoriesComponent);
@@ -760,6 +816,109 @@ describe('CategoriesComponent', () => {
       // Assert
       expect(host().querySelector('app-locked-account-notice')).toBeNull();
       expect(host().querySelector('.category-groups')).not.toBeNull();
+    });
+
+    // The term a key rotation adds to both predicates. Every case here holds
+    // custody at `unlocked`: the tab is holding a perfectly good content key,
+    // and the rows it would draw are the ones a chunk has already re-sealed
+    // under the generation replacing it — so a hierarchy drawn here is part
+    // names and part em dashes, and gets worse as the run succeeds.
+    describe('a key rotation in flight', () => {
+      it('replaces the hierarchy with the run’s notice while custody is unlocked', () => {
+        // Arrange
+        rotations.setRunning(true);
+
+        // Act
+        fixture.detectChanges();
+
+        // Assert
+        expect(
+          host().querySelector('app-locked-account-notice'),
+        ).not.toBeNull();
+        expect(host().querySelector('.category-groups')).toBeNull();
+        expect((host().textContent ?? '').replace(/\s+/g, ' ')).toContain(
+          'Budgetoid is giving this account new keys. Your records come back ' +
+            'when it finishes — watch it in Settings.',
+        );
+      });
+
+      it('disables both forms and gives the run as the reason', () => {
+        // Arrange — a row created after a run has collected is a row the run
+        // will never visit, and the completion refuses until it does.
+        rotations.setRunning(true);
+
+        // Act
+        fixture.detectChanges();
+
+        // Assert — and neither sentence names Unlock: pressing it mid-run hands
+        // back the generation that is on its way out.
+        const reasons = Array.from(
+          host().querySelectorAll('form p.reason'),
+        ).map((element) =>
+          (element.textContent ?? '').replace(/\s+/g, ' ').trim(),
+        );
+
+        expect(nameInputs()).toHaveLength(2);
+        expect(nameInputs().every((input) => input.disabled)).toBe(true);
+        expect(submitButtons().every((button) => button.disabled)).toBe(true);
+        expect(reasons).toEqual([
+          'Adding and editing are off while Budgetoid gives this account new ' +
+            'keys. They come back when it finishes.',
+          'Adding and editing are off while Budgetoid gives this account new ' +
+            'keys. They come back when it finishes.',
+        ]);
+      });
+
+      it('takes the group picker out of the DOM while a run is in flight', () => {
+        // Arrange — the picker is the one control on this screen rendering a
+        // value somebody opened, and it sits in a form, outside the branch that
+        // replaces the hierarchy. A `mat-select` goes on displaying the option
+        // it had selected after the option is gone, so it has to leave.
+        screen().categoryForm.patchValue({ categoryGroupId: GROUP_ID });
+        fixture.detectChanges();
+        expect(editorsText()).toContain('Essentials');
+
+        // Act
+        rotations.setRunning(true);
+        fixture.detectChanges();
+
+        // Assert
+        expect(editorsText()).not.toContain('Essentials');
+        expect(
+          host().querySelector('mat-select[formcontrolname="categoryGroupId"]'),
+        ).toBeNull();
+      });
+
+      it('carries the run’s sentence when the account is locked as well', () => {
+        // Arrange — somebody who arrived locked and pressed Rotate is going to
+        // be able to read their records when it finishes.
+        custody.setStatus('locked');
+        rotations.setRunning(true);
+
+        // Act
+        fixture.detectChanges();
+
+        // Assert
+        const copy = (host().textContent ?? '').replace(/\s+/g, ' ');
+
+        expect(copy).toContain('Budgetoid is giving this account new keys.');
+        expect(copy).not.toContain('This tab can’t read your account yet.');
+      });
+
+      it('takes a run this browser never began from what the server staged', () => {
+        // Arrange — a rotation that lost its tab survives as server state
+        // alone, and the application initializer is what reads it back.
+        rotations.setStaged({ startedAtUtc: '2026-02-03T04:05:06Z' });
+
+        // Act
+        fixture.detectChanges();
+
+        // Assert
+        expect(
+          host().querySelector('app-locked-account-notice'),
+        ).not.toBeNull();
+        expect(host().querySelector('.category-groups')).toBeNull();
+      });
     });
   });
 

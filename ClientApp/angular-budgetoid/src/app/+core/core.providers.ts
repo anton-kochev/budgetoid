@@ -3,6 +3,7 @@ import {
   EnvironmentProviders,
   makeEnvironmentProviders,
 } from '@angular/core';
+import { KeyRotationService } from '@app-core/security/key-rotation.service';
 import { AuthService } from '@app-core/services/auth-service';
 import { ConfigurationService } from '@app-core/services/configuration.service';
 import { SessionService } from '@app-core/session/session.service';
@@ -25,6 +26,7 @@ export const provideAppCore = (): EnvironmentProviders =>
           config: ConfigurationService,
           session: SessionService,
           auth: AuthService,
+          rotations: KeyRotationService,
         ) =>
         async () => {
           await config.load();
@@ -60,9 +62,44 @@ export const provideAppCore = (): EnvironmentProviders =>
           // ordered the other way, a browser that cannot reach Google never
           // learns who its own server thinks it is.
           await session.probe();
+
+          // **Whether a key rotation is in flight, and it is asked here for the
+          // same reason the probe is.** A run that lost its tab survives as
+          // server state alone, so a browser that has just loaded knows of no
+          // run — and the three content screens draw their lists from rows a
+          // chunk may already have re-sealed under the generation replacing the
+          // one custody holds. Read late, or not at all, a reload lands on a
+          // list that is part names and part em dashes with nothing on screen
+          // saying why.
+          //
+          // **After the probe has answered, and only for a visitor the server
+          // recognised.** This route is authenticated, so an anonymous visitor
+          // asking it is answered 401 — and `sessionExpiryInterceptor` is the
+          // single owner of "the session ended" and acts on 401 alone, so an
+          // unconditional read would report a session ending to somebody who
+          // never had one, on every cold load of `/welcome`. Sequential rather
+          // than beside the probe for exactly that: the condition is the
+          // probe's answer. An anonymous cold start therefore pays nothing.
+          //
+          // **Awaited, and a failed read does not stop the application.**
+          // `readStagedRotation()` publishes `null` rather than rejecting —
+          // the six refusal words each say what became of a *run*, and there is
+          // no run here to have become anything — so this can no more break
+          // bootstrapping than the probe can, and awaiting it is what keeps a
+          // screen from drawing a list before the answer that would have
+          // replaced it.
+          if (session.status() === 'authenticated') {
+            await rotations.readStagedRotation();
+          }
+
           await auth.initialize();
         },
-      deps: [ConfigurationService, SessionService, AuthService],
+      deps: [
+        ConfigurationService,
+        SessionService,
+        AuthService,
+        KeyRotationService,
+      ],
       multi: true,
     },
   ]);

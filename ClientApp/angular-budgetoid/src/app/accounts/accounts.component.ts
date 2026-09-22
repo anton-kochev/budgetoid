@@ -33,8 +33,8 @@
 //     which is loud and harmless, where the negative form would arrive enabled
 //     and quiet. That asymmetry is the whole argument, and it is why this
 //     predicate may not be "simplified" into its complement.
-//   * The **notice** follows {@link AccountsComponent.locked}, which is
-//     `=== 'locked'` exactly. Its sentence tells somebody to go and press
+//   * The **notice** follows {@link AccountsComponent.blocked}, which takes
+//     `=== 'locked'` exactly of the three. Its sentence tells somebody to press
 //     Unlock, and that advice is already wrong for a person whose unlock is
 //     running — and would be a guess for any state nobody has thought of yet.
 //     During `unlocking` the list stays, and every name in it renders as the
@@ -43,6 +43,27 @@
 //
 // Written as two computeds rather than one, because folding them would make
 // one of the two mistakes above unavoidable.
+//
+// **A key rotation in flight is a second term on both of them, and it changes
+// the shape of neither.** {@link AccountsComponent.rotating} is the driver's
+// own two signals read together, and it joins `writable` with **and** and
+// `blocked` with **or** — each in the direction its own mistake is audible. A
+// row a chunk has already re-sealed will not open under the generation custody
+// holds, so a list drawn mid-run is part names and part em dashes and the
+// proportion of dashes rises as the run succeeds; and a form left live during a
+// run offers somebody a way to make their own rotation fail, because a row
+// created after the run collected is a row it will never visit and the
+// completion refuses until it does. When both terms are true the **run's**
+// sentence is the one that renders: somebody who arrived locked and pressed
+// Rotate will be able to read their records when it finishes, and the Unlock
+// advice would name a control that cannot help.
+//
+// **The edit-clearing effect below keeps `locked` alone, and that is not an
+// oversight.** Ending an edit is destructive and no later state gives the
+// discarded text back, so the fail-safe direction there is not to act — which
+// is the same reason it does not fire during an `unlocking`. A run resolves
+// into keys as an unlock does, and the form it disabled comes back holding what
+// the person left in it.
 //
 // **A row whose name did not open cannot be edited.** The field would prefill
 // empty — there is no text to put in it — and the save would seal a blank over
@@ -135,7 +156,11 @@ import {
 import { AccountType } from '@app-core/api/account-api.service';
 import type { WriteOutcome } from '@app-core/api/write-outcome';
 import { AccountKeyCustodyService } from '@app-core/security/account-key-custody.service';
-import { LockedAccountNoticeComponent } from '@app-shared/components/locked-account-notice/locked-account-notice.component';
+import { KeyRotationService } from '@app-core/security/key-rotation.service';
+import {
+  LockedAccountNoticeComponent,
+  type LockedAccountReason,
+} from '@app-shared/components/locked-account-notice/locked-account-notice.component';
 import { NarrativeValueComponent } from '@app-shared/components/narrative-value/narrative-value.component';
 import { NARRATIVE_NAME_CHARACTERS } from '@app-shared/narrative-field-caps';
 import {
@@ -247,7 +272,17 @@ function placeableKeys(editing: boolean): ReadonlyMap<string, string> {
     <h1>Accounts</h1>
 
     <form [formGroup]="form" (ngSubmit)="save()">
-      @if (!writable()) {
+      @if (rotating()) {
+        <!--
+          The run's reason, and it names no press. Unlock mid-run hands back the
+          generation that is on its way out, so the smallest act that returns
+          this form is waiting — which is what the sentence says instead.
+        -->
+        <p class="reason">
+          Adding and editing are off while Budgetoid gives this account new
+          keys. They come back when it finishes.
+        </p>
+      } @else if (!writable()) {
         <!--
           The reason, beside the form rather than on it. A disabled control
           whose explanation is a tooltip is an explanation nobody hears, and
@@ -364,12 +399,14 @@ function placeableKeys(editing: boolean): ReadonlyMap<string, string> {
       </div>
     </form>
 
-    @if (locked()) {
+    @if (blocked()) {
       <!--
         In place of the list, never over it and never as a redirect. Settings
-        holds the way out, so nothing here may take a person off this screen.
+        holds the way out and the run to watch, so nothing here may take a
+        person off this screen. Which sentence it carries is decided here,
+        because the notice reads nothing and is told.
       -->
-      <app-locked-account-notice />
+      <app-locked-account-notice [reason]="noticeReason()" />
     } @else if (accounts.accounts(); as list) {
       <mat-list>
         @for (account of list; track account.id) {
@@ -456,6 +493,10 @@ export class AccountsComponent implements OnInit {
   private readonly formBuilder = inject(FormBuilder);
   private readonly currencyApi = inject(CurrencyApiService);
   private readonly custody = inject(AccountKeyCustodyService);
+  // The driver, read and never driven: this screen begins nothing, resumes
+  // nothing and reads no rotation state of its own — the `APP_INITIALIZER` makes
+  // that read once, before the first route activates.
+  private readonly rotations = inject(KeyRotationService);
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
 
   // Where the last write's answer renders, or `null` where there is no answer
@@ -470,26 +511,67 @@ export class AccountsComponent implements OnInit {
   readonly #write = signal<WriteReport | null>(null);
 
   /**
+   * Whether a key rotation is in flight.
+   *
+   * **Two terms, because "in flight" is two different observations.**
+   * `running` is a run this tab is walking — begun here, and while it is going
+   * nothing is staged in this browser. `staged` is a run on file: one another
+   * tab began, or one that survived this browser's reload, which the
+   * application initializer reads back before the first route activates. Either
+   * alone half-works, and the half that fails is the quiet one.
+   *
+   * Both are the driver's own published signals; nothing here derives a run's
+   * state from a phase.
+   */
+  protected readonly rotating = computed(
+    () => this.rotations.running() || this.rotations.staged() !== null,
+  );
+
+  /**
    * Whether this screen may write.
    *
    * **Positive on purpose, and never `!== 'locked'`** — the head of this file
    * argues it. `unlocking` and any word added later are not `unlocked`, so
    * they arrive disabled, which is the direction a state nobody thought about
-   * has to fail in.
+   * has to fail in. A run in flight is the second term, joined with **and** for
+   * the same reason: the composite is true only for a state that has been
+   * thought about.
    */
   protected readonly writable = computed(
-    () => this.custody.status() === 'unlocked',
+    () => this.custody.status() === 'unlocked' && !this.rotating(),
+  );
+
+  /**
+   * Whether custody alone has taken this account's words away.
+   *
+   * `locked` exactly, over custody's three words, and it is what the
+   * edit-clearing effect follows. **Not the notice's predicate**, which is
+   * {@link blocked} — the two ask different questions and the head of this file
+   * argues why ending an edit fails safe in the other direction.
+   */
+  protected readonly locked = computed(
+    () => this.custody.status() === 'locked',
   );
 
   /**
    * Whether the notice replaces the list.
    *
-   * `locked` exactly, and deliberately not {@link writable}'s complement: the
-   * notice's way forward is "press Unlock in Settings", which is already wrong
-   * for somebody whose unlock is running.
+   * `locked` exactly of custody's three words — the notice's way forward is
+   * "press Unlock in Settings", which is already wrong for somebody whose
+   * unlock is running — **or** a run in flight, whose rows this tab's
+   * generation no longer opens.
    */
-  protected readonly locked = computed(
-    () => this.custody.status() === 'locked',
+  protected readonly blocked = computed(() => this.locked() || this.rotating());
+
+  /**
+   * Which sentence the notice carries.
+   *
+   * **The run wins when both are true.** Somebody who arrived locked and
+   * pressed Rotate will be able to read their records when it finishes, so
+   * Unlock advice would send them to a control that cannot help them.
+   */
+  protected readonly noticeReason = computed<LockedAccountReason>(() =>
+    this.rotating() ? 'rotating' : 'locked',
   );
 
   /**
@@ -501,14 +583,14 @@ export class AccountsComponent implements OnInit {
    * value can only be one of them — instead of by the order the branches were
    * written in.
    *
-   * `null` while the account is locked and `null` while a list is on screen:
-   * the notice and the list are this section's value, and the region speaks
-   * only for a read with no value to show. `loading` outranks `failed` for the
+   * `null` while the notice is up and `null` while a list is on screen: the
+   * notice and the list are this section's value, and the region speaks only
+   * for a read with no value to show. `loading` outranks `failed` for the
    * reason the branch order used to carry: a reload started after one failed
    * read would otherwise keep the failure sentence up throughout it.
    */
   protected readonly readState = computed<'loading' | 'failed' | null>(() => {
-    if (this.locked() || this.accounts.accounts() !== null) {
+    if (this.blocked() || this.accounts.accounts() !== null) {
       return null;
     }
 

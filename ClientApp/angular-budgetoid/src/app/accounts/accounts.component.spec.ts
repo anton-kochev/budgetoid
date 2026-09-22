@@ -1,4 +1,4 @@
-// The accounts screen, driven against two hand-written stubs.
+// The accounts screen, driven against three hand-written stubs.
 //
 // **Custody is stubbed for its `status` alone, and the stub's status is its own
 // settable signal.** The real service reaches `locked` only by never having
@@ -7,7 +7,7 @@
 // second copy of the predicate, pinning nothing about which object the screen
 // asked.
 //
-// **`implements Pick<S, keyof S>` on both stubs** is the compiler's own census
+// **`implements Pick<S, keyof S>` on all three** is the compiler's own census
 // of what each service publishes — `keyof` over a class yields the public
 // surface only — so a member the screen starts reaching for is an error here
 // rather than an `is not a function` during change detection.
@@ -51,6 +51,13 @@ import {
   type AccountKeyStatus,
   type UnlockFailure,
 } from '@app-core/security/account-key-custody.service';
+import {
+  KeyRotationService,
+  type KeyRotationFailure,
+  type KeyRotationPhase,
+  type KeyRotationProgress,
+  type StagedRotation,
+} from '@app-core/security/key-rotation.service';
 import { NARRATIVE_NAME_CHARACTERS } from '@app-shared/narrative-field-caps';
 import { Observable, of } from 'rxjs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -170,6 +177,54 @@ class CustodyStub
   }
 }
 
+// The driver, stubbed for the two signals this screen reads and refusing
+// everything a screen has no business calling.
+//
+// **Two settable facts and not one**, because "a run is in flight" is two
+// different observations: `running` is a run this tab is walking, and `staged`
+// is a run on file — one begun in another tab, or one that survived this
+// browser's reload and was read back by the application initializer. A screen
+// built against either alone half-works, and the half that fails is the one
+// nobody watches.
+class KeyRotationStub
+  implements Pick<KeyRotationService, keyof KeyRotationService>
+{
+  readonly #running = signal(false);
+  readonly #staged = signal<StagedRotation | null>(null);
+
+  public readonly running: Signal<boolean> = this.#running.asReadonly();
+  public readonly staged: Signal<StagedRotation | null> =
+    this.#staged.asReadonly();
+  public readonly phase: Signal<KeyRotationPhase> =
+    signal<KeyRotationPhase>('idle').asReadonly();
+  public readonly progress: Signal<KeyRotationProgress> =
+    signal<KeyRotationProgress>({ records: 0, resealed: 0 }).asReadonly();
+  public readonly failure: Signal<KeyRotationFailure | null> =
+    signal<KeyRotationFailure | null>(null).asReadonly();
+
+  public setRunning(running: boolean): void {
+    this.#running.set(running);
+  }
+
+  public setStaged(staged: StagedRotation | null): void {
+    this.#staged.set(staged);
+  }
+
+  public begin(): never {
+    throw new Error('the accounts screen may not begin a rotation');
+  }
+
+  public resume(): never {
+    throw new Error('the accounts screen may not resume a rotation');
+  }
+
+  public readStagedRotation(): never {
+    throw new Error(
+      'the accounts screen may not read the staged rotation — the application initializer does',
+    );
+  }
+}
+
 class CurrencyApiStub implements Pick<CurrencyApiService, 'getCurrencies'> {
   public getCurrencies = vi.fn(
     (): Observable<CurrencyListResponse> =>
@@ -219,6 +274,7 @@ function invalid(
 describe('AccountsComponent', () => {
   let accounts: AccountsServiceStub;
   let custody: CustodyStub;
+  let rotations: KeyRotationStub;
   let fixture: ComponentFixture<AccountsComponent>;
 
   function host(): HTMLElement {
@@ -247,6 +303,7 @@ describe('AccountsComponent', () => {
   beforeEach(async () => {
     accounts = new AccountsServiceStub();
     custody = new CustodyStub();
+    rotations = new KeyRotationStub();
     await TestBed.configureTestingModule({
       imports: [AccountsComponent],
       providers: [
@@ -254,6 +311,7 @@ describe('AccountsComponent', () => {
         provideRouter([]),
         { provide: AccountsService, useValue: accounts },
         { provide: AccountKeyCustodyService, useValue: custody },
+        { provide: KeyRotationService, useValue: rotations },
         { provide: CurrencyApiService, useValue: new CurrencyApiStub() },
       ],
     }).compileComponents();
@@ -488,6 +546,91 @@ describe('AccountsComponent', () => {
     // Assert
     expect(host().querySelector('app-locked-account-notice')).toBeNull();
     expect(host().querySelector('mat-list')).not.toBeNull();
+  });
+
+  // The term a key rotation adds to both predicates. Every case here holds
+  // custody at `unlocked`, which is the whole point: the tab is holding a
+  // perfectly good content key and the rows it would draw are the ones a chunk
+  // has already re-sealed under the generation replacing it, so a list drawn
+  // here is part names and part em dashes and gets worse as the run succeeds.
+  describe('a key rotation in flight', () => {
+    it('replaces the list with the run’s notice while custody is unlocked', () => {
+      // Arrange — rows are present and the account is unlocked, so this is the
+      // run taking the list away rather than the lock.
+      rotations.setRunning(true);
+
+      // Act
+      fixture.detectChanges();
+
+      // Assert
+      expect(host().querySelector('app-locked-account-notice')).not.toBeNull();
+      expect(host().querySelector('mat-list')).toBeNull();
+      expect((host().textContent ?? '').replace(/\s+/g, ' ')).toContain(
+        'Budgetoid is giving this account new keys. Your records come back ' +
+          'when it finishes — watch it in Settings.',
+      );
+    });
+
+    it('disables the form and gives the run as the reason', () => {
+      // Arrange — a row created after a run has collected is a row the run will
+      // never visit, and the completion refuses until it does. Keeping the form
+      // live offers somebody a way to make their own rotation fail.
+      rotations.setRunning(true);
+
+      // Act
+      fixture.detectChanges();
+
+      // Assert — and the sentence is the run's, not the lock's: pressing Unlock
+      // mid-run gets the generation on its way out.
+      const name = host().querySelector<HTMLInputElement>(
+        'input[formcontrolname="name"]',
+      );
+      const submit = host().querySelector<HTMLButtonElement>(
+        'button[type="submit"]',
+      );
+      const reason = (host().querySelector('form p')?.textContent ?? '')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+      expect(name?.disabled).toBe(true);
+      expect(submit?.disabled).toBe(true);
+      expect(reason).toBe(
+        'Adding and editing are off while Budgetoid gives this account new ' +
+          'keys. They come back when it finishes.',
+      );
+    });
+
+    it('carries the run’s sentence when the account is locked as well', () => {
+      // Arrange — somebody who arrived locked and pressed Rotate is going to be
+      // able to read their records when it finishes, and the Unlock advice
+      // would send them to a control that cannot help.
+      custody.setStatus('locked');
+      rotations.setRunning(true);
+
+      // Act
+      fixture.detectChanges();
+
+      // Assert
+      const copy = (host().textContent ?? '').replace(/\s+/g, ' ');
+
+      expect(copy).toContain('Budgetoid is giving this account new keys.');
+      expect(copy).not.toContain('This tab can’t read your account yet.');
+    });
+
+    it('takes a run this browser never began from what the server staged', () => {
+      // Arrange — a rotation that lost its tab survives as server state alone,
+      // and the application initializer is what reads it back. Without this
+      // term a reload mid-run draws a list of em dashes with nothing saying
+      // why.
+      rotations.setStaged({ startedAtUtc: '2026-02-03T04:05:06Z' });
+
+      // Act
+      fixture.detectChanges();
+
+      // Assert
+      expect(host().querySelector('app-locked-account-notice')).not.toBeNull();
+      expect(host().querySelector('mat-list')).toBeNull();
+    });
   });
 
   it('refuses to edit a row whose name did not open', () => {

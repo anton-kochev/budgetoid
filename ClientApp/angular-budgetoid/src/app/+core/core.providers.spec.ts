@@ -1,8 +1,12 @@
-import { ApplicationInitStatus } from '@angular/core';
+import { ApplicationInitStatus, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
+import { KeyRotationService } from '@app-core/security/key-rotation.service';
 import { AuthService } from '@app-core/services/auth-service';
 import { ConfigurationService } from '@app-core/services/configuration.service';
-import { SessionService } from '@app-core/session/session.service';
+import {
+  SessionService,
+  type SessionStatus,
+} from '@app-core/session/session.service';
 import { afterEach, describe, expect, it } from 'vitest';
 import { provideAppCore } from './core.providers';
 
@@ -18,6 +22,11 @@ interface Boot {
 interface BootOptions {
   readonly load?: () => Promise<boolean>;
   readonly probe?: () => Promise<void>;
+  // What the probe leaves behind, which is the condition on the rotation read.
+  // `authenticated` is the default because it is the state that exercises every
+  // step; the anonymous case names its own.
+  readonly status?: SessionStatus;
+  readonly readStagedRotation?: () => Promise<void>;
 }
 
 // A macrotask, so every microtask an initializer chained has had its turn. A
@@ -34,6 +43,8 @@ function bootstrap(options: BootOptions = {}): Boot {
   const {
     load = () => Promise.resolve(true),
     probe = () => Promise.resolve(),
+    status = 'authenticated',
+    readStagedRotation = () => Promise.resolve(),
   } = options;
 
   TestBed.resetTestingModule();
@@ -54,11 +65,23 @@ function bootstrap(options: BootOptions = {}): Boot {
       return Promise.resolve();
     },
   };
-  const session: Pick<SessionService, 'probe'> = {
+  // The probe's answer as well as the probe, because the rotation read is
+  // conditional on it. The status is a signal the way the real one is — the
+  // initializer reads it, and a plain value here would let a reader that never
+  // called it pass.
+  const session: Pick<SessionService, 'probe' | 'status'> = {
     probe: () => {
       calls.push('session.probe');
 
       return probe();
+    },
+    status: signal<SessionStatus>(status).asReadonly(),
+  };
+  const rotations: Pick<KeyRotationService, 'readStagedRotation'> = {
+    readStagedRotation: () => {
+      calls.push('rotations.readStagedRotation');
+
+      return readStagedRotation();
     },
   };
 
@@ -70,6 +93,7 @@ function bootstrap(options: BootOptions = {}): Boot {
       { provide: ConfigurationService, useValue: configuration },
       { provide: AuthService, useValue: auth },
       { provide: SessionService, useValue: session },
+      { provide: KeyRotationService, useValue: rotations },
     ],
   });
 
@@ -148,5 +172,87 @@ describe('provideAppCore', () => {
     // Assert
     expect(boot.calls).toContain('session.probe');
     expect(TestBed.inject(ApplicationInitStatus).done).toBe(false);
+  });
+
+  // Whether a key rotation is in flight is server state, and a browser that has
+  // just loaded knows of none — so it is read here, beside the probe, or the
+  // three content screens draw a list of half em dashes after every reload made
+  // during a run.
+  describe('the staged rotation', () => {
+    it('is read for a visitor the server recognised, after the probe', async () => {
+      // Arrange
+      const boot = bootstrap({ status: 'authenticated' });
+
+      // Act
+      await boot.initialized;
+
+      // Assert — the order is the subject: the condition on this read is the
+      // probe's own answer, so a read made beside it would be reading a status
+      // nobody has written yet.
+      expect(boot.calls).toEqual([
+        'config.load',
+        'session.probe',
+        'rotations.readStagedRotation',
+        'auth.initialize',
+      ]);
+    });
+
+    it('is not read for a visitor with no session', async () => {
+      // Arrange — the route is authenticated, so an anonymous visitor asking it
+      // is answered 401; `sessionExpiryInterceptor` is the single owner of "the
+      // session ended" and acts on 401 alone, so an unconditional read reports
+      // a session ending to somebody who never had one — on every cold load of
+      // the welcome screen. An anonymous cold start pays nothing.
+      const boot = bootstrap({ status: 'anonymous' });
+
+      // Act
+      await boot.initialized;
+
+      // Assert
+      expect(boot.calls).not.toContain('rotations.readStagedRotation');
+      expect(boot.calls).toContain('auth.initialize');
+    });
+
+    it('is not read when the probe could not reach the server', async () => {
+      // Arrange — the fourth status, and the one a reader collapses into the
+      // third. Nothing is known about this visitor, so nothing authenticated is
+      // asked on their behalf.
+      const boot = bootstrap({ status: 'unreachable' });
+
+      // Act
+      await boot.initialized;
+
+      // Assert
+      expect(boot.calls).not.toContain('rotations.readStagedRotation');
+    });
+
+    it('finishes starting the application with the read in the chain', async () => {
+      // Arrange — the shape a failed read really has. `readStagedRotation()`
+      // publishes `null` and **resolves**: the six refusal words each say what
+      // became of a *run*, and a read made before anybody pressed anything has
+      // no run to have become anything. So a server that is down costs this
+      // application one wrongly-drawn screen and never a blank page.
+      //
+      // A stub that *rejected* is deliberately not the case under test, because
+      // the method has no rejecting path for one to stand in for: it is a bare
+      // `try`/`catch` that sets `null` and resolves — over a refusal and over a
+      // read that answers nothing at all alike — so a stub built to reject
+      // would pin a contract the real service does not have. Nothing here
+      // re-handles what the service already handles — the probe next to it is
+      // not wrapped either, for the same reason — and the swallow is pinned
+      // where it lives, in `key-rotation.service.spec.ts`.
+      const boot = bootstrap({
+        readStagedRotation: () => Promise.resolve(),
+        status: 'authenticated',
+      });
+
+      // Act
+      await boot.initialized;
+
+      // Assert — nothing after the read is conditional on it.
+      expect(boot.calls).toContain('rotations.readStagedRotation');
+      expect(boot.calls).toContain('auth.initialize');
+      expect(TestBed.inject(ApplicationInitStatus).done).toBe(true);
+    });
   });
 });

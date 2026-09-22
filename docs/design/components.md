@@ -2014,8 +2014,18 @@ it.
   satisfy "a label naming what is being counted". It is the one string on the section that no copy
   table specifies.
 
-**What a run does to the rest of the app is still unbuilt.** The notice takes no input, the three
-content screens read no run, and the two-row table above is a specification.
+**What a run does to the rest of the app ships.** `locked-account-notice` takes one input and
+renders both sentences in the table above character for character; `/app/accounts`,
+`/app/categories` and the transactions screen each carry the run as a second term on both of their
+predicates, and each passes the word that decides which sentence. "A run is in flight" is
+`KeyRotationService.running()` **or** a staged run on file, read on each screen off the driver's two
+signals — the second term is what survives a reload, and it is read once in the `APP_INITIALIZER`,
+after the probe has answered and only for a visitor it found authenticated.
+
+**The sentence beside each disabled form is now specified** rather than left to the screens, and so
+is the locked one beside it, which had shipped unwritten since the locked treatment was built —
+[the locked account](#the-locked-account) carries both, because that chapter owns the disabled-form
+rule.
 
 **What the placement claim above costs today** is smaller than it was and has not gone: the section
 sits between Account keys and Export, because **What we can read** renders below Erase rather than
@@ -2323,7 +2333,30 @@ codebase.
 
 **The reason is a sentence beside the form, never a bare disabled control** — the *Not built yet*
 pattern in [voice](voice.md), except that this is not "not built": it is a capability the tab has
-temporarily lost and can get back. The sentence says so and names the press that returns it.
+temporarily lost and can get back. The sentence says so, and it names the press that returns it
+**only where there is one to name**.
+
+| State | Copy |
+| --- | --- |
+| `locked` | "Adding and editing are off while this tab can’t read your account. Press Unlock in Settings to turn them back on." |
+| `rotating` | "Adding and editing are off while Budgetoid gives this account new keys. They come back when it finishes." |
+
+The copy is the specification, not an example of it. **On the transactions screen, which has no
+edit, both lines open *Adding is off* and their pronouns follow** — *turn it back on*, and *It comes
+back when it finishes*. The singular is not a detail to be normalised away later: a screen that
+offers one act and says two are off is describing a different screen.
+
+**The second sentence exists because the first one's advice is false during a run**, and it names no
+press for the notice's reason: the smallest act that clears this block is waiting. That is the whole
+difference between the two — one is a capability this tab can take back in a single press, and the
+other is one the account is in the middle of rebuilding, where the press that would help does not
+exist and the one that looks like it would does nothing.
+
+**Both lines were shipping before either was written down here.** The locked one has been on three
+screens since the locked treatment was built and appeared in no table; the run's was written when
+the run reached those screens. Recording a departure for the second while the first sat unspecified
+would have been the wrong repair — the book states what a surface *shall* say, so the answer to a
+string nobody specified is to specify it.
 
 **A disabled form is excluded from validation, so a control gated on validity alone comes back to
 life exactly when it should not.** Angular's status becomes the third value `DISABLED`, and **both**
@@ -2367,6 +2400,12 @@ a form follows "anything but `unlocked`", because leaving a control live by mist
 switching it off by mistake is loud. This action is **destructive**: a discarded edit is somebody's
 work and no later state gives it back, so the fail-safe direction is not to act. An `unlocking`
 ceremony ends in keys; an edit thrown away mid-ceremony is paid for nothing.
+
+**A key rotation is deliberately not a term here**, though it is a term on the two predicates below.
+A run ends in keys the way a ceremony does, and it ends in the *same words* — the plaintext a
+prefill holds is what the run re-seals, not something it invalidates — so an edit that survives a
+run is an edit somebody can still save when the form comes back. Clearing it would throw work away
+to tidy a screen, which is the trade this section refuses.
 
 ### Two predicates, failing safe in opposite directions
 
@@ -2487,9 +2526,10 @@ Ghost button — is work this book owes.
 
 **Every narrative screen seals what it writes and opens what it reads** — `/app/accounts`, the
 transaction form and both halves of `/app/categories` — so both components in this chapter are
-reached in earnest and a reload leaves names unreadable until Unlock. **The notice takes no input
-and renders the `locked` sentence only**: the second state is a key rotation in flight, and nothing
-in this client can begin one yet. The Account keys
+reached in earnest and a reload leaves names unreadable until Unlock. **The notice takes one input
+and renders both sentences**, and all three screens carry the key-rotation term on both predicates:
+the form is usable on `unlocked` **and** no run, the notice renders on `locked` **or** a run, and
+the run's sentence is the one that renders when both are true. The Account keys
 section above says the same thing from the other end: being locked costs something anybody can see,
 and its control is the only way out of the state, which is why nothing may put that control behind
 one.

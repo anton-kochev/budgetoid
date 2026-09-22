@@ -3,8 +3,13 @@ import {
   HttpTestingController,
   provideHttpClientTesting,
 } from '@angular/common/http/testing';
+import { ApplicationInitStatus } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { Router } from '@angular/router';
+import {
+  KeyRotationApiService,
+  type KeyRotationStateDto,
+} from '@app-core/api/key-rotation-api.service';
 import { MeApiService } from '@app-core/api/me-api.service';
 import { AuthService } from '@app-core/services/auth-service';
 import { ConfigurationService } from '@app-core/services/configuration.service';
@@ -20,8 +25,14 @@ const CLIENT_HEADER = 'X-Budgetoid-Client';
 
 describe('appConfig', () => {
   let httpMock: HttpTestingController;
+  // How many times bootstrapping asked whether a rotation is staged. Counted
+  // rather than spied, because the count is what the third test below asserts
+  // and a spy would need restoring — nothing in this project configures
+  // `restoreMocks`.
+  let rotationStateReads: number;
 
   beforeEach(() => {
+    rotationStateReads = 0;
     // The real providers, with only the backend swapped: everything
     // `provideHttpClient` set up — the interceptor chain included — is still the
     // one the application ships. `api-credentials.interceptor.spec.ts` calls the
@@ -64,6 +75,19 @@ describe('appConfig', () => {
           email: 'visitor@budgetoid.app',
         }),
     };
+    // The initializer's second read, silenced at its API service for the reason
+    // the probe is silenced at `MeApiService`: the real one reaches
+    // `HttpClient`, and a request nothing flushes fails `httpMock.verify()` in
+    // every case in this file. `KeyRotationService` itself stays real, so the
+    // third test watches production code make the call rather than a stub this
+    // file wrote reporting itself.
+    const rotationApi: Pick<KeyRotationApiService, 'getRotationState'> = {
+      getRotationState: () => {
+        rotationStateReads += 1;
+
+        return of<KeyRotationStateDto>({ rotation: null });
+      },
+    };
     const oAuth: Pick<OAuthService, 'getIdToken'> = {
       getIdToken: () => '',
     };
@@ -90,6 +114,7 @@ describe('appConfig', () => {
         { provide: ConfigurationService, useValue: configuration },
         { provide: AuthService, useValue: auth },
         { provide: MeApiService, useValue: me },
+        { provide: KeyRotationApiService, useValue: rotationApi },
         { provide: OAuthService, useValue: oAuth },
         { provide: Router, useValue: router },
       ],
@@ -157,5 +182,27 @@ describe('appConfig', () => {
 
     // Assert
     expect(session.status()).toBe('anonymous');
+  });
+
+  // The third registration this file holds, and it is here for the same reason
+  // the two above are. `core.providers.spec.ts` calls `provideAppCore()` itself,
+  // so it can no more see whether the **application** registers it than an
+  // interceptor's own spec can see whether it is in the chain: dropping
+  // `provideAppCore()` from `app.config.ts` leaves that file green and this one
+  // red.
+  //
+  // What it costs when it goes missing is a reload made during a key rotation
+  // drawing a list of half em dashes — the three content screens read "a run is
+  // in flight" from a signal nothing has written.
+  it('runs the core initializer, which asks whether a rotation is staged', async () => {
+    // Arrange — the initializer runs when the module is finalized, which
+    // `TestBed.inject` in `beforeEach` has already done; what is outstanding is
+    // the chain of promises it awaited.
+
+    // Act
+    await TestBed.inject(ApplicationInitStatus).donePromise;
+
+    // Assert — once, for a visitor the probe found authenticated.
+    expect(rotationStateReads).toBe(1);
   });
 });

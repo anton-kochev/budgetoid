@@ -26,7 +26,12 @@ import { provideAppCore } from '@app-core/core.providers';
 import { AuthService } from '@app-core/services/auth-service';
 import { ConfigurationService } from '@app-core/services/configuration.service';
 import { SessionService } from '@app-core/session/session.service';
+import { of } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import {
+  KeyRotationApiService,
+  type KeyRotationStateDto,
+} from './key-rotation-api.service';
 import { type MeDto } from './me-api.service';
 
 const API_BASE_URL = 'https://api.budgetoid.app';
@@ -51,13 +56,20 @@ function afterPendingWork(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-// The real provider list with two dependencies swapped. `ConfigurationService`
+// The real provider list with three dependencies swapped. `ConfigurationService`
 // is stubbed because the real one fetches `assets/app-config.json` — and
 // because withholding its answer is the whole arrangement here. `AuthService`
 // is stubbed because the real one reaches Google's discovery document.
+// `KeyRotationApiService` is stubbed because the initializer asks it, once the
+// probe has answered `authenticated`, whether a rotation is staged: a second
+// request on the wire here leaves the first test's `match(() => true)` with two
+// URLs to account for and the third awaiting a promise nothing settles.
 // `SessionService` and `MeApiService` are the production classes: the subject
 // is where `MeApiService` sends its request, so a stub of either would be this
-// file supplying the answer it then asserts.
+// file supplying the answer it then asserts. The stub is at the API service and
+// not at `KeyRotationService` for the same reason the probe is silenced at
+// `MeApiService` — the driver itself is still built, so the construction order
+// this file exists to pin still covers it.
 function bootstrap(): Boot {
   let apiBaseUrl = '';
   let release = (): void => undefined;
@@ -75,6 +87,9 @@ function bootstrap(): Boot {
   const auth: Pick<AuthService, 'initialize'> = {
     initialize: () => Promise.resolve(),
   };
+  const rotations: Pick<KeyRotationApiService, 'getRotationState'> = {
+    getRotationState: () => of<KeyRotationStateDto>({ rotation: null }),
+  };
 
   TestBed.configureTestingModule({
     providers: [
@@ -85,6 +100,7 @@ function bootstrap(): Boot {
       // itself.
       { provide: ConfigurationService, useValue: configuration },
       { provide: AuthService, useValue: auth },
+      { provide: KeyRotationApiService, useValue: rotations },
     ],
   });
 

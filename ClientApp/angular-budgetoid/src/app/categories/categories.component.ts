@@ -16,9 +16,28 @@
 // {@link CategoriesComponent.writable} is `=== 'unlocked'`, written
 // **positively** so that `unlocking` and any word added later arrive disabled —
 // loud and harmless — rather than live and silent.
-// {@link CategoriesComponent.locked} is `=== 'locked'` exactly, because the
-// notice's sentence is *advice* and that advice is already wrong for somebody
-// whose unlock is running. Disable when unsure; do not advise when unsure.
+// {@link CategoriesComponent.blocked} takes `=== 'locked'` exactly of custody's
+// three words, because the notice's sentence is *advice* and that advice is
+// already wrong for somebody whose unlock is running. Disable when unsure; do
+// not advise when unsure.
+//
+// **A key rotation in flight is a second term on both of them, and it changes
+// the shape of neither.** {@link CategoriesComponent.rotating} is the driver's
+// own two signals read together, and it joins `writable` with **and** and
+// `blocked` with **or** — each in the direction its own mistake is audible. A
+// row a chunk has already re-sealed will not open under the generation custody
+// holds, so a hierarchy drawn mid-run is part names and part em dashes and the
+// proportion of dashes rises as the run succeeds; and a form left live during a
+// run offers somebody a way to make their own rotation fail, because a row
+// created after the run collected is a row it will never visit and the
+// completion refuses until it does. When both terms are true the **run's**
+// sentence renders: somebody who arrived locked and pressed Rotate will be able
+// to read their records when it finishes.
+//
+// **{@link CategoriesComponent.locked} survives as the edit-clearing effect's
+// own predicate, and that is not an oversight.** Ending an edit is destructive
+// and no later state gives the discarded text back, so the fail-safe direction
+// there is not to act — the same reason it does not fire during an `unlocking`.
 //
 // **The lock is named three times per form and none of them is redundant, a
 // fourth time on the one control that renders a value somebody opened, and a
@@ -29,7 +48,7 @@
 // control, and again in the handler, because Material's click-halt is applied
 // to anchors only and a `<button>` still receives the press. The fourth is the
 // category form's group picker, which **leaves the DOM** rather than being
-// switched off: it sits outside the `@if (locked())` that replaces the
+// switched off: it sits outside the `@if (blocked())` that replaces the
 // hierarchy, and disabling a `mat-select` does not stop it displaying the
 // option it had selected — measured — so a lock landing over a filled form left
 // a group's opened name beside a notice saying this tab cannot read the
@@ -150,7 +169,11 @@ import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
 import { MatSelectModule } from '@angular/material/select';
 import { AccountKeyCustodyService } from '@app-core/security/account-key-custody.service';
-import { LockedAccountNoticeComponent } from '@app-shared/components/locked-account-notice/locked-account-notice.component';
+import { KeyRotationService } from '@app-core/security/key-rotation.service';
+import {
+  LockedAccountNoticeComponent,
+  type LockedAccountReason,
+} from '@app-shared/components/locked-account-notice/locked-account-notice.component';
 import { NarrativeValueComponent } from '@app-shared/components/narrative-value/narrative-value.component';
 import {
   NARRATIVE_DESCRIPTION_CHARACTERS,
@@ -354,7 +377,18 @@ function placeableKeys(surface: WritingSurface): ReadonlyMap<string, string> {
         <h2>
           {{ editingGroupId() ? 'Edit category group' : 'Add category group' }}
         </h2>
-        @if (!writable()) {
+        @if (rotating()) {
+          <!--
+            The run's reason, and it names no press. Unlock mid-run hands back
+            the generation that is on its way out, so the smallest act that
+            returns this form is waiting — which is what the sentence says
+            instead.
+          -->
+          <p class="reason">
+            Adding and editing are off while Budgetoid gives this account new
+            keys. They come back when it finishes.
+          </p>
+        } @else if (!writable()) {
           <!--
             The reason, beside the form rather than on it. A disabled control
             whose explanation is a tooltip is an explanation nobody hears, and
@@ -437,7 +471,12 @@ function placeableKeys(surface: WritingSurface): ReadonlyMap<string, string> {
         (ngSubmit)="saveCategory()"
       >
         <h2>{{ editingCategoryId() ? 'Edit category' : 'Add category' }}</h2>
-        @if (!writable()) {
+        @if (rotating()) {
+          <p class="reason">
+            Adding and editing are off while Budgetoid gives this account new
+            keys. They come back when it finishes.
+          </p>
+        } @else if (!writable()) {
           <p class="reason">
             Adding and editing are off while this tab can’t read your account.
             Press Unlock in Settings to turn them back on.
@@ -481,11 +520,12 @@ function placeableKeys(surface: WritingSurface): ReadonlyMap<string, string> {
 
           Emptying the option list is not enough and that is measured: a
           mat-select goes on displaying the option it had selected after the
-          option is gone. locked() exactly, matching the notice rather than
-          !writable(): an unlock in flight is not a reason to take a control
-          away from somebody who is looking at it.
+          option is gone. blocked() and never !writable(): an unlock in flight
+          is not a reason to take a control away from somebody who is looking at
+          it, while a run in flight is — the names in it are the ones a chunk is
+          re-sealing out from under this generation.
         -->
-        @if (!locked()) {
+        @if (!blocked()) {
           <mat-form-field>
             <mat-label>Category group</mat-label>
             <mat-select formControlName="categoryGroupId">
@@ -536,13 +576,14 @@ function placeableKeys(surface: WritingSurface): ReadonlyMap<string, string> {
       </form>
     </div>
 
-    @if (locked()) {
+    @if (blocked()) {
       <!--
         In place of the hierarchy, never over it and never as a redirect.
-        Settings holds the way out, so nothing here may take a person off this
-        screen.
+        Settings holds the way out and the run to watch, so nothing here may
+        take a person off this screen. Which sentence it carries is decided
+        here, because the notice reads nothing and is told.
       -->
-      <app-locked-account-notice />
+      <app-locked-account-notice [reason]="noticeReason()" />
     } @else if (categories.groups(); as groups) {
       <div
         class="category-groups"
@@ -688,6 +729,10 @@ export class CategoriesComponent implements OnInit {
   protected readonly categories = inject(CategoriesService);
   private readonly formBuilder = inject(FormBuilder);
   private readonly custody = inject(AccountKeyCustodyService);
+  // The driver, read and never driven: this screen begins nothing, resumes
+  // nothing and reads no rotation state of its own — the `APP_INITIALIZER` makes
+  // that read once, before the first route activates.
+  private readonly rotations = inject(KeyRotationService);
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
 
   // The last write on this screen, as the pair the head of this file argues
@@ -697,26 +742,67 @@ export class CategoriesComponent implements OnInit {
   readonly #write = signal<SurfaceWrite | null>(null);
 
   /**
+   * Whether a key rotation is in flight.
+   *
+   * **Two terms, because "in flight" is two different observations.**
+   * `running` is a run this tab is walking — begun here, and while it is going
+   * nothing is staged in this browser. `staged` is a run on file: one another
+   * tab began, or one that survived this browser's reload, which the
+   * application initializer reads back before the first route activates. Either
+   * alone half-works, and the half that fails is the quiet one.
+   *
+   * Both are the driver's own published signals; nothing here derives a run's
+   * state from a phase.
+   */
+  protected readonly rotating = computed(
+    () => this.rotations.running() || this.rotations.staged() !== null,
+  );
+
+  /**
    * Whether this screen may write.
    *
    * **Positive on purpose, and never `!== 'locked'`** — the head of this file
    * argues it. `unlocking` and any word added later are not `unlocked`, so they
    * arrive disabled, which is the direction a state nobody thought about has to
-   * fail in.
+   * fail in. A run in flight is the second term, joined with **and** for the
+   * same reason: the composite is true only for a state that has been thought
+   * about.
    */
   protected readonly writable = computed(
-    () => this.custody.status() === 'unlocked',
+    () => this.custody.status() === 'unlocked' && !this.rotating(),
+  );
+
+  /**
+   * Whether custody alone has taken this account's words away.
+   *
+   * `locked` exactly, over custody's three words, and it is what the
+   * edit-clearing effect follows. **Not the notice's predicate**, which is
+   * {@link blocked} — the two ask different questions, and ending an edit is
+   * destructive, so it fails safe in the other direction.
+   */
+  protected readonly locked = computed(
+    () => this.custody.status() === 'locked',
   );
 
   /**
    * Whether the notice replaces the hierarchy.
    *
-   * `locked` exactly, and deliberately not {@link writable}'s complement: the
-   * notice's way forward is "press Unlock in Settings", which is already wrong
-   * for somebody whose unlock is running.
+   * `locked` exactly of custody's three words — the notice's way forward is
+   * "press Unlock in Settings", which is already wrong for somebody whose
+   * unlock is running — **or** a run in flight, whose rows this tab's
+   * generation no longer opens.
    */
-  protected readonly locked = computed(
-    () => this.custody.status() === 'locked',
+  protected readonly blocked = computed(() => this.locked() || this.rotating());
+
+  /**
+   * Which sentence the notice carries.
+   *
+   * **The run wins when both are true.** Somebody who arrived locked and
+   * pressed Rotate will be able to read their records when it finishes, so
+   * Unlock advice would send them to a control that cannot help them.
+   */
+  protected readonly noticeReason = computed<LockedAccountReason>(() =>
+    this.rotating() ? 'rotating' : 'locked',
   );
 
   /**
@@ -728,7 +814,7 @@ export class CategoriesComponent implements OnInit {
    * value can only be one of them — instead of by the order the branches were
    * written in.
    *
-   * `null` while the account is locked and `null` while the hierarchy is on
+   * `null` while the notice is up and `null` while the hierarchy is on
    * screen: the notice and the groups are this section's value, and the region
    * speaks only for a read with no value to show. `loading` outranks `failed`
    * for the reason the branch order used to carry: a reload started after one
@@ -739,7 +825,7 @@ export class CategoriesComponent implements OnInit {
    * without one has nowhere to be drawn.
    */
   protected readonly readState = computed<'loading' | 'failed' | null>(() => {
-    if (this.locked() || this.categories.groups() !== null) {
+    if (this.blocked() || this.categories.groups() !== null) {
       return null;
     }
 

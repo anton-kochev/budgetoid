@@ -83,7 +83,7 @@ import {
   type TransactionListResponse,
 } from '@app-core/api/transactions-api.service';
 import { SessionService } from '@app-core/session/session.service';
-import { Observable, of, throwError } from 'rxjs';
+import { EMPTY, Observable, of, throwError } from 'rxjs';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AccountKeyCustodyService } from './account-key-custody.service';
 import {
@@ -462,6 +462,10 @@ class FakeServer {
   public refuseAccountKeys: unknown = null;
   /** Answers the account-key read with no manifest at all. */
   public serveNoManifest = false;
+  /** Refuses the staged-rotation read with this. */
+  public refuseState: unknown = null;
+  /** Answers the staged-rotation read by completing without emitting. */
+  public answerStateWithoutEmitting = false;
 
   constructor(seed: Fixture) {
     this.manifest = seed.manifest;
@@ -605,6 +609,18 @@ class FakeServer {
   }
 
   public state(): Observable<KeyRotationStateDto> {
+    if (this.refuseState !== null) {
+      return throwError(() => this.refuseState);
+    }
+
+    // Not a wire shape `HttpClient` produces, and it is here for what the
+    // *service* does with it: `firstValueFrom` over an observable that
+    // completes without emitting raises, and the read's one `catch` is what
+    // decides whether that reaches its caller.
+    if (this.answerStateWithoutEmitting) {
+      return EMPTY;
+    }
+
     const staged = this.staged;
 
     // A row is not a run: a completed run leaves its staging row standing, and
@@ -1976,6 +1992,51 @@ describe('a run picked up after a reload', () => {
     // Not a byte of the account's key material was read either. The press stops
     // at the one read that says there is nothing to pick up.
     expect(server.accountKeyReads).toBe(0);
+  });
+
+  // The two cases below are the read's whole failure behaviour, and they are
+  // what lets every caller make it without a `.catch` — the initializer in
+  // `core.providers.ts` among them, where a rejection would be a blank page on
+  // every cold load made while this route is down.
+  //
+  // Both arrange a run that really is staged, so the `null` each asserts is the
+  // read's own answer and not the state of the world: against a server holding
+  // nothing, a swallow and a successful read are the same value, and the case
+  // above already covers that half.
+  it('publishes nothing to finish when the read is refused, and does not reject', async () => {
+    // Arrange
+    await interruptedRun(1, MAX_CHUNK_BYTES);
+    server.refuseState = new HttpErrorResponse({ status: 500 });
+
+    const service = freshDriver();
+
+    // Act — the promise settling is half the assertion.
+    await expect(service.readStagedRotation()).resolves.toBeUndefined();
+
+    // Assert
+    expect(service.staged()).toBeNull();
+    // And no word. The six each say what became of a *run*, and a read made
+    // before anybody pressed anything has no run to have become anything.
+    expect(service.failure()).toBeNull();
+    expect(service.phase()).toBe('idle');
+  });
+
+  it('publishes nothing to finish when the read answers nothing at all', async () => {
+    // Arrange — the second shape the same `catch` absorbs: no refusal, no
+    // value, just a completion. It costs one flag to drive and it is the one
+    // failure a reader assumes is a success.
+    await interruptedRun(1, MAX_CHUNK_BYTES);
+    server.answerStateWithoutEmitting = true;
+
+    const service = freshDriver();
+
+    // Act
+    await expect(service.readStagedRotation()).resolves.toBeUndefined();
+
+    // Assert
+    expect(service.staged()).toBeNull();
+    expect(service.failure()).toBeNull();
+    expect(service.phase()).toBe('idle');
   });
 
   it('refuses a staged seal naming a factor this account no longer holds', async () => {

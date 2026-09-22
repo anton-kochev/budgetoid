@@ -13,9 +13,23 @@
 // {@link TransactionsComponent.writable} is `=== 'unlocked'`, written
 // **positively** so that `unlocking` and any word added later arrive disabled —
 // loud and harmless — rather than live and silent.
-// {@link TransactionsComponent.locked} is `=== 'locked'` exactly, because the
+// {@link TransactionsComponent.blocked} is `=== 'locked'` exactly, because the
 // notice's sentence is *advice* and that advice is already wrong for somebody
 // whose unlock is running. Disable when unsure; do not advise when unsure.
+//
+// **A key rotation in flight is a second term on both of them, and it changes
+// the shape of neither.** {@link TransactionsComponent.rotating} is the
+// driver's own two signals read together, and it joins `writable` with **and**
+// and `blocked` with **or** — each in the direction its own mistake is audible.
+// A row a chunk has already re-sealed will not open under the generation
+// custody holds, so a list drawn mid-run is part names and part em dashes and
+// the proportion of dashes rises as the run succeeds; and a form left live
+// during a run offers somebody a way to make their own rotation fail, because a
+// row created after the run collected is a row it will never visit and the
+// completion refuses until it does. When both terms are true the **run's**
+// sentence renders: somebody who arrived locked and pressed Rotate will be able
+// to read their records when it finishes, and the Unlock advice would name a
+// control that cannot help.
 //
 // **The lock is named four times and none of them is redundant.** A disabled
 // form's status is `DISABLED`, which excludes it from validation and makes
@@ -174,8 +188,12 @@ import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
 import { MatSelectModule } from '@angular/material/select';
 import { AccountKeyCustodyService } from '@app-core/security/account-key-custody.service';
+import { KeyRotationService } from '@app-core/security/key-rotation.service';
 import type { NarrativeText } from '@app-core/security/narrative-text';
-import { LockedAccountNoticeComponent } from '@app-shared/components/locked-account-notice/locked-account-notice.component';
+import {
+  LockedAccountNoticeComponent,
+  type LockedAccountReason,
+} from '@app-shared/components/locked-account-notice/locked-account-notice.component';
 import { NarrativeValueComponent } from '@app-shared/components/narrative-value/narrative-value.component';
 import {
   NARRATIVE_DESCRIPTION_CHARACTERS,
@@ -410,7 +428,17 @@ const PLACEABLE_KEYS: ReadonlyMap<string, string> = new Map([
     <h1>Transactions</h1>
 
     <form [formGroup]="form" (ngSubmit)="add()">
-      @if (!writable()) {
+      @if (rotating()) {
+        <!--
+          The run's reason, and it names no press. Unlock mid-run hands back the
+          generation that is on its way out, so the smallest act that returns
+          this form is waiting — which is what the sentence says instead.
+        -->
+        <p class="reason">
+          Adding is off while Budgetoid gives this account new keys. It comes
+          back when it finishes.
+        </p>
+      } @else if (!writable()) {
         <!--
           The reason, beside the form rather than on it. A disabled control
           whose explanation is a tooltip is an explanation nobody hears, and
@@ -461,11 +489,12 @@ const PLACEABLE_KEYS: ReadonlyMap<string, string> = new Map([
         dead control while the notice underneath said this tab cannot read the
         account. The notice renders **in place of** account content, and a
         disabled control still showing it is the same claim by another route.
-        locked() exactly, matching the notice rather than !writable(): an
-        unlock in flight is not a reason to take a screen away from somebody
-        who is looking at it.
+        blocked() and never !writable(): an unlock in flight is not a reason to
+        take a screen away from somebody who is looking at it, while a run in
+        flight is — the names in these lists are the ones a chunk is re-sealing
+        out from under this generation.
       -->
-      @if (!locked()) {
+      @if (!blocked()) {
         <mat-form-field>
           <mat-label>Account</mat-label>
           <mat-select formControlName="accountId">
@@ -522,7 +551,7 @@ const PLACEABLE_KEYS: ReadonlyMap<string, string> = new Map([
         }
       </mat-form-field>
 
-      @if (!locked()) {
+      @if (!blocked()) {
         <mat-form-field>
           <mat-label>Payee</mat-label>
           <input
@@ -546,7 +575,7 @@ const PLACEABLE_KEYS: ReadonlyMap<string, string> = new Map([
         </mat-form-field>
       }
 
-      @if (!locked()) {
+      @if (!blocked()) {
         <mat-form-field>
           <mat-label>Category</mat-label>
           <mat-select formControlName="categoryId">
@@ -615,12 +644,14 @@ const PLACEABLE_KEYS: ReadonlyMap<string, string> = new Map([
       </button>
     </form>
 
-    @if (locked()) {
+    @if (blocked()) {
       <!--
         In place of the list, never over it and never as a redirect. Settings
-        holds the way out, so nothing here may take a person off this screen.
+        holds the way out and the run to watch, so nothing here may take a
+        person off this screen. Which sentence it carries is decided here,
+        because the notice reads nothing and is told.
       -->
-      <app-locked-account-notice />
+      <app-locked-account-notice [reason]="noticeReason()" />
     } @else if (transactions.transactions(); as list) {
       <!--
         A plain semantic list, which is the base docs/design/components.md
@@ -719,6 +750,10 @@ export class TransactionsComponent implements OnInit {
   protected readonly accounts = inject(AccountsService);
   private readonly formBuilder = inject(FormBuilder);
   private readonly custody = inject(AccountKeyCustodyService);
+  // The driver, read and never driven: this screen begins nothing, resumes
+  // nothing and reads no rotation state of its own — the `APP_INITIALIZER` makes
+  // that read once, before the first route activates.
+  private readonly rotations = inject(KeyRotationService);
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
   readonly #locale = inject(TRANSACTION_ROW_LOCALE);
 
@@ -745,26 +780,57 @@ export class TransactionsComponent implements OnInit {
   readonly #recording = signal(false);
 
   /**
+   * Whether a key rotation is in flight.
+   *
+   * **Two terms, because "in flight" is two different observations.**
+   * `running` is a run this tab is walking — begun here, and while it is going
+   * nothing is staged in this browser. `staged` is a run on file: one another
+   * tab began, or one that survived this browser's reload, which the
+   * application initializer reads back before the first route activates. Either
+   * alone half-works, and the half that fails is the quiet one.
+   *
+   * Both are the driver's own published signals; nothing here derives a run's
+   * state from a phase.
+   */
+  protected readonly rotating = computed(
+    () => this.rotations.running() || this.rotations.staged() !== null,
+  );
+
+  /**
    * Whether this screen may write.
    *
    * **Positive on purpose, and never `!== 'locked'`** — the head of this file
    * argues it. `unlocking` and any word added later are not `unlocked`, so they
    * arrive disabled, which is the direction a state nobody thought about has to
-   * fail in.
+   * fail in. A run in flight is the second term, joined with **and** for the
+   * same reason: the composite is true only for a state that has been thought
+   * about.
    */
   protected readonly writable = computed(
-    () => this.custody.status() === 'unlocked',
+    () => this.custody.status() === 'unlocked' && !this.rotating(),
   );
 
   /**
    * Whether the notice replaces the list.
    *
-   * `locked` exactly, and deliberately not {@link writable}'s complement: the
-   * notice's way forward is "press Unlock in Settings", which is already wrong
-   * for somebody whose unlock is running.
+   * `locked` exactly of custody's three words, and deliberately not
+   * {@link writable}'s complement — the notice's way forward is "press Unlock
+   * in Settings", which is already wrong for somebody whose unlock is running —
+   * **or** a run in flight, whose rows this tab's generation no longer opens.
    */
-  protected readonly locked = computed(
-    () => this.custody.status() === 'locked',
+  protected readonly blocked = computed(
+    () => this.custody.status() === 'locked' || this.rotating(),
+  );
+
+  /**
+   * Which sentence the notice carries.
+   *
+   * **The run wins when both are true.** Somebody who arrived locked and
+   * pressed Rotate will be able to read their records when it finishes, so
+   * Unlock advice would send them to a control that cannot help them.
+   */
+  protected readonly noticeReason = computed<LockedAccountReason>(() =>
+    this.rotating() ? 'rotating' : 'locked',
   );
 
   /**
@@ -790,7 +856,7 @@ export class TransactionsComponent implements OnInit {
    * different requests, and the wrong one of them.
    */
   protected readonly readState = computed<'loading' | 'failed' | null>(() => {
-    if (this.locked() || this.transactions.transactions() !== null) {
+    if (this.blocked() || this.transactions.transactions() !== null) {
       return null;
     }
 
@@ -910,7 +976,7 @@ export class TransactionsComponent implements OnInit {
    */
   protected readonly filteredPayees = computed<readonly PayeeSuggestion[]>(
     () => {
-      if (this.locked()) {
+      if (this.blocked()) {
         return [];
       }
 

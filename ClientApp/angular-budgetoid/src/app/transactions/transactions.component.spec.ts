@@ -75,6 +75,13 @@ import {
   type UnlockFailure,
 } from '@app-core/security/account-key-custody.service';
 import {
+  KeyRotationService,
+  type KeyRotationFailure,
+  type KeyRotationPhase,
+  type KeyRotationProgress,
+  type StagedRotation,
+} from '@app-core/security/key-rotation.service';
+import {
   NARRATIVE_DESCRIPTION_CHARACTERS,
   NARRATIVE_NAME_CHARACTERS,
 } from '@app-shared/narrative-field-caps';
@@ -464,9 +471,56 @@ function edgeWhitespace(text: string): readonly string[] {
   ];
 }
 
+// The driver, stubbed for the two signals this screen reads and refusing
+// everything a screen has no business calling.
+//
+// **Two settable facts and not one**, because "a run is in flight" is two
+// different observations: `running` is a run this tab is walking, and `staged`
+// is a run on file — one begun in another tab, or one that survived this
+// browser's reload and was read back by the application initializer.
+class KeyRotationStub
+  implements Pick<KeyRotationService, keyof KeyRotationService>
+{
+  readonly #running = signal(false);
+  readonly #staged = signal<StagedRotation | null>(null);
+
+  public readonly running: Signal<boolean> = this.#running.asReadonly();
+  public readonly staged: Signal<StagedRotation | null> =
+    this.#staged.asReadonly();
+  public readonly phase: Signal<KeyRotationPhase> =
+    signal<KeyRotationPhase>('idle').asReadonly();
+  public readonly progress: Signal<KeyRotationProgress> =
+    signal<KeyRotationProgress>({ records: 0, resealed: 0 }).asReadonly();
+  public readonly failure: Signal<KeyRotationFailure | null> =
+    signal<KeyRotationFailure | null>(null).asReadonly();
+
+  public setRunning(running: boolean): void {
+    this.#running.set(running);
+  }
+
+  public setStaged(staged: StagedRotation | null): void {
+    this.#staged.set(staged);
+  }
+
+  public begin(): never {
+    throw new Error('the transactions screen may not begin a rotation');
+  }
+
+  public resume(): never {
+    throw new Error('the transactions screen may not resume a rotation');
+  }
+
+  public readStagedRotation(): never {
+    throw new Error(
+      'the transactions screen may not read the staged rotation — the application initializer does',
+    );
+  }
+}
+
 describe('TransactionsComponent', () => {
   let transactions: TransactionsServiceStub;
   let custody: CustodyStub;
+  let rotations: KeyRotationStub;
   let fixture: ComponentFixture<TransactionsComponent>;
 
   function host(): HTMLElement {
@@ -551,6 +605,7 @@ describe('TransactionsComponent', () => {
   beforeEach(async () => {
     transactions = new TransactionsServiceStub();
     custody = new CustodyStub();
+    rotations = new KeyRotationStub();
     TestBed.configureTestingModule({
       imports: [TransactionsComponent],
       providers: [
@@ -559,6 +614,7 @@ describe('TransactionsComponent', () => {
         { provide: TransactionsService, useValue: transactions },
         { provide: AccountsService, useClass: AccountsServiceStub },
         { provide: AccountKeyCustodyService, useValue: custody },
+        { provide: KeyRotationService, useValue: rotations },
       ],
     });
     await TestBed.compileComponents();
@@ -1005,6 +1061,121 @@ describe('TransactionsComponent', () => {
     expect(host().querySelector('.transactions')).not.toBeNull();
   });
 
+  // The term a key rotation adds to both predicates. Every case here holds
+  // custody at `unlocked`: the tab is holding a perfectly good content key, and
+  // the rows it would draw are the ones a chunk has already re-sealed under the
+  // generation replacing it — so a list drawn here is part names and part em
+  // dashes, and gets worse as the run succeeds.
+  describe('a key rotation in flight', () => {
+    it('replaces the list with the run’s notice while custody is unlocked', () => {
+      // Arrange
+      rotations.setRunning(true);
+
+      // Act
+      fixture.detectChanges();
+
+      // Assert
+      expect(host().querySelector('app-locked-account-notice')).not.toBeNull();
+      expect(host().querySelector('.transactions')).toBeNull();
+      expect((host().textContent ?? '').replace(/\s+/g, ' ')).toContain(
+        'Budgetoid is giving this account new keys. Your records come back ' +
+          'when it finishes — watch it in Settings.',
+      );
+    });
+
+    it('disables the form and gives the run as the reason', () => {
+      // Arrange — a row created after a run has collected is a row the run will
+      // never visit, and the completion refuses until it does.
+      rotations.setRunning(true);
+
+      // Act
+      fixture.detectChanges();
+
+      // Assert — and the sentence is the run's, not the lock's: pressing Unlock
+      // mid-run gets the generation on its way out.
+      const amount = host().querySelector<HTMLInputElement>(
+        'input[formcontrolname="amount"]',
+      );
+      const submit = host().querySelector<HTMLButtonElement>(
+        'button[type="submit"]',
+      );
+      const reason = (host().querySelector('form p')?.textContent ?? '')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+      expect(amount?.disabled).toBe(true);
+      expect(submit?.disabled).toBe(true);
+      expect(reason).toBe(
+        'Adding is off while Budgetoid gives this account new keys. It comes ' +
+          'back when it finishes.',
+      );
+    });
+
+    it('shows no opened name in the form while a run is in flight', () => {
+      // Arrange — the account picker, the payee field and the category picker
+      // sit inside the form rather than inside the notice's branch, and what
+      // they hold is a name this run is re-sealing out from under the
+      // generation that opened it.
+      fill({ categoryId: CATEGORY_ID });
+      fixture.detectChanges();
+      expect(host().querySelector('form')?.textContent ?? '').toContain(
+        'Everyday',
+      );
+
+      // Act
+      rotations.setRunning(true);
+      fixture.detectChanges();
+
+      // Assert
+      const form = host().querySelector('form')?.textContent ?? '';
+
+      expect(form).not.toContain('Everyday');
+      expect(form).not.toContain('Groceries');
+    });
+
+    it('offers no payee suggestions while a run is in flight', () => {
+      // Arrange — the same rule on the third control. A suggestion list is
+      // account content whatever the field around it can do.
+      transactions.payeesSignal.set([cornerShop, bakery]);
+      rotations.setRunning(true);
+
+      // Act
+      fixture.detectChanges();
+
+      // Assert
+      expect(suggestions(fixture.componentInstance)).toEqual([]);
+    });
+
+    it('carries the run’s sentence when the account is locked as well', () => {
+      // Arrange — somebody who arrived locked and pressed Rotate is going to be
+      // able to read their records when it finishes.
+      custody.setStatus('locked');
+      rotations.setRunning(true);
+
+      // Act
+      fixture.detectChanges();
+
+      // Assert
+      const copy = (host().textContent ?? '').replace(/\s+/g, ' ');
+
+      expect(copy).toContain('Budgetoid is giving this account new keys.');
+      expect(copy).not.toContain('This tab can’t read your account yet.');
+    });
+
+    it('takes a run this browser never began from what the server staged', () => {
+      // Arrange — a rotation that lost its tab survives as server state alone,
+      // and the application initializer is what reads it back.
+      rotations.setStaged({ startedAtUtc: '2026-02-03T04:05:06Z' });
+
+      // Act
+      fixture.detectChanges();
+
+      // Assert
+      expect(host().querySelector('app-locked-account-notice')).not.toBeNull();
+      expect(host().querySelector('.transactions')).toBeNull();
+    });
+  });
+
   it('renders every sealed member the row still carries through the narrative marker', () => {
     // Arrange — the row is two lines and five things: the payee leads with the
     // amount right of it, and the second line is category · account with the
@@ -1304,6 +1475,7 @@ describe('TransactionsComponent', () => {
       transactions = new TransactionsServiceStub();
       transactions.transactionsSignal.set([row]);
       custody = new CustodyStub();
+      rotations = new KeyRotationStub();
       TestBed.configureTestingModule({
         imports: [TransactionsComponent],
         providers: [
@@ -1312,6 +1484,7 @@ describe('TransactionsComponent', () => {
           { provide: TransactionsService, useValue: transactions },
           { provide: AccountsService, useClass: AccountsServiceStub },
           { provide: AccountKeyCustodyService, useValue: custody },
+          { provide: KeyRotationService, useValue: rotations },
           { provide: TRANSACTION_ROW_LOCALE, useValue: locale },
         ],
       });

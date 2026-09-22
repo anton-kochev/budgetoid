@@ -489,6 +489,15 @@ required members. A third writer is a decision rather than a refactor.
   `void probe()` satisfies one and fails the other. `probe()` resolves however the read ends and
   **never rejects**; a rejection is not a failed probe but an application that never finishes
   starting.
+  - **One read rides *after* the probe and is conditional on its answer.**
+    `KeyRotationService.readStagedRotation()` runs in the same initializer, so that "a key rotation
+    is in flight" survives a reload — see [key-rotation.md](key-rotation.md) for what the three
+    content screens do with it. It is sequential and **not** parallel, and it is made only when the
+    probe answered `authenticated`: that route is authenticated, an anonymous visitor asking it is
+    answered `401`, and `sessionExpiryInterceptor` is the single owner of "the session ended" and
+    acts on `401` alone — so an unconditional read announces a session ending to somebody who never
+    had one, on every anonymous cold load. Nothing in it is awaited for the guards' sake; what the
+    await buys is a screen that does not draw a list the answer would have replaced.
   - **The reading also moves twice mid-visit, and both moves are a *set* rather than a re-probe.**
     `ended()` is called by `sessionExpiryInterceptor` on a `401` and by the Settings screen's sign
     out; `established()` is called by the registration flow on the `201` and by the sign-in flow on

@@ -59,10 +59,10 @@ that walk one, the read that resumes an interrupted one, a typed client for all 
 run carries, the driver that spends it — now from either end, and now ending in custody — and the
 section on `/app/settings` that presses it. A
 browser can begin a rotation, walk it to its 204 and be holding the promoted generation after it; a
-browser that lost one to a reload can pick it up, finish it and end the same way; and a person can
-start either from a control. What is still missing is what the three content screens do while a run
-is in flight — they render their lists, where
-[components.md](../design/components.md) specifies the locked-account notice.** `POST /api/me/key-rotation` stages a run,
+browser that lost one to a reload can pick it up, finish it and end the same way; a person can start
+either from a control; and the three content screens render the locked-account notice in place of
+their lists while a run is in flight, with their forms disabled beside it, which is what
+[components.md](../design/components.md) specifies.** `POST /api/me/key-rotation` stages a run,
 `POST /api/me/key-rotation/chunks` re-seals a batch of rows,
 `POST /api/me/key-rotation/completion` promotes the staged generation, and
 `GET /api/me/key-rotation` hands a staged run back to a client that lost it — so `key_rotations`,
@@ -183,7 +183,13 @@ that one judges the staged seals against the **staged** manifest, which on a res
 stood when the run began, so the two agree perfectly while neither of them is the set the account holds
 now.
 
-**Which control a section draws is a read of its own.** `KeyRotationService.readStagedRotation()`
+**Which control a section draws is a read of its own, and it is made twice.** The settings section
+makes it as it is built, and the `APP_INITIALIZER` makes it once for the whole application — after
+`SessionService.probe()` has answered and **only** for a visitor it found authenticated, because this
+route is authenticated and `sessionExpiryInterceptor` reads a 401 as a session ending. That second
+call is what makes "a run is in flight" survive a reload: a browser that has just loaded knows of no
+run, and the three content screens would otherwise draw lists of half em dashes with nothing saying
+why. `KeyRotationService.readStagedRotation()`
 publishes the staged run's `startedAtUtc` and nothing else of it, on a `staged` signal — the record
 beside that date carries one copy of the next generation's account keys per factor, which is not a
 thing a screen binds. A read that did not happen publishes "nothing to finish" rather than a word, for
