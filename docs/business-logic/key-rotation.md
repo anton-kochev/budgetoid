@@ -55,24 +55,23 @@ everything.
 ## What is built today
 
 **The schema, the domain behaviour, the completeness gate, the handlers a run needs, the three routes
-that walk one, the read that resumes an interrupted one, and — new — a typed client for all four.
-The whole server side of a rotation is reachable over HTTP, and a browser can now address it. Nothing
-drives a run.** `POST /api/me/key-rotation` stages a run,
+that walk one, the read that resumes an interrupted one, a typed client for all four, the material a
+run carries, and — new — the driver that spends it. A browser can now begin a rotation and walk it
+to its 204. What is still missing is the screen that presses the button and the leg that picks up an
+interrupted run.** `POST /api/me/key-rotation` stages a run,
 `POST /api/me/key-rotation/chunks` re-seals a batch of rows,
 `POST /api/me/key-rotation/completion` promotes the staged generation, and
 `GET /api/me/key-rotation` hands a staged run back to a client that lost it — so `key_rotations`,
 `key_rotation_seals`, the six `rotation_id` stamp columns, `wrapped_account_keys` and
 `factor_manifests` can all now hold values a browser caused to be written, and none of that work is
-lost to a reload. **What is missing is what drives a run.** `key-rotation-api.service.ts` names the
+lost to a reload. `key-rotation-api.service.ts` names the
 four routes and mirrors every request and response record member for member; it is a transport, so
-it holds no key, runs no cipher, makes no refusal of its own and reads no conflict — and nothing
-calls it. **The material a run carries is assembled now, and nothing carries it.**
+it holds no key, runs no cipher, makes no refusal of its own and reads no conflict.
 `key-rotation-material.ts` takes a key-encryption key and the two reads and answers with both
 generations of the account's keys, the factor set its own manifest declares, the epoch the next
 manifest is filed at, that manifest, and one seal per factor — minting the next generation when the
 resume read says nothing is staged and recovering the staged one when it does. It is framework-free:
-no injectable, no signal, no HTTP. What nobody has built is what spends it — no screen, and nothing
-that re-seals a narrative row or posts a chunk. `me-api.service.ts`
+no injectable, no signal, no HTTP. `me-api.service.ts`
 argues, over the sibling route that replaces a card of codes, why the account's own keys are not
 something custody can be asked for today.
 **`factor_manifests` was never empty**: registration files a row for every account it creates, at
@@ -127,7 +126,25 @@ the second one is the point: `key-rotation-api.service.spec.ts` compares the bro
 against those lists, and `KeyRotationWireContractTests` reflects over the server's own records,
 camel-cases their property names through the serializer the API ships, and compares them against the
 same lists as **sets in both directions**. Neither may be deleted on the grounds that the other
-covers the contract, because a list one side alone reads pins one side alone.
+covers the contract, because a list one side alone reads pins one side alone; and the driver that
+walks a run — `KeyRotationService`, root-provided, whose one entry point `begin()` assembles the
+material from one passkey assertion, posts the begin, reads the published inventory, collects every
+narrative row across the five arms, re-seals each under the next content key and recomputes each
+blind index under the next index key, posts them in chunks sized by the published budget, and posts
+the completion. It **stops at the 204**: taking custody of the promoted generation is not its act,
+so a rotation leaves the tab exactly as locked or unlocked as it found it. It holds both generations
+in ECMAScript `#` fields with no accessor, publishes a phase, a numerator over a denominator and one
+refusal word as signals, and keeps **no per-row progress record anywhere** — the chunk route answers
+no count and the resume read carries none, and a client-side one would be a second numerator able to
+disagree with the server's completeness gate. Its numerator counts **rows carried by a chunk the
+server answered 204**, never rows collected, sealed or queued. Two refusals are its own and both
+abort before a chunk is posted: an inventory naming a budget row, which no chunk arm can stamp and
+which no account in this product can produce, and an arm whose collected rows are **fewer** than the
+count the begin published, which is a client that cannot see rows the gate will count. Collecting
+**more** than was published is legal and raises the denominator — rows created between the begin and
+the collection are sealed under the generation being replaced, so a chunk has to visit them. Rows
+created after a collection make the completion answer `rotation_incomplete`, and the remedy is
+bounded: **three collect-and-send passes, then a named failure**, never a loop.
 
 **The completion route hands back nothing, and that is the one decision the route makes.** Not a body
 member, not an `ETag`, not a `Location`, not a header of its own: a client's rotation-epoch record may
@@ -145,8 +162,10 @@ finished run, which is what the legitimate client was about to do. Neither is a 
 gate did not already grant, and a prompt here would fall at the one moment a person has the most to
 lose by abandoning the request.
 
-Not built: anything that drives a run — no screen, no path that re-seals a row, and nothing that
-posts to any of the four routes. Do not state any of it in the present tense until it ships.
+Not built: the screen — no key-rotation section renders on `/app/settings`, no control exists, and
+nothing runs the passkey ceremony a begin is authorized by; and the leg that picks up an interrupted
+run, which reads `GET /api/me/key-rotation` and drives the chunks and the completion without posting
+a begin at all. Do not state either of them in the present tense until it ships.
 
 **The begin can write its row, and `key_rotations` still holds no `DELETE` of any shape.**
 `app-role-grants.sql` grants `SELECT`, `INSERT` and a column-listed `UPDATE` over `rotation_id`,
@@ -596,9 +615,10 @@ covering another is refused by nothing here. A sentence reading as though FR-123
 — under the very generation its seals carry, at the very epoch it is filed at — and compares the set
 it names against the seal set, in both directions. On a resume that judges what a previous begin
 really posted; on a begin it is a self-check over what is about to be posted, which is why the
-manifest is opened again rather than compared against the list it was built from. Nothing posts yet:
-the transport that addresses the route is built and nothing calls it. The comparison being made
-before a body exists is the point — a client that made it afterwards would be reading an echo.
+manifest is opened again rather than compared against the list it was built from. `KeyRotationService`
+is what posts the result, and it posts nothing this comparison has not passed: the material is
+assembled before a request body exists, which is the point — a client that compared afterwards would
+be reading an echo.
 
 ### Carrying a chunk: what the route owes, and the three things it must not add
 

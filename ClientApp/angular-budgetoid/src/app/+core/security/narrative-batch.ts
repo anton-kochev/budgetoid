@@ -330,7 +330,21 @@ function isPostTaskScheduler(value: unknown): value is PostTaskScheduler {
   );
 }
 
-function handBackTheFrame(): Promise<void> {
+/**
+ * Hands the frame back to the browser and resolves once it has had a task of
+ * its own.
+ *
+ * **Exported so that a second driver borrows this one rather than writing
+ * another.** `openNarrativeBatch` is not the only loop in this client that holds
+ * the main thread over a whole account — a key rotation re-seals every narrative
+ * column in one pass — and the head of this file is where the mechanisms are
+ * argued: `scheduler.yield()` resumes ahead of rendering and draws no frame, and
+ * `setTimeout(…, 0)` is rejected there too. A second copy of that decision is a
+ * copy nobody keeps true.
+ *
+ * It is the {@link FrameYield} a caller supplying no {@link FrameBudget} gets.
+ */
+export function handBackTheFrame(): Promise<void> {
   const candidate = (globalThis as { scheduler?: unknown }).scheduler;
 
   return isPostTaskScheduler(candidate)

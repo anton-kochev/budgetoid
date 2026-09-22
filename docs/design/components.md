@@ -1817,19 +1817,34 @@ says what became of the run, which the Account keys lines have no run to say any
 | --- | --- |
 | `unreachable` | "Budgetoid couldn’t reach the server. The rotation stopped where it is — try again in a minute and it picks up from there." |
 | `unauthenticated` | "Budgetoid stopped accepting this rotation from this browser. Sign out and sign in again, then finish it from here." |
-| `unrecognised` | "Budgetoid couldn’t read what the server sent back. Reload the page — that’s the one thing here that can change the answer." |
+| `unrecognised` | "Budgetoid couldn’t work with what the server sent back. Reload the page — that’s the one thing here that can change the answer." |
 | `inconsistent` | "Something about this account’s keys doesn’t line up — no passkey or recovery code will change it." |
 | `unfinished` | "Something else changed this account while it was being re-encrypted. Close any other Budgetoid tab, then finish the rotation from here." |
 | `factors-moved` | "The passkeys and recovery codes on this account changed while the rotation was running. Start it again from here — the records already re-encrypted stay that way." |
 
 The copy is the specification, not an example of it.
 
-**Two of the six are custody's sentences unchanged, and each survives for its own reason.**
-`unrecognised` survives because the act it names is the same act and a run survives it: a reload
-fetches different JavaScript from the static host, and the staged run is still on the server to be
-picked up afterwards, so the promise the sentence makes is one this section can keep too.
-`inconsistent` survives because it is the one line in either table that says out loud that nothing
-the person does changes the answer, and a run in front of it changes nothing about that.
+**One of the six is custody's sentence unchanged, and one is custody's sentence widened by a
+word.** `inconsistent` survives verbatim because it is the one line in either table that says out
+loud that nothing the person does changes the answer, and a run standing in front of it changes
+nothing about that.
+
+**`unrecognised` keeps custody's remedy and loses custody's first clause, because this section
+raises the word from two sources where the server's answer was perfectly readable.** A run refuses
+before it posts anything when the published inventory names a budget, and when an arm comes back
+with fewer rows than that inventory counted — the first because no chunk can stamp a budget and the
+completion could never pass, the second because a client that cannot see rows the completeness gate
+counts has a run that can never finish. In both the body parsed, every member bound, and this
+bundle could not act on it. *Couldn’t read* is false there, so the sentence says **couldn’t work
+with**, which covers a body this client could not read and a body it could not drive without naming
+which — and neither is a distinction a person can act on differently.
+
+**The remedy is what had to survive, and it does.** A reload is still the only act in the product
+that fetches different JavaScript from the static host, which is the only thing that changes a
+refusal about what this bundle can drive; and where the cause is instead a list read that went
+stale, a reload re-reads it. The staged run is still on the server either way, so nothing is spent
+by trying. That is the same property the Account keys chapter names — **the copy names the act and
+not the cause** — which is why widening the source cost one word rather than a seventh line.
 
 **`factors-moved` is the one whose remedy has a rule behind it, and the rule is not visible in the
 sentence.** Starting again after this refusal must re-stage **the generation the interrupted run
@@ -1916,11 +1931,17 @@ being counted, and sits outside the region. Nothing here is communicated by colo
 
 ### What ships today
 
-**Nothing.** This chapter is a specification, in the sense the preamble states: no key-rotation
-section renders on `/app/settings`, no control exists, and the notice takes no input. What exists is
-the server side of the act — the four routes, the staging generation, the completeness gate and the
-promotion, all argued in [key-rotation.md](../business-logic/key-rotation.md) — and a client that
-reaches none of them.
+**No pixel of it.** This chapter is a specification, in the sense the preamble states: no
+key-rotation section renders on `/app/settings`, no control exists, and the notice takes no input.
+What exists is the server side of the act — the four routes, the staging generation, the
+completeness gate and the promotion, all argued in
+[key-rotation.md](../business-logic/key-rotation.md) — and, now, the driver that walks one.
+`KeyRotationService.begin()` takes a passkey assertion and runs a whole rotation to its 204: it
+publishes the three phase words, the numerator and denominator the progress line above specifies,
+and the six refusal words in the table above. It keeps no per-row progress record anywhere, for the
+reason this chapter gives. What nothing does yet is *press* it — there is no section, no checkbox
+and no button — and the leg that picks up an interrupted run is not built either, so **Finish
+rotating** is still a control this chapter specifies and nothing draws.
 
 **What the placement claim above costs today**: the Account keys section and **What we can read**
 are adjacent on the screen, and the sentence in that chapter naming its neighbours is written for

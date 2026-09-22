@@ -92,6 +92,15 @@ rather than per disposition: the transaction read declares that it takes nothing
 added to it reddens like a parameter added to a gated row. Paging it means editing that column,
 which is the visible cost.
 
+**That cost has grown by one named dependent, and it is worth knowing before the paging commit is
+written.** `KeyRotationService` collects every narrative row of an account by reading all five of
+these lists whole, and it refuses outright when an arm comes back with **fewer** rows than the
+inventory the begin published — a client that cannot see rows the completeness gate counts is a
+client whose run can never finish, so it aborts before a chunk is posted rather than starting one.
+Paging this read therefore does not merely change a screen: it stops a rotation from beginning at
+all, until the driver learns to walk the pages. The remedy is cheap and the surprise is not, which
+is why it is written here rather than left in the driver.
+
 ## Three reads are held by a stronger rule
 
 `IAccountKeyReadService.ListForAccountAsync`, `IExportReadService.ListOwnedBudgetsAsync` and

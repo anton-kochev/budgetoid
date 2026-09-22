@@ -2690,11 +2690,14 @@ gets back out.
    `BeginKeyRotationHandler` calls it on every begin, judging the seals a client staged against its
    keys in both directions. `POST /api/me/key-rotation` reaches it, and that read serves no client:
    it answers the gate and nothing of it is serialised. This route is still the only one that hands
-   any of it back. The browser has two callers and custody is the one with an injector: it reads both
-   levels off this answer and
-   spends all three members: the entries to try, the manifest to confirm the content key against and
+   any of it back. The browser has two consumers and two callers, and they are not the same pair.
+   `AccountKeyCustodyService` is both at once: it makes the read and reads both
+   levels off this answer, spending all three members — the entries to try, the manifest to confirm
+   the content key against and
    to name the account's factor set, and the epoch to compare against what this device has already
-   watched the account reach. `key-rotation-material.ts` is the other and spends the first two the
+   watched the account reach. `key-rotation-material.ts` is the second consumer and calls nothing:
+   it is framework-free, so `KeyRotationService` makes the read and hands the body over. It spends
+   the first two members the
    same way and the third differently — a rotation files the next manifest at the epoch beside them
    plus one, and records nothing, because rising a device's high-water mark is custody's act and only
    after its own four refusals have passed. **That unlock reads `GET /api/me` in the same
