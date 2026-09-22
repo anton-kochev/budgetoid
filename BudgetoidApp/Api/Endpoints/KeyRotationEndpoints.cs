@@ -1,6 +1,8 @@
 using System.Diagnostics.CodeAnalysis;
+using Api.Infrastructure;
 using Application.KeyRotations.BeginKeyRotation;
 using Application.KeyRotations.CompleteKeyRotation;
+using Application.KeyRotations.GetKeyRotationState;
 using Application.KeyRotations.ResealRows;
 using Application.Passkeys;
 using Application.Passkeys.Reauthentication;
@@ -11,12 +13,21 @@ using Microsoft.AspNetCore.Http.HttpResults;
 namespace Api.Endpoints;
 
 /// <summary>
-/// The routes of a content-key rotation. Three: the begin, which stages the next generation's
-/// manifest and one copy of the new account keys per factor the account holds; the chunk, which
-/// carries a batch of rows a client has re-sealed under that generation; and the completion, which
-/// promotes what the begin staged into the account's live rows.
+/// The routes of a content-key rotation. Four: the begin, which stages the next generation's manifest
+/// and one copy of the new account keys per factor the account holds; the chunk, which carries a batch
+/// of rows a client has re-sealed under that generation; the completion, which promotes what the begin
+/// staged into the account's live rows; and the read that hands a staged run back, which is what makes
+/// an interruption recoverable rather than terminal.
 /// </summary>
 /// <remarks>
+/// <para>
+/// <b>The read is the only one of the four that is not an act, and it is the only one that hands key
+/// material out.</b> A staged seal is the account's next content key and index key encapsulated to one
+/// factor, and until a completion promotes them those staged values are the <em>only</em> copies of
+/// that generation — so <c>GET /api/me/key-rotation</c> states its own cacheability through
+/// <see cref="Api.Infrastructure.ResponseCaching.NoStore" />, which it shares with the one other route
+/// that returns key material and with nothing else.
+/// </para>
 /// <para>
 /// <b>The completion decodes nothing, which is the one thing it has in common with neither of the
 /// others.</b> Its body carries a single identifier the binder has already produced, and every refusal
@@ -290,6 +301,87 @@ public static class KeyRotationEndpoints
                 cancellationToken);
 
             return TypedResults.NoContent();
+        });
+
+        // THE READ THAT RESUMES A RUN, AND IT IS LAST HERE BECAUSE THE THREE ABOVE ARE THE RUN'S OWN
+        // ORDER. Without it an interruption is permanent data loss rather than a recoverable state: the
+        // client that began the run holds the new content key only in the tab that drew it, and
+        // wrapped_account_keys still holds the superseded generation until the promotion — so the
+        // staged seals below are the only copies of the generation every row a chunk already rewrote is
+        // sealed under.
+        //
+        // THE SAME THREE ABSENCES AS THE THREE ROUTES ABOVE. No RequireAuthorization, because the
+        // fallback policy covers every route that declares nothing and restating it here would stop the
+        // one line that defines the anonymous surface being the only one. Never AllowAnonymous. And no
+        // AllowsLockedSessionAttribute: this answer is the staged generation of an account's content key
+        // and index key, and a session opened by the federated credential derives no key-encryption key
+        // at all — a caller reaching it could open none of what it is being handed.
+        //
+        // 200 ALWAYS AND NEVER 404, WHICH IS THE ONE DECISION THIS ROUTE MAKES. AccountKeysResponse
+        // argues it for its own route and the reason transfers unchanged: AccountKeyCustodyService and
+        // every client beside it read a failed read as "try again in a minute", which for an account
+        // that has simply never begun a rotation never succeeds. "Nothing staged" is therefore
+        // `rotation: null` inside a 200 — null rather than an empty object, because an object carrying
+        // an empty seal array is a staged run naming no factor, which no path produces and which a
+        // client would read as a rotation it may resume by re-encapsulating to nobody.
+        //
+        // AND NO GATE OF ITS OWN BEYOND THE FALLBACK POLICY — no re-authentication. The values here are
+        // ciphertext under factor public keys and a manifest sealed under the account's content key, so
+        // a caller holding a session and no authenticator learns from this route exactly what it could
+        // learn from GET /api/me/account-keys under the same policy: that the account holds n factors.
+        // A prompt would also fall on the one request a person makes when their rotation has already
+        // gone wrong once.
+        group.MapGet("/", async Task<Ok<KeyRotationStateResponse>> (
+            HttpResponse response,
+            GetKeyRotationStateHandler handler,
+            CancellationToken cancellationToken) =>
+        {
+            // WRITTEN BEFORE THE READ AND NEVER INSIDE A BRANCH ON WHAT THE READ FOUND. Cacheability
+            // belongs to the ROUTE rather than to the answer: a header written from inside an
+            // `if (rotation is not null)` would serve a cacheable 200 to every account with nothing
+            // staged, and a null body carrying no key material today is one member away from the day it
+            // does. On this line rather than in SecurityHeadersMiddleware, which argues at length for
+            // owning no global value, and as a DIRECT WRITE rather than a second Response.OnStarting
+            // callback — that middleware registers the only one in the application and says what a
+            // second costs: Kestrel runs them LIFO and abandons the stack on the first throw. The one
+            // path where this header is lost is a 500, where the exception handler's Response.Clear()
+            // takes it and the body is a ProblemDetails carrying no key material.
+            response.Headers.CacheControl = ResponseCaching.NoStore;
+
+            StagedKeyRotation? staged = await handler.HandleAsync(
+                new GetKeyRotationStateQuery(),
+                cancellationToken);
+
+            // Base64url applied at this edge and nowhere below it, the rule AccountKeyEndpoints keeps
+            // over the same two framings: the Application ring carries an envelope as bytes and the
+            // wire spelling is the API's business. PasskeyEncoding.Encode emits the unpadded alphabet
+            // the client's decoder is stricter about than this one — a Convert.ToBase64String here
+            // would hand a browser a value it refuses outright, over stored bytes that are correct.
+            //
+            // THE SEALS ARE PROJECTED ONE FOR ONE AND NOTHING IS ADDED TO THE SET. A run that sealed
+            // for twelve factors while the account now holds thirteen answers twelve entries here, and
+            // the thirteenth is absent rather than carried with a null value or filled in from that
+            // factor's live row — StagedKeyRotation carries the argument for why both of those would
+            // fail a resuming client worse than the absence does.
+            //
+            // The inventory is the Application record straight out, the way the begin answers its own:
+            // a response record of this layer's own would be six counts able to disagree with the six
+            // RotationInventory declares.
+            return TypedResults.Ok(new KeyRotationStateResponse(
+                staged is null
+                    ? null
+                    : new StagedRotationResponse(
+                        staged.RotationId,
+                        staged.StagedRotationEpoch,
+                        PasskeyEncoding.Encode(staged.StagedManifest.Span),
+                        staged.StartedAtUtc,
+                        staged.Inventory,
+                        staged.MaxChunkBytes,
+                        [
+                            .. staged.Seals.Select(seal => new StagedSealResponse(
+                                seal.FactorId,
+                                PasskeyEncoding.Encode(seal.EncapsulatedAccountKeys.Span))),
+                        ])));
         });
 
         return endpoints;
@@ -953,4 +1045,146 @@ public static class KeyRotationEndpoints
         IReadOnlyList<ResealedCategoryGroupRequest> CategoryGroups,
         IReadOnlyList<ResealedCategoryRequest> Categories,
         IReadOnlyList<ResealedTransactionRequest> Transactions);
+
+    /// <summary>
+    /// The whole answer of the resume read: the run in flight, or <see langword="null" /> when the
+    /// account has none.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>A wrapper carrying one member rather than the staged run served bare, and the member is the
+    /// point.</b> A bare body would have to spell "nothing in flight" as a literal <c>null</c> document
+    /// or as <c>{}</c>: the first is a body a client has to guard before it may read anything, and the
+    /// second is indistinguishable from a run whose members all went missing. A named member that is
+    /// present and <see langword="null" /> says both halves — the shape did not change, and there is no
+    /// run — which is what the client reads before deciding whether it has something to resume.
+    /// </para>
+    /// <para>
+    /// <b><see langword="null" /> and never an empty <see cref="StagedRotationResponse" />.</b> An
+    /// object carrying an empty seal array is a staged run naming no factor, a state no path in the
+    /// product produces, and a client acting on it would resume by re-encapsulating the account's keys
+    /// to nobody.
+    /// </para>
+    /// <para>
+    /// <b>No second member may be added saying whether a run is in flight.</b> The presence of
+    /// <see cref="Rotation" /> is that fact, and a flag beside it would be one statement able to
+    /// disagree with the other — on the one read a client consults when it has already lost track of
+    /// what it was doing.
+    /// </para>
+    /// </remarks>
+    /// <param name="Rotation">
+    /// The run this account has staged and not yet completed, or <see langword="null" /> when it has
+    /// none — which includes a run that finished, because a completion leaves its staging row standing.
+    /// </param>
+    private sealed record KeyRotationStateResponse(StagedRotationResponse? Rotation);
+
+    /// <summary>
+    /// One staged run as a resuming client needs it back: which run, what it staged, when it began,
+    /// and the denominator the rest of it is driven against.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b><see cref="StagedManifest" /> is the account's next authenticated list of every factor's
+    /// PUBLIC key, and handing it back discloses what its live sibling on
+    /// <c>GET /api/me/account-keys</c> discloses</b>: how many recovery factors the account is about to
+    /// hold, and which public keys they are. It is sealed under the account's content key, so this
+    /// server enforces framing, width and epoch and never contents — a manifest naming nobody is staged,
+    /// stored and served back here unchanged.
+    /// </para>
+    /// <para>
+    /// <b><see cref="Inventory" /> is the Application record itself rather than a response record of
+    /// this layer's own</b>, the way the begin answers its own: six counts restated here would be six
+    /// numbers able to disagree with the six <see cref="RotationInventory" /> declares, on the one
+    /// value a client divides its progress by.
+    /// </para>
+    /// <para>
+    /// <b>It echoes the epoch and the manifest where <c>KeyRotationBegun</c> deliberately echoes
+    /// neither, and the asymmetry is the whole difference between the two answers.</b> A begin's caller
+    /// sent those values a moment ago, so repeating them invites it to read the echo as agreement. This
+    /// caller sent nothing: it is a client that lost the run to a reload, and these are the values it no
+    /// longer has.
+    /// </para>
+    /// <para>
+    /// <b>No member may be added carrying progress</b> — not "rows remaining", not a percentage, not a
+    /// list of stamped row ids. <see cref="Inventory" /> is the denominator and the client holds the
+    /// numerator; a second count computed here would be a progress bar able to disagree with the
+    /// completeness gate, which is the one number that decides whether the run may be completed.
+    /// </para>
+    /// </remarks>
+    /// <param name="RotationId">
+    /// The client-minted identifier of the run — what a resumed chunk and the completion must quote.
+    /// </param>
+    /// <param name="StagedRotationEpoch">The generation the staged manifest will be filed at.</param>
+    /// <param name="StagedManifest">
+    /// The next generation's manifest of factor public keys, sealed under the account's content key, as
+    /// one unpadded base64url AEAD envelope — byte for byte what the begin staged.
+    /// </param>
+    /// <param name="StartedAtUtc">When the run was begun.</param>
+    /// <param name="Inventory">
+    /// How many rows carrying a narrative value each of the six narrative-bearing tables holds now.
+    /// </param>
+    /// <param name="MaxChunkBytes">
+    /// The byte budget one chunk's re-sealed rows may occupy, republished because a resuming client
+    /// needs it exactly as the client that began the run did.
+    /// </param>
+    /// <param name="Seals">
+    /// One entry per factor <b>this run staged a value for</b>, which is not always the set of factors
+    /// the account holds now — see <see cref="StagedSealResponse" />.
+    /// </param>
+    private sealed record StagedRotationResponse(
+        Guid RotationId,
+        int StagedRotationEpoch,
+        string StagedManifest,
+        DateTime StartedAtUtc,
+        RotationInventory Inventory,
+        int MaxChunkBytes,
+        IReadOnlyList<StagedSealResponse> Seals);
+
+    /// <summary>
+    /// One factor's staged copy of the next generation's account keys, as the wire carries it back.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The mirror of <see cref="SealRequest" />, member for member, and that is deliberate.</b> This
+    /// is the value that member put on file coming back out — the same suite, the same framing and the
+    /// same width — so a client that built a seal set and lost it reads back what it sent, under names
+    /// it has already written code against.
+    /// </para>
+    /// <para>
+    /// <b>IT IS KEY MATERIAL, AND HANDING IT BACK IS THIS ROUTE RATHER THAN A LEAK.</b> The staged
+    /// seals are the only copies of the generation an interrupted run was rewriting the account under,
+    /// because <c>wrapped_account_keys</c> holds the superseded pair until the promotion — so a server
+    /// that refused to hand them back would make every interruption permanent data loss. Opening one
+    /// needs the private half of that factor's pair, which crosses this wire only <em>wrapped under</em>
+    /// a key-encryption key the browser derives from a recovery factor and which never reaches this
+    /// server.
+    /// </para>
+    /// <para>
+    /// <b>The entry set is what the run staged, and a factor with no staged seal is LEFT OUT.</b> Never
+    /// carried with a <see langword="null" /> value, which is a seal a client cannot use and will skip —
+    /// the orphaning again — and never filled in from that factor's live
+    /// <c>encapsulated_account_keys</c>, which is a well-formed value of the right width and version
+    /// carrying the generation the run is replacing. Absence is the only answer that leaves a client
+    /// able to tell what really happened, and the run it describes will be refused at the completion
+    /// with <c>factor_set_moved</c> whichever way this read answered.
+    /// </para>
+    /// <para>
+    /// <b>No third member.</b> A <c>credentialId</c> is the join <c>account-keys.md</c> deliberately
+    /// withholds, a <c>wrappedPrivateKey</c> belongs to the factor rather than to a run and is on the
+    /// route that serves factors, and a per-entry stamp or instant would be a second statement of what
+    /// <see cref="StagedRotationResponse.StartedAtUtc" /> already says once.
+    /// </para>
+    /// </remarks>
+    /// <param name="FactorId">
+    /// The factor this copy was encapsulated to — the <c>wrapped_account_keys.factor_id</c> of the row
+    /// a promotion will write it into, in the canonical hyphenated spelling the client rebuilds its
+    /// associated data from.
+    /// </param>
+    /// <param name="EncapsulatedAccountKeys">
+    /// The next generation's content key and index key as one 64-byte plaintext, <b>content key
+    /// first</b>, encapsulated to that factor's public key, as unpadded base64url. The order of the two
+    /// halves is a client contract no server-side check can reach: these are the bytes the begin was
+    /// given, served back unchanged.
+    /// </param>
+    private sealed record StagedSealResponse(Guid FactorId, string EncapsulatedAccountKeys);
 }

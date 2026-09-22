@@ -3,10 +3,18 @@ using Domain.Users;
 namespace Application.KeyRotations.BeginKeyRotation;
 
 /// <summary>
-/// One factor's copy of the next generation's account keys, as a client presents it: the new content key
-/// and index key as one plaintext, <em>encapsulated to</em> that factor's public key.
+/// One factor's copy of the next generation's account keys: the new content key and index key as one
+/// plaintext, <em>encapsulated to</em> that factor's public key.
 /// </summary>
 /// <remarks>
+/// <para>
+/// <b>It travels in both directions and it is one type, because it is one value.</b> A begin presents
+/// these and the resume read hands the staged ones back —
+/// <c>Application.KeyRotations.GetKeyRotationState.StagedKeyRotation</c> carries them out again, since
+/// until a completion promotes them the staged seals are the only copies of that generation anywhere.
+/// A second record for the outbound leg would be the same two members under another name, able to
+/// disagree with this one about what a seal is.
+/// </para>
 /// <para>
 /// <b>The wire shape of a <see cref="KeyRotationSeal"/> and deliberately not that type.</b> The entity is
 /// built by <see cref="KeyRotationSeal.For"/>, which reads the owner off the rotation and the factor off a

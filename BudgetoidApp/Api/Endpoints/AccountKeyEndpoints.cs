@@ -1,33 +1,25 @@
+using Api.Infrastructure;
 using Application.AccountKeys;
 using Application.AccountKeys.GetAccountKeys;
 using Application.Passkeys;
 
 namespace Api.Endpoints;
 
+/// <summary>
+/// The route that hands a browser the account's key custody: the manifest naming every recovery
+/// factor's public key, the generation it is in, and what each factor stores.
+/// </summary>
+/// <remarks>
+/// <b>It is one of <em>two</em> routes in the product that return key material, and the header that
+/// says so is no longer a private copy.</b> This route's response carries every factor's wrapped
+/// private key; <c>GET /api/me/key-rotation</c> carries the staged seals of an interrupted run, which
+/// are the only copies of the generation that run was rewriting the account under. Both write
+/// <see cref="ResponseCaching.NoStore" /> themselves — the value has one owner, the decision stays with
+/// each route, and <see cref="SecurityHeadersMiddleware" /> still refuses to write a blanket
+/// <c>Cache-Control</c> for the reason it gives where it refuses.
+/// </remarks>
 public static class AccountKeyEndpoints
 {
-    /// <summary>
-    /// The one response header this route states for itself, and the one endpoint in the application
-    /// that has a reason to.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// <see cref="Api.Infrastructure.SecurityHeadersMiddleware" /> refuses to write a blanket
-    /// <c>Cache-Control</c> and says why: no endpoint here states its cacheability, so the question is
-    /// open rather than delegated, and settling it globally would settle it in the one place that knows
-    /// least about what was returned. This is the endpoint that closes that sentence for itself — it is
-    /// the only route in the product that returns key material, so it is the only one whose body must
-    /// not be written to a shared cache, a disk cache or a back-button restore.
-    /// </para>
-    /// <para>
-    /// <b><c>no-store</c> alone, not the longer incantation.</b> <c>no-cache</c> permits storage and
-    /// requires revalidation, which is the opposite of what is wanted; <c>private</c> permits a browser
-    /// cache; <c>max-age=0</c> without <c>no-store</c> permits a stale-serving cache to keep the bytes.
-    /// The four together are a superstition that reads as more careful and stores more.
-    /// </para>
-    /// </remarks>
-    private const string NoStore = "no-store";
-
     public static IEndpointRouteBuilder MapAccountKeyEndpoints(this IEndpointRouteBuilder endpoints)
     {
         ArgumentNullException.ThrowIfNull(endpoints);
@@ -77,7 +69,12 @@ public static class AccountKeyEndpoints
             // else on the response. The one path where the header is lost is a 500 — the exception
             // handler's Response.Clear() takes it — and the body written there is a ProblemDetails
             // carrying no key material, which is the case a cache is welcome to keep.
-            response.Headers.CacheControl = NoStore;
+            //
+            // The VALUE is shared with GET /api/me/key-rotation and the DECISION is not: two private
+            // copies of a security header is the shape that drifts, while a route inheriting one by
+            // being written in the same file is the shape that spreads. ResponseCaching carries that
+            // split, and the argument for no-store alone rather than the longer incantation.
+            response.Headers.CacheControl = ResponseCaching.NoStore;
 
             AccountKeyCustody custody = await handler.HandleAsync(
                 new GetAccountKeysQuery(),

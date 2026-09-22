@@ -54,14 +54,17 @@ everything.
 
 ## What is built today
 
-**The schema, the domain behaviour, the completeness gate, the three handlers a run needs, and — new
-— the route that completes one. The whole server side of a rotation is now reachable over HTTP. No
-client.** `POST /api/me/key-rotation` stages a run, `POST /api/me/key-rotation/chunks` re-seals a
-batch of rows, and `POST /api/me/key-rotation/completion` promotes the staged generation, so
-`key_rotations`, `key_rotation_seals`, the six `rotation_id` stamp columns, `wrapped_account_keys`
-and `factor_manifests` can all now hold values a browser caused to be written. **What is missing is
-the client**, which is the half that holds the keys: nothing in this repository encrypts, so no
-browser can produce the manifest a begin stages or the envelopes a chunk carries.
+**The schema, the domain behaviour, the completeness gate, the handlers a run needs, the three routes
+that walk one, and — new — the read that resumes an interrupted one. The whole server side of a
+rotation is now reachable over HTTP. No client.** `POST /api/me/key-rotation` stages a run,
+`POST /api/me/key-rotation/chunks` re-seals a batch of rows,
+`POST /api/me/key-rotation/completion` promotes the staged generation, and
+`GET /api/me/key-rotation` hands a staged run back to a client that lost it — so `key_rotations`,
+`key_rotation_seals`, the six `rotation_id` stamp columns, `wrapped_account_keys` and
+`factor_manifests` can all now hold values a browser caused to be written, and none of that work is
+lost to a reload. **What is missing is the client**, which is the half that holds the keys: nothing
+in this repository encrypts, so no browser can produce the manifest a begin stages or the envelopes
+a chunk carries.
 **`factor_manifests` was never empty**: registration files a row for every account it creates, at
 epoch 1, and three paths promoted one before this; the completion is the fourth.
 
@@ -99,7 +102,13 @@ manifest move together; and the completion's route,
 `POST /api/me/key-rotation/completion` in the same class as the other two, which answers **204**
 carrying nothing, **binds one member — `rotationId` — and judges none of it**, and declares **no
 authorization metadata and no re-authentication gate**, so the fallback policy covers it and a locked
-session is refused.
+session is refused; and the resume read — `GetKeyRotationStateHandler` over the same repository and
+the same inventory read service as the begin — and its route, `GET /api/me/key-rotation` in the
+same class as the three posts, which answers **200 always** carrying `rotation: null` when nothing
+is staged, drives its `seals` off `key_rotation_seals` rather than off the account's live factors,
+tells a finished run from a live one by **the epoch** rather than by the staging row's existence,
+and writes `Cache-Control: no-store` on both answers. It declares the same three absences as the
+routes beside it.
 
 **The completion route hands back nothing, and that is the one decision the route makes.** Not a body
 member, not an `ETag`, not a `Location`, not a header of its own: a client's rotation-epoch record may
@@ -273,6 +282,13 @@ Staging removes the choice: both generations are on file until one step promotes
 is always recoverable. **This buys recoverability, not atomicity** — chunks still commit
 independently and an observer mid-rotation sees an account under two keys. Atomicity is separate
 work and is not claimed here.
+
+**"Recoverable" is a promise a route keeps, and the route is `GET /api/me/key-rotation`** — see
+[resuming an interrupted run](#resuming-an-interrupted-run). Both generations being on file is
+necessary and is not sufficient: the new one is on file *only* as the staged seals, each encapsulated
+to a factor's public key, and the client that drew it holds it nowhere across a reload. Without a read
+that hands those seals back, an interrupted run would be exactly the second bullet above — every row
+already rewritten sealed under a key that existed only in the tab doing the work.
 
 **A promotion is one column per surviving factor plus one row for the account, and reading it as
 three columns per factor is the mistake this reshape removed.** Under the arrangement this replaced
@@ -690,6 +706,68 @@ over some other entity riding along on the same `SaveChanges` propagates as the 
 deliberately not the `400` `FactorManifest.Promote` raises over the same rule: that caller's epoch was
 never one greater than the stored generation, and this caller's was, at the moment it was read.
 
+### Resuming an interrupted run
+
+`GET /api/me/key-rotation` answers **200 always** carrying a `rotation` member: the staged run, or
+`null` when the account has none. It is the read that makes the recoverability promised
+[above](#why-staging-rather-than-one-generation) true, and it hands back four things a resuming
+client cannot get anywhere else — `rotationId`, `stagedManifest` and `stagedRotationEpoch`, and one
+`seals` entry per factor the run sealed for, each carrying that factor's `encapsulatedAccountKeys`.
+Beside them it republishes `inventory` and `maxChunkBytes`, because a client resuming a run needs the
+denominator and the chunk budget exactly as the client that began it did.
+
+**Never 404, and that is the decision the route makes.** Every client in this product reads a failed
+read as *try again in a minute*, which for an account that has simply never begun a rotation never
+succeeds. "Nothing staged" is `rotation: null` inside a 200 — **null rather than an empty object**,
+because an object carrying an empty seal array is a staged run naming no factor, a state no path
+produces and one a client would act on by re-encapsulating the account's keys to nobody.
+
+**A row is not a run, and the epoch is what tells them apart** — the same comparison the completion
+makes. A completion deletes nothing, so a finished run leaves its staging row standing carrying the
+identifier the client is still quoting; a read keyed on the row's existence alone would tell somebody
+who has just finished a rotation that they have one to resume, sending them back through a whole
+re-encryption under a content key they no longer hold. A live run's staged epoch is above the
+generation the manifest holds and a completed one's is equal to it.
+
+**The seals are driven off `key_rotation_seals` and never off the account's live factors joined to
+them.** The two sets are equal on the day a run begins and part company the moment a factor is
+enrolled or revoked while it is in flight, and a factor with no staged seal is **left out**. Neither
+way of papering over the gap is available:
+
+- **Filling it from that factor's live `encapsulated_account_keys`** yields a well-formed 158-byte
+  value of the right version carrying the generation the run is *replacing*, and a resuming client
+  that adopted it would believe the factor already holds the new keys.
+- **Naming the factor with a null value** is a seal a client cannot use and will skip, which is the
+  orphaning the seal set exists to prevent, arriving as a gap nobody reports.
+
+Such a run cannot be completed — the completion refuses it as `factor_set_moved` and the remedy is a
+fresh begin carrying the corrected set — and hiding that is not this read's job. What it owes is an
+honest account of *what was staged*.
+
+**`Cache-Control: no-store` on both answers, the populated one and the null one.** Cacheability
+belongs to the route rather than to what the route happened to find: a header written only when there
+was something to describe would serve a cacheable 200 to every account with nothing staged, and a null
+body carrying no key material today is one member away from the day it does. This is the **second**
+route in the product that returns key material — `GET /api/me/account-keys` is the first — so the
+value has one owner, `Api.Infrastructure.ResponseCaching`, while the decision stays on each route.
+
+**The inventory is recomputed rather than remembered, which is why this read owes the scope refusal
+too.** Nothing stores the counts a begin published, and storing them would be worse than not: a row
+created since the begin is sealed under the generation the run is replacing, so a chunk has to visit
+it and the completeness gate counts it. Recomputing means five of the six sets are read through the
+`BudgetIsolation` filter and scoped to the *ambient* budget, so the same refusal
+[the gate makes](#the-gate-refuses-rather-than-rotating-half-an-account) applies here — set equality
+in both directions, never `Count > 1`. It is made **after** the two cheap answers rather than before
+them, unlike the begin's: an account with nothing staged has no denominator to be wrong about, so
+asking earlier would buy a 500 for a read whose honest answer is "nothing in flight".
+
+**No re-authentication and no locked-session opt-out.** The answer is ciphertext under factor public
+keys and a manifest sealed under the account's content key, so a caller holding a session and no
+authenticator learns here what `GET /api/me/account-keys` already tells it under the same fallback
+policy: how many factors the account holds. A session opened by the federated credential derives no
+key-encryption key at all and is refused, like every route that declares no
+`AllowsLockedSessionAttribute`.
+
 ### Clearing too little is silent data loss
 
 A second browser tab holding the **old** content key can rename a payee this rotation already
@@ -731,6 +809,13 @@ nothing, so the staging row survives its own run and what distinguishes the two 
 completion is refused on exactly that comparison. **`POST /api/me/key-rotation/completion` walks that
 edge**, so every edge in the diagram is now reachable from a browser; an account reaches `Completed`
 by that route and leaves it only by beginning another run.
+
+**The interrupted self-loop is the one edge no request walks, and `GET /api/me/key-rotation` is what
+makes it survivable.** An interruption moves nothing in the database — that is the whole of what the
+self-loop says — so what has to be recovered is the client's side of it, and the read is where the
+staged manifest, the epoch and one seal per sealed factor come back. It answers `rotation: null` on
+`None` and on `Completed` alike, which is the same epoch comparison the completion makes and not a
+statement about whether a row is there.
 
 ## Edge Cases & Known Gotchas
 

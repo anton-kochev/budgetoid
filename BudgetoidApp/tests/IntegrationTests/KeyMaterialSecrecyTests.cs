@@ -1575,6 +1575,39 @@ public sealed class KeyMaterialSecrecyTests
             + "of every account, opens none of them. The two halves inside the plaintext are a contract "
             + "with the client that nothing on this side can check: a reversed pair is the right width, "
             + "the right version, stores and reads back"),
+        new("KeyRotationEndpoints.StagedRotationResponse", "StagedManifest",
+            "a response member: base64url over the account's NEXT generation of its authenticated list "
+            + "of every recovery factor's PUBLIC key, held in key_rotations.staged_manifest until a "
+            + "completion promotes it. THE ARGUMENT IS AccountKeysResponse.Manifest'S AND RUNS THE SAME "
+            + "WAY ROUND, written out here rather than pointed at because an entry that says \"see "
+            + "above\" stops being a per-member argument: this is not key material and not ciphertext "
+            + "the server could be said to hold the key for, because a public half is the thing a value "
+            + "is ENCAPSULATED TO and reading one opens nothing. WHAT IS PARTICULAR TO THIS COPY is that "
+            + "it leaves the server as part of a RESUMPTION rather than as part of an ordinary read: a "
+            + "client that lost the content key to a reload is handed these bytes back so it can learn "
+            + "which factors the run it abandoned was staged against. It is sealed under the account's "
+            + "content key, so this server enforces framing, width and epoch and never contents — a "
+            + "manifest naming nobody stores, promotes and is handed back here unchanged. What it "
+            + "discloses is what its live sibling discloses and is why DataInventory classifies the "
+            + "column EXCLUDED rather than harmless: how many recovery factors the account is about to "
+            + "hold, and which public keys they are"),
+        new("KeyRotationEndpoints.StagedSealResponse", "EncapsulatedAccountKeys",
+            "a response member: base64url over a 158-byte encapsulation of BOTH of the NEXT generation's "
+            + "account keys as one plaintext, content key first, ENCAPSULATED TO one factor's PUBLIC "
+            + "half — the same suite and the same width as SealRequest.EncapsulatedAccountKeys, which is "
+            + "the member that PUT it on file, coming back out. IT IS KEY MATERIAL AND THAT IS THIS "
+            + "ROUTE RATHER THAN A LEAK, and the licence is stronger here than on any sibling: these "
+            + "staged seals are THE ONLY COPIES of the generation an interrupted run was rewriting the "
+            + "account under, because wrapped_account_keys still holds the superseded pair until the "
+            + "promotion — so a server that refused to hand them back would make every interruption "
+            + "permanent data loss rather than a recoverable state. Opening one needs the private half "
+            + "of that factor's pair, which crosses this wire only WRAPPED UNDER a key-encryption key a "
+            + "browser derives from a recovery factor — an authenticator's prf output, or a recovery "
+            + "code — that never reaches this server, so the operator holding every one of these, for "
+            + "every factor of every account, opens none of them. The order of the two halves inside the "
+            + "plaintext is a client contract nothing on this side can check, and this member hands back "
+            + "exactly the bytes it was given: a reversed pair is the right width, the right version, "
+            + "stores, reads back and is served here unchanged"),
         new("Optional`1", "Value",
             "the payload of the wrapper a partial update uses; whatever the member holding it carries, "
             + "argued at that member"),

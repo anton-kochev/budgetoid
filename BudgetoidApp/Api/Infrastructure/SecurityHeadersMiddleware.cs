@@ -94,11 +94,13 @@ namespace Api.Infrastructure;
 /// <c>Cross-Origin-Resource-Policy</c>: <c>same-origin</c> breaks the frontend, which is a different origin
 /// from this API, and <c>same-site</c> is an amendment to the CORS story's argument rather than to this one.
 /// <c>Permissions-Policy</c>: a document header governing a browsing context this host never creates — it
-/// serves JSON to a client served from elsewhere. A global <c>Cache-Control: no-store</c>: no endpoint in
-/// this application states its cacheability — <c>Cache-Control</c>, <c>[ResponseCache]</c> and output
-/// caching appear nowhere under <c>Api</c>, this sentence aside — so the question is open, not delegated,
-/// and a blanket value here would settle it in the one place that knows least about what was returned.
-/// Adding the header is a decision of its own and this class does not make it.
+/// serves JSON to a client served from elsewhere. A global <c>Cache-Control: no-store</c>: the two routes
+/// that return key material state their own cacheability and no other endpoint states any —
+/// <c>[ResponseCache]</c> and output caching appear nowhere under <c>Api</c> at all, and
+/// <c>Cache-Control</c> is written on those two routes and nowhere else, through
+/// <see cref="ResponseCaching.NoStore" />. So the question is open for every other response rather than
+/// delegated, and a blanket value here would settle it in the one place that knows least about what was
+/// returned. Adding the header is a decision of its own and this class does not make it.
 /// </para>
 /// </remarks>
 public sealed class SecurityHeadersMiddleware(RequestDelegate next)

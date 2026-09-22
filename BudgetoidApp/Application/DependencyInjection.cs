@@ -19,6 +19,7 @@ using Application.CategoryGroups.UpdateCategoryGroup;
 using Application.Currencies.GetCurrencies;
 using Application.KeyRotations.BeginKeyRotation;
 using Application.KeyRotations.CompleteKeyRotation;
+using Application.KeyRotations.GetKeyRotationState;
 using Application.KeyRotations.ResealRows;
 using Application.Passkeys.BeginAssertion;
 using Application.Passkeys.BeginRegistration;
@@ -102,6 +103,7 @@ public static class DependencyInjection
         services.AddScoped<BeginKeyRotationHandler>();
         services.AddScoped<ResealRowsHandler>();
         services.AddScoped<CompleteKeyRotationHandler>();
+        services.AddScoped<GetKeyRotationStateHandler>();
         services.AddScoped<BeginAccountRegistrationHandler>();
         services.AddScoped<RegisterAccountHandler>();
 

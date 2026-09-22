@@ -1188,10 +1188,14 @@ live is the authentication pipeline's answer, applied before any handler is reac
 restraint written in a comment; it is now structural, because there is no session in reach to check.
 `AccountKeysEndpointTests` pins that the pipeline still refuses a revoked session here.
 
-**`Cache-Control: no-store` is stated on this route and nowhere else.** `SecurityHeadersMiddleware`
-declines to own a global value and says why — no endpoint in the application states its cacheability,
-so the question is open rather than delegated. This is the one endpoint that returns key material, so
-it is the one that answers for itself. It is a direct header write rather than a second
+**`Cache-Control: no-store` is stated on this route and on one other.**
+`SecurityHeadersMiddleware` declines to own a global value and says why — a blanket value would
+settle cacheability in the one place that knows least about what was returned — so each route that
+returns key material answers for itself. There are two: this one, and `GET /api/me/key-rotation`,
+which hands back the staged seals of an interrupted rotation ([key-rotation.md](key-rotation.md)).
+The **value** has a single owner, `Api.Infrastructure.ResponseCaching`, because two private copies of
+a security header is the shape that drifts; the **decision** stays on each route, so nothing inherits
+the header by being written in the same file. It is a direct header write rather than a second
 `Response.OnStarting` callback: Kestrel runs those LIFO and abandons the whole stack on the first
 throw, so a second one would both overwrite this header and put the four security headers behind its
 own failure.
