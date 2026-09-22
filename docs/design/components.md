@@ -2000,8 +2000,15 @@ makes in `ngOnInit`, and it is what decides which control there is to draw. **Fi
 unlocks the account in this tab, as the section above specifies**, and no copy anywhere advertises
 it.
 
-**Three departures, each named as work rather than smoothed over by moving the target.**
+**Four departures, each named as work rather than smoothed over by moving the target.**
 
+- **The ceremony says nothing either, and this is the gap a person actually feels.** Between the
+  press and the first phase word the region is empty for the whole of the passkey check — observed
+  in a browser, where that is several seconds of a screen that looks inert with only a busy control
+  moving. The Account keys section one above carries *Waiting for your passkey.* for exactly this
+  moment and argues that it is a moment a person can act on: the thing to do is touch a sensor or
+  pick a key up off the desk, and no other line in that table tells them so. The phase table here
+  has three rows and the ceremony is none of them, so the sentence is owed.
 - **A finished run says nothing.** The phase table has three rows, and `finished` is not one of them
   — while the paragraph about a re-sent completion says "the section reports a rotation that is
   done". Nothing is invented in the template: the region is empty at `idle` and at `finished` alike.
