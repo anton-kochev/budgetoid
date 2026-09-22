@@ -97,7 +97,7 @@ import {
 } from './blind-index';
 import { mintFactorId } from './factor-id';
 import { mintFactorKeypair, openFactorKeypair } from './factor-keypair';
-import { sealFactorManifest } from './factor-manifest';
+import { openFactorManifest, sealFactorManifest } from './factor-manifest';
 import {
   KeyRotationService,
   type KeyRotationFailure,
@@ -987,6 +987,12 @@ async function adoptedGeneration(factor: MintedFactor): Promise<{
 interface StoredCell {
   readonly rowId: string;
   readonly wire: string;
+  /**
+   * The run that last rewrote this cell's row, or `null` for a row no chunk has
+   * reached. It travels with the cell so that a case can ask which generation
+   * the wire beside it is sealed under without a second walk over the arms.
+   */
+  readonly rotationId: string | null;
 }
 
 // Every stored cell of one narrative pair, read off the fake rather than off
@@ -998,36 +1004,64 @@ function cellsFor(field: NarrativeField): StoredCell[] {
 
   switch (pair) {
     case 'accounts.name':
-      return server.accounts.map((row) => ({ rowId: row.id, wire: row.name }));
+      return server.accounts.map((row) => ({
+        rowId: row.id,
+        wire: row.name,
+        rotationId: row.rotationId,
+      }));
     case 'payees.name':
-      return server.payees.map((row) => ({ rowId: row.id, wire: row.name }));
+      return server.payees.map((row) => ({
+        rowId: row.id,
+        wire: row.name,
+        rotationId: row.rotationId,
+      }));
     case 'category_groups.name':
       return server.categoryGroups.map((row) => ({
         rowId: row.id,
         wire: row.name,
+        rotationId: row.rotationId,
       }));
     case 'category_groups.description':
       return server.categoryGroups.flatMap((row) =>
         row.description === null
           ? []
-          : [{ rowId: row.id, wire: row.description }],
+          : [
+              {
+                rowId: row.id,
+                wire: row.description,
+                rotationId: row.rotationId,
+              },
+            ],
       );
     case 'categories.name':
       return server.categories.map((row) => ({
         rowId: row.id,
         wire: row.name,
+        rotationId: row.rotationId,
       }));
     case 'categories.description':
       return server.categories.flatMap((row) =>
         row.description === null
           ? []
-          : [{ rowId: row.id, wire: row.description }],
+          : [
+              {
+                rowId: row.id,
+                wire: row.description,
+                rotationId: row.rotationId,
+              },
+            ],
       );
     case 'transactions.description':
       return server.transactions.flatMap((row) =>
         row.description === null
           ? []
-          : [{ rowId: row.id, wire: row.description }],
+          : [
+              {
+                rowId: row.id,
+                wire: row.description,
+                rotationId: row.rotationId,
+              },
+            ],
       );
     case 'budgets.name':
       // The one narrative pair with no arm: the chunk route has five and a
@@ -1046,22 +1080,85 @@ function indexCellsFor(field: BlindIndexedField): StoredCell[] {
       return server.accounts.map((row) => ({
         rowId: row.id,
         wire: row.nameKey,
+        rotationId: row.rotationId,
       }));
     case 'payees.name':
-      return server.payees.map((row) => ({ rowId: row.id, wire: row.nameKey }));
+      return server.payees.map((row) => ({
+        rowId: row.id,
+        wire: row.nameKey,
+        rotationId: row.rotationId,
+      }));
     case 'categories.name':
       return server.categories.map((row) => ({
         rowId: row.id,
         wire: row.nameKey,
+        rotationId: row.rotationId,
       }));
     case 'category_groups.name':
       return server.categoryGroups.map((row) => ({
         rowId: row.id,
         wire: row.nameKey,
+        rotationId: row.rotationId,
       }));
     default:
       throw new Error(`this fixture covers no blind index for ${pair}`);
   }
+}
+
+// Every narrative cell one run has already re-sealed, carrying the field it
+// belongs to and the wire it holds **right now**.
+//
+// **The wire is captured rather than looked up afterwards, and that is the
+// whole point of this helper.** Those bytes are the only copy of those rows'
+// plaintext under the generation the interrupted run staged; whether they still
+// open once a repair has finished is exactly the claim *the records already
+// re-encrypted stay that way* makes, and it cannot be judged from a value read
+// after the repair has overwritten it.
+function cellsStampedBy(
+  rotationId: string,
+): readonly { readonly field: NarrativeField; readonly cell: StoredCell }[] {
+  return NARRATIVE_FIELDS.flatMap((field) =>
+    cellsFor(field)
+      .filter((cell) => cell.rotationId === rotationId)
+      .map((cell) => ({ field, cell })),
+  );
+}
+
+// One staged seal, or a harness fault: every case that reads one has just
+// arranged for the run to have staged it.
+function sealFor(
+  seals: readonly RotationSealBody[],
+  factorId: string,
+): RotationSealBody {
+  const seal = seals.find((candidate) => candidate.factorId === factorId);
+
+  if (seal === undefined) {
+    throw new Error(`the staged run holds no seal for ${factorId}`);
+  }
+
+  return seal;
+}
+
+// A factor revoked while a run was in flight, and what the account holds after.
+//
+// **The live manifest moves with the factor set**, exactly as the path that
+// revokes a passkey moves it — that path promotes the manifest in the unit of
+// work it already had. A case that deleted the entry alone would meet the
+// material module's *served set is not the declared set* refusal instead of the
+// moved-set state it meant to arrange.
+async function revoke(revoked: MintedFactor): Promise<readonly MintedFactor[]> {
+  const surviving = fixture.factors.filter((factor) => factor !== revoked);
+
+  server.entries.delete(revoked.factorId);
+  server.manifest = await manifestOver(fixture.contentKey, surviving, EPOCH);
+
+  return surviving;
+}
+
+function factorIdsOf(
+  factors: readonly { readonly factorId: string }[],
+): string[] {
+  return factors.map((factor) => factor.factorId).sort();
 }
 
 function textOf(field: NarrativeField, rowId: string): string {
@@ -1838,12 +1935,7 @@ describe('a run picked up after a reload', () => {
     // revokes a passkey moves it, or the refusal under test is not the one that
     // fires.
     await interruptedRun(1, MAX_CHUNK_BYTES);
-
-    const revoked = fixture.factors[FACTOR_COUNT - 1];
-    const surviving = fixture.factors.filter((factor) => factor !== revoked);
-
-    server.entries.delete(revoked.factorId);
-    server.manifest = await manifestOver(fixture.contentKey, surviving, EPOCH);
+    await revoke(fixture.factors[FACTOR_COUNT - 1]);
 
     const resumed = freshDriver();
 
@@ -1853,7 +1945,10 @@ describe('a run picked up after a reload', () => {
     // Assert
     expect(resumed.failure()).toBe(word('factors-moved'));
     // Before the run and not at the end of it: a whole account has not been
-    // re-sealed for a completion the server was always going to refuse.
+    // re-sealed for a completion the server was always going to refuse. And a
+    // resume never begins: the repair belongs to the other press, which is what
+    // the word's own copy sends somebody to.
+    expect(server.beginBodies).toHaveLength(0);
     expect(server.chunkBodies).toHaveLength(0);
     expect(server.completionBodies).toHaveLength(0);
     expect(server.rotationEpoch).toBe(EPOCH);
@@ -1943,5 +2038,167 @@ describe('a run picked up after a reload', () => {
     expect(resumed.progress().records).toBe(NARRATIVE_ROWS);
     expect(resumed.progress().resealed).toBe(NARRATIVE_ROWS);
     expect(rowsCarriedBy(server.chunkBodies)).toBe(NARRATIVE_ROWS);
+  });
+});
+
+// The repair a `factors-moved` refusal points at: press **Rotate keys** over a
+// run that is staged for a factor set the account no longer has.
+//
+// **What makes it a repair rather than a second rotation is the generation.**
+// The staged seals are the only copy of the generation every row the
+// interrupted run already re-sealed is sealed under, and a begin overwrites
+// them in place — so a begin here has to recover that generation out of a
+// surviving factor's staged seal and carry it to the **live** set, never mint
+// one. That is the whole of *the records already re-encrypted stay that way*.
+describe('a run begun again after the factor set moved', () => {
+  it('finishes, and the rows the interrupted run re-sealed are not stranded', async () => {
+    // Arrange — a run that re-sealed part of the account and stopped, then a
+    // factor revoked while it was stopped.
+    await interruptedRun(3, 400);
+
+    const staged = stagedRun();
+    const done = rowsAlreadyDone();
+
+    // Neither half may be empty, or this is not the state the repair is about:
+    // some rows carry the staged generation and the rest carry the one still in
+    // force.
+    expect(done).toBeGreaterThan(0);
+    expect(done).toBeLessThan(NARRATIVE_ROWS);
+
+    const alreadyResealed = cellsStampedBy(staged.rotationId);
+
+    expect(alreadyResealed.length).toBeGreaterThan(0);
+
+    await revoke(fixture.factors[FACTOR_COUNT - 1]);
+
+    const repaired = freshDriver();
+
+    // Act
+    await repaired.begin(ceremonyUnder(firstFactor()));
+
+    // Assert
+    expect(repaired.failure()).toBeNull();
+    expect(repaired.phase()).toBe('finished');
+    expect(server.rotationEpoch).toBe(EPOCH + 1);
+    // One begin, and it re-stages the run that was already on file rather than
+    // drawing a second identifier: the rows the interrupted run stamped are
+    // rows this run really has done.
+    expect(server.beginBodies).toHaveLength(1);
+    expect(server.beginBodies[0].rotationId).toBe(staged.rotationId);
+
+    const { contentKey } = await adoptedGeneration(firstFactor());
+
+    // **The assertion this whole case exists for.** The ciphertext those rows
+    // held at the moment of the repair — the only copy of their plaintext under
+    // the interrupted run's generation — still opens under the generation the
+    // account was promoted to. A repair that minted a fresh generation would
+    // leave every one of these opening under nothing at all, silently: the
+    // staged seals it overwrote were that generation's only copy.
+    for (const { field, cell } of alreadyResealed) {
+      await expect(
+        openNarrativeField(contentKey, cell.wire, {
+          ...field,
+          rowId: cell.rowId,
+        }),
+        `${field.table}.${field.column} as the repair found it`,
+      ).resolves.toBe(textOf(field, cell.rowId));
+    }
+
+    // And the whole account as it stands now, including the rows the
+    // interrupted run never reached.
+    let opened = 0;
+
+    for (const field of NARRATIVE_FIELDS) {
+      const cells = cellsFor(field);
+      const pair = `${field.table}.${field.column}`;
+
+      if (field.table === 'budgets') {
+        expect(cells, pair).toHaveLength(0);
+        continue;
+      }
+
+      expect(cells.length, pair).toBeGreaterThan(0);
+
+      for (const cell of cells) {
+        const binding = { ...field, rowId: cell.rowId };
+
+        await expect(
+          openNarrativeField(contentKey, cell.wire, binding),
+          pair,
+        ).resolves.toBe(textOf(field, cell.rowId));
+        // And none of them under the generation that was in force before any of
+        // this started.
+        await expect(
+          openNarrativeField(fixture.contentKey, cell.wire, binding),
+          pair,
+        ).rejects.toThrow();
+        opened += 1;
+      }
+    }
+
+    expect(opened).toBe(12);
+  });
+
+  it('posts a seal set that is exactly the live factor set, in both directions', async () => {
+    // Arrange
+    await interruptedRun(1, MAX_CHUNK_BYTES);
+
+    const surviving = await revoke(fixture.factors[FACTOR_COUNT - 1]);
+    const repaired = freshDriver();
+
+    // Act
+    await repaired.begin(ceremonyUnder(firstFactor()));
+
+    // Assert
+    expect(repaired.failure()).toBeNull();
+    expect(server.beginBodies).toHaveLength(1);
+    // Sorted on both sides, so this is set equality rather than a count: a seal
+    // still naming the revoked factor and a live factor with no seal are two
+    // different failures, and neither passes.
+    expect(factorIdsOf(server.beginBodies[0].seals)).toEqual(
+      factorIdsOf(surviving),
+    );
+  });
+
+  it('stages a manifest that opens under the recovered generation and names the live set', async () => {
+    // Arrange
+    await interruptedRun(1, MAX_CHUNK_BYTES);
+
+    // The interrupted run's own seal for a factor that survives, captured
+    // before the repair overwrites it. Opening it is how this case learns which
+    // generation is being carried forward without asking the driver, which has
+    // no accessor to ask through and would be the thing under test anyway.
+    const carried = sealFor(stagedRun().seals, firstFactor().factorId);
+    const surviving = await revoke(fixture.factors[FACTOR_COUNT - 1]);
+    const repaired = freshDriver();
+
+    // Act
+    await repaired.begin(ceremonyUnder(firstFactor()));
+
+    // Assert
+    expect(repaired.failure()).toBeNull();
+    expect(server.beginBodies).toHaveLength(1);
+
+    const recovered = await openFactorKeypair(
+      firstFactor().keyEncryptionKey,
+      firstFactor().factorId,
+      {
+        wrappedPrivateKey: server.factorEntry(firstFactor().factorId)
+          .wrappedPrivateKey,
+        encapsulatedAccountKeys: carried.encapsulatedAccountKeys,
+      },
+    );
+    const body = server.beginBodies[0];
+    const named = await openFactorManifest(
+      await importAesGcmKey(recovered.contentKey),
+      body.manifest,
+      body.rotationEpoch,
+    );
+
+    // It opened at all, under that generation and at that epoch, which is what
+    // makes the manifest and the seals one run rather than two values of the
+    // right shape; and the set it names is the one the account holds now.
+    expect(factorIdsOf(named)).toEqual(factorIdsOf(surviving));
+    expect(body.rotationEpoch).toBe(EPOCH + 1);
   });
 });

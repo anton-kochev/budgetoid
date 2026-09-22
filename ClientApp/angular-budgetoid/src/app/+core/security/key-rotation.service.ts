@@ -80,7 +80,8 @@ import { SessionService } from '@app-core/session/session.service';
 import { firstValueFrom } from 'rxjs';
 import { computeBlindIndex, type BlindIndexedField } from './blind-index';
 import {
-  assembleKeyRotationMaterial,
+  assembleKeyRotationBegin,
+  assembleKeyRotationResume,
   KeyRotationMaterialError,
   type AccountKeyGeneration,
 } from './key-rotation-material';
@@ -467,10 +468,11 @@ export class KeyRotationService {
    * rendered at rest before anybody pressed anything, would be false. What the
    * failed read costs is one wrongly-drawn control, and that costs little:
    * {@link begin} makes this very read again and carries a staged generation
-   * forward rather than minting one, so a press of **Rotate keys** over a run
+   * forward rather than drawing one, so a press of **Rotate keys** over a run
    * that is really there picks that run up — under its own identifier, and
-   * without touching the staged seals' generation — as long as the account's
-   * factor set held still. A 401 is not swallowed by this —
+   * without touching the staged seals' generation — whether or not the
+   * account's factor set held still, because a begin re-stages to the set it
+   * finds. A 401 is not swallowed by this —
    * `sessionExpiryInterceptor` owns that answer for every request in the
    * product and acts on it whatever this method does with the rejection.
    */
@@ -550,18 +552,16 @@ export class KeyRotationService {
         // that control meets the same refusal for ever: the staged seals name a
         // set the account no longer has, and no read changes that.
         //
-        // **What the control it draws instead cannot do yet.** `begin()` does
-        // carry the recovered generation forward rather than minting one — that
-        // is what would make the word's *the records already re-encrypted stay
-        // that way* true — but it **restates** the staged manifest and the
-        // staged seals byte for byte, which is `key-rotation-material.ts`'
-        // stated rule for its recovering arm. So a begin made here posts a seal
-        // set naming the old factors, the begin's own factor-set gate refuses
-        // it, and the word is `unrecognised` (measured). Closing that is a
-        // change to the recovering arm — re-encapsulate the recovered
-        // generation to the live set and re-seal the manifest over it — and
-        // belongs in the commit that makes the repair reachable, not in a third
-        // entry point here.
+        // **What the control it draws instead does.** A press of **Rotate
+        // keys** over this state reaches {@link begin}, which finds the run
+        // still on file, recovers its generation out of a surviving factor's
+        // staged seal and re-stages *that* generation to the factor set the
+        // account holds now — under the same `rotationId`, so every row the
+        // interrupted run stamped is still a row this run has done. That is
+        // what makes the word's *the records already re-encrypted stay that
+        // way* true. It is not a third entry point: the repair **is** a begin,
+        // and the only thing it does differently from any other begin is that
+        // it cannot draw a generation while one is staged.
         this.#staged.set(null);
       }
 
@@ -581,7 +581,7 @@ export class KeyRotationService {
     const budgetId = this.#budget();
     const custody = await firstValueFrom(this.#keys.getAccountKeys());
     const state = await firstValueFrom(this.#rotations.getRotationState());
-    const material = await assembleKeyRotationMaterial(
+    const material = await assembleKeyRotationBegin(
       ceremony.keyEncryptionKey,
       custody,
       state,
@@ -591,7 +591,7 @@ export class KeyRotationService {
     this.#next = material.next;
 
     // **A run already in flight keeps its identifier.** The material module has
-    // just carried that run's generation forward rather than minting a fresh one
+    // just carried that run's generation forward rather than drawing a fresh one
     // — a second begin overwrites the staged seals in place, and every row the
     // interrupted run already rewrote would then open under nothing at all — so
     // the rows it stamped are rows this run really has done. Minting a second
@@ -650,10 +650,15 @@ export class KeyRotationService {
 
     requireTheFactorSetHeldStill(staged.seals, custody.factors);
 
-    const material = await assembleKeyRotationMaterial(
+    // **The staged run itself, which is the entry point that cannot re-stage
+    // anything.** A resume finishes the run on file, so what it needs is that
+    // run's manifest and seals restated byte for byte; the begin's entry point
+    // over the same value would re-encapsulate to the live set and file a new
+    // manifest, which is the repair and not this press.
+    const material = await assembleKeyRotationResume(
       ceremony.keyEncryptionKey,
       custody,
-      state,
+      staged,
     );
 
     this.#current = material.current;

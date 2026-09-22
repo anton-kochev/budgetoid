@@ -49,7 +49,8 @@ import {
   type FactorPublicKey,
 } from './factor-manifest';
 import {
-  assembleKeyRotationMaterial,
+  assembleKeyRotationBegin,
+  assembleKeyRotationResume,
   KeyRotationMaterialError,
   type KeyRotationMaterial,
 } from './key-rotation-material';
@@ -218,6 +219,53 @@ function factorIdsOf(
   return entries.map((entry) => entry.factorId).sort();
 }
 
+// A coherent staged run, built the way a previous begin would have left one:
+// the material this module assembles for a fresh rotation *is* what that begin
+// posted.
+async function stagedFromAMint(): Promise<{
+  readonly begun: KeyRotationMaterial;
+  readonly staged: StagedRotationDto;
+}> {
+  const begun = await assembleKeyRotationBegin(
+    account.keyEncryptionKey,
+    account.custody,
+    NO_ROTATION,
+  );
+
+  return {
+    begun,
+    staged: stagedRun(begun.manifest, begun.rotationEpoch, begun.seals),
+  };
+}
+
+// The account after one of its factors was revoked while a run was in flight.
+//
+// **The manifest moves with the set and the stored epoch moves with the
+// manifest**, because the path that revokes a passkey *promotes* the manifest
+// in the unit of work it already had. A fixture that dropped the entry alone
+// would meet the *served set is not the declared set* refusal instead of the
+// moved-set state it meant to arrange — and one that left the epoch where it
+// was could not tell a derived epoch from a restated one.
+async function afterRevoking(revoked: MintedFactor): Promise<{
+  readonly surviving: readonly MintedFactor[];
+  readonly custody: AccountKeyCustodyDto;
+}> {
+  const surviving = account.factors.filter((factor) => factor !== revoked);
+
+  return {
+    surviving,
+    custody: {
+      manifest: await sealFactorManifest(
+        account.contentKey,
+        declaredSetOf(surviving),
+        EPOCH + 1,
+      ),
+      rotationEpoch: EPOCH + 1,
+      factors: surviving.map((factor) => factor.entry),
+    },
+  };
+}
+
 beforeAll(async () => {
   account = await buildAccount();
 }, 30000);
@@ -226,7 +274,7 @@ describe('assembling a key rotation', () => {
   describe('the generation still in force', () => {
     it("hands back the content key the account's manifest is sealed under", async () => {
       // Arrange, Act
-      const material = await assembleKeyRotationMaterial(
+      const material = await assembleKeyRotationBegin(
         account.keyEncryptionKey,
         account.custody,
         NO_ROTATION,
@@ -248,7 +296,7 @@ describe('assembling a key rotation', () => {
 
     it('sends each of the two keys through its own door', async () => {
       // Arrange, Act
-      const material = await assembleKeyRotationMaterial(
+      const material = await assembleKeyRotationBegin(
         account.keyEncryptionKey,
         account.custody,
         NO_ROTATION,
@@ -268,7 +316,7 @@ describe('assembling a key rotation', () => {
   describe('the generation a run carries to every factor', () => {
     it('is minted, and filed one epoch on, when nothing is staged', async () => {
       // Arrange, Act
-      const material = await assembleKeyRotationMaterial(
+      const material = await assembleKeyRotationBegin(
         account.keyEncryptionKey,
         account.custody,
         NO_ROTATION,
@@ -298,7 +346,7 @@ describe('assembling a key rotation', () => {
 
     it('is encapsulated to every factor the manifest names, and to no other', async () => {
       // Arrange, Act
-      const material = await assembleKeyRotationMaterial(
+      const material = await assembleKeyRotationBegin(
         account.keyEncryptionKey,
         account.custody,
         NO_ROTATION,
@@ -313,7 +361,7 @@ describe('assembling a key rotation', () => {
 
     it('is what each factor really opens, paired with the private half already stored', async () => {
       // Arrange
-      const material = await assembleKeyRotationMaterial(
+      const material = await assembleKeyRotationBegin(
         account.keyEncryptionKey,
         account.custody,
         NO_ROTATION,
@@ -352,40 +400,21 @@ describe('assembling a key rotation', () => {
     });
   });
 
-  describe('a run already in flight', () => {
-    // A coherent staged run, built the way a previous begin would have left
-    // one: the material this module assembles for a mint *is* what that begin
-    // posted.
-    async function stagedFromAMint(): Promise<{
-      readonly begun: KeyRotationMaterial;
-      readonly staged: StagedRotationDto;
-    }> {
-      const begun = await assembleKeyRotationMaterial(
-        account.keyEncryptionKey,
-        account.custody,
-        NO_ROTATION,
-      );
-
-      return {
-        begun,
-        staged: stagedRun(begun.manifest, begun.rotationEpoch, begun.seals),
-      };
-    }
-
-    it("carries the staged run's generation forward rather than minting one", async () => {
+  describe('a resume over a run already in flight', () => {
+    it("carries the staged run's generation forward rather than drawing one", async () => {
       // Arrange
       const { begun, staged } = await stagedFromAMint();
 
       // Act
-      const resumed = await assembleKeyRotationMaterial(
+      const resumed = await assembleKeyRotationResume(
         account.keyEncryptionKey,
         account.custody,
-        { rotation: staged },
+        staged,
       );
 
       // Assert
       // The staged seals are the only copy of the generation every row this run
-      // already rewrote is sealed under. A freshly minted generation here would
+      // already rewrote is sealed under. A freshly drawn generation here would
       // leave each of those rows opening under nothing at all, silently, with
       // no error and no repair path — so the recovered content key has to be
       // the one the staged manifest was sealed under.
@@ -404,10 +433,10 @@ describe('assembling a key rotation', () => {
       const { staged } = await stagedFromAMint();
 
       // Act
-      const resumed = await assembleKeyRotationMaterial(
+      const resumed = await assembleKeyRotationResume(
         account.keyEncryptionKey,
         account.custody,
-        { rotation: staged },
+        staged,
       );
 
       // Assert
@@ -419,6 +448,152 @@ describe('assembling a key rotation', () => {
     });
   });
 
+  // The repair a `factor_set_moved` points at: a begin pressed over a run that
+  // is still staged, for a factor set the account no longer has.
+  describe('a begin over a run already in flight', () => {
+    it('carries the staged generation to every factor the account holds now, and to no other', async () => {
+      // Arrange
+      const { staged } = await stagedFromAMint();
+      const { surviving, custody } = await afterRevoking(account.factors[2]);
+
+      // Act
+      const repaired = await assembleKeyRotationBegin(
+        account.keyEncryptionKey,
+        custody,
+        { rotation: staged },
+      );
+
+      // Assert
+      // Set equality in both directions: a seal still naming the revoked factor
+      // and a live factor with no seal are two different failures.
+      expect(factorIdsOf(repaired.seals)).toEqual(factorIdsOf(surviving));
+
+      for (const factor of surviving) {
+        const seal = repaired.seals.find(
+          (candidate) => candidate.factorId === factor.factorId,
+        );
+        // The staged value beside the private key already on file, and what
+        // comes out opens the manifest the *interrupted* run filed — which is
+        // the whole claim: this is that run's generation and not a new one, and
+        // every surviving factor now holds it.
+        const opened = await openFactorKeypair(
+          account.keyEncryptionKey,
+          factor.factorId,
+          {
+            wrappedPrivateKey: factor.entry.wrappedPrivateKey,
+            encapsulatedAccountKeys: seal?.encapsulatedAccountKeys ?? '',
+          },
+        );
+
+        await expect(
+          openFactorManifest(
+            await importAesGcmKey(opened.contentKey),
+            staged.stagedManifest,
+            staged.stagedRotationEpoch,
+          ),
+        ).resolves.toHaveLength(account.factors.length);
+      }
+    });
+
+    it('seals a manifest over the live set, at the epoch a begin files at', async () => {
+      // Arrange
+      // The revoke promoted the account's manifest, so the stored epoch has
+      // already moved past the one the staged run is filed at — which is what
+      // makes this case able to tell a derived epoch from a restated one.
+      const { staged } = await stagedFromAMint();
+      const { surviving, custody } = await afterRevoking(account.factors[2]);
+
+      // Act
+      const repaired = await assembleKeyRotationBegin(
+        account.keyEncryptionKey,
+        custody,
+        { rotation: staged },
+      );
+
+      // Assert
+      expect(repaired.rotationEpoch).toBe(custody.rotationEpoch + 1);
+      expect(repaired.rotationEpoch).not.toBe(staged.stagedRotationEpoch);
+      // Restating the staged manifest would post a set naming the revoked
+      // factor, which is the refusal this press exists to get out of.
+      expect(repaired.manifest).not.toBe(staged.stagedManifest);
+
+      const declared = await openFactorManifest(
+        repaired.next.contentKey,
+        repaired.manifest,
+        repaired.rotationEpoch,
+      );
+
+      expect(factorIdsOf(declared)).toEqual(factorIdsOf(surviving));
+    });
+
+    it('refuses when the presented factor holds no staged seal while another does', async () => {
+      // Arrange
+      // A factor enrolled after the run began holds nothing this call can open,
+      // and another factor still carries the generation — so the way forward
+      // really is a different authenticator.
+      const { staged } = await stagedFromAMint();
+      const opening = account.custody.factors[0].factorId;
+
+      // Act
+      const refusal = await refusalFrom(
+        assembleKeyRotationBegin(account.keyEncryptionKey, account.custody, {
+          rotation: stagedRun(
+            staged.stagedManifest,
+            staged.stagedRotationEpoch,
+            staged.seals.filter((seal) => seal.factorId !== opening),
+          ),
+        }),
+      );
+
+      // Assert
+      expect(refusal.reason).toBe('unopened');
+      expect(refusal.message).toContain(opening);
+    });
+
+    it('refuses when the staged run sealed nothing for any factor this account still holds', async () => {
+      // Arrange
+      // A run really staged by an account whose only factor is one this account
+      // does not have: every byte of it is genuine, and not one of its seals
+      // names a factor still enrolled here. The generation it re-sealed rows
+      // under is gone for good, and no factor of this account brings it back.
+      const strangerKey = await keyEncryptionKeyFrom(0x33);
+      const stranger = await mintFactor(strangerKey, account.keys);
+      const elsewhere = await assembleKeyRotationBegin(
+        strangerKey,
+        {
+          manifest: await sealFactorManifest(
+            account.contentKey,
+            declaredSetOf([stranger]),
+            EPOCH,
+          ),
+          rotationEpoch: EPOCH,
+          factors: [stranger.entry],
+        },
+        NO_ROTATION,
+      );
+
+      // Act
+      const refusal = await refusalFrom(
+        assembleKeyRotationBegin(account.keyEncryptionKey, account.custody, {
+          rotation: stagedRun(
+            elsewhere.manifest,
+            elsewhere.rotationEpoch,
+            elsewhere.seals,
+          ),
+        }),
+      );
+
+      // Assert
+      // **Not `unopened`.** That word means *another factor may well work*, and
+      // it would send somebody through a whole recovery card over a state no
+      // card touches: every factor that held this generation is gone, and the
+      // rows an earlier chunk re-sealed under it were stranded when the last of
+      // them went.
+      expect(refusal.reason).toBe('inconsistent');
+      expect(refusal.message).toContain('no factor this account still holds');
+    });
+  });
+
   describe('the refusals, each of which produces nothing at all', () => {
     it('refuses when no factor of the account opens under the key presented', async () => {
       // Arrange
@@ -426,7 +601,7 @@ describe('assembling a key rotation', () => {
 
       // Act
       const refusal = await refusalFrom(
-        assembleKeyRotationMaterial(stranger, account.custody, NO_ROTATION),
+        assembleKeyRotationBegin(stranger, account.custody, NO_ROTATION),
       );
 
       // Assert
@@ -445,7 +620,7 @@ describe('assembling a key rotation', () => {
 
       // Act
       const refusal = await refusalFrom(
-        assembleKeyRotationMaterial(
+        assembleKeyRotationBegin(
           account.keyEncryptionKey,
           custody,
           NO_ROTATION,
@@ -472,7 +647,7 @@ describe('assembling a key rotation', () => {
 
       // Act
       const refusal = await refusalFrom(
-        assembleKeyRotationMaterial(
+        assembleKeyRotationBegin(
           account.keyEncryptionKey,
           custody,
           NO_ROTATION,
@@ -497,7 +672,7 @@ describe('assembling a key rotation', () => {
 
       // Act
       const refusal = await refusalFrom(
-        assembleKeyRotationMaterial(
+        assembleKeyRotationBegin(
           account.keyEncryptionKey,
           custody,
           NO_ROTATION,
@@ -521,7 +696,7 @@ describe('assembling a key rotation', () => {
 
       // Act
       const refusal = await refusalFrom(
-        assembleKeyRotationMaterial(
+        assembleKeyRotationBegin(
           account.keyEncryptionKey,
           custody,
           NO_ROTATION,
@@ -550,7 +725,7 @@ describe('assembling a key rotation', () => {
 
       // Act
       const refusal = await refusalFrom(
-        assembleKeyRotationMaterial(
+        assembleKeyRotationBegin(
           account.keyEncryptionKey,
           custody,
           NO_ROTATION,
@@ -566,12 +741,12 @@ describe('assembling a key rotation', () => {
       expect(refusal.message).toContain(first.factorId);
     });
 
-    it('refuses when the run in flight staged nothing for the factor presented', async () => {
+    it('refuses a resume when the run in flight staged nothing for the factor presented', async () => {
       // Arrange
       // The factor whose key-encryption key this is holds no staged seal — a
       // factor enrolled after the run began. Another factor may still carry
       // the generation, so the way forward is a different authenticator.
-      const begun = await assembleKeyRotationMaterial(
+      const begun = await assembleKeyRotationBegin(
         account.keyEncryptionKey,
         account.custody,
         NO_ROTATION,
@@ -581,9 +756,11 @@ describe('assembling a key rotation', () => {
 
       // Act
       const refusal = await refusalFrom(
-        assembleKeyRotationMaterial(account.keyEncryptionKey, account.custody, {
-          rotation: stagedRun(begun.manifest, begun.rotationEpoch, seals),
-        }),
+        assembleKeyRotationResume(
+          account.keyEncryptionKey,
+          account.custody,
+          stagedRun(begun.manifest, begun.rotationEpoch, seals),
+        ),
       );
 
       // Assert
@@ -597,7 +774,7 @@ describe('assembling a key rotation', () => {
       // wire holds: the staged manifest names three factors and the staged
       // seals cover two. The factor that opens keeps its seal, so the
       // generation is recoverable and this is the first thing that can fire.
-      const begun = await assembleKeyRotationMaterial(
+      const begun = await assembleKeyRotationBegin(
         account.keyEncryptionKey,
         account.custody,
         NO_ROTATION,
@@ -606,13 +783,15 @@ describe('assembling a key rotation', () => {
 
       // Act
       const refusal = await refusalFrom(
-        assembleKeyRotationMaterial(account.keyEncryptionKey, account.custody, {
-          rotation: stagedRun(
+        assembleKeyRotationResume(
+          account.keyEncryptionKey,
+          account.custody,
+          stagedRun(
             begun.manifest,
             begun.rotationEpoch,
             begun.seals.filter((seal) => seal.factorId !== dropped),
           ),
-        }),
+        ),
       );
 
       // Assert
@@ -625,7 +804,7 @@ describe('assembling a key rotation', () => {
       // The other direction, over the same pair. A manifest naming a smaller
       // set than the seals that travelled with it promotes an account into a
       // factor set it never agreed to.
-      const begun = await assembleKeyRotationMaterial(
+      const begun = await assembleKeyRotationBegin(
         account.keyEncryptionKey,
         account.custody,
         NO_ROTATION,
@@ -638,9 +817,11 @@ describe('assembling a key rotation', () => {
 
       // Act
       const refusal = await refusalFrom(
-        assembleKeyRotationMaterial(account.keyEncryptionKey, account.custody, {
-          rotation: stagedRun(narrowed, begun.rotationEpoch, begun.seals),
-        }),
+        assembleKeyRotationResume(
+          account.keyEncryptionKey,
+          account.custody,
+          stagedRun(narrowed, begun.rotationEpoch, begun.seals),
+        ),
       );
 
       // Assert

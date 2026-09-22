@@ -69,8 +69,9 @@ four routes and mirrors every request and response record member for member; it 
 it holds no key, runs no cipher, makes no refusal of its own and reads no conflict.
 `key-rotation-material.ts` takes a key-encryption key and the two reads and answers with both
 generations of the account's keys, the factor set its own manifest declares, the epoch the next
-manifest is filed at, that manifest, and one seal per factor — minting the next generation when the
-resume read says nothing is staged and recovering the staged one when it does. It is framework-free:
+manifest is filed at, that manifest, and one seal per factor — drawing the next generation when the
+resume read says nothing is staged, and otherwise recovering the staged one: restated byte for byte
+for a resume, re-staged to the live factor set for a begin. It is framework-free:
 no injectable, no signal, no HTTP. `me-api.service.ts`
 argues, over the sibling route that replaces a card of codes, why the account's own keys are not
 something custody can be asked for today.
@@ -196,21 +197,30 @@ finished run, which is what the legitimate client was about to do. Neither is a 
 gate did not already grant, and a prompt here would fall at the one moment a person has the most to
 lose by abandoning the request.
 
-Not built: the screen — no key-rotation section renders on `/app/settings`, no control exists, and
-nothing runs the passkey ceremony either press is authorized by; and the repair a `factors-moved`
-points at. Do not state either of them in the present tense until it ships.
+**The repair a `factors-moved` points at is a begin and not a third press, and it carries the
+interrupted run's generation to the set the account holds now.** `begin()` over a run that is still
+staged recovers that run's generation out of a surviving factor's staged seal — which is what keeps
+every row an earlier chunk already re-sealed readable — then encapsulates *that* generation to every
+live factor and seals a manifest over the live set, at the epoch a begin files at, under the
+`rotationId` already on file. Restating the staged pair there would post a seal set naming the
+factors that were enrolled when the run began, which is the refusal the person pressed the control to
+get out of. **The shape that holds it is one entry point per press**, in
+`key-rotation-material.ts`: `assembleKeyRotationBegin` takes the resume read itself and decides on
+`rotation === null`, so a generation is drawn in exactly the one case that permits it, and
+`assembleKeyRotationResume` takes the staged run rather than the read, so it has no such case and no
+draw anywhere on its path. A flag over one function was the other shape and is weaker — a caller
+holding a staged run can pass the wrong value.
 
-**That second one is a gap and is written down as work rather than described as a design.** The
-remedy a moved factor set needs is a begin carrying the **corrected** set, and `begin()` does half of
-it: it carries the staged generation forward rather than minting one, which is what keeps the rows an
-interrupted run already re-sealed readable. What it does not do is re-encapsulate that generation to
-the live set or re-seal the manifest over it — `key-rotation-material.ts`' recovering arm restates the
-staged manifest and the staged seals byte for byte, and argues for that in its own words. So a begin
-made after a factor set moved posts a seal set naming the factors that were there when the run began,
-the begin's own factor-set gate refuses it as a `400`, and the client's word is `unrecognised`:
-measured by pressing `begin()` against that state in the driver's fake, which models that gate. What
-would close it is a change to that arm and to nothing else, and no third entry point: two ways to start
-a run is how a caller holding a staged run reaches the minting one.
+**Recovering needs a factor in *both* the staged seal set and the live set, and when there is none
+the client says `inconsistent`.** If every factor that run staged a seal for is gone, nothing
+anywhere holds that generation and every row an earlier chunk re-sealed under it was stranded when
+the last of them went; no press undoes that. `unopened` would mean *another factor may well work* and
+would send somebody through a whole recovery card over a state no card touches, so the word is the
+one that says out loud that nothing they hold changes the answer.
+
+Not built: the screen — no key-rotation section renders on `/app/settings`, no control exists, and
+nothing runs the passkey ceremony either press is authorized by. Do not state it in the present tense
+until it ships.
 
 **The begin can write its row, and `key_rotations` still holds no `DELETE` of any shape.**
 `app-role-grants.sql` grants `SELECT`, `INSERT` and a column-listed `UPDATE` over `rotation_id`,

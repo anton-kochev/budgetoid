@@ -38,27 +38,53 @@
 // below, and the difference from custody's copy is recorded in this paragraph
 // rather than left for somebody to find.
 //
-// **One entry point, and it takes the resume read rather than a flag.** A begin
-// that replaces a run already in flight must carry that run's generation
-// forward and must never mint a fresh one: the staged seals are the only copy
-// of the generation every row that run already rewrote is sealed under, a
-// second begin overwrites them in place, and from that moment each of those
-// rows opens under nothing at all — silently, with no error, no SQLSTATE and no
-// repair path. Nothing in the product enforces that today. What enforces it
-// here is that there is no way to say it: {@link assembleKeyRotationMaterial}
-// is handed `GET /api/me/key-rotation`'s own answer and decides on
-// `rotation === null`, so a fresh generation is minted in exactly the one case
-// the rule permits. Two entry points were the other shape and are weaker — a
-// caller holding a staged run can still call the minting one, which is the
-// mistake, spelled with one extra character. A boolean is weaker again.
+// **Two entry points, one per caller, and minting is unreachable from either
+// while a run is staged.** A begin that replaces a run already in flight must
+// carry that run's generation forward and must never draw a fresh one: the
+// staged seals are the only copy of the generation every row that run already
+// rewrote is sealed under, a second begin overwrites them in place, and from
+// that moment each of those rows opens under nothing at all — silently, with no
+// error, no SQLSTATE and no repair path. Nothing in the product enforces that
+// today. What enforces it here is that there is no way to say it.
+// {@link assembleKeyRotationBegin} is handed `GET /api/me/key-rotation`'s own
+// answer and decides on `rotation === null`, so a draw is reachable in exactly
+// the one case the rule permits; {@link assembleKeyRotationResume} is handed
+// the staged run itself rather than the read, so it has no null case to branch
+// on and no draw anywhere on its path. A boolean over one function was the
+// other shape and is weaker — a caller holding a staged run can pass the wrong
+// value, which is the mistake, spelled with one extra character.
 //
-// **A resume restates the staged manifest and the staged seals byte for byte.**
-// Re-sealing them would produce a manifest of the right shape over the right
-// set under a fresh nonce, which is a *different* value for a run the server
-// already has on file — and re-encapsulating would replace the staged seals
-// with new values of the generation they already carry, for no gain and one
-// more chance to differ. What a resume recovers is the *keys*; what it carries
-// is what was staged.
+// **The split is by caller and not by state, because the two callers want
+// different things from the same staged run.**
+//
+//   * **A resume finishes *this* run**, so it restates the staged manifest and
+//     the staged seals byte for byte. Re-sealing would produce a manifest of the
+//     right shape over the right set under a fresh nonce, which is a *different*
+//     value for a run the server already has on file; re-encapsulating would
+//     replace the staged seals with new values of the generation they already
+//     carry, for no gain and one more chance to differ. What a resume recovers
+//     is the *keys*; what it carries is what was staged.
+//   * **A begin over the same run is the repair a `factor_set_moved` points
+//     at.** It recovers that same generation and then encapsulates it to the
+//     factor set the account holds **now**, under a manifest sealed over that
+//     set at the epoch a begin files at. Restating there would post a seal set
+//     naming the factors that were enrolled when the run began, which is the
+//     refusal the person pressed the control to get out of.
+//
+// **A staged generation no live factor can recover is `inconsistent`, and that
+// word is a decision rather than a fall-through.** Recovering it needs a factor
+// present in **both** the staged seal set and the live set. If every factor that
+// run staged a seal for is gone, nothing anywhere holds that generation, and
+// every row an earlier chunk already re-sealed under it is stranded — which
+// happened when the last of those factors went, and nothing on this path can
+// undo it. `unopened` would be a lie of exactly the kind the two words exist to
+// prevent: it means *another factor may well work*, and here it would send
+// somebody through a whole recovery card over a state no card touches.
+// `inconsistent` is the word that says out loud that nothing the person holds
+// changes the answer, which is true here to the letter. A third word is refused
+// for the reason the union below gives: it would be one more shade of *nothing
+// you hold will change this*, and the driver renders both of these as one
+// sentence anyway.
 //
 // **The refusals are ordered rather than arranged**, each reading something the
 // one before it proved, and every one of them aborts with no material at all. A
@@ -86,7 +112,7 @@
 //      directions again. `key-rotation.md` says outright that nothing on either
 //      side of the wire holds this comparison and that the first client to begin
 //      a run owes it; this is that client. On a resume it judges what the
-//      previous begin really posted. On a mint it is a self-check over what is
+//      previous begin really posted. On a begin it is a self-check over what is
 //      about to be posted — the manifest is opened again rather than compared
 //      against the list it was built from, so what passes is a value that
 //      round-tripped, not a variable that was reused.
@@ -216,10 +242,10 @@ export interface AccountKeyGeneration {
  * Everything a client needs to begin a run, or to carry on with one it lost.
  *
  * {@link manifest} and {@link seals} are the two values a begin posts, already
- * agreeing with each other — freshly built on a mint, restated byte for byte on
- * a resume. {@link factors} is the account's live factor set as its **own**
- * manifest declares it, which is what a corrected begin would encapsulate to
- * after a `factor_set_moved`.
+ * agreeing with each other — freshly built on either begin, restated byte for
+ * byte on a resume. {@link factors} is the account's live factor set as its
+ * **own** manifest declares it, which is the set a begin encapsulates to,
+ * including the corrected one after a `factor_set_moved`.
  *
  * Both generations are here because a rotation needs both at once: the one in
  * force opens what is stored, and the next one is what it is all rewritten
@@ -250,6 +276,19 @@ interface OpenedFactor {
   readonly keys: AccountKeys;
 }
 
+// What the account really is, before either entry point stages anything: the
+// row that opened, the generation in force, and the set the manifest declares.
+//
+// **The entry travels rather than the opened keys**, because those are spent by
+// the time this exists — `holdGeneration` wipes what it is handed. What is still
+// needed of the row downstream is its `factorId`, to find the staged seal, and
+// its live `wrappedPrivateKey`, to open that seal against.
+interface LiveAccount {
+  readonly entry: AccountKeyEntry;
+  readonly current: AccountKeyGeneration;
+  readonly factors: readonly FactorPublicKey[];
+}
+
 // The next generation and the three values that travel with it, whichever of
 // the two paths produced them. One shape, so the fourth refusal is one function
 // called once rather than a comparison written on each path.
@@ -261,13 +300,20 @@ interface StagedGeneration {
 }
 
 /**
- * Assembles the material a rotation runs on, or refuses.
+ * Assembles the material a **begin** runs on, or refuses.
  *
  * `keyEncryptionKey` is what a factor ceremony just yielded. `custody` is
  * `GET /api/me/account-keys`' answer and `state` is `GET /api/me/key-rotation`'s;
- * **the second is what decides whether a generation is minted or recovered**,
+ * **the second is what decides whether a generation is drawn or recovered**,
  * which is why it is the read itself rather than anything a caller computes from
  * it. See the head of this file for what that shape is worth.
+ *
+ * **Over a run already in flight this is the repair**, not a second rotation: it
+ * recovers the staged generation and encapsulates *that* to the factor set the
+ * account holds now, under a manifest sealed over that set. A begin pressed
+ * after a `factor_set_moved` is the whole reason it exists, and carrying the
+ * generation forward is what makes the design chapter's *the records already
+ * re-encrypted stay that way* true.
  *
  * The key-encryption key is a parameter and is not retained, copied or named
  * anywhere but this call's own frame. Nothing of the account's material outlives
@@ -276,11 +322,86 @@ interface StagedGeneration {
  * Rejects with {@link KeyRotationMaterialError} on every refusal this module
  * makes, and with whatever the platform threw on anything else.
  */
-export async function assembleKeyRotationMaterial(
+export async function assembleKeyRotationBegin(
   keyEncryptionKey: CryptoKey,
   custody: AccountKeyCustodyDto,
   state: KeyRotationStateDto,
 ): Promise<KeyRotationMaterial> {
+  const live = await liveAccountOf(keyEncryptionKey, custody);
+  // **The epoch comes off the live read and never off the staged run.** A
+  // manifest promoted by some other path while that run sat there — a passkey
+  // revoked, which is the very event that sends somebody to this repair — has
+  // already moved the stored epoch, and the server refuses a begin filed at
+  // anything but stored + 1.
+  const rotationEpoch = custody.rotationEpoch + 1;
+  // **The one place in this module a generation is drawn**, and the branch
+  // above it is the whole of what keeps it out of reach of a run in flight.
+  const keys =
+    state.rotation === null
+      ? generateAccountKeys()
+      : await recoverStagedKeys(keyEncryptionKey, live, state.rotation);
+  // Refusal 3 is inside this call, over the **live** set either way.
+  const run = await stageGeneration(keys, live.factors, rotationEpoch);
+
+  // Refusal 4, over the pair that is about to be posted.
+  await requireSealsCoverTheManifest(run);
+
+  return materialOf(live, run);
+}
+
+/**
+ * Assembles the material a **resume** runs on, or refuses.
+ *
+ * `staged` is the run `GET /api/me/key-rotation` handed back, and it is the
+ * staged run rather than the read around it because a resume has nothing to say
+ * about an account with nothing in flight — the caller has already gone back to
+ * rest by then. What that buys over a second `KeyRotationStateDto` parameter is
+ * that there is no arm on this path where a generation could be drawn, in the
+ * type rather than in a comment.
+ *
+ * **It restates the staged manifest and the staged seals byte for byte**, for
+ * the reason the head of this file gives. What it recovers is the keys.
+ *
+ * Rejects with {@link KeyRotationMaterialError} on every refusal this module
+ * makes, and with whatever the platform threw on anything else.
+ */
+export async function assembleKeyRotationResume(
+  keyEncryptionKey: CryptoKey,
+  custody: AccountKeyCustodyDto,
+  staged: StagedRotationDto,
+): Promise<KeyRotationMaterial> {
+  const live = await liveAccountOf(keyEncryptionKey, custody);
+  const run: StagedGeneration = {
+    next: await holdGeneration(
+      await recoverStagedKeys(keyEncryptionKey, live, staged),
+    ),
+    // The epoch, the manifest and the seals are the run's own and are restated
+    // rather than recomputed. A resume that re-derived the epoch from the
+    // account-key read would agree today and would be a second arithmetic for
+    // nobody to keep true.
+    rotationEpoch: staged.stagedRotationEpoch,
+    manifest: staged.stagedManifest,
+    seals: staged.seals,
+  };
+
+  // Refusal 4, over what the previous begin really posted.
+  await requireSealsCoverTheManifest(run);
+
+  return materialOf(live, run);
+}
+
+// The account as it stands right now, judged before either entry point stages
+// anything: the factor that opened, the generation in force, and the set the
+// account's own manifest declares.
+//
+// **Refusals 1 and 2 are here, and they run before anything is drawn,
+// recovered or encapsulated.** Everything downstream reaches this set, so a run
+// staged against a set nobody authenticated hands the account's next generation
+// to whoever wrote the extra row.
+async function liveAccountOf(
+  keyEncryptionKey: CryptoKey,
+  custody: AccountKeyCustodyDto,
+): Promise<LiveAccount> {
   // **Every entry, in turn, each under its own `factorId`.** An account holding
   // one passkey is answered with one entry, so the list of one is what a reader
   // optimises into `entries[0]` — and it works forever on that kind of account.
@@ -302,31 +423,26 @@ export async function assembleKeyRotationMaterial(
   // Refusal 1.
   const factors = await declaredFactors(current.contentKey, custody);
 
-  // Refusal 2. Run before anything is minted or recovered, because everything
-  // below encapsulates to this set: a run staged against a set nobody
-  // authenticated hands the account's next generation to whoever wrote the
-  // extra row.
+  // Refusal 2.
   requireOneFactorSet(
     factors,
     custody.factors,
     'The account serves a factor set that is not the one its manifest declares.',
   );
 
-  // The one place a fresh generation can come from, and it is unreachable
-  // unless the resume read said there is nothing staged. Refusal 3 is inside
-  // the minting arm; the recovering arm encapsulates nothing.
-  const run =
-    state.rotation === null
-      ? await mintNextGeneration(factors, custody.rotationEpoch + 1)
-      : await recoverNextGeneration(keyEncryptionKey, opened, state.rotation);
+  return { entry: opened.entry, current, factors };
+}
 
-  // Refusal 4, over whichever pair is about to be posted.
-  await requireSealsCoverTheManifest(run);
-
+// The two halves of the answer, put together in one place so that neither entry
+// point can forget a member or fill one from the wrong side.
+function materialOf(
+  live: LiveAccount,
+  run: StagedGeneration,
+): KeyRotationMaterial {
   return {
-    current,
+    current: live.current,
     next: run.next,
-    factors,
+    factors: live.factors,
     rotationEpoch: run.rotationEpoch,
     manifest: run.manifest,
     seals: run.seals,
@@ -439,20 +555,23 @@ function requireOneFactorSet(
   throw refusal('inconsistent', message);
 }
 
-// The next generation, drawn here, carried to every factor the manifest names.
+// One generation carried to every factor the manifest names, whether it was
+// just drawn or recovered out of a run already in flight.
 //
-// **Reachable only when the resume read said there is no rotation**, which is
-// the one case the rule at the head of this file permits.
+// **One function for both, because everything after the keys is identical and a
+// second copy is a second chance to seal the manifest under the wrong one of
+// them.** What differs between a fresh rotation and a repair is exactly where
+// `keys` came from, and that is decided one frame up, next to the branch that
+// keeps a draw out of reach of a staged run.
 //
-// The account's keys are drawn **once** and encapsulated per factor. Drawing a
-// pair per factor passes every round trip and gives one account as many
-// keyspaces as it has authenticators.
-async function mintNextGeneration(
+// The keys are encapsulated per factor from **one** pair. Drawing a pair per
+// factor passes every round trip and gives one account as many keyspaces as it
+// has authenticators.
+async function stageGeneration(
+  keys: AccountKeys,
   factors: readonly FactorPublicKey[],
   rotationEpoch: number,
 ): Promise<StagedGeneration> {
-  const keys = generateAccountKeys();
-
   try {
     const seals: RotationSealBody[] = [];
 
@@ -527,63 +646,79 @@ async function encapsulateTo(
 }
 
 // The generation a run already in flight is sealed under, recovered rather than
-// minted.
+// drawn, as bytes.
 //
 // **The pairing is the whole of it**: the factor's *live* wrapped private key,
 // which a rotation never touches because the key-encryption key that factor
 // derives does not change when the account's keys do, opened against the
 // *staged* encapsulated value. The two open together although they were never
 // written together.
-async function recoverNextGeneration(
+//
+// **Bytes and not a {@link AccountKeyGeneration}, because one of the two callers
+// has to encapsulate them again.** A resume hands them straight through
+// `holdGeneration`, which ends them in the same statement; the repair carries
+// them to every live factor first. Neither keeps them past its own frame.
+async function recoverStagedKeys(
   keyEncryptionKey: CryptoKey,
-  opened: OpenedFactor,
+  live: LiveAccount,
   staged: StagedRotationDto,
-): Promise<StagedGeneration> {
+): Promise<AccountKeys> {
+  requireSomeLiveFactorHoldsASeal(live.factors, staged.seals);
+
   const seal = staged.seals.find(
-    (candidate) => candidate.factorId === opened.entry.factorId,
+    (candidate) => candidate.factorId === live.entry.factorId,
   );
 
   if (seal === undefined) {
     // A factor enrolled after this run began holds no staged seal, and that is
     // an honest state rather than a broken one — the read is specified to
     // answer what was *staged* rather than to fill a gap from a live row, which
-    // would hand back the generation this run is replacing. Another factor
-    // still carries it, so this is `unopened` and not `inconsistent`.
+    // would hand back the generation this run is replacing. The refusal above
+    // has just established that another factor still carries it, which is what
+    // makes `unopened` — *try another one* — true here rather than hopeful.
     throw refusal(
       'unopened',
-      `The rotation in flight staged nothing for ${opened.entry.factorId}.`,
+      `The rotation in flight staged nothing for ${live.entry.factorId}.`,
     );
   }
 
-  let recovered: AccountKeys;
-
   try {
-    recovered = await openFactorKeypair(
-      keyEncryptionKey,
-      opened.entry.factorId,
-      {
-        wrappedPrivateKey: opened.entry.wrappedPrivateKey,
-        encapsulatedAccountKeys: seal.encapsulatedAccountKeys,
-      },
-    );
+    return await openFactorKeypair(keyEncryptionKey, live.entry.factorId, {
+      wrappedPrivateKey: live.entry.wrappedPrivateKey,
+      encapsulatedAccountKeys: seal.encapsulatedAccountKeys,
+    });
   } catch (cause: unknown) {
     throw refusal(
       'unopened',
-      `The value the rotation in flight staged for ${opened.entry.factorId} did not open.`,
+      `The value the rotation in flight staged for ${live.entry.factorId} did not open.`,
       cause,
     );
   }
+}
 
-  return {
-    next: await holdGeneration(recovered),
-    // The epoch, the manifest and the seals are the run's own and are restated
-    // rather than recomputed. A resume that re-derived the epoch from the
-    // account-key read would agree today and would be a second arithmetic for
-    // nobody to keep true.
-    rotationEpoch: staged.stagedRotationEpoch,
-    manifest: staged.stagedManifest,
-    seals: staged.seals,
-  };
+// The edge that decides which of the two words the refusal above may use.
+//
+// **It is the intersection of two sets and not a lookup**, and it is checked
+// before the presented factor is looked up at all, because the two states it
+// separates are two different next steps. A factor of this account that holds no
+// staged seal while another one does is *try another one*; a staged seal set
+// with nothing live in it is a generation no factor of this account can ever
+// recover, and every row an earlier chunk re-sealed under it is already
+// stranded. The head of this file argues why the second is `inconsistent`.
+function requireSomeLiveFactorHoldsASeal(
+  factors: readonly { readonly factorId: string }[],
+  seals: readonly { readonly factorId: string }[],
+): void {
+  const sealed = new Set(seals.map((seal) => seal.factorId));
+
+  if (factors.some((factor) => sealed.has(factor.factorId))) {
+    return;
+  }
+
+  throw refusal(
+    'inconsistent',
+    'The rotation in flight staged a seal for no factor this account still holds, so the generation it re-sealed rows under can no longer be recovered.',
+  );
 }
 
 // Refusal 4: the seals a run carries are exactly the set its manifest declares.

@@ -1852,13 +1852,24 @@ already held**, never a freshly minted one. The staged seals are the only copy o
 anywhere; a second begin overwrites them in place; and every row a chunk already re-sealed under it
 would then open under nothing at all — silently, with no error and no repair path, which is the same
 shape as completing a run early. So the restart carries the recovered keys forward, which is also
-what makes the sentence's last clause true. A fresh generation is minted in exactly one case: the
+what makes the sentence's last clause true. A fresh generation is drawn in exactly one case: the
 resume read said there is no rotation.
 
-**What holds that rule is a shape rather than a check.** `key-rotation-material.ts` takes the resume
-read itself and decides on `rotation === null`, so there is no flag to pass and no second entry point
-to pick the wrong one of — the one case that may mint is the only case in which minting is
-reachable. Nothing else enforces it, on either side of the wire.
+**And it carries them to the set the account has now, which is the other half of the same rule.**
+The restart recovers that generation out of a surviving factor's staged seal, encapsulates it to
+every factor the account currently holds and seals a manifest over that set, at the epoch a begin
+files at. Restating the staged pair would post a seal set naming the factors that were enrolled when
+the run began — the very thing this refusal is about — and the server would refuse it. Recovering
+needs a factor present in **both** the staged seal set and the live set; when the last of those is
+gone the generation is unrecoverable, the rows already re-sealed under it are stranded, and the word
+is `inconsistent` rather than a suggestion to try another passkey.
+
+**What holds that rule is a shape rather than a check.** `key-rotation-material.ts` has one entry
+point per press and neither can draw a generation while a run is staged: the begin's takes the
+resume read itself and decides on `rotation === null`, so the one case that may draw is the only case
+in which drawing is reachable, and the resume's takes the staged run rather than the read, so it has
+no such case at all. A flag over one function was the other shape and is weaker — a caller holding a
+staged run can pass the wrong value. Nothing else enforces any of it, on either side of the wire.
 
 **`unfinished` is bounded, and the sentence is what the person sees after the bound is spent.** Rows
 created after a collection make the completion answer that the run is incomplete, and the remedy is
@@ -1937,7 +1948,9 @@ What exists is the server side of the act — the four routes, the staging gener
 completeness gate and the promotion, all argued in
 [key-rotation.md](../business-logic/key-rotation.md) — and the driver that walks one, now from
 either end. `KeyRotationService.begin()` takes a passkey assertion and runs a whole rotation to its
-204; `resume()` takes one and finishes a run this browser never began, quoting the identifier the
+204 — and over a run that is still staged it is the restart this chapter's `factors-moved` rule
+describes, carrying that run's generation to the corrected factor set under the identifier already on
+file; `resume()` takes one and finishes a run this browser never began, quoting the identifier the
 server hands back rather than beginning anything. Both publish the three phase words, the numerator
 and denominator the progress line above specifies, and the six refusal words in the table above, and
 a resumed run starts its bar at zero exactly as the consequence block warns. They keep no per-row
@@ -1946,15 +1959,6 @@ decides **which** control there is to draw: it publishes the date the staged run
 line this chapter puts above **Finish rotating**. What nothing does yet is *press* either of them —
 there is no section, no checkbox and no button — so both controls, the date line and the phase
 region are still things this chapter specifies and nothing draws.
-
-**One departure, and it is under `factors-moved`.** The rule above says the restart must carry the
-interrupted run's own generation forward and that `begin()` is where it happens. It does carry the
-generation forward. What it does not yet do is re-encapsulate that generation to the **corrected**
-factor set or re-seal the manifest over it, so a begin pressed after this refusal is itself refused,
-and the word a person would see is `unrecognised` rather than a run that starts. The driver publishes
-"nothing to finish" on this refusal regardless, so the control a section would draw is the right one;
-what is missing is behind it. [key-rotation.md](../business-logic/key-rotation.md) records what
-closing it takes.
 
 **What the placement claim above costs today**: the Account keys section and **What we can read**
 are adjacent on the screen, and the sentence in that chapter naming its neighbours is written for
