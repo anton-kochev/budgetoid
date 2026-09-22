@@ -1563,8 +1563,9 @@ belongs to.
 
 ### What ships today
 
-**The section is on `/app/settings`, in its specified place between Recovery codes and Export, and
-everything above renders as written** — the three blocks, the thirteen lines, the one
+**The section is on `/app/settings`, above the Export/Erase pair as the placement rule requires and
+with Key rotation now between it and Export, and everything above renders as written** — the three
+blocks, the thirteen lines, the one
 `role="status"` region and the control that leaves when the keys are held.
 `AccountKeyCustodyService` holds the account's keys and publishes the five failure words;
 `WebauthnCeremonyService.deriveKeyFromLocalAssertion()` mints the challenge, runs the assertion and
@@ -1574,11 +1575,13 @@ screen, which is `RegisterService`'s and `SignInService`'s argument unchanged. W
 produces is not held there at all: it goes to custody, which is root-provided because the keys are
 state of the session.
 
-**A reloaded tab is now recoverable from inside the account rather than by leaving it.** The two
-other producers of a key-encryption key — the assertion on `/welcome` and the registration flow —
-sit behind `guestGuard`, which turns an authenticated visitor away, so until this section existed
-somebody whose tab reloaded had to sign out and sign back in to get their own keys back. That exit
-is still on the screen and is no longer the only one.
+**A reloaded tab is now recoverable from inside the account rather than by leaving it.** Two of the
+three other producers of a key-encryption key — the assertion on `/welcome` and the registration
+flow — sit behind `guestGuard`, which turns an authenticated visitor away, so until this section
+existed somebody whose tab reloaded had to sign out and sign back in to get their own keys back.
+That exit is still on the screen and is no longer the only one. The fourth producer is the section
+below this one, whose finished run hands the promoted generation to custody — a fact about that act
+and not a second way in, which is why no copy on either section mentions it.
 
 **The flow carries no `available()` check of its own, and the omission is deliberate**, so nobody
 adds one back for symmetry with `SignInService`. That check exists there because a challenge is a
@@ -1592,8 +1595,9 @@ A copy would be a second enforcement with no observable difference, which
 writes: a reload leaves the account's names unreadable until this control is pressed. It stays a
 section rather than a screen standing in front of the app because the app is navigable while
 locked, and the [locked account](#the-locked-account) chapter is what each content screen renders in
-the meantime. This control is the only way out of that state, which is why nothing may put it behind
-one.
+the meantime. This control is the only way out of that state a person can be *sent* to — a finished
+rotation leaves the tab holding keys too, but nothing offers rotating as a way to unlock and nothing
+may — which is why nothing may put this one behind anything.
 
 ## Key rotation section
 
@@ -1942,35 +1946,70 @@ being counted, and sits outside the region. Nothing here is communicated by colo
 
 ### What ships today
 
-**No pixel of it.** This chapter is a specification, in the sense the preamble states: no
-key-rotation section renders on `/app/settings`, no control exists, and the notice takes no input.
-What exists is the server side of the act — the four routes, the staging generation, the
-completeness gate and the promotion, all argued in
-[key-rotation.md](../business-logic/key-rotation.md) — and the driver that walks one, now from
-either end. `KeyRotationService.begin()` takes a passkey assertion and runs a whole rotation to its
-204 — and over a run that is still staged it is the restart this chapter's `factors-moved` rule
-describes, carrying that run's generation to the corrected factor set under the identifier already on
-file; `resume()` takes one and finishes a run this browser never began, quoting the identifier the
-server hands back rather than beginning anything. Both publish the three phase words, the numerator
-and denominator the progress line above specifies, and the six refusal words in the table above, and
-a resumed run starts its bar at zero exactly as the consequence block warns. They keep no per-row
-progress record anywhere, for the reason this chapter gives. **Finishing a rotation unlocks the
-account in this tab, as the section above specifies**: either press hands the promoted generation to
-`AccountKeyCustodyService` on its way out, and that class runs the same four refusals an unlock
-passes before it says the account is open — so a promotion the account's own material does not agree
-with leaves the tab locked carrying custody's `inconsistent`, over a run whose own word is still
-`null`. No copy anywhere advertises any of it, which is the rule above and not a gap.
+**The section renders and both controls can be pressed.** `key-rotation-section.component.*` draws
+it on `/app/settings` directly below Account keys: both blocks of prose character for character, the
+acknowledgement under its specified label, one Destructive control that is **Rotate keys** or
+**Finish rotating** and never both, the `role="status"` region carrying the three phase sentences
+and all eleven refusals, and the determinate bar outside that region with its own `aria-valuenow`,
+`aria-valuemax` and label. The checkbox is a signal initialised to `false` on the component, so it
+arrives unticked on every construction including over a staged run, and no path sets it from
+anywhere else.
 
-`readStagedRotation()` is the read that
-decides **which** control there is to draw: it publishes the date the staged run began, which is the
-line this chapter puts above **Finish rotating**. What nothing does yet is *press* either of them —
-there is no section, no checkbox and no button — so both controls, the date line and the phase
-region are still things this chapter specifies and nothing draws.
+**The gate is in the click handler as well as in the attribute**, and the handler is as wide as the
+attribute it backstops: the control is drawn unpressable on `working || !acknowledged()` and
+`rotate()` refuses on exactly that pair. Removing either half of it reddens exactly one case and the
+attribute assertions stay green, which is the measurement this rule exists for.
 
-**What the placement claim above costs today**: the Account keys section and **What we can read**
-are adjacent on the screen, and the sentence in that chapter naming its neighbours is written for
-where this section goes, not for where the screen stands. That is the departure this book requires
-to be recorded rather than smoothed over by moving the target.
+**"A run is in flight" has one owner.** `RotationFlowService.working` is `busy || rotations.running()`,
+and the control's `disabled`, its `aria-busy`, the component's handler and the flow's own entry point
+all read it. That last reader is what closes the gap named below this chapter's control section:
+`KeyRotationService.begin()` still has no re-entrancy guard of its own, and the flow is where the
+second press is refused.
+
+**The flow is a fourth producer of a key-encryption key in this client**, and the first that spends a
+server-minted challenge for one. `ReauthenticationApiService` posts
+`/api/passkeys/reauthentication/options` — the authenticated pool, never the anonymous assertion one
+— and the ceremony is the first thing either press does, so *Nothing has changed.* is true on a begin
+and on a resume alike. The flow checks `available()` before that call for `SignInService`'s reason
+and not the Unlock control's: a nonce the server persisted must not be spent by a browser that was
+never going to finish.
+
+Underneath it the driver is unchanged. `begin()` takes a passkey assertion and runs a whole rotation
+to its 204 — and over a run that is still staged it is the restart this chapter's `factors-moved`
+rule describes, carrying that run's generation to the corrected factor set under the identifier
+already on file; `resume()` finishes a run this browser never began, quoting the identifier the
+server hands back rather than beginning anything. `readStagedRotation()` is the read the section
+makes in `ngOnInit`, and it is what decides which control there is to draw. **Finishing a rotation
+unlocks the account in this tab, as the section above specifies**, and no copy anywhere advertises
+it.
+
+**Four departures, each named as work rather than smoothed over by moving the target.**
+
+- **`unknown`'s sentence names the wrong act.** The five ceremony words are rendered verbatim from
+  the Account keys table as this chapter directs, and four of them are act-neutral. The fifth reads
+  *Budgetoid couldn’t finish unlocking.* — which is what a person sees when a rotation's challenge
+  never arrives. Verbatim was built because the chapter says verbatim; the line needs its own
+  wording, and giving it one is a copy decision this book makes rather than an implementation
+  detail.
+- **A finished run says nothing.** The phase table has three rows, and `finished` is not one of them
+  — while the paragraph about a re-sent completion says "the section reports a rotation that is
+  done". Nothing is invented in the template: the region is empty at `idle` and at `finished` alike.
+  What partly covers it today is the Account keys section one above, which starts saying the account
+  is unlocked the moment the promoted generation reaches custody. The sentence is owed here.
+- **The line above Finish rotating is the date and nothing else.** This chapter names it as "the
+  date the run started" and specifies no sentence around it, so the section renders the reader's own
+  calendar day through `credentialRegistrationDate` and stops there.
+- **The bar's accessible name is not in any table.** *Records re-encrypted* is what ships, chosen to
+  satisfy "a label naming what is being counted". It is the one string on the section that no copy
+  table specifies.
+
+**What a run does to the rest of the app is still unbuilt.** The notice takes no input, the three
+content screens read no run, and the two-row table above is a specification.
+
+**What the placement claim above costs today** is smaller than it was and has not gone: the section
+sits between Account keys and Export, because **What we can read** renders below Erase rather than
+above Export. That is the departure recorded in that chapter, and this section is above the pair as
+the rule requires.
 
 ## What we can read
 
@@ -1981,10 +2020,9 @@ that would wrap it exists to group things there is more than one of.
 
 It sits on `/app/settings` **between Key rotation and Export**, on the placement rule the
 recovery-codes chapter argues and which is not restated here: Export and Erase are a pair, so
-nothing goes between them and everything else arrives above them. **Key rotation is unbuilt**, so
-on the screen today the section above this one is Account keys; the
-[key-rotation](#key-rotation-section) chapter argues why it lands between the two rather than under
-this one. Being the last thing above that pair is right for this section rather than merely
+nothing goes between them and everything else arrives above them. The
+[key-rotation](#key-rotation-section) chapter argues why that section lands between Account keys and
+this one rather than under it. Being the last thing above that pair is right for this section rather than merely
 permitted by the rule — the two controls beneath
 it are what somebody reaches for when this section tells them something they are not willing to
 live with, so the statement comes first and the acts follow it.

@@ -3,7 +3,11 @@ import {
   HttpTestingController,
   provideHttpClientTesting,
 } from '@angular/common/http/testing';
-import { signal, type Provider } from '@angular/core';
+import {
+  signal,
+  type EnvironmentProviders,
+  type Provider,
+} from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { provideNoopAnimations } from '@angular/platform-browser/animations';
 import { Router, provideRouter, type UrlTree } from '@angular/router';
@@ -17,6 +21,13 @@ import {
   type AccountKeyStatus,
   type UnlockFailure,
 } from '@app-core/security/account-key-custody.service';
+import {
+  KeyRotationService,
+  type KeyRotationFailure,
+  type KeyRotationPhase,
+  type KeyRotationProgress,
+  type StagedRotation,
+} from '@app-core/security/key-rotation.service';
 import { WebauthnCeremonyService } from '@app-core/security/webauthn-ceremony.service';
 import { ConfigurationService } from '@app-core/services/configuration.service';
 import { FileDownloadService } from '@app-core/services/file-download.service';
@@ -31,6 +42,10 @@ import {
   type UnlockCeremonyFailure,
 } from './account-unlock.service';
 import { credentialRegistrationDate } from './credential-registration-date';
+import {
+  RotationFlowService,
+  type RotationCeremonyFailure,
+} from './rotation-flow.service';
 import { SettingsComponent } from './settings.component';
 import { SettingsService, type ExportFailure } from './settings.service';
 
@@ -599,10 +614,69 @@ class AccountUnlockStub implements AccountUnlockSurface {
   public unlock = vi.fn();
 }
 
+// The run, and the press that starts one. Both are stubbed for the reason the
+// two stubs above are: the real `KeyRotationService` is `providedIn: 'root'` and
+// reaches eight API services, each of which extends `BaseApiService` and injects
+// the bare `ConfigurationService` this block does not provide — so every test
+// here would die at construction before one assertion was reached.
+//
+// **Only the mount is pinned from this file.** What the section renders, which
+// control it draws and what its gate refuses belong to
+// `key-rotation-section.component.spec.ts`; this block's job is that the section
+// is on the screen, in the right place, with a flow provided for it to reach.
+type KeyRotationSurface = Pick<KeyRotationService, keyof KeyRotationService>;
+
+class KeyRotationStub implements KeyRotationSurface {
+  public readonly phase = signal<KeyRotationPhase>('idle');
+  public readonly progress = signal<KeyRotationProgress>({
+    resealed: 0,
+    records: 0,
+  });
+  public readonly failure = signal<KeyRotationFailure | null>(null);
+  public readonly staged = signal<StagedRotation | null>(null);
+  public readonly running = signal(false);
+  public begin = vi.fn(async () => Promise.resolve());
+  public resume = vi.fn(async () => Promise.resolve());
+  public readStagedRotation = vi.fn(async () => Promise.resolve());
+}
+
+type RotationFlowSurface = Pick<RotationFlowService, keyof RotationFlowService>;
+
+class RotationFlowStub implements RotationFlowSurface {
+  public readonly busy = signal(false);
+  public readonly failure = signal<RotationCeremonyFailure | null>(null);
+  public readonly working = signal(false);
+  public rotate = vi.fn();
+}
+
+// What the three blocks below need in order to mount the *shipped* component
+// rather than an overridden one.
+//
+// The key-rotation section injects the driver, and the driver reaches eight API
+// services through `BaseApiService` — so without this each of those blocks dies
+// at construction with `NG0201: No provider found for _ConfigurationService`,
+// before a single assertion about an export or a reload is reached. The driver
+// is stubbed rather than configured, because nothing in those blocks is about a
+// rotation and a real one would leave an unanswered `GET /api/me/key-rotation`
+// outstanding in every case. The HTTP pair and the configuration are still here
+// because `RotationFlowService` is component-provided and therefore real in
+// those blocks: it builds its options leg on construction and asks for nothing
+// until a press.
+//
+// A factory rather than one instance, so two blocks cannot share a spy.
+const ROTATION_SECTION_STUBS: readonly (Provider | EnvironmentProviders)[] = [
+  provideHttpClient(),
+  provideHttpClientTesting(),
+  CONFIGURATION_STUB,
+  { provide: KeyRotationService, useFactory: () => new KeyRotationStub() },
+];
+
 describe('SettingsComponent', () => {
   let service: SettingsServiceStub;
   let custody: AccountKeyCustodyStub;
   let unlock: AccountUnlockStub;
+  let rotations: KeyRotationStub;
+  let rotationFlow: RotationFlowStub;
   let fixture: ComponentFixture<SettingsComponent>;
   let host: HTMLElement;
 
@@ -610,6 +684,8 @@ describe('SettingsComponent', () => {
     service = new SettingsServiceStub();
     custody = new AccountKeyCustodyStub();
     unlock = new AccountUnlockStub();
+    rotations = new KeyRotationStub();
+    rotationFlow = new RotationFlowStub();
     TestBed.configureTestingModule({
       imports: [SettingsComponent],
       providers: [
@@ -624,6 +700,12 @@ describe('SettingsComponent', () => {
         // mode this arrangement has no version of.
         { provide: AccountKeyCustodyService, useValue: custody },
         { provide: AccountUnlockService, useValue: unlock },
+        // Both at the module level, and `RotationFlowService` deliberately so
+        // even though the component provides it — the `overrideComponent` below
+        // **replaces** the component's array, so whatever it declares is gone by
+        // the time anything is injected and the lookup walks up to here.
+        { provide: KeyRotationService, useValue: rotations },
+        { provide: RotationFlowService, useValue: rotationFlow },
       ],
     });
     // The stub is installed on the component, not on the module. A module-level
@@ -641,6 +723,55 @@ describe('SettingsComponent', () => {
     // Exactly one — the NFR-021 test below depends on this being the whole of
     // the interaction that precedes it.
     fixture.detectChanges();
+  });
+
+  // **The mount, and only the mount.** What the section renders, which of two
+  // controls it draws and what its gate refuses are
+  // `key-rotation-section.component.spec.ts`'s, which drives the component
+  // directly. What only this file can see is that the section is on this screen
+  // at all, where on it, and with a flow provided for it to reach — none of
+  // which is visible from inside the component.
+  it('carries a key-rotation section directly below the account keys', () => {
+    // Assert
+    // Between Account keys and **What we can read**, which is narrower than the
+    // placement rule alone requires: a rotation is not one of the remedies the
+    // transparency statement names, so a control offered directly under that
+    // statement would be offered as a third answer to it. The statement's own
+    // position is a departure this book already records, so what this pins is
+    // the pair that does not depend on it — Account keys, then Key rotation,
+    // then the Export/Erase pair.
+    const headings = Array.from(host.querySelectorAll('h2')).map((heading) =>
+      heading.textContent?.trim(),
+    );
+
+    expect(headings).toEqual([
+      'Account',
+      'Ways to sign in',
+      'Recovery codes',
+      'Account keys',
+      'Key rotation',
+      'Export',
+      'Erase everything',
+      'What we can read',
+    ]);
+  });
+
+  it('gives the rotation section a flow to reach', () => {
+    // Arrange
+    // The section injects the flow from this screen's injector rather than
+    // providing one of its own, which is what makes an abandoned press die with
+    // the screen. A section that had gone back to `providedIn: 'root'` would
+    // render identically and keep a refusal readable on an unrelated screen an
+    // hour later.
+
+    // Act
+    host.querySelector<HTMLElement>('app-key-rotation-section button')?.click();
+
+    // Assert
+    // Unticked, so the section's own gate refuses it — which is the point: the
+    // press reached a flow, and that flow is this one.
+    expect(rotationFlow.rotate).not.toHaveBeenCalled();
+    expect(rotations.readStagedRotation).toHaveBeenCalled();
   });
 
   it('loads the account email on initialization', () => {
@@ -3843,6 +3974,7 @@ describe('SettingsComponent on a second visit', () => {
         provideNoopAnimations(),
         { provide: MeApiService, useValue: api },
         { provide: FileDownloadService, useValue: downloads },
+        ...ROTATION_SECTION_STUBS,
       ],
     }).compileComponents();
   }
@@ -3956,6 +4088,7 @@ describe('SettingsComponent unlocking on a second visit', () => {
         { provide: MeApiService, useValue: api },
         { provide: FileDownloadService, useValue: downloads },
         { provide: WebauthnCeremonyService, useValue: ceremony },
+        ...ROTATION_SECTION_STUBS,
       ],
     }).compileComponents();
 
@@ -4177,6 +4310,7 @@ async function visitWithApi(
       provideNoopAnimations(),
       { provide: MeApiService, useValue: api },
       { provide: FileDownloadService, useValue: downloads },
+      ...ROTATION_SECTION_STUBS,
     ],
   }).compileComponents();
 

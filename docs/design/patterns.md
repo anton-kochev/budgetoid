@@ -164,7 +164,7 @@ its Generate control is present and **disabled**, and it now carries a sentence 
 than the credential list's, because two facts hold it off where one holds its neighbour off — a
 set being ten factors that each wrap those keys, on a route gated by an assertion the server
 verifies. Generating a set **from here** and redeeming
-one are unbuilt, as are key rotation, the email-change action and the erasure confirmation
+one are unbuilt, as are the email-change action and the erasure confirmation
 dialog. Showing a set once is built and lives elsewhere — the last
 step of registration, where the account's first set is issued.
 
@@ -174,18 +174,24 @@ reloaded gets their keys back without leaving the account. It is drawn only whil
 something to unlock, it carries no sentence saying what it waits on because it waits on nothing,
 and [components](components.md) owns the rest of its specification.
 
-Between Account keys and Export the screen will carry a **Key rotation** section, and it is
-specified rather than built — [components](components.md) holds the chapter, including the one
-decision in it that reaches other screens: while a rotation runs, the three content screens render
-the locked-account notice in place of their lists. Nothing of it is on the screen today, so Account
-keys and **What we can read** are adjacent.
+Below Account keys sits **Key rotation**, and it is **built**: two blocks of prose, an
+acknowledgement, one Destructive control — the first in the book to take that fill without deleting
+anything — a polite region carrying the phase sentence and eleven refusals, and a determinate bar
+beside it rather than inside it. The control is **Rotate keys**, or **Finish rotating** over a run
+this account staged and never finished, and never both.
+[components](components.md) holds the chapter and the four places what ships departs from it. The
+one decision in it that reaches other screens is still unbuilt: while a rotation runs, the three
+content screens are to render the locked-account notice in place of their lists, and today they
+render their lists.
 
 **Sign out is no longer the only exit from a locked account.** Count the producers of a
-key-encryption key in this client and there are **three** — the assertion on `/welcome`, the
-registration flow, and this Unlock. The first two sit behind the guard that turns an authenticated
-visitor away, so before this section shipped the only route back to your own keys was to leave the
-account and come back in through one of them. That exit is still on the screen, several sections
-up, and it is now one of two.
+key-encryption key in this client and there are **four** — the assertion on `/welcome`, the
+registration flow, this Unlock, and the rotation flow below it. The first two sit behind the guard
+that turns an authenticated visitor away, so before the Account keys section shipped the only route
+back to your own keys was to leave the account and come back in through one of them. That exit is
+still on the screen, several sections up, and it is now one of three: a finished rotation hands the
+promoted generation to custody on its way out, which unlocks the tab. **No copy anywhere says so**,
+because somebody who wants to read their records should press the control that takes a second.
 
 Nothing between the two is by accident: Export and Erase are a pair, so nothing goes between *them*
 and everything else arrives above. The bullets above stay as written because they are the target,

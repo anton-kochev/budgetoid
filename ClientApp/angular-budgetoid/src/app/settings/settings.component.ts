@@ -9,15 +9,29 @@ import { MatButtonModule } from '@angular/material/button';
 import { AccountKeyCustodyService } from '@app-core/security/account-key-custody.service';
 import { AccountUnlockService } from './account-unlock.service';
 import { toCredentialRow, type CredentialRow } from './credential-row';
+import { KeyRotationSectionComponent } from './key-rotation-section.component';
+import { RotationFlowService } from './rotation-flow.service';
 import { SettingsService } from './settings.service';
 
 @Component({
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [MatButtonModule],
-  // Both services' lifetime is this screen's. Provided here rather than at the
-  // root so an export outcome cannot survive a navigation away and reappear as
-  // a claim about a visit that has exported nothing — and so an *abandoned*
-  // unlock attempt dies with the screen it was started on.
+  // **Key rotation is a component and not two hundred more lines of this
+  // screen's template**, and the reason is in that file's own header: it is the
+  // one section here with a gate in it, and a gate that is half attribute and
+  // half handler wants a handler that is about one press.
+  imports: [MatButtonModule, KeyRotationSectionComponent],
+  // All three services' lifetime is this screen's. Provided here rather than at
+  // the root so an export outcome cannot survive a navigation away and reappear
+  // as a claim about a visit that has exported nothing — and so an *abandoned*
+  // unlock attempt, or an abandoned press of Rotate, dies with the screen it was
+  // started on.
+  //
+  // **`RotationFlowService` is provided here and not on the section**, which is
+  // the same distinction the two above keep: the *flow* is an attempt, and an
+  // attempt belongs to the screen. What the attempt drives is
+  // `KeyRotationService`, which is root-provided because a run survives the tab
+  // that began it as server state and has to be readable by the three content
+  // screens while it is in flight.
   //
   // `AccountKeyCustodyService` is deliberately **not** in this list. What the
   // attempt produces is state of the **session**, which outlives every screen,
@@ -25,7 +39,7 @@ import { SettingsService } from './settings.service';
   // `app` is the near miss `account-keys.md` refuses, because `guestGuard`
   // bouncing an authenticated visitor off `/welcome` destroys that injector and
   // discards the keys with nothing on screen going red.
-  providers: [SettingsService, AccountUnlockService],
+  providers: [SettingsService, AccountUnlockService, RotationFlowService],
   styleUrls: ['./settings.component.scss'],
   templateUrl: './settings.component.html',
 })

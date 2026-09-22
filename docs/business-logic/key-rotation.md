@@ -56,10 +56,13 @@ everything.
 
 **The schema, the domain behaviour, the completeness gate, the handlers a run needs, the three routes
 that walk one, the read that resumes an interrupted one, a typed client for all four, the material a
-run carries, and the driver that spends it — now from either end, and now ending in custody. A
+run carries, the driver that spends it — now from either end, and now ending in custody — and the
+section on `/app/settings` that presses it. A
 browser can begin a rotation, walk it to its 204 and be holding the promoted generation after it; a
-browser that lost one to a reload can pick it up, finish it and end the same way. What is
-still missing is the screen that presses either button.** `POST /api/me/key-rotation` stages a run,
+browser that lost one to a reload can pick it up, finish it and end the same way; and a person can
+start either from a control. What is still missing is what the three content screens do while a run
+is in flight — they render their lists, where
+[components.md](../design/components.md) specifies the locked-account notice.** `POST /api/me/key-rotation` stages a run,
 `POST /api/me/key-rotation/chunks` re-seals a batch of rows,
 `POST /api/me/key-rotation/completion` promotes the staged generation, and
 `GET /api/me/key-rotation` hands a staged run back to a client that lost it — so `key_rotations`,
