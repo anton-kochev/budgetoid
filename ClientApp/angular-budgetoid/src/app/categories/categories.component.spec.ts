@@ -157,6 +157,10 @@ class CustodyStub
     throw new Error('the categories screen may not adopt account keys');
   }
 
+  public adoptRotated(): void {
+    throw new Error('the categories screen may not take custody of a rotation');
+  }
+
   public lock(): void {
     throw new Error('the categories screen may not lock the account');
   }

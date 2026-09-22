@@ -274,6 +274,12 @@ class CustodyStub
     throw new Error('the categories service may not adopt account keys');
   }
 
+  public adoptRotated(): void {
+    throw new Error(
+      'the categories service may not take custody of a rotation',
+    );
+  }
+
   public lock(): void {
     throw new Error('the categories service may not lock the account');
   }

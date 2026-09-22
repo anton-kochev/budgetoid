@@ -1313,7 +1313,7 @@ both directions.
 has opened them, and the one place in this client that holds them past the ceremony that produced
 them. It reports two things about itself and answers a set of operations that is expected to grow,
 and **no member of any of them is a key**: a three-word `status` — `locked`, `unlocking`,
-`unlocked` — an `unlockFailure` when an attempt ended without custody, and the results of
+`unlocked` — an `unlockFailure` when an arrival ended without custody, and the results of
 `sealField`, `openField` and `blindIndex`, which
 [the section below](#the-operations-that-delegate-and-the-shape-that-was-forced) is about.
 Each decision below is worth the words, and every one of them is silent when reversed. They are
@@ -1734,6 +1734,32 @@ now that the read spans the account. It hands back all eleven pairs, but the bro
 **passkey's** key-encryption key and nothing else, so only the passkey factor's pair is ever opened
 and the ten code pairs go untouched, which is precisely where the mispairing hazard the registration
 loop is built around lives.
+
+**A finished rotation transfers the keys as objects too, and is the one hand-over that still owes
+the gate.** `adoptRotated` is the member, and the difference from `adopt` beside it is what a
+response has had the chance to say. Nothing has been served to a registering browser for a manifest
+to disagree with — the account is being created by the request that is answering — while a promotion
+has just rewritten `factor_manifests` and every factor's `encapsulated_account_keys`, and the route
+that serves them back is the same route an unlock reads. So this member drops what it was holding,
+re-reads `GET /api/me/account-keys` and `GET /api/me`, runs the **same four ordered refusals** over
+the manifest the promotion filed, records the epoch and only then publishes the pair. A refusal
+there **locks the account and publishes the word**, which is honest rather than harsh: a manifest
+that does not agree with the set the route serves is the account's material disagreeing with itself,
+and no factor clears it.
+
+**The driver may not make those judgements, and that is the decision rather than a division of
+labour.** `KeyRotationService` ends at its 204 and hands over two key objects; every refusal stays
+on custody's side. A copy of the gate in the driver would be a second, weaker definition of the rule
+this chapter spends a section on — one file from the one that runs, agreeing with it the day it was
+written and drifting the day either moves, with nothing going red. The read is made **again** rather
+than carried over from the material the run assembled, because what has to be judged is the manifest
+the promotion *filed*: a body read before the completion describes the generation being replaced, so
+a client judging that one would have confirmed the account it was leaving.
+
+**Why the completion cannot simply answer with the generation** is [key-rotation.md](key-rotation.md)'s
+half and is the reason this member exists at all: a device's epoch record may rise only after those
+four refusals have passed, so a number handed back from the route that promotes would be one a
+client advanced its record from having judged nothing — an oracle rather than an observation.
 
 ### The operations that delegate, and the shape that was forced
 
@@ -2717,11 +2743,14 @@ gets back out.
    `blindIndex` under the index key — and never through a member that returns one. All three have
    callers: `/app/accounts`, the transaction form and both halves of `/app/categories` reach them
    through their view models and services, each of which is handed a capability and never a key.
-   **Three paths arrive here.** A
+   **Four paths arrive here.** A
    sign-in reaches it through step 4. Registration reaches it directly, by handing over the pair it
-   drew. And the Settings screen's Unlock reaches it through step 4 as well, from a passkey ceremony
-   the browser mints and discards — the only one of the three that runs on a session that already
-   exists, and therefore the only one that can be run twice. It ends at a sign-out, at a `401`, and
+   drew. The Settings screen's Unlock reaches it through step 4 as well, from a passkey ceremony
+   the browser mints and discards — one of the two that run on a session that already
+   exists, and therefore one of the two that can be run twice. And a finished key rotation reaches
+   it by handing over the generation it has just had promoted, through `adoptRotated`: keys as
+   objects like registration's, and the whole of step 4's gate like an unlock's, because unlike
+   registration it has a response to be judged against. It ends at a sign-out, at a `401`, and
    at a page load — **nothing about it is written anywhere a reload survives**. See
    [The one class that holds them](#the-one-class-that-holds-them) and
    [The third way into custody](#the-third-way-into-custody).

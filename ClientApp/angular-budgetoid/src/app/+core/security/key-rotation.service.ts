@@ -5,9 +5,12 @@
 // reads; post the begin, which stages the manifest and one seal per factor and
 // answers with the inventory; collect every narrative row across the five arms;
 // re-seal each under the next content key and recompute each blind index under
-// the next index key; post them in chunks; post the completion. **It stops at
-// the 204.** Taking custody of the promoted generation is a step of its own and
-// is not taken here.
+// the next index key; post them in chunks; post the completion; hand the
+// promoted generation to `AccountKeyCustodyService`. **That last step makes no
+// judgement.** The completion answers 204 carrying nothing on purpose, so
+// custody re-reads the account keys and runs its own four refusals over the
+// manifest the promotion filed — and a second reading of that rule here is
+// exactly what this file must not grow.
 //
 // **Two presses and one run, because an interruption leaves nothing in the
 // browser.** A rotation that lost its tab survives as server state alone — a
@@ -78,6 +81,7 @@ import { PayeesApiService } from '@app-core/api/payees-api.service';
 import { TransactionsApiService } from '@app-core/api/transactions-api.service';
 import { SessionService } from '@app-core/session/session.service';
 import { firstValueFrom } from 'rxjs';
+import { AccountKeyCustodyService } from './account-key-custody.service';
 import { computeBlindIndex, type BlindIndexedField } from './blind-index';
 import {
   assembleKeyRotationBegin,
@@ -376,6 +380,12 @@ export class KeyRotationService {
   // second read of the same route would be a second answer able to disagree
   // with the one every screen is already using.
   readonly #session = inject(SessionService);
+  // **Where the promoted generation goes, and the edge runs this way only.**
+  // That class may not inject this one — nothing here is a fact about an
+  // account's keys at rest — and it holds every judgement about whether the
+  // pair this run produced may be published. What crosses the edge is two key
+  // objects and no decision.
+  readonly #custody = inject(AccountKeyCustodyService);
   readonly #accountsApi = inject(AccountApiService);
   readonly #payeesApi = inject(PayeesApiService);
   readonly #categoryGroupsApi = inject(CategoryGroupsApiService);
@@ -533,6 +543,24 @@ export class KeyRotationService {
       const resting = await leg();
 
       if (resting === 'finished') {
+        // **Custody of the promoted generation, and it happens here.** Both
+        // presses end at the same 204 and the `finally` below drops both
+        // fields, so this is the one frame that is holding the pair and knows
+        // the run reached its completion. A run that finished and left the tab
+        // locked is a broken end state: every row in the account has just been
+        // rewritten under a generation nothing else in this browser holds, so
+        // the three content screens would show a locked account and the way
+        // back would be a second ceremony for keys that are already here.
+        //
+        // **What it hands over is the pair and nothing else.** Whether custody
+        // may publish it is decided by the four refusals that class runs over
+        // its own re-read of the account keys, and this driver makes none of
+        // them: a second reading here would be a second, weaker definition of
+        // a rule `docs/business-logic/account-keys.md` spends a chapter on. It
+        // is `void` for the same reason `unlock` is, so nothing of that gate's
+        // answer lands in this run's word.
+        this.#adoptThePromotedGeneration();
+
         // **The one place this service may say so without reading it.** The
         // staged generation is the live one now and this client is the reason,
         // so "there is nothing to finish" is an observation rather than a guess
@@ -568,13 +596,34 @@ export class KeyRotationService {
       this.#phase.set('idle');
       this.#failure.set(failure);
     } finally {
-      // **The generations end with the run.** The step that hands the promoted
-      // pair to `AccountKeyCustodyService` is a commit of its own and would take
-      // custody *before* this line; until it lands, a finished rotation leaves
-      // this tab exactly as locked or unlocked as it was.
+      // **The generations end with the run**, and the hand-over above happens
+      // before this line rather than after it: the pair custody takes is read
+      // off these two fields, and a hand-over written down here would have
+      // nothing left to hand over.
       this.#current = null;
       this.#next = null;
     }
+  }
+
+  // Hands the generation this run promoted to the class that holds the
+  // account's keys.
+  //
+  // The throw is unreachable and is written the way its three siblings are
+  // written: a leg answers `'finished'` only after the completion it posted was
+  // accepted, and neither leg posts anything before it has both generations. A
+  // silent `return` there would be a finished run that quietly left the tab
+  // locked, which is the state this whole step exists to prevent.
+  #adoptThePromotedGeneration(): void {
+    const next = this.#next;
+
+    if (next === null) {
+      throw new KeyRotationRefusal(
+        'inconsistent',
+        'This run holds no generation to take custody of.',
+      );
+    }
+
+    this.#custody.adoptRotated(next.contentKey, next.indexKey);
   }
 
   async #drive(ceremony: PasskeyAssertionCeremony): Promise<RestingPhase> {

@@ -1954,7 +1954,14 @@ file; `resume()` takes one and finishes a run this browser never began, quoting 
 server hands back rather than beginning anything. Both publish the three phase words, the numerator
 and denominator the progress line above specifies, and the six refusal words in the table above, and
 a resumed run starts its bar at zero exactly as the consequence block warns. They keep no per-row
-progress record anywhere, for the reason this chapter gives. `readStagedRotation()` is the read that
+progress record anywhere, for the reason this chapter gives. **Finishing a rotation unlocks the
+account in this tab, as the section above specifies**: either press hands the promoted generation to
+`AccountKeyCustodyService` on its way out, and that class runs the same four refusals an unlock
+passes before it says the account is open — so a promotion the account's own material does not agree
+with leaves the tab locked carrying custody's `inconsistent`, over a run whose own word is still
+`null`. No copy anywhere advertises any of it, which is the rule above and not a gap.
+
+`readStagedRotation()` is the read that
 decides **which** control there is to draw: it publishes the date the staged run began, which is the
 line this chapter puts above **Finish rotating**. What nothing does yet is *press* either of them —
 there is no section, no checkbox and no button — so both controls, the date line and the phase

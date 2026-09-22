@@ -70,6 +70,7 @@ import {
   MeApiService,
   type AccountKeyCustodyDto,
   type AccountKeyEntry,
+  type MeDto,
 } from '@app-core/api/me-api.service';
 import {
   PayeesApiService,
@@ -83,7 +84,8 @@ import {
 } from '@app-core/api/transactions-api.service';
 import { SessionService } from '@app-core/session/session.service';
 import { Observable, of, throwError } from 'rxjs';
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { AccountKeyCustodyService } from './account-key-custody.service';
 import {
   generateAccountKeys,
   importAesGcmKey,
@@ -109,6 +111,11 @@ import {
   type NarrativeField,
 } from './narrative-cipher';
 import { mintNarrativeRowId } from './narrative-row-id';
+// The device's memory of how far an account has already moved, read through the
+// module that owns it rather than through a key spelled here — one key per
+// account is that module's decision and its own spec is where the spelling is
+// pinned.
+import { highestRotationEpochSeen } from './rotation-epoch-record';
 import type { PasskeyAssertionCeremony } from './webauthn-ceremony.service';
 
 // The tenancy every blind index below is keyed inside. `GET /api/me` is where a
@@ -906,10 +913,22 @@ class RotationTransport
   }
 }
 
-// **Only `getAccountKeys`, deliberately.** A wider stub would let a driver that
-// reached for `getMe`, the passkey handles or the recovery-code count go
-// unnoticed, and a rotation has no business asking this route anything else.
-class MeTransport implements Pick<MeApiService, 'getAccountKeys'> {
+// **Two members, and the second one is not the driver's.** A rotation has no
+// business asking this route anything, and every member it might have reached
+// for — the passkey handles, the recovery-code count, the export — is still
+// absent, so a driver that grew one would fail to inject rather than go
+// unnoticed.
+//
+// `getSessionOwner` is here because the real `AccountKeyCustodyService` is
+// standing in the injector below and reads it: an epoch record is filed per
+// account, and that route is where a browser learns which account it is in. It
+// is **not** a second way for this driver to learn the tenancy — `does not
+// begin a run while this browser has not been told its budget` drives
+// `SessionService.budgetId` to `null` and requires the run to refuse, which no
+// driver reading this route instead could satisfy.
+class MeTransport
+  implements Pick<MeApiService, 'getAccountKeys' | 'getSessionOwner'>
+{
   readonly #server: FakeServer;
 
   constructor(server: FakeServer) {
@@ -918,6 +937,10 @@ class MeTransport implements Pick<MeApiService, 'getAccountKeys'> {
 
   public getAccountKeys(): Observable<AccountKeyCustodyDto> {
     return this.#server.accountKeys();
+  }
+
+  public getSessionOwner(): Observable<MeDto> {
+    return of({ budgetId: BUDGET_ID, email: 'owner@budgetoid.test' });
   }
 }
 
@@ -957,6 +980,27 @@ function firstFactor(): MintedFactor {
 
 function driver(): KeyRotationService {
   return TestBed.inject(KeyRotationService);
+}
+
+// **The real custody, not a double, and that is the point of the cases that
+// read it.** What a finished run owes is that this tab ends up holding the
+// promoted generation — which is a fact about the class that holds keys, and
+// the only way to observe it is through the operations that delegate, because
+// there is no accessor and there never may be one.
+function custody(): AccountKeyCustodyService {
+  return TestBed.inject(AccountKeyCustodyService);
+}
+
+// Waits for an adoption to end, whichever way it ended.
+//
+// `adoptRotated` returns nothing — for the reason `unlock` does — so there is no
+// promise to await and the only marker is the status leaving `'unlocking'`.
+// `vi.waitFor` gives up loudly, which is the right answer for a hand-over that
+// never resolved.
+async function settled(keys: AccountKeyCustodyService): Promise<void> {
+  await vi.waitFor(() => {
+    expect(keys.status()).not.toBe('unlocking');
+  });
 }
 
 // The word a case expects, run through the union so a typo is a compile error
@@ -1325,6 +1369,11 @@ function configureTestBed(): void {
 }
 
 beforeEach(() => {
+  // jsdom's `localStorage` is per test *file* and not per case, so the epoch a
+  // finished run makes custody record is an invisible fixture for every case
+  // after it. Cleared here rather than in the describe that reads one, because
+  // every run in this file that reaches its 204 writes one.
+  localStorage.clear();
   server = new FakeServer(fixture);
   session = new SessionStub();
 
@@ -2200,5 +2249,176 @@ describe('a run begun again after the factor set moved', () => {
     // right shape; and the set it names is the one the account holds now.
     expect(factorIdsOf(named)).toEqual(factorIdsOf(surviving));
     expect(body.rotationEpoch).toBe(EPOCH + 1);
+  });
+});
+
+// What a finished run leaves the tab holding.
+//
+// **A run that finished and left the account locked is a broken end state**, and
+// `docs/design/components.md` says so where it argues that the two key sections
+// do not wait on each other: somebody who arrived at a locked account and
+// pressed Rotate ends up holding keys. Every row they own has just been
+// rewritten under a generation this tab is the only holder of; reporting a
+// finished rotation over an account nothing can read would send them to press
+// Unlock and run a second ceremony for keys that are already in the frame.
+//
+// **The hand-over is `AccountKeyCustodyService.adoptRotated` and this driver
+// makes none of the judgements behind it.** The completion answers 204 carrying
+// nothing on purpose — a generation from that route would be a number a client
+// advanced its record from having judged nothing — so custody re-reads the
+// account keys and runs the same four refusals an unlock runs. A second reading
+// of the manifest here would be a second, weaker definition of the rule that
+// whole chapter defends.
+//
+// The real custody stands in the injector for these cases, because what is owed
+// is a fact about the class that holds the keys and there is no accessor to read
+// one through.
+describe('the tab a finished run leaves behind', () => {
+  it('holds the promoted generation, and says the account is open', async () => {
+    // Arrange
+    const service = driver();
+    const keys = custody();
+
+    expect(keys.status()).toBe('locked');
+
+    // Act
+    await service.begin(ceremonyUnder(firstFactor()));
+    await settled(keys);
+
+    // Assert
+    expect(service.phase()).toBe('finished');
+    expect(service.failure()).toBeNull();
+    expect(keys.status()).toBe('unlocked');
+    expect(keys.unlockFailure()).toBeNull();
+
+    // **Both keys, through the operations that delegate.** A hand-over that
+    // happened after the `finally` that drops this run's two fields would have
+    // nothing to hand over, and a hand-over that passed the generation being
+    // replaced would report an open account that cannot read a single row the
+    // run just rewrote.
+    const row = server.accounts[0];
+
+    await expect(
+      keys.openField({ ...ACCOUNT_NAME_FIELD, rowId: row.id }, row.name),
+    ).resolves.toEqual({
+      state: 'text',
+      value: textOf(ACCOUNT_NAME_FIELD, row.id),
+    });
+    // The index key too, against the value this run wrote into the column: a
+    // lookup keyed under the generation being replaced matches no row, and comes
+    // back empty rather than failing.
+    await expect(
+      keys.blindIndex(
+        { ...ACCOUNT_NAME_FIELD, budgetId: BUDGET_ID },
+        textOf(ACCOUNT_NAME_FIELD, row.id),
+      ),
+    ).resolves.toEqual({ state: 'computed', value: row.nameKey });
+  });
+
+  it('records the epoch the promotion filed, once and through the gate', async () => {
+    // Arrange
+    const service = driver();
+    const keys = custody();
+
+    // Act
+    await service.begin(ceremonyUnder(firstFactor()));
+    await settled(keys);
+
+    // Assert
+    // The run really promoted, or the record below is a claim about an account
+    // that never moved.
+    expect(keys.status()).toBe('unlocked');
+    expect(server.rotationEpoch).toBe(EPOCH + 1);
+    expect(highestRotationEpochSeen(BUDGET_ID)).toBe(EPOCH + 1);
+    // **The read behind that record is custody's own.** The driver made one for
+    // its material; the second is the one the gate is run over, and without it
+    // the record would be rising from the epoch this client chose rather than
+    // from the manifest the server now serves.
+    expect(server.accountKeyReads).toBe(2);
+  });
+
+  it('hands the generation over after a run picked up from the other end too', async () => {
+    // Arrange
+    // A resume finishes a run this browser never began, and the tab it leaves
+    // behind is the same tab. The hand-over lives in the leg both presses share,
+    // so a copy written on the begin alone is what this case refuses.
+    await interruptedRun(3, 400);
+
+    const resumed = freshDriver();
+    const keys = custody();
+
+    // Act
+    await resumed.resume(ceremonyUnder(firstFactor()));
+    await settled(keys);
+
+    // Assert
+    expect(resumed.phase()).toBe('finished');
+    expect(keys.status()).toBe('unlocked');
+
+    const row = server.payees[0];
+
+    await expect(
+      keys.openField({ ...PAYEE_NAME_FIELD, rowId: row.id }, row.name),
+    ).resolves.toEqual({
+      state: 'text',
+      value: textOf(PAYEE_NAME_FIELD, row.id),
+    });
+  });
+
+  it('hands nothing over when the run did not finish', async () => {
+    // Arrange
+    // **The other half of every case above.** A hand-over written outside the
+    // branch that answers `'finished'` would unlock this tab from a run that
+    // stopped — under a generation the account is not in, so every row on every
+    // screen would come back unreadable while the service reported an open
+    // account.
+    server.refuseChunk = { at: 1, error: new HttpErrorResponse({ status: 0 }) };
+
+    const service = driver();
+    const keys = custody();
+
+    // Act
+    await service.begin(ceremonyUnder(firstFactor()));
+
+    // Assert
+    expect(service.failure()).toBe(word('unreachable'));
+    expect(keys.status()).toBe('locked');
+    expect(keys.unlockFailure()).toBeNull();
+    // One read, the driver's own: custody was never asked to judge anything, so
+    // nothing was observed and nothing was recorded.
+    expect(server.accountKeyReads).toBe(1);
+    expect(localStorage.length).toBe(0);
+  });
+
+  it('locks and says so when what the server serves back does not agree', async () => {
+    // Arrange
+    // **A completion the server refuses as already completed is a run that is
+    // done**, and this driver reports it as one — so the hand-over happens, and
+    // custody meets an account whose served manifest is still the one from
+    // before. Here that is arranged rather than real; on the wire it is the
+    // shape of a promotion this client believes happened and the account did not
+    // make.
+    //
+    // The word is custody's and the run's is still `null`, which is the honest
+    // division: the rotation really did reach its completion, and what does not
+    // agree is the account's own material. `inconsistent` says out loud that no
+    // factor clears it, which is true — every factor of an account encapsulates
+    // the same two keys.
+    server.refuseCompletion = conflict('rotation_already_completed');
+
+    const service = driver();
+    const keys = custody();
+
+    // Act
+    await service.begin(ceremonyUnder(firstFactor()));
+    await settled(keys);
+
+    // Assert
+    expect(service.phase()).toBe('finished');
+    expect(service.failure()).toBeNull();
+    expect(keys.status()).toBe('locked');
+    expect(keys.unlockFailure()).toBe('inconsistent');
+    // And the device remembered nothing from a body it refused.
+    expect(localStorage.length).toBe(0);
   });
 });

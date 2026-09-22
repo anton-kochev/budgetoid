@@ -322,6 +322,17 @@ interface HeldKeys {
 // already arrived.
 type ManifestRefusal = Extract<UnlockFailure, 'inconsistent' | 'unrecognised'>;
 
+// One reading of the two routes: the body to judge, and the account whose
+// record this device is about to compare against.
+//
+// Not exported, for `HeldKeys`' reason one step out: it is the argument of a
+// gate that runs inside this file and of nothing else, and a type anybody
+// outside could write down invites a caller that assembles one.
+interface AccountRead {
+  readonly custody: AccountKeyCustodyDto;
+  readonly budgetId: string;
+}
+
 @Injectable({ providedIn: 'root' })
 export class AccountKeyCustodyService {
   // **ECMAScript `#` fields, not TypeScript `private`, and this is the first of
@@ -452,6 +463,55 @@ export class AccountKeyCustodyService {
     // top of keys a caller has just handed over.
     this.#forget('locked');
     this.#hold(contentKey, indexKey);
+  }
+
+  /**
+   * Takes custody of a generation the caller has just promoted, and makes this
+   * device's epoch record rise through the same gate an unlock passes.
+   *
+   * **Why it exists at all.** The route that promotes a rotation answers 204
+   * carrying nothing, deliberately: this device's record may rise only after
+   * the four ordered refusals below have passed, so a generation handed back
+   * from that answer would be a number a client could advance its record from
+   * having judged nothing — an oracle rather than an observation. Somebody
+   * therefore has to read the account's keys again, open the promoted manifest
+   * under the **new** content key, and record the epoch. That somebody is this
+   * class.
+   *
+   * **The caller must not make those judgements itself, and that is the whole
+   * of the design decision.** A driver that ran them would be a second,
+   * weaker definition of the rule this gate exists to hold — one file away from
+   * the one that runs, agreeing with it on the day it was written and drifting
+   * the day either moves, with nothing going red about it. So the pair crosses
+   * this boundary and everything that decides whether it may be published stays
+   * on this side of it.
+   *
+   * **A refusal here locks the account and publishes the word**, which is
+   * honest rather than harsh: if the manifest the promotion filed does not
+   * agree with what the route serves back, the account really is in a state no
+   * factor clears, and reporting an open account over it would hand every
+   * screen keys that read nothing.
+   *
+   * **It returns `void`, for {@link unlock}'s reason.** The caller is a driver
+   * standing at the end of a run it has already reported finished; an awaitable
+   * round trip there is one refactor away from a `catch` that reports a whole
+   * rotation as failed over a body this browser could not read, on an account
+   * whose every row was rewritten perfectly. The only things a caller is
+   * entitled to are {@link status} and {@link unlockFailure}.
+   *
+   * **{@link adopt} is the other hand-over and it does none of this**, because
+   * nothing has been served to that browser yet for a manifest to disagree
+   * with: the account is being created by the request that is answering.
+   */
+  public adoptRotated(contentKey: CryptoKey, indexKey: CryptoKey): void {
+    // Custody ends the moment this starts, exactly as it does on an unlock, so
+    // "status is not `unlocked`" implies "this instance holds no key" at every
+    // instant. The pair being handed over is very probably the same account's,
+    // but a tab that kept the outgoing generation while the gate ran would be
+    // reporting an open account under keys the account has just stopped using.
+    const generation = this.#forget('unlocking');
+
+    void this.#confirm({ contentKey, indexKey }, generation);
   }
 
   /**
@@ -764,86 +824,17 @@ export class AccountKeyCustodyService {
   // the `unreachable` branch it would do it over one blinked request, which is
   // precisely the reading that class's fourth state exists to refuse. The
   // failure is published as a state, and the state is the handling.
-  //
-  // **Which account this is arrives from the API, and the identity read is a
-  // step of the gate rather than an errand beside it.** The epoch record below
-  // is filed per account, and the only per-account identifier a browser ever
-  // holds is the budget the session is scoped by. `SessionService` publishes it
-  // as a signal four characters away, and reading that signal is the tempting
-  // edge this whole class is built on the other side of — that class injects
-  // this one, so the edge closes a cycle. It would also be wrong on its own
-  // terms: the signal is `null` at the instant `unlock()` is called on the
-  // sign-in path, because `established()` starts its own read without awaiting
-  // it and sign-in unlocks on the line after, so the first unlock of every
-  // session would be filed under nothing.
   async #attempt(
     keyEncryptionKey: CryptoKey,
     generation: number,
   ): Promise<void> {
-    let answers: readonly [AccountKeyCustodyDto, MeDto];
+    const read = await this.#read(generation);
 
-    try {
-      // **Two reads, one `try`, one reading of what went wrong — and the
-      // sharing is the property rather than a saving of three lines.** A second
-      // `catch` written over the identity read, for a log line or a message of
-      // its own, would answer a refused identity read with whatever word that
-      // catch happened to pick — and `unreachable` is the one it would most
-      // plausibly pick, false by that word's own definition over a server that
-      // was reached and answered.
-      //
-      // **Cases pin that mapping over the identity read specifically, which is
-      // what makes a split here go red rather than quiet**: a pair over 401 and
-      // 403 asserting `unauthenticated`, beside one over a request that never
-      // arrived asserting `unreachable`. What the sharing buys on top of them is
-      // the rest of the reading, which no case can reach from this side. Routed
-      // through `failureOf`, "a 401 or a 403 is `unauthenticated`, a body this
-      // client cannot read is `unrecognised`, and everything else is
-      // `unreachable`" is true of both reads **by construction**: there is one
-      // reading of a failed read in this class, and both reads go through it.
-      //
-      // Together rather than in series, because neither answer is an input to
-      // the other request and somebody is waiting in front of a screen for both.
-      answers = await Promise.all([
-        firstValueFrom(this.#api.getAccountKeys()),
-        firstValueFrom(this.#api.getSessionOwner()),
-      ]);
-    } catch (error: unknown) {
-      // Never `unopened`: nothing about a read that did not come back says
-      // anything about the factor the person presented, and telling them to go
-      // and find their recovery card over a body nobody could read is the worse
-      // of the two wrong answers. A refused *body* is `unrecognised` — the
-      // server answered and this client did not recognise the answer, which is
-      // a fact about this read and not about the factor or the network.
-      this.#fail(AccountKeyCustodyService.failureOf(error), generation);
-
+    if (read === null) {
       return;
     }
 
-    const [custody, owner] = answers;
-    // Read as `unknown`, because a declared response type is an assertion about
-    // JSON rather than a check of it, and `''` is the absence of an answer
-    // wearing the type of one.
-    const budgetId: unknown = owner.budgetId;
-
-    // **A 200 carrying no budget is `unrecognised`, and it is refused here
-    // rather than shrugged off.** `SessionService` reads the same absence as
-    // `null` and carries on, deliberately: a body that says there is a session
-    // and whose it is still says that with one member missing, and taking the
-    // session status down over a version skew would sign somebody out. This
-    // path cannot make that trade. An unlock that does not learn which account
-    // it is opening can record nothing, and an unlock that records nothing
-    // cannot refuse a replay — so shrugging here would hand an operator a way
-    // to switch the rollback refusal off for every browser at once, by dropping
-    // one member from a response nothing else on this path reads.
-    //
-    // `unrecognised` and not `unreachable`, by that word's own definition: the
-    // server was reached and it answered. What was observed is an answer this
-    // client could not read, and a reload is the one act that changes it.
-    if (typeof budgetId !== 'string' || budgetId.length === 0) {
-      this.#fail('unrecognised', generation);
-
-      return;
-    }
+    const { custody, budgetId } = read;
 
     // **Every entry, in turn, each under its own `factorId`.** An account
     // holding one passkey and nothing else is answered with one entry, so the
@@ -885,44 +876,178 @@ export class AccountKeyCustodyService {
       return;
     }
 
-    // **The gate, and it runs once, here, after the loop and never inside it.**
+    await this.#settle(opened, custody, budgetId, generation);
+  }
+
+  // The same tail over a pair the caller is already holding, off the main path
+  // because {@link adoptRotated} returns nothing.
+  //
+  // **The read is made again here rather than carried over from the run that
+  // produced this pair**, and that is the point rather than a cost. What has to
+  // be judged is the manifest the promotion *filed*, as the route serves it
+  // now; a body read before the promotion describes the generation being
+  // replaced, and a client that judged that one would have confirmed the
+  // account it was leaving.
+  async #confirm(opened: HeldKeys, generation: number): Promise<void> {
+    const read = await this.#read(generation);
+
+    if (read === null) {
+      return;
+    }
+
+    await this.#settle(opened, read.custody, read.budgetId, generation);
+  }
+
+  // The two reads, the one reading of what went wrong, and the account they are
+  // about — or `null`, with the word already published.
+  //
+  // **One definition, reached by both ways into custody.** A copy of this on the
+  // second path would be a second reading of a failed read, and the one it would
+  // most plausibly pick for a refused identity read is `unreachable`, false by
+  // that word's own definition over a server that was reached and answered.
+  //
+  // **Which account this is arrives from the API, and the identity read is a
+  // step of the gate rather than an errand beside it.** The epoch record is
+  // filed per account, and the only per-account identifier a browser ever holds
+  // is the budget the session is scoped by. `SessionService` publishes it as a
+  // signal four characters away, and reading that signal is the tempting edge
+  // this whole class is built on the other side of — that class injects this
+  // one, so the edge closes a cycle. It would also be wrong on its own terms:
+  // the signal is `null` at the instant `unlock()` is called on the sign-in
+  // path, because `established()` starts its own read without awaiting it and
+  // sign-in unlocks on the line after, so the first unlock of every session
+  // would be filed under nothing.
+  async #read(generation: number): Promise<AccountRead | null> {
+    let answers: readonly [AccountKeyCustodyDto, MeDto];
+
+    try {
+      // **Two reads, one `try`, one reading of what went wrong — and the
+      // sharing is the property rather than a saving of three lines.** A second
+      // `catch` written over the identity read, for a log line or a message of
+      // its own, would answer a refused identity read with whatever word that
+      // catch happened to pick — and `unreachable` is the one it would most
+      // plausibly pick, false by that word's own definition over a server that
+      // was reached and answered.
+      //
+      // **Cases pin that mapping over the identity read specifically, which is
+      // what makes a split here go red rather than quiet**: a pair over 401 and
+      // 403 asserting `unauthenticated`, beside one over a request that never
+      // arrived asserting `unreachable`. What the sharing buys on top of them is
+      // the rest of the reading, which no case can reach from this side. Routed
+      // through `failureOf`, "a 401 or a 403 is `unauthenticated`, a body this
+      // client cannot read is `unrecognised`, and everything else is
+      // `unreachable`" is true of both reads **by construction**: there is one
+      // reading of a failed read in this class, and both reads go through it.
+      //
+      // Together rather than in series, because neither answer is an input to
+      // the other request and somebody is waiting in front of a screen for both.
+      answers = await Promise.all([
+        firstValueFrom(this.#api.getAccountKeys()),
+        firstValueFrom(this.#api.getSessionOwner()),
+      ]);
+    } catch (error: unknown) {
+      // Never `unopened`: nothing about a read that did not come back says
+      // anything about the factor the person presented, and telling them to go
+      // and find their recovery card over a body nobody could read is the worse
+      // of the two wrong answers. A refused *body* is `unrecognised` — the
+      // server answered and this client did not recognise the answer, which is
+      // a fact about this read and not about the factor or the network.
+      this.#fail(AccountKeyCustodyService.failureOf(error), generation);
+
+      return null;
+    }
+
+    const [custody, owner] = answers;
+    // Read as `unknown`, because a declared response type is an assertion about
+    // JSON rather than a check of it, and `''` is the absence of an answer
+    // wearing the type of one.
+    const budgetId: unknown = owner.budgetId;
+
+    // **A 200 carrying no budget is `unrecognised`, and it is refused here
+    // rather than shrugged off.** `SessionService` reads the same absence as
+    // `null` and carries on, deliberately: a body that says there is a session
+    // and whose it is still says that with one member missing, and taking the
+    // session status down over a version skew would sign somebody out. This
+    // path cannot make that trade. An unlock that does not learn which account
+    // it is opening can record nothing, and an unlock that records nothing
+    // cannot refuse a replay — so shrugging here would hand an operator a way
+    // to switch the rollback refusal off for every browser at once, by dropping
+    // one member from a response nothing else on this path reads.
     //
-    // Inside the loop it would be a second reason an entry can be skipped, and
-    // the two would be indistinguishable in the answer: "no factor opened"
-    // (`unopened`, present another one) and "a factor opened and the account's
-    // material does not agree with itself" (nothing another factor can help
-    // with) would arrive at the same place by the same road. Out here they are
-    // two branches with two causes.
-    //
-    // **The cost of that order, written down rather than left to be
-    // discovered.** Somebody who presents the wrong factor to a response
-    // somebody else has shaped is told `unopened` — *present another factor* —
-    // because the loop runs first and the loop's verdict about that factor is
-    // true. It is the cheaper of the two mistakes. The alternative announces
-    // that this account's material is not to be trusted to a browser that has
-    // not yet shown it holds anything of the account's at all, over a factor
-    // nothing has judged.
-    // **The word comes back from the gate rather than being decided here, and
-    // that is the change a boolean could not carry.** Almost everything it
-    // judges is `inconsistent`, and that is a word of its own because the remedy
-    // is the opposite of `unopened`'s. `unopened` says *present another factor*.
-    // Every factor of this account encapsulates the same two keys, so a pair
-    // that will not open this manifest will not open it under any of them: no
-    // passkey, none of the ten recovery codes, no browser and no number of
-    // reloads. The same is true of the three refusals beside that one — a
-    // response carrying no manifest, a served set that disagrees with the
-    // declared one, an epoch this device has already watched the account pass —
-    // because none of them is a fact about the person's authenticator either.
-    // Reported as `unopened`, any of the four sends somebody to spend their
-    // whole recovery card on a door that cannot open, with the screen telling
-    // them to keep going.
-    //
-    // **The one answer that is not that word is a manifest no cipher ever
-    // reached**, where `inconsistent`'s *nothing you hold will change this* is a
-    // sentence about a state this browser never observed, told to somebody a
-    // reload would have let straight in. The gate owns which of the two it is,
-    // because it is the only frame that sees what the manifest module threw; all
-    // this frame may do is publish it.
+    // `unrecognised` and not `unreachable`, by that word's own definition: the
+    // server was reached and it answered. What was observed is an answer this
+    // client could not read, and a reload is the one act that changes it.
+    if (typeof budgetId !== 'string' || budgetId.length === 0) {
+      this.#fail('unrecognised', generation);
+
+      return null;
+    }
+
+    return { custody, budgetId };
+  }
+
+  // What every way into custody that reads anything ends with: the gate, the
+  // record, and the publish.
+  //
+  // **Extracted rather than written twice, and that is this member's whole
+  // reason to exist.** Two spellings of these refusals agree on the day the
+  // second is written and stop agreeing the day either moves, silently — the
+  // copy still refuses everything whoever wrote it thought of. So a trial that
+  // opened an entry and a generation a caller has just promoted arrive here by
+  // two different roads and are judged by one.
+  //
+  // **The gate, and on the unlock path it runs once, after the loop and never
+  // inside it.**
+  //
+  // Inside the loop it would be a second reason an entry can be skipped, and
+  // the two would be indistinguishable in the answer: "no factor opened"
+  // (`unopened`, present another one) and "a factor opened and the account's
+  // material does not agree with itself" (nothing another factor can help
+  // with) would arrive at the same place by the same road. Out here they are
+  // two branches with two causes.
+  //
+  // **The cost of that order, written down rather than left to be
+  // discovered.** Somebody who presents the wrong factor to a response
+  // somebody else has shaped is told `unopened` — *present another factor* —
+  // because the loop runs first and the loop's verdict about that factor is
+  // true. It is the cheaper of the two mistakes. The alternative announces
+  // that this account's material is not to be trusted to a browser that has
+  // not yet shown it holds anything of the account's at all, over a factor
+  // nothing has judged.
+  //
+  // that is the change a boolean could not carry.** Almost everything it
+  // judges is `inconsistent`, and that is a word of its own because the remedy
+  // is the opposite of `unopened`'s. `unopened` says *present another factor*.
+  // Every factor of this account encapsulates the same two keys, so a pair
+  // that will not open this manifest will not open it under any of them: no
+  // passkey, none of the ten recovery codes, no browser and no number of
+  // reloads. The same is true of the three refusals beside that one — a
+  // response carrying no manifest, a served set that disagrees with the
+  // declared one, an epoch this device has already watched the account pass —
+  // because none of them is a fact about the person's authenticator either.
+  // Reported as `unopened`, any of the four sends somebody to spend their
+  // whole recovery card on a door that cannot open, with the screen telling
+  // them to keep going.
+  //
+  // **The one answer that is not that word is a manifest no cipher ever
+  // reached**, where `inconsistent`'s *nothing you hold will change this* is a
+  // sentence about a state this browser never observed, told to somebody a
+  // reload would have let straight in. The gate owns which of the two it is,
+  // because it is the only frame that sees what the manifest module threw; all
+  // this frame may do is publish it.
+  //
+  // **On the promotion path that publishing locks the account, and that is
+  // honest rather than harsh.** A manifest the promotion filed that does not
+  // agree with the set the route serves back is the account's material
+  // disagreeing with itself, and there is nothing whatever a person holds that
+  // changes it. Reporting an open account over that state would hand every
+  // screen a generation the account is not in.
+  async #settle(
+    opened: HeldKeys,
+    custody: AccountKeyCustodyDto,
+    budgetId: string,
+    generation: number,
+  ): Promise<void> {
     const refusal = await AccountKeyCustodyService.manifestRefusal(
       opened,
       custody,
@@ -947,7 +1072,7 @@ export class AccountKeyCustodyService {
     // browser is finished with that account.
     //
     // **Before the generation check**, because the two answer different
-    // questions. That check is about whether *this attempt* may publish keys
+    // questions. That check is about whether *this arrival* may publish keys
     // into a world that has moved on from it; this line is about what the
     // **device** observed, and the device observed this account at this epoch
     // whatever happened next. The record only ever rises, so writing it costs a
@@ -966,9 +1091,9 @@ export class AccountKeyCustodyService {
   }
 
   // Which word the account's material earns, or `null` when it agrees with
-  // itself: the manifest against the content key an entry just handed over,
-  // against what this device has already watched this account pass, and against
-  // the rows served beside it.
+  // itself: the manifest against the content key whichever way in has just
+  // produced, against what this device has already watched this account pass,
+  // and against the rows served beside it.
   //
   // **Four refusals, one word, and they are ordered rather than arranged.** Each
   // reads something the one before it proved: there is a manifest, it opened, so

@@ -56,8 +56,9 @@ everything.
 
 **The schema, the domain behaviour, the completeness gate, the handlers a run needs, the three routes
 that walk one, the read that resumes an interrupted one, a typed client for all four, the material a
-run carries, and the driver that spends it — now from either end. A browser can begin a rotation and
-walk it to its 204, and a browser that lost one to a reload can pick it up and finish it. What is
+run carries, and the driver that spends it — now from either end, and now ending in custody. A
+browser can begin a rotation, walk it to its 204 and be holding the promoted generation after it; a
+browser that lost one to a reload can pick it up, finish it and end the same way. What is
 still missing is the screen that presses either button.** `POST /api/me/key-rotation` stages a run,
 `POST /api/me/key-rotation/chunks` re-seals a batch of rows,
 `POST /api/me/key-rotation/completion` promotes the staged generation, and
@@ -132,8 +133,15 @@ walks a run — `KeyRotationService`, root-provided, whose entry point `begin()`
 material from one passkey assertion, posts the begin, reads the published inventory, collects every
 narrative row across the five arms, re-seals each under the next content key and recomputes each
 blind index under the next index key, posts them in chunks sized by the published budget, and posts
-the completion. It **stops at the 204**: taking custody of the promoted generation is not its act,
-so a rotation leaves the tab exactly as locked or unlocked as it found it. It holds both generations
+the completion, and hands the promoted generation to `AccountKeyCustodyService` before the two key
+fields go — so **a run that finishes unlocks the account in this tab**, which it has to: every row
+in the account has just been rewritten under a generation nothing else in the browser holds. **That
+hand-over makes no judgement.** `adoptRotated` re-reads `GET /api/me/account-keys` and `GET /api/me`
+and runs the same four ordered refusals an unlock runs over the manifest the promotion filed; a
+refusal there locks the account and publishes custody's own word, leaving the run's `failure` at
+`null` because the rotation really did reach its completion. A copy of that gate in the driver would
+be a second, weaker definition of a rule [account-keys.md](account-keys.md) spends a section on. It
+holds both generations
 in ECMAScript `#` fields with no accessor, publishes a phase, a numerator over a denominator and one
 refusal word as signals, and keeps **no per-row progress record anywhere** — the chunk route answers
 no count and the resume read carries none, and a client-side one would be a second numerator able to

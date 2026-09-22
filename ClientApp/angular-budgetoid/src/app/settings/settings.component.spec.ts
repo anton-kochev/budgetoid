@@ -542,6 +542,11 @@ class AccountKeyCustodyStub implements AccountKeyCustodySurface {
   public readonly unlockFailure = signal<UnlockFailure | null>(null);
   public unlock = vi.fn();
   public adopt = vi.fn();
+  // The hand-over a finished rotation makes. Nothing on this screen calls it —
+  // the key-rotation section is unbuilt — and it is here because the `Pick`
+  // census above did its job again: the service's public surface grew, and this
+  // stub was a compile error naming the missing member before anything ran.
+  public adoptRotated = vi.fn();
   public lock = vi.fn();
   // The three key-backed operations, here because the `Pick` census above did
   // exactly the job its own comment describes — twice now. The service's public

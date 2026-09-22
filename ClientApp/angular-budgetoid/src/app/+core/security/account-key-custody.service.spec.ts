@@ -692,6 +692,7 @@ const PUBLIC_SURFACE = new Set([
   'unlockFailure',
   'unlock',
   'adopt',
+  'adoptRotated',
   'lock',
   'sealField',
   'openField',
@@ -726,6 +727,16 @@ const FORBIDDEN_VALUE_IMPORTS = new Set(
     .filter(([, value]) => typeof value !== 'function')
     .map(([name]) => name),
 );
+
+// How many times `needle` appears in `source`, literally.
+//
+// Literal rather than a regular expression, because what the one caller below
+// looks for is a call site — `AccountKeyCustodyService.manifestRefusal(` — and
+// every character of that is a character somebody would have to type to make a
+// second copy of the rule.
+function occurrencesOf(source: string, needle: string): number {
+  return source.split(needle).length - 1;
+}
 
 // Every `public` member the class declares, by name.
 //
@@ -2867,6 +2878,411 @@ describe('AccountKeyCustodyService', () => {
     // would work perfectly and cost a registration one more request that can
     // fail at the happiest moment of the flow.
     expect(api.getAccountKeys).not.toHaveBeenCalled();
+  });
+
+  it('runs no gate over an adopted pair, and remembers nothing for this device', async () => {
+    // Arrange
+    // **The other half of the case above, and it is the one that goes red if
+    // `adopt` is ever routed through the gate its neighbour passes.** Nothing
+    // has been served to this browser at the moment registration hands these
+    // two objects over: the account was created by the request that is
+    // answering, and there is no response yet for a manifest to disagree with.
+    // A gate here would have nothing to read and would refuse the one path in
+    // the product that cannot be retried.
+    const contentKey = await keyEncryptionKey(0x6c);
+    const indexKey = await keyEncryptionKey(0x6d);
+
+    // Act
+    custody.adopt(contentKey, indexKey);
+
+    // Assert
+    expect(custody.status()).toBe('unlocked');
+    expect(custody.unlockFailure()).toBeNull();
+
+    // Neither route, and the identity read especially: it exists to say which
+    // account a *record* is filed under, and this path files none.
+    expect(api.getAccountKeys).not.toHaveBeenCalled();
+    expect(api.getSessionOwner).not.toHaveBeenCalled();
+
+    // And the device observed nothing. An epoch written from here would be a
+    // high-water mark raised from a number nobody judged, which is the whole of
+    // what the gate beside it exists to refuse.
+    expect(localStorage.length).toBe(0);
+  });
+
+  // **The second way into custody that presents no factor, and the only one of
+  // the two that still owes the gate.**
+  //
+  // A rotation ends at a 204 carrying nothing, deliberately: a generation handed
+  // back from that route would be a number a client could advance its record
+  // from having judged nothing, which is an oracle rather than an observation.
+  // So the browser that drove the run is already holding the promoted pair, and
+  // what it owes before this class may report an open account is the four
+  // refusals an unlock owes — against the manifest that promotion has just
+  // filed, read back off the route rather than taken from the caller.
+  //
+  // **The driver must not make those refusals itself**, which is what this
+  // member exists for: a second reading of the manifest one file away is a
+  // second, weaker definition of the rule, and the day either moves they stop
+  // agreeing with nothing going red.
+  describe('taking custody of a generation just promoted', () => {
+    // The account's own two keys as key objects, the way the caller of this
+    // member is holding them. From **copies**, because both doors wipe what they
+    // are handed and the same material has to reach the fixtures.
+    async function keyPairOf(keys: AccountKeys): Promise<{
+      contentKey: CryptoKey;
+      indexKey: CryptoKey;
+    }> {
+      return {
+        contentKey: await importAesGcmKey(Uint8Array.from(keys.contentKey)),
+        indexKey: await importHmacSha256Key(Uint8Array.from(keys.indexKey)),
+      };
+    }
+
+    it('unlocks holding the pair it was handed, once the account agrees with itself', async () => {
+      // Arrange
+      // The positive control every refusal below stands on: without it, a member
+      // that refused every promotion there has ever been would satisfy all of
+      // them.
+      const keys = generateAccountKeys();
+      const kek = await keyEncryptionKey(0xc0);
+      const factor = await factorFor(kek, FIRST_FACTOR_ID, keys);
+      const { contentKey, indexKey } = await keyPairOf(keys);
+      // Sealed and keyed **before** the hand-over, under the very objects that
+      // are about to cross it, so the two assertions below are about which keys
+      // this class is holding rather than about which keys this case has.
+      const wire = await sealNarrativeField(contentKey, 'Everything', BINDING);
+      const indexBinding = firstIndexBinding();
+      const expected = await computeBlindIndex(
+        indexKey,
+        indexBinding,
+        'Everything',
+      );
+
+      api.getAccountKeys.mockReturnValue(of(await custodyWith(keys, [factor])));
+
+      // Act
+      custody.adoptRotated(contentKey, indexKey);
+      await settled(custody);
+
+      // Assert
+      expect(custody.status()).toBe('unlocked');
+      expect(custody.unlockFailure()).toBeNull();
+
+      // **Both keys, through the operations that delegate**, because there is no
+      // accessor to read either of them with and there never may be one. A
+      // member that took the content key and dropped the index key on the floor
+      // reports `unlocked` and breaks every lookup in the product.
+      await expect(custody.openField(BINDING, wire)).resolves.toEqual({
+        state: 'text',
+        value: 'Everything',
+      });
+      await expect(
+        custody.blindIndex(indexBinding, 'Everything'),
+      ).resolves.toEqual({ state: 'computed', value: expected });
+    });
+
+    it('records the epoch the promoted manifest was sealed at', async () => {
+      // Arrange
+      // Eight rather than one, so a record written from a constant, from the
+      // manifest's floor or from the count of anything is a different number
+      // from the one asserted.
+      const keys = generateAccountKeys();
+      const kek = await keyEncryptionKey(0xc1);
+      const factor = await factorFor(kek, FIRST_FACTOR_ID, keys);
+      const { contentKey, indexKey } = await keyPairOf(keys);
+
+      api.getAccountKeys.mockReturnValue(
+        of(await custodyWith(keys, [factor], 8)),
+      );
+
+      // Act
+      custody.adoptRotated(contentKey, indexKey);
+      await settled(custody);
+
+      // Assert
+      // The adoption succeeded first, or "the record is 8" is a claim about a
+      // path that never reached the keys.
+      expect(custody.status()).toBe('unlocked');
+      expect(highestRotationEpochSeen(SESSION_BUDGET_ID)).toBe(8);
+    });
+
+    it('reads both routes rather than trusting what it was handed', async () => {
+      // Arrange
+      // **The case that reddens the whole of the shortcut.** A member that
+      // simply held the pair would report `unlocked` from every arrangement in
+      // this describe and would be indistinguishable from the correct one
+      // wherever the account is healthy. It asks the key route because the
+      // manifest is what confirms the promotion happened, and the identity route
+      // because a record is filed per account and nothing else on this path
+      // carries the account.
+      const keys = generateAccountKeys();
+      const kek = await keyEncryptionKey(0xc2);
+      const factor = await factorFor(kek, FIRST_FACTOR_ID, keys);
+      const { contentKey, indexKey } = await keyPairOf(keys);
+
+      api.getAccountKeys.mockReturnValue(of(await custodyWith(keys, [factor])));
+
+      // Act
+      custody.adoptRotated(contentKey, indexKey);
+      await settled(custody);
+
+      // Assert
+      expect(custody.status()).toBe('unlocked');
+      expect(api.getAccountKeys).toHaveBeenCalled();
+      expect(api.getSessionOwner).toHaveBeenCalled();
+
+      // And still nothing on `SessionService`. The edge that would close the
+      // cycle is no less tempting on this path than on the unlock.
+      expect(session.budgetId).not.toHaveBeenCalled();
+      expect(session.ended).not.toHaveBeenCalled();
+      expect(session.established).not.toHaveBeenCalled();
+    });
+
+    it('returns nothing at all, and nothing anybody can await', async () => {
+      // Arrange
+      const keys = generateAccountKeys();
+      const kek = await keyEncryptionKey(0xc3);
+      const factor = await factorFor(kek, FIRST_FACTOR_ID, keys);
+      const { contentKey, indexKey } = await keyPairOf(keys);
+
+      api.getAccountKeys.mockReturnValue(of(await custodyWith(keys, [factor])));
+
+      // Act
+      const returned = custody.adoptRotated(contentKey, indexKey);
+
+      // Assert
+      // **`void`, for `unlock`'s reason.** The caller here is a driver standing
+      // at the end of a run it has already reported finished; an awaitable round
+      // trip there is one refactor away from a `catch` that turns a manifest
+      // this browser could not read into a rotation reported as failed, over an
+      // account whose every row was rewritten perfectly.
+      expect(returned).toBeUndefined();
+      expect(
+        (returned as { then?: unknown } | undefined)?.then,
+      ).toBeUndefined();
+
+      await settled(custody);
+    });
+  });
+
+  // **One gate, two ways in, and this describe is what stops them drifting.**
+  //
+  // Both members end in the same four refusals over the same body, and the two
+  // are one extracted tail in the source. A copy made of that tail would pass
+  // every case above on the day it was written and would stop agreeing the day
+  // either half moved — silently, because the copy still refuses everything the
+  // person who wrote it thought of.
+  //
+  // Two halves, neither of which covers the other. The table below runs the same
+  // arrangements through both entry points, so a refusal dropped from either is
+  // a red bar naming which. The source scan under it says there is **one**
+  // definition to drop a refusal from, which no behavioural case can see: two
+  // copies that happen to agree today satisfy every row here.
+  describe('the gate is one definition and both ways in pass it', () => {
+    // What an arrangement leaves behind for whichever entry point is about to
+    // be driven: the account's own material, and the key-encryption key the one
+    // served factor was filed under.
+    interface Arrangement {
+      readonly keys: AccountKeys;
+      readonly kek: CryptoKey;
+    }
+
+    interface GateRefusal {
+      readonly why: string;
+      /** What this device had already watched this account reach, or nothing. */
+      readonly before: number | null;
+      /** What it must still be afterwards. */
+      readonly after: number | null;
+      readonly arrange: () => Promise<Arrangement>;
+    }
+
+    interface WayIn {
+      readonly how: string;
+      // `void` as well as a promise, because one of the two takes the key it
+      // was handed and the other has two imports to make first. Neither member
+      // under test returns anything anybody can await, which is the rule both
+      // of them keep.
+      readonly present: (
+        service: AccountKeyCustodyService,
+        arrangement: Arrangement,
+      ) => Promise<void> | void;
+    }
+
+    // The four the gate makes, each over a body that is impeccable in every
+    // other respect — so the refusal named is the only one that can fire, and a
+    // row that stopped firing would report `unlocked` rather than some other
+    // word.
+    const GATE_REFUSALS: readonly GateRefusal[] = [
+      {
+        why: 'a response carrying no manifest',
+        before: null,
+        after: null,
+        arrange: async (): Promise<Arrangement> => {
+          const keys = generateAccountKeys();
+          const kek = await keyEncryptionKey(0xc4);
+
+          // Epoch 7 beside a `null` manifest, for the reason the unlock's own
+          // record cases give: a manifest-less body at epoch 0 is refused by the
+          // record's floor, so the row would be held by the store rather than by
+          // this class.
+          api.getAccountKeys.mockReturnValue(
+            of({
+              ...custodyOf([await entryFor(kek, FIRST_FACTOR_ID, keys)]),
+              rotationEpoch: 7,
+            }),
+          );
+
+          return { keys, kek };
+        },
+      },
+      {
+        why: 'a manifest that did not open under the content key',
+        before: null,
+        after: null,
+        arrange: async (): Promise<Arrangement> => {
+          const keys = generateAccountKeys();
+          const kek = await keyEncryptionKey(0xc5);
+          const factor = await factorFor(kek, FIRST_FACTOR_ID, keys);
+
+          // Sealed under the account's index key, which is what a client that
+          // encapsulated the two halves the wrong way round looks like from
+          // here.
+          api.getAccountKeys.mockReturnValue(
+            of(await custodyWith(keys, [factor], 7, keys.indexKey)),
+          );
+
+          return { keys, kek };
+        },
+      },
+      {
+        why: 'an epoch below one this device has watched the account pass',
+        before: 9,
+        after: 9,
+        arrange: async (): Promise<Arrangement> => {
+          const keys = generateAccountKeys();
+          const kek = await keyEncryptionKey(0xc6);
+          const factor = await factorFor(kek, FIRST_FACTOR_ID, keys);
+
+          api.getAccountKeys.mockReturnValue(
+            of(await custodyWith(keys, [factor], 3)),
+          );
+
+          return { keys, kek };
+        },
+      },
+      {
+        why: 'a served factor the manifest does not account for',
+        before: null,
+        after: null,
+        arrange: async (): Promise<Arrangement> => {
+          const keys = generateAccountKeys();
+          const kek = await keyEncryptionKey(0xc7);
+          const intruderKek = await keyEncryptionKey(0xc8);
+          const mine = await factorFor(kek, FIRST_FACTOR_ID, keys);
+          const intruder = await factorFor(intruderKek, SECOND_FACTOR_ID, keys);
+          const body = await custodyWith(keys, [mine], 7);
+
+          api.getAccountKeys.mockReturnValue(
+            of({ ...body, factors: [mine.entry, intruder.entry] }),
+          );
+
+          return { keys, kek };
+        },
+      },
+    ];
+
+    const WAYS_IN: readonly WayIn[] = [
+      {
+        how: 'a factor presented',
+        present: (service, { kek }): void => {
+          service.unlock(kek);
+        },
+      },
+      {
+        how: 'a generation just promoted',
+        present: async (service, { keys }): Promise<void> => {
+          service.adoptRotated(
+            await importAesGcmKey(Uint8Array.from(keys.contentKey)),
+            await importHmacSha256Key(Uint8Array.from(keys.indexKey)),
+          );
+        },
+      },
+    ];
+
+    it.each(
+      WAYS_IN.flatMap((way) =>
+        GATE_REFUSALS.map((refusal) => ({ ...way, ...refusal })),
+      ),
+    )(
+      'locks over $why, and records nothing, through $how',
+      async ({ arrange, present, before, after }) => {
+        // Arrange
+        if (before !== null) {
+          recordRotationEpochSeen(SESSION_BUDGET_ID, before);
+        }
+
+        const arrangement = await arrange();
+
+        // Act
+        await present(custody, arrangement);
+        await settled(custody);
+
+        // Assert
+        // **The word is the same one for all four, and that is the rule rather
+        // than an accident of this table.** They share one next step — nothing
+        // this person holds changes it — and a person offered four shades of
+        // that is being handed a diagnosis this client cannot make.
+        expect(custody.status()).toBe('locked');
+        expect(custody.unlockFailure()).toBe('inconsistent');
+
+        // And the device remembered nothing it had not already watched. A
+        // refusal that wrote the epoch it refused is a defence that disarms
+        // itself on the second attempt.
+        expect(highestRotationEpochSeen(SESSION_BUDGET_ID)).toBe(after);
+        // Nothing under some other key either — a factor id, a shared key, the
+        // epoch alone. A record this device cannot read back still denies a
+        // legitimate manifest the day the spelling is corrected.
+        expect(localStorage.length).toBe(before === null ? 0 : 1);
+      },
+    );
+
+    it('calls the gate and the record from exactly one place', () => {
+      // Arrange, Act
+      const source = readFileSync(CUSTODY_SOURCE, 'utf8');
+
+      // Assert
+      // **Call sites and not declarations.** The gate is a `private static`, so
+      // its own declaration line carries no class prefix and is not counted;
+      // the record's import specifier carries no parenthesis and is not counted
+      // either. What is counted is the number of places in this file that judge
+      // a manifest and the number that raise a device's high-water mark, and
+      // both are one.
+      expect(
+        occurrencesOf(source, 'AccountKeyCustodyService.manifestRefusal('),
+        'the manifest gate is judged from more than one place in this class',
+      ).toBe(1);
+      expect(
+        occurrencesOf(source, 'recordRotationEpochSeen('),
+        "this device's high-water mark is raised from more than one place",
+      ).toBe(1);
+    });
+
+    it('would report a second call site', () => {
+      // Arrange, Act, Assert
+      // The negative control, and the case that makes the one above worth
+      // anything: it is green over an `occurrencesOf` that never looked.
+      expect(
+        occurrencesOf(
+          [
+            'await AccountKeyCustodyService.manifestRefusal(a, b, c);',
+            'await AccountKeyCustodyService.manifestRefusal(d, e, f);',
+          ].join('\n'),
+          'AccountKeyCustodyService.manifestRefusal(',
+        ),
+      ).toBe(2);
+      expect(occurrencesOf('nothing of the sort', 'manifestRefusal(')).toBe(0);
+    });
   });
 
   it('drops what an attempt opened when the world moved while the cipher ran', async () => {
