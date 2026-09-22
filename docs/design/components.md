@@ -1806,13 +1806,30 @@ keep.
 **Eleven words, from three sources, and no sentence is shared with a section that means something
 else by it.**
 
-**The ceremony's five are rendered verbatim from the Account keys chapter's table** —
-`unsupported`, `cancelled`, `no-prf`, `ceremony-failed`, `unknown` — including their closing
-*Nothing has changed.* That borrowing is honest because of a constraint on the flow rather than a
-judgement about the words: **the ceremony is the first thing either press does, and nothing is
-posted until it answers.** On a begin nothing has been written; on a resume nothing new has. A flow
-that ever posted before the ceremony would make five sentences false at once, which is why the
-order is stated here as a rule and not as an implementation note.
+**The ceremony's five come from the Account keys chapter's table, four of them verbatim** —
+`unsupported`, `cancelled`, `no-prf` and `ceremony-failed` — including their closing *Nothing has
+changed.* That borrowing is honest because of a constraint on the flow rather than a judgement about
+the words: **the ceremony is the first thing either press does, and nothing is posted until it
+answers.** On a begin nothing has been written; on a resume nothing new has. A flow that ever posted
+before the ceremony would make five sentences false at once, which is why the order is stated here
+as a rule and not as an implementation note.
+
+**The fifth is the one that cannot travel, because it is the only one of the five that names an
+act.** Custody's line is *Budgetoid couldn’t finish unlocking.*, and the other four say what a
+*device* or a *browser* did, which is the same fact on any screen that asks for a passkey. Here it
+becomes:
+
+| Word | Copy |
+| --- | --- |
+| `unknown` | "Budgetoid couldn’t finish rotating your keys. Nothing has changed — try again." |
+
+The shape is custody's, down to the clause: the subject is the software, the act is the one this
+screen offers, and the closing promise is the one the ordering rule above makes true. Only the act
+is renamed, and it has to be — a person who pressed **Rotate keys** and is told that unlocking
+failed has been handed a sentence about a control one section up, and the obvious next move it
+suggests is to go and press that one, which changes nothing about why this failed. It reads as
+act-neutrally on **Finish rotating** as on **Rotate keys**: both presses are rotating this account's
+keys, and neither has written anything by the time this line can appear.
 
 **Six are this section's own**, and they differ from custody's five where they share a word: each
 says what became of the run, which the Account keys lines have no run to say anything about.
@@ -1983,14 +2000,8 @@ makes in `ngOnInit`, and it is what decides which control there is to draw. **Fi
 unlocks the account in this tab, as the section above specifies**, and no copy anywhere advertises
 it.
 
-**Four departures, each named as work rather than smoothed over by moving the target.**
+**Three departures, each named as work rather than smoothed over by moving the target.**
 
-- **`unknown`'s sentence names the wrong act.** The five ceremony words are rendered verbatim from
-  the Account keys table as this chapter directs, and four of them are act-neutral. The fifth reads
-  *Budgetoid couldn’t finish unlocking.* — which is what a person sees when a rotation's challenge
-  never arrives. Verbatim was built because the chapter says verbatim; the line needs its own
-  wording, and giving it one is a copy decision this book makes rather than an implementation
-  detail.
 - **A finished run says nothing.** The phase table has three rows, and `finished` is not one of them
   — while the paragraph about a re-sent completion says "the section reports a rotation that is
   done". Nothing is invented in the template: the region is empty at `idle` and at `finished` alike.

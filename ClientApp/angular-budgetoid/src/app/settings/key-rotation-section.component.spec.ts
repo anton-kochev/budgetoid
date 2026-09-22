@@ -79,7 +79,9 @@ const RUN_REFUSALS = {
     're-encrypted stay that way.',
 } as const satisfies Record<KeyRotationFailure, string>;
 
-// The ceremony's five, rendered verbatim from the Account keys chapter's table.
+// The ceremony's five, from the Account keys chapter's table — four verbatim,
+// and `unknown` with its act renamed, because it is the only one of the five
+// that names one.
 // The borrowing is honest because of a constraint on the flow rather than a
 // judgement about the words: the ceremony is the first thing either press does
 // and nothing is posted until it answers, so *Nothing has changed.* is true on a
@@ -97,7 +99,8 @@ const CEREMONY_REFUSALS = {
   'ceremony-failed':
     'Your device didn’t finish the passkey check. Nothing has changed.',
   unknown:
-    'Budgetoid couldn’t finish unlocking. Nothing has changed — try again.',
+    'Budgetoid couldn’t finish rotating your keys. Nothing has changed — try ' +
+    'again.',
 } as const satisfies Record<RotationCeremonyFailure, string>;
 
 type KeyRotationSurface = Pick<KeyRotationService, keyof KeyRotationService>;
@@ -409,7 +412,7 @@ describe('KeyRotationSectionComponent', () => {
       RotationCeremonyFailure,
       string,
     ])[],
-  )('says what the device did when a press stopped on %s', (word, sentence) => {
+  )('says what became of a press when it stopped on %s', (word, sentence) => {
     // Arrange
     flow.failure.set(word);
 
