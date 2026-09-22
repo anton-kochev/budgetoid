@@ -160,6 +160,34 @@ again, and state a loss nobody can reverse — without any of it reading as alar
 - **Say what is not yet true, on every step.** "Nothing is saved until the last step."
   removes the reason to be afraid of leaving, so no dialog has to ask.
 
+## A long act that cannot be undone
+
+A key rotation is the first thing the product does that is destructive, slow, and interruptible all
+at once, and each of those three pulls the copy in a different direction. The chapter specifying it
+is [components](components.md); what belongs here is the four rules its sentences answer to, because
+the next act of this shape will reach for them.
+
+- **Say what the act does, never how long it takes.** "This may take a few minutes." is the
+  sentence to refuse: nothing measures it, a figure taken off one machine does not transport, and a
+  person told minutes and given ten has been lied to by their own interface. A determinate bar is
+  the honest version of that sentence, and a phase word beside it says more than a percentage does.
+- **State the consequence as a fact, in its own block.** "This rewrites every record in the account,
+  and nothing can put the old keys back." No label above it, no icon standing in for one — the
+  secret-shown-once rule, for the same reason: a label tells the reader to brace instead of to read.
+- **Say what an interruption costs, before it can happen.** "If this tab closes part-way through,
+  the rotation stops where it is and this section offers to finish it — a rotation picked up again
+  starts over from the first record." A progress bar that restarts looks broken to anybody who was
+  not told, and this is the sentence that makes it read as honest instead.
+- **An acknowledgement may name a future act when there is no past one to name.** "I’ll leave this
+  tab open until it finishes." departs from the rule above it knowingly: nothing precedes a rotation
+  the way saving the codes precedes leaving the hand-off, so the label names the one act that is the
+  person’s to perform while it runs, and what it asserts is true at the moment it is ticked. "I
+  understand this can’t be undone" is still refused — it asks for a feeling.
+- **Every standing sentence stays true while the act is running and after it has finished.** Copy
+  written as what the act *does*, rather than as what is about to happen, survives all three states;
+  copy written for the resting state has to be swapped out mid-run, and the swap is what nobody
+  maintains.
+
 ## Marketing voice (Welcome and public surfaces)
 
 Currency-free, no feature lists, no trust-claim lists, no gimmick lines. The shipped

@@ -132,7 +132,7 @@ label style `label` (Inter 600 15), icon 20 with 8px gap.
 | Primary | `--mat-sys-primary` fill | `--mat-sys-on-primary` | The screen's one main action |
 | Outline | `--bud-surface`, 1px `--bud-hairline` border | `--bud-text` | Secondary actions; the provider control on the registration flow's introduction step is this spec |
 | Ghost | transparent | `--bud-accent-text` | Tertiary, inline, and dialog-dismiss actions |
-| Destructive | `--bud-over` fill | `#FFFFFF` | Deleting and erasing, only after confirmation UI |
+| Destructive | `--bud-over` fill | `#FFFFFF` | Deleting, erasing, and any act with no way back; only after confirmation UI |
 
 One primary button per view. Hover on Outline may invert to primary fill; Ghost and icon
 buttons use state layers. Icon-only buttons: 40px visual, 48px target, always
@@ -141,9 +141,17 @@ shared provider sign-in button, deleted when the provider stopped signing anybod
 the provider control that replaced it is a plain Material `outlined`. Read the inversion as
 the target, like the rest of this table.
 
+**The fill makes two promises and an act needs only the second to earn it**: that a confirmation
+follows, and that there is no way back. Deleting and erasing keep both, which is why the Use column
+above named them first and for a long time named nothing else. The key-rotation control is the first
+to take the fill without deleting anything — it overwrites every sealed value in an account in
+place, keeps no copy of what was there, and ends with the previous keys opening nothing, which is
+its purpose rather than a side effect. Read the column as the second promise with two examples in
+front of it, not as a list of two.
+
 A destructive action whose confirmation UI does not exist yet is specified as **Outline,
-disabled** — never Destructive. The Destructive fill is a promise that a confirmation
-follows, and a control that cannot be activated should not make it. Disabled is not
+disabled** — never Destructive. A control that cannot be activated should not promise that a
+confirmation follows. Disabled is not
 self-explanatory either: a `[disabled]` button leaves the tab order and screen readers skip
 it, so the sentence saying what it waits on is **visible prose beside the button**, never a
 `title`, a tooltip, or an `aria-describedby` on the disabled element. A control that is
@@ -1587,6 +1595,333 @@ locked, and the [locked account](#the-locked-account) chapter is what each conte
 the meantime. This control is the only way out of that state, which is why nothing may put it behind
 one.
 
+## Key rotation section
+
+The act that gives an account new keys and rewrites every sealed value in it under them. M3 base:
+**none** — prose, one checkbox, one button, one `role="status"` region and one `progressbar`, for
+the reason the two sections above it have none: one act about one thing is a sentence, and every
+component that would wrap it exists to group things there is more than one of.
+
+It sits on `/app/settings` **between Account keys and What we can read**, which is a narrower claim
+than the placement rule alone makes. The rule — Export and Erase are a pair, so nothing goes
+between them and everything else arrives above them — permits anywhere above that pair. The
+narrowing is argued below, because the section it displaces argued its own position and that
+argument is still good.
+
+### Why it goes above the transparency statement rather than below it
+
+**What we can read** claims the last place above Export and Erase, and the reason it gives is that
+the two controls beneath it are what somebody reaches for when the statement tells them something
+they are not willing to live with. That argument names the acts *below* the statement as its
+remedies.
+
+**A rotation is not one of those remedies, and placing it under the statement would say it is.**
+Nothing in those three paragraphs reads differently after a rotation: the operator sees the same
+columns, the same lengths and the same short codes beside the same names. A control offered
+directly under a statement, beside two that answer it, is offered as a third answer to it — and
+this one would be answering a question it does not touch. Above the statement, beside Unlock, it
+reads as what it is: the second thing this screen does with the account's keys.
+
+### Why it is a section and not a route
+
+The Account keys chapter's argument transfers unchanged and is not re-derived here: `/app/rotate` is
+an address anybody can open, including somebody with nothing to rotate, so the chapter specifying it
+would owe a second design for a screen about nothing.
+
+**A second reason belongs to this section alone.** A rotation that was interrupted survives only as
+*server* state — a staging row and one seal per factor, and nothing in the browser — so the way back
+into one has to be somewhere a person arrives without being sent. They arrive here. A route would
+have to be linked from somewhere, and the only honest place to link it from is this screen, which
+leaves the route as a second address for the thing the link already is.
+
+### Two key sections, and neither control waits on the other
+
+**A rotation does not wait on an unlock.** It runs its own passkey ceremony and holds its own copy
+of both generations — the argument is
+[key-rotation.md](../business-logic/key-rotation.md)'s, and the short version is that a resumed run
+has no unlocked custody to borrow from, so the driver must be able to do this from one ceremony or
+there are two mechanisms for one job.
+
+Three consequences, and the third is the one a writer gets wrong:
+
+- **Rotate is offered on a locked account**, at full strength, with no sentence about unlocking
+  first.
+- **The two controls can be pressed in either order** and neither section's copy may imply a
+  sequence.
+- **Finishing a rotation unlocks the account in this tab.** The promotion hands the new generation
+  to custody through the same gate an unlock passes, so somebody who arrived at a locked account and
+  pressed Rotate ends up holding keys. That is a fact about the act, not a feature to advertise:
+  no copy here offers rotation as a way to unlock, because a person who wants to read their records
+  should press the control that takes a second.
+
+### The copy is the specification
+
+Two blocks, and the second is the consequence. They are two because the consequence has to be able
+to stand on its own next to the gate, per the recovery-code hand-off's rule — a consequence folded
+into standing prose is read once by somebody who came for something else.
+
+> Rotating gives your account new keys and re-encrypts every name and note under them. Every passkey
+> and recovery code you have keeps working — the old keys stop opening anything.
+
+> This rewrites every record in the account, and nothing can put the old keys back. If this tab
+> closes part-way through, the rotation stops where it is and this section offers to finish it — a
+> rotation picked up again starts over from the first record.
+
+**Both blocks are standing prose, so both have to be true at rest, while a run is in flight, and
+after one has finished** — the Account keys chapter's rule, applied to a longer act. Written as what
+rotating *does*, rather than as what is about to happen, every sentence survives all three.
+
+**Five sentences a writer reaches for, and why each is refused:**
+
+- *Nothing is saved until you press Rotate.* The registration flow's line, and it is the one most
+  likely to be pasted here. It is false: a run writes from its first accepted chunk, and the
+  staging row is written before that.
+- *This may take a few minutes.* A wall-clock promise nothing measures. The
+  [frontend performance](../engineering/frontend-performance.md) rule about figures that do not
+  transport applies harder to a number said to a person than to one in a doc — the bar is the honest
+  version of this sentence.
+- *You will need to unlock again afterwards.* False, per the section above.
+- *Your records are safe while this runs.* A reassurance with nothing checkable in it, and the copy
+  rule on this screen is a fact about the system with nothing around it.
+- *Rotate your keys if you think one has leaked.* Advice, and advice the product cannot support: it
+  has nothing to tell the person about whether one has.
+
+### The Rotate control
+
+- **Destructive** (`--bud-over` fill, `#FFFFFF` label), 48px target, visible label **Rotate keys**.
+- **Not Primary.** Export is the screen's one main action and a screen with two is a screen with
+  none — Sign out's reason, unchanged.
+- **Not Outline.** That is Unlock's treatment and Unlock's reason is that nothing is lost either
+  way. Something is lost here, deliberately.
+- **Not Outline-disabled.** That treatment is for a destructive act whose confirmation UI does not
+  exist. Here it does, and it is the checkbox immediately above the button.
+- **This is the first control in the book to take the Destructive fill without deleting anything,
+  and the Buttons table is widened in the same commit to say so.** The fill is two promises — a
+  confirmation follows, and there is no way back — and a rotation keeps the second as squarely as an
+  erasure does. Every narrative column in the account is overwritten in place, no copy of the
+  previous ciphertext is kept anywhere, and making the previous keys stop opening things is the
+  act's *purpose* rather than a side effect of it.
+- **No composed accessible name.** It is the only Rotate on the screen.
+- **While a run is in flight it takes `disabledInteractive` and `aria-busy="true"`** — the Unlock
+  control's treatment and the Unlock control's reason, which is not restated here.
+- **The attribute and the handler's guard read one predicate with one owner.** The flow service
+  publishes "a run is in flight" and the control's `disabled`, its `aria-busy` and the handler all
+  bind that one signal. The drift this prevents, and the defect it already caused once on the Unlock
+  control, are argued there and not argued again.
+- **It is replaced, not joined, when there is a run to finish.** The resume read answers either "no
+  rotation" or one rotation, so the section draws exactly one control: **Rotate keys**, or **Finish
+  rotating** with the date the run started in the line above it. Two controls would ask a person to
+  choose between starting over and continuing, which is a choice with a wrong answer.
+
+### The acknowledgement, and the one rule it departs from
+
+- **A checkbox above the control.** The control takes `disabledInteractive` until it is ticked —
+  the Buttons chapter's third case, a control waiting on the person rather than on work — and needs
+  no sentence beside it, because the thing it waits on is the visible control immediately above.
+- **The gate is in the click handler as well as in the attribute, and that is not belt and braces.**
+  Material's click-halt is applied to anchors only, so on a `<button>` the DOM `disabled` property
+  stays `false` and the click reaches the component. On the registration step the cost of getting
+  this wrong is an account created for somebody who acknowledged nothing; here it is a run begun by
+  somebody who acknowledged nothing, which writes to every row they own.
+- **The consequence is its own block above, never the checkbox's label** — the hand-off's rule. A
+  label carrying the consequence is read by the person who has already decided to tick it.
+- **The label is** *I’ll leave this tab open until it finishes.*
+- **It arrives unticked every time the section is drawn, including on a resume.** A box that arrives
+  ticked acknowledges nothing, and a resumed run rewrites the account exactly as the first press
+  did.
+- **This is the book's second acknowledgement and the first whose act has not happened yet, which
+  departs from [voice](voice.md) knowingly.** That rule — an acknowledgement is what the person did,
+  not what they promise — exists because a promise is not checkable, and the hand-off had a real
+  prior act to name. Nothing precedes a rotation the way saving the codes precedes leaving the
+  hand-off. So the label names the one act that is the person's to perform *during* the run, in
+  their own words, and the thing it asserts is true at the moment it is ticked: the tab is open.
+  Refused, and for voice's own reasons: *I understand this can’t be undone*, which asks for a
+  feeling; and *I’ve saved my recovery codes*, which is true of a different screen and would send
+  somebody away before an act that keeps those codes working.
+- **The gate is not a threat, and the consequence block is what keeps it from reading as one.**
+  Breaking the promise costs time rather than records — the section offers to finish the run. It
+  still earns a gate, because the cost of breaking it is the whole account being re-sealed a second
+  time from the first record.
+
+### Anatomy
+
+- A settings section per the spec above: `<section aria-labelledby>`, `eyebrow` heading **Key
+  rotation**, `--bud-space-4` between heading and content, `--bud-space-7` to the next section,
+  prose capped at 65ch. One grid column, `justify-items: start`, `--bud-space-4` gap at every width,
+  for the reason the two sections above give: one control, no rows, nothing for a second column to
+  carry.
+- **The order inside the section is the reading order the act needs**: standing prose, consequence
+  block, checkbox, control, progress block. The consequence is read before the gate and the gate
+  before the press, and nothing between them competes for the eye.
+- **One `role="status"` region, in the DOM from first paint and empty at rest**, carrying the phase
+  sentence and every refusal. `status` and never `alert`: the person asked for this.
+- **The bar is not inside the region, and that is the one accessibility decision this section makes
+  that the sections above did not have to.** A determinate `progressbar` whose value moves once per
+  accepted chunk, inside a live region, narrates a number several hundred times over one run. The
+  region holds the phase sentence, which changes three times; the bar sits beside it in reading
+  order carrying its own `aria-valuenow`, `aria-valuemax` and label, and announces nothing. It is
+  the rule [accessibility](accessibility.md) already states about the recovery codes — content is
+  not an announcement — reached from the other end.
+- **The phase sentence reserves one line box** (`min-height: 1lh`), so nothing below it moves when
+  a phase changes.
+
+### The progress line
+
+**One denominator, published once, and a numerator that counts only what the server accepted.** The
+inventory arrives with the begin and is republished on a resume; the chunk route answers no count
+and the resume read carries none, by design. So the denominator is the inventory's five narrative
+arms, and the numerator is **rows carried by a chunk the server answered 204** — never rows
+collected, never rows sealed, never rows queued. A chunk is all-or-nothing in one save, so 204 is
+the only increment that is honest at the moment it is drawn.
+
+**Three phases, and the word carries more than the percentage does:**
+
+| Phase | Copy | Bar |
+| --- | --- | --- |
+| Collecting | "Reading your records." | none |
+| Re-sealing | "Re-encrypting your records." | determinate, with **`n` of `m` records** beside it |
+| Finishing | "Finishing." | determinate, left where it stands |
+
+**No bar during collecting**, because a determinate bar sitting at zero while five list reads run
+says that nothing is happening. The phase word says what is, and a person watching it change three
+times learns more about where a run is than a percentage tells them.
+
+**A resumed run starts the bar at zero, and the consequence block says so before it happens.** That
+is the sentence this chapter exists to get right: a bar restarting looks broken unless the person
+was told, one screen earlier, that a rotation picked up again starts over from the first record.
+The server publishes no per-row progress and the resume read deliberately carries none.
+
+**A client-side per-row record is refused, and it is written down here so nobody adds it back for a
+nicer bar.** Keeping "which rows are done" in `localStorage` would be a second numerator able to
+disagree with the server's completeness gate, persisted across reloads, naming which rows an account
+holds, in a store anybody at this device can write. It is precisely the thing the server declines to
+keep.
+
+### The refusals
+
+**Eleven words, from three sources, and no sentence is shared with a section that means something
+else by it.**
+
+**The ceremony's five are rendered verbatim from the Account keys chapter's table** —
+`unsupported`, `cancelled`, `no-prf`, `ceremony-failed`, `unknown` — including their closing
+*Nothing has changed.* That borrowing is honest because of a constraint on the flow rather than a
+judgement about the words: **the ceremony is the first thing either press does, and nothing is
+posted until it answers.** On a begin nothing has been written; on a resume nothing new has. A flow
+that ever posted before the ceremony would make five sentences false at once, which is why the
+order is stated here as a rule and not as an implementation note.
+
+**Six are this section's own**, and they differ from custody's five where they share a word: each
+says what became of the run, which the Account keys lines have no run to say anything about.
+
+| Word | Copy |
+| --- | --- |
+| `unreachable` | "Budgetoid couldn’t reach the server. The rotation stopped where it is — try again in a minute and it picks up from there." |
+| `unauthenticated` | "Budgetoid stopped accepting this rotation from this browser. Sign out and sign in again, then finish it from here." |
+| `unrecognised` | "Budgetoid couldn’t read what the server sent back. Reload the page — that’s the one thing here that can change the answer." |
+| `inconsistent` | "Something about this account’s keys doesn’t line up — no passkey or recovery code will change it." |
+| `unfinished` | "Something else changed this account while it was being re-encrypted. Close any other Budgetoid tab, then finish the rotation from here." |
+| `factors-moved` | "The passkeys and recovery codes on this account changed while the rotation was running. Start it again from here — the records already re-encrypted stay that way." |
+
+The copy is the specification, not an example of it.
+
+**Two of the six are custody's sentences unchanged, and each survives for its own reason.**
+`unrecognised` survives because the act it names is the same act and a run survives it: a reload
+fetches different JavaScript from the static host, and the staged run is still on the server to be
+picked up afterwards, so the promise the sentence makes is one this section can keep too.
+`inconsistent` survives because it is the one line in either table that says out loud that nothing
+the person does changes the answer, and a run in front of it changes nothing about that.
+
+**`factors-moved` is the one whose remedy has a rule behind it, and the rule is not visible in the
+sentence.** Starting again after this refusal must re-stage **the generation the interrupted run
+already held**, never a freshly minted one. The staged seals are the only copy of that generation
+anywhere; a second begin overwrites them in place; and every row a chunk already re-sealed under it
+would then open under nothing at all — silently, with no error and no repair path, which is the same
+shape as completing a run early. So the restart carries the recovered keys forward, which is also
+what makes the sentence's last clause true. A fresh generation is minted in exactly one case: the
+resume read said there is no rotation.
+
+**`unfinished` is bounded, and the sentence is what the person sees after the bound is spent.** Rows
+created after a collection make the completion answer that the run is incomplete, and the remedy is
+to collect and send again — three passes, then this word. An unbounded loop is the same
+non-converging failure [key-rotation.md](../business-logic/key-rotation.md) refuses from the other
+side, and a person watching a bar go round forever has been told less than one who has been told to
+close a tab.
+
+**A completion refused because the rotation was already completed gets no word at all, and that is
+a decision rather than an omission.** The server answers that way when a completion is re-sent — the
+first one succeeded and this client lost the answer. The run is *finished*, so the honest render is
+the finished one: the flow goes on to take custody of the promoted generation exactly as a 204
+would have had it do, and the section reports a rotation that is done. A refusal sentence there
+would tell somebody their rotation failed at the moment it had succeeded, and send them to press
+Rotate again over an account that no longer needs it.
+
+**Colour is never the message** — every line above reads the same with `--bud-over` removed.
+
+### What a run does to the rest of the app
+
+**While a rotation is in flight, the three content screens render the locked-account notice in place
+of their lists, and their forms are disabled.** This is the chapter's decision that reaches other
+screens, and it is specified here so that it is not discovered by whoever builds the third one.
+
+**The reason is not that the tab holds no key — it holds one.** Custody holds the generation in
+force; the rotation driver holds both. A row a chunk has already re-sealed will not open under
+what custody holds, so a list drawn mid-run is part names and part em dashes, and the proportion of
+dashes rises as the run succeeds. A screen that looks more broken the better things are going is
+worse than one that says what is happening.
+
+**Letting custody open under either generation is refused outright.** It is the exact capability the
+story's last acceptance criterion says must not exist — nothing may decrypt under the previous
+content key once a rotation is done — and building it for the length of a run builds it.
+
+**The notice gains a second render rather than a second component.** One input naming which of the
+two states sent it; no injection, no status read, no `Router` — the emptiness that makes "it cannot
+navigate" structural is untouched, because the screen already computes the reason and passes it.
+
+| Reason | Copy |
+| --- | --- |
+| `locked` | "This tab can’t read your account yet. Unlock it in Settings." |
+| `rotating` | "Budgetoid is giving this account new keys. Your records come back when it finishes — watch it in Settings." |
+
+**The second sentence exists because the first one's advice is false during a run.** Pressing Unlock
+mid-rotation gets the generation that is on its way out, and the list stays half dashes; the
+smallest act that clears this block is waiting, and the place to watch it is named for the same
+reason Settings is named in the other line. This is the *do not advise when unsure* rule from
+**Two predicates** below, applied to a state where there is something certain to say.
+
+**The predicate the screens read gains a term and does not gain a shape.** The form is usable only
+when custody says `unlocked` **and** no run is in flight — written positively, so a state nobody has
+thought of yet arrives disabled. The notice renders when custody says `locked` **or** a run is in
+flight, and which sentence it carries is decided by which of the two is true, with the run winning
+when both are: somebody who arrived locked and pressed Rotate is going to be able to read their
+records when it finishes, and the Unlock advice would send them to a control that cannot help.
+
+**Disabling the forms is not tidiness.** A row created after a run has collected is a row the run
+will never visit, and the completion refuses until it does — the `unfinished` word above is what a
+person is told when that happens three times. Keeping the forms live during a run means offering
+somebody a way to make their own rotation fail.
+
+### Accessibility
+
+Heading level `h2` under the screen's one `h1`; no level skipped. The checkbox has a programmatic
+label and is a 48px target; the phase sentence and the `n` of `m` line are plain text and are not
+targets. The region is `role="status"`, polite, and never `assertive` — a rotation is something the
+person started and is watching, and the carve-out for `alert` is for a failure that lands after
+attention has moved on. The bar carries `aria-valuenow`, `aria-valuemax` and a label naming what is
+being counted, and sits outside the region. Nothing here is communicated by colour alone.
+
+### What ships today
+
+**Nothing.** This chapter is a specification, in the sense the preamble states: no key-rotation
+section renders on `/app/settings`, no control exists, and the notice takes no input. What exists is
+the server side of the act — the four routes, the staging generation, the completeness gate and the
+promotion, all argued in [key-rotation.md](../business-logic/key-rotation.md) — and a client that
+reaches none of them.
+
+**What the placement claim above costs today**: the Account keys section and **What we can read**
+are adjacent on the screen, and the sentence in that chapter naming its neighbours is written for
+where this section goes, not for where the screen stands. That is the departure this book requires
+to be recorded rather than smoothed over by moving the target.
+
 ## What we can read
 
 The product's transparency statement: what the people running Budgetoid can see of an account, and
@@ -1594,10 +1929,13 @@ what they cannot. M3 base: **none** — three paragraphs of prose, no control an
 reason the two sections above it have none: one thing to say is a paragraph, and every component
 that would wrap it exists to group things there is more than one of.
 
-It sits on `/app/settings` **between Account keys and Export**, on the placement rule the
+It sits on `/app/settings` **between Key rotation and Export**, on the placement rule the
 recovery-codes chapter argues and which is not restated here: Export and Erase are a pair, so
-nothing goes between them and everything else arrives above them. Being the last thing above that
-pair is right for this section rather than merely permitted by the rule — the two controls beneath
+nothing goes between them and everything else arrives above them. **Key rotation is unbuilt**, so
+on the screen today the section above this one is Account keys; the
+[key-rotation](#key-rotation-section) chapter argues why it lands between the two rather than under
+this one. Being the last thing above that pair is right for this section rather than merely
+permitted by the rule — the two controls beneath
 it are what somebody reaches for when this section tells them something they are not willing to
 live with, so the statement comes first and the acts follow it.
 
@@ -1854,6 +2192,14 @@ blocked-action pattern from [voice](voice.md): the fact, then the way forward, a
 is the smallest act that clears the block — *This tab can’t read your account yet. Unlock it in
 Settings.* — with **Settings** a `routerLink` to `/app/settings`.
 
+**Two states send it, and it renders a different sentence for each.** One input names which —
+`locked`, or `rotating` while a key rotation is in flight — and the
+[key-rotation](#key-rotation-section) chapter owns the second, both the copy and the reason a run
+takes the lists away. **The input is the whole of what changes here.** The component still injects
+nothing, reads no status and calls no `Router`: the screen already computes which state it is in,
+and passing a word is not reaching for one. That is what keeps *it cannot navigate* structural
+rather than remembered.
+
 **It links and does not navigate.** Three shapes were considered and two refused:
 
 - **A route guard** — refused. It would be synchronous against a fact with no resolution on the
@@ -1932,8 +2278,8 @@ unavoidable.
 - **The form is usable only when the status is `unlocked`.** Written positively, so `locked`,
   `unlocking` and any state added later all arrive **disabled**. A state nobody has thought about
   yet must be inert and visible, never live and silent.
-- **The notice renders on `locked` alone.** Its sentence is *advice* — press Unlock in Settings —
-  and that advice is already false for somebody whose unlock is running. So during `unlocking` the
+- **The notice renders on `locked` alone, of custody's three values.** Its sentence is *advice* —
+  press Unlock in Settings — and that advice is already false for somebody whose unlock is running. So during `unlocking` the
   list stays where it is, **still showing the words it opened before the ceremony began**. The
   services drop their opened lists on `locked` exactly, for the same reason: an `unlocking` resolves
   back into keys, and blanking a screen somebody is reading in order to fill it again seconds later
@@ -1944,6 +2290,15 @@ unavoidable.
 That is the whole distinction: **disable when unsure, but do not advise when unsure.** Written
 `!== 'locked'` the form goes live mid-ceremony; written `!== 'unlocked'` the notice tells somebody
 to press a button they are already holding down.
+
+**A key rotation in flight is a second term on both predicates and changes the shape of neither.**
+The form is usable when custody says `unlocked` **and** no run is in flight; the notice renders when
+custody says `locked` **or** a run is in flight, carrying the run's sentence when both are true. The
+rule survives the addition because each term was written in the direction its own mistake is
+audible, and the new one is no different: a form left live during a run offers somebody a way to
+make their own rotation fail, and Unlock advice given during a run names a control that cannot
+help. The [key-rotation](#key-rotation-section) chapter argues why a run takes the lists away at
+all; this chapter is where the predicates live.
 
 `unlocking` is **unreachable from this route today** — the ceremony runs from Settings and there is
 one tab — so the two cases naming it are the only thing keeping the split alive.
@@ -2033,7 +2388,9 @@ Ghost button — is work this book owes.
 
 **Every narrative screen seals what it writes and opens what it reads** — `/app/accounts`, the
 transaction form and both halves of `/app/categories` — so both components in this chapter are
-reached in earnest and a reload leaves names unreadable until Unlock. The Account keys
+reached in earnest and a reload leaves names unreadable until Unlock. **The notice takes no input
+and renders the `locked` sentence only**: the second state is a key rotation in flight, and nothing
+in this client can begin one yet. The Account keys
 section above says the same thing from the other end: being locked costs something anybody can see,
 and its control is the only way out of the state, which is why nothing may put that control behind
 one.

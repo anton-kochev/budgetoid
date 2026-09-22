@@ -168,11 +168,17 @@ one are unbuilt, as are key rotation, the email-change action and the erasure co
 dialog. Showing a set once is built and lives elsewhere — the last
 step of registration, where the account's first set is issued.
 
-Below Recovery codes and above Export sits **Account keys**, and it is **built**: one Outline
+Below Recovery codes sits **Account keys**, and it is **built**: one Outline
 **Unlock** running a passkey ceremony the browser mints and throws away, so that a person whose tab
 reloaded gets their keys back without leaving the account. It is drawn only while there is
 something to unlock, it carries no sentence saying what it waits on because it waits on nothing,
 and [components](components.md) owns the rest of its specification.
+
+Between Account keys and Export the screen will carry a **Key rotation** section, and it is
+specified rather than built — [components](components.md) holds the chapter, including the one
+decision in it that reaches other screens: while a rotation runs, the three content screens render
+the locked-account notice in place of their lists. Nothing of it is on the screen today, so Account
+keys and **What we can read** are adjacent.
 
 **Sign out is no longer the only exit from a locked account.** Count the producers of a
 key-encryption key in this client and there are **three** — the assertion on `/welcome`, the
