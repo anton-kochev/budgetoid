@@ -59,7 +59,9 @@ function afterPendingWork(): Promise<void> {
 // The real provider list with three dependencies swapped. `ConfigurationService`
 // is stubbed because the real one fetches `assets/app-config.json` — and
 // because withholding its answer is the whole arrangement here. `AuthService`
-// is stubbed because the real one reaches Google's discovery document.
+// is stubbed to say no registration is coming back from the provider, so the
+// initializer never reaches Google's discovery document whatever address the
+// runner's document sits at.
 // `KeyRotationApiService` is stubbed because the initializer asks it, once the
 // probe has answered `authenticated`, whether a rotation is staged: a second
 // request on the wire here leaves the first test's `match(() => true)` with two
@@ -84,8 +86,9 @@ function bootstrap(): Boot {
     getConfig: () => ({ apiBaseUrl, auth: {} }),
     load: () => loaded,
   };
-  const auth: Pick<AuthService, 'initialize'> = {
+  const auth: Pick<AuthService, 'initialize' | 'isProviderReturn'> = {
     initialize: () => Promise.resolve(),
+    isProviderReturn: () => false,
   };
   const rotations: Pick<KeyRotationApiService, 'getRotationState'> = {
     getRotationState: () => of<KeyRotationStateDto>({ rotation: null }),

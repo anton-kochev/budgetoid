@@ -704,6 +704,16 @@ the *set*, so it is authenticated once.
   under a promise the next press cannot keep. The site root is the wrong target for the same reason
   it is the obvious one: the app reads that address as *somebody arriving with a session*, which a
   person consenting in order to **create** an account does not have.
+  - **The answer is read in the `APP_INITIALIZER`, before the router's first navigation, and only
+    on that page load.** `AuthService.isProviderReturn()` recognises the configured redirect
+    address carrying a fragment or a query; for a visitor the probe did not recognise, the
+    initializer then awaits `AuthService.initialize()`, which fetches the discovery document and
+    reads the tokens off the URL. A resolver on `/register` is the obvious home and the wrong one:
+    the library clears the fragment once it has read it, but the router writes its navigation's
+    target — fragment included — back to the address bar *after* resolvers run, so the tokens
+    would come straight back. A bare `/register` contacts nobody; the press that starts the
+    exchange prepares the client itself, and `AuthService` prepares it at most once per page load.
+    See [no third-party origins](../engineering/no-third-party-origins.md).
   - **No test in this repository can see the other half.** A mismatch is refused by Google with
     `redirect_uri_mismatch` before a single line of this application runs: the browser never comes
     back, so nothing here is reached to fail. Changing the value without changing the console entry
@@ -712,7 +722,9 @@ the *set*, so it is authenticated once.
 - **Enforced in**: `auth.google.redirectUri` in the shipped `app-config.json`, pinned by
   `src/registration-redirect-uri.spec.ts`, which reads the **emitted build** rather than the source
   file and also fails when the key is renamed or dropped. The console entry is enforced by nothing
-  and is named here so it is read as part of the change rather than as a follow-up.
+  and is named here so it is read as part of the change rather than as a follow-up. That the return
+  leg alone contacts the provider at bootstrap is pinned by `core.providers.spec.ts`, and what counts
+  as a return by `auth-service.spec.ts`.
 - **Source**: `[SOURCE: discussion]`
 
 ## Workflows & State Transitions

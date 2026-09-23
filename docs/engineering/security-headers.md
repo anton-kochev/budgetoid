@@ -106,10 +106,10 @@ origin.
 it. It names four sources: `'self'`, the API, `accounts.google.com` for the OpenID discovery
 document, and `www.googleapis.com` for the JWKS that document points at. The last two are the same
 fetches [no-third-party-origins.md](no-third-party-origins.md) already records as gaps it cannot
-close, and both leave with federated sign-in. They are reachable on **one** screen — the
-registration flow's introduction step, the only place the provider is contacted — so the policy has
-to permit them on a document served at every address, for a fetch that happens once in an account's
-life. `oauth2.googleapis.com` is deliberately absent: the application runs the implicit flow, so no
+close, and both leave with federated sign-in. They are reachable on **one** screen — `/register`,
+on the press that starts the provider exchange and on the page load the provider redirects back
+to, the only places the provider is contacted — so the policy has to permit them on a document
+served at every address, for fetches made only while an account is being created. `oauth2.googleapis.com` is deliberately absent: the application runs the implicit flow, so no
 request reaches a token endpoint.
 
 `img-src` carries no `data:`, verified against the emitted CSS and JavaScript, which contain none.

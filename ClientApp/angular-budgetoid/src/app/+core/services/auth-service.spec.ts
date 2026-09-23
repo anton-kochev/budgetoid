@@ -1,3 +1,4 @@
+import { DOCUMENT } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { OAuthEvent, OAuthService } from 'angular-oauth2-oidc';
 import { isObservable, Observable, Subject } from 'rxjs';
@@ -60,13 +61,13 @@ describe('AuthService', () => {
     expect(getIdentityClaims).not.toHaveBeenCalled();
   });
 
-  // `core.providers.ts:49` awaits this method inside the `APP_INITIALIZER`, so
-  // a rejection here is not a degraded sign-in — it is an application that
-  // never finishes bootstrapping and a browser left on a blank page. The
-  // discovery document lives on `accounts.google.com`, which an outage, a
-  // blocked host, a captive portal or a corporate proxy each make unreachable,
-  // and none of those says anything about the first-party session cookie the
-  // rest of the app runs on.
+  // `core.providers.ts` awaits this method inside the `APP_INITIALIZER` when a
+  // registration comes back from the provider, so a rejection here is not a
+  // degraded registration — it is an application that never finishes
+  // bootstrapping and a browser left on a blank page. The discovery document
+  // lives on `accounts.google.com`, which an outage, a blocked host, a captive
+  // portal or a corporate proxy each make unreachable, and none of those says
+  // anything about the first-party session cookie the rest of the app runs on.
   it('finishes initializing when the provider cannot be reached', async () => {
     // Arrange
     const oAuth = {
@@ -143,6 +144,181 @@ describe('AuthService', () => {
     // that had been emptied out entirely would satisfy the second one.
     expect(loadDiscoveryDocumentAndTryLogin).toHaveBeenCalledOnce();
     expect(setupAutomaticSilentRefresh).not.toHaveBeenCalled();
+  });
+
+  // NFR-025 is about how often the provider hears from this browser, so a second
+  // ask — the return leg's initializer and then a press of the provider button
+  // on the same page, or two presses — must not be a second discovery fetch.
+  it('fetches the discovery document once however many times it is asked', async () => {
+    // Arrange
+    const loadDiscoveryDocumentAndTryLogin = vi.fn(() => Promise.resolve(true));
+    const service = authServiceOver({
+      configure: vi.fn(),
+      loadDiscoveryDocumentAndTryLogin,
+    });
+
+    // Act
+    await Promise.all([service.initialize(), service.initialize()]);
+    await service.initialize();
+
+    // Assert
+    expect(loadDiscoveryDocumentAndTryLogin).toHaveBeenCalledOnce();
+  });
+
+  // The memo holds a success, never a failure. Held, one unreachable moment
+  // would leave the provider button dead until a reload, with nothing on the
+  // screen saying why a press does nothing.
+  it('asks the provider again after it could not be reached', async () => {
+    // Arrange
+    const loadDiscoveryDocumentAndTryLogin = vi
+      .fn<() => Promise<boolean>>()
+      .mockRejectedValueOnce(
+        new Error('The discovery document is unreachable.'),
+      )
+      .mockResolvedValueOnce(true);
+    const service = authServiceOver({
+      configure: vi.fn(),
+      loadDiscoveryDocumentAndTryLogin,
+    });
+    await service.initialize();
+
+    // Act
+    await service.initialize();
+
+    // Assert
+    expect(loadDiscoveryDocumentAndTryLogin).toHaveBeenCalledTimes(2);
+  });
+
+  // Nothing configures the client at bootstrap any more, so the press that
+  // starts the exchange is the first moment anything knows the provider's
+  // login endpoint — which lives in the discovery document.
+  it('loads the discovery document before starting the exchange', async () => {
+    // Arrange
+    const reached: string[] = [];
+    const service = authServiceOver({
+      configure: vi.fn(),
+      loadDiscoveryDocumentAndTryLogin: vi.fn(() => {
+        reached.push('loadDiscoveryDocumentAndTryLogin');
+
+        return Promise.resolve(true);
+      }),
+      initLoginFlow: vi.fn(() => {
+        reached.push('initLoginFlow');
+      }),
+    });
+
+    // Act
+    service.signIn();
+    await afterPendingWork();
+
+    // Assert
+    expect(reached).toEqual([
+      'loadDiscoveryDocumentAndTryLogin',
+      'initLoginFlow',
+    ]);
+  });
+
+  it('starts the exchange without a second fetch once the client is prepared', async () => {
+    // Arrange
+    const loadDiscoveryDocumentAndTryLogin = vi.fn(() => Promise.resolve(true));
+    const initLoginFlow = vi.fn();
+    const service = authServiceOver({
+      configure: vi.fn(),
+      loadDiscoveryDocumentAndTryLogin,
+      initLoginFlow,
+    });
+    await service.initialize();
+
+    // Act
+    service.signIn();
+    await afterPendingWork();
+
+    // Assert
+    expect(initLoginFlow).toHaveBeenCalledOnce();
+    expect(loadDiscoveryDocumentAndTryLogin).toHaveBeenCalledOnce();
+  });
+
+  // With no discovery document there is no login endpoint to send anybody to;
+  // the library would throw from inside a promise nothing awaits.
+  it('starts no exchange when the provider could not be reached', async () => {
+    // Arrange
+    const initLoginFlow = vi.fn();
+    const service = authServiceOver({
+      configure: vi.fn(),
+      loadDiscoveryDocumentAndTryLogin: vi.fn(() =>
+        Promise.reject(new Error('The discovery document is unreachable.')),
+      ),
+      initLoginFlow,
+    });
+
+    // Act
+    service.signIn();
+    await afterPendingWork();
+
+    // Assert
+    expect(initLoginFlow).not.toHaveBeenCalled();
+  });
+
+  // The provider's answer arrives on the configured redirect address — the
+  // implicit flow puts it in the fragment, a code flow would put it in the
+  // query — and that is the only cold load on which the bootstrap may contact
+  // the provider.
+  it.each([
+    {
+      shape: 'an implicit-flow answer in the fragment',
+      href: 'https://budgetoid.app/register#access_token=a&id_token=b&state=c',
+    },
+    {
+      shape: 'a refusal in the fragment',
+      href: 'https://budgetoid.app/register#error=access_denied&state=c',
+    },
+    {
+      shape: 'a code-flow answer in the query',
+      href: 'https://budgetoid.app/register?code=a&state=c',
+    },
+  ])('recognises $shape as the provider coming back', ({ href }) => {
+    // Arrange
+    const service = authServiceOver({}, { href });
+
+    // Act & Assert
+    expect(service.isProviderReturn()).toBe(true);
+  });
+
+  it.each([
+    // Somebody opening the registration screen has not been to the provider
+    // yet; the press on the screen is what contacts it.
+    {
+      shape: 'the redirect address carrying nothing',
+      href: 'https://budgetoid.app/register',
+    },
+    {
+      shape: 'another screen',
+      href: 'https://budgetoid.app/welcome#access_token=a',
+    },
+    {
+      shape: 'the same path on another origin',
+      href: 'https://budgetoid.example/register#access_token=a',
+    },
+  ])('does not read $shape as the provider coming back', ({ href }) => {
+    // Arrange
+    const service = authServiceOver({}, { href });
+
+    // Act & Assert
+    expect(service.isProviderReturn()).toBe(false);
+  });
+
+  it('reads nothing as the provider coming back when no redirect address is configured', () => {
+    // Arrange
+    const service = authServiceOver(
+      {},
+      {
+        href: 'https://budgetoid.app/register#access_token=a',
+        redirectUri: null,
+      },
+    );
+
+    // Act & Assert
+    expect(service.isProviderReturn()).toBe(false);
   });
 
   // The `email` claim and nothing else. `openid email` already carries it, so
@@ -227,6 +403,42 @@ describe('AuthService', () => {
     expect(service.providerEmail()).toBeNull();
   });
 });
+
+// A macrotask, so every microtask `signIn` chained has had its turn.
+function afterPendingWork(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+// One `AuthService` over a stubbed provider, configured with the production
+// redirect address and sitting at whatever address the case names. The
+// document is a stub rather than the runner's, because the address is the
+// input under test and jsdom's cannot leave its own origin.
+function authServiceOver(
+  oAuth: Partial<Record<keyof OAuthService, unknown>>,
+  {
+    href = 'https://budgetoid.app/welcome',
+    redirectUri = 'https://budgetoid.app/register',
+  }: { readonly href?: string; readonly redirectUri?: string | null } = {},
+): AuthService {
+  const google =
+    redirectUri === null
+      ? undefined
+      : { clientId: 'client', redirectUri, scope: 'openid email' };
+
+  TestBed.configureTestingModule({
+    providers: [
+      AuthService,
+      { provide: OAuthService, useValue: oAuth },
+      {
+        provide: ConfigurationService,
+        useValue: { getConfig: () => ({ apiBaseUrl: '', auth: { google } }) },
+      },
+      { provide: DOCUMENT, useValue: { location: { href } } },
+    ],
+  });
+
+  return TestBed.inject(AuthService);
+}
 
 // One `AuthService` over a stubbed provider whose claims the caller decides,
 // and whose token is live unless the caller says otherwise.

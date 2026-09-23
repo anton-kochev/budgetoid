@@ -41,10 +41,11 @@ describe('appConfig', () => {
     // array in `app.config.ts` is what it goes red on.
     // `TestBed.inject` finalizes the test module, which runs the `APP_INITIALIZER`
     // from `core.providers.ts`, whose real dependencies fetch `app-config.json`,
-    // then Google's discovery document, and ask `GET /api/me` who the visitor
-    // is. The probe needs silencing for a second reason on top — it asks the
-    // very URL this spec asserts on, so the real one leaves `expectOne` looking
-    // at two matching requests.
+    // ask `GET /api/me` who the visitor is, and — on a page the provider
+    // redirected back to — fetch Google's discovery document. The probe needs
+    // silencing for a second reason on top — it asks the very URL this spec
+    // asserts on, so the real one leaves `expectOne` looking at two matching
+    // requests.
     //
     // It is silenced at `MeApiService` rather than at `SessionService`, which
     // is what a reader will expect. `SessionService` is the application's single
@@ -65,8 +66,9 @@ describe('appConfig', () => {
       getConfig: () => ({ apiBaseUrl: API_BASE_URL, auth: {} }),
       load: () => Promise.resolve(true),
     };
-    const auth: Pick<AuthService, 'initialize'> = {
+    const auth: Pick<AuthService, 'initialize' | 'isProviderReturn'> = {
       initialize: () => Promise.resolve(),
+      isProviderReturn: () => false,
     };
     const me: Pick<MeApiService, 'getSessionOwner'> = {
       getSessionOwner: () =>

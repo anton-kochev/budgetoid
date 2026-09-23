@@ -1,4 +1,4 @@
-import { inject, Injectable } from '@angular/core';
+import { DOCUMENT, inject, Injectable } from '@angular/core';
 import { OAuthService } from 'angular-oauth2-oidc';
 import { ConfigurationService } from './configuration.service';
 
@@ -8,11 +8,51 @@ import { ConfigurationService } from './configuration.service';
 export class AuthService {
   private readonly config = inject(ConfigurationService);
   private readonly oAuth = inject(OAuthService);
+  private readonly document = inject(DOCUMENT);
 
-  // Configure OAuth from the (now-loaded) app config and process any
-  // redirect-back token. Driven by an APP_INITIALIZER after the config has
-  // loaded — see core.providers.ts — so config values are present.
+  // The one preparation of the client this page load makes, shared by every
+  // caller. Resolves `true` once the discovery document has loaded and any
+  // answer on the URL has been read, `false` when the provider could not be
+  // reached.
+  //
+  // **Memoized here, and not at either caller, because this service is the
+  // only thing both legs share.** The return leg asks from the
+  // `APP_INITIALIZER`, the outbound leg asks from a button press on the
+  // registration screen, and on a page that came back from the provider both
+  // happen — a person whose token lapsed presses **Continue with Google** again.
+  // A flag at either caller cannot see the other; this field sees both, so the
+  // provider hears from this page load at most once.
+  //
+  // **A success is held and a failure is not.** The field is cleared when the
+  // load rejects, so the next press asks again. Held, one unreachable moment
+  // would leave the provider button dead until a reload, with nothing on the
+  // screen saying why a press does nothing.
+  private ready: Promise<boolean> | null = null;
+
+  /**
+   * Configures the client from the loaded app config, fetches the provider's
+   * discovery document and reads any answer the provider left on the URL.
+   *
+   * **This is what contacts the identity provider, so it runs only where
+   * registration needs it** (NFR-025): from the `APP_INITIALIZER` when
+   * {@link isProviderReturn} says the provider is redirecting back, and from
+   * {@link signIn} before the exchange starts. Run on every cold load, it
+   * would tell Google the address and time of every visit to the product,
+   * anonymous or signed in.
+   *
+   * At most once per page load; see {@link ready}.
+   */
   public async initialize(): Promise<void> {
+    await this.whenReady();
+  }
+
+  private whenReady(): Promise<boolean> {
+    this.ready ??= this.prepare();
+
+    return this.ready;
+  }
+
+  private async prepare(): Promise<boolean> {
     const { auth } = this.config.getConfig();
 
     this.oAuth.configure({
@@ -22,25 +62,27 @@ export class AuthService {
       strictDiscoveryDocumentValidation: false,
       scope: auth.google?.scope,
     });
-    // **Guarded, because the `APP_INITIALIZER` awaits this method.** The
-    // discovery document lives on `accounts.google.com`; a browser that cannot
-    // reach it — an outage, a blocked host, a captive portal, a corporate
-    // proxy — would reject here, take the initializer down with it and leave
-    // the person on a blank page. `session.probe()`, one line earlier in
-    // `core.providers.ts`, is written never to reject for exactly this reason,
-    // and it buys nothing while the next call can still do it.
+    // **Guarded, because the `APP_INITIALIZER` awaits this method** on a page
+    // load the provider redirected back to. The discovery document lives on
+    // `accounts.google.com`; a browser that cannot reach it — an outage, a
+    // blocked host, a captive portal, a corporate proxy — would reject here,
+    // take the initializer down with it and leave the person on a blank page.
+    // `session.probe()`, earlier in `core.providers.ts`, is written never to
+    // reject for exactly this reason, and it buys nothing while this call can
+    // still do it.
     //
-    // What a failure now degrades to is a *working* application whose provider
-    // sign-in does not work: the configuration above has been applied, the
-    // first-party session cookie was already probed, and every screen that does
-    // not need the identity provider renders as usual. Only the sign-in and
-    // registration paths are unavailable, and they were unavailable anyway —
-    // the provider they depend on is the thing that could not be reached.
+    // What a failure degrades to is a *working* application whose provider
+    // exchange does not work: the first-party session cookie was already
+    // probed, and every screen that does not need the identity provider renders
+    // as usual. Only registration is unavailable, and it was unavailable anyway
+    // — the provider it depends on is the thing that could not be reached.
     //
     // Nothing is re-thrown and nothing is published. This service holds no
     // state a screen reads, and `isAuthenticated()` already answers `false` for
     // a browser that never completed an exchange, so a flag beside it would be
-    // a second, weaker way of asking a question that is already answered.
+    // a second, weaker way of asking a question that is already answered. The
+    // `false` this resolves to is for {@link signIn} alone, which must not send
+    // anybody to a login endpoint nobody has learned.
     //
     // **Nothing schedules a silent refresh, and the omission is the rule.**
     // `setupAutomaticSilentRefresh()` used to sit on the next line; it plants a
@@ -60,9 +102,47 @@ export class AuthService {
     // degraded sign-in into a blank page. Read it as argued, not as a drive-by.
     try {
       await this.oAuth.loadDiscoveryDocumentAndTryLogin();
+
+      return true;
     } catch {
-      // Intentionally swallowed; see above.
+      // Intentionally swallowed; see above. Forgotten, so the next ask retries
+      // — see {@link ready}.
+      this.ready = null;
+
+      return false;
     }
+  }
+
+  /**
+   * Whether this page load is the provider redirecting back with its answer.
+   *
+   * The configured redirect address — origin and path — carrying anything at
+   * all after the path. The implicit flow this client runs puts the answer (a
+   * token pair or an `error`) in the fragment; a code flow would put it in the
+   * query, and both are accepted so a change of flow cannot quietly turn the
+   * return leg off. `/register` uses neither for itself, so a bare
+   * `/register` is somebody opening the screen, who has not been to the
+   * provider yet and does not cause a contact by arriving.
+   *
+   * Read from the document rather than the router: this is asked by the
+   * `APP_INITIALIZER`, before the router has navigated anywhere — see
+   * `core.providers.ts` for why it has to be that early.
+   */
+  public isProviderReturn(): boolean {
+    const redirectUri = this.config.getConfig().auth.google?.redirectUri;
+
+    if (redirectUri === undefined || !URL.canParse(redirectUri)) {
+      return false;
+    }
+
+    const expected = new URL(redirectUri);
+    const landed = new URL(this.document.location.href);
+
+    return (
+      landed.origin === expected.origin &&
+      landed.pathname === expected.pathname &&
+      (landed.hash.length > 1 || landed.search.length > 1)
+    );
   }
 
   public isAuthenticated(): boolean {
@@ -131,8 +211,27 @@ export class AuthService {
     return typeof email === 'string' && email.length > 0 ? email : null;
   }
 
+  /**
+   * Starts the provider exchange: a top-level navigation to the provider,
+   * which redirects back to `/register`.
+   *
+   * **Prepares the client first**, because nothing prepared it at bootstrap and
+   * the login endpoint this navigates to is learned from the discovery
+   * document. On a page load that came back from the provider the preparation
+   * is already done and costs nothing.
+   *
+   * **Returns `void` and settles its own promise**, because the two callers are
+   * click handlers with nothing to do after the page has left: the success path
+   * ends in a navigation away, and the failure path — the provider could not be
+   * reached — is a press that does nothing, which is also what the library's own
+   * `initLoginFlow()` does without a login endpoint, minus the unhandled error.
+   */
   public signIn(): void {
-    this.oAuth.initLoginFlow();
+    void this.whenReady().then((ready) => {
+      if (ready) {
+        this.oAuth.initLoginFlow();
+      }
+    });
   }
 
   /**

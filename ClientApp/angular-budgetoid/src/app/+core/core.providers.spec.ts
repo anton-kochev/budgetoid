@@ -27,6 +27,12 @@ interface BootOptions {
   // step; the anonymous case names its own.
   readonly status?: SessionStatus;
   readonly readStagedRotation?: () => Promise<void>;
+  // Whether the browser landed on the address the identity provider redirects
+  // back to, carrying its answer. `false` is the default because it is every
+  // cold load but one: the provider is none of this initializer's business
+  // unless a registration is coming back from it.
+  readonly providerReturn?: boolean;
+  readonly initialize?: () => Promise<void>;
 }
 
 // A macrotask, so every microtask an initializer chained has had its turn. A
@@ -36,15 +42,19 @@ function afterPendingWork(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-// The real provider list with only its three dependencies swapped, because the
-// real trio fetches `app-config.json`, Google's discovery document and
-// `GET /api/me` over the network the moment the module is finalized.
+// The real provider list with only its four dependencies swapped, because the
+// real ones fetch `app-config.json`, `GET /api/me` and the staged rotation over
+// the network the moment the module is finalized — and the real `AuthService`
+// decides from the runner's own address whether a registration is coming back,
+// which is the one input these cases have to choose for themselves.
 function bootstrap(options: BootOptions = {}): Boot {
   const {
     load = () => Promise.resolve(true),
     probe = () => Promise.resolve(),
     status = 'authenticated',
     readStagedRotation = () => Promise.resolve(),
+    providerReturn = false,
+    initialize = () => Promise.resolve(),
   } = options;
 
   TestBed.resetTestingModule();
@@ -58,12 +68,13 @@ function bootstrap(options: BootOptions = {}): Boot {
       return load();
     },
   };
-  const auth: Pick<AuthService, 'initialize'> = {
+  const auth: Pick<AuthService, 'initialize' | 'isProviderReturn'> = {
     initialize: () => {
       calls.push('auth.initialize');
 
-      return Promise.resolve();
+      return initialize();
     },
+    isProviderReturn: () => providerReturn,
   };
   // The probe's answer as well as the probe, because the rotation read is
   // conditional on it. The status is a signal the way the real one is — the
@@ -193,7 +204,6 @@ describe('provideAppCore', () => {
         'config.load',
         'session.probe',
         'rotations.readStagedRotation',
-        'auth.initialize',
       ]);
     });
 
@@ -210,7 +220,6 @@ describe('provideAppCore', () => {
 
       // Assert
       expect(boot.calls).not.toContain('rotations.readStagedRotation');
-      expect(boot.calls).toContain('auth.initialize');
     });
 
     it('is not read when the probe could not reach the server', async () => {
@@ -249,10 +258,75 @@ describe('provideAppCore', () => {
       // Act
       await boot.initialized;
 
-      // Assert — nothing after the read is conditional on it.
+      // Assert
       expect(boot.calls).toContain('rotations.readStagedRotation');
-      expect(boot.calls).toContain('auth.initialize');
       expect(TestBed.inject(ApplicationInitStatus).done).toBe(true);
+    });
+  });
+
+  // NFR-025: the identity provider is contacted only while an account is being
+  // created. Configuring the client and fetching Google's discovery document
+  // here, for everybody, told Google the address and time of every cold load of
+  // the product — anonymous or signed in, on any screen. The exchange's
+  // outbound leg starts the provider on demand from the registration screen
+  // (`AuthService.signIn`); what is left for this initializer is the return leg
+  // alone.
+  describe('the identity provider', () => {
+    it.each<SessionStatus>(['anonymous', 'authenticated', 'unreachable'])(
+      'is not contacted for a visitor who is %s',
+      async (status) => {
+        // Arrange
+        const boot = bootstrap({ status });
+
+        // Act
+        await boot.initialized;
+
+        // Assert — the control first: without it an initializer that never ran
+        // would satisfy the second expectation.
+        expect(boot.calls).toContain('session.probe');
+        expect(boot.calls).not.toContain('auth.initialize');
+      },
+    );
+
+    // The provider redirects back to `/register` with its answer on the URL,
+    // and the answer has to be read **before the router's first navigation**.
+    // The library clears the fragment once it has read it; a route resolver
+    // doing the same work runs inside a navigation whose target already holds
+    // that fragment, and the router writes its target back to the address bar
+    // after resolvers have run — so the tokens would come straight back.
+    it('completes a registration coming back from the provider before the application finishes starting', async () => {
+      // Arrange
+      const boot = bootstrap({
+        status: 'anonymous',
+        providerReturn: true,
+        initialize: () => new Promise<void>(() => undefined),
+      });
+
+      // Act
+      await afterPendingWork();
+
+      // Assert
+      expect(boot.calls).toEqual([
+        'config.load',
+        'session.probe',
+        'auth.initialize',
+      ]);
+      expect(TestBed.inject(ApplicationInitStatus).done).toBe(false);
+    });
+
+    // `guestGuard` turns a visitor holding a session away from `/register`, so
+    // completing an exchange for them contacts the provider for a screen they
+    // will never see.
+    it('is not contacted for a visitor the registration screen will turn away', async () => {
+      // Arrange
+      const boot = bootstrap({ status: 'authenticated', providerReturn: true });
+
+      // Act
+      await boot.initialized;
+
+      // Assert
+      expect(boot.calls).toContain('session.probe');
+      expect(boot.calls).not.toContain('auth.initialize');
     });
   });
 });

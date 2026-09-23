@@ -71,13 +71,20 @@ the URL that document returns, `www.googleapis.com/oauth2/v3/certs`. Neither is 
 and the second appears in no bundle — the library learns the URL at runtime. Ending them means
 ending the dependency on a federated identity provider.
 
-**Both fetches have narrowed to one moment in an account's life, and that is the whole of what
-changed.** The identity provider is contacted **once**, on the registration screen's introduction
-step, and nothing else in the client touches it: signing in is a WebAuthn assertion against this
-product's own API, and every request after it authenticates from the first-party session cookie.
-So the page loads privately, *signing in* loads privately, and the two fetches above are reachable
-only while an account is being created. What used to be a standing cost of using the product is now
-a one-time cost of starting to.
+**Both fetches have narrowed to the one provider exchange an account is created through.** They are
+made in exactly two places, both on `/register`: when the person presses **Continue with Google**,
+because the login endpoint that press navigates to is learned from the discovery document; and on
+the page load the provider redirects back to, because the `APP_INITIALIZER` must read the provider's
+answer off the URL before the router's first navigation. `AuthService` prepares the client at most
+once per page load, so a press on the page that came back costs no second fetch. **Nothing else
+contacts the provider**: every other cold load — anonymous or signed in, on any screen, and a bare
+`/register` that carries no answer — makes no request to Google, signing in is a WebAuthn assertion
+against this product's own API, and every request after it authenticates from the first-party
+session cookie. So the page loads privately, *signing in* loads privately, and the two fetches above
+are reachable only while an account is being created. What used to be a standing cost of using the
+product is now a one-time cost of starting to. `core.providers.spec.ts` holds the bootstrap half —
+anonymous, signed-in and unreachable visitors alike — and `auth-service.spec.ts` holds the press
+and the once-per-page-load half.
 
 **What an allow-listed origin buys, and what it therefore cannot catch.**
 `accounts.google.com` is listed above as the issuer `auth-service.ts` configures, legitimately —

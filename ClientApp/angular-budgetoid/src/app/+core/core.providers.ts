@@ -55,12 +55,6 @@ export const provideAppCore = (): EnvironmentProviders =>
           // outstanding, so no route activates against `'unknown'`. A
           // `void session.probe()` here still asks, and still leaves the first
           // guard reading a status nobody has answered yet.
-          //
-          // Before `auth.initialize()` rather than after it. That call reaches
-          // Google's discovery document, and the session this probe asks about
-          // is a first-party cookie the identity provider knows nothing about;
-          // ordered the other way, a browser that cannot reach Google never
-          // learns who its own server thinks it is.
           await session.probe();
 
           // **Whether a key rotation is in flight, and it is asked here for the
@@ -92,7 +86,31 @@ export const provideAppCore = (): EnvironmentProviders =>
             await rotations.readStagedRotation();
           }
 
-          await auth.initialize();
+          // **The identity provider is contacted here only when it is
+          // redirecting a registration back** (NFR-025). Every other cold load
+          // — anonymous or signed in, on any screen — makes no request to
+          // Google at all; the outbound leg prepares the client itself, on the
+          // press that starts it (`AuthService.signIn`). An unconditional call
+          // here told Google the address and time of every visit.
+          //
+          // **Here, and not in a resolver on `/register`, because the answer
+          // has to be read before the router's first navigation.** The provider
+          // puts its tokens in the fragment and the library clears the fragment
+          // once it has read them — but a resolver runs inside a navigation
+          // whose target already holds that fragment, and the router writes its
+          // target back to the address bar *after* resolvers have run, so the
+          // tokens would come straight back. Awaited for the same reason the
+          // probe is: `/register` renders the address off the token this reads,
+          // and must not render before it.
+          //
+          // After the probe, and skipped for a visitor it recognised:
+          // `guestGuard` turns a session away from `/register`, so completing
+          // an exchange for them contacts the provider for a screen they will
+          // never see. It is also why a browser that cannot reach Google still
+          // learns who its own server thinks it is.
+          if (session.status() !== 'authenticated' && auth.isProviderReturn()) {
+            await auth.initialize();
+          }
         },
       deps: [
         ConfigurationService,
