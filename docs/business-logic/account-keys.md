@@ -369,13 +369,15 @@ erDiagram
     a written argument for each of the two payloads rather than one sentence covering both — they are
     values of two different cryptographic suites at two different widths, and a sentence about "an
     envelope" would tell a reader nothing about which of the two this deployment was judging.
-    **The response's `manifest` member owes a third argument, and it runs the other way.** Those two
-    payloads may cross because the key that would open them never reaches this server; the manifest
-    may cross because there is **nothing in it to open** — public halves a value is *encapsulated
-    to*, held in the clear, and an operator reading them opens no envelope and derives no key. Either
-    argument pasted over the other is false, which is why the census makes the entry write its own:
-    what it concedes is how many recovery factors the account holds and which public keys they are,
-    and that concession is why `DataInventory` classifies the column *excluded* rather than harmless.
+    **The response's `manifest` member owes a third argument, because its key is a different one.**
+    Those two payloads may cross because the key-encryption key at the root of their chain never
+    reaches this server; the manifest is sealed under the **content key** itself, which reaches it
+    only encapsulated, and what is inside would open nothing even if read — public halves a value is
+    *encapsulated to*. Either argument pasted over the other is false, which is why the census makes
+    the entry write its own. What it concedes is what an operator learns without opening it: its
+    length, which says how many recovery factors the account holds because every entry is the same
+    width, and the rotation epoch stored beside it in plaintext. That concession is why
+    `DataInventory` classifies the column *excluded* rather than harmless.
 
 - **A factor identifier MUST be one spelling on the wire.** The write paths accept a UUID in the
   **lower-case** 36-character hyphenated form with no surrounding whitespace, and nothing else — not
@@ -2374,7 +2376,8 @@ the decision.** A **factor key** is plain English for the key-encryption key —
 bytes a passkey's PRF output or a recovery code derives, and the one value this whole
 design guarantees never reaches the server. A table named for it would announce that the
 server keeps a list of them, which is the exact inverse of what these bytes are: public
-halves, held in the clear, that a reader can encapsulate a value to and open nothing with.
+halves, sealed under the content key, that a reader could encapsulate a value to and open
+nothing with.
 This product's key vocabulary already refuses every other loose spelling of that idea —
 three verbs at three exact widths, and a separate name for each kind of key — and a table
 name is where the refusal is worth most, because a name is read far more often than the
@@ -2573,19 +2576,19 @@ the atomicity, because two requests can each read `N` and each compute `N + 1` c
 being two independent rules: under the detached spelling argued above, the token guards
 nothing while looking exactly as though it does, and the arithmetic is all that is left.
 
-**The bytes are public material this server holds in the clear, and the export concedes
-what that discloses before it declines to carry it.** All three columns are classified
-*excluded* in `DataInventory`, and the `manifest` entry argues its exclusion by first
-stating what publishing it would give up: how many recovery factors the account holds, and
-what those factors' public keys are. Neither opens anything — a public key is the half a
-value is encapsulated *to*, and the private half is wrapped under a key-encryption key
-derived in a browser from a factor this server has never seen, so a reader holding the
-whole blob could encapsulate a value nobody will open, and open nothing at all. It stays
-out of the export because it is account-control machinery rather than content: no route in
-this product enrols a factor from a file, so the person could do nothing with a copy but
-read a map of their own front door, in an artefact that outlives every session which could
-have vouched for whoever is holding it. The other two columns are excluded on arguments
-of their own, and `rotation_epoch`'s is the one worth reading twice: a generation number
+**The bytes are public keys sealed under the content key, and the export concedes what
+the stored value still discloses before it declines to carry it.** All three columns are
+classified *excluded* in `DataInventory`, and the `manifest` entry argues its exclusion by
+first stating what an operator learns without opening it: its length, which says how many
+recovery factors the account holds because every entry is the same width, and the
+`rotation_epoch` beside it, which is plaintext. The keys inside would open nothing even if
+read — a public key is the half a value is encapsulated *to*, and the private half is
+wrapped under a key-encryption key derived in a browser from a factor this server has never
+seen. It stays out of the export because it is account-control machinery rather than
+content: no route in this product enrols a factor from a file, so the person could do
+nothing with a copy but hold a sealed map of their own front door, in an artefact that
+outlives every session which could have vouched for whoever is holding it. The other two
+columns are excluded on arguments of their own, and `rotation_epoch`'s is the one worth reading twice: a generation number
 means nothing away from the live row it is compared against, so what a published one
 discloses is how churned somebody's recovery setup has been.
 

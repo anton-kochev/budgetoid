@@ -178,11 +178,11 @@ public sealed class AccountKeysEndpointTests
     /// of the same question, at the cap.
     /// </para>
     /// <para>
-    /// Not an AEAD envelope and not an encapsulation: a manifest is an authenticated list of public
-    /// keys under a framing this repository does not ship, and the column refuses only emptiness and a
-    /// width above <c>FactorManifest.MaximumBytes</c>. Bytes of any shape inside that are a legal row,
-    /// which is why nothing here builds one to a version-and-width recipe the way the two envelope
-    /// payloads are built.
+    /// Not built as an AEAD envelope, though a real manifest is one — a list of public keys the client
+    /// seals under the account's content key, which this server cannot open. The column refuses only
+    /// emptiness and a width above <c>FactorManifest.MaximumBytes</c>, so bytes of any shape inside that
+    /// are a legal row, which is why nothing here builds one to a version-and-width recipe the way the
+    /// two envelope payloads are built.
     /// </para>
     /// </remarks>
     private static readonly byte[] SeededManifest =

@@ -159,10 +159,11 @@ server can do nothing with what it holds.
   the constants of their own columns' suites, never from the neighbour's.
   [ciphertext-envelope.md](../business-logic/ciphertext-envelope.md) owns the framings and the three
   verbs.
-- **Three columns now hold public key material in the clear**, and none of them opens anything:
-  `passkey_public_keys.public_key_cose`, which is a different key for a different job — the one an
-  assertion's signature is verified against — and `factor_manifests.manifest` and
-  `key_rotations.staged_manifest`, which are the same kind of value one generation apart. The data
+- **Three columns now hold public key material, one in the clear and two sealed**, and none of them
+  opens anything: `passkey_public_keys.public_key_cose`, which is a different key for a different
+  job — the one an assertion's signature is verified against — and `factor_manifests.manifest` and
+  `key_rotations.staged_manifest`, which are the same kind of value one generation apart, each sealed
+  under a content key this server does not hold. The data
   inventory's enumeration of non-narrative `byte[]` columns held at fourteen while four of them
   changed, which is exactly the kind of drift a count alone reports as nothing.
   [data inventory](../engineering/data-inventory.md)

@@ -571,37 +571,33 @@ public sealed class KeyMaterialSecrecyTests
     /// named rather than counted because they are the two that grow: every column a screen seals joins
     /// the first, and every sealed name that has to stay unique joins the second, so a number written
     /// against either is a pin no assertion in this file holds. A new column has to argue itself into
-    /// one of those kinds or invent another in writing, which is what the paragraph below does.
+    /// one of those kinds or invent another in writing — and the paragraph below records two columns
+    /// that looked as though they needed a kind of their own and do not.
     /// </para>
     /// <para>
-    /// <b>A SIXTH KIND ARRIVED, AND IT IS NOT SECRET.</b> <c>factor_manifests.manifest</c> is
-    /// <i>authenticated public material held in the clear</i>: the account's list of every recovery
-    /// factor's public key, written by the client and read back by it to learn which factors exist and
-    /// what to <i>encapsulate to</i>. Not secret is not what is new about it —
-    /// <c>passkey_public_keys.public_key_cose</c> is in this census, is a public key, and is no more
-    /// secret than this one. What is new is that no existing kind will take it without saying something
-    /// false. It is not an envelope — nothing seals it and nothing opens it, so "the server holds no
-    /// value that opens this" is not an argument about it but a category error. It is not content,
-    /// because no plaintext is hidden here. It is not a blind index, because nothing is keyed and
-    /// nothing is compared. It is not one-way, because no digest was taken. And it is not WebAuthn's
-    /// own material, whose kind is closed and whose two members belong to the authenticator rather than
-    /// to this design's key hierarchy — so <c>passkey_public_keys.public_key_cose</c> is the entry whose
-    /// <i>argument</i> comes closest, and closest is not the same table, not the same key and not the
-    /// same job.
+    /// <b>THE TWO MANIFESTS ARE SEALED, AND THEY TAKE THE CONTENT ARGUMENT RATHER THAN A KIND OF THEIR
+    /// OWN.</b> <c>factor_manifests.manifest</c> is the account's list of every recovery factor's public
+    /// key, written by the client and read back by it to learn which factors exist and what to
+    /// <i>encapsulate to</i> — and the client writes it as an AEAD envelope <i>sealed under</i> the
+    /// account's content key, so this server cannot read a byte of it.
+    /// <c>key_rotations.staged_manifest</c> is the same value for a rotation in flight, sealed under the
+    /// <i>next</i> generation's content key. That puts both on content's footing: safe because the key
+    /// that opens them reaches this server only <i>encapsulated to</i> a factor's public key, whose
+    /// private half is itself wrapped under a key-encryption key derived from a recovery factor the
+    /// operator never holds — a chain the operator cannot start. They are not a person's words, so they
+    /// are argued as content rather than counted with it. And <c>passkey_public_keys.public_key_cose</c>,
+    /// the other column here that carries a public key, must not be pointed at: that one this server
+    /// reads in the clear, and these it cannot.
     /// </para>
     /// <para>
-    /// <b>The standing argument every other <c>bytea</c> on this schema makes does not apply here, and
-    /// pasting it over this entry would be the worst kind of pass.</b> Those columns are safe because
-    /// the server has never held the key that opens them. This one is safe for the opposite reason:
-    /// there is nothing to open, because these are <i>public</i> keys and publishing a public key is
-    /// what a public key is for. So the entry owes a different account — not what stands between the
-    /// bytes and a key-encryption key, but <b>what an operator reading the column actually learns</b>,
-    /// which is how many recovery factors an account holds and what each factor's public key is.
-    /// Neither of those opens anything: an ECDH public key encapsulates <i>to</i> a factor and decrypts
-    /// nothing, and the count is metadata about an account's recovery arrangements rather than about
-    /// the person's money. The kind is open like content and blind indexes are, and for the same
-    /// reason — any table that has to publish a set of public keys joins it — so it is named here and
-    /// never counted.
+    /// <b>What each manifest entry owes is its concession, and it is not the narrative columns'
+    /// concession.</b> AES-GCM leaks the plaintext's length here as it does there, but here the length
+    /// is worth more: every entry in a manifest is the same width, so the length says how many recovery
+    /// factors the account holds. <c>factor_manifests</c> adds the plaintext <c>rotation_epoch</c> beside
+    /// it, and a staged copy says, by existing, that a rotation is in flight. None of that opens
+    /// anything — the public keys inside would open nothing even if read, because an ECDH public key is
+    /// what a value is encapsulated <i>to</i> — and the count is metadata about an account's recovery
+    /// arrangements rather than about the person's money.
     /// </para>
     /// <para>
     /// <b>THE ENVELOPE KIND STOPPED BEING COUNTED, AND IT IS WORTH SAYING WHY RATHER THAN QUIETLY
@@ -714,11 +710,12 @@ public sealed class KeyMaterialSecrecyTests
             "an account's name sealed as a narrative field — an AEAD envelope of version, nonce, "
             + "ciphertext and tag, produced in the browser under the account's content key",
             "the same argument budgets.name makes, and deliberately not a pointer at it: the content "
-            + "key that seals this is generated in the browser and reaches this server only as the "
-            + "wrapped_private_key envelopes, each sealed under a key-encryption key derived from a "
-            + "recovery factor the operator never holds, so the row and everything that could open it "
-            + "are separated by a step that happens on somebody's device. It is CONTENT rather than "
-            + "key material, which inverts the wrapped-key argument rather than joining it. The "
+            + "key that seals this is generated in the browser and reaches this server only "
+            + "ENCAPSULATED TO a factor's public key, in the encapsulated_account_keys envelopes, whose "
+            + "private half is itself wrapped under a key-encryption key derived from a recovery factor "
+            + "the operator never holds — a chain the operator cannot start, so the row and everything "
+            + "that could open it are separated by a step that happens on somebody's device. It is "
+            + "CONTENT rather than key material, which inverts the wrapped-key argument rather than joining it. The "
             + "concession is the same one and is written out rather than glossed: AES-GCM without the "
             + "key yields nothing but the plaintext's LENGTH, which the column's own length already "
             + "gives away, so sealing buys nothing against a length oracle and never claimed to. The "
@@ -758,8 +755,10 @@ public sealed class KeyMaterialSecrecyTests
             "a budget's name sealed as a narrative field — an AEAD envelope of version, nonce, "
             + "ciphertext and tag, produced in the browser under the account's content key",
             "the content key that seals it is generated in the browser and reaches this server only "
-            + "as the wrapped_private_key envelopes next door, each sealed under a key-encryption key "
-            + "derived from a recovery factor the operator never holds — so the row and everything "
+            + "ENCAPSULATED TO a factor's public key, in the encapsulated_account_keys envelopes next "
+            + "door, whose private half is itself wrapped under a key-encryption key derived from a "
+            + "recovery factor the operator never holds — a chain the operator cannot start, so the "
+            + "row and everything "
             + "that could open it are separated by a step that happens on somebody's device. This is "
             + "the reverse of the wrapped-key argument rather than a copy of it: those columns are the "
             + "key and are safe because nothing here opens them, this one is CONTENT and is safe "
@@ -777,9 +776,10 @@ public sealed class KeyMaterialSecrecyTests
             "the same content-key argument budgets.name, accounts.name, category_groups.name and "
             + "payees.name make, written out again rather than pointed at, because a classification "
             + "that says \"see above\" stops being a per-column argument: the content key is generated "
-            + "in the browser and reaches this server only as the wrapped_private_key envelopes, each "
-            + "sealed under a key-encryption key derived from a recovery factor the operator never "
-            + "holds. WHAT THIS COLUMN IN PARTICULAR STOPS BEING LEGIBLE sits one level FINER than its "
+            + "in the browser and reaches this server only ENCAPSULATED TO a factor's public key, in "
+            + "the encapsulated_account_keys envelopes, whose private half is itself wrapped under a "
+            + "key-encryption key derived from a recovery factor the operator never holds — a "
+            + "chain the operator cannot start. WHAT THIS COLUMN IN PARTICULAR STOPS BEING LEGIBLE sits one level FINER than its "
             + "group's and is the more revealing of the two for exactly that reason: a group called "
             + "Medical says somebody has medical costs, while the categories under it \u2014 Therapy, "
             + "Fertility, a named condition \u2014 say which, and there are tens of them per budget "
@@ -869,8 +869,10 @@ public sealed class KeyMaterialSecrecyTests
             "the same content-key argument budgets.name, accounts.name and payees.name make, written "
             + "out again rather than pointed at, because a classification that says \"see above\" stops "
             + "being a per-column argument: the content key is generated in the browser and reaches "
-            + "this server only as the wrapped_private_key envelopes, each sealed under a "
-            + "key-encryption key derived from a recovery factor the operator never holds, so the row "
+            + "this server only ENCAPSULATED TO a factor's public key, in the encapsulated_account_keys "
+            + "envelopes, whose private half is itself wrapped under a key-encryption key derived from "
+            + "a recovery factor the operator never holds — a chain the operator cannot start, so "
+            + "the row "
             + "and everything that could open it are separated by a step that happens on somebody's "
             + "device. WHAT THIS COLUMN IN PARTICULAR STOPS BEING LEGIBLE is the COARSEST label in a "
             + "person's ledger and therefore the shortest read: a handful of rows saying Medical, "
@@ -888,9 +890,10 @@ public sealed class KeyMaterialSecrecyTests
             + "content key \u2014 the first sealed FREE-TEXT column in the product, and the second "
             + "narrative column that is nullable after budgets.name",
             "the content-key half is its neighbour's and is restated rather than pointed at for the "
-            + "same reason: the key is generated in the browser and reaches this server only as the "
-            + "wrapped_private_key envelopes, each sealed under a key-encryption key derived from a "
-            + "recovery factor the operator never holds. IT OWES A CONCESSION NO OTHER ENTRY ON THIS "
+            + "same reason: the key is generated in the browser and reaches this server only "
+            + "ENCAPSULATED TO a factor's public key, in the encapsulated_account_keys envelopes, whose "
+            + "private half is itself wrapped under a key-encryption key derived from a recovery factor "
+            + "the operator never holds — a chain the operator cannot start. IT OWES A CONCESSION NO OTHER ENTRY ON THIS "
             + "TABLE MAKES, and pasting the name's paragraph over this one is exactly how it would be "
             + "lost. accounts.name, category_groups.name and payees.name are NOT NULL, so their "
             + "presence says nothing; this column is nullable, and NULL is distinguishable from "
@@ -951,8 +954,10 @@ public sealed class KeyMaterialSecrecyTests
             "the same content-key argument accounts.name and budgets.name make, written out again "
             + "rather than pointed at, because a classification that says \"see above\" stops being a "
             + "per-column argument: the content key is generated in the browser and reaches this "
-            + "server only as the wrapped_private_key envelopes, each sealed under a key-encryption "
-            + "key derived from a recovery factor the operator never holds, so the row and everything "
+            + "server only ENCAPSULATED TO a factor's public key, in the encapsulated_account_keys "
+            + "envelopes, whose private half is itself wrapped under a key-encryption key derived from "
+            + "a recovery factor the operator never holds — a chain the operator cannot start, so the "
+            + "row and everything "
             + "that could open it are separated by a step that happens on somebody's device. WHAT THIS "
             + "COLUMN IN PARTICULAR STOPS BEING LEGIBLE IS WORTH NAMING, because it is the strongest "
             + "case of any sealed name in the product: a payee list is the set of counterparties one "
@@ -1032,25 +1037,27 @@ public sealed class KeyMaterialSecrecyTests
         new(
             "key_rotations",
             "staged_manifest",
-            "the factor manifest a rotation in flight committed to — the same authenticated list of "
-            + "every recovery factor\'s PUBLIC key that factor_manifests.manifest holds, staged beside "
-            + "the generation still in force so that a completion step can tell whether the live set "
-            + "has moved under it",
-            "IT IS NOT AN ENVELOPE AND THE STANDING ARGUMENT EVERY SEALED bytea HERE MAKES DOES NOT "
-            + "APPLY TO IT — written out rather than pointed at factor_manifests.manifest, because a "
-            + "classification that says \"see the other table\" stops being a per-column argument. "
-            + "There is nothing here to open: these are PUBLIC keys, held in the clear on purpose. "
-            + "Reading it yields how many recovery factors the run committed to and each of their ECDH "
-            + "P-256 public keys, and encapsulating to a public key is one-way — the private halves are "
-            + "wrapped under key-encryption keys derived on somebody\'s device, so holding every public "
-            + "key in the account opens not one envelope on this schema. WHAT IS NEW HERE IS THE "
-            + "SIMULTANEITY RATHER THAN THE BYTES, and it is the one thing a reader should check rather "
-            + "than assume: while a run is in flight the server holds TWO manifests for one account. "
-            + "Both are public and neither is a step toward the other, so two is worth exactly what one "
-            + "is. The tag over the set is what this column defends, and it defends integrity rather "
-            + "than secrecy — an operator who added, removed or swapped an entry produces a manifest "
-            + "the client refuses rather than one it believes, which is the whole reason the staged "
-            + "copy is stored rather than re-read"),
+            "the factor manifest a rotation in flight committed to — the same kind of list of every "
+            + "recovery factor\'s PUBLIC key that factor_manifests.manifest holds, sealed as one AEAD "
+            + "envelope under the NEXT generation\'s content key, and staged beside the generation "
+            + "still in force so that a completion step can tell whether the live set has moved under it",
+            "it is sealed under the NEXT generation\'s content key, never the current one, and that key "
+            + "reaches this server only ENCAPSULATED TO a factor\'s public key, in the "
+            + "key_rotation_seals envelopes, whose private half is itself wrapped under a "
+            + "key-encryption key derived from a recovery factor the operator never holds — a chain the "
+            + "operator cannot start. Written out rather than pointed at factor_manifests.manifest, "
+            + "because a classification that says \"see the other table\" stops being a per-column "
+            + "argument. The public keys inside would open nothing even if read: encapsulating to a "
+            + "public key is one-way. THE CONCESSION IS WHAT AN OPERATOR LEARNS WITHOUT OPENING IT. Its "
+            + "LENGTH gives up how many recovery factors the run committed to, because every entry is "
+            + "the same width, and the row existing at all says a rotation is in flight. WHAT IS NEW "
+            + "HERE IS THE SIMULTANEITY RATHER THAN THE BYTES, and it is the one thing a reader should "
+            + "check rather than assume: while a run is in flight the server holds TWO manifests for "
+            + "one account, sealed under two unrelated content keys, and neither is a step toward the "
+            + "other, so two is worth exactly what one is. The tag is the other half, and it defends "
+            + "integrity as well as secrecy — an operator who added, removed or swapped an entry "
+            + "produces a manifest the client refuses rather than one it believes, which is the whole "
+            + "reason the staged copy is stored rather than re-read"),
         new(
             "key_rotation_seals",
             "encapsulated_account_keys",
@@ -1080,31 +1087,28 @@ public sealed class KeyMaterialSecrecyTests
         new(
             "factor_manifests",
             "manifest",
-            "the account's authenticated manifest of every recovery factor's PUBLIC key, written by "
-            + "the client — the sole carrier of those keys, since no per-row public key column "
-            + "exists beside it",
-            "IT IS NOT AN ENVELOPE, NOT CONTENT AND NOT A DIGEST, AND THE STANDING ARGUMENT EVERY "
-            + "OTHER bytea ON THIS SCHEMA MAKES DOES NOT APPLY TO IT. Those columns are safe because "
-            + "the server has never held the key that opens them; here there is nothing to open. These "
-            + "are PUBLIC keys, held in the clear on purpose, because publishing a public key is what a "
-            + "public key is for — so an entry claiming an operator cannot read this value would "
-            + "be false, and the honest account is what reading it DOES yield. Two things, and neither "
-            + "is a key that unwraps anything. The first is HOW MANY recovery factors the account "
-            + "holds, which is metadata about somebody's recovery arrangements rather than about their "
-            + "money, and which the credentials and wrapped_account_keys row counts already give away. "
-            + "The second is each factor's ECDH P-256 PUBLIC key, which is the half of the pair the "
-            + "design intends the world to see: the account's content and index keys are ENCAPSULATED "
-            + "TO it, and encapsulating to a public key is a one-way operation — the private half "
-            + "is wrapped under the key-encryption key that factor derives on somebody's device and "
-            + "never reaches this server, so holding every public key in the account opens not one of "
-            + "the envelopes next door. It unwraps nothing in the second sense either: no value here is "
-            + "an input to a KDF or a wrapping step on this side. WHAT THE BYTES DO CARRY IS "
-            + "AUTHENTICATION, and it runs the other way — the set is signed as a SET so that a "
-            + "client can tell whether it is looking at all of the factors, which means an operator who "
-            + "added, removed or swapped an entry produces a manifest the client refuses rather than "
-            + "one it believes. That tag is the whole of what this column defends, and it defends "
-            + "integrity rather than secrecy, which is why no concession about AES-GCM length belongs "
-            + "on this line: nothing here was sealed"),
+            "the account's manifest of every recovery factor's PUBLIC key, sealed by the client as one "
+            + "AEAD envelope under the account's content key — the sole carrier of those keys, since "
+            + "no per-row public key column exists beside it",
+            "the content key it is sealed under is generated in the browser and reaches this server "
+            + "only ENCAPSULATED TO a factor's public key, in the encapsulated_account_keys envelopes, "
+            + "whose private half is itself wrapped under a key-encryption key derived from a recovery "
+            + "factor the operator never holds — a chain the operator cannot start, so this server "
+            + "cannot read a byte of it. It is sealed like CONTENT but is not a person's words, and it "
+            + "must not borrow passkey_public_keys.public_key_cose's argument: that public key the "
+            + "server reads in the clear, and these it cannot. The public keys inside would open "
+            + "nothing even if read — the account's content and index keys are ENCAPSULATED TO them, "
+            + "and encapsulating to a public key is one-way. THE CONCESSION IS WHAT AN OPERATOR LEARNS "
+            + "WITHOUT OPENING IT, and it is larger than the narrative columns' because of what the "
+            + "length means here. AES-GCM leaks the plaintext's LENGTH, and every entry in a manifest "
+            + "is the same width, so the length gives up HOW MANY recovery factors the account holds — "
+            + "metadata about somebody's recovery arrangements rather than about their money, and "
+            + "something the credentials and wrapped_account_keys row counts already give away. The "
+            + "rotation_epoch beside it is plaintext too, and says how many times the set has moved. "
+            + "It unwraps nothing in the second sense either: no value here is an input to a KDF or a "
+            + "wrapping step on this side. The tag is the other half — the set is sealed as a SET, so "
+            + "an operator who added, removed or swapped an entry produces a manifest the client "
+            + "refuses rather than one it believes"),
         new(
             "passkey_public_keys",
             "public_key_cose",
@@ -1262,20 +1266,22 @@ public sealed class KeyMaterialSecrecyTests
             + "not a pair — opening this needs the private half the member beside it carries — so an "
             + "operator holding both opens neither"),
         new("AccountKeyEndpoints.AccountKeysResponse", "Manifest",
-            "a response member, and THE ONE MEMBER ON THIS SURFACE WHOSE ARGUMENT RUNS THE OTHER WAY: "
-            + "base64url over the account's authenticated list of its recovery factors' PUBLIC keys, or "
-            + "null for an account holding no such row, which is every account in the product today. The "
-            + "two members above it are key material, and what licenses them is that the key which would "
-            + "open them never reaches this server. THIS IS NOT KEY MATERIAL AND NOT CIPHERTEXT AT ALL — "
-            + "the server holds these bytes in the clear, an operator can read them, and reading them "
-            + "opens nothing, because a public half is the thing a value is ENCAPSULATED TO and the "
-            + "private half it pairs with is wrapped under a key-encryption key derived in a browser "
-            + "from a factor this server has never seen. So the reason it may cross is not that it is "
-            + "sealed; it is that there is nothing in it to unseal. What it does disclose is stated "
-            + "rather than waved away, and is why DataInventory classifies the column EXCLUDED rather "
-            + "than harmless: how many recovery factors the account holds, and which public keys they "
-            + "are. It is authenticated as a SET — a per-row public key column would be unforgeable one "
-            + "row at a time and would leave a client no way to ask whether it was looking at all of "
+            "a response member, and THE ONE MEMBER ON THIS SURFACE SEALED UNDER A DIFFERENT KEY FROM "
+            + "ITS NEIGHBOURS: base64url over the account's list of its recovery factors' PUBLIC keys, "
+            + "sealed by the client as one AEAD envelope under the account's CONTENT KEY — or null for "
+            + "an account holding no manifest row, which since registration writes the first one at "
+            + "epoch 1 means only an account created before that landed. The two members above it are "
+            + "key material, and what licenses them is that the key-encryption key at the root of "
+            + "their chain never reaches this server. This one is sealed under the content key itself, "
+            + "which reaches this server only ENCAPSULATED TO a factor's public key, whose private half "
+            + "is wrapped under a key-encryption key derived in a browser from a factor this server has "
+            + "never seen — a chain the operator cannot start, so the operator handing these bytes back "
+            + "cannot open them. And what is inside would open nothing even if read, because a public "
+            + "half is the thing a value is ENCAPSULATED TO. What it does disclose is stated rather than "
+            + "waved away, and is why DataInventory classifies the column EXCLUDED rather than harmless: "
+            + "its LENGTH says how many recovery factors the account holds, because every entry is the "
+            + "same width, and RotationEpoch beside it is plaintext. It is sealed as a SET — a per-row "
+            + "public key column would be unforgeable one row at a time and would leave a client no way to ask whether it was looking at all of "
             + "them — which is also why this member sits on the response beside RotationEpoch and not "
             + "inside AccountKeyEntry"),
         new("CategoryEndpoints.UpdateCategoryRequest", "Description",
@@ -1456,10 +1462,12 @@ public sealed class KeyMaterialSecrecyTests
         new("KeyRotationEndpoints.BeginRotationRequest", "CredentialId",
             "base64url over the authenticator's opaque handle, which selects a key and is not one"),
         new("KeyRotationEndpoints.BeginRotationRequest", "Manifest",
-            "base64url over an AEAD envelope of 29 to 4096 bytes SEALED UNDER the account's content key, "
-            + "listing every recovery factor and its PUBLIC half, staged here as the list the run this "
-            + "request opens will file when it completes. The same value and the same argument as "
-            + "PasskeyEndpoints.RegistrationRequest.Manifest — this server cannot open it, so what the "
+            "base64url over an AEAD envelope of 29 to 4096 bytes SEALED UNDER the NEXT generation's "
+            + "content key, never the one in force, listing every recovery factor and its PUBLIC half, "
+            + "staged here as the list the run this request opens will file when it completes. The same "
+            + "kind of value and the same argument as PasskeyEndpoints.RegistrationRequest.Manifest, "
+            + "one generation on: that next content key reaches this server only encapsulated, in the "
+            + "seals this same run stages, so this server cannot open it, and what the "
             + "list contains is held by the authentication tag and by the client that can verify it, and "
             + "a private key arriving in this member would be a secret the operator could reach with "
             + "nothing able to notice. WHAT IS DIFFERENT ON THIS ROUTE IS WHERE THE FRAMING IS JUDGED, "
@@ -1576,21 +1584,23 @@ public sealed class KeyMaterialSecrecyTests
             + "with the client that nothing on this side can check: a reversed pair is the right width, "
             + "the right version, stores and reads back"),
         new("KeyRotationEndpoints.StagedRotationResponse", "StagedManifest",
-            "a response member: base64url over the account's NEXT generation of its authenticated list "
-            + "of every recovery factor's PUBLIC key, held in key_rotations.staged_manifest until a "
-            + "completion promotes it. THE ARGUMENT IS AccountKeysResponse.Manifest'S AND RUNS THE SAME "
-            + "WAY ROUND, written out here rather than pointed at because an entry that says \"see "
-            + "above\" stops being a per-member argument: this is not key material and not ciphertext "
-            + "the server could be said to hold the key for, because a public half is the thing a value "
-            + "is ENCAPSULATED TO and reading one opens nothing. WHAT IS PARTICULAR TO THIS COPY is that "
+            "a response member: base64url over the account's NEXT generation of its list of every "
+            + "recovery factor's PUBLIC key, held in key_rotations.staged_manifest until a completion "
+            + "promotes it. THE ARGUMENT IS AccountKeysResponse.Manifest'S, ONE GENERATION ON, written "
+            + "out here rather than pointed at because an entry that says \"see above\" stops being a "
+            + "per-member argument: the bytes are an AEAD envelope sealed under the NEXT generation's "
+            + "content key, never the one in force, and that key reaches this server only ENCAPSULATED "
+            + "TO a factor's public key, in the staged seals, whose private half is wrapped under a "
+            + "key-encryption key derived in a browser — a chain the operator cannot start. The public "
+            + "halves inside would open nothing even if read. WHAT IS PARTICULAR TO THIS COPY is that "
             + "it leaves the server as part of a RESUMPTION rather than as part of an ordinary read: a "
             + "client that lost the content key to a reload is handed these bytes back so it can learn "
-            + "which factors the run it abandoned was staged against. It is sealed under the account's "
-            + "content key, so this server enforces framing, width and epoch and never contents — a "
-            + "manifest naming nobody stores, promotes and is handed back here unchanged. What it "
-            + "discloses is what its live sibling discloses and is why DataInventory classifies the "
-            + "column EXCLUDED rather than harmless: how many recovery factors the account is about to "
-            + "hold, and which public keys they are"),
+            + "which factors the run it abandoned was staged against. This server enforces framing, "
+            + "width and epoch and never contents — a manifest naming nobody stores, promotes and is "
+            + "handed back here unchanged. What it discloses is what its live sibling discloses and is "
+            + "why DataInventory classifies the column EXCLUDED rather than harmless: its LENGTH says "
+            + "how many recovery factors the account is about to hold, because every entry is the same "
+            + "width, and its presence says a rotation is in flight"),
         new("KeyRotationEndpoints.StagedSealResponse", "EncapsulatedAccountKeys",
             "a response member: base64url over a 158-byte encapsulation of BOTH of the NEXT generation's "
             + "account keys as one plaintext, content key first, ENCAPSULATED TO one factor's PUBLIC "

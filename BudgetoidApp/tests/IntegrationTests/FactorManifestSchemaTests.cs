@@ -317,13 +317,13 @@ public sealed class FactorManifestSchemaTests
     /// Builds a manifest of <paramref name="length" /> bytes, every one <paramref name="filler" />.
     /// </summary>
     /// <remarks>
-    /// Deliberately not an envelope and deliberately not built by
-    /// <c>RepositoryTestHost.WrappedPrivateKeyPayload</c>: a manifest is authenticated PUBLIC material the
-    /// server holds in the clear, so a value carrying the wrapped-key version byte would misstate what
-    /// this column holds to anybody reading these probes for an example. Nothing here verifies the
-    /// authentication — the tag is checkable only by a client holding the account's keys, and no such
-    /// client exists in this file — so the length band and the owner are the whole of what a row has to
-    /// satisfy.
+    /// Filler bytes rather than a real envelope, and not because the column holds anything else: a real
+    /// manifest is an AEAD envelope sealed under the account's content key, in the same framing
+    /// <c>RepositoryTestHost.WrappedPrivateKeyPayload</c> builds. Filler is honest here because the
+    /// column checks only a length band and an owner, and a probe that looked like a real envelope would
+    /// suggest it checks more. Nothing on this side can verify the envelope — the tag is checkable only
+    /// by a client holding the account's content key, and no such client exists in this file — so the
+    /// length band and the owner are the whole of what a row has to satisfy.
     /// </remarks>
     private static byte[] Manifest(int length, byte filler) => [.. Enumerable.Repeat(filler, length)];
 

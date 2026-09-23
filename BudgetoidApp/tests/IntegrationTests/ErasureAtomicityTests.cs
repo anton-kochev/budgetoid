@@ -1085,12 +1085,12 @@ public sealed class ErasureAtomicityTests
     /// A stand-in manifest naming the one factor this helper seeds.
     /// </summary>
     /// <remarks>
-    /// Deliberately NOT built by <see cref="Envelope" />, and the difference is the point rather than a
-    /// detail: a manifest is authenticated PUBLIC material the server holds in the clear, not a sealed
-    /// envelope, so a value carrying the wrapped-key version byte would misstate what the column holds
-    /// to anybody reading this seeding for an example. Nothing verifies the authentication here — the
-    /// tag is checkable only by a client holding the account's keys, and no such client exists in this
-    /// file — so the only rules the row has to satisfy are the length band and an owner, which
+    /// Deliberately NOT built by <see cref="WrappedPrivateKeyPayload" />, and not because the column
+    /// holds anything else: a real manifest is an AEAD envelope sealed under the account's content key,
+    /// in the framing that helper imitates. Plain bytes are honest here because the column checks only a length band and an owner,
+    /// and a seed that looked like a real envelope would suggest it checks more. Nothing on this side
+    /// can verify the envelope — the tag is checkable only by a client holding the account's content
+    /// key, and no such client exists in this file — so the only rules the row has to satisfy are the length band and an owner, which
     /// <see cref="FactorManifest.For" /> and <c>CK_factor_manifests_manifest_length</c> refuse
     /// to bend from either end. Derived from the factor rather than random so a failure message can say
     /// which factor the seeded manifest was written for.

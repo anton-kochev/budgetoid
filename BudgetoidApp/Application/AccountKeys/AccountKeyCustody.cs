@@ -114,9 +114,9 @@ namespace Application.AccountKeys;
 /// </para>
 /// <para>
 /// <b>Nothing on this type can be opened by the server, and no member may be added that could be.</b>
-/// A manifest carries <em>public</em> keys — the halves a value is <em>encapsulated to</em> — so its
-/// bytes are material this server may hold in the clear, which is a different licence from the one the
-/// envelopes beside it hold and not a wider one. A member carrying an unwrapped key, a private key, a
+/// A manifest carries <em>public</em> keys — the halves a value is <em>encapsulated to</em> — sealed
+/// under the account's content key, so its bytes are ciphertext this server cannot open, as the
+/// envelopes beside it are. A member carrying an unwrapped key, a private key, a
 /// key-encryption key, a PRF output or a recovery code is refused here exactly as it is on
 /// <see cref="FactorEnvelopes" />, and would fail no test, because there is no test that can notice a
 /// value the design says never arrives.

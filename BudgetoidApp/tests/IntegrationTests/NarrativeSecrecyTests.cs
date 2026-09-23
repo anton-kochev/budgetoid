@@ -175,9 +175,9 @@ public sealed class NarrativeSecrecyTests
             $"Narrative scan: {scan.Relations.Count} relations, {scan.Columns} columns, "
             + $"{scan.RowsExamined} rows. {string.Join(", ", scan.Relations)}");
 
-        // Floors rather than counts, and deliberately loose ones: the schema is measured today at 17
-        // relations, 95 columns and 28 rows on this arrangement, and these three exist to separate "the
-        // scan read the database" from "the scan read nothing" rather than to pin a shape. Pinning the
+        // Floors rather than counts, and deliberately loose ones: the schema sits well above all three
+        // on this arrangement — the line printed above says by how much — and these three exist to
+        // separate "the scan read the database" from "the scan read nothing" rather than to pin a shape. Pinning the
         // shape is AppRoleGrantMatrixTests' and RlsCoverageTests' job, and a census that reddened every
         // time a table was added would be answered by raising the number, which is how a guard becomes
         // a chore. The named relations below are the half that is specific.

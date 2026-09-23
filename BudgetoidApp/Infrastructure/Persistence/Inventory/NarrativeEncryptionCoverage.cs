@@ -39,12 +39,14 @@ namespace Infrastructure.Persistence.Inventory;
 /// <c>recovery_code_hashes.verifier_hash</c>, both of <c>wrapped_account_keys</c>' payload columns,
 /// <c>key_rotations.staged_manifest</c>, <c>key_rotation_seals.encapsulated_account_keys</c>,
 /// <c>passkey_public_keys</c>' two columns, <c>webauthn_challenges.challenge</c> and
-/// <c>factor_manifests.manifest</c>. Three of the fourteen are
-/// <i>public</i> key material the server holds in the clear rather than anything sealed or hashed —
-/// <c>passkey_public_keys.public_key_cose</c>, <c>factor_manifests.manifest</c> and
-/// <c>key_rotations.staged_manifest</c>, which is the next generation of the second — and none is
-/// told apart from a sealed column by this pair of members: no version byte and no envelope are
-/// facts about the bytes, not about the type or the store type. So raw bytes
+/// <c>factor_manifests.manifest</c>. One of the fourteen,
+/// <c>passkey_public_keys.public_key_cose</c>, is <i>public</i> key material the server holds in the
+/// clear rather than anything sealed or hashed; <c>factor_manifests.manifest</c> and
+/// <c>key_rotations.staged_manifest</c>, the next generation of it, <i>are</i> sealed — AEAD envelopes
+/// under a content key — yet carry no version check, because the stored rule is a length band and
+/// nothing else. None of them is told apart from a narrative column by this pair of members: a
+/// version byte and an envelope are facts about the bytes, not about the type or the store type. So
+/// raw bytes
 /// carrying no envelope at all satisfy <see cref="ProviderTypeIsNotBytes" /> and
 /// <see cref="StoreTypeIsNotOpaque" /> both, and a column misclassified as narrative would pass two of
 /// the four checks on shape alone. What distinguishes a sealed column from a hashed one is

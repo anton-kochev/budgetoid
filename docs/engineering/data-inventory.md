@@ -54,9 +54,8 @@ claim about the **database** — that a column is stored as ciphertext, that it 
 of real rows, that an erasure reaches it.
 
 So a container-backed test asserts that the EF model and the live catalog describe the same columns,
-in both directions. Measured when it was written: 93 mapped columns over 16 tables against 95 over
-17, the whole difference being `__EFMigrationsHistory` and its two columns, and both directions
-empty.
+in both directions. Measured over this model: 110 mapped columns over 19 tables against 112 over 20,
+the whole difference being `__EFMigrationsHistory` and its two columns, and both directions empty.
 
 `DataInventory.RelationsOutsideTheModel` is the written-down half, and it **excuses a relation, never
 a column**. A per-column list would offer a middle where a mapped table drops one column out of the
@@ -131,12 +130,13 @@ indexes, `session_tokens.token_hash`, `recovery_code_hashes.verifier_hash`,
 worth reading rather than skimming: the two wrapped account keys and the two staged envelopes left,
 and a wrapped private key, an encapsulated pair, a staged manifest and a seal arrived — so a census
 that compared only the number would have reported nothing at all.
-**Three of the fourteen are *public* key material the server holds in the clear** rather than
-anything sealed or hashed — `passkey_public_keys.public_key_cose`, `factor_manifests.manifest` and
-`key_rotations.staged_manifest`, the last two being the same kind of value one generation apart —
-and this pair of checks tells none of them from a sealed column,
-because carrying no version byte and no envelope is a fact about the bytes rather than about the
-type or the store type. Raw bytes carrying no envelope at all satisfy both type checks, so
+**One of the fourteen, `passkey_public_keys.public_key_cose`, is *public* key material the server
+holds in the clear** rather than anything sealed or hashed. `factor_manifests.manifest` and
+`key_rotations.staged_manifest` — the same kind of value one generation apart — *are* sealed: AEAD
+envelopes under a content key, whose stored rule is a length band with no version check. This pair
+of checks tells none of them from a narrative column, because a version byte and an envelope are
+facts about the bytes rather than about the type or the store type. Raw bytes carrying no envelope
+at all satisfy both type checks, so
 a column misclassified as narrative passes half the gate on shape alone. What tells a sealed column
 from a hashed one is the version check and the length band; the type pair only rules out a column
 this server can read directly.

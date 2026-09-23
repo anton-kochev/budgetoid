@@ -39,11 +39,11 @@ namespace Application.KeyRotations.BeginKeyRotation;
 /// </para>
 /// <para>
 /// <b>Nothing here is an unwrapped key, a private key, a key-encryption key or a PRF output</b>, and
-/// nothing may be added that is. The manifest carries <em>public</em> halves and every seal is
-/// ciphertext <em>encapsulated to</em> one of them, both of which the server may hold in the clear
-/// because it holds nothing that opens either; a member carrying a private one would put the account's
-/// whole plaintext within reach of the operator without reddening a test, because there is no test that
-/// can notice a value the design says never arrives.
+/// nothing may be added that is. The manifest is the <em>public</em> halves sealed under the next
+/// generation's content key and every seal is ciphertext <em>encapsulated to</em> one of them, and the
+/// server may hold both because it holds nothing that opens either; a member carrying a private one
+/// would put the account's whole plaintext within reach of the operator without reddening a test,
+/// because there is no test that can notice a value the design says never arrives.
 /// </para>
 /// </remarks>
 /// <param name="Assertion">The fresh re-authentication the begin is authorized by.</param>

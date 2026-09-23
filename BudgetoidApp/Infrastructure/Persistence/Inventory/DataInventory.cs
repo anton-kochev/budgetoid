@@ -595,8 +595,10 @@ public static class DataInventory
             + "payload column here, which is why it gets its own sentence rather than the standing "
             + "one. The standing reason is that the server has never held the key that opens the "
             + "value; the truthful version here is that the server has never held the PRIVATE HALF. "
-            + "It holds the public half in the clear, in factor_manifests, and a public key is enough "
-            + "to PRODUCE one of these. What withholding buys is therefore about the index key inside "
+            + "The public half is no defence, because a public key is enough to PRODUCE one of these — "
+            + "though this server cannot read that half either, since its only copy sits inside "
+            + "factor_manifests, sealed under the content key. What withholding buys is therefore "
+            + "about the index key inside "
             + "it: opening the pair regenerates every blind index in the budget, turning a stolen "
             + "export from a pile of ciphertext into an oracle that confirms guesses at names"),
         ColumnClassificationEntry.Excluded(
@@ -627,11 +629,12 @@ public static class DataInventory
         ColumnClassificationEntry.Excluded(
             "key_rotations",
             "staged_manifest",
-            "the NEXT generation's list of every factor's public key, authenticated as one blob and "
-            + "not yet in force. It is the same kind of value factor_manifests.manifest holds, and "
-            + "that entry's concession applies here unchanged — this is not ciphertext, the server "
-            + "holds it in the clear, and publishing it gives up how many ways back into the account "
-            + "there will be and what their public keys are. What is different is that this copy is "
+            "the NEXT generation's list of every factor's public key, sealed as one AEAD envelope "
+            + "under the NEXT generation's content key and not yet in force. It is the same kind of "
+            + "value factor_manifests.manifest holds, and that entry's concession applies here "
+            + "unchanged — the server cannot open it, but its length still gives up how many ways back "
+            + "into the account there will be, because every entry is the same width. What is "
+            + "different is that this copy is "
             + "provisional: it names the factor set a run intends to end with, so a file carrying it "
             + "would state a person's future security setup as though it were their current one, and "
             + "the row is rewritten or destroyed the moment the run is replaced or finishes"),
@@ -698,18 +701,18 @@ public static class DataInventory
         ColumnClassificationEntry.Excluded(
             "factor_manifests",
             "manifest",
-            "every factor's PUBLIC key, authenticated as one blob — and this entry has to concede "
-            + "what it would disclose before it can argue for withholding it, because unlike the "
-            + "envelopes next door this is not ciphertext and the server holds it in the clear. "
-            + "Published, it gives up exactly two things: how many recovery factors the account has, "
-            + "and what those factors' public keys are. Neither opens anything. A public key is the "
-            + "half an envelope is encapsulated TO, and the private half is wrapped under a "
-            + "key-encryption key derived in a browser from a factor this server has never seen — so "
-            + "a reader holding the whole blob can seal a value nobody will ever read and can open "
-            + "nothing at all. It is excluded because it is account-control machinery rather than "
-            + "content: no route in this product enrols a factor from a file, so the person could do "
-            + "nothing with it but read a map of their own front door, in an artefact that outlives "
-            + "every session that could have vouched for whoever is holding it"),
+            "every factor's PUBLIC key, as one AEAD envelope the client seals under the account's "
+            + "content key — so this server cannot read a byte of it, and the entry still has to "
+            + "concede what the stored value discloses before it can argue for withholding it. Its "
+            + "LENGTH gives up how many recovery factors the account has, because every entry is the "
+            + "same width, and the rotation_epoch beside it is plaintext. The keys themselves stay "
+            + "sealed, and would open nothing if they did not: a public key is the half an envelope is "
+            + "encapsulated TO, and the private half is wrapped under a key-encryption key derived in "
+            + "a browser from a factor this server has never seen. It is excluded because it is "
+            + "account-control machinery rather than content: no route in this product enrols a "
+            + "factor from a file, so the person could do nothing with it but hold a sealed map of "
+            + "their own front door, in an artefact that outlives every session that could have "
+            + "vouched for whoever is holding it"),
         ColumnClassificationEntry.Excluded(
             "factor_manifests",
             "rotation_epoch",

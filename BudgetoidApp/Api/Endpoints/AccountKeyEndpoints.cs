@@ -104,8 +104,8 @@ public static class AccountKeyEndpoints
             // about: base64url is the transport, and it is the same transport for two framings the
             // decoders on the write side keep apart by naming two types. What must never be shared is
             // the judging, not the spelling. THE MANIFEST IS THE THIRD VALUE THAT TRANSPORT CARRIES,
-            // through the same encoder for the same reason — it is neither of those two framings, being
-            // an authenticated list of public keys rather than an envelope, and the transport says
+            // through the same encoder for the same reason — it is the list of public keys sealed under
+            // the account's content key, a third value this server cannot open, and the transport says
             // nothing about which of the three it is spelling.
             //
             // The absent manifest stays absent rather than becoming "": an empty string is a legal

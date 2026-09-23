@@ -23,16 +23,19 @@ namespace Domain.Users;
 /// </para>
 /// <para>
 /// <b>Three verbs, and they are not interchangeable</b> — <em>sealed under</em> a key over data,
-/// <em>wrapped under</em> a key over another key, <em>encapsulated to</em> a public key. A manifest
-/// carries the third kind of value, and only that kind.
+/// <em>wrapped under</em> a key over another key, <em>encapsulated to</em> a public key. A manifest is
+/// the first kind: data <em>sealed under</em> the account's content key, and the data is the public
+/// keys the third kind is encapsulated to.
 /// </para>
 /// <para>
 /// <b>Nothing here takes an unwrapped key, a private key, a key-encryption key or a PRF output</b>, the
-/// rule <see cref="WrappedAccountKeys"/> states at length. A manifest carries <em>public</em> keys, so
-/// its bytes — like <see cref="PasskeyPublicKey.CoseKey"/> next door — are key material the server may
-/// hold in the clear; a member accepting a private one would put the whole account's plaintext within
-/// reach of the operator, and it would do so without reddening a single test, because there is no test
-/// that can notice a value the design says never arrives.
+/// rule <see cref="WrappedAccountKeys"/> states at length. The bytes are ciphertext this server cannot
+/// open, unlike <see cref="PasskeyPublicKey.CoseKey"/> next door, which it reads in the clear. What an
+/// operator does learn is the length — every entry is the same width, so it says how many factors the
+/// account holds — and <see cref="RotationEpoch"/>, which is plaintext. The public keys inside would
+/// open nothing even if read; a member accepting a private one would put the whole account's
+/// plaintext within reach of the operator, and it would do so without reddening a single test,
+/// because there is no test that can notice a value the design says never arrives.
 /// </para>
 /// <para>
 /// <b>This floor is not the whole epoch rule, and a reader must not take it for one.</b> The

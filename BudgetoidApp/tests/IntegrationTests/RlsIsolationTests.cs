@@ -1978,13 +1978,13 @@ public sealed class RlsIsolationTests
     /// refused by a constraint would be a refusal the probe could not attribute to a policy.
     /// </para>
     /// <para>
-    /// Filled bytes rather than an envelope, and deliberately not built from
-    /// <see cref="RepositoryTestHost.WrappedPrivateKeyPayload" />: a manifest is authenticated PUBLIC
-    /// material the server holds in the clear, and a value carrying the wrapped-key version byte would
-    /// misstate what this column holds to anybody reading the probe for an example. Nothing here or
-    /// anywhere else on this side of the wire verifies the authentication — the tag is checkable only
-    /// by a client holding the account's content key — so the band and the owner are the whole of what
-    /// a row has to satisfy.
+    /// Filled bytes rather than a real envelope, and not because the column holds anything else: a real
+    /// manifest is an AEAD envelope sealed under the account's content key, in the same framing
+    /// <see cref="RepositoryTestHost.WrappedPrivateKeyPayload" /> builds. Filler is honest here because
+    /// the column checks only a length band and an owner, and a probe that looked like a real envelope
+    /// would suggest it checks more. Nothing here or anywhere else on this side of the wire can verify
+    /// the envelope — the tag is checkable only by a client holding the account's content key — so the
+    /// band and the owner are the whole of what a row has to satisfy.
     /// </para>
     /// </remarks>
     private static NpgsqlCommand BuildManifestInsertProbe(NpgsqlConnection connection, Guid ownerId)
