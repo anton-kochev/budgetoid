@@ -39,6 +39,20 @@ export interface CreatePayeeRequest {
   nameKey: string;
 }
 
+/**
+ * The body of `PATCH /api/payees/{id}` — two members and no `id`, which the
+ * route carries. A rename re-seals against the row's **existing** identifier.
+ *
+ * Both halves of one name travel together, because a payee has one mutable
+ * thing about it and a body carrying only the envelope would be a half-rename
+ * the server refuses to spell. A duplicate `nameKey` answers **400 keyed on
+ * `Name`** here, not the create's 409.
+ */
+export interface RenamePayeeRequest {
+  name: string;
+  nameKey: string;
+}
+
 @Injectable({ providedIn: 'root' })
 export class PayeesApiService extends BaseApiService {
   public getPayees(): Observable<PayeeListResponse> {
@@ -47,5 +61,19 @@ export class PayeesApiService extends BaseApiService {
 
   public createPayee(request: CreatePayeeRequest): Observable<PayeeDto> {
     return this.post<PayeeDto>('api/payees', request);
+  }
+
+  public renamePayee(
+    id: string,
+    request: RenamePayeeRequest,
+  ): Observable<void> {
+    // Built member by member, so a caller holding a wider object sends exactly
+    // these two: the route binds strictly.
+    const body: RenamePayeeRequest = {
+      name: request.name,
+      nameKey: request.nameKey,
+    };
+
+    return this.patch<void>(`api/payees/${id}`, body);
   }
 }

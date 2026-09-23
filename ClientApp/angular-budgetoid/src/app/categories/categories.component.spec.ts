@@ -36,6 +36,8 @@ import {
 import {
   KeyRotationService,
   type KeyRotationFailure,
+  type KeyRotationNameCollision,
+  type KeyRotationRenameRefusal,
   type KeyRotationPhase,
   type KeyRotationProgress,
   type StagedRotation,
@@ -240,6 +242,12 @@ class KeyRotationStub
     signal<KeyRotationProgress>({ records: 0, resealed: 0 }).asReadonly();
   public readonly failure: Signal<KeyRotationFailure | null> =
     signal<KeyRotationFailure | null>(null).asReadonly();
+  // No screen but the settings section draws a rename block, so these stay
+  // at rest.
+  public readonly collision: Signal<KeyRotationNameCollision | null> =
+    signal<KeyRotationNameCollision | null>(null).asReadonly();
+  public readonly renameRefusal: Signal<KeyRotationRenameRefusal | null> =
+    signal<KeyRotationRenameRefusal | null>(null).asReadonly();
 
   public setRunning(running: boolean): void {
     this.#running.set(running);

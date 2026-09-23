@@ -10,16 +10,20 @@
 // compiler's own census of what a template can reach: a member added to either
 // service is a compile error naming it, rather than a `TypeError` during change
 // detection that kills every test in the file on one message.
-import { signal } from '@angular/core';
+import { afterNextRender, signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { provideNoopAnimations } from '@angular/platform-browser/animations';
 import {
   KeyRotationService,
   type KeyRotationFailure,
+  type KeyRotationNameCollision,
+  type KeyRotationRenameRefusal,
   type KeyRotationPhase,
   type KeyRotationProgress,
   type StagedRotation,
 } from '@app-core/security/key-rotation.service';
+import type { NameArm } from '@app-core/security/rotation-name-collision';
+import { NARRATIVE_NAME_CHARACTERS } from '@app-shared/narrative-field-caps';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { KeyRotationSectionComponent } from './key-rotation-section.component';
 import {
@@ -47,6 +51,10 @@ const ACKNOWLEDGEMENT = 'I’ll leave this tab open until it finishes.';
 
 const ROTATE = 'Rotate keys';
 const FINISH = 'Finish rotating';
+const RENAME = 'Rename and finish';
+
+// What a person types into the rename block.
+const TYPED_NAME = 'Corner shop';
 
 const PHASES = {
   collecting: 'Reading your records.',
@@ -54,7 +62,7 @@ const PHASES = {
   finishing: 'Finishing.',
 } as const satisfies Partial<Record<KeyRotationPhase, string>>;
 
-// The run's six, each saying what became of the *run* — which is what separates
+// The run's seven, each saying what became of the *run* — which is what separates
 // them from the Account keys section's lines, which have no run to say anything
 // about.
 const RUN_REFUSALS = {
@@ -71,12 +79,18 @@ const RUN_REFUSALS = {
     'Something about this account’s keys doesn’t line up — no passkey or ' +
     'recovery code will change it.',
   unfinished:
-    'Something else changed this account while it was being re-encrypted. ' +
-    'Close any other Budgetoid tab, then finish the rotation from here.',
+    'This account kept changing while it was being re-encrypted, so the ' +
+    'rotation stopped where it is. Close Budgetoid in other tabs and on other ' +
+    'devices, then finish it here — the records already re-encrypted stay ' +
+    'that way.',
   'factors-moved':
     'The passkeys and recovery codes on this account changed while the ' +
     'rotation was running. Start it again from here — the records already ' +
     're-encrypted stay that way.',
+  'same-name':
+    'Two records in one list have the same name, so the rotation stopped ' +
+    'where it is. Give one of them a new name to finish it — the records ' +
+    'already re-encrypted stay that way.',
 } as const satisfies Record<KeyRotationFailure, string>;
 
 // The ceremony's five, from the Account keys chapter's table — four verbatim,
@@ -113,6 +127,8 @@ class KeyRotationStub implements KeyRotationSurface {
   });
   public readonly failure = signal<KeyRotationFailure | null>(null);
   public readonly staged = signal<StagedRotation | null>(null);
+  public readonly collision = signal<KeyRotationNameCollision | null>(null);
+  public readonly renameRefusal = signal<KeyRotationRenameRefusal | null>(null);
   public readonly running = signal(false);
   public begin = vi.fn(async () => Promise.resolve());
   public resume = vi.fn(async () => Promise.resolve());
@@ -132,6 +148,7 @@ class RotationFlowStub implements RotationFlowSurface {
   public readonly failure = signal<RotationCeremonyFailure | null>(null);
   public readonly working = signal(false);
   public rotate = vi.fn();
+  public renameAndFinish = vi.fn();
 }
 
 // Collapses the whitespace a template's line wrapping introduces, so a pinned
@@ -458,4 +475,629 @@ describe('KeyRotationSectionComponent', () => {
     expect(heading?.textContent?.trim()).toBe('Key rotation');
     expect(section?.getAttribute('aria-labelledby')).toBe(heading?.id);
   });
+
+  // `docs/design/components.md`, "Renaming one of two records with one name":
+  // the block the section draws while `same-name` stands.
+  describe('renaming one of two records with one name', () => {
+    const nameField = (): HTMLInputElement | null =>
+      host.querySelector('input:not([type="checkbox"])');
+    const renameControl = (): HTMLElement | null => buttonNamed(host, RENAME);
+
+    const typeName = (value: string): void => {
+      const input = nameField();
+
+      if (input === null) {
+        throw new Error('the section drew no name field');
+      }
+
+      input.value = value;
+      input.dispatchEvent(new Event('input'));
+      tick();
+    };
+
+    // The section as a person meets it on arriving at the screen: the driver
+    // is root-provided, so a pair from an earlier press is already standing
+    // when this render is constructed.
+    const arriveWith = (standing: KeyRotationNameCollision): void => {
+      rotations.failure.set('same-name');
+      rotations.collision.set(standing);
+      fixture.destroy();
+      fixture = TestBed.createComponent(KeyRotationSectionComponent);
+      host = fixture.nativeElement as HTMLElement;
+      tick();
+    };
+
+    // A press, as the section sees one: in flight, then over.
+    const pressEnds = (outcome: () => void): void => {
+      flow.working.set(true);
+      rotations.running.set(true);
+      tick();
+      flow.working.set(false);
+      rotations.running.set(false);
+      outcome();
+      tick();
+    };
+
+    beforeEach(() => {
+      arriveWith(pair('payees', 'Groceries', 'groceries'));
+    });
+
+    it('draws Rename and finish in place of Rotate keys and Finish rotating', () => {
+      // Arrange
+      rotations.staged.set({ startedAtUtc: '2026-07-14T09:30:00Z' });
+
+      // Act
+      tick();
+
+      // Assert
+      // That run cannot finish until a name changes, so the last of the three
+      // wins, and one control is drawn.
+      expect(renameControl()).not.toBeNull();
+      expect(buttonNamed(host, ROTATE)).toBeNull();
+      expect(buttonNamed(host, FINISH)).toBeNull();
+    });
+
+    it('draws no name field while no pair stands', () => {
+      // Arrange
+      rotations.collision.set(null);
+      rotations.failure.set(null);
+
+      // Act
+      tick();
+
+      // Assert
+      expect(nameField()).toBeNull();
+      expect(renameControl()).toBeNull();
+    });
+
+    it.each([
+      [
+        'accounts',
+        'Groceries',
+        'Two accounts are called “Groceries”. The new name goes to the one ' +
+          'that was given this name after the rotation started.',
+      ],
+      [
+        'accounts',
+        'groceries',
+        'An account called “Groceries” and one called “groceries” count as ' +
+          'the same name. The new name goes to “groceries”, which was given ' +
+          'its name after the rotation started.',
+      ],
+      [
+        'payees',
+        'Groceries',
+        'Two payees are called “Groceries”. The new name goes to the one that ' +
+          'was given this name after the rotation started.',
+      ],
+      [
+        'payees',
+        'groceries',
+        'A payee called “Groceries” and one called “groceries” count as the ' +
+          'same name. The new name goes to “groceries”, which was given its ' +
+          'name after the rotation started.',
+      ],
+      [
+        'categoryGroups',
+        'Groceries',
+        'Two category groups are called “Groceries”. The new name goes to the ' +
+          'one that was given this name after the rotation started.',
+      ],
+      [
+        'categoryGroups',
+        'groceries',
+        'A category group called “Groceries” and one called “groceries” count ' +
+          'as the same name. The new name goes to “groceries”, which was given ' +
+          'its name after the rotation started.',
+      ],
+      [
+        'categories',
+        'Groceries',
+        'Two categories are called “Groceries”. The new name goes to the one ' +
+          'that was given this name after the rotation started.',
+      ],
+      [
+        'categories',
+        'groceries',
+        'A category called “Groceries” and one called “groceries” count as ' +
+          'the same name. The new name goes to “groceries”, which was given ' +
+          'its name after the rotation started.',
+      ],
+    ] satisfies readonly (readonly [NameArm, string, string])[])(
+      'names the pair in %s when the second is spelled “%s”, and describes the field with it',
+      (arm, renamedName, lead) => {
+        // Arrange
+        arriveWith(pair(arm, 'Groceries', renamedName));
+
+        // Act
+        const described = describedBy(nameField());
+
+        // Assert
+        // The copy is the specification; the names render as stored.
+        expect(described).toContain(lead);
+        expect(elementSaying(lead)).not.toBeNull();
+      },
+    );
+
+    it('labels the field New name and keeps the browser’s suggestions off it', () => {
+      // Assert
+      const input = nameField();
+
+      expect(textOf(input?.labels?.[0])).toBe('New name');
+      expect(input?.getAttribute('autocomplete')).toBe('off');
+    });
+
+    it('caps the field at the length every ordinary name field takes', () => {
+      // Assert
+      // The same constant, so the rename cannot accept a name the lists refuse.
+      expect(nameField()?.getAttribute('maxlength')).toBe(
+        String(NARRATIVE_NAME_CHARACTERS),
+      );
+    });
+
+    it('puts the block between the consequence and the acknowledgement', () => {
+      // Assert
+      // A name is typed before the gate is ticked, so the gate is still what
+      // sits immediately above the press.
+      const consequence = elementSaying(CONSEQUENCE);
+      const input = nameField();
+      const box = checkbox();
+      const press = renameControl();
+
+      expect(isBefore(consequence, input)).toBe(true);
+      expect(isBefore(input, box)).toBe(true);
+      expect(isBefore(box, press)).toBe(true);
+    });
+
+    it('holds Rename and finish while the box is unticked', () => {
+      // Arrange
+      typeName(TYPED_NAME);
+
+      // Assert
+      expect(renameControl()?.getAttribute('aria-disabled')).toBe('true');
+    });
+
+    it.each(['', '   '])(
+      'holds Rename and finish while the field holds “%s”',
+      (typed) => {
+        // Arrange
+        acknowledge();
+        typeName(typed);
+
+        // Assert
+        // Blank and whitespace-only names never reach a press: the control
+        // waits on the field.
+        expect(renameControl()?.getAttribute('aria-disabled')).toBe('true');
+      },
+    );
+
+    it('releases Rename and finish once the box is ticked and the field holds a name', () => {
+      // Arrange
+      acknowledge();
+      typeName(TYPED_NAME);
+
+      // Assert
+      expect(renameControl()?.getAttribute('aria-disabled')).not.toBe('true');
+    });
+
+    it('refuses a press made while the box is unticked', () => {
+      // Arrange
+      typeName(TYPED_NAME);
+
+      // Act
+      renameControl()?.click();
+
+      // Assert
+      // Material halts clicks on anchors only, so the attribute alone lets
+      // this one through to the handler.
+      expect(flow.renameAndFinish).not.toHaveBeenCalled();
+    });
+
+    it.each(['', '   '])(
+      'refuses a press made while the field holds “%s”',
+      (typed) => {
+        // Arrange
+        acknowledge();
+        typeName(typed);
+
+        // Act
+        renameControl()?.click();
+
+        // Assert
+        expect(flow.renameAndFinish).not.toHaveBeenCalled();
+      },
+    );
+
+    it('refuses a press made while a run is in flight', () => {
+      // Arrange
+      acknowledge();
+      typeName(TYPED_NAME);
+      flow.working.set(true);
+      tick();
+
+      // Act
+      renameControl()?.click();
+
+      // Assert
+      expect(flow.renameAndFinish).not.toHaveBeenCalled();
+    });
+
+    it('renames and finishes with the typed name once both are given', () => {
+      // Arrange
+      acknowledge();
+      typeName(TYPED_NAME);
+
+      // Act
+      renameControl()?.click();
+
+      // Assert
+      expect(flow.renameAndFinish).toHaveBeenCalledTimes(1);
+      expect(flow.renameAndFinish).toHaveBeenCalledWith(TYPED_NAME);
+      expect(flow.rotate).not.toHaveBeenCalled();
+    });
+
+    it('holds the field read-only while a press is working, and keeps its value', () => {
+      // Arrange
+      typeName(TYPED_NAME);
+
+      // Act
+      flow.working.set(true);
+      tick();
+
+      // Assert
+      // One press carries one name.
+      expect(nameField()?.readOnly).toBe(true);
+      expect(nameField()?.value).toBe(TYPED_NAME);
+    });
+
+    it.each([
+      [
+        'accounts',
+        'Another account already has this name. Choose a different one.',
+      ],
+      [
+        'payees',
+        'Another payee already has this name. Choose a different one.',
+      ],
+      [
+        'categoryGroups',
+        'Another category group already has this name. Choose a different one.',
+      ],
+      [
+        'categories',
+        'Another category already has this name. Choose a different one.',
+      ],
+    ] satisfies readonly (readonly [NameArm, string])[])(
+      'says a name is taken in %s beneath the field, never in the region',
+      (arm, sentence) => {
+        // Arrange
+        arriveWith(pair(arm, 'Groceries', 'groceries'));
+        typeName(TYPED_NAME);
+
+        // Act
+        rotations.renameRefusal.set({ reason: 'taken' });
+        tick();
+
+        // Assert
+        const said = elementSaying(sentence);
+
+        expect(said).not.toBeNull();
+        expect(isBefore(nameField(), said)).toBe(true);
+        expect(region()?.contains(said)).toBe(false);
+        expect(nameField()?.getAttribute('aria-invalid')).toBe('true');
+        expect(nameField()?.value).toBe(TYPED_NAME);
+      },
+    );
+
+    it('carries the server’s sentences about the name verbatim beneath the field', () => {
+      // Arrange
+      const messages = [
+        'The name is longer than a payee name may be.',
+        'Choose a shorter one.',
+      ];
+
+      typeName(TYPED_NAME);
+
+      // Act
+      rotations.renameRefusal.set({ reason: 'invalid', messages });
+      tick();
+
+      // Assert
+      for (const message of messages) {
+        const said = elementSaying(message);
+
+        expect(said, message).not.toBeNull();
+        expect(isBefore(nameField(), said), message).toBe(true);
+        expect(region()?.contains(said), message).toBe(false);
+      }
+
+      expect(nameField()?.getAttribute('aria-invalid')).toBe('true');
+    });
+
+    it('replaces the lead line and clears the field when a press finds a different pair', () => {
+      // Arrange
+      typeName(TYPED_NAME);
+
+      // Act
+      pressEnds(() => {
+        rotations.collision.set(pair('categories', 'Rent', 'Rent'));
+      });
+
+      // Assert
+      // A name typed for one pair answers a question nobody is asking now.
+      expect(describedBy(nameField())).toContain(
+        'Two categories are called “Rent”. The new name goes to the one that ' +
+          'was given this name after the rotation started.',
+      );
+      expect(nameField()?.value).toBe('');
+    });
+
+    it('moves nothing when the block is already drawn on arrival', async () => {
+      // Act
+      await fixture.whenStable();
+
+      // Assert
+      // Somebody arriving at the screen is reading from its top.
+      expect(nameField()).not.toBeNull();
+      expect(document.activeElement).not.toBe(nameField());
+    });
+
+    it('moves focus to the field when a press ends on same-name', async () => {
+      // Arrange
+      rotations.collision.set(null);
+      rotations.failure.set(null);
+      tick();
+
+      // Act
+      pressEnds(() => {
+        rotations.failure.set('same-name');
+        rotations.collision.set(pair('payees', 'Groceries', 'groceries'));
+      });
+
+      // Assert
+      // The next act is there.
+      await vi.waitFor(() => {
+        expect(document.activeElement).toBe(nameField());
+      });
+    });
+
+    it('moves focus to the field when a press ends on a refusal beneath it', async () => {
+      // Arrange
+      typeName(TYPED_NAME);
+
+      // Act
+      pressEnds(() => {
+        rotations.renameRefusal.set({ reason: 'taken' });
+      });
+
+      // Assert
+      await vi.waitFor(() => {
+        expect(document.activeElement).toBe(nameField());
+      });
+    });
+
+    it('keeps a refusal inside the field, where the input is described by it', () => {
+      // Arrange
+      const sentence =
+        'Another payee already has this name. Choose a different one.';
+
+      typeName(TYPED_NAME);
+
+      // Act
+      rotations.renameRefusal.set({ reason: 'taken' });
+      tick();
+
+      // Assert
+      // A sentence after the form field is beneath it only visually: the field
+      // is what ties each refusal to the input, so a reader landing on the
+      // input hears why it is invalid.
+      const said = elementSaying(sentence);
+
+      expect(said?.closest('mat-form-field')?.contains(nameField())).toBe(true);
+      expect(describedBy(nameField())).toContain(sentence);
+    });
+
+    it('moves nothing when a press ends on a ceremony that failed', async () => {
+      // Arrange
+      typeName(TYPED_NAME);
+      checkbox()?.focus();
+      // A render that is known to have run, so the absence below is observed
+      // after the pass in which a focus would have landed.
+      let rendered = false;
+
+      afterNextRender(
+        () => {
+          rendered = true;
+        },
+        { injector: fixture.componentRef.injector },
+      );
+
+      // Act
+      // The ceremony's refusal reaches no press, so the driver's word and pair
+      // are exactly what they were; only the flow's own word changes.
+      pressEnds(() => {
+        flow.failure.set('cancelled');
+      });
+      await fixture.whenStable();
+
+      // Assert
+      // Focus follows the outcome, never the edge of a press.
+      expect(rendered).toBe(true);
+      expect(document.activeElement).toBe(checkbox());
+      expect(document.activeElement).not.toBe(nameField());
+    });
+
+    it('keeps the block drawn and the field read-only through a press', () => {
+      // Arrange
+      acknowledge();
+      typeName(TYPED_NAME);
+
+      // Act
+      // What the driver publishes while a resume is walking: its word is
+      // cleared as the press starts, but the pair stands until the press ends.
+      rotations.failure.set(null);
+      rotations.running.set(true);
+      flow.working.set(true);
+      tick();
+
+      // Assert
+      // A block keyed on the word would vanish under the finger.
+      expect(nameField()).not.toBeNull();
+      expect(nameField()?.readOnly).toBe(true);
+      expect(nameField()?.value).toBe(TYPED_NAME);
+      expect(renameControl()).not.toBeNull();
+    });
+
+    it('carries the name exactly as typed, surrounding spaces included', () => {
+      // Arrange
+      const typed = '  Bakery 2 ';
+
+      acknowledge();
+      typeName(typed);
+
+      // Act
+      renameControl()?.click();
+
+      // Assert
+      // The field trims to judge a blank and never to alter: the driver seals
+      // what the person wrote.
+      expect(flow.renameAndFinish).toHaveBeenCalledWith(typed);
+    });
+
+    it('keeps the typed name when a press is refused over the same pair, republished', () => {
+      // Arrange
+      typeName(TYPED_NAME);
+
+      // Act
+      // The driver hands over a fresh object on every stop, including a stop on
+      // the very pair the person was already shown.
+      pressEnds(() => {
+        rotations.collision.set(pair('payees', 'Groceries', 'groceries'));
+        rotations.renameRefusal.set({ reason: 'taken' });
+      });
+
+      // Assert
+      // Refused at the field: the value is kept so it can be corrected.
+      expect(nameField()?.value).toBe(TYPED_NAME);
+    });
+
+    it('clears the typed name when a press finds another pair in the same list under the same names', () => {
+      // Arrange
+      typeName(TYPED_NAME);
+      const other: KeyRotationNameCollision = {
+        arm: 'payees',
+        kept: { id: 'b8d1c0de-0000-4000-8000-000000000003', name: 'Groceries' },
+        renamed: {
+          id: 'b8d1c0de-0000-4000-8000-000000000004',
+          name: 'groceries',
+        },
+      };
+
+      // Act
+      pressEnds(() => {
+        rotations.collision.set(other);
+      });
+
+      // Assert
+      // The pair is its two records, not its list or its spelling: two
+      // different records answer a different question.
+      expect(nameField()?.value).toBe('');
+    });
+
+    it.each([
+      { length: NARRATIVE_NAME_CHARACTERS, held: false },
+      { length: NARRATIVE_NAME_CHARACTERS + 1, held: true },
+    ])(
+      'judges a name of $length characters by the cap itself (held: $held)',
+      ({ length, held }) => {
+        // Arrange
+        // Set as a value rather than typed: `maxlength` stops a keyboard and
+        // nothing else, so a paste-alike or autofill reaches the control and
+        // the validator is the only thing left to refuse it.
+        acknowledge();
+        typeName('x'.repeat(length));
+
+        // Act
+        renameControl()?.click();
+
+        // Assert
+        expect(renameControl()?.getAttribute('aria-disabled') === 'true').toBe(
+          held,
+        );
+        expect(flow.renameAndFinish).toHaveBeenCalledTimes(held ? 0 : 1);
+      },
+    );
+
+    it('draws no started date above Rename and finish', () => {
+      // Arrange
+      rotations.staged.set({ startedAtUtc: '2026-07-14T09:30:00Z' });
+
+      // Act
+      tick();
+
+      // Assert
+      // The date belongs to Finish rotating; above Rename and finish it is a
+      // line about a control that is not drawn.
+      expect(renameControl()).not.toBeNull();
+      expect(host.querySelector('.k-started')).toBeNull();
+    });
+
+    it('says the same-name sentence in the region and never either name', () => {
+      // Assert
+      // The names are content, never an announcement.
+      const said = textOf(region());
+
+      expect(said).toBe(RUN_REFUSALS['same-name']);
+      expect(said).not.toContain('Groceries');
+      expect(said).not.toContain('groceries');
+    });
+  });
 });
+
+// A pair as the driver publishes it: the record that keeps its name and the one
+// given it second, which the typed name goes to.
+function pair(
+  arm: NameArm,
+  keptName: string,
+  renamedName: string,
+): KeyRotationNameCollision {
+  return {
+    arm,
+    kept: { id: 'b8d1c0de-0000-4000-8000-000000000001', name: keptName },
+    renamed: { id: 'b8d1c0de-0000-4000-8000-000000000002', name: renamedName },
+  };
+}
+
+// The texts of every element an input's `aria-describedby` names.
+function describedBy(input: HTMLInputElement | null): string[] {
+  const ids = (input?.getAttribute('aria-describedby') ?? '')
+    .split(/\s+/)
+    .filter((id) => id !== '');
+
+  return ids.map((id) => textOf(document.getElementById(id)));
+}
+
+// The innermost element whose whole text is `sentence`, or `null`.
+// `querySelectorAll` lists ancestors before descendants, so the last match is
+// the innermost.
+function elementSaying(sentence: string): Element | null {
+  const matches = Array.from(document.body.querySelectorAll('*')).filter(
+    (element) => textOf(element) === sentence,
+  );
+
+  return matches.at(-1) ?? null;
+}
+
+// Whether `first` comes before `second` in reading order. `false` when either
+// is missing, so an absent element fails the order rather than passing it.
+function isBefore(first: Node | null, second: Node | null): boolean {
+  if (first === null || second === null) {
+    return false;
+  }
+
+  return (
+    (first.compareDocumentPosition(second) &
+      Node.DOCUMENT_POSITION_FOLLOWING) !==
+    0
+  );
+}

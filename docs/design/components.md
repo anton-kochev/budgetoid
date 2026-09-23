@@ -1713,9 +1713,11 @@ rotating *does*, rather than as what is about to happen, every sentence survives
   bind that one signal. The drift this prevents, and the defect it already caused once on the Unlock
   control, are argued there and not argued again.
 - **It is replaced, not joined, when there is a run to finish.** The resume read answers either "no
-  rotation" or one rotation, so the section draws exactly one control: **Rotate keys**, or **Finish
-  rotating** with the date the run started in the line above it. Two controls would ask a person to
-  choose between starting over and continuing, which is a choice with a wrong answer.
+  rotation" or one rotation, so the section draws exactly one control: **Rotate keys**, **Finish
+  rotating** with the date the run started in the line above it, or **Rename and finish** when the
+  last run stopped on `same-name`. The last wins over the other two, because that run cannot finish
+  until a name changes. Two controls would ask a person to choose between starting over and
+  continuing, which is a choice with a wrong answer.
 
 ### The acknowledgement, and the one rule it departs from
 
@@ -1755,8 +1757,10 @@ rotating *does*, rather than as what is about to happen, every sentence survives
   for the reason the two sections above give: one control, no rows, nothing for a second column to
   carry.
 - **The order inside the section is the reading order the act needs**: standing prose, consequence
-  block, checkbox, control, progress block. The consequence is read before the gate and the gate
-  before the press, and nothing between them competes for the eye.
+  block, the rename block when there is one, checkbox, control, progress block. The consequence is
+  read before the gate and the gate before the press, and nothing between them competes for the eye.
+  A name is typed before the gate is ticked, so the gate is still what sits immediately above the
+  press.
 - **One `role="status"` region, in the DOM from first paint and empty at rest**, carrying the phase
   sentence and every refusal. `status` and never `alert`: the person asked for this.
 - **The bar is not inside the region, and that is the one accessibility decision this section makes
@@ -1803,13 +1807,13 @@ keep.
 
 ### The refusals
 
-**Eleven words, from three sources, and no sentence is shared with a section that means something
+**Twelve words, from three sources, and no sentence is shared with a section that means something
 else by it.**
 
 **The ceremony's five come from the Account keys chapter's table, four of them verbatim** —
 `unsupported`, `cancelled`, `no-prf` and `ceremony-failed` — including their closing *Nothing has
 changed.* That borrowing is honest because of a constraint on the flow rather than a judgement about
-the words: **the ceremony is the first thing either press does, and nothing is posted until it
+the words: **the ceremony is the first thing every press does, and nothing is posted until it
 answers.** On a begin nothing has been written; on a resume nothing new has. A flow that ever posted
 before the ceremony would make five sentences false at once, which is why the order is stated here
 as a rule and not as an implementation note.
@@ -1828,10 +1832,11 @@ screen offers, and the closing promise is the one the ordering rule above makes 
 is renamed, and it has to be — a person who pressed **Rotate keys** and is told that unlocking
 failed has been handed a sentence about a control one section up, and the obvious next move it
 suggests is to go and press that one, which changes nothing about why this failed. It reads as
-act-neutrally on **Finish rotating** as on **Rotate keys**: both presses are rotating this account's
-keys, and neither has written anything by the time this line can appear.
+act-neutrally on **Finish rotating** and **Rename and finish** as on **Rotate keys**: all three
+presses are rotating this account's keys, and none has written anything by the time this line can
+appear.
 
-**Six are this section's own**, and they differ from custody's five where they share a word: each
+**Seven are this section's own**, and they differ from custody's five where they share a word: each
 says what became of the run, which the Account keys lines have no run to say anything about.
 
 | Word | Copy |
@@ -1840,12 +1845,13 @@ says what became of the run, which the Account keys lines have no run to say any
 | `unauthenticated` | "Budgetoid stopped accepting this rotation from this browser. Sign out and sign in again, then finish it from here." |
 | `unrecognised` | "Budgetoid couldn’t work with what the server sent back. Reload the page — that’s the one thing here that can change the answer." |
 | `inconsistent` | "Something about this account’s keys doesn’t line up — no passkey or recovery code will change it." |
-| `unfinished` | "Something else changed this account while it was being re-encrypted. Close any other Budgetoid tab, then finish the rotation from here." |
+| `unfinished` | "This account kept changing while it was being re-encrypted, so the rotation stopped where it is. Close Budgetoid in other tabs and on other devices, then finish it here — the records already re-encrypted stay that way." |
 | `factors-moved` | "The passkeys and recovery codes on this account changed while the rotation was running. Start it again from here — the records already re-encrypted stay that way." |
+| `same-name` | "Two records in one list have the same name, so the rotation stopped where it is. Give one of them a new name to finish it — the records already re-encrypted stay that way." |
 
 The copy is the specification, not an example of it.
 
-**One of the six is custody's sentence unchanged, and one is custody's sentence widened by a
+**One of the seven is custody's sentence unchanged, and one is custody's sentence widened by a
 word.** `inconsistent` survives verbatim because it is the one line in either table that says out
 loud that nothing the person does changes the answer, and a run standing in front of it changes
 nothing about that.
@@ -1899,6 +1905,32 @@ non-converging failure [key-rotation.md](../business-logic/key-rotation.md) refu
 side, and a person watching a bar go round forever has been told less than one who has been told to
 close a tab.
 
+The sentence names what was seen and the act that stops it, never the tab that caused it. **Other
+devices are named because the forms on this one cannot be the source**: a tab that learned of the run
+disables its own forms, so what keeps changing the account is a browser that loaded before the begin,
+on this device or another. A chunk the server refuses because two records would share a name spends a
+pass too, since the next collection is what finds the pair. So this word is also what somebody sees
+when another browser keeps writing a name the run has just re-sealed.
+
+**`same-name` is the one refusal whose remedy is typed, and the section takes it itself.** A tab that
+loaded before the begin still holds the outgoing keys, so it can give a record a name the run has
+already re-sealed on another record, and nothing refuses that: the two blind indexes are taken under
+different keys. The next pass would re-seal both onto one value, which the server refuses whole on
+every send. No sentence clears that and no other screen can either, because every content form is
+disabled while a run is staged ([below](#what-a-run-does-to-the-rest-of-the-app)). The rename block
+[below](#renaming-one-of-two-records-with-one-name) is the remedy.
+
+**The run finds the pair before it posts anything, and the server's refusal is only the backstop.**
+After each collection it compares every name's incoming index within each list, and two equal values
+stop the run on this word before that pass sends a chunk. The server's `rotation_name_collision` names
+no row and cannot, so it gets no word of its own: it means a name landed between a collection and a
+send, and it spends a pass the way `unfinished`'s cause does. Every `same-name` a person reads
+therefore arrives with both names.
+
+**The sentence names no tab and no screen.** *Another tab renamed a payee* is a cause this client
+watched nobody commit. *Rename it in Payees* is false while a run is staged. *Unlock to see the names*
+is false too: the names come from the run's own keys, never from Unlock's.
+
 **A completion refused because the rotation was already completed gets no word at all, and that is
 a decision rather than an omission.** The server answers that way when a completion is re-sent — the
 first one succeeded and this client lost the answer. The run is *finished*, so the honest render is
@@ -1908,6 +1940,70 @@ would tell somebody their rotation failed at the moment it had succeeded, and se
 Rotate again over an account that no longer needs it.
 
 **Colour is never the message** — every line above reads the same with `--bud-over` removed.
+
+### Renaming one of two records with one name
+
+The block the section draws while `same-name` stands. M3 base: one outline text field.
+
+**Anatomy**, top to bottom, inside the section's one column:
+
+- **A lead line naming the pair**, plain text and not a target. When the two spellings match:
+  *Two payees are called “Groceries”. The new name goes to the one that was given this name after the
+  rotation started.* When they differ: *A payee called “Groceries” and one called “groceries” count as
+  the same name. The new name goes to “groceries”, which was given its name after the rotation
+  started.* The noun follows the list — account, payee, category group, category — with the article
+  English gives it (*An account called …*), and the names
+  render as stored, the way every list renders them.
+- **One text field**, label **New name**, `autocomplete="off"`, whose accessible description is the
+  lead line. It takes the cap and the whitespace-only refusal the ordinary name fields take, from the
+  same constant.
+- The section's checkbox and its one control, now **Rename and finish**, Destructive because it
+  rewrites the account exactly as **Finish rotating** does. It stays `disabledInteractive` until the
+  box is ticked **and** the field holds a name, and the click handler refuses on the same pair.
+
+**The product picks which of the two is renamed: the one that took the name second.** The two records
+look the same on every screen, and the screens that could tell them apart are blocked, so a choice
+between them gives the person nothing to choose with. The record given its name after the rotation
+started is the one whose name arrived second, so the other keeps what it had first.
+
+**The rename asks for a passkey, because the keys went with the run.** A run that stops holds
+nothing — both generations end with it — so the press is a finish that carries a name, and its
+ceremony comes first, which keeps the five ceremony sentences and their *Nothing has changed.* true
+here. A run that stayed paused holding both generations while somebody thought of a name would save a
+tap on a rare path and break the one rule this chapter's copy rests on.
+
+**It works the same on a locked account.** The names and the keys come from the run's own ceremony,
+never from Unlock, so nothing in the block mentions unlocking.
+
+**The name is sealed under the incoming keys**, so the server's unique index compares it against every
+record already re-encrypted. Before posting, the run also compares it against every record in that
+list, including those not yet visited, because the server cannot compare an incoming index against a
+row still under the outgoing key.
+
+**What it refuses**, each beneath the field and never in the region:
+
+- **A name another record in the same list already has**, found by the run before anything is
+  written: *Another payee already has this name. Choose a different one.* This is the chapter's own
+  sentence rather than the server's, because it is the client's observation, made before any request
+  exists, over the very value the unique index compares.
+- **The server's `400` keyed on `Name`**, rendered verbatim, per
+  [Whose sentence goes beneath the field](#whose-sentence-goes-beneath-the-field).
+- Blank and over-length names never reach a press: the control waits on the field.
+
+**States.** *Standing*: the field is editable. *Working*: the field is `readonly` and keeps its value
+and focus, since one press carries one name. *Refused at the field*: the value is kept and the field
+is `aria-invalid`. *A different pair found*: the lead line is replaced and the field cleared, because
+a name typed for one pair answers a question nobody is asking now; nothing is renamed. *No pair
+found*: somebody fixed it elsewhere; nothing is renamed and the run carries on. *Any other word*: the
+block goes, and that word's remedy governs. A ceremony that fails leaves the block standing.
+
+**The region never carries a name.** It holds the refusal; the names are content, which is the rule
+the bar already follows from the other end. The phase stays *Reading your records.* across the rename,
+which is one request between two collections — a phase word for it would flash.
+
+**Accessibility.** The field has a programmatic label and is a 48px target. When a press ends on
+`same-name` or on a refusal beneath the field, focus moves to the field, because the next act is
+there. Arriving at the screen with the block already drawn moves nothing.
 
 ### What a run does to the rest of the app
 
@@ -1967,7 +2063,7 @@ being counted, and sits outside the region. Nothing here is communicated by colo
 it on `/app/settings` directly below Account keys: both blocks of prose character for character, the
 acknowledgement under its specified label, one Destructive control that is **Rotate keys** or
 **Finish rotating** and never both, the `role="status"` region carrying the three phase sentences
-and all eleven refusals, and the determinate bar outside that region with its own `aria-valuenow`,
+and all twelve refusals, and the determinate bar outside that region with its own `aria-valuenow`,
 `aria-valuemax` and label. The checkbox is a signal initialised to `false` on the component, so it
 arrives unticked on every construction including over a staged run, and no path sets it from
 anywhere else.
@@ -1999,6 +2095,10 @@ server hands back rather than beginning anything. `readStagedRotation()` is the 
 makes in `ngOnInit`, and it is what decides which control there is to draw. **Finishing a rotation
 unlocks the account in this tab, as the section above specifies**, and no copy anywhere advertises
 it.
+
+**The rename block ships**: while the driver publishes a pair the section draws the lead line, the
+**New name** field and **Rename and finish**, and `RotationFlowService.renameAndFinish` runs the
+ceremony before a `resume` that carries the name.
 
 **Four departures, each named as work rather than smoothed over by moving the target.**
 

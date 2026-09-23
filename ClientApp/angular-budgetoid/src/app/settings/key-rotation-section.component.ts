@@ -23,21 +23,93 @@
 import {
   ChangeDetectionStrategy,
   Component,
+  ElementRef,
+  Injector,
   OnInit,
+  afterNextRender,
   computed,
+  effect,
   inject,
   signal,
+  untracked,
+  viewChild,
 } from '@angular/core';
+import { toSignal } from '@angular/core/rxjs-interop';
+import {
+  NonNullableFormBuilder,
+  ReactiveFormsModule,
+  Validators,
+  type AbstractControl,
+  type ValidationErrors,
+} from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { MatCheckboxModule } from '@angular/material/checkbox';
+import type { ErrorStateMatcher } from '@angular/material/core';
+import { MatInputModule } from '@angular/material/input';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
-import { KeyRotationService } from '@app-core/security/key-rotation.service';
+import {
+  KeyRotationService,
+  type KeyRotationNameCollision,
+  type KeyRotationRenameRefusal,
+} from '@app-core/security/key-rotation.service';
+import type { NameArm } from '@app-core/security/rotation-name-collision';
+import { NARRATIVE_NAME_CHARACTERS } from '@app-shared/narrative-field-caps';
 import { credentialRegistrationDate } from './credential-registration-date';
 import { RotationFlowService } from './rotation-flow.service';
 
+/** How the rename block's copy speaks of one list. */
+interface ListNoun {
+  /** *An* or *A*, capitalised: the lead line opens with it. */
+  readonly article: string;
+  readonly one: string;
+  readonly many: string;
+}
+
+// The noun follows the list, with the article English gives it. Exhaustive over
+// `NameArm` by `satisfies`, so a fifth list is a compile error here rather than
+// a lead line reading "Two undefined are called".
+const LIST_NOUNS = {
+  accounts: { article: 'An', one: 'account', many: 'accounts' },
+  payees: { article: 'A', one: 'payee', many: 'payees' },
+  categoryGroups: {
+    article: 'A',
+    one: 'category group',
+    many: 'category groups',
+  },
+  categories: { article: 'A', one: 'category', many: 'categories' },
+} as const satisfies Record<NameArm, ListNoun>;
+
+/**
+ * Refuses a value that is entirely whitespace.
+ *
+ * The ordinary name fields' rule, and this is their function rather than a
+ * variant of it: it trims **to judge** and never to alter, because what the
+ * driver seals is what the person typed.
+ */
+function nonBlank(control: AbstractControl): ValidationErrors | null {
+  return typeof control.value === 'string' && control.value.trim().length === 0
+    ? { blank: true }
+    : null;
+}
+
+// Which pair a name is typed for: the list and the two records, never the
+// names. The driver hands over a fresh object on every stop, including a stop
+// on the very pair the person was already shown, so the object is no identity.
+function pairKey(pair: KeyRotationNameCollision | null): string | null {
+  return pair === null
+    ? null
+    : `${pair.arm}:${pair.renamed.id}:${pair.kept.id}`;
+}
+
 @Component({
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [MatButtonModule, MatCheckboxModule, MatProgressBarModule],
+  imports: [
+    MatButtonModule,
+    MatCheckboxModule,
+    MatInputModule,
+    MatProgressBarModule,
+    ReactiveFormsModule,
+  ],
   selector: 'app-key-rotation-section',
   styleUrls: ['./key-rotation-section.component.scss'],
   templateUrl: './key-rotation-section.component.html',
@@ -101,6 +173,167 @@ export class KeyRotationSectionComponent implements OnInit {
       : credentialRegistrationDate(staged.startedAtUtc);
   });
 
+  /**
+   * **New name**, the rename block's one field.
+   *
+   * The cap and the whitespace-only refusal the ordinary name fields take, from
+   * the same constant, so the rename cannot accept a name the lists refuse. The
+   * cap reaches the validator as a call argument, which keeps the live import —
+   * `AccountsComponent.nameCharacters` states why a bare field initialiser
+   * would not.
+   *
+   * **Component state, like {@link acknowledged}**: a name typed for a pair is
+   * dead the moment the section leaves the screen.
+   */
+  protected readonly nameControl = inject(NonNullableFormBuilder).control('', [
+    Validators.required,
+    nonBlank,
+    Validators.maxLength(NARRATIVE_NAME_CHARACTERS),
+  ]);
+
+  readonly #nameStatus = toSignal(this.nameControl.statusChanges, {
+    initialValue: this.nameControl.status,
+  });
+
+  /** Whether the field holds a name a press may carry. */
+  protected readonly nameGiven = computed(() => this.#nameStatus() === 'VALID');
+
+  /**
+   * Whether the control is drawn unpressable, and the one reading its handler
+   * refuses on.
+   *
+   * **One computed for the attribute and the handler**, so the two are the
+   * same width by construction: in flight, unticked, or — while the rename
+   * block stands — a field holding no name a press may carry. "In flight" is
+   * still the flow's one predicate, read here rather than restated.
+   */
+  protected readonly held = computed(
+    () =>
+      this.flow.working() ||
+      !this.acknowledged() ||
+      (this.rotations.collision() !== null && !this.nameGiven()),
+  );
+
+  /** How the block's copy speaks of the pair's list, or `null` with no pair. */
+  readonly #noun = computed(() => {
+    const pair = this.rotations.collision();
+
+    return pair === null ? null : LIST_NOUNS[pair.arm];
+  });
+
+  /**
+   * The lead line naming the pair, and the field's accessible description.
+   *
+   * Two sentences, chosen by whether the two names are spelled alike **as
+   * stored** — the names render the way every list renders them, and a pair
+   * differing only in case is exactly the pair that needs saying out loud.
+   */
+  protected readonly lead = computed(() => {
+    const pair = this.rotations.collision();
+    const noun = this.#noun();
+
+    if (pair === null || noun === null) {
+      return '';
+    }
+
+    return pair.kept.name === pair.renamed.name
+      ? `Two ${noun.many} are called “${pair.kept.name}”. The new name goes ` +
+          'to the one that was given this name after the rotation started.'
+      : `${noun.article} ${noun.one} called “${pair.kept.name}” and one ` +
+          `called “${pair.renamed.name}” count as the same name. The new ` +
+          `name goes to “${pair.renamed.name}”, which was given its name ` +
+          'after the rotation started.';
+  });
+
+  /**
+   * The chapter's own sentence for `taken`: the client's observation, made
+   * before any request exists, so there is no server sentence to render.
+   */
+  protected readonly takenSentence = computed(() => {
+    const noun = this.#noun();
+
+    return noun === null
+      ? ''
+      : `Another ${noun.one} already has this name. Choose a different one.`;
+  });
+
+  /**
+   * The field is in error exactly while a refusal of the last press's name
+   * stands, and for nothing else.
+   *
+   * **Not Material's default matcher**, which would redden a touched blank
+   * field: this block has no sentence for a blank or over-long name — the
+   * control waits on the field instead — so a red border there would be colour
+   * carrying a message nothing else says. And the refusals are the driver's
+   * state, not a validator's: `setErrors` would be a second copy of them,
+   * dropped by the next keystroke while the refusal still stands.
+   */
+  protected readonly refusalMatcher: ErrorStateMatcher = {
+    isErrorState: () => this.rotations.renameRefusal() !== null,
+  };
+
+  private readonly nameField =
+    viewChild<ElementRef<HTMLInputElement>>('nameField');
+
+  readonly #injector = inject(Injector);
+
+  // What the driver had published when this render last looked, so that focus
+  // moves on an *arrival* of a pair or a refusal and never on what was already
+  // standing when the section was constructed.
+  #shownPair: KeyRotationNameCollision | null = this.rotations.collision();
+  #shownRefusal: KeyRotationRenameRefusal | null =
+    this.rotations.renameRefusal();
+
+  constructor() {
+    // **A name typed for one pair answers a question nobody is asking now**, so
+    // a different pair clears the field. Keyed on the pair's identity rather
+    // than the object: a refusal of the typed name republishes the same pair,
+    // and there the value is kept.
+    const typedFor = computed(() => pairKey(this.rotations.collision()));
+
+    effect(() => {
+      typedFor();
+      untracked(() => {
+        this.nameControl.setValue('');
+      });
+    });
+
+    // **Focus follows the outcome, never the edge.** A press that ends on
+    // `same-name` publishes a pair, and one refused at the field publishes a
+    // refusal; either puts the next act in the field. Both arrive only when a
+    // press answers — the driver clears the refusal as a press starts and
+    // replaces the pair when it ends — so a press whose ceremony failed, which
+    // reaches the driver not at all, moves nothing, and neither does arriving
+    // at the screen with the block already drawn.
+    effect(() => {
+      const pair = this.rotations.collision();
+      const refusal = this.rotations.renameRefusal();
+      const arrived =
+        (pair !== null && pair !== this.#shownPair) ||
+        (refusal !== null && refusal !== this.#shownRefusal);
+
+      this.#shownPair = pair;
+      this.#shownRefusal = refusal;
+
+      if (arrived) {
+        afterNextRender(
+          () => {
+            this.nameField()?.nativeElement.focus();
+          },
+          { injector: this.#injector },
+        );
+      }
+    });
+  }
+
+  /**
+   * The cap the field's `maxlength` reads — a getter and not a field, for the
+   * reason `AccountsComponent.nameCharacters` states.
+   */
+  protected get nameCharacters(): number {
+    return NARRATIVE_NAME_CHARACTERS;
+  }
+
   public ngOnInit(): void {
     // **The read the section makes before it draws anything.** A rotation that
     // was interrupted survives only as server state — a staging row, a staged
@@ -125,22 +358,31 @@ export class KeyRotationSectionComponent implements OnInit {
    *
    * **And the in-flight half is here too, because a guard backstopping an
    * attribute has to be at least as wide as that attribute.** The control is
-   * drawn unpressable on `working || !acknowledged()`; a handler covering only
-   * the second of those is narrower than what the screen promised, and every
-   * press landing in the gap is one the section drew as impossible. That is not
-   * a second definition of "a run is in flight" — there is exactly one, and it
-   * is `RotationFlowService.working`. This line *reads* it, as the `disabled`
-   * binding and `aria-busy` do, which is what keeps the three the same width
-   * when any of them moves. The flow guards on the same signal again at its own
+   * drawn unpressable on {@link held}, and this line refuses on that same
+   * computed — in flight, unticked, or a rename with no name to carry — so a
+   * handler narrower than what the screen promised is a state this pair has no
+   * version of. That is not a second definition of "a run is in flight" —
+   * there is exactly one, and it is `RotationFlowService.working`, which
+   * `held` reads. The flow guards on the same signal again at its own
    * entry point, where it is the driver's re-entrancy guard: `begin()` has none
    * of its own, and two concurrent runs would fight over the two generations a
    * run holds while it walks an account.
    */
-  protected rotate(): void {
-    if (this.flow.working() || !this.acknowledged()) {
+  protected press(): void {
+    if (this.held()) {
       return;
     }
 
-    this.flow.rotate();
+    // Which act the one control is, read at the press rather than at the last
+    // render: **Rename and finish** while a pair stands, which wins over the
+    // other two because that run cannot finish until a name changes.
+    if (this.rotations.collision() === null) {
+      this.flow.rotate();
+
+      return;
+    }
+
+    // As typed: the driver seals what the person wrote, never a trimmed copy.
+    this.flow.renameAndFinish(this.nameControl.value);
   }
 }

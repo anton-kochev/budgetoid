@@ -42,10 +42,19 @@
 // is serializable by construction — that is what a time-travelling inspector,
 // a rehydrated snapshot and a devtools bridge all rest on — and the one thing in
 // this client that must never be serializable is the next generation's keys. So
-// this is a service holding `CryptoKey` objects and publishing three signals,
-// and the day somebody "completes" the empty store, this is not the slice to
-// complete it with. The signals below carry a phase, two integers and a word;
-// none of them is key material and none of them ever may be.
+// this is a service holding `CryptoKey` objects and publishing signals, and the
+// day somebody "completes" the empty store, this is not the slice to complete
+// it with. The signals below carry a phase, two integers, a word, the date a
+// staged run began, a refusal of a typed name — `taken`, or the server's own
+// sentences keyed on `Name` — and, while a `same-name` block is drawn, the
+// pair's list and its two records' identifiers and names. None of them is key
+// material and none of them ever may be.
+//
+// **Every one of them is the account's that produced it.** A tab can end one
+// session and establish another without a reload, and this service outlives
+// both, so each value is stamped with the budget of the press or read that
+// published it and reads as its resting value under any other — see
+// `#publishedFor`.
 //
 // **No per-row progress record is kept anywhere, and `localStorage` least of
 // all.** Keeping "which rows are done" across a reload would be a second
@@ -64,7 +73,10 @@ import {
   signal,
   type Signal,
 } from '@angular/core';
-import { AccountApiService } from '@app-core/api/account-api.service';
+import {
+  AccountApiService,
+  type AccountType,
+} from '@app-core/api/account-api.service';
 import { CategoriesApiService } from '@app-core/api/categories-api.service';
 import { CategoryGroupsApiService } from '@app-core/api/category-groups-api.service';
 import {
@@ -80,7 +92,8 @@ import { MeApiService } from '@app-core/api/me-api.service';
 import { PayeesApiService } from '@app-core/api/payees-api.service';
 import { TransactionsApiService } from '@app-core/api/transactions-api.service';
 import { SessionService } from '@app-core/session/session.service';
-import { firstValueFrom } from 'rxjs';
+import { writeOutcomeOf } from '@app-core/api/write-outcome';
+import { firstValueFrom, type Observable } from 'rxjs';
 import { AccountKeyCustodyService } from './account-key-custody.service';
 import { computeBlindIndex, type BlindIndexedField } from './blind-index';
 import {
@@ -105,6 +118,12 @@ import {
   type NarrativeFieldBinding,
 } from './narrative-cipher';
 import type { NarrativeOpener, NarrativeText } from './narrative-text';
+import {
+  findNameCollision,
+  holderOf,
+  type NameArm,
+  type NamedRowIndex,
+} from './rotation-name-collision';
 import type { PasskeyAssertionCeremony } from './webauthn-ceremony.service';
 
 /**
@@ -123,7 +142,7 @@ export type KeyRotationPhase =
   | 'finished';
 
 /**
- * Why a run did not finish, in the six words `docs/design/components.md`
+ * Why a run did not finish, in the seven words `docs/design/components.md`
  * specifies with their copy.
  *
  * They are **not** `UnlockFailure`'s five, though four of them share a spelling:
@@ -139,7 +158,41 @@ export type KeyRotationFailure =
   | 'unrecognised'
   | 'inconsistent'
   | 'unfinished'
-  | 'factors-moved';
+  | 'factors-moved'
+  | 'same-name';
+
+/** One of the two records a `same-name` stop names, as the rename block draws it. */
+export interface KeyRotationNamedRecord {
+  readonly id: string;
+  /** The name as stored, opened. */
+  readonly name: string;
+}
+
+/**
+ * The two records a run stopped on because a rotation would give them one name,
+ * and which of them a typed name goes to.
+ *
+ * **The one opened value this service publishes, and only while the block is
+ * drawn.** Two identifiers and two names: no index, no generation, nothing a
+ * key could be learned from. See "Renaming one of two records with one name"
+ * in `docs/design/components.md`.
+ */
+export interface KeyRotationNameCollision {
+  readonly arm: NameArm;
+  /** The record given its name second: the one the typed name goes to. */
+  readonly renamed: KeyRotationNamedRecord;
+  /** The record that keeps the name it had first. */
+  readonly kept: KeyRotationNamedRecord;
+}
+
+/**
+ * Why a typed name was refused, rendered beneath the field and never in the
+ * region. `taken` is this client's own observation, made before any request
+ * exists; `invalid` is the server's `400` keyed on `Name`, carried verbatim.
+ */
+export type KeyRotationRenameRefusal =
+  | { readonly reason: 'taken' }
+  | { readonly reason: 'invalid'; readonly messages: readonly string[] };
 
 /**
  * What the bar draws: rows the server has accepted, over rows this run has to
@@ -198,6 +251,11 @@ const COLLECTION_PASSES = 3;
 const FACTOR_SET_MOVED = 'factor_set_moved';
 const ROTATION_INCOMPLETE = 'rotation_incomplete';
 const ROTATION_ALREADY_COMPLETED = 'rotation_already_completed';
+const ROTATION_NAME_COLLISION = 'rotation_name_collision';
+
+// The member a rename route keys its refusal of a name on, as ASP.NET spells
+// the command's property on the wire.
+const NAME_ERROR_KEY = 'Name';
 
 // The five pairs a chunk carries, as the two censuses spell them. Written as
 // constants so the seal and the index over one column cannot drift apart at a
@@ -214,12 +272,30 @@ const TRANSACTION_NOTE = {
   column: 'description',
 } as const;
 
+// Which of a run's two generations a stored value opened under.
+type Generation = NamedRowIndex['openedUnder'];
+
 // One row's narrative, opened. Three shapes because the chunk route has three,
 // and a shared one carrying optional members would let an arm send a column its
 // table does not have.
+//
+// **A named row carries its incoming index and the generation it opened
+// under**, computed once per collection: the pre-check compares the first and
+// needs the second to say which name came first, and the chunk sends the same
+// index the pre-check judged rather than a second computation of it.
 interface OpenedNamedRow {
   readonly id: string;
   readonly name: string;
+  readonly nameKey: string;
+  readonly openedUnder: Generation;
+}
+
+// The two members an account's `PUT` carries beside its name, as the list
+// served them. Neither is narrative; they travel so a rename rewrites the
+// name and nothing else.
+interface OpenedAccountRow extends OpenedNamedRow {
+  readonly type: AccountType;
+  readonly openingBalance: number;
 }
 
 interface OpenedDescribedRow extends OpenedNamedRow {
@@ -233,11 +309,33 @@ interface OpenedNotedRow {
 
 // Everything a run has to rewrite, in the clear, for the length of one pass.
 interface Collection {
-  readonly accounts: readonly OpenedNamedRow[];
+  readonly accounts: readonly OpenedAccountRow[];
   readonly payees: readonly OpenedNamedRow[];
   readonly categoryGroups: readonly OpenedDescribedRow[];
   readonly categories: readonly OpenedDescribedRow[];
   readonly transactions: readonly OpenedNotedRow[];
+}
+
+// A name typed for one pair: the name, and the pair the person was shown when
+// they typed it — `null` when no block was drawn, which no collection matches.
+interface RenameRequest {
+  readonly name: string;
+  readonly shown: KeyRotationNameCollision | null;
+}
+
+// The name index of each list, and the blind-indexed field it is keyed as.
+const NAME_FIELDS: Readonly<Record<NameArm, BlindIndexedField>> = {
+  accounts: ACCOUNT_NAME,
+  payees: PAYEE_NAME,
+  categoryGroups: GROUP_NAME,
+  categories: CATEGORY_NAME,
+};
+
+// A value this service published, and the budget of the press or read that
+// published it — `null` for one made while the session had not said.
+interface Published<T> {
+  readonly value: T;
+  readonly budgetId: string | null;
 }
 
 // Where a press leaves the phase when it did not throw: at its 204, or back at
@@ -313,6 +411,22 @@ function requireTheFactorSetHeldStill(
   );
 }
 
+// The tenancy a blind index is keyed inside, as a press read it.
+//
+// No factor supplies a budget, so a ceremony cannot clear this and the word
+// that offers one would be a road that cannot help. `SessionService` argues
+// the same answer for every write that meets it.
+function budgetOf(budgetId: string | null): string {
+  if (budgetId === null) {
+    throw new KeyRotationRefusal(
+      'unreachable',
+      'This browser has not been told which budget it is in, so nothing can be keyed.',
+    );
+  }
+
+  return budgetId;
+}
+
 // A refusal this driver makes, carrying the word a screen renders. Local,
 // because nothing outside acts on the type — what a caller reads is
 // {@link KeyRotationService.failure}.
@@ -325,6 +439,30 @@ class KeyRotationRefusal extends Error {
     super(message, cause === undefined ? undefined : { cause });
 
     this.word = word;
+  }
+}
+
+// A run stopped on `same-name`, carrying the pair the block draws and, when a
+// typed name was the reason, why it was refused. Its own class rather than a
+// `KeyRotationRefusal` with optional members, because it is the one stop that
+// publishes something beside its word.
+class NameCollisionStop extends Error {
+  public override readonly name = 'NameCollisionStop';
+
+  public readonly collision: KeyRotationNameCollision;
+
+  public readonly refusal: KeyRotationRenameRefusal | null;
+
+  constructor(
+    collision: KeyRotationNameCollision,
+    refusal: KeyRotationRenameRefusal | null = null,
+  ) {
+    super(
+      'Two records in one list would share a name under the incoming keys.',
+    );
+
+    this.collision = collision;
+    this.refusal = refusal;
   }
 }
 
@@ -345,6 +483,11 @@ function conflictKindOf(error: unknown): string | null {
   const kind: unknown = body.conflictKind;
 
   return typeof kind === 'string' ? kind : null;
+}
+
+// One cell of one collection, as a map key.
+function cellOf(binding: NarrativeFieldBinding): string {
+  return JSON.stringify([binding.table, binding.column, binding.rowId]);
 }
 
 // The plaintext an opener answered with, or a refusal. The opener this service
@@ -400,19 +543,71 @@ export class KeyRotationService {
   #current: AccountKeyGeneration | null = null;
   #next: AccountKeyGeneration | null = null;
 
-  readonly #staged = signal<StagedRotation | null>(null);
+  // What this service has published, each stamped with the budget it belongs
+  // to. The public signals below are these read through `#publishedFor`.
+  readonly #staged = signal<Published<StagedRotation | null>>({
+    value: null,
+    budgetId: null,
+  });
 
-  readonly #phase = signal<KeyRotationPhase>('idle');
-  readonly #progress = signal<KeyRotationProgress>({ resealed: 0, records: 0 });
-  readonly #failure = signal<KeyRotationFailure | null>(null);
+  readonly #phase = signal<Published<KeyRotationPhase>>({
+    value: 'idle',
+    budgetId: null,
+  });
 
-  public readonly phase: Signal<KeyRotationPhase> = this.#phase.asReadonly();
+  readonly #progress = signal<Published<KeyRotationProgress>>({
+    value: { resealed: 0, records: 0 },
+    budgetId: null,
+  });
 
-  public readonly progress: Signal<KeyRotationProgress> =
-    this.#progress.asReadonly();
+  readonly #failure = signal<Published<KeyRotationFailure | null>>({
+    value: null,
+    budgetId: null,
+  });
+
+  readonly #collision = signal<Published<KeyRotationNameCollision | null>>({
+    value: null,
+    budgetId: null,
+  });
+
+  readonly #renameRefusal = signal<Published<KeyRotationRenameRefusal | null>>({
+    value: null,
+    budgetId: null,
+  });
+
+  public readonly phase: Signal<KeyRotationPhase> = this.#publishedFor(
+    this.#phase,
+    'idle',
+  );
+
+  public readonly progress: Signal<KeyRotationProgress> = this.#publishedFor(
+    this.#progress,
+    { resealed: 0, records: 0 },
+  );
 
   public readonly failure: Signal<KeyRotationFailure | null> =
-    this.#failure.asReadonly();
+    this.#publishedFor(this.#failure, null);
+
+  /**
+   * The two records a `same-name` stop names, or `null` when the last press did
+   * not end there.
+   *
+   * **The one opened value this service publishes, and the exception is
+   * narrow.** Nothing else opened in a run outlives its own read; this pair
+   * stands only while the rename block is drawn — it is replaced by the next
+   * `same-name`, cleared when a press ends any other way, and hidden from any
+   * session but the account's that produced it. A ceremony that fails reaches
+   * no press, so it leaves the pair standing, which is the block standing.
+   */
+  public readonly collision: Signal<KeyRotationNameCollision | null> =
+    this.#publishedFor(this.#collision, null);
+
+  /**
+   * Why the name the last press carried was refused, or `null`. Rendered
+   * beneath the field; it never accompanies any word but `same-name`.
+   */
+  public readonly renameRefusal: Signal<KeyRotationRenameRefusal | null> =
+    this.#publishedFor(this.#renameRefusal, null);
 
   /**
    * The run there is to finish, or `null` when there is none — which is what
@@ -425,8 +620,10 @@ export class KeyRotationService {
    * drove to its 204, and a refusal after which the section's own copy tells
    * somebody to start again rather than to finish.
    */
-  public readonly staged: Signal<StagedRotation | null> =
-    this.#staged.asReadonly();
+  public readonly staged: Signal<StagedRotation | null> = this.#publishedFor(
+    this.#staged,
+    null,
+  );
 
   /**
    * Whether a run is in flight.
@@ -436,12 +633,50 @@ export class KeyRotationService {
    * screens read it beside custody's lockedness. A screen deriving its own from
    * {@link phase} would be a second definition of the same fact, which is the
    * drift the Unlock control already paid for once.
+   *
+   * **The one signal not read through the budget rule**, because what it
+   * guards is this object rather than an account: a run in flight holds both
+   * generations in two fields a second press would overwrite, and a session
+   * that changed under it changes nothing about that. It says only that a run
+   * is going — nothing of whose, how far, or how it stopped.
    */
   public readonly running: Signal<boolean> = computed(() => {
-    const phase = this.#phase();
+    const phase = this.#phase().value;
 
     return phase !== 'idle' && phase !== 'finished';
   });
+
+  // A published value as the session in this tab may read it: the value, when
+  // the session is the account's that published it, and `rest` otherwise.
+  //
+  // **Hidden rather than dropped, and a `computed` rather than a clearing.**
+  // Clearing on a session's end has one owner, `SessionService.ended()`, and
+  // that class cannot reach this one — this one injects it, and the edge would
+  // be a cycle — while an `effect()` clearing from here would be a second owner
+  // whose timing injection order decides. So nothing is cleared: a value stops
+  // being readable the moment the session is not its account's, and is readable
+  // again if that account signs back in, which is the run on file still standing
+  // where it stopped.
+  //
+  // **Two conditions, and the status one is not implied by the budget one.**
+  // `ended()` drops the budget and the status together, but only `anonymous` is
+  // a session that ended — `unknown` and `unreachable` keep everything, or a
+  // blinked request would take a typed name away. The budget is compared by
+  // equality, so a current `null` matches no value stamped with a budget: a
+  // session that has not yet said which account it is has not said it is this
+  // one. A value stamped `null` is one a press published while it, too, had no
+  // budget — the `unreachable` word, whose run was refused before anything of an
+  // account was read — and it reads under a `null` budget only.
+  #publishedFor<T>(source: Signal<Published<T>>, rest: T): Signal<T> {
+    return computed(() => {
+      const published = source();
+
+      return this.#session.status() !== 'anonymous' &&
+        this.#session.budgetId() === published.budgetId
+        ? published.value
+        : rest;
+    });
+  }
 
   /**
    * Begins a rotation and drives it to its completion, or publishes the word it
@@ -459,7 +694,7 @@ export class KeyRotationService {
    * on a button handler is one `catch` away from a silent one.
    */
   public async begin(ceremony: PasskeyAssertionCeremony): Promise<void> {
-    await this.#press(async () => this.#drive(ceremony));
+    await this.#press(async (budgetId) => this.#drive(ceremony, budgetId));
   }
 
   /**
@@ -473,7 +708,7 @@ export class KeyRotationService {
    * cryptography in it.
    *
    * **A read that did not happen publishes "nothing to finish", and no word.**
-   * The six refusal words each say what became of a *run*, and there is no run
+   * The seven refusal words each say what became of a *run*, and there is no run
    * here to have become anything — a sentence about a rotation that stopped,
    * rendered at rest before anybody pressed anything, would be false. What the
    * failed read costs is one wrongly-drawn control, and that costs little:
@@ -487,12 +722,17 @@ export class KeyRotationService {
    * product and acts on it whatever this method does with the rejection.
    */
   public async readStagedRotation(): Promise<void> {
+    // The budget the read was asked under, not the one standing when it lands:
+    // an answer arriving after the session changed is still the account's that
+    // the cookie on the request named.
+    const budgetId = this.#session.budgetId();
+
     try {
       const state = await firstValueFrom(this.#rotations.getRotationState());
 
-      this.#staged.set(stagedRotationOf(state.rotation));
+      this.#staged.set({ value: stagedRotationOf(state.rotation), budgetId });
     } catch {
-      this.#staged.set(null);
+      this.#staged.set({ value: null, budgetId });
     }
   }
 
@@ -516,11 +756,34 @@ export class KeyRotationService {
    * quotes the run the server hands back and re-collects, re-seals and completes
    * under it.
    *
+   * `rename` is **Rename and finish**: the name a person typed for the pair
+   * {@link collision} published. It is spent on the first collection only, and
+   * only when that collection finds the very pair the person was shown — a
+   * different pair is republished and nothing is renamed, and no pair at all
+   * means somebody fixed it elsewhere and the run carries on. Before anything
+   * is posted the name is compared against every record in that list; after it
+   * lands, the re-collection that sees it does not spend one of the run's
+   * passes.
+   *
    * It resolves rather than rejecting, always — {@link begin}'s rule, for
    * {@link begin}'s reason.
    */
-  public async resume(ceremony: PasskeyAssertionCeremony): Promise<void> {
-    await this.#press(async () => this.#pickUp(ceremony));
+  public async resume(
+    ceremony: PasskeyAssertionCeremony,
+    rename?: { readonly name: string },
+  ): Promise<void> {
+    // The pair the person was shown when they typed, read before the press
+    // clears anything: the name is an answer to *that* pair and no other. Read
+    // as the screen reads it, so a pair another account's run left behind is
+    // `null` here — nothing was shown, and nothing is renamed.
+    const request: RenameRequest | null =
+      rename === undefined
+        ? null
+        : { name: rename.name, shown: this.collision() };
+
+    await this.#press(async (budgetId) =>
+      this.#pickUp(ceremony, request, budgetId),
+    );
   }
 
   // The envelope both presses share: the phase, the bar, the word, and the two
@@ -534,13 +797,31 @@ export class KeyRotationService {
   // The leg answers with the phase it ended in. `'finished'` is a run that
   // reached its 204; `'idle'` is a press that found there was nothing to do,
   // which is not a failure and gets no word.
-  async #press(leg: () => Promise<RestingPhase>): Promise<void> {
-    this.#phase.set('collecting');
-    this.#progress.set({ resealed: 0, records: 0 });
-    this.#failure.set(null);
+  //
+  // **The pair ends with any press that does not end on `same-name`.** It is
+  // left standing while a press runs, because the block stays drawn — its field
+  // `readonly` — until the press answers; the refusal beneath the field is
+  // cleared at once, because one press carries one name.
+  //
+  // **Everything a press publishes is stamped with the budget read as it
+  // starts**, never with the one standing when a value lands: a run is keyed
+  // inside the budget it began in, and what it reports is that account's
+  // however long it takes.
+  async #press(
+    leg: (budgetId: string) => Promise<RestingPhase>,
+  ): Promise<void> {
+    const budgetId = this.#session.budgetId();
+    const publish = <T>(value: T): Published<T> => ({ value, budgetId });
+
+    this.#phase.set(publish('collecting'));
+    this.#progress.set(publish({ resealed: 0, records: 0 }));
+    this.#failure.set(publish(null));
+    this.#renameRefusal.set(publish(null));
 
     try {
-      const resting = await leg();
+      const resting = await leg(budgetOf(budgetId));
+
+      this.#collision.set(publish(null));
 
       if (resting === 'finished') {
         // **Custody of the promoted generation, and it happens here.** Both
@@ -566,12 +847,19 @@ export class KeyRotationService {
         // so "there is nothing to finish" is an observation rather than a guess
         // — and a section still offering **Finish rotating** over a run that
         // has just completed sends somebody through a whole account again.
-        this.#staged.set(null);
+        this.#staged.set(publish(null));
       }
 
-      this.#phase.set(resting);
+      this.#phase.set(publish(resting));
     } catch (error: unknown) {
       const failure = this.#wordFor(error);
+
+      if (error instanceof NameCollisionStop) {
+        this.#collision.set(publish(error.collision));
+        this.#renameRefusal.set(publish(error.refusal));
+      } else {
+        this.#collision.set(publish(null));
+      }
 
       if (failure === 'factors-moved') {
         // **The section stops offering to finish, because its own copy says to
@@ -590,11 +878,11 @@ export class KeyRotationService {
         // way* true. It is not a third entry point: the repair **is** a begin,
         // and the only thing it does differently from any other begin is that
         // it cannot draw a generation while one is staged.
-        this.#staged.set(null);
+        this.#staged.set(publish(null));
       }
 
-      this.#phase.set('idle');
-      this.#failure.set(failure);
+      this.#phase.set(publish('idle'));
+      this.#failure.set(publish(failure));
     } finally {
       // **The generations end with the run**, and the hand-over above happens
       // before this line rather than after it: the pair custody takes is read
@@ -626,8 +914,10 @@ export class KeyRotationService {
     this.#custody.adoptRotated(next.contentKey, next.indexKey);
   }
 
-  async #drive(ceremony: PasskeyAssertionCeremony): Promise<RestingPhase> {
-    const budgetId = this.#budget();
+  async #drive(
+    ceremony: PasskeyAssertionCeremony,
+    budgetId: string,
+  ): Promise<RestingPhase> {
     const custody = await firstValueFrom(this.#keys.getAccountKeys());
     const state = await firstValueFrom(this.#rotations.getRotationState());
     const material = await assembleKeyRotationBegin(
@@ -657,7 +947,13 @@ export class KeyRotationService {
       }),
     );
 
-    await this.#run(rotationId, budgetId, begun.inventory, begun.maxChunkBytes);
+    await this.#run(
+      rotationId,
+      budgetId,
+      begun.inventory,
+      begun.maxChunkBytes,
+      null,
+    );
 
     return 'finished';
   }
@@ -677,18 +973,21 @@ export class KeyRotationService {
   // **The rows an interrupted run already rewrote are why both generations are
   // needed at once**, and `#open` is where that is spent: a resumed collection
   // meets an account that is part one generation and part the other.
-  async #pickUp(ceremony: PasskeyAssertionCeremony): Promise<RestingPhase> {
-    const budgetId = this.#budget();
+  async #pickUp(
+    ceremony: PasskeyAssertionCeremony,
+    rename: RenameRequest | null,
+    budgetId: string,
+  ): Promise<RestingPhase> {
     const state = await firstValueFrom(this.#rotations.getRotationState());
     const staged = state.rotation;
 
-    this.#staged.set(stagedRotationOf(staged));
+    this.#staged.set({ value: stagedRotationOf(staged), budgetId });
 
     if (staged === null) {
       // **Nothing to finish, and no word.** The run this press was offering to
       // pick up is not on file: either another tab completed it, or this
       // section was drawn from a read that has since gone stale. Every one of
-      // the six words says a *run* failed, and none of them is true of a run
+      // the seven words says a *run* failed, and none of them is true of a run
       // that is not there — so the phase goes back to rest, the signal above
       // has just republished that there is nothing staged, and the control the
       // section draws becomes **Rotate keys**.
@@ -721,27 +1020,10 @@ export class KeyRotationService {
       budgetId,
       staged.inventory,
       staged.maxChunkBytes,
+      rename,
     );
 
     return 'finished';
-  }
-
-  // The tenancy a blind index is keyed inside.
-  //
-  // No factor supplies a budget, so a ceremony cannot clear this and the word
-  // that offers one would be a road that cannot help. `SessionService` argues
-  // the same answer for every write that meets it.
-  #budget(): string {
-    const budgetId = this.#session.budgetId();
-
-    if (budgetId === null) {
-      throw new KeyRotationRefusal(
-        'unreachable',
-        'This browser has not been told which budget it is in, so nothing can be keyed.',
-      );
-    }
-
-    return budgetId;
   }
 
   async #run(
@@ -749,6 +1031,7 @@ export class KeyRotationService {
     budgetId: string,
     inventory: RotationInventoryDto,
     maxChunkBytes: number,
+    rename: RenameRequest | null,
   ): Promise<void> {
     // **A tripwire that costs nothing today and refuses a run that could never
     // finish.** The chunk route has five arms and no budget arm — FR-099 keeps
@@ -770,9 +1053,9 @@ export class KeyRotationService {
     }
 
     for (let pass = 1; pass <= COLLECTION_PASSES; pass += 1) {
-      this.#phase.set('collecting');
+      this.#phase.set({ value: 'collecting', budgetId });
 
-      const collected = await this.#collect();
+      let collected = await this.#collect(budgetId);
 
       // **Judged on the first pass only, because "nothing is posted" is a claim
       // only the first pass can make.** By the second, chunks have landed; and
@@ -782,12 +1065,32 @@ export class KeyRotationService {
         this.#requireEveryCountedRow(inventory, collected);
       }
 
-      this.#progress.set({ resealed: 0, records: rowsIn(collected) });
-      this.#phase.set('resealing');
+      // **The rename belongs to the first collection and spends no pass.** It
+      // is one request between two collections of the same pass: the second
+      // is what sees the new name, and counting it as a pass would take one
+      // from a run that has to absorb rows arriving mid-run exactly as it
+      // would have without the rename.
+      if (pass === 1 && rename !== null) {
+        collected = await this.#renamedAndRecollected(
+          collected,
+          rename,
+          budgetId,
+        );
+      }
 
-      await this.#send(rotationId, budgetId, collected, maxChunkBytes);
+      requireEveryNameDistinct(collected);
 
-      this.#phase.set('finishing');
+      this.#progress.set({
+        value: { resealed: 0, records: rowsIn(collected) },
+        budgetId,
+      });
+      this.#phase.set({ value: 'resealing', budgetId });
+
+      if (!(await this.#sent(rotationId, collected, maxChunkBytes))) {
+        continue;
+      }
+
+      this.#phase.set({ value: 'finishing', budgetId });
 
       if (await this.#complete(rotationId)) {
         return;
@@ -798,6 +1101,125 @@ export class KeyRotationService {
       'unfinished',
       `The account went on changing across ${String(COLLECTION_PASSES)} passes, so this run never caught up with it.`,
     );
+  }
+
+  // Spends a typed name on the pair it was typed for, and answers the
+  // collection that sees it.
+  //
+  // **Three outcomes, and only one of them writes.** No pair: somebody fixed it
+  // elsewhere, nothing is renamed and the collection in hand carries on. A
+  // different pair: a name typed for one pair answers a question nobody is
+  // asking now, so the new pair is published and nothing is written. The same
+  // pair: the rename, then a fresh collection.
+  async #renamedAndRecollected(
+    collected: Collection,
+    rename: RenameRequest,
+    budgetId: string,
+  ): Promise<Collection> {
+    const found = publishedCollisionIn(collected);
+
+    if (found === null) {
+      return collected;
+    }
+
+    if (rename.shown === null || !isSamePair(found, rename.shown)) {
+      throw new NameCollisionStop(found);
+    }
+
+    await this.#rename(collected, found, rename.name, budgetId);
+
+    return this.#collect(budgetId);
+  }
+
+  // Renames the record a pair says is renamed, through that list's own route.
+  //
+  // **Sealed under the incoming content key and keyed under the incoming index
+  // key**, so the server's unique index compares it against every record the
+  // run already re-encrypted. It cannot compare it against a record still
+  // under the outgoing key — those indexes were taken under a different key —
+  // so this run compares it against **every** record in the list first, and a
+  // hit is refused beneath the field with nothing posted.
+  //
+  // The route's `400` keyed on `Name` is the server's sentence and travels
+  // verbatim; every other answer is the run's ordinary word.
+  async #rename(
+    collected: Collection,
+    pair: KeyRotationNameCollision,
+    name: string,
+    budgetId: string,
+  ): Promise<void> {
+    const field = NAME_FIELDS[pair.arm];
+    const id = pair.renamed.id;
+    const nameKey = await this.#index({ ...field, budgetId }, name);
+
+    if (holderOf(nameArmsOf(collected)[pair.arm], nameKey, id) !== null) {
+      throw new NameCollisionStop(pair, { reason: 'taken' });
+    }
+
+    const sealed = await this.#seal({ ...field, rowId: id }, name);
+
+    try {
+      await firstValueFrom(
+        await this.#renameRequest(collected, pair.arm, id, sealed, nameKey),
+      );
+    } catch (error: unknown) {
+      const messages = nameMessagesOf(error);
+
+      if (messages === null) {
+        throw error;
+      }
+
+      throw new NameCollisionStop(pair, { reason: 'invalid', messages });
+    }
+  }
+
+  // The request that renames one row, on the route that list already has.
+  //
+  // **Every route but the payee's is a full `PUT`**, so what the row already
+  // holds travels beside the name: an account's type and opening balance as
+  // the list served them, and a group's or category's note re-sealed under the
+  // incoming key — `null` staying `null`. On that verb an absent note is a 204
+  // having cleared it, and a note left under the outgoing key would be a row
+  // the completion strands.
+  async #renameRequest(
+    collected: Collection,
+    arm: NameArm,
+    id: string,
+    name: string,
+    nameKey: string,
+  ): Promise<Observable<void>> {
+    switch (arm) {
+      case 'accounts': {
+        const row = rowIn(collected.accounts, id);
+
+        return this.#accountsApi.updateAccount(id, {
+          name,
+          nameKey,
+          type: row.type,
+          openingBalance: row.openingBalance,
+        });
+      }
+      case 'payees':
+        return this.#payeesApi.renamePayee(id, { name, nameKey });
+      case 'categoryGroups':
+        return this.#categoryGroupsApi.updateCategoryGroup(id, {
+          name,
+          nameKey,
+          description: await this.#resealedNote(
+            GROUP_NOTE,
+            rowIn(collected.categoryGroups, id),
+          ),
+        });
+      case 'categories':
+        return this.#categoriesApi.updateCategory(id, {
+          name,
+          nameKey,
+          description: await this.#resealedNote(
+            CATEGORY_NOTE,
+            rowIn(collected.categories, id),
+          ),
+        });
+    }
   }
 
   // **Fewer rows than the server counted means this client cannot see rows the
@@ -840,7 +1262,7 @@ export class KeyRotationService {
   // pass where this tab would otherwise hold the main thread over a whole
   // account. Nothing opened here is kept past its own read: the plaintext lives
   // in this call's result for the length of one pass and goes with it.
-  async #collect(): Promise<Collection> {
+  async #collect(budgetId: string): Promise<Collection> {
     const [accounts, payees, categoryGroups, categories, transactions] =
       await Promise.all([
         firstValueFrom(this.#accountsApi.getAccounts()),
@@ -893,30 +1315,60 @@ export class KeyRotationService {
       }
     }
 
-    const opener = await openNarrativeBatch(requests, this.#opener());
+    // Which generation each value opened under, by cell, for this collection
+    // only. It holds no plaintext and goes with the call.
+    const generations = new Map<string, Generation>();
+    const opener = await openNarrativeBatch(
+      requests,
+      this.#opener(generations),
+    );
 
     const open = async (
       binding: NarrativeFieldBinding,
       wire: string,
     ): Promise<string> => plaintextOf(await opener(binding, wire));
 
+    const named = async (
+      field: BlindIndexedField,
+      id: string,
+      wire: string,
+    ): Promise<OpenedNamedRow> => {
+      const binding = { ...field, rowId: id };
+      const name = await open(binding, wire);
+      const openedUnder = generations.get(cellOf(binding));
+
+      if (openedUnder === undefined) {
+        // Unreachable: every value this collection opens goes through the
+        // opener that records it. Written as a refusal rather than a default,
+        // because a guessed generation decides which record a person renames.
+        throw new KeyRotationRefusal(
+          'inconsistent',
+          `${binding.table}.${binding.column} on ${id} opened under no recorded generation.`,
+        );
+      }
+
+      return {
+        id,
+        name,
+        nameKey: await this.#index({ ...field, budgetId }, name),
+        openedUnder,
+      };
+    };
+
     return {
       accounts: await Promise.all(
         accounts.items.map(async (row) => ({
-          id: row.id,
-          name: await open({ ...ACCOUNT_NAME, rowId: row.id }, row.name),
+          ...(await named(ACCOUNT_NAME, row.id, row.name)),
+          type: row.type,
+          openingBalance: row.openingBalance,
         })),
       ),
       payees: await Promise.all(
-        payees.items.map(async (row) => ({
-          id: row.id,
-          name: await open({ ...PAYEE_NAME, rowId: row.id }, row.name),
-        })),
+        payees.items.map(async (row) => named(PAYEE_NAME, row.id, row.name)),
       ),
       categoryGroups: await Promise.all(
         categoryGroups.items.map(async (row) => ({
-          id: row.id,
-          name: await open({ ...GROUP_NAME, rowId: row.id }, row.name),
+          ...(await named(GROUP_NAME, row.id, row.name)),
           description:
             row.description === null
               ? null
@@ -925,8 +1377,7 @@ export class KeyRotationService {
       ),
       categories: await Promise.all(
         categories.items.map(async (row) => ({
-          id: row.id,
-          name: await open({ ...CATEGORY_NAME, rowId: row.id }, row.name),
+          ...(await named(CATEGORY_NAME, row.id, row.name)),
           description:
             row.description === null
               ? null
@@ -959,14 +1410,25 @@ export class KeyRotationService {
   // length of a run — that is what the staging tables are for — and a driver
   // that only tried one of them would stop dead on the first row an earlier pass
   // had finished.
-  #opener(): NarrativeOpener {
-    return async (binding, wire): Promise<NarrativeText> => ({
-      state: 'text',
-      value: await this.#open(binding, wire),
-    });
+  //
+  // **Which of the two opened it is recorded into `generations`**, because the
+  // name pre-check needs it: a pair is one row the run already moved and one a
+  // stale tab wrote under the outgoing keys, and the generation is the only
+  // fact that says which name came first.
+  #opener(generations: Map<string, Generation>): NarrativeOpener {
+    return async (binding, wire): Promise<NarrativeText> => {
+      const opened = await this.#open(binding, wire);
+
+      generations.set(cellOf(binding), opened.under);
+
+      return { state: 'text', value: opened.value };
+    };
   }
 
-  async #open(binding: NarrativeFieldBinding, wire: string): Promise<string> {
+  async #open(
+    binding: NarrativeFieldBinding,
+    wire: string,
+  ): Promise<{ readonly value: string; readonly under: Generation }> {
     const current = this.#current;
     const next = this.#next;
 
@@ -978,10 +1440,16 @@ export class KeyRotationService {
     }
 
     try {
-      return await openNarrativeField(current.contentKey, wire, binding);
+      return {
+        value: await openNarrativeField(current.contentKey, wire, binding),
+        under: 'current',
+      };
     } catch (cause: unknown) {
       try {
-        return await openNarrativeField(next.contentKey, wire, binding);
+        return {
+          value: await openNarrativeField(next.contentKey, wire, binding),
+          under: 'next',
+        };
       } catch {
         // Neither generation opens it, and no factor of this account changes
         // that: every factor encapsulates the same two keys.
@@ -994,6 +1462,34 @@ export class KeyRotationService {
     }
   }
 
+  // One pass's send. `true` when every chunk landed, `false` when a chunk was
+  // refused as a name collision and the pass is spent.
+  //
+  // **`rotation_name_collision` names no row, so it gets no word of its own and
+  // no retry of the post.** A name landed between this pass's collection and its
+  // send; the refused chunk wrote nothing, and re-posting it would carry the same
+  // pair forever. The next collection is what can see the pair, so the pass is
+  // spent the way a row arriving mid-run spends one, and the chunks after the
+  // refused one are not sent — they were sealed from the same stale collection.
+  // Read from the kind alone, never from the problem document's prose.
+  async #sent(
+    rotationId: string,
+    collected: Collection,
+    maxChunkBytes: number,
+  ): Promise<boolean> {
+    try {
+      await this.#send(rotationId, collected, maxChunkBytes);
+
+      return true;
+    } catch (error: unknown) {
+      if (conflictKindOf(error) === ROTATION_NAME_COLLISION) {
+        return false;
+      }
+
+      throw error;
+    }
+  }
+
   // Re-seals every collected row and posts it, in chunks sized by the budget the
   // begin published.
   //
@@ -1003,7 +1499,6 @@ export class KeyRotationService {
   // fit still travels: splitting a row is not a thing a chunk can do.
   async #send(
     rotationId: string,
-    budgetId: string,
     collected: Collection,
     maxChunkBytes: number,
   ): Promise<void> {
@@ -1044,9 +1539,14 @@ export class KeyRotationService {
       // **Only here.** The rows above were collected, sealed and queued, and
       // none of that is a fact about the account until the save behind this 204
       // committed.
+      // The stamp the pass set travels unchanged: the same run, the same
+      // account.
       this.#progress.update((progress) => ({
         ...progress,
-        resealed: progress.resealed + carried,
+        value: {
+          ...progress.value,
+          resealed: progress.value.resealed + carried,
+        },
       }));
 
       accounts = [];
@@ -1072,38 +1572,28 @@ export class KeyRotationService {
     };
 
     for (const row of collected.accounts) {
-      const body = await this.#namedBody(ACCOUNT_NAME, budgetId, row);
+      const body = await this.#namedBody(ACCOUNT_NAME, row);
 
       await room(entryBytes(body));
       accounts.push(body);
     }
 
     for (const row of collected.payees) {
-      const body = await this.#namedBody(PAYEE_NAME, budgetId, row);
+      const body = await this.#namedBody(PAYEE_NAME, row);
 
       await room(entryBytes(body));
       payees.push(body);
     }
 
     for (const row of collected.categoryGroups) {
-      const body = await this.#describedBody(
-        GROUP_NAME,
-        GROUP_NOTE,
-        budgetId,
-        row,
-      );
+      const body = await this.#describedBody(GROUP_NAME, GROUP_NOTE, row);
 
       await room(entryBytes(body));
       categoryGroups.push(body);
     }
 
     for (const row of collected.categories) {
-      const body = await this.#describedBody(
-        CATEGORY_NAME,
-        CATEGORY_NOTE,
-        budgetId,
-        row,
-      );
+      const body = await this.#describedBody(CATEGORY_NAME, CATEGORY_NOTE, row);
 
       await room(entryBytes(body));
       categories.push(body);
@@ -1127,34 +1617,41 @@ export class KeyRotationService {
 
   async #namedBody(
     field: BlindIndexedField,
-    budgetId: string,
     row: OpenedNamedRow,
   ): Promise<ResealedNamedRowBody> {
+    // The index the pre-check judged, not a second computation of it.
     return {
       id: row.id,
       name: await this.#seal({ ...field, rowId: row.id }, row.name),
-      nameKey: await this.#index({ ...field, budgetId }, row.name),
+      nameKey: row.nameKey,
     };
   }
 
   async #describedBody(
     nameField: BlindIndexedField,
     noteField: typeof GROUP_NOTE | typeof CATEGORY_NOTE,
-    budgetId: string,
     row: OpenedDescribedRow,
   ): Promise<ResealedDescribedRowBody> {
     return {
-      ...(await this.#namedBody(nameField, budgetId, row)),
+      ...(await this.#namedBody(nameField, row)),
       // **The member is always present and `null` is not a way to clear it.**
       // The server refuses a reseal that changes whether a row holds a note in
       // either direction, so sending the member always is what keeps an arm's
       // member set a fact about this client rather than about which rows a chunk
       // happened to name.
-      description:
-        row.description === null
-          ? null
-          : await this.#seal({ ...noteField, rowId: row.id }, row.description),
+      description: await this.#resealedNote(noteField, row),
     };
+  }
+
+  // A described row's note under the incoming content key, or `null` for a
+  // row that holds none — never `''`, which is not an envelope.
+  async #resealedNote(
+    noteField: typeof GROUP_NOTE | typeof CATEGORY_NOTE,
+    row: OpenedDescribedRow,
+  ): Promise<string | null> {
+    return row.description === null
+      ? null
+      : this.#seal({ ...noteField, rowId: row.id }, row.description);
   }
 
   async #seal(
@@ -1238,11 +1735,15 @@ export class KeyRotationService {
   // for both of its reasons, including `unopened`: a begin is authorized by an
   // assertion the server verified against this account, so a factor of this
   // account that opens nothing here is the account's material failing to agree
-  // with itself, and the six words on this screen deliberately carry no *try
+  // with itself, and the seven words on this screen deliberately carry no *try
   // another passkey* sentence.
   #wordFor(error: unknown): KeyRotationFailure {
     if (error instanceof KeyRotationRefusal) {
       return error.word;
+    }
+
+    if (error instanceof NameCollisionStop) {
+      return 'same-name';
     }
 
     if (error instanceof KeyRotationMaterialError) {
@@ -1270,6 +1771,122 @@ export class KeyRotationService {
     // defect of its own. The remedy is a reload, which is the one act that
     // changes which JavaScript this tab is running.
     return 'unrecognised';
+  }
+}
+
+// The four indexed lists of one collection as the pure comparison takes them:
+// identifiers, incoming indexes and generations, and no name.
+function nameArmsOf(
+  collected: Collection,
+): Readonly<Record<NameArm, readonly NamedRowIndex[]>> {
+  const indexOf = (row: OpenedNamedRow): NamedRowIndex => ({
+    id: row.id,
+    nameKey: row.nameKey,
+    openedUnder: row.openedUnder,
+  });
+
+  return {
+    accounts: collected.accounts.map(indexOf),
+    payees: collected.payees.map(indexOf),
+    categoryGroups: collected.categoryGroups.map(indexOf),
+    categories: collected.categories.map(indexOf),
+  };
+}
+
+// The pair in one collection, as the block draws it, or `null` for none.
+//
+// **Built member by member**, so what reaches the signal is exactly two
+// identifiers and two names; a spread of the collected row would carry its
+// index and its generation onto an object every injector can reach.
+function publishedCollisionIn(
+  collected: Collection,
+): KeyRotationNameCollision | null {
+  const found = findNameCollision(nameArmsOf(collected));
+
+  if (found === null) {
+    return null;
+  }
+
+  const rows: readonly OpenedNamedRow[] = collected[found.arm];
+  const record = (id: string): KeyRotationNamedRecord => {
+    const row = rows.find((candidate) => candidate.id === id);
+
+    if (row === undefined) {
+      throw new KeyRotationRefusal(
+        'inconsistent',
+        'The comparison named a row this collection does not hold.',
+      );
+    }
+
+    return { id: row.id, name: row.name };
+  };
+
+  return {
+    arm: found.arm,
+    renamed: record(found.renamed.id),
+    kept: record(found.kept.id),
+  };
+}
+
+// Whether a collection found the very pair a person was shown: the same list
+// and the same two records in the same roles.
+//
+// **Judged by identifier and never by name.** A stale tab re-spelling one of
+// the two leaves the same two rows colliding, and the name typed for them
+// still answers the question the block asked; a different record under the
+// very same spelling is a different question, and only its identifier says so.
+function isSamePair(
+  found: KeyRotationNameCollision,
+  shown: KeyRotationNameCollision,
+): boolean {
+  return (
+    found.arm === shown.arm &&
+    found.renamed.id === shown.renamed.id &&
+    found.kept.id === shown.kept.id
+  );
+}
+
+// One collected row by identifier, or a refusal: every caller is holding an
+// identifier the same collection just produced.
+function rowIn<TRow extends { readonly id: string }>(
+  rows: readonly TRow[],
+  id: string,
+): TRow {
+  const row = rows.find((candidate) => candidate.id === id);
+
+  if (row === undefined) {
+    throw new KeyRotationRefusal(
+      'inconsistent',
+      `This collection holds no row ${id} to rename.`,
+    );
+  }
+
+  return row;
+}
+
+// The server's sentences for a name it refused, verbatim, or `null` for any
+// answer that is not a validation refusal keyed on `Name`. Read through
+// `writeOutcomeOf`, the one place this client reads a refusal out of an API
+// answer.
+function nameMessagesOf(error: unknown): readonly string[] | null {
+  const outcome = writeOutcomeOf(error);
+
+  return outcome.state === 'invalid'
+    ? (outcome.errors.get(NAME_ERROR_KEY) ?? null)
+    : null;
+}
+
+// **The run finds the pair before it posts anything; the server's refusal is
+// only the backstop.** Two rows whose names this pass would re-seal onto one
+// incoming index are refused whole by the chunk route on every send, and its
+// `rotation_name_collision` names no row — so a run left to meet it would spend
+// its passes and end on a word whose remedy cannot help. Made after every
+// collection and before any chunk of that pass.
+function requireEveryNameDistinct(collected: Collection): void {
+  const collision = publishedCollisionIn(collected);
+
+  if (collision !== null) {
+    throw new NameCollisionStop(collision);
   }
 }
 

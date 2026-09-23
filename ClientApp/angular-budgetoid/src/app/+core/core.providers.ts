@@ -83,7 +83,7 @@ export const provideAppCore = (): EnvironmentProviders =>
           //
           // **Awaited, and a failed read does not stop the application.**
           // `readStagedRotation()` publishes `null` rather than rejecting —
-          // the six refusal words each say what became of a *run*, and there is
+          // the seven refusal words each say what became of a *run*, and there is
           // no run here to have become anything — so this can no more break
           // bootstrapping than the probe can, and awaiting it is what keeps a
           // screen from drawing a list before the answer that would have

@@ -156,12 +156,49 @@ can stamp and which no account in this product can produce, and an arm whose col
 count. Collecting **more** than was published is legal and raises the denominator — rows created
 between the begin and the collection are sealed under the generation being replaced, so a chunk has to
 visit them. Rows created after a collection make the completion answer `rotation_incomplete`, and the
-remedy is bounded: **three collect-and-send passes, then a named failure**, never a loop.
+remedy is bounded: **three collect-and-send passes, then a named failure**, never a loop. A chunk
+refused as `rotation_name_collision` spends a pass the same way: the pass stops at that chunk, and the
+next collection is what can see the rows as they now stand.
+
+**Before a pass sends anything, the driver looks for two rows of one list that would share a name.**
+It computes every name's blind index under the incoming key as it collects, and records which
+generation each row opened under. Two equal values in one list end the run on `same-name` before that
+pass posts a chunk, so the server's refusal is the backstop rather than the finder, which it has to be:
+the server's `409` names no row. The driver publishes the pair as its list, the two row identifiers
+and the two names, and it keeps the names past the pass that opened them, as the one deliberate
+exception to holding nothing opened. They are cleared when a later press ends on anything else, and
+they are drawn only for the account that produced them. Of the two, the row opened under the
+**outgoing** generation is the one renamed: under one key two equal indexes cannot both be stored, so
+that row's name is the one written after its twin was re-sealed.
+
+**Everything the driver publishes belongs to the account that produced it, and a tab can change
+accounts without a reload.** A session can end and another can be established in the same tab, by
+registration or a sign-in. So the pair, the refusal beneath the rename field, the refusal word, the
+staged run's date, the phase and the progress are each stamped with the budget that produced them.
+Each reads as its resting value while the session is anonymous or its budget is not that one, and a
+session that has not yet said which budget it is in matches nothing a budget produced. The stamp is
+the budget a press or read started under, not the one standing when its answer lands. A press that
+started with no budget is refused `unreachable` before it reads anything, and that word reads only
+while the session still has none. Whether a run is in flight is not stamped, because what it guards
+is the driver's own two key fields. Nothing is cleared from the session's side, because that edge
+would close an import cycle. The same account signing back in sees its own state again.
+
+**The remedy is a resume that carries a name, and it costs a passkey.** A run that stops holds neither
+generation, so `resume(ceremony, { name })` recovers the staged generation the way every resume does,
+collects again, and finds the pair again. If it is the same two rows, judged by their identifiers
+and never by their spelling, it checks the typed name's incoming
+index against every row of that list, visited or not, because the server's unique index cannot compare an
+incoming value against a row still under the outgoing key. It then renames through that list's ordinary
+route. The new name is sealed under the **incoming** content key with its index under the incoming index
+key, so the server compares it against every row already re-sealed. The rename clears the row's stamp, so
+the run re-seals it like any other. The re-collection after a rename does not spend one of the three
+passes. A different pair is republished and nothing is renamed, and no pair means nothing is renamed and
+the run carries on.
 
 **A run is picked up from the other end by the same driver, and the leg that does it posts no begin.**
 `KeyRotationService.resume()` reads `GET /api/me/key-rotation` first — an account with nothing staged
 has no key material worth reading — and answers `rotation: null` by going back to rest with no word at
-all, because each of the six says what became of a *run* and none of them is true of one that is not
+all, because each of the seven says what became of a *run* and none of them is true of one that is not
 there. Where there is a run it reads the account keys, hands both answers to
 `key-rotation-material.ts`, which recovers the staged generation rather than minting one, and then
 drives the identical collection, chunking and completion a begin drives — **quoting the `rotationId`

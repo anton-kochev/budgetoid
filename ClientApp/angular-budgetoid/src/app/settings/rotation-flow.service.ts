@@ -66,7 +66,7 @@ import { firstValueFrom } from 'rxjs';
  *
  * `unknown` is this flow's own and covers a rejection out of a method whose
  * contract is to answer with a result — including the options leg answering
- * nothing at all. There is deliberately no sixth word for that leg: the six
+ * nothing at all. There is deliberately no sixth word for that leg: the seven
  * words beside these five each say what became of a *run*, and a press that
  * never reached the authenticator has no run to have become anything.
  */
@@ -137,6 +137,41 @@ export class RotationFlowService {
    * covering different halves of a press is a state this pair has no version of.
    */
   public rotate(): void {
+    this.press((ceremony) => this.drive(ceremony));
+  }
+
+  /**
+   * **Rename and finish**: runs the ceremony and finishes the stopped run,
+   * carrying the name a person typed for the pair the driver published.
+   *
+   * **Always a resume, never a begin, whatever `staged` says.** A begin press
+   * that stopped on `same-name` never staged anything this browser has read,
+   * so `staged` can be `null` over a run that is on file; and a begin over the
+   * stopped run would re-stage it rather than rename anything. The driver's
+   * resume reads the run out of the server's own answer, so it needs nothing
+   * from this side but the ceremony and the name.
+   *
+   * The name is handed on as typed. What the driver seals is what the person
+   * wrote, character for character — the ordinary name fields' rule — and the
+   * blank and over-length refusals belong to the field, which holds the press
+   * until neither applies.
+   *
+   * The same guard, the same `available()` check and the same ceremony-first
+   * order as {@link rotate}, because it is the same act entered by a third
+   * control: nothing is posted until the ceremony answers, which is what keeps
+   * the five ceremony sentences' *Nothing has changed.* true here too. A
+   * ceremony that fails reaches no press, so the driver's pair stays standing
+   * and the block with it.
+   */
+  public renameAndFinish(name: string): void {
+    this.press((ceremony) => this.rotations.resume(ceremony, { name }));
+  }
+
+  // The envelope every entry point shares: the guard, the cleared sentence,
+  // the check that spends nothing, and the ceremony.
+  private press(
+    drive: (ceremony: PasskeyAssertionCeremony) => Promise<void>,
+  ): void {
     if (this.working()) {
       return;
     }
@@ -162,11 +197,13 @@ export class RotationFlowService {
 
     this.busySignal.set(true);
 
-    void this.assert();
+    void this.assert(drive);
   }
 
   // The challenge, the ceremony, and the hand-over to the driver.
-  private async assert(): Promise<void> {
+  private async assert(
+    drive: (ceremony: PasskeyAssertionCeremony) => Promise<void>,
+  ): Promise<void> {
     try {
       // The server's own options, unchanged. They carry the challenge this
       // assertion is signed over, and an assertion run against options this
@@ -194,7 +231,7 @@ export class RotationFlowService {
       // which both are false. Cleared first, the section would flash back to
       // its resting state for the moment between this statement and the
       // driver's first signal write, with a second press available in it.
-      const run = this.drive(ceremony.value);
+      const run = drive(ceremony.value);
 
       this.busySignal.set(false);
 
@@ -211,7 +248,9 @@ export class RotationFlowService {
     }
   }
 
-  // Which entry point this press is, and the read that decides it.
+  // Which entry point a **Rotate keys** or **Finish rotating** press is, and
+  // the read that decides it. **Rename and finish** does not come through here:
+  // it is a resume by definition.
   //
   // **`begin` over a staged run is the repair and not a mistake.** That method
   // makes this same read again and carries the staged generation forward rather

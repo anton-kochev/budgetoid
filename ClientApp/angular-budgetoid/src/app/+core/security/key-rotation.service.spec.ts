@@ -45,6 +45,7 @@ import {
   AccountApiService,
   type AccountDto,
   type AccountListResponse,
+  type AccountType,
 } from '@app-core/api/account-api.service';
 import {
   CategoriesApiService,
@@ -82,7 +83,10 @@ import {
   type TransactionDto,
   type TransactionListResponse,
 } from '@app-core/api/transactions-api.service';
-import { SessionService } from '@app-core/session/session.service';
+import {
+  SessionService,
+  type SessionStatus,
+} from '@app-core/session/session.service';
 import { EMPTY, Observable, of, throwError } from 'rxjs';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AccountKeyCustodyService } from './account-key-custody.service';
@@ -103,6 +107,9 @@ import { openFactorManifest, sealFactorManifest } from './factor-manifest';
 import {
   KeyRotationService,
   type KeyRotationFailure,
+  type KeyRotationNameCollision,
+  type KeyRotationPhase,
+  type KeyRotationProgress,
 } from './key-rotation.service';
 import {
   NARRATIVE_FIELDS,
@@ -116,6 +123,7 @@ import { mintNarrativeRowId } from './narrative-row-id';
 // account is that module's decision and its own spec is where the spelling is
 // pinned.
 import { highestRotationEpochSeen } from './rotation-epoch-record';
+import type { NameArm } from './rotation-name-collision';
 import type { PasskeyAssertionCeremony } from './webauthn-ceremony.service';
 
 // The tenancy every blind index below is keyed inside. `GET /api/me` is where a
@@ -407,6 +415,25 @@ async function buildFixture(): Promise<Fixture> {
 // The fake server.
 // ---------------------------------------------------------------------------
 
+// What one of the four ordinary rename routes was sent. `description` is on the
+// two described lists' routes and `type` and `openingBalance` on the account's;
+// the recorded body is a copy of exactly what arrived, so a member a driver
+// added or dropped is visible in its keys.
+interface RenameBody {
+  readonly name: string;
+  readonly nameKey: string;
+  readonly description?: string | null;
+  readonly type?: AccountType;
+  readonly openingBalance?: number;
+}
+
+interface RenameCall {
+  readonly arm: NameArm;
+  readonly method: 'PATCH' | 'PUT';
+  readonly id: string;
+  readonly body: Readonly<Record<string, unknown>>;
+}
+
 interface StagedRun {
   readonly rotationId: string;
   readonly manifest: string;
@@ -421,6 +448,33 @@ function conflict(kind: string): HttpErrorResponse {
     error: { conflictKind: kind },
   });
 }
+
+// A 409 as the API really renders one: `ConflictExceptionHandler` writes a
+// problem document with a fixed title, the exception's sentence as `detail`
+// and the kind as the one extension member a client branches on; the default
+// `IProblemDetailsService` adds `type` and `traceId` beside them. `conflict`
+// above is the minimum the driver reads; this is the whole body, so a driver
+// that branched on `detail` or `title` would be seen reading prose.
+function problemConflict(kind: string, detail: string): HttpErrorResponse {
+  return new HttpErrorResponse({
+    status: 409,
+    statusText: 'Conflict',
+    url: 'https://api.budgetoid.app/api/me/key-rotation/chunks',
+    error: {
+      type: 'https://tools.ietf.org/html/rfc9110#section-15.5.10',
+      title: 'The request conflicts with the current state of the resource.',
+      status: 409,
+      detail,
+      conflictKind: kind,
+      traceId: '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00',
+    },
+  });
+}
+
+// The server's own sentence for `rotation_name_collision`, from
+// `NarrativeResealRepository`.
+const NAME_COLLISION_DETAIL =
+  'Two rows would end up with the same name under the new keys, so this chunk was refused and nothing in it was written. Rename one of them, then carry on with the rotation.';
 
 // What a browser is answered by, modelled closely enough that the run below is a
 // real run: the five list reads, the account-key read, and the four rotation
@@ -454,6 +508,8 @@ class FakeServer {
   /** The 1-based chunk to refuse, and what to refuse it with. */
   public refuseChunk: { readonly at: number; readonly error: unknown } | null =
     null;
+  /** Refuses every chunk with this, before any of it is applied. */
+  public refuseEveryChunk: unknown = null;
   /** Called before each completion is judged. */
   public beforeCompletion: (() => void) | null = null;
   /** Refuses every completion with this, instead of judging one. */
@@ -466,6 +522,18 @@ class FakeServer {
   public refuseState: unknown = null;
   /** Answers the staged-rotation read by completing without emitting. */
   public answerStateWithoutEmitting = false;
+  /** Every ordinary rename made, in order, as its route received it. */
+  public readonly renames: RenameCall[] = [];
+  /** Refuses every ordinary rename with this, before any of it is applied. */
+  public refuseRename: unknown = null;
+  /**
+   * The members the account list serves beside a row's name, by row. A row not
+   * named here is served as `Checking` with nothing opening it.
+   */
+  public readonly accountDetails = new Map<
+    string,
+    { readonly type: AccountType; readonly openingBalance: number }
+  >();
 
   constructor(seed: Fixture) {
     this.manifest = seed.manifest;
@@ -515,8 +583,8 @@ class FakeServer {
         (row): AccountDto => ({
           id: row.id,
           name: row.name,
-          type: 'Checking',
-          openingBalance: 0,
+          type: this.accountDetails.get(row.id)?.type ?? 'Checking',
+          openingBalance: this.accountDetails.get(row.id)?.openingBalance ?? 0,
           createdAtUtc: '2026-01-02T03:04:05Z',
           currencyCode: 'USD',
           currencyName: 'US Dollar',
@@ -702,6 +770,12 @@ class FakeServer {
       return throwError(() => refusal.error);
     }
 
+    const everyChunk: unknown = this.refuseEveryChunk;
+
+    if (everyChunk !== null) {
+      return throwError(() => everyChunk);
+    }
+
     const staged = this.staged;
 
     if (staged === null || staged.rotationId !== body.rotationId) {
@@ -741,6 +815,32 @@ class FakeServer {
 
       return [row, entry.description] as const;
     });
+
+    // The four unique indexes, as the server has them: per list, over the
+    // values the rows would hold once this chunk landed. Two rows on one value
+    // refuse the whole chunk, and nothing in it is written.
+    const collides = (
+      rows: readonly StoredNamedRow[],
+      entries: readonly { readonly id: string; readonly nameKey: string }[],
+    ): boolean => {
+      const after = rows.map(
+        (row) =>
+          entries.find((entry) => entry.id === row.id)?.nameKey ?? row.nameKey,
+      );
+
+      return new Set(after).size !== after.length;
+    };
+
+    if (
+      collides(this.accounts, body.accounts) ||
+      collides(this.payees, body.payees) ||
+      collides(this.categoryGroups, body.categoryGroups) ||
+      collides(this.categories, body.categories)
+    ) {
+      return throwError(() =>
+        problemConflict('rotation_name_collision', NAME_COLLISION_DETAIL),
+      );
+    }
 
     for (const [row, entry] of named) {
       row.name = entry.name;
@@ -808,6 +908,89 @@ class FakeServer {
     return of(undefined);
   }
 
+  // -- the four ordinary rename routes --------------------------------------
+
+  /**
+   * An ordinary rename, as the four routes behind it behave: the unique index
+   * over the list, then both halves of the name replaced together, a note
+   * replaced by whatever the body carries, and **the row's rotation stamp
+   * disowned** — `Payee.Rename` and its three siblings clear it, because what a
+   * rename writes is not something a chunk wrote.
+   */
+  public rename(
+    arm: NameArm,
+    method: 'PATCH' | 'PUT',
+    id: string,
+    body: RenameBody,
+  ): Observable<void> {
+    this.renames.push({ arm, method, id, body: { ...body } });
+
+    const refusal: unknown = this.refuseRename;
+
+    if (refusal !== null) {
+      return throwError(() => refusal);
+    }
+
+    const rows = this.namedRows(arm);
+    const row = rows.find((candidate) => candidate.id === id);
+
+    if (row === undefined) {
+      // A harness fault, for the chunk route's reason: no case renames a row
+      // this account does not hold.
+      throw new Error(`the rename named a row this account does not hold`);
+    }
+
+    if (
+      rows.some(
+        (candidate) =>
+          candidate.id !== id && candidate.nameKey === body.nameKey,
+      )
+    ) {
+      return throwError(
+        () =>
+          new HttpErrorResponse({
+            status: 400,
+            error: {
+              title: 'One or more validation errors occurred.',
+              status: 400,
+              errors: {
+                // The member as ASP.NET spells it on the wire.
+                // eslint-disable-next-line @typescript-eslint/naming-convention
+                Name: ['This list already has a record by that name.'],
+              },
+            },
+          }),
+      );
+    }
+
+    row.name = body.name;
+    row.nameKey = body.nameKey;
+    row.rotationId = null;
+
+    if (arm === 'categoryGroups' || arm === 'categories') {
+      const described = this[arm].find((candidate) => candidate.id === id);
+
+      if (described !== undefined) {
+        described.description = body.description ?? null;
+      }
+    }
+
+    return of(undefined);
+  }
+
+  public namedRows(arm: NameArm): StoredNamedRow[] {
+    switch (arm) {
+      case 'accounts':
+        return this.accounts;
+      case 'payees':
+        return this.payees;
+      case 'categoryGroups':
+        return this.categoryGroups;
+      case 'categories':
+        return this.categories;
+    }
+  }
+
   /**
    * Forgets every request made so far, so that what a **later** browser posted
    * stands on its own.
@@ -819,6 +1002,7 @@ class FakeServer {
     this.beginBodies.length = 0;
     this.chunkBodies.length = 0;
     this.completionBodies.length = 0;
+    this.renames.length = 0;
     this.accountKeyReads = 0;
   }
 
@@ -960,13 +1144,35 @@ class MeTransport
   }
 }
 
-class SessionStub implements Pick<SessionService, 'budgetId'> {
+// `status` is here for the one thing the driver may read it for: a pair of
+// names drawn on a screen is hidden once the session is gone.
+class SessionStub implements Pick<SessionService, 'budgetId' | 'status'> {
   readonly #budgetId = signal<string | null>(BUDGET_ID);
+  readonly #status = signal<SessionStatus>('authenticated');
 
   public readonly budgetId: Signal<string | null> = this.#budgetId.asReadonly();
 
+  public readonly status: Signal<SessionStatus> = this.#status.asReadonly();
+
   public setBudgetId(budgetId: string | null): void {
     this.#budgetId.set(budgetId);
+  }
+
+  public setStatus(status: SessionStatus): void {
+    this.#status.set(status);
+  }
+
+  // `SessionService.ended()` as far as these two members see it: the status
+  // and the budget go in one call.
+  public end(): void {
+    this.#status.set('anonymous');
+    this.#budgetId.set(null);
+  }
+
+  // `SessionService.established()`: the status now, and the budget only when
+  // the read it starts lands — which a later `setBudgetId` stands in for.
+  public establish(): void {
+    this.#status.set('authenticated');
   }
 }
 
@@ -1351,12 +1557,18 @@ function configureTestBed(): void {
         useValue: {
           getAccounts: (): Observable<AccountListResponse> =>
             server.accountList(),
+          updateAccount: (id: string, body: RenameBody): Observable<void> =>
+            server.rename('accounts', 'PUT', id, body),
         },
       },
       {
         provide: PayeesApiService,
         useValue: {
           getPayees: (): Observable<PayeeListResponse> => server.payeeList(),
+          // `PATCH api/payees/{id}`, pinned against the real service in
+          // `payees-api.service.spec.ts`.
+          renamePayee: (id: string, body: RenameBody): Observable<void> =>
+            server.rename('payees', 'PATCH', id, body),
         },
       },
       {
@@ -1364,6 +1576,11 @@ function configureTestBed(): void {
         useValue: {
           getCategoryGroups: (): Observable<CategoryGroupListResponse> =>
             server.categoryGroupList(),
+          updateCategoryGroup: (
+            id: string,
+            body: RenameBody,
+          ): Observable<void> =>
+            server.rename('categoryGroups', 'PUT', id, body),
         },
       },
       {
@@ -1371,6 +1588,8 @@ function configureTestBed(): void {
         useValue: {
           getCategories: (): Observable<CategoryListResponse> =>
             server.categoryList(),
+          updateCategory: (id: string, body: RenameBody): Observable<void> =>
+            server.rename('categories', 'PUT', id, body),
         },
       },
       {
@@ -1759,6 +1978,78 @@ describe('the refusals a begin owes', () => {
     expect(service.failure()).toBeNull();
     expect(server.completionBodies).toHaveLength(2);
     expect(server.rotationEpoch).toBe(EPOCH + 1);
+  });
+
+  // `rotation_name_collision` names no row, so it gets no word of its own: a
+  // name landed between a collection and a send, and the next collection is
+  // what finds the pair. Nothing in the refused chunk was written, so the pass
+  // is spent the way a row arriving mid-run spends one.
+  it('collects and sends again when a chunk is refused as a name collision, and finishes', async () => {
+    // Arrange
+    const service = driver();
+    let collections = 0;
+
+    server.onList = (): void => {
+      collections += 1;
+    };
+    server.refuseChunk = {
+      at: 1,
+      error: problemConflict('rotation_name_collision', NAME_COLLISION_DETAIL),
+    };
+
+    // Act
+    await service.begin(ceremonyUnder(firstFactor()));
+
+    // Assert
+    expect(service.failure()).toBeNull();
+    // Collected again, not the refused chunk re-sent: the pair is found by the
+    // next collection, so a driver that only retried the post would send the
+    // same collision forever.
+    expect(collections).toBe(2);
+    expect(server.chunkBodies).toHaveLength(2);
+    expect(server.completionBodies).toHaveLength(1);
+    expect(server.rotationEpoch).toBe(EPOCH + 1);
+  });
+
+  it('gives up with the word unfinished after three chunks refused as a name collision', async () => {
+    // Arrange
+    const service = driver();
+    let collections = 0;
+
+    server.onList = (): void => {
+      collections += 1;
+    };
+    server.refuseEveryChunk = problemConflict(
+      'rotation_name_collision',
+      NAME_COLLISION_DETAIL,
+    );
+
+    // Act
+    await service.begin(ceremonyUnder(firstFactor()));
+
+    // Assert
+    expect(service.failure()).toBe(word('unfinished'));
+    expect(collections).toBe(3);
+    expect(server.chunkBodies).toHaveLength(3);
+    expect(server.completionBodies).toHaveLength(0);
+  });
+
+  it('answers a chunk refused with a conflict kind it has never heard of as unrecognised, and sends nothing more', async () => {
+    // Arrange
+    const service = driver();
+
+    server.refuseEveryChunk = problemConflict(
+      'rotation_something_new',
+      'A refusal this client was built before.',
+    );
+
+    // Act
+    await service.begin(ceremonyUnder(firstFactor()));
+
+    // Assert
+    expect(service.failure()).toBe(word('unrecognised'));
+    expect(server.chunkBodies).toHaveLength(1);
+    expect(server.completionBodies).toHaveLength(0);
   });
 
   it('answers a moved factor set with its own word', async () => {
@@ -2481,5 +2772,1251 @@ describe('the tab a finished run leaves behind', () => {
     expect(keys.unlockFailure()).toBe('inconsistent');
     // And the device remembered nothing from a body it refused.
     expect(localStorage.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Two records in one list with one name.
+// ---------------------------------------------------------------------------
+
+// What the driver publishes about a `same-name` stop, and the entry that
+// carries a typed name — `docs/design/components.md`, "Renaming one of two
+// records with one name".
+
+// The word, spelled once and run through the union.
+const SAME_NAME = word('same-name');
+
+// What a person types into the block. Unique in every list the fixture holds.
+const TYPED_NAME = 'Corner shop';
+
+// Rows in the four indexed lists: two of each.
+const NAMED_ROWS = 8;
+
+const NAME_FIELDS: Readonly<Record<NameArm, BlindIndexedField>> = {
+  accounts: ACCOUNT_NAME_FIELD,
+  payees: PAYEE_NAME_FIELD,
+  categoryGroups: GROUP_NAME_FIELD,
+  categories: CATEGORY_NAME_FIELD,
+};
+
+const NOTE_FIELDS = {
+  categoryGroups: GROUP_NOTE_FIELD,
+  categories: CATEGORY_NOTE_FIELD,
+} as const;
+
+// An interrupted run that got as far as every name and no further.
+//
+// One row per chunk and the ninth refused, so every row of the four indexed
+// lists is re-sealed under the staged generation and stamped, and every
+// transaction note is still under the generation in force. That is the one
+// state in which a stale tab can make a pair: a name it writes is sealed and
+// keyed under the outgoing keys, beside a row the run already moved.
+async function everyNameResealed(): Promise<void> {
+  await interruptedRun(NAMED_ROWS + 1, 1);
+
+  const rotationId = stagedRun().rotationId;
+  const unstamped = (
+    ['accounts', 'payees', 'categoryGroups', 'categories'] as const
+  )
+    .flatMap((arm) => server.namedRows(arm))
+    .filter((row) => row.rotationId !== rotationId);
+
+  // A harness check: a case built on a list the run never reached makes no
+  // pair at all and would pass while testing nothing.
+  if (unstamped.length !== 0) {
+    throw new Error('the interruption did not reach every named row');
+  }
+}
+
+// A name written by a tab that loaded before the run began: sealed and keyed
+// under the generation still in force, and the stamp disowned, as the server's
+// ordinary update disowns it. A note the row holds is re-sealed under the same
+// keys, because that tab's form sends the whole row.
+async function writtenByAStaleTab(
+  arm: NameArm,
+  row: StoredNamedRow,
+  name: string,
+): Promise<void> {
+  const field = NAME_FIELDS[arm];
+
+  row.name = await sealNarrativeField(fixture.contentKey, name, {
+    ...field,
+    rowId: row.id,
+  });
+  row.nameKey = await computeBlindIndex(
+    fixture.indexKey,
+    { ...field, budgetId: BUDGET_ID },
+    name,
+  );
+  row.rotationId = null;
+
+  if (arm === 'categoryGroups' || arm === 'categories') {
+    const described = server[arm].find((candidate) => candidate.id === row.id);
+    const note = noteOf(arm, row.id);
+
+    if (described !== undefined && note !== null) {
+      described.description = await sealNarrativeField(
+        fixture.contentKey,
+        note,
+        { ...NOTE_FIELDS[arm], rowId: row.id },
+      );
+    }
+  }
+}
+
+// The note a described row was seeded with, or `null` for one seeded without.
+function noteOf(
+  arm: 'categoryGroups' | 'categories',
+  rowId: string,
+): string | null {
+  const field = NOTE_FIELDS[arm];
+
+  return fixture.texts.get(cellKey(field.table, field.column, rowId)) ?? null;
+}
+
+interface NamePair {
+  readonly arm: NameArm;
+  readonly renamed: StoredNamedRow;
+  readonly kept: StoredNamedRow;
+  readonly renamedName: string;
+  readonly keptName: string;
+}
+
+// A stale tab gives the row at `renamedAt` the name of the row at `keptAt` —
+// in capitals, so the two spellings differ and only the incoming index says
+// they are one name.
+async function aPairIn(
+  arm: NameArm,
+  renamedAt: number,
+  keptAt: number,
+): Promise<NamePair> {
+  const rows = server.namedRows(arm);
+  const renamed = rows[renamedAt];
+  const kept = rows[keptAt];
+  const keptName = textOf(NAME_FIELDS[arm], kept.id);
+  const renamedName = keptName.toUpperCase();
+
+  await writtenByAStaleTab(arm, renamed, renamedName);
+
+  return { arm, renamed, kept, renamedName, keptName };
+}
+
+// A payee written by a tab still under the outgoing keys: a row the run has not
+// reached, whose stored index no incoming value can ever equal.
+async function payeeUnderTheOutgoingKeys(
+  name: string,
+): Promise<StoredNamedRow> {
+  const id = mintNarrativeRowId();
+
+  return {
+    id,
+    name: await sealNarrativeField(fixture.contentKey, name, {
+      ...PAYEE_NAME_FIELD,
+      rowId: id,
+    }),
+    nameKey: await computeBlindIndex(
+      fixture.indexKey,
+      { ...PAYEE_NAME_FIELD, budgetId: BUDGET_ID },
+      name,
+    ),
+    rotationId: null,
+  };
+}
+
+function expectedCollision(pair: NamePair): KeyRotationNameCollision {
+  return {
+    arm: pair.arm,
+    renamed: { id: pair.renamed.id, name: pair.renamedName },
+    kept: { id: pair.kept.id, name: pair.keptName },
+  };
+}
+
+// A reloaded browser whose resume stopped on the pair, which is where every
+// rename begins.
+async function stoppedOnSameName(
+  arm: NameArm,
+  renamedAt: number,
+  keptAt: number,
+): Promise<{ readonly service: KeyRotationService; readonly pair: NamePair }> {
+  await everyNameResealed();
+
+  const pair = await aPairIn(arm, renamedAt, keptAt);
+
+  const service = freshDriver();
+
+  await service.resume(ceremonyUnder(firstFactor()));
+
+  // The precondition every rename case stands on, asserted rather than
+  // assumed: without the stop there is no block, and nothing to rename from.
+  expect(service.failure(), 'the press before the rename').toBe(SAME_NAME);
+
+  server.forgetEveryRequest();
+
+  return { service, pair };
+}
+
+// The generation the staged run is re-sealing onto, recovered the way a factor
+// recovers it: its live wrapped private key against its staged seal. Never
+// asked of the driver, which has no accessor and is the thing under test.
+async function stagedGeneration(): Promise<{
+  readonly contentKey: CryptoKey;
+  readonly indexKey: CryptoKey;
+}> {
+  const factor = firstFactor();
+  const opened = await openFactorKeypair(
+    factor.keyEncryptionKey,
+    factor.factorId,
+    {
+      wrappedPrivateKey: server.factorEntry(factor.factorId).wrappedPrivateKey,
+      encapsulatedAccountKeys: sealFor(stagedRun().seals, factor.factorId)
+        .encapsulatedAccountKeys,
+    },
+  );
+
+  return {
+    contentKey: await importAesGcmKey(opened.contentKey),
+    indexKey: await importHmacSha256Key(opened.indexKey),
+  };
+}
+
+function stringAt(call: RenameCall, key: string): string {
+  const value = call.body[key];
+
+  if (typeof value !== 'string') {
+    throw new Error(`the rename carried no string ${key}`);
+  }
+
+  return value;
+}
+
+describe('two records in one list with one name', () => {
+  it('stops on same-name before its pass sends a chunk, and publishes both names as stored', async () => {
+    // Arrange
+    await everyNameResealed();
+
+    const pair = await aPairIn('payees', 1, 0);
+    const service = freshDriver();
+
+    // Act
+    await service.resume(ceremonyUnder(firstFactor()));
+
+    // Assert
+    expect(service.failure()).toBe(SAME_NAME);
+    // Found by the run, not by the server: nothing was posted to be refused.
+    expect(server.chunkBodies).toHaveLength(0);
+    expect(server.completionBodies).toHaveLength(0);
+    // Exactly these members: two identifiers and two names, and nothing that
+    // is an index, a generation or a key.
+    expect(service.collision()).toEqual(expectedCollision(pair));
+    expect(service.phase()).toBe('idle');
+    // The run is still staged, so the section still has a run to finish.
+    expect(service.staged()).not.toBeNull();
+  });
+
+  interface RenameCase {
+    readonly label: string;
+    readonly arm: NameArm;
+    readonly renamedAt: number;
+    readonly keptAt: number;
+    readonly method: 'PATCH' | 'PUT';
+    readonly keys: readonly string[];
+  }
+
+  const RENAME_CASES: readonly RenameCase[] = [
+    {
+      label: 'an account',
+      arm: 'accounts',
+      renamedAt: 1,
+      keptAt: 0,
+      method: 'PUT',
+      keys: ['name', 'nameKey', 'openingBalance', 'type'],
+    },
+    {
+      label: 'a payee',
+      arm: 'payees',
+      renamedAt: 1,
+      keptAt: 0,
+      method: 'PATCH',
+      keys: ['name', 'nameKey'],
+    },
+    {
+      label: 'a category group holding a note',
+      arm: 'categoryGroups',
+      renamedAt: 0,
+      keptAt: 1,
+      method: 'PUT',
+      keys: ['description', 'name', 'nameKey'],
+    },
+    {
+      label: 'a category group holding none',
+      arm: 'categoryGroups',
+      renamedAt: 1,
+      keptAt: 0,
+      method: 'PUT',
+      keys: ['description', 'name', 'nameKey'],
+    },
+    {
+      label: 'a category holding a note',
+      arm: 'categories',
+      renamedAt: 0,
+      keptAt: 1,
+      method: 'PUT',
+      keys: ['description', 'name', 'nameKey'],
+    },
+    {
+      label: 'a category holding none',
+      arm: 'categories',
+      renamedAt: 1,
+      keptAt: 0,
+      method: 'PUT',
+      keys: ['description', 'name', 'nameKey'],
+    },
+  ];
+
+  it.each(RENAME_CASES)(
+    'renames $label through its own route under the incoming keys, then finishes',
+    async (row) => {
+      // Arrange
+      if (row.arm === 'accounts') {
+        // Not the list's defaults, so a PUT that invented them is visible.
+        server.accountDetails.set(server.accounts[row.renamedAt].id, {
+          type: 'Savings',
+          openingBalance: 125000,
+        });
+      }
+
+      const { service, pair } = await stoppedOnSameName(
+        row.arm,
+        row.renamedAt,
+        row.keptAt,
+      );
+      const next = await stagedGeneration();
+      const field = NAME_FIELDS[row.arm];
+      const binding = { ...field, rowId: pair.renamed.id };
+
+      // Act
+      await service.resume(ceremonyUnder(firstFactor()), {
+        name: TYPED_NAME,
+      });
+
+      // Assert
+      expect(server.renames).toHaveLength(1);
+
+      const call = server.renames[0];
+
+      expect(call.arm).toBe(row.arm);
+      expect(call.method).toBe(row.method);
+      // The row given its name second, and never the one that kept it.
+      expect(call.id).toBe(pair.renamed.id);
+      expect(Object.keys(call.body).sort()).toEqual(row.keys);
+
+      // Sealed under the incoming content key, so the server's unique index
+      // compares it against every row already re-encrypted — and not under the
+      // outgoing one, which the completion is about to destroy.
+      await expect(
+        openNarrativeField(next.contentKey, stringAt(call, 'name'), binding),
+      ).resolves.toBe(TYPED_NAME);
+      await expect(
+        openNarrativeField(fixture.contentKey, stringAt(call, 'name'), binding),
+      ).rejects.toThrow();
+      expect(stringAt(call, 'nameKey')).toBe(
+        await computeBlindIndex(
+          next.indexKey,
+          { ...field, budgetId: BUDGET_ID },
+          TYPED_NAME,
+        ),
+      );
+
+      if (row.arm === 'accounts') {
+        // A full PUT: what the row already holds, carried as collected.
+        expect(call.body['type']).toBe('Savings');
+        expect(call.body['openingBalance']).toBe(125000);
+      }
+
+      if (row.arm === 'categoryGroups' || row.arm === 'categories') {
+        const note = noteOf(row.arm, pair.renamed.id);
+        const noteBinding = { ...NOTE_FIELDS[row.arm], rowId: pair.renamed.id };
+
+        if (note === null) {
+          // Null stays null: the verb clears a note it is sent nothing for, and
+          // this row never had one to clear.
+          expect(call.body['description']).toBeNull();
+        } else {
+          // And the note travels re-sealed rather than dropped — on this verb
+          // an absent note is a 204 having cleared it.
+          await expect(
+            openNarrativeField(
+              next.contentKey,
+              stringAt(call, 'description'),
+              noteBinding,
+            ),
+          ).resolves.toBe(note);
+          await expect(
+            openNarrativeField(
+              fixture.contentKey,
+              stringAt(call, 'description'),
+              noteBinding,
+            ),
+          ).rejects.toThrow();
+        }
+      }
+
+      expect(service.failure()).toBeNull();
+      expect(service.phase()).toBe('finished');
+      expect(server.completionBodies).toHaveLength(1);
+      expect(service.collision()).toBeNull();
+
+      // The re-collection saw the new name and the run carried it: the row ends
+      // under the promoted generation holding what was typed.
+      const { contentKey } = await adoptedGeneration(firstFactor());
+      const stored = server
+        .namedRows(row.arm)
+        .find((candidate) => candidate.id === pair.renamed.id);
+
+      await expect(
+        openNarrativeField(contentKey, stored?.name ?? '', binding),
+      ).resolves.toBe(TYPED_NAME);
+    },
+  );
+
+  it('republishes a different pair found between the presses, and renames nothing', async () => {
+    // Arrange
+    const { service } = await stoppedOnSameName('payees', 1, 0);
+
+    // Between the presses the payee pair went away and a category pair arrived.
+    await writtenByAStaleTab('payees', server.payees[1], 'Florist');
+
+    const moved = await aPairIn('categories', 1, 0);
+
+    // Act
+    await service.resume(ceremonyUnder(firstFactor()), {
+      name: TYPED_NAME,
+    });
+
+    // Assert
+    expect(service.failure()).toBe(SAME_NAME);
+    expect(service.collision()).toEqual(expectedCollision(moved));
+    // A name typed for one pair answers a question nobody is asking now.
+    expect(server.renames).toHaveLength(0);
+    expect(server.chunkBodies).toHaveLength(0);
+    expect(server.completionBodies).toHaveLength(0);
+  });
+
+  it('renames nothing and carries on when the pair went away between the presses', async () => {
+    // Arrange
+    const { service } = await stoppedOnSameName('payees', 1, 0);
+
+    await writtenByAStaleTab('payees', server.payees[1], 'Florist');
+
+    // Act
+    await service.resume(ceremonyUnder(firstFactor()), {
+      name: TYPED_NAME,
+    });
+
+    // Assert
+    expect(server.renames).toHaveLength(0);
+    expect(service.failure()).toBeNull();
+    expect(service.phase()).toBe('finished');
+    expect(service.collision()).toBeNull();
+  });
+
+  it.each([
+    { label: 'a record the run has not reached yet', typed: 'FLORIST' },
+    { label: 'the record that keeps the name', typed: 'bakery' },
+  ])(
+    'refuses a typed name $label already has, beneath the field and before anything is written',
+    async ({ typed }) => {
+      // Arrange
+      const { service, pair } = await stoppedOnSameName('payees', 1, 0);
+
+      // Still under the outgoing keys, so its stored index can never equal an
+      // incoming one: only the run's own comparison can see it.
+      server.payees.push(await payeeUnderTheOutgoingKeys('Florist'));
+
+      // Act
+      await service.resume(ceremonyUnder(firstFactor()), {
+        name: typed,
+      });
+
+      // Assert
+      expect(service.renameRefusal()).toEqual({ reason: 'taken' });
+      expect(server.renames).toHaveLength(0);
+      expect(server.chunkBodies).toHaveLength(0);
+      expect(server.completionBodies).toHaveLength(0);
+      // The block stands over the same pair, so the field keeps its value.
+      expect(service.failure()).toBe(SAME_NAME);
+      expect(service.collision()).toEqual(expectedCollision(pair));
+    },
+  );
+
+  it('carries the server refusal keyed on Name verbatim, and does not finish', async () => {
+    // Arrange
+    const { service, pair } = await stoppedOnSameName('payees', 1, 0);
+    const messages = [
+      'The name is longer than a payee name may be.',
+      'Choose a shorter one.',
+    ];
+
+    server.refuseRename = new HttpErrorResponse({
+      status: 400,
+      statusText: 'Bad Request',
+      error: {
+        type: 'https://tools.ietf.org/html/rfc9110#section-15.5.1',
+        title: 'One or more validation errors occurred.',
+        status: 400,
+        // The member as ASP.NET spells it on the wire.
+        // eslint-disable-next-line @typescript-eslint/naming-convention
+        errors: { Name: messages },
+      },
+    });
+
+    // Act
+    await service.resume(ceremonyUnder(firstFactor()), {
+      name: TYPED_NAME,
+    });
+
+    // Assert
+    expect(service.renameRefusal()).toEqual({
+      reason: 'invalid',
+      messages,
+    });
+    expect(server.renames).toHaveLength(1);
+    expect(server.chunkBodies).toHaveLength(0);
+    expect(server.completionBodies).toHaveLength(0);
+    expect(service.phase()).not.toBe('finished');
+    expect(service.failure()).toBe(SAME_NAME);
+    expect(service.collision()).toEqual(expectedCollision(pair));
+  });
+
+  it('does not spend a pass on the collection after a rename', async () => {
+    // Arrange
+    const { service } = await stoppedOnSameName('payees', 1, 0);
+    let completions = 0;
+
+    // The first two completions answer that the run is incomplete, so this
+    // press needs all three passes — and has them only if the collection that
+    // follows the rename was not counted as one.
+    server.beforeCompletion = (): void => {
+      completions += 1;
+      server.refuseCompletion =
+        completions <= 2 ? conflict('rotation_incomplete') : null;
+    };
+
+    // Act
+    await service.resume(ceremonyUnder(firstFactor()), {
+      name: TYPED_NAME,
+    });
+
+    // Assert
+    expect(server.renames).toHaveLength(1);
+    expect(completions).toBe(3);
+    expect(service.failure()).toBeNull();
+    expect(service.phase()).toBe('finished');
+  });
+
+  it('clears the pair when a later press ends on another word', async () => {
+    // Arrange
+    const { service } = await stoppedOnSameName('payees', 1, 0);
+
+    server.refuseState = new HttpErrorResponse({ status: 0 });
+
+    // Act
+    await service.resume(ceremonyUnder(firstFactor()));
+
+    // Assert
+    expect(service.failure()).toBe(word('unreachable'));
+    expect(service.collision()).toBeNull();
+  });
+
+  it('hides the pair once the session has ended', async () => {
+    // Arrange
+    const { service, pair } = await stoppedOnSameName('payees', 1, 0);
+
+    expect(service.collision()).toEqual(expectedCollision(pair));
+
+    // Act
+    session.setStatus('anonymous');
+
+    // Assert
+    expect(service.collision()).toBeNull();
+  });
+
+  it('hides the refusal beneath the field once the session has ended', async () => {
+    // Arrange
+    const { service } = await stoppedOnSameName('payees', 1, 0);
+
+    await service.resume(ceremonyUnder(firstFactor()), { name: 'bakery' });
+    expect(service.renameRefusal(), 'the press before').toEqual({
+      reason: 'taken',
+    });
+
+    // Act
+    session.setStatus('anonymous');
+
+    // Assert
+    expect(service.renameRefusal()).toBeNull();
+  });
+
+  // Only `anonymous` is a session that ended. `unknown` is a probe that has not
+  // answered and `unreachable` one that could not, and hiding the block there
+  // would take somebody's typed name away over a blinked request.
+  it.each([
+    'unknown',
+    'unreachable',
+  ] as const satisfies readonly SessionStatus[])(
+    'keeps the pair and the refusal drawn while the session reads %s',
+    async (status) => {
+      // Arrange
+      const { service, pair } = await stoppedOnSameName('payees', 1, 0);
+
+      await service.resume(ceremonyUnder(firstFactor()), { name: 'bakery' });
+
+      // Act
+      session.setStatus(status);
+
+      // Assert
+      expect(service.collision()).toEqual(expectedCollision(pair));
+      expect(service.renameRefusal()).toEqual({ reason: 'taken' });
+    },
+  );
+
+  it('stops on same-name when the pair first appears on a later pass, before that pass sends a chunk', async () => {
+    // Arrange
+    const service = driver();
+    const kept = server.payees[0];
+    const renamed = server.payees[1];
+    const keptName = textOf(PAYEE_NAME_FIELD, kept.id);
+    const renamedName = keptName.toUpperCase();
+    // What a stale tab writes, prepared ahead because the hook that lands it
+    // runs synchronously: sealed and keyed under the outgoing generation.
+    const staleName = await sealNarrativeField(
+      fixture.contentKey,
+      renamedName,
+      { ...PAYEE_NAME_FIELD, rowId: renamed.id },
+    );
+    const staleKey = await computeBlindIndex(
+      fixture.indexKey,
+      { ...PAYEE_NAME_FIELD, budgetId: BUDGET_ID },
+      renamedName,
+    );
+    let completions = 0;
+
+    // Pass 1 collects no pair and sends its one chunk. The name lands after
+    // that send and before its completion, so the completion answers that the
+    // run is incomplete and pass 2's collection is the first to see the pair.
+    server.beforeCompletion = (): void => {
+      completions += 1;
+
+      if (completions === 1) {
+        renamed.name = staleName;
+        renamed.nameKey = staleKey;
+        renamed.rotationId = null;
+      }
+    };
+
+    // Act
+    await service.begin(ceremonyUnder(firstFactor()));
+
+    // Assert
+    expect(service.failure()).toBe(SAME_NAME);
+    // Pass 1's chunk and nothing after it: pass 2 stopped before it sent.
+    expect(server.chunkBodies).toHaveLength(1);
+    expect(server.completionBodies).toHaveLength(1);
+    expect(service.collision()).toEqual(
+      expectedCollision({
+        arm: 'payees',
+        renamed,
+        kept,
+        renamedName,
+        keptName,
+      }),
+    );
+  });
+
+  it('clears the refusal beneath the field as the next press starts, and leaves it clear when that press ends another way', async () => {
+    // Arrange
+    const { service } = await stoppedOnSameName('payees', 1, 0);
+
+    await service.resume(ceremonyUnder(firstFactor()), { name: 'bakery' });
+    expect(service.renameRefusal(), 'the press before').toEqual({
+      reason: 'taken',
+    });
+
+    server.refuseState = new HttpErrorResponse({ status: 0 });
+
+    // Act
+    const pressing = service.resume(ceremonyUnder(firstFactor()));
+    const whilePressing = service.renameRefusal();
+
+    await pressing;
+
+    // Assert
+    // One press carries one name: the sentence about the last one does not
+    // stand over this one while it runs, nor after it ends on another word.
+    expect(whilePressing).toBeNull();
+    expect(service.failure()).toBe(word('unreachable'));
+    expect(service.renameRefusal()).toBeNull();
+  });
+
+  it.each([
+    {
+      label: 'a different record given the kept name',
+      arrange: async (): Promise<NamePair> => {
+        const kept = server.payees[0];
+        const keptName = textOf(PAYEE_NAME_FIELD, kept.id);
+
+        await writtenByAStaleTab('payees', server.payees[1], 'Florist');
+
+        const renamed = await payeeUnderTheOutgoingKeys(keptName.toLowerCase());
+
+        server.payees.push(renamed);
+
+        return {
+          arm: 'payees',
+          renamed,
+          kept,
+          renamedName: keptName.toLowerCase(),
+          keptName,
+        };
+      },
+    },
+    {
+      // Every name spelled exactly as the lead line spelled it, so only the
+      // renamed record's identifier says this is not the pair it named.
+      label: 'a different record given the renamed name in the same spelling',
+      arrange: async (): Promise<NamePair> => {
+        const kept = server.payees[0];
+        const keptName = textOf(PAYEE_NAME_FIELD, kept.id);
+        const renamedName = keptName.toUpperCase();
+
+        await writtenByAStaleTab('payees', server.payees[1], 'Florist');
+
+        const renamed = await payeeUnderTheOutgoingKeys(renamedName);
+
+        server.payees.push(renamed);
+
+        return { arm: 'payees', renamed, kept, renamedName, keptName };
+      },
+    },
+    {
+      // The mirror: the renamed record and both spellings are the ones the
+      // lead line named, and only the kept record's identifier moved.
+      label: 'the same renamed record against a different kept one',
+      arrange: async (): Promise<NamePair> => aPairWithAnotherKeptRecord(),
+    },
+  ])(
+    'republishes $label in the same list, and renames nothing',
+    async ({ arrange }) => {
+      // Arrange
+      const { service } = await stoppedOnSameName('payees', 1, 0);
+      const moved = await arrange();
+
+      // Act
+      await service.resume(ceremonyUnder(firstFactor()), {
+        name: TYPED_NAME,
+      });
+
+      // Assert
+      // Same list, but not the pair the lead line named, so the name typed
+      // under it answers a question nobody is asking now.
+      expect(service.failure()).toBe(SAME_NAME);
+      expect(service.collision()).toEqual(expectedCollision(moved));
+      expect(server.renames).toHaveLength(0);
+      expect(server.chunkBodies).toHaveLength(0);
+      expect(server.completionBodies).toHaveLength(0);
+    },
+  );
+
+  it('renames the same two records found under another spelling, and finishes', async () => {
+    // Arrange
+    const { service, pair } = await stoppedOnSameName('payees', 1, 0);
+
+    await aPairInAnotherSpelling();
+
+    // Act
+    await service.resume(ceremonyUnder(firstFactor()), {
+      name: TYPED_NAME,
+    });
+
+    // Assert
+    // The same two rows, judged by their identifiers and never by their
+    // spelling: the name typed for them still answers the question asked.
+    expect(server.renames).toHaveLength(1);
+    expect(server.renames[0].id).toBe(pair.renamed.id);
+    expect(service.failure()).toBeNull();
+    expect(service.phase()).toBe('finished');
+    expect(service.collision()).toBeNull();
+  });
+
+  it('answers a rename refused on a member other than Name as unrecognised, and clears the pair', async () => {
+    // Arrange
+    const { service } = await stoppedOnSameName('payees', 1, 0);
+
+    // A validation refusal of the index this client computed. There is no
+    // sentence in it for the person — the name they typed is not what was
+    // refused — so it is this bundle's defect, and a reload is the remedy.
+    server.refuseRename = new HttpErrorResponse({
+      status: 400,
+      statusText: 'Bad Request',
+      error: {
+        type: 'https://tools.ietf.org/html/rfc9110#section-15.5.1',
+        title: 'One or more validation errors occurred.',
+        status: 400,
+        // The member as ASP.NET spells it on the wire.
+        // eslint-disable-next-line @typescript-eslint/naming-convention
+        errors: { NameKey: ['The name key is not a blind index.'] },
+      },
+    });
+
+    // Act
+    await service.resume(ceremonyUnder(firstFactor()), {
+      name: TYPED_NAME,
+    });
+
+    // Assert
+    expect(service.failure()).toBe(word('unrecognised'));
+    expect(service.renameRefusal()).toBeNull();
+    // The press ended on a word other than same-name, so the block goes.
+    expect(service.collision()).toBeNull();
+    expect(server.chunkBodies).toHaveLength(0);
+    expect(server.completionBodies).toHaveLength(0);
+  });
+
+  it('answers a rename that reached no server as unreachable, and clears the pair', async () => {
+    // Arrange
+    const { service } = await stoppedOnSameName('payees', 1, 0);
+
+    server.refuseRename = new HttpErrorResponse({ status: 0 });
+
+    // Act
+    await service.resume(ceremonyUnder(firstFactor()), {
+      name: TYPED_NAME,
+    });
+
+    // Assert
+    // The run's ordinary word, never a refusal beneath the field: nothing
+    // about the name was judged.
+    expect(service.failure()).toBe(word('unreachable'));
+    expect(service.renameRefusal()).toBeNull();
+    expect(service.collision()).toBeNull();
+    expect(server.chunkBodies).toHaveLength(0);
+    expect(server.completionBodies).toHaveLength(0);
+  });
+
+  it('refuses a typed name a category the run has not reached already has, before anything is written', async () => {
+    // Arrange
+    const { service, pair } = await stoppedOnSameName('categories', 1, 0);
+
+    // Under the outgoing keys, so its stored index can never equal an incoming
+    // one: only the run's own comparison over this list can see it.
+    server.categories.push(await categoryUnderTheOutgoingKeys('Groceries'));
+
+    // Act
+    await service.resume(ceremonyUnder(firstFactor()), {
+      name: 'GROCERIES',
+    });
+
+    // Assert
+    expect(service.renameRefusal()).toEqual({ reason: 'taken' });
+    expect(server.renames).toHaveLength(0);
+    expect(server.chunkBodies).toHaveLength(0);
+    expect(server.completionBodies).toHaveLength(0);
+    expect(service.failure()).toBe(SAME_NAME);
+    expect(service.collision()).toEqual(expectedCollision(pair));
+  });
+});
+
+// What one account's press leaves on a root-provided service, read by whoever
+// signs in next in the same tab. `SessionService.established()` puts the status
+// back to `authenticated` without a reload — registration does, and so may a
+// sign-in — so a rule keyed on `anonymous` alone ends at the next sign-in.
+describe('a session that ended, and the one established after it', () => {
+  const OTHER_BUDGET_ID = '4e7a2d91-6c3b-4f08-9a15-b2d8e0c7f364';
+
+  it('draws neither the pair nor the refusal for a different account', async () => {
+    // Arrange
+    const { service } = await stoppedOnSameName('payees', 1, 0);
+
+    await service.resume(ceremonyUnder(firstFactor()), { name: 'bakery' });
+    expect(service.renameRefusal(), 'the press before').toEqual({
+      reason: 'taken',
+    });
+
+    // Act
+    session.end();
+    session.establish();
+    session.setBudgetId(OTHER_BUDGET_ID);
+
+    // Assert
+    expect(service.collision()).toBeNull();
+    expect(service.renameRefusal()).toBeNull();
+  });
+
+  it('draws neither while the session established after it has not said which budget it is in', async () => {
+    // Arrange
+    const { service } = await stoppedOnSameName('payees', 1, 0);
+
+    await service.resume(ceremonyUnder(firstFactor()), { name: 'bakery' });
+
+    // Act
+    session.end();
+    session.establish();
+
+    // Assert
+    // Whose account this is is not known yet, so it is not known to be the
+    // account that produced the pair.
+    expect(service.collision()).toBeNull();
+    expect(service.renameRefusal()).toBeNull();
+  });
+
+  it('draws the pair and the refusal again for the account that produced them', async () => {
+    // Arrange
+    const { service, pair } = await stoppedOnSameName('payees', 1, 0);
+
+    await service.resume(ceremonyUnder(firstFactor()), { name: 'bakery' });
+
+    // Act
+    session.end();
+    session.establish();
+    session.setBudgetId(BUDGET_ID);
+
+    // Assert
+    // Hidden, not dropped: the names are that account's own, and the run on
+    // file is still stopped on them.
+    expect(service.collision()).toEqual(expectedCollision(pair));
+    expect(service.renameRefusal()).toEqual({ reason: 'taken' });
+  });
+
+  it('does not tell a different account how the previous account’s run stopped', async () => {
+    // Arrange
+    const { service } = await stoppedOnSameName('payees', 1, 0);
+
+    // Act
+    session.end();
+    session.establish();
+    session.setBudgetId(OTHER_BUDGET_ID);
+
+    // Assert
+    // Rendered, the word says *Two records in one list have the same name* to
+    // somebody whose account holds no such pair and no run.
+    expect(service.failure()).toBeNull();
+  });
+
+  it('does not offer a different account the previous account’s run to finish', async () => {
+    // Arrange
+    const { service } = await stoppedOnSameName('payees', 1, 0);
+
+    expect(service.staged(), 'the press before').not.toBeNull();
+
+    // Act
+    session.end();
+    session.establish();
+    session.setBudgetId(OTHER_BUDGET_ID);
+
+    // Assert
+    // Before the section's own read lands, a staged run here draws Finish
+    // rotating with the date the previous account's run began.
+    expect(service.staged()).toBeNull();
+  });
+
+  it('does not hand a different account the size of the previous account’s finished run', async () => {
+    // Arrange
+    const service = driver();
+
+    await service.begin(ceremonyUnder(firstFactor()));
+    expect(service.progress(), 'the press before').toEqual({
+      resealed: NARRATIVE_ROWS,
+      records: NARRATIVE_ROWS,
+    });
+
+    // Act
+    session.end();
+    session.establish();
+    session.setBudgetId(OTHER_BUDGET_ID);
+
+    // Assert
+    // Not drawn at rest, and still a count of another account's records on an
+    // object every injector in the app can reach.
+    expect(service.phase()).toBe('idle');
+    expect(service.progress()).toEqual({ resealed: 0, records: 0 });
+  });
+
+  // The cases above change the session after a press has ended. These change it
+  // while one is still in flight, so every value the press publishes afterwards
+  // lands under the other account — and is still the first account's, because
+  // a run is keyed inside the budget it began in.
+  const switchToAnotherAccount = (): void => {
+    session.end();
+    session.establish();
+    session.setBudgetId(OTHER_BUDGET_ID);
+  };
+
+  it('shows a different account nothing of a run that finished after the switch', async () => {
+    // Arrange
+    const service = driver();
+    const seenByTheOtherAccount: {
+      readonly phase: KeyRotationPhase;
+      readonly progress: KeyRotationProgress;
+      readonly running: boolean;
+    }[] = [];
+    let switched = false;
+
+    // The first chunk is held at the server when the session changes, so the
+    // chunk's 204, the finishing phase and the 204 of the completion all land
+    // under the other account.
+    server.onChunk = (): void => {
+      if (!switched) {
+        switched = true;
+        switchToAnotherAccount();
+      }
+    };
+    server.beforeCompletion = (): void => {
+      seenByTheOtherAccount.push({
+        phase: service.phase(),
+        progress: service.progress(),
+        running: service.running(),
+      });
+    };
+
+    // Act
+    await service.begin(ceremonyUnder(firstFactor()));
+
+    // Assert
+    expect(seenByTheOtherAccount).toEqual([
+      {
+        phase: 'idle',
+        progress: { resealed: 0, records: 0 },
+        // Not read through the budget rule: it guards this object.
+        running: true,
+      },
+    ]);
+    expect(service.phase()).toBe('idle');
+    expect(service.progress()).toEqual({ resealed: 0, records: 0 });
+    expect(service.failure()).toBeNull();
+
+    // And the run is the first account's: back there, it finished.
+    session.end();
+    session.establish();
+    session.setBudgetId(BUDGET_ID);
+    expect(service.phase()).toBe('finished');
+    expect(service.progress()).toEqual({
+      resealed: NARRATIVE_ROWS,
+      records: NARRATIVE_ROWS,
+    });
+  });
+
+  it('does not tell a different account the word a run stopped on after the switch', async () => {
+    // Arrange
+    const service = driver();
+
+    server.onChunk = switchToAnotherAccount;
+    server.refuseChunk = { at: 1, error: new HttpErrorResponse({ status: 0 }) };
+
+    // Act
+    await service.begin(ceremonyUnder(firstFactor()));
+
+    // Assert
+    expect(service.failure()).toBeNull();
+    expect(service.phase()).toBe('idle');
+
+    session.end();
+    session.establish();
+    session.setBudgetId(BUDGET_ID);
+    expect(service.failure()).toBe(word('unreachable'));
+  });
+
+  it('does not draw a different account the pair a resume found after the switch', async () => {
+    // Arrange
+    await everyNameResealed();
+
+    const pair = await aPairIn('payees', 1, 0);
+    const service = freshDriver();
+
+    // Act
+    // Switched before the staged-rotation read has answered: everything the
+    // press publishes after its first set lands under the other account.
+    const pressing = service.resume(ceremonyUnder(firstFactor()));
+
+    switchToAnotherAccount();
+    await pressing;
+
+    // Assert
+    expect(service.collision()).toBeNull();
+    expect(service.failure()).toBeNull();
+    expect(service.staged()).toBeNull();
+
+    session.end();
+    session.establish();
+    session.setBudgetId(BUDGET_ID);
+    expect(service.failure()).toBe(SAME_NAME);
+    expect(service.collision()).toEqual(expectedCollision(pair));
+    expect(service.staged()).not.toBeNull();
+  });
+
+  it('does not offer a different account a staged run whose read answered after the switch', async () => {
+    // Arrange
+    await interruptedRun(1, MAX_CHUNK_BYTES);
+
+    const service = freshDriver();
+
+    // Act
+    const reading = service.readStagedRotation();
+
+    switchToAnotherAccount();
+    await reading;
+
+    // Assert
+    expect(service.staged()).toBeNull();
+
+    session.end();
+    session.establish();
+    session.setBudgetId(BUDGET_ID);
+    expect(service.staged()).toEqual({ startedAtUtc: '2026-02-03T04:05:06Z' });
+  });
+});
+
+// A category written by a tab still under the outgoing keys, holding no note:
+// a row the run has not reached, whose stored index no incoming value equals.
+async function categoryUnderTheOutgoingKeys(
+  name: string,
+): Promise<StoredDescribedRow> {
+  const id = mintNarrativeRowId();
+
+  return {
+    id,
+    name: await sealNarrativeField(fixture.contentKey, name, {
+      ...CATEGORY_NAME_FIELD,
+      rowId: id,
+    }),
+    nameKey: await computeBlindIndex(
+      fixture.indexKey,
+      { ...CATEGORY_NAME_FIELD, budgetId: BUDGET_ID },
+      name,
+    ),
+    rotationId: null,
+    description: null,
+  };
+}
+
+// The pair `stoppedOnSameName('payees', 1, 0)` drew, with the record that kept
+// the name deleted by another tab and a new record holding that name in the
+// same spelling under the **incoming** keys — which is how a rename made during
+// the run writes it. The renamed record and both spellings are unchanged.
+async function aPairWithAnotherKeptRecord(): Promise<NamePair> {
+  const renamed = server.payees[1];
+  const gone = server.payees[0];
+  const keptName = textOf(PAYEE_NAME_FIELD, gone.id);
+  const renamedName = keptName.toUpperCase();
+  const next = await stagedGeneration();
+  const id = mintNarrativeRowId();
+  const kept: StoredNamedRow = {
+    id,
+    name: await sealNarrativeField(next.contentKey, keptName, {
+      ...PAYEE_NAME_FIELD,
+      rowId: id,
+    }),
+    nameKey: await computeBlindIndex(
+      next.indexKey,
+      { ...PAYEE_NAME_FIELD, budgetId: BUDGET_ID },
+      keptName,
+    ),
+    rotationId: null,
+  };
+
+  server.payees = [renamed, kept];
+
+  return { arm: 'payees', renamed, kept, renamedName, keptName };
+}
+
+// The pair `stoppedOnSameName('payees', 1, 0)` drew, with the renamed record
+// re-written by the stale tab in a third spelling: the same two identifiers,
+// so the same pair, and a lead line whose spelling has moved.
+async function aPairInAnotherSpelling(): Promise<NamePair> {
+  const kept = server.payees[0];
+  const renamed = server.payees[1];
+  const keptName = textOf(PAYEE_NAME_FIELD, kept.id);
+  const renamedName = keptName.toLowerCase();
+
+  await writtenByAStaleTab('payees', renamed, renamedName);
+
+  return { arm: 'payees', renamed, kept, renamedName, keptName };
+}
+
+// The server's `rotation_name_collision` is a backstop the pre-check leaves in
+// place: a name that landed between a collection and a send.
+describe('a chunk refused as a name collision', () => {
+  it('spends a pass on the kind alone, whatever the problem document says', async () => {
+    // Arrange
+    const service = driver();
+    let collections = 0;
+
+    server.onList = (): void => {
+      collections += 1;
+    };
+    server.refuseChunk = {
+      at: 1,
+      error: problemConflict(
+        'rotation_name_collision',
+        'The request conflicts with the current state of the resource.',
+      ),
+    };
+
+    // Act
+    await service.begin(ceremonyUnder(firstFactor()));
+
+    // Assert
+    expect(service.failure()).toBeNull();
+    expect(collections).toBe(2);
+    expect(server.completionBodies).toHaveLength(1);
+  });
+
+  it('answers an unknown kind as unrecognised even when its detail speaks of a shared name', async () => {
+    // Arrange
+    const service = driver();
+    let collections = 0;
+
+    server.onList = (): void => {
+      collections += 1;
+    };
+    server.refuseEveryChunk = problemConflict(
+      'rotation_label_clash',
+      NAME_COLLISION_DETAIL,
+    );
+
+    // Act
+    await service.begin(ceremonyUnder(firstFactor()));
+
+    // Assert
+    expect(service.failure()).toBe(word('unrecognised'));
+    expect(collections).toBe(1);
+    expect(server.chunkBodies).toHaveLength(1);
+  });
+
+  it('posts none of the later chunks of a pass whose first chunk was refused', async () => {
+    // Arrange
+    const service = driver();
+    let collections = 0;
+    const passOfEachChunk: number[] = [];
+
+    // One row per chunk, so a pass is ten chunks.
+    server.maxChunkBytes = 1;
+    server.onList = (): void => {
+      collections += 1;
+    };
+    server.onChunk = (): void => {
+      passOfEachChunk.push(collections);
+    };
+    server.refuseChunk = {
+      at: 1,
+      error: problemConflict('rotation_name_collision', NAME_COLLISION_DETAIL),
+    };
+
+    // Act
+    await service.begin(ceremonyUnder(firstFactor()));
+
+    // Assert
+    expect(service.failure()).toBeNull();
+    expect(passOfEachChunk.filter((pass) => pass === 1)).toHaveLength(1);
+    expect(server.chunkBodies).toHaveLength(1 + NARRATIVE_ROWS);
   });
 });

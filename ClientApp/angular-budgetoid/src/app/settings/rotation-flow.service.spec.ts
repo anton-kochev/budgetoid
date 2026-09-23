@@ -24,6 +24,8 @@ import { TestBed } from '@angular/core/testing';
 import {
   KeyRotationService,
   type KeyRotationFailure,
+  type KeyRotationNameCollision,
+  type KeyRotationRenameRefusal,
   type KeyRotationPhase,
   type KeyRotationProgress,
   type StagedRotation,
@@ -83,6 +85,8 @@ class KeyRotationStub implements KeyRotationSurface {
   });
   public readonly failure = signal<KeyRotationFailure | null>(null);
   public readonly staged = signal<StagedRotation | null>(null);
+  public readonly collision = signal<KeyRotationNameCollision | null>(null);
+  public readonly renameRefusal = signal<KeyRotationRenameRefusal | null>(null);
   // **An independent signal, deliberately not composed out of `phase`.** The
   // flow's `working` is the one predicate the control's `disabled`, its
   // `aria-busy` and the guard all read; a stub deriving it from the phase would
@@ -94,6 +98,15 @@ class KeyRotationStub implements KeyRotationSurface {
   public resume = vi.fn(async () => Promise.resolve());
   public readStagedRotation = vi.fn(async () => Promise.resolve());
 }
+
+// The name a person typed into the rename block, and the pair it answers.
+const TYPED_NAME = 'Corner shop';
+
+const COLLISION: KeyRotationNameCollision = {
+  arm: 'payees',
+  renamed: { id: 'b8d1c0de-0000-4000-8000-000000000002', name: 'BAKERY' },
+  kept: { id: 'b8d1c0de-0000-4000-8000-000000000001', name: 'Bakery' },
+};
 
 class CeremonyStub {
   public supported = true;
@@ -316,5 +329,152 @@ describe('RotationFlowService', () => {
     http
       .expectOne(`${API_ORIGIN}/api/passkeys/reauthentication/options`)
       .flush(OPTIONS);
+  });
+
+  it('hands nothing to the driver when the ceremony for a finish fails', async () => {
+    // Arrange
+    // A run that stopped on the pair: still staged, its word and its pair
+    // standing on the driver.
+    rotations.staged.set({ startedAtUtc: '2026-07-14T09:30:00Z' });
+    rotations.failure.set('same-name');
+    rotations.collision.set(COLLISION);
+    ceremony.answer = { ok: false, failure: 'cancelled' };
+
+    // Act
+    flow.rotate();
+    await answerTheOptionsLeg();
+
+    // Assert
+    // A ceremony that fails reaches no press, so the driver's pair — and the
+    // block drawn from it — is left as it stood.
+    expect(flow.failure()).toBe('cancelled');
+    expect(flow.working()).toBe(false);
+    expect(rotations.resume).not.toHaveBeenCalled();
+    expect(rotations.begin).not.toHaveBeenCalled();
+  });
+
+  describe('Rename and finish', () => {
+    beforeEach(() => {
+      rotations.failure.set('same-name');
+      rotations.collision.set(COLLISION);
+    });
+
+    it.each<{ readonly label: string; readonly staged: StagedRotation | null }>(
+      [
+        {
+          label:
+            'nothing staged, because the begin that stopped never staged one',
+          staged: null,
+        },
+        {
+          label: 'a staged run',
+          staged: { startedAtUtc: '2026-07-14T09:30:00Z' },
+        },
+      ],
+    )(
+      'runs the ceremony first and then finishes the run carrying the name, over $label',
+      async ({ staged }) => {
+        // Arrange
+        rotations.staged.set(staged);
+
+        // Act
+        flow.renameAndFinish(TYPED_NAME);
+
+        // Assert
+        // Nothing reaches the driver before the ceremony has answered: the
+        // ceremony sentences each end *Nothing has changed.*
+        expect(rotations.resume).not.toHaveBeenCalled();
+
+        await answerTheOptionsLeg();
+
+        expect(ceremony.assertPasskey).toHaveBeenCalledWith(OPTIONS);
+        // A resume and never a begin, whatever `staged` says: a begin-press
+        // that ended same-name never set it, and a begin over the stopped run
+        // would re-stage rather than rename.
+        expect(rotations.resume).toHaveBeenCalledTimes(1);
+        expect(rotations.resume).toHaveBeenCalledWith(CEREMONY, {
+          name: TYPED_NAME,
+        });
+        expect(rotations.begin).not.toHaveBeenCalled();
+        expect(ceremony.assertPasskey.mock.invocationCallOrder[0]).toBeLessThan(
+          rotations.resume.mock.invocationCallOrder[0],
+        );
+      },
+    );
+
+    it('refuses a press while a run is in flight', () => {
+      // Arrange
+      rotations.running.set(true);
+
+      // Act
+      flow.renameAndFinish(TYPED_NAME);
+
+      // Assert
+      http.expectNone(`${API_ORIGIN}/api/passkeys/reauthentication/options`);
+      expect(ceremony.assertPasskey).not.toHaveBeenCalled();
+      expect(rotations.resume).not.toHaveBeenCalled();
+    });
+
+    it('refuses a second press while its own ceremony is still up', () => {
+      // Arrange
+      flow.renameAndFinish(TYPED_NAME);
+
+      // Act
+      flow.renameAndFinish(TYPED_NAME);
+
+      // Assert
+      // One options request, not two: a second would spend a second nonce and
+      // raise a second system sheet over the first.
+      http.expectOne(`${API_ORIGIN}/api/passkeys/reauthentication/options`);
+    });
+
+    it('hands the driver the name exactly as typed, surrounding spaces included', async () => {
+      // Arrange
+      // What the driver seals is what the person wrote, character for
+      // character — the ordinary name fields' rule. The field trims only to
+      // judge a blank.
+      const typed = '  Bakery 2 ';
+
+      // Act
+      flow.renameAndFinish(typed);
+      await answerTheOptionsLeg();
+
+      // Assert
+      expect(rotations.resume).toHaveBeenCalledWith(CEREMONY, { name: typed });
+    });
+
+    it('spends no challenge on a browser that cannot check a passkey', () => {
+      // Arrange
+      ceremony.supported = false;
+
+      // Act
+      flow.renameAndFinish(TYPED_NAME);
+
+      // Assert
+      // The same check, in the same position, as a Rotate keys press: a
+      // re-authentication nonce is persisted server-side, so one spent on a
+      // browser that was never going to finish the ceremony is spent for
+      // nothing.
+      http.expectNone(`${API_ORIGIN}/api/passkeys/reauthentication/options`);
+      expect(ceremony.assertPasskey).not.toHaveBeenCalled();
+      expect(rotations.resume).not.toHaveBeenCalled();
+      expect(flow.failure()).toBe('unsupported');
+      expect(flow.working()).toBe(false);
+    });
+
+    it('hands nothing to the driver when the ceremony fails', async () => {
+      // Arrange
+      ceremony.answer = { ok: false, failure: 'cancelled' };
+
+      // Act
+      flow.renameAndFinish(TYPED_NAME);
+      await answerTheOptionsLeg();
+
+      // Assert
+      expect(flow.failure()).toBe('cancelled');
+      expect(flow.working()).toBe(false);
+      expect(rotations.resume).not.toHaveBeenCalled();
+      expect(rotations.begin).not.toHaveBeenCalled();
+    });
   });
 });

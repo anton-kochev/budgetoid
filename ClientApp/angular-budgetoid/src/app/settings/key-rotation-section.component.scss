@@ -11,9 +11,9 @@
 // and nothing for a second column to carry.
 //
 // **The order inside is the reading order the act needs**: standing prose,
-// consequence block, checkbox, control, progress block. The consequence is read
-// before the gate and the gate before the press, and nothing between them
-// competes for the eye.
+// consequence block, the rename block when there is one, checkbox, control,
+// progress block. The consequence is read before the gate and the gate before
+// the press, and nothing between them competes for the eye.
 .k-section {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -54,6 +54,21 @@
   max-width: 65ch;
   font-size: 0.875rem;
   line-height: 1.55;
+}
+
+// The rename block: the lead line over its one field, as a unit. Full width so
+// the field has the column to span — the section's `justify-items: start` would
+// otherwise shrink it to its intrinsic width.
+.k-rename {
+  display: grid;
+  gap: var(--bud-space-2);
+  width: 100%;
+}
+
+// Capped at the reading measure with the prose above it.
+.k-name {
+  width: 100%;
+  max-width: 65ch;
 }
 
 // The date the staged run began, in the line above **Finish rotating**.

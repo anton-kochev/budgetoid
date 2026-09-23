@@ -24,6 +24,8 @@ import {
 import {
   KeyRotationService,
   type KeyRotationFailure,
+  type KeyRotationNameCollision,
+  type KeyRotationRenameRefusal,
   type KeyRotationPhase,
   type KeyRotationProgress,
   type StagedRotation,
@@ -634,6 +636,8 @@ class KeyRotationStub implements KeyRotationSurface {
   });
   public readonly failure = signal<KeyRotationFailure | null>(null);
   public readonly staged = signal<StagedRotation | null>(null);
+  public readonly collision = signal<KeyRotationNameCollision | null>(null);
+  public readonly renameRefusal = signal<KeyRotationRenameRefusal | null>(null);
   public readonly running = signal(false);
   public begin = vi.fn(async () => Promise.resolve());
   public resume = vi.fn(async () => Promise.resolve());
@@ -647,6 +651,7 @@ class RotationFlowStub implements RotationFlowSurface {
   public readonly failure = signal<RotationCeremonyFailure | null>(null);
   public readonly working = signal(false);
   public rotate = vi.fn();
+  public renameAndFinish = vi.fn();
 }
 
 // What the three blocks below need in order to mount the *shipped* component
