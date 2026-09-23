@@ -86,7 +86,7 @@
     },
     "keyRotationBegunResponse": {
       "_what": [
-        "The whole answer of `POST /api/me/key-rotation`: what a client drives the rest of the run with.",
+        "The whole answer of `POST /api/me/key-rotation`: what a client drives the rest of the run with, and when the run it drives was staged.",
         "`Application.KeyRotations.BeginKeyRotation.KeyRotationBegun` on the server, served straight out rather than through a response record of the API's own — six counts restated at the edge would be six numbers able to disagree with the six `RotationInventory` declares. `KeyRotationBegunDto` on the client."
       ],
       "_itEchoesNeitherTheRunNorTheManifest": [
@@ -94,9 +94,13 @@
         "The caller minted the first and sent the other two a moment ago, so repeating them adds nothing and invites a client to read the echo as confirmation that the server agreed — which on this path it would, because the values are stored verbatim or the request was refused. The resume read echoes all three precisely because ITS caller sent none of them.",
         "There is also no status member. A begin that returned is a begin that staged, so a flag saying so is one nothing could ever set to false."
       ],
+      "_startedAtUtcIsNotAnEcho": [
+        "`startedAtUtc` is the one member here the caller did not send: the request carries no instant, and this is the server's own clock as the staged row stores it — microsecond precision, spelled exactly as `stagedRotationResponse.startedAtUtc` spells it for the same run.",
+        "A client needs it to publish the run it just staged, and taking it from here spares a second read that would fail exactly when the network does."
+      ],
       "route": "POST /api/me/key-rotation",
       "direction": "response",
-      "members": ["inventory", "maxChunkBytes"]
+      "members": ["inventory", "maxChunkBytes", "startedAtUtc"]
     },
     "rotationInventory": {
       "_what": [

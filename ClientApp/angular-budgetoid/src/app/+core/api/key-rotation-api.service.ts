@@ -120,8 +120,8 @@ export interface RotationInventoryDto {
 }
 
 /**
- * What a begun rotation answers: how much there is to rewrite, and how much of
- * it may travel in one request.
+ * What a begun rotation answers: how much there is to rewrite, how much of it
+ * may travel in one request, and when the run it answers for was staged.
  *
  * It echoes back neither the run nor the staged manifest, and that is the
  * server's decision rather than an omission — a response restating what was
@@ -135,6 +135,15 @@ export interface KeyRotationBegunDto {
    * is the host's request-body cap, in one place.
    */
   readonly maxChunkBytes: number;
+  /**
+   * When the run was staged, as the server's clock wrote it — **not an echo**,
+   * because the request carries no instant. It is spelled exactly as
+   * {@link StagedRotationDto.startedAtUtc} spells it for the same run, so a
+   * client can publish the run it just staged without a second read, which
+   * would fail exactly when the network does. It stays a string all the way to
+   * whatever renders it.
+   */
+  readonly startedAtUtc: string;
 }
 
 /**

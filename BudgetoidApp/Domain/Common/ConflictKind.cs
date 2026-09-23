@@ -210,20 +210,23 @@ public enum ConflictKind
     /// <b>How a run reaches it.</b> A row re-sealed under the incoming index key frees the value it held
     /// under the outgoing one; a tab still holding the outgoing key then files a second row under that
     /// freed value, and nothing refuses it. The chunk that re-seals the second row lands it on the value
-    /// the first already holds. The same happens with no second tab when one chunk names two rows onto
-    /// one value. <c>NarrativeResealRepository.SaveAsync</c> raises it, narrowed on the four blind-index
-    /// uniqueness rules a chunk can break.
+    /// the first already holds. A client whose blind indexes are wrong can reach it with no second tab,
+    /// by naming two rows of one chunk onto one value; a client whose indexes are honest cannot, because
+    /// two rows the run has not reached yet share one outgoing key and the index already refused the
+    /// second of them. <c>NarrativeResealRepository.SaveAsync</c> raises it, narrowed on the four
+    /// blind-index uniqueness rules a chunk can break.
     /// </para>
     /// <para>
     /// <b>The remedy is to rename one of the two rows the run would give the same name, then carry on
     /// with the same run</b> — re-seal the renamed row and complete. Nothing is wrong with the run, and
-    /// nothing the chunk carried was written, so no work is lost and no ceremony is owed.
+    /// nothing the chunk carried was written, so no work is lost and the server owes no new begin.
     /// </para>
     /// <para>
     /// <b>Deliberately not <see cref="DuplicateName"/>, though both are the same index refusing.</b> That
-    /// one says the client's list was stale and the next step is to adopt the row that already exists.
-    /// Here both rows are the person's own and both are wanted; adopting one would fold two payees, or two
-    /// accounts, into one. And <b>deliberately not <see cref="RotationIncomplete"/></b>: sending the
+    /// one is the payee create's answer; every other create and every rename answers this index with a
+    /// <c>400</c>. It says the client's list was stale and the next step is to adopt the row that already
+    /// exists. Here both rows are the person's own and both are wanted; adopting one would fold two rows
+    /// into one. And <b>deliberately not <see cref="RotationIncomplete"/></b>: sending the
     /// outstanding chunks does not help, because this chunk is refused the same way every time it is
     /// sent until one row is renamed.
     /// </para>

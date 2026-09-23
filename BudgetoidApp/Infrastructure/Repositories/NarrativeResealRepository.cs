@@ -59,8 +59,8 @@ namespace Infrastructure.Repositories;
 /// one it borrows.</b> A run re-seals a row under the incoming index key and frees its outgoing value; a
 /// stale tab files a second row under that value; the chunk that re-seals the second row lands it on the
 /// first one's new value and breaks the <c>(budget_id, name_key)</c> index. The table's own repository
-/// catches the same index with a different answer — the create's <c>duplicate_name</c>, the rename's
-/// <c>400</c> — and neither is the remedy here, so this save answers
+/// catches the same index with a different answer — the payee create's <c>duplicate_name</c>, every
+/// other create's and every rename's <c>400</c> — and none is the remedy here, so this save answers
 /// <see cref="ConflictKind.RotationNameCollision" />. The filter names the four index constants and
 /// nothing wider; a <c>42501</c> and every other constraint these tables carry still leave as the
 /// <see cref="DbUpdateException" /> EF threw.

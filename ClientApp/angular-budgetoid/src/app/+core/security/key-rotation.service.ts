@@ -81,6 +81,7 @@ import { CategoriesApiService } from '@app-core/api/categories-api.service';
 import { CategoryGroupsApiService } from '@app-core/api/category-groups-api.service';
 import {
   KeyRotationApiService,
+  type KeyRotationBegunDto,
   type ResealChunkRequestBody,
   type ResealedDescribedRowBody,
   type ResealedNamedRowBody,
@@ -101,6 +102,7 @@ import {
   assembleKeyRotationResume,
   KeyRotationMaterialError,
   type AccountKeyGeneration,
+  type KeyRotationMaterial,
 } from './key-rotation-material';
 // **The yield is borrowed and not rewritten.** `narrative-batch.ts` argues which
 // mechanisms hand a frame back and which only look as though they do —
@@ -179,9 +181,14 @@ export interface KeyRotationNamedRecord {
  */
 export interface KeyRotationNameCollision {
   readonly arm: NameArm;
-  /** The record given its name second: the one the typed name goes to. */
+  /**
+   * The record whose name opened under the outgoing generation — the one not
+   * yet re-encrypted — and the one the typed name goes to. Never "the one named
+   * last": a chunk re-seals what its collection saw, so this client cannot know
+   * which of the two was named last.
+   */
   readonly renamed: KeyRotationNamedRecord;
-  /** The record that keeps the name it had first. */
+  /** The record already under the incoming keys, which keeps its name. */
   readonly kept: KeyRotationNamedRecord;
 }
 
@@ -281,8 +288,9 @@ type Generation = NamedRowIndex['openedUnder'];
 //
 // **A named row carries its incoming index and the generation it opened
 // under**, computed once per collection: the pre-check compares the first and
-// needs the second to say which name came first, and the chunk sends the same
-// index the pre-check judged rather than a second computation of it.
+// needs the second to say which row is not yet re-encrypted, and the chunk
+// sends the same index the pre-check judged rather than a second computation
+// of it.
 interface OpenedNamedRow {
   readonly id: string;
   readonly name: string;
@@ -595,8 +603,9 @@ export class KeyRotationService {
    * **The one opened value this service publishes, and the exception is
    * narrow.** Nothing else opened in a run outlives its own read; this pair
    * stands only while the rename block is drawn — it is replaced by the next
-   * `same-name`, cleared when a press ends any other way, and hidden from any
-   * session but the account's that produced it. A ceremony that fails reaches
+   * `same-name`, cleared the moment a rename carried for it lands or a resume
+   * finds no pair at all, cleared when a press ends any other way, and hidden
+   * from any session but the account's that produced it. A ceremony that fails reaches
    * no press, so it leaves the pair standing, which is the block standing.
    */
   public readonly collision: Signal<KeyRotationNameCollision | null> =
@@ -614,11 +623,20 @@ export class KeyRotationService {
    * decides **which control the section draws**.
    *
    * It is `null` until something reads it: a browser that has just loaded knows
-   * of no run, and an interrupted rotation survives as server state alone. Four
-   * places write it: {@link readStagedRotation}, {@link resume}'s own read, and
-   * the two moments below where this service knows without reading — a run it
-   * drove to its 204, and a refusal after which the section's own copy tells
-   * somebody to start again rather than to finish.
+   * of no run, and an interrupted rotation survives as server state alone. It
+   * is written by {@link readStagedRotation}, by {@link resume}'s own read, by
+   * a {@link begin} as it stops, and at the two moments where this service
+   * knows without reading — a run it drove to its 204, and a refusal after
+   * which the section's own copy tells somebody to start again rather than to
+   * finish.
+   *
+   * **A begin publishes nothing while it walks, only what it leaves on file
+   * when it stops**: the date its own answer carried once it got past its
+   * POST, what its read before the POST found when the POST was refused, and
+   * one read back when the POST never answered — because whether that one
+   * staged a run is unknowable without asking. Published at the 2xx instead,
+   * the control's label would flip from **Rotate keys** to **Finish rotating**
+   * under the finger that pressed it.
    */
   public readonly staged: Signal<StagedRotation | null> = this.#publishedFor(
     this.#staged,
@@ -626,25 +644,39 @@ export class KeyRotationService {
   );
 
   /**
-   * Whether a run is in flight.
+   * Whether this account has a run in flight in this tab — what a screen draws
+   * from.
    *
-   * **One predicate with one owner.** The Rotate control's `disabled`, its
-   * `aria-busy` and its click handler all bind this, and the three content
-   * screens read it beside custody's lockedness. A screen deriving its own from
-   * {@link phase} would be a second definition of the same fact, which is the
-   * drift the Unlock control already paid for once.
+   * **One predicate with one owner.** The Rotate control's `disabled` and
+   * `aria-busy` bind this, and the three content screens read it beside
+   * custody's lockedness. A screen deriving its own from {@link phase} would be
+   * a second definition of the same fact, which is the drift the Unlock control
+   * already paid for once.
+   *
+   * **Read through the budget rule, like every value a screen draws.** A run
+   * walking for the account this tab signed out of says nothing about the rows
+   * of the one signed in now, and a list replaced by the run's notice there
+   * would be a screen blocked by somebody else's work. What guards this object
+   * is {@link walking}, never this.
+   */
+  public readonly running: Signal<boolean> = computed(() =>
+    isWalking(this.phase()),
+  );
+
+  /**
+   * Whether this object is walking a run, whoever's account it is for — **the
+   * re-entrancy guard, and never what a screen draws from.**
    *
    * **The one signal not read through the budget rule**, because what it
    * guards is this object rather than an account: a run in flight holds both
    * generations in two fields a second press would overwrite, and a session
    * that changed under it changes nothing about that. It says only that a run
-   * is going — nothing of whose, how far, or how it stopped.
+   * is going — nothing of whose, how far, or how it stopped — so a press
+   * handler refuses on it, and no content screen may read it.
    */
-  public readonly running: Signal<boolean> = computed(() => {
-    const phase = this.#phase().value;
-
-    return phase !== 'idle' && phase !== 'finished';
-  });
+  public readonly walking: Signal<boolean> = computed(() =>
+    isWalking(this.#phase().value),
+  );
 
   // A published value as the session in this tab may read it: the value, when
   // the session is the account's that published it, and `rest` otherwise.
@@ -800,8 +832,9 @@ export class KeyRotationService {
   //
   // **The pair ends with any press that does not end on `same-name`.** It is
   // left standing while a press runs, because the block stays drawn — its field
-  // `readonly` — until the press answers; the refusal beneath the field is
-  // cleared at once, because one press carries one name.
+  // `readonly` — until the rename it carries lands or the collection finds no
+  // pair, which `#renamedAndRecollected` clears as it happens; the refusal
+  // beneath the field is cleared at once, because one press carries one name.
   //
   // **Everything a press publishes is stamped with the budget read as it
   // starts**, never with the one standing when a value lands: a run is keyed
@@ -920,11 +953,30 @@ export class KeyRotationService {
   ): Promise<RestingPhase> {
     const custody = await firstValueFrom(this.#keys.getAccountKeys());
     const state = await firstValueFrom(this.#rotations.getRotationState());
-    const material = await assembleKeyRotationBegin(
-      ceremony.keyEncryptionKey,
-      custody,
-      state,
-    );
+    // **What is on file, held and not yet published.** Every stop below
+    // publishes what it leaves on file, and none of it is published while the
+    // run walks: a run found here flipping the label mid-press would turn
+    // **Rotate keys** into **Finish rotating** under the finger.
+    const onFile = stagedRotationOf(state.rotation);
+    const leaveOnFile = (staged: StagedRotation | null): void => {
+      this.#staged.set({ value: staged, budgetId });
+    };
+
+    let material: KeyRotationMaterial;
+
+    try {
+      material = await assembleKeyRotationBegin(
+        ceremony.keyEncryptionKey,
+        custody,
+        state,
+      );
+    } catch (error: unknown) {
+      // Refused before anything was posted, so what is on file is what the
+      // read found.
+      leaveOnFile(onFile);
+
+      throw error;
+    }
 
     this.#current = material.current;
     this.#next = material.next;
@@ -937,25 +989,69 @@ export class KeyRotationService {
     // identifier here would orphan those stamps and make the design chapter's
     // *the records already re-encrypted stay that way* false.
     const rotationId = state.rotation?.rotationId ?? this.#mintRotationId();
-    const begun = await firstValueFrom(
-      this.#rotations.beginRotation({
-        ...ceremony.payload,
-        rotationId,
-        manifest: material.manifest,
-        rotationEpoch: material.rotationEpoch,
-        seals: material.seals,
-      }),
-    );
+    let begun: KeyRotationBegunDto;
 
-    await this.#run(
-      rotationId,
-      budgetId,
-      begun.inventory,
-      begun.maxChunkBytes,
-      null,
-    );
+    try {
+      begun = await firstValueFrom(
+        this.#rotations.beginRotation({
+          ...ceremony.payload,
+          rotationId,
+          manifest: material.manifest,
+          rotationEpoch: material.rotationEpoch,
+          seals: material.seals,
+        }),
+      );
+    } catch (error: unknown) {
+      leaveOnFile(await this.#onFileAfterARefusedBegin(error, onFile));
+
+      throw error;
+    }
+
+    try {
+      await this.#run(
+        rotationId,
+        budgetId,
+        begun.inventory,
+        begun.maxChunkBytes,
+        null,
+      );
+    } catch (error: unknown) {
+      // **Past its POST the begin has staged a run, whatever stopped it**, so
+      // the section has to offer to finish that one — dated by the begin's own
+      // answer rather than by a read, which is the one request that fails
+      // exactly when the network does. A `factors-moved` overrides this in
+      // `#press`, because that word's copy says to start again.
+      leaveOnFile({ startedAtUtc: begun.startedAtUtc });
+
+      throw error;
+    }
 
     return 'finished';
+  }
+
+  // What a begin whose POST did not answer 2xx leaves on file.
+  //
+  // **A refusal staged nothing**, so the run the read before the POST found —
+  // or none — is still the whole of it. **A request with no answer may have
+  // staged one**, and whether it did is unknowable without asking, so this asks
+  // once; a read that fails the same way leaves the pre-POST answer standing,
+  // which is the last thing this press observed. "No answer" is exactly
+  // `unreachable`'s definition, read through `#wordFor` so there is one.
+  async #onFileAfterARefusedBegin(
+    error: unknown,
+    onFile: StagedRotation | null,
+  ): Promise<StagedRotation | null> {
+    if (this.#wordFor(error) !== 'unreachable') {
+      return onFile;
+    }
+
+    try {
+      const state = await firstValueFrom(this.#rotations.getRotationState());
+
+      return stagedRotationOf(state.rotation);
+    } catch {
+      return onFile;
+    }
   }
 
   // The resume: everything a begin does except begin.
@@ -1111,6 +1207,13 @@ export class KeyRotationService {
   // different pair: a name typed for one pair answers a question nobody is
   // asking now, so the new pair is published and nothing is written. The same
   // pair: the rename, then a fresh collection.
+  //
+  // **The pair goes the moment it stops being true**, not when the press
+  // answers: at once when there is none, and as soon as the rename lands —
+  // before the re-collection, which is a whole account of opens. The block's
+  // lead line names two records with one name, and a run walking on under
+  // **Finish rotating** beneath a sentence that is no longer so would be a
+  // screen disagreeing with the server.
   async #renamedAndRecollected(
     collected: Collection,
     rename: RenameRequest,
@@ -1119,6 +1222,8 @@ export class KeyRotationService {
     const found = publishedCollisionIn(collected);
 
     if (found === null) {
+      this.#collision.set({ value: null, budgetId });
+
       return collected;
     }
 
@@ -1127,6 +1232,8 @@ export class KeyRotationService {
     }
 
     await this.#rename(collected, found, rename.name, budgetId);
+
+    this.#collision.set({ value: null, budgetId });
 
     return this.#collect(budgetId);
   }
@@ -1412,9 +1519,11 @@ export class KeyRotationService {
   // had finished.
   //
   // **Which of the two opened it is recorded into `generations`**, because the
-  // name pre-check needs it: a pair is one row the run already moved and one a
-  // stale tab wrote under the outgoing keys, and the generation is the only
-  // fact that says which name came first.
+  // name pre-check needs it: a pair is one row under the incoming keys and one
+  // still under the outgoing, and the generation is the only fact that says
+  // which is which. It says nothing about which was named last — a chunk
+  // re-seals what its collection saw — so the renamed row is picked by it
+  // alone: the one not yet re-encrypted.
   #opener(generations: Map<string, Generation>): NarrativeOpener {
     return async (binding, wire): Promise<NarrativeText> => {
       const opened = await this.#open(binding, wire);
@@ -1888,6 +1997,11 @@ function requireEveryNameDistinct(collected: Collection): void {
   if (collision !== null) {
     throw new NameCollisionStop(collision);
   }
+}
+
+// Whether a phase is one a run passes through rather than one a press rests in.
+function isWalking(phase: KeyRotationPhase): boolean {
+  return phase !== 'idle' && phase !== 'finished';
 }
 
 function rowsIn(collected: Collection): number {

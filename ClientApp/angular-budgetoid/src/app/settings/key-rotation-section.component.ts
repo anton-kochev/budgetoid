@@ -227,6 +227,11 @@ export class KeyRotationSectionComponent implements OnInit {
    * Two sentences, chosen by whether the two names are spelled alike **as
    * stored** — the names render the way every list renders them, and a pair
    * differing only in case is exactly the pair that needs saying out loud.
+   *
+   * **The renamed record is named by its state, never by when it was named.**
+   * It is the one not yet re-encrypted, which the run can see; which of the two
+   * was named last it cannot, because a pass re-seals what its collection saw
+   * and can put a name back onto a record another tab renamed meanwhile.
    */
   protected readonly lead = computed(() => {
     const pair = this.rotations.collision();
@@ -238,11 +243,11 @@ export class KeyRotationSectionComponent implements OnInit {
 
     return pair.kept.name === pair.renamed.name
       ? `Two ${noun.many} are called “${pair.kept.name}”. The new name goes ` +
-          'to the one that was given this name after the rotation started.'
+          'to the one that isn’t re-encrypted yet.'
       : `${noun.article} ${noun.one} called “${pair.kept.name}” and one ` +
           `called “${pair.renamed.name}” count as the same name. The new ` +
-          `name goes to “${pair.renamed.name}”, which was given its name ` +
-          'after the rotation started.';
+          `name goes to “${pair.renamed.name}”, the one that isn’t ` +
+          're-encrypted yet.';
   });
 
   /**
@@ -275,6 +280,13 @@ export class KeyRotationSectionComponent implements OnInit {
   private readonly nameField =
     viewChild<ElementRef<HTMLInputElement>>('nameField');
 
+  // `read: ElementRef` because the button hosts `MatButton`, a component, and a
+  // bare template reference on a component's host resolves to the instance.
+  private readonly control = viewChild<string, ElementRef<HTMLButtonElement>>(
+    'control',
+    { read: ElementRef },
+  );
+
   readonly #injector = inject(Injector);
 
   // What the driver had published when this render last looked, so that focus
@@ -305,25 +317,51 @@ export class KeyRotationSectionComponent implements OnInit {
     // replaces the pair when it ends — so a press whose ceremony failed, which
     // reaches the driver not at all, moves nothing, and neither does arriving
     // at the screen with the block already drawn.
+    //
+    // **And when the block goes while a press is working, focus moves to the
+    // section's control** — the rename was saved, or somebody fixed the pair
+    // elsewhere, and the run carries on under **Finish rotating**. The field
+    // is read-only through a press and keeps focus, so a person who pressed
+    // from the keyboard is standing in it when it leaves the DOM, and without
+    // this they fall to the page at the moment the outcome is announced. Only
+    // then: the effect runs before the render that removes the block, so
+    // whether the field holds focus is read while it still exists, and focus
+    // anywhere else is the person's own and stays where it is.
     effect(() => {
       const pair = this.rotations.collision();
       const refusal = this.rotations.renameRefusal();
       const arrived =
         (pair !== null && pair !== this.#shownPair) ||
         (refusal !== null && refusal !== this.#shownRefusal);
+      const went =
+        pair === null &&
+        this.#shownPair !== null &&
+        untracked(() => this.flow.working() && this.#fieldHoldsFocus());
 
       this.#shownPair = pair;
       this.#shownRefusal = refusal;
 
       if (arrived) {
-        afterNextRender(
-          () => {
-            this.nameField()?.nativeElement.focus();
-          },
-          { injector: this.#injector },
-        );
+        this.#focusAfterRender(() => this.nameField());
+      } else if (went) {
+        this.#focusAfterRender(() => this.control());
       }
     });
+  }
+
+  #fieldHoldsFocus(): boolean {
+    const field = this.nameField()?.nativeElement;
+
+    return field !== undefined && field.ownerDocument.activeElement === field;
+  }
+
+  #focusAfterRender(target: () => ElementRef<HTMLElement> | undefined): void {
+    afterNextRender(
+      () => {
+        target()?.nativeElement.focus();
+      },
+      { injector: this.#injector },
+    );
   }
 
   /**

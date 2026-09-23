@@ -639,6 +639,9 @@ class KeyRotationStub implements KeyRotationSurface {
   public readonly collision = signal<KeyRotationNameCollision | null>(null);
   public readonly renameRefusal = signal<KeyRotationRenameRefusal | null>(null);
   public readonly running = signal(false);
+  // The driver's raw "a run is walking", whoever's account it is for; the
+  // re-entrancy guard, never what a screen draws from.
+  public readonly walking = signal(false);
   public begin = vi.fn(async () => Promise.resolve());
   public resume = vi.fn(async () => Promise.resolve());
   public readStagedRotation = vi.fn(async () => Promise.resolve());

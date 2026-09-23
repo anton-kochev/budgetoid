@@ -38,7 +38,7 @@ interface NameCollision {
   readonly arm: NameArm;
   /** The row the person's new name goes to. */
   readonly renamed: NamedRowIndex;
-  /** The row that keeps the name it had first. */
+  /** The row already under the incoming generation; it keeps its name. */
   readonly kept: NamedRowIndex;
 }
 
@@ -95,15 +95,15 @@ export function holderOf(
   );
 }
 
-// **The row opened under the outgoing generation is renamed**, because its name
-// is the one that arrived second — the other was already under the incoming
-// keys, re-sealed or renamed by this run, when that name was written. Never by list position or by identifier: the two
-// records look the same on every screen, so the generation is the only fact
-// that says which name came first.
+// **The row opened under the outgoing generation is renamed**: it is the one no
+// chunk has re-sealed yet. Exactly one of a pair is under each generation,
+// because two equal indexes cannot be stored under one key. That is all the
+// generation says. It does not say which name was written last, and nothing
+// here can: a chunk re-seals whatever its collection saw, so an older name can
+// sit under the incoming keys.
 //
-// A pair sharing a generation cannot reach here — under one key an equal index
-// is one the server's unique index already refused — and if one ever did, no
-// fact says which name came first, so the later-listed row is renamed.
+// A pair sharing a generation cannot reach here; if one ever did, the
+// later-listed row is renamed.
 function renamedAndKept(
   earlier: NamedRowIndex,
   later: NamedRowIndex,

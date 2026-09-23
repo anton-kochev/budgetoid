@@ -130,6 +130,9 @@ class KeyRotationStub implements KeyRotationSurface {
   public readonly collision = signal<KeyRotationNameCollision | null>(null);
   public readonly renameRefusal = signal<KeyRotationRenameRefusal | null>(null);
   public readonly running = signal(false);
+  // The driver's raw "a run is walking", whoever's account it is for; the
+  // re-entrancy guard, never what a screen draws from.
+  public readonly walking = signal(false);
   public begin = vi.fn(async () => Promise.resolve());
   public resume = vi.fn(async () => Promise.resolve());
   public readStagedRotation = vi.fn(async () => Promise.resolve());
@@ -555,53 +558,53 @@ describe('KeyRotationSectionComponent', () => {
         'accounts',
         'Groceries',
         'Two accounts are called “Groceries”. The new name goes to the one ' +
-          'that was given this name after the rotation started.',
+          'that isn’t re-encrypted yet.',
       ],
       [
         'accounts',
         'groceries',
         'An account called “Groceries” and one called “groceries” count as ' +
-          'the same name. The new name goes to “groceries”, which was given ' +
-          'its name after the rotation started.',
+          'the same name. The new name goes to “groceries”, the one that ' +
+          'isn’t re-encrypted yet.',
       ],
       [
         'payees',
         'Groceries',
-        'Two payees are called “Groceries”. The new name goes to the one that ' +
-          'was given this name after the rotation started.',
+        'Two payees are called “Groceries”. The new name goes to the one ' +
+          'that isn’t re-encrypted yet.',
       ],
       [
         'payees',
         'groceries',
-        'A payee called “Groceries” and one called “groceries” count as the ' +
-          'same name. The new name goes to “groceries”, which was given its ' +
-          'name after the rotation started.',
+        'A payee called “Groceries” and one called “groceries” count as ' +
+          'the same name. The new name goes to “groceries”, the one that ' +
+          'isn’t re-encrypted yet.',
       ],
       [
         'categoryGroups',
         'Groceries',
-        'Two category groups are called “Groceries”. The new name goes to the ' +
-          'one that was given this name after the rotation started.',
+        'Two category groups are called “Groceries”. The new name goes to the one ' +
+          'that isn’t re-encrypted yet.',
       ],
       [
         'categoryGroups',
         'groceries',
-        'A category group called “Groceries” and one called “groceries” count ' +
-          'as the same name. The new name goes to “groceries”, which was given ' +
-          'its name after the rotation started.',
+        'A category group called “Groceries” and one called “groceries” count as ' +
+          'the same name. The new name goes to “groceries”, the one that ' +
+          'isn’t re-encrypted yet.',
       ],
       [
         'categories',
         'Groceries',
         'Two categories are called “Groceries”. The new name goes to the one ' +
-          'that was given this name after the rotation started.',
+          'that isn’t re-encrypted yet.',
       ],
       [
         'categories',
         'groceries',
         'A category called “Groceries” and one called “groceries” count as ' +
-          'the same name. The new name goes to “groceries”, which was given ' +
-          'its name after the rotation started.',
+          'the same name. The new name goes to “groceries”, the one that ' +
+          'isn’t re-encrypted yet.',
       ],
     ] satisfies readonly (readonly [NameArm, string, string])[])(
       'names the pair in %s when the second is spelled “%s”, and describes the field with it',
@@ -827,7 +830,7 @@ describe('KeyRotationSectionComponent', () => {
       // A name typed for one pair answers a question nobody is asking now.
       expect(describedBy(nameField())).toContain(
         'Two categories are called “Rent”. The new name goes to the one that ' +
-          'was given this name after the rotation started.',
+          'isn’t re-encrypted yet.',
       );
       expect(nameField()?.value).toBe('');
     });
@@ -946,6 +949,108 @@ describe('KeyRotationSectionComponent', () => {
       expect(nameField()?.readOnly).toBe(true);
       expect(nameField()?.value).toBe(TYPED_NAME);
       expect(renameControl()).not.toBeNull();
+    });
+
+    it('moves focus to the section’s control when the block goes while a press is working', async () => {
+      // Arrange
+      // A rename press in flight, typed from the keyboard: the field is
+      // read-only and keeps focus, and the run on file is still staged.
+      rotations.staged.set({ startedAtUtc: '2026-07-14T09:30:00Z' });
+      acknowledge();
+      typeName(TYPED_NAME);
+      rotations.failure.set(null);
+      rotations.running.set(true);
+      flow.working.set(true);
+      tick();
+      nameField()?.focus();
+      expect(document.activeElement, 'the press before').toBe(nameField());
+
+      // Act
+      // The new name was saved, so the lead line stops being true and the
+      // driver drops the pair while the run carries on.
+      rotations.collision.set(null);
+      tick();
+
+      // Assert
+      // The block is gone mid-press and the run goes on under Finish
+      // rotating; the person who pressed from the keyboard keeps their place
+      // rather than falling to the page.
+      expect(nameField()).toBeNull();
+      expect(renameControl()).toBeNull();
+      await vi.waitFor(() => {
+        expect(document.activeElement).toBe(buttonNamed(host, FINISH));
+      });
+      expect(document.activeElement).not.toBe(document.body);
+    });
+
+    it('moves no focus to the control when the block goes at rest', async () => {
+      // Arrange
+      // No press is working: the person is standing in the field, and the pair
+      // is hidden by something other than a rename — the tab changing account.
+      rotations.staged.set({ startedAtUtc: '2026-07-14T09:30:00Z' });
+      acknowledge();
+      typeName(TYPED_NAME);
+      nameField()?.focus();
+      expect(document.activeElement, 'the state before').toBe(nameField());
+
+      let rendered = false;
+
+      afterNextRender(
+        () => {
+          rendered = true;
+        },
+        { injector: fixture.componentRef.injector },
+      );
+
+      // Act
+      rotations.collision.set(null);
+      tick();
+      await fixture.whenStable();
+
+      // Assert
+      // The hand-off answers a press that carries on under Finish rotating;
+      // with none in the air there is no run for the control to stand for.
+      expect(rendered).toBe(true);
+      expect(nameField()).toBeNull();
+      expect(buttonNamed(host, FINISH)).not.toBeNull();
+      expect(document.activeElement).not.toBe(buttonNamed(host, FINISH));
+    });
+
+    it('leaves focus where the person put it when the block goes mid-press', async () => {
+      // Arrange
+      // A press in flight, and the person has moved on to the acknowledgement:
+      // focus is theirs, not the field's.
+      rotations.staged.set({ startedAtUtc: '2026-07-14T09:30:00Z' });
+      acknowledge();
+      typeName(TYPED_NAME);
+      rotations.failure.set(null);
+      rotations.running.set(true);
+      flow.working.set(true);
+      tick();
+      checkbox()?.focus();
+      expect(document.activeElement, 'the state before').toBe(checkbox());
+
+      let rendered = false;
+
+      afterNextRender(
+        () => {
+          rendered = true;
+        },
+        { injector: fixture.componentRef.injector },
+      );
+
+      // Act
+      rotations.collision.set(null);
+      tick();
+      await fixture.whenStable();
+
+      // Assert
+      // Only a field holding focus as it leaves the DOM drops anybody to the
+      // page; focus anywhere else stays where it is.
+      expect(rendered).toBe(true);
+      expect(nameField()).toBeNull();
+      expect(document.activeElement).toBe(checkbox());
+      expect(document.activeElement).not.toBe(buttonNamed(host, FINISH));
     });
 
     it('carries the name exactly as typed, surrounding spaces included', () => {

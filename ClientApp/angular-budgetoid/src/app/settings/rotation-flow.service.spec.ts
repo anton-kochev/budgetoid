@@ -94,6 +94,9 @@ class KeyRotationStub implements KeyRotationSurface {
   // put in a state the driver itself cannot reach, and there a second spelling
   // parts company with the first.
   public readonly running = signal(false);
+  // The driver's raw "a run is walking", whoever's account it is for; the
+  // re-entrancy guard, never what a screen draws from.
+  public readonly walking = signal(false);
   public begin = vi.fn(async () => Promise.resolve());
   public resume = vi.fn(async () => Promise.resolve());
   public readStagedRotation = vi.fn(async () => Promise.resolve());
@@ -211,6 +214,27 @@ describe('RotationFlowService', () => {
     http.expectNone(`${API_ORIGIN}/api/passkeys/reauthentication/options`);
     expect(ceremony.assertPasskey).not.toHaveBeenCalled();
     expect(rotations.begin).not.toHaveBeenCalled();
+    await Promise.resolve();
+  });
+
+  it('refuses a press while the driver walks a run for another account', async () => {
+    // Arrange
+    // The tab changed accounts under a run it is still walking. `running`,
+    // read for the account now signed in, is down; the run still holds both
+    // generations in the driver's two key fields, and a second press would
+    // overwrite them.
+    rotations.running.set(false);
+    rotations.walking.set(true);
+
+    // Act
+    flow.rotate();
+
+    // Assert
+    expect(flow.working()).toBe(true);
+    http.expectNone(`${API_ORIGIN}/api/passkeys/reauthentication/options`);
+    expect(ceremony.assertPasskey).not.toHaveBeenCalled();
+    expect(rotations.begin).not.toHaveBeenCalled();
+    expect(rotations.resume).not.toHaveBeenCalled();
     await Promise.resolve();
   });
 

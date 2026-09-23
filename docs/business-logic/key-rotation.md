@@ -92,7 +92,8 @@ implementation — which is registered and which nothing calls; and the begin �
 `Application.KeyRotations.IRotationInventoryReadService` — which writes **the staging row and one
 seal per factor in one save** and which holds the factor-set gate over those seals; and the begin's
 route, `POST /api/me/key-rotation` in `Api.Endpoints.KeyRotationEndpoints`, which answers **200**
-with the inventory and the chunk budget, decodes the staged manifest before the command is built —
+with the inventory, the chunk budget and the start time the staging row stored — the server's own
+clock truncated to the column's microseconds, never an echo of the request — decodes the staged manifest before the command is built —
 the one manifest-carrying route where the decode is the endpoint's, because
 `BeginKeyRotationCommand.StagedManifest` is bytes where its three siblings carry text — and declares
 no authorization metadata of its own, so the fallback policy covers it and a locked session is
@@ -166,10 +167,13 @@ generation each row opened under. Two equal values in one list end the run on `s
 pass posts a chunk, so the server's refusal is the backstop rather than the finder, which it has to be:
 the server's `409` names no row. The driver publishes the pair as its list, the two row identifiers
 and the two names, and it keeps the names past the pass that opened them, as the one deliberate
-exception to holding nothing opened. They are cleared when a later press ends on anything else, and
-they are drawn only for the account that produced them. Of the two, the row opened under the
-**outgoing** generation is the one renamed: under one key two equal indexes cannot both be stored, so
-that row's name is the one written after its twin was re-sealed.
+exception to holding nothing opened. They are cleared the moment a rename lands or a resume finds no
+pair, and when a later press ends on anything else; until then they are held in the root service
+even while nothing draws them, drawn only for the account that produced them. Of the two, the row opened under the **outgoing** generation is the one
+renamed. Under one key two equal indexes cannot both be stored, so exactly one of the pair is under
+each generation, and the outgoing one is the row this run has not re-encrypted yet. Which of the two
+a person wrote last is not something the client can know: a chunk re-seals what its collection saw,
+so a pass can put a name back onto a row after a rename in another tab.
 
 **Everything the driver publishes belongs to the account that produced it, and a tab can change
 accounts without a reload.** A session can end and another can be established in the same tab, by
@@ -179,8 +183,9 @@ Each reads as its resting value while the session is anonymous or its budget is 
 session that has not yet said which budget it is in matches nothing a budget produced. The stamp is
 the budget a press or read started under, not the one standing when its answer lands. A press that
 started with no budget is refused `unreachable` before it reads anything, and that word reads only
-while the session still has none. Whether a run is in flight is not stamped, because what it guards
-is the driver's own two key fields. Nothing is cleared from the session's side, because that edge
+while the session still has none. "A run is in flight", which the three content screens read, is
+stamped like the rest; a second, unstamped reading of the same phase is what refuses a second press,
+because what that guards is the driver's own two key fields, whatever session stands. Nothing is cleared from the session's side, because that edge
 would close an import cycle. The same account signing back in sees its own state again.
 
 **The remedy is a resume that carries a name, and it costs a passkey.** A run that stops holds neither
@@ -231,7 +236,12 @@ publishes the staged run's `startedAtUtc` and nothing else of it, on a `staged` 
 beside that date carries one copy of the next generation's account keys per factor, which is not a
 thing a screen binds. A read that did not happen publishes "nothing to finish" rather than a word, for
 the same reason the null answer gets none, and it costs little: a begin made over a run that is really
-there picks that run up. A run that reached its 204 clears the signal, and so does a `factors-moved` —
+there picks that run up. **A begin publishes the run it staged when it stops, never while it walks**:
+the begin's own answer carries the start time the server stored, so a begin that stops after its
+request landed publishes that; one the server refused publishes what the read before it found; and one
+whose request never answered reads the state once more, falling back to that earlier read when the
+second fails too. Publishing at the begin's `2xx` would relabel the control **Finish rotating** in the
+middle of the run it is driving. A run that reached its 204 clears the signal, and so does a `factors-moved` —
 that word's copy tells somebody to start again rather than to finish, and a control labelled **Finish
 rotating** underneath it would be a screen disagreeing with itself.
 
@@ -789,22 +799,26 @@ old one. Before this refusal existed that answered `500` on the first send and o
 run could never finish (measured, through the real routes). `NarrativeResealRepository.SaveAsync` now
 catches the violation **by the four `NameIndexName` constants and nothing wider**. `SaveChanges` flushes
 every tracked row, so a stranger's `23505` matched on SQLSTATE alone would tell a client to rename rows
-that broke nothing, and every other constraint still escapes. It detaches every pending re-seal, so none
-of the refused chunk can ride a later save on the same context. The throw leaves the handler's executor
+that broke nothing, and every other constraint still escapes. It detaches every added, modified or
+deleted entry of the five re-sealed entity types, so none of the refused chunk can ride a later save
+on the same context. Nothing in the request saves again after the refusal today, so this is held by
+a repository test that saves again by hand rather than by any route. The throw leaves the handler's executor
 delegate, so the chunk's transaction rolls back whole, across arms.
 
-It is a kind of its own because the remedy is its own. `duplicate_name` tells a create that its list was
-stale and it should adopt the row that exists. `rotation_incomplete` tells a completion to send what is
+It is a kind of its own because the remedy is its own. `duplicate_name` tells a payee create that its
+list was stale and it should adopt the row that exists; the other three creates, and every rename,
+answer the same index with a `400` on the name. `rotation_incomplete` tells a completion to send what is
 outstanding, and here the same chunk is refused the same way until something changes. What changes it is
 **renaming one of the two rows** through the ordinary route, which clears that row's stamp, and then
 carrying on with the same run. The response names neither row, because the violation names only the
 index, and the client does not need the server to say which rows collided: it holds every row's incoming
 index for the pass it is sending, so it can find the pair itself.
 
-A duplicate cannot outlive a completion that goes through, for as long as clients compute honest
+When the gate reads, no two rows it passes can share a name, for as long as clients compute honest
 indexes. The gate requires every named row to carry the run's stamp, only a re-seal writes the stamp,
 and a re-seal writes `name_key` under the incoming key in the same save, so two equal names that are both
-stamped are two equal values under one index.
+stamped are two equal values under one index. What the gate reads is all it holds: it is a read, and
+nothing it passes is locked against a write that lands after it.
 
 ### Completing a run: the order is the property
 
@@ -874,7 +888,7 @@ new generation.
 would mean the promotion reached for a column outside those lists rather than a privilege nobody
 granted yet.
 
-**One race remains and it is translated, not hidden.** A passkey registered or a card issued between
+**A race over the factor set is translated, not hidden.** A passkey registered or a card issued between
 this request's read of the manifest and its write moves the generation, so the promotion's
 `WHERE rotation_epoch = N` matches nothing and EF raises. `KeyRotationRepository.PromoteAsync` answers
 that with `409 factor_set_moved` — the same member the two paths that *move* a factor set already
@@ -1009,10 +1023,12 @@ statement about whether a row is there.
   off already: `FromSql*` is a banned symbol, so it cannot be written in the application at all —
   though the provisioning script and the deploy-time verifier are not bound by that.
 
-  So the rule is **not** "never write `!=`". It is: the answer must be `IS DISTINCT FROM` in the SQL
-  that reaches PostgreSQL, whatever produced it, and a hand-written `HasValue` guard is the way that
-  stops being true. `Completeness_ForAnAccountThatHasNeverBeenRotated_IsFalse` is the one test that
-  catches that spelling.
+  So the rule is **not** "never write `!=`". It is: the SQL that reaches PostgreSQL must carry
+  `IS DISTINCT FROM` semantics, whatever produced it — EF 10 spells it
+  `(rotation_id <> @rotationId OR rotation_id IS NULL)` (measured) — and a hand-written `HasValue`
+  guard is the way that stops being true. Rewriting all six arms that way reddens eight cases of
+  `RotationCompletenessTests` (measured), led by
+  `Completeness_ForAnAccountThatHasNeverBeenRotated_IsFalse` and one unstamped-row case per table.
 - **A `NOT NULL` default was rejected, and it would have made the predicate above correct.** It was
   still wrong: a generated identifier per row names a rotation that never happened, and a fixed
   sentinel makes "never rotated" a value the application agrees to read a certain way, one layer

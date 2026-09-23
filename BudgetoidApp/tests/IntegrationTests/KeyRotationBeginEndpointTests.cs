@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json.Nodes;
@@ -13,6 +14,9 @@ using Domain.Transactions;
 using Domain.Users;
 using Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Time.Testing;
 using Npgsql;
 using TestSupport;
 
@@ -83,6 +87,14 @@ public sealed class KeyRotationBeginEndpointTests
     /// <see cref="DateTime" />, so <see cref="DateTimeKind.Utc" /> is load-bearing rather than decoration.
     /// </summary>
     private static readonly DateTime SeedInstant = new(2026, 6, 12, 13, 14, 15, DateTimeKind.Utc);
+
+    /// <summary>
+    /// The instant the two <c>startedAtUtc</c> cases start their clock at: <c>.1234567</c> seconds, a
+    /// value <c>timestamptz</c> cannot hold, so an answer taken from memory rather than from what was
+    /// stored differs from the row in its seventh digit.
+    /// </summary>
+    private static readonly DateTimeOffset SubMicrosecondStartInstant =
+        new DateTimeOffset(2026, 6, 12, 13, 14, 15, TimeSpan.Zero).AddTicks(1_234_567);
 
     /// <summary>
     /// <b>The case that matters more than its status code.</b> A request carrying no proof at all, but a
@@ -303,6 +315,136 @@ public sealed class KeyRotationBeginEndpointTests
         // generation's bytes rather than the first's.
         await Assert.That(await CountSealsAsync(admin, signedIn.UserId)).IsEqualTo((long)factorIds.Count);
         await AssertSealsAreAsync(admin, signedIn.UserId, surviving);
+    }
+
+    /// <summary>
+    /// The begin answers the <c>startedAtUtc</c> it staged: the stored <c>started_at_utc</c>, spelled as
+    /// <c>GET /api/me/key-rotation</c> spells it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The clock is a fixed instant with a non-zero seventh fractional digit, and that digit is the
+    /// point.</b> <c>timestamptz</c> keeps microseconds, so the digit never reaches the row (measured: it
+    /// stores <c>.123456</c>). A begin that answered the in-memory instant it handed the domain would
+    /// answer <c>.1234567</c> while the row and the resume read both say <c>.123456</c> — two statements of one run's start that disagree. Under
+    /// the wall clock that mismatch appears on some runs and not others.
+    /// </para>
+    /// <para>
+    /// <b>Compared two ways.</b> Against the stored row as an instant, because that is the value the
+    /// answer claims to report. Against the resume read as <b>text</b>, because the two routes owe a
+    /// client one spelling, and a client comparing the two answers byte for byte must not see a
+    /// difference the server made up.
+    /// </para>
+    /// <para>
+    /// <b>The clock moves a millisecond on every reading during the begin.</b> A fixed clock would let a
+    /// begin answer a second reading taken after the save, cut the same way, and still match the row.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task BeginKeyRotation_AnswersTheStartedAtItStaged()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartRegisteringHostAsync();
+        FakeTimeProvider clock = new(SubMicrosecondStartInstant);
+        await using ApiFactory factory = host.CreateFactory(
+            configureServices: services => services.Replace(ServiceDescriptor.Singleton<TimeProvider>(clock)));
+        ApiFactory.SignedInClient signedIn = await factory.RegisterAccountAsync(Subject);
+        SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await RegisterPasskeyAsync(signedIn.Client, device);
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        IReadOnlyList<Guid> factorIds = await FactorIdsAsync(admin, signedIn.UserId);
+        Generation generation = MintGeneration(factorIds, await FactorGeneration.NextAsync(signedIn.Client));
+
+        // From here every reading moves the clock a whole millisecond, so the one reading the row was
+        // stamped from is the only one the answer may equal: an answer taken from a second reading after
+        // the save, cut the same way, lands at least a millisecond later. Whole milliseconds keep the
+        // seventh digit of every reading at 7, so the truncation case keeps its teeth.
+        clock.AutoAdvanceAmount = TimeSpan.FromMilliseconds(1);
+        DateTime before = clock.GetUtcNow().UtcDateTime;
+
+        // Act
+        HttpResponseMessage response = await BeginAsync(signedIn.Client, device, signedIn.UserId, generation);
+
+        // Assert — the status first, so a missing member on a refused request reads as the refusal.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        DateTime after = clock.GetUtcNow().UtcDateTime;
+
+        JsonObject body = await ReadJsonObjectAsync(response);
+        await Assert.That(body.ContainsKey("startedAtUtc")).IsTrue();
+        string answered = body["startedAtUtc"]!.GetValue<string>();
+
+        // The arrangement held: the stamp came off the substituted clock, inside this request, rather
+        // than off the wall clock — or the seventh digit below proves nothing.
+        DateTime stored = await StartedAtUtcAsync(admin, signedIn.UserId);
+        await Assert.That(stored).IsGreaterThan(before);
+        await Assert.That(stored).IsLessThan(after);
+
+        await Assert.That(ParseUtc(answered)).IsEqualTo(stored);
+        await Assert.That(answered).IsEqualTo(await ResumedStartedAtTextAsync(signedIn.Client));
+    }
+
+    /// <summary>
+    /// A second begin answers the <b>second</b> <c>startedAtUtc</c>, the one its replacement stored.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>A re-begin overwrites the staged row in place, stamp included</b>, so the value a client
+    /// holds after it is the second one. A begin that answered a start read before the replacement, or
+    /// one that kept the first run's stamp in the answer, would hand the client an instant the row no
+    /// longer carries.
+    /// </para>
+    /// <para>
+    /// The clock moves seven minutes between the two begins, so the two stamps differ by construction and
+    /// "the answer changed" is a claim rather than an accident of timing.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task BeginKeyRotation_Twice_AnswersTheSecondStartedAt()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartRegisteringHostAsync();
+        FakeTimeProvider clock = new(SubMicrosecondStartInstant);
+        await using ApiFactory factory = host.CreateFactory(
+            configureServices: services => services.Replace(ServiceDescriptor.Singleton<TimeProvider>(clock)));
+        ApiFactory.SignedInClient signedIn = await factory.RegisterAccountAsync(Subject);
+        SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await RegisterPasskeyAsync(signedIn.Client, device);
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        IReadOnlyList<Guid> factorIds = await FactorIdsAsync(admin, signedIn.UserId);
+        int epoch = await FactorGeneration.NextAsync(signedIn.Client);
+        Generation superseded = MintGeneration(factorIds, epoch);
+        Generation surviving = MintGeneration(factorIds, epoch + 1);
+
+        HttpResponseMessage opened = await BeginAsync(signedIn.Client, device, signedIn.UserId, superseded);
+        await Assert.That(opened.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        DateTime firstStored = await StartedAtUtcAsync(admin, signedIn.UserId);
+
+        clock.Advance(TimeSpan.FromMinutes(7));
+
+        // Every reading from here moves the clock a millisecond, so an answer taken from a second reading
+        // after the replacement's save cannot equal the stamp the replacement stored.
+        clock.AutoAdvanceAmount = TimeSpan.FromMilliseconds(1);
+
+        // Act
+        HttpResponseMessage replaced = await BeginAsync(
+            signedIn.Client, device, signedIn.UserId, surviving, signCount: 2);
+
+        // Assert
+        await Assert.That(replaced.StatusCode).IsEqualTo(HttpStatusCode.OK);
+
+        JsonObject body = await ReadJsonObjectAsync(replaced);
+        await Assert.That(body.ContainsKey("startedAtUtc")).IsTrue();
+        string answered = body["startedAtUtc"]!.GetValue<string>();
+
+        DateTime secondStored = await StartedAtUtcAsync(admin, signedIn.UserId);
+        await Assert.That(secondStored).IsNotEqualTo(firstStored);
+
+        await Assert.That(ParseUtc(answered)).IsEqualTo(secondStored);
+        await Assert.That(answered).IsEqualTo(await ResumedStartedAtTextAsync(signedIn.Client));
     }
 
     /// <summary>
@@ -1124,6 +1266,38 @@ public sealed class KeyRotationBeginEndpointTests
         }
 
         return seals;
+    }
+
+    /// <summary>The staged row's <c>started_at_utc</c>, read on the superuser connection.</summary>
+    private static async Task<DateTime> StartedAtUtcAsync(NpgsqlConnection admin, Guid userId)
+    {
+        await using NpgsqlCommand command = new(
+            "select started_at_utc from key_rotations where user_id = @id", admin);
+        command.Parameters.AddWithValue("id", userId);
+
+        return (DateTime)(await command.ExecuteScalarAsync()
+            ?? throw new InvalidOperationException("Expected a staged rotation, found none."));
+    }
+
+    /// <summary>
+    /// <c>startedAtUtc</c> as <c>GET /api/me/key-rotation</c> spells it, for comparing the begin's answer
+    /// against as text.
+    /// </summary>
+    private static async Task<string> ResumedStartedAtTextAsync(HttpClient client)
+    {
+        HttpResponseMessage response = await client.GetAsync(BeginPath);
+        response.EnsureSuccessStatusCode();
+        JsonObject body = await ReadJsonObjectAsync(response);
+        return body["rotation"]!["startedAtUtc"]!.GetValue<string>();
+    }
+
+    /// <summary>A wire instant as UTC, refusing a spelling that carries no zone.</summary>
+    private static DateTime ParseUtc(string text)
+    {
+        DateTime parsed = DateTime.Parse(text, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind);
+        return parsed.Kind == DateTimeKind.Utc
+            ? parsed
+            : throw new FormatException($"'{text}' is not a UTC instant.");
     }
 
     private static Task<long> CountRotationsAsync(NpgsqlConnection admin, Guid userId) =>

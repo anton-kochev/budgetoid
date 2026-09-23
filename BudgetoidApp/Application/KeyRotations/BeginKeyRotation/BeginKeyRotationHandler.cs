@@ -293,7 +293,18 @@ public sealed class BeginKeyRotationHandler(
         // established that every submitted factor is a key of a listing scoped to this same user — and
         // it is kept because the factory is the ring where a cross-account seal must be unconstructable
         // rather than merely unstorable.
-        DateTime now = timeProvider.GetUtcNow().UtcDateTime;
+        //
+        // AND THE INSTANT IS CUT TO THE MICROSECOND BEFORE THE ROW IS BUILT, because the response
+        // answers it. started_at_utc is a timestamptz and keeps microseconds; a DateTime keeps ticks.
+        // Left whole, the row in memory carries a seventh fractional digit the stored row does not, and
+        // EF never refreshes a tracked value from what the database kept — so the begin would answer one
+        // instant while GET /api/me/key-rotation answers another for the same run. Truncating HERE,
+        // rather than trusting the provider to drop the digit the same way on the write, means the value
+        // handed to the save is already one the column holds exactly, and what this handler answers is
+        // what was stored whichever way Npgsql would have rounded. It is a whole-tick subtraction, so the
+        // Kind stays Utc and the wire spelling is the resume read's.
+        DateTime clock = timeProvider.GetUtcNow().UtcDateTime;
+        DateTime now = clock.AddTicks(-(clock.Ticks % TimeSpan.TicksPerMicrosecond));
         KeyRotation rotation = KeyRotation.Begin(
             passkey,
             command.RotationId,
@@ -331,7 +342,11 @@ public sealed class BeginKeyRotationHandler(
                 // habit they would inherit.
                 await keyRotations.StageAsync(rotation, seals, token);
 
-                return new KeyRotationBegun(counts, MaxChunkBytes);
+                // The staged row's own start, read off the instance the save just wrote rather than off
+                // the local above, so an answer and a row cannot come from two different values. On a
+                // second begin the adapter copies this instance's values onto the row it found, stamp
+                // included, so this is the replacement's start and never the first run's.
+                return new KeyRotationBegun(counts, MaxChunkBytes, rotation.StartedAtUtc);
             },
             cancellationToken);
     }

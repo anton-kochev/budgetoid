@@ -253,6 +253,7 @@ const INVENTORY = {
 const BEGUN = {
   inventory: INVENTORY,
   maxChunkBytes: 262144,
+  startedAtUtc: '2026-09-22T11:04:59.123456Z',
 } satisfies KeyRotationBegunDto;
 
 const STAGED = {

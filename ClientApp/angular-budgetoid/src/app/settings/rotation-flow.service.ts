@@ -101,7 +101,7 @@ export class RotationFlowService {
    *
    * **One predicate with one owner.** The Rotate control's `disabled`, its
    * `aria-busy` and {@link rotate}'s guard all bind this, and the three content
-   * screens read the driver's half of it beside custody's lockedness. Two
+   * screens read the driver's `running` beside custody's lockedness. Two
    * spellings of one fact drift, and the drift is silent in both directions: a
    * template that narrows draws a live control over a run already going, and a
    * handler that narrows accepts the press behind it. It is the defect the
@@ -113,9 +113,19 @@ export class RotationFlowService {
    * is walking an account. The chapter specifies "a run is in flight" as one
    * predicate with one owner, so the owner is the thing that refuses the second
    * press, and it is here.
+   *
+   * **The driver's half is `walking`, never `running` alone.** `running` is
+   * read through the budget rule, so a tab that changed accounts under a run
+   * reads it as down while the driver still holds both generations — and a
+   * press there would overwrite them. `walking` is the unscoped reading and
+   * the one that guards. `running` stays beside it because it is what this
+   * account's screen draws from, and against the real driver it implies
+   * `walking`, so it widens nothing; it only keeps a run this account can see
+   * from ever reading as idle here.
    */
   public readonly working: Signal<boolean> = computed(
-    () => this.busySignal() || this.rotations.running(),
+    () =>
+      this.busySignal() || this.rotations.walking() || this.rotations.running(),
   );
 
   /**

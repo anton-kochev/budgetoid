@@ -484,9 +484,14 @@ class KeyRotationStub
   implements Pick<KeyRotationService, keyof KeyRotationService>
 {
   readonly #running = signal(false);
+  readonly #walking = signal(false);
   readonly #staged = signal<StagedRotation | null>(null);
 
   public readonly running: Signal<boolean> = this.#running.asReadonly();
+  // The driver's raw "a run is walking", whoever's it is. No content screen
+  // may read it: a run walking for another account says nothing about this
+  // one's rows.
+  public readonly walking: Signal<boolean> = this.#walking.asReadonly();
   public readonly staged: Signal<StagedRotation | null> =
     this.#staged.asReadonly();
   public readonly phase: Signal<KeyRotationPhase> =
@@ -504,6 +509,10 @@ class KeyRotationStub
 
   public setRunning(running: boolean): void {
     this.#running.set(running);
+  }
+
+  public setWalking(walking: boolean): void {
+    this.#walking.set(walking);
   }
 
   public setStaged(staged: StagedRotation | null): void {
@@ -1075,6 +1084,27 @@ describe('TransactionsComponent', () => {
   // generation replacing it — so a list drawn here is part names and part em
   // dashes, and gets worse as the run succeeds.
   describe('a key rotation in flight', () => {
+    it('leaves the list and the form live while a run walks for another account', () => {
+      // Arrange — the tab changed accounts under a run it is still walking, so
+      // the driver's raw flag is up while `running`, read for this account,
+      // is down. The rows on screen are this account's and no run is touching
+      // them.
+      rotations.setRunning(false);
+      rotations.setWalking(true);
+
+      // Act
+      fixture.detectChanges();
+
+      // Assert
+      const amount = host().querySelector<HTMLInputElement>(
+        'input[formcontrolname="amount"]',
+      );
+
+      expect(host().querySelector('app-locked-account-notice')).toBeNull();
+      expect(host().querySelector('.transactions')).not.toBeNull();
+      expect(amount?.disabled).toBe(false);
+    });
+
     it('replaces the list with the run’s notice while custody is unlocked', () => {
       // Arrange
       rotations.setRunning(true);

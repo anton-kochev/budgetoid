@@ -1948,12 +1948,11 @@ The block the section draws while `same-name` stands. M3 base: one outline text 
 **Anatomy**, top to bottom, inside the section's one column:
 
 - **A lead line naming the pair**, plain text and not a target. When the two spellings match:
-  *Two payees are called “Groceries”. The new name goes to the one that was given this name after the
-  rotation started.* When they differ: *A payee called “Groceries” and one called “groceries” count as
-  the same name. The new name goes to “groceries”, which was given its name after the rotation
-  started.* The noun follows the list — account, payee, category group, category — with the article
-  English gives it (*An account called …*), and the names
-  render as stored, the way every list renders them.
+  *Two payees are called “Groceries”. The new name goes to the one that isn’t re-encrypted yet.* When
+  they differ: *A payee called “Groceries” and one called “groceries” count as the same name. The new
+  name goes to “groceries”, the one that isn’t re-encrypted yet.* The noun follows the list — account,
+  payee, category group, category — with the article English gives it (*An account called …*), and the
+  names render as stored, the way every list renders them.
 - **One text field**, label **New name**, `autocomplete="off"`, whose accessible description is the
   lead line. It takes the cap and the whitespace-only refusal the ordinary name fields take, from the
   same constant.
@@ -1961,10 +1960,12 @@ The block the section draws while `same-name` stands. M3 base: one outline text 
   rewrites the account exactly as **Finish rotating** does. It stays `disabledInteractive` until the
   box is ticked **and** the field holds a name, and the click handler refuses on the same pair.
 
-**The product picks which of the two is renamed: the one that took the name second.** The two records
-look the same on every screen, and the screens that could tell them apart are blocked, so a choice
-between them gives the person nothing to choose with. The record given its name after the rotation
-started is the one whose name arrived second, so the other keeps what it had first.
+**The product picks which of the two is renamed: the one not yet re-encrypted.** The two records look
+the same on every screen, and the screens that could tell them apart are blocked, so a choice between
+them gives the person nothing to choose with. Exactly one of the two is under the new keys — two equal
+names cannot both be stored under one — and the lead line names the other by that state, which the
+run can see, rather than by which of the two was named last, which it cannot: a pass re-seals what
+its collection saw, so it can put a name back onto a record after another tab renamed it.
 
 **The rename asks for a passkey, because the keys went with the run.** A run that stops holds
 nothing — both generations end with it — so the press is a finish that carries a name, and its
@@ -1993,8 +1994,10 @@ row still under the outgoing key.
 **States.** *Standing*: the field is editable. *Working*: the field is `readonly` and keeps its value
 and focus, since one press carries one name. *Refused at the field*: the value is kept and the field
 is `aria-invalid`. *A different pair found*: the lead line is replaced and the field cleared, because
-a name typed for one pair answers a question nobody is asking now; nothing is renamed. *No pair
-found*: somebody fixed it elsewhere; nothing is renamed and the run carries on. *Any other word*: the
+a name typed for one pair answers a question nobody is asking now; nothing is renamed. *Renamed*:
+the block goes the moment the new name is saved, because its lead line stops being true then, and
+the run carries on under **Finish rotating**. *No pair found*: somebody fixed it elsewhere; nothing is
+renamed, the block goes and the run carries on. *Any other word*: the
 block goes, and that word's remedy governs. A ceremony that fails leaves the block standing.
 
 **The region never carries a name.** It holds the refusal; the names are content, which is the rule
@@ -2003,7 +2006,8 @@ which is one request between two collections — a phase word for it would flash
 
 **Accessibility.** The field has a programmatic label and is a 48px target. When a press ends on
 `same-name` or on a refusal beneath the field, focus moves to the field, because the next act is
-there. Arriving at the screen with the block already drawn moves nothing.
+there. Arriving at the screen with the block already drawn moves nothing. When the block goes while a
+press is working, focus moves to the section's control rather than falling to the page.
 
 ### What a run does to the rest of the app
 
@@ -2059,10 +2063,10 @@ being counted, and sits outside the region. Nothing here is communicated by colo
 
 ### What ships today
 
-**The section renders and both controls can be pressed.** `key-rotation-section.component.*` draws
-it on `/app/settings` directly below Account keys: both blocks of prose character for character, the
-acknowledgement under its specified label, one Destructive control that is **Rotate keys** or
-**Finish rotating** and never both, the `role="status"` region carrying the three phase sentences
+**The section renders and all three controls can be pressed.** `key-rotation-section.component.*`
+draws it on `/app/settings` directly below Account keys: both blocks of prose character for
+character, the acknowledgement under its specified label, one Destructive control that is **Rotate
+keys**, **Finish rotating** or **Rename and finish** and never two of them, the `role="status"` region carrying the three phase sentences
 and all twelve refusals, and the determinate bar outside that region with its own `aria-valuenow`,
 `aria-valuemax` and label. The checkbox is a signal initialised to `false` on the component, so it
 arrives unticked on every construction including over a staged run, and no path sets it from

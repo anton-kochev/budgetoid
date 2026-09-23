@@ -110,6 +110,7 @@ import {
   type KeyRotationNameCollision,
   type KeyRotationPhase,
   type KeyRotationProgress,
+  type StagedRotation,
 } from './key-rotation.service';
 import {
   NARRATIVE_FIELDS,
@@ -134,6 +135,14 @@ const BUDGET_ID = '9c4b1f22-0d6e-4f31-a8b7-5e2c3d4a6b70';
 // The generation the account's manifest is in when a run begins. Three rather
 // than one, so a driver that read the epoch as a constant would be visible.
 const EPOCH = 3;
+
+// When a run on file began, as the staged-rotation read answers it.
+const STATE_STARTED_AT_UTC = '2026-02-03T04:05:06Z';
+
+// When a run began, as the begin's own answer states it. A different instant
+// from the read's, and microsecond-precise as the column is, so a case can
+// tell which of the two sources a published date came from.
+const BEGUN_STARTED_AT_UTC = '2026-05-06T07:08:09.123456Z';
 
 // The chunk budget the begin publishes by default — wide enough that the whole
 // account travels in one chunk, so a case that wants several says so.
@@ -522,6 +531,17 @@ class FakeServer {
   public refuseState: unknown = null;
   /** Answers the staged-rotation read by completing without emitting. */
   public answerStateWithoutEmitting = false;
+  /** Called as each begin arrives, before it is judged or refused. */
+  public onBegin: (() => void) | null = null;
+  /** Refuses every begin with this, before anything is staged. */
+  public refuseBegin: unknown = null;
+  /**
+   * Stages the begin and then loses its answer: the browser sees a request
+   * that never answered (status 0) over a run the server now holds. With
+   * `rereadRefused`, every staged-rotation read after it is refused the same
+   * way.
+   */
+  public loseBeginAnswer: { readonly rereadRefused: boolean } | null = null;
   /** Every ordinary rename made, in order, as its route received it. */
   public readonly renames: RenameCall[] = [];
   /** Refuses every ordinary rename with this, before any of it is applied. */
@@ -702,7 +722,7 @@ class FakeServer {
         rotationId: staged.rotationId,
         stagedRotationEpoch: staged.rotationEpoch,
         stagedManifest: staged.manifest,
-        startedAtUtc: '2026-02-03T04:05:06Z',
+        startedAtUtc: STATE_STARTED_AT_UTC,
         inventory: this.inventory(),
         maxChunkBytes: this.maxChunkBytes,
         seals: staged.seals.map((seal) => ({ ...seal })),
@@ -714,6 +734,13 @@ class FakeServer {
     body: BeginRotationRequestBody,
   ): Observable<KeyRotationBegunDto> {
     this.beginBodies.push(body);
+    this.onBegin?.();
+
+    const refusal: unknown = this.refuseBegin;
+
+    if (refusal !== null) {
+      return throwError(() => refusal);
+    }
 
     const live = new Set(this.entries.keys());
     const named = body.seals.map((seal) => seal.factorId);
@@ -754,10 +781,25 @@ class FakeServer {
       seals: body.seals.map((seal) => ({ ...seal })),
     };
 
-    return of({
+    const lost = this.loseBeginAnswer;
+
+    if (lost !== null) {
+      if (lost.rereadRefused) {
+        this.refuseState = new HttpErrorResponse({ status: 0 });
+      }
+
+      return throwError(() => new HttpErrorResponse({ status: 0 }));
+    }
+
+    // Bound to a name before `of`, so the one member the client type has not
+    // grown yet is not an excess property of a literal.
+    const begun = {
       inventory: this.inventory(),
       maxChunkBytes: this.maxChunkBytes,
-    });
+      startedAtUtc: BEGUN_STARTED_AT_UTC,
+    };
+
+    return of(begun);
   }
 
   public reseal(body: ResealChunkRequestBody): Observable<void> {
@@ -2168,6 +2210,262 @@ describe('what the service publishes while it runs', () => {
   });
 });
 
+// What a Rotate keys press leaves in `staged` when it stops.
+//
+// **The label follows what is on file.** A begin that got past its POST has
+// staged a run whether or not the rest went through, so the section has to
+// offer Finish rotating over it; one refused at the POST staged nothing, so
+// the section goes on offering whatever the read before it found. None of it
+// is published while the run is walking: a label that flipped at the begin's
+// 2xx would turn Rotate keys into Finish rotating under the finger.
+describe('the run a begin leaves on file', () => {
+  // A payee pair that lands between pass 1's chunk and its completion, so
+  // pass 2 is the first collection to see it — after the POST, before a send.
+  async function aPairAfterTheFirstPass(): Promise<void> {
+    const kept = server.payees[0];
+    const renamed = server.payees[1];
+    const renamedName = textOf(PAYEE_NAME_FIELD, kept.id).toUpperCase();
+    const staleName = await sealNarrativeField(
+      fixture.contentKey,
+      renamedName,
+      { ...PAYEE_NAME_FIELD, rowId: renamed.id },
+    );
+    const staleKey = await computeBlindIndex(
+      fixture.indexKey,
+      { ...PAYEE_NAME_FIELD, budgetId: BUDGET_ID },
+      renamedName,
+    );
+    let completions = 0;
+
+    server.beforeCompletion = (): void => {
+      completions += 1;
+
+      if (completions === 1) {
+        renamed.name = staleName;
+        renamed.nameKey = staleKey;
+        renamed.rotationId = null;
+      }
+    };
+  }
+
+  it.each([
+    {
+      stoppedOn: word('same-name'),
+      arrange: aPairAfterTheFirstPass,
+    },
+    {
+      stoppedOn: word('unfinished'),
+      arrange: async (): Promise<void> => {
+        server.refuseCompletion = conflict('rotation_incomplete');
+        await Promise.resolve();
+      },
+    },
+    {
+      stoppedOn: word('unreachable'),
+      arrange: async (): Promise<void> => {
+        server.refuseChunk = {
+          at: 1,
+          error: new HttpErrorResponse({ status: 0 }),
+        };
+        await Promise.resolve();
+      },
+    },
+  ])(
+    'publishes the date the begin answered when it stops past its POST on $stoppedOn',
+    async ({ stoppedOn, arrange }) => {
+      // Arrange — a fresh account: no run on file before the press.
+      const service = driver();
+
+      await arrange();
+
+      // Act
+      await service.begin(ceremonyUnder(firstFactor()));
+
+      // Assert
+      expect(service.failure(), 'the stop this case is about').toBe(stoppedOn);
+      expect(server.staged, 'the begin staged a run').not.toBeNull();
+      // The begin's own answer, not a read: the staged-rotation route
+      // answers another instant, and a read is the one request that fails
+      // exactly when the network does.
+      expect(service.staged()).toEqual({ startedAtUtc: BEGUN_STARTED_AT_UTC });
+    },
+  );
+
+  it('publishes nothing to finish when the POST was refused on a fresh account', async () => {
+    // Arrange
+    const service = driver();
+
+    server.refuseBegin = new HttpErrorResponse({ status: 400 });
+
+    // Act
+    await service.begin(ceremonyUnder(firstFactor()));
+
+    // Assert
+    expect(server.staged).toBeNull();
+    expect(service.staged()).toBeNull();
+  });
+
+  it('publishes the run on file when the POST was refused over one', async () => {
+    // Arrange — a run already on file, and a browser that loaded without
+    // reading it: the press's own read before the POST is what finds it.
+    await interruptedRun(1, MAX_CHUNK_BYTES);
+
+    const service = freshDriver();
+
+    server.refuseBegin = new HttpErrorResponse({ status: 400 });
+
+    // Act
+    await service.begin(ceremonyUnder(firstFactor()));
+
+    // Assert
+    // Nothing new was staged, and the run that is still there is the one the
+    // section must go on offering to finish.
+    expect(service.staged()).toEqual({ startedAtUtc: STATE_STARTED_AT_UTC });
+  });
+
+  it('reads the run back when the POST never answered, and publishes what it finds', async () => {
+    // Arrange — a fresh account, and a begin the server staged whose answer
+    // was lost on the way back.
+    const service = driver();
+
+    server.loseBeginAnswer = { rereadRefused: false };
+
+    // Act
+    await service.begin(ceremonyUnder(firstFactor()));
+
+    // Assert
+    expect(service.failure()).toBe(word('unreachable'));
+    expect(server.staged, 'the begin staged a run').not.toBeNull();
+    // Whether it landed is unknowable without asking, so the press asks.
+    expect(service.staged()).toEqual({ startedAtUtc: STATE_STARTED_AT_UTC });
+  });
+
+  it('keeps what the read before the POST found when neither the POST nor the read back answered', async () => {
+    // Arrange — a run on file, a browser that loaded without reading it, a
+    // begin whose answer was lost, and a read after it that fails the same
+    // way.
+    await interruptedRun(1, MAX_CHUNK_BYTES);
+
+    const service = freshDriver();
+
+    server.loseBeginAnswer = { rereadRefused: true };
+
+    // Act
+    await service.begin(ceremonyUnder(firstFactor()));
+
+    // Assert
+    expect(service.failure()).toBe(word('unreachable'));
+    expect(service.staged()).toEqual({ startedAtUtc: STATE_STARTED_AT_UTC });
+  });
+
+  it('publishes nothing about the run while the begin is walking it', async () => {
+    // Arrange — a fresh account, sampled at every chunk.
+    const service = driver();
+    const seen: (StagedRotation | null)[] = [];
+
+    server.onChunk = (): void => {
+      seen.push(service.staged());
+    };
+    server.refuseChunk = { at: 2, error: new HttpErrorResponse({ status: 0 }) };
+    server.maxChunkBytes = 1;
+
+    // Act
+    await service.begin(ceremonyUnder(firstFactor()));
+
+    // Assert
+    // The run is published when the press stops, and never at the begin's
+    // 2xx: the label under the finger would flip while the run walks.
+    expect(seen).toEqual([null, null]);
+    expect(service.staged()).toEqual({ startedAtUtc: BEGUN_STARTED_AT_UTC });
+  });
+
+  it('does not publish the run its own read found while the begin is walking over it', async () => {
+    // Arrange — a run already on file, and a browser that loaded without
+    // reading it, so the press's read before the POST is the first to see it.
+    // Sampled at every chunk.
+    await interruptedRun(1, MAX_CHUNK_BYTES);
+
+    const service = freshDriver();
+    const seen: (StagedRotation | null)[] = [];
+
+    server.onChunk = (): void => {
+      seen.push(service.staged());
+    };
+    server.refuseChunk = { at: 2, error: new HttpErrorResponse({ status: 0 }) };
+    server.maxChunkBytes = 1;
+
+    // Act
+    await service.begin(ceremonyUnder(firstFactor()));
+
+    // Assert
+    // The read found a run, and the label under the finger still does not
+    // flip: what that read found is held until the press stops, and by then
+    // the begin's own answer has replaced it.
+    expect(seen).toEqual([null, null]);
+    expect(service.staged()).toEqual({ startedAtUtc: BEGUN_STARTED_AT_UTC });
+  });
+
+  it('publishes what the read before the POST found when the POST was refused, and does not read again', async () => {
+    // Arrange — a run on file and a browser that loaded without reading it.
+    // The begin is refused with a 400, and by the time it is refused the run
+    // is gone from the server: another tab finished it.
+    await interruptedRun(1, MAX_CHUNK_BYTES);
+
+    const service = freshDriver();
+
+    server.onBegin = (): void => {
+      server.rotationEpoch = stagedRun().rotationEpoch;
+    };
+    server.refuseBegin = new HttpErrorResponse({ status: 400 });
+
+    // Act
+    await service.begin(ceremonyUnder(firstFactor()));
+
+    // Assert
+    // A refusal staged nothing, so there is nothing a second read could
+    // learn about this press. What stands is the pre-POST read: a read made
+    // now answers "nothing staged", and publishing it would be a press that
+    // was refused reporting another tab's work as its own.
+    expect(service.failure()).not.toBe(word('unreachable'));
+    expect(service.staged()).toEqual({ startedAtUtc: STATE_STARTED_AT_UTC });
+  });
+
+  it('publishes the run its read found when the material refuses before the POST', async () => {
+    // Arrange — a run on file, a browser that loaded without reading it, and
+    // an account-key read carrying no manifest, which the material refuses.
+    await interruptedRun(1, MAX_CHUNK_BYTES);
+
+    const service = freshDriver();
+
+    server.serveNoManifest = true;
+
+    // Act
+    await service.begin(ceremonyUnder(firstFactor()));
+
+    // Assert
+    // Nothing was posted, so what is on file is what the read found — and the
+    // section goes on offering to finish it.
+    expect(service.failure()).toBe(word('inconsistent'));
+    expect(server.beginBodies).toHaveLength(0);
+    expect(service.staged()).toEqual({ startedAtUtc: STATE_STARTED_AT_UTC });
+  });
+
+  it('publishes nothing to finish when the factor set moved', async () => {
+    // Arrange
+    const service = driver();
+
+    server.refuseCompletion = conflict('factor_set_moved');
+
+    // Act
+    await service.begin(ceremonyUnder(firstFactor()));
+
+    // Assert
+    // The section's own copy says to start again, so it draws Rotate keys.
+    expect(service.failure()).toBe(word('factors-moved'));
+    expect(service.staged()).toBeNull();
+  });
+});
+
 // The leg that picks up a run a browser lost.
 //
 // **Every case here throws the driver away.** A resume's whole claim is that it
@@ -2256,7 +2554,7 @@ describe('a run picked up after a reload', () => {
     await service.readStagedRotation();
 
     // Assert
-    expect(service.staged()).toEqual({ startedAtUtc: '2026-02-03T04:05:06Z' });
+    expect(service.staged()).toEqual({ startedAtUtc: STATE_STARTED_AT_UTC });
     // A read and nothing else: the control has not been pressed.
     expect(server.beginBodies).toHaveLength(0);
     expect(server.chunkBodies).toHaveLength(0);
@@ -3220,6 +3518,84 @@ describe('two records in one list with one name', () => {
     expect(service.collision()).toBeNull();
   });
 
+  it('drops the pair the moment the new name is saved, before the run goes on', async () => {
+    // Arrange
+    const { service, pair } = await stoppedOnSameName('payees', 1, 0);
+    const seenWhileResealing: (KeyRotationNameCollision | null)[] = [];
+
+    expect(service.collision(), 'the press before').toEqual(
+      expectedCollision(pair),
+    );
+
+    // Each chunk is held at the server while the pair is read: the run is
+    // walking on under Finish rotating by then.
+    server.onChunk = (): void => {
+      seenWhileResealing.push(service.collision());
+    };
+
+    // Act
+    await service.resume(ceremonyUnder(firstFactor()), {
+      name: TYPED_NAME,
+    });
+
+    // Assert
+    // The lead line stops being true when the rename lands, so the block the
+    // pair draws goes then — not when the whole run answers.
+    expect(server.renames).toHaveLength(1);
+    expect(seenWhileResealing.length).toBeGreaterThan(0);
+    expect(seenWhileResealing.every((seen) => seen === null)).toBe(true);
+    expect(service.failure()).toBeNull();
+  });
+
+  it('drops the pair before the collection that follows the rename, not after it', async () => {
+    // Arrange
+    const { service, pair } = await stoppedOnSameName('payees', 1, 0);
+    const seenAsEachCollectionStarts: (KeyRotationNameCollision | null)[] = [];
+
+    // Sampled as each collection's first list read starts. The collection
+    // after a rename is a whole account of opens, and the block's lead line
+    // is already false for all of it.
+    server.onList = (): void => {
+      seenAsEachCollectionStarts.push(service.collision());
+    };
+
+    // Act
+    await service.resume(ceremonyUnder(firstFactor()), {
+      name: TYPED_NAME,
+    });
+
+    // Assert
+    // The first collection is the one that finds the pair, so it still stands
+    // there; the second is the one after the rename landed.
+    expect(server.renames).toHaveLength(1);
+    expect(seenAsEachCollectionStarts).toEqual([expectedCollision(pair), null]);
+    expect(service.failure()).toBeNull();
+  });
+
+  it('drops the pair at once when the resume finds no pair to rename', async () => {
+    // Arrange
+    const { service } = await stoppedOnSameName('payees', 1, 0);
+    const seenWhileResealing: (KeyRotationNameCollision | null)[] = [];
+
+    // Somebody fixed it elsewhere between the presses.
+    await writtenByAStaleTab('payees', server.payees[1], 'Florist');
+
+    server.onChunk = (): void => {
+      seenWhileResealing.push(service.collision());
+    };
+
+    // Act
+    await service.resume(ceremonyUnder(firstFactor()), {
+      name: TYPED_NAME,
+    });
+
+    // Assert
+    expect(server.renames).toHaveLength(0);
+    expect(seenWhileResealing.length).toBeGreaterThan(0);
+    expect(seenWhileResealing.every((seen) => seen === null)).toBe(true);
+    expect(service.failure()).toBeNull();
+  });
+
   it.each([
     { label: 'a record the run has not reached yet', typed: 'FLORIST' },
     { label: 'the record that keeps the name', typed: 'bakery' },
@@ -3758,6 +4134,7 @@ describe('a session that ended, and the one established after it', () => {
       readonly phase: KeyRotationPhase;
       readonly progress: KeyRotationProgress;
       readonly running: boolean;
+      readonly walking: boolean;
     }[] = [];
     let switched = false;
 
@@ -3775,6 +4152,7 @@ describe('a session that ended, and the one established after it', () => {
         phase: service.phase(),
         progress: service.progress(),
         running: service.running(),
+        walking: service.walking(),
       });
     };
 
@@ -3786,8 +4164,12 @@ describe('a session that ended, and the one established after it', () => {
       {
         phase: 'idle',
         progress: { resealed: 0, records: 0 },
-        // Not read through the budget rule: it guards this object.
-        running: true,
+        // What the screens draw from, so read through the budget rule: a run
+        // for the account signed out of blocks nothing on this one's screens.
+        running: false,
+        // Not read through the budget rule: it guards this object, whose two
+        // key fields a second press would overwrite whoever is signed in.
+        walking: true,
       },
     ]);
     expect(service.phase()).toBe('idle');
@@ -3803,6 +4185,51 @@ describe('a session that ended, and the one established after it', () => {
       resealed: NARRATIVE_ROWS,
       records: NARRATIVE_ROWS,
     });
+  });
+
+  it('says a run is in flight only to its own account, while the driver still says it is walking', async () => {
+    // Arrange
+    const service = driver();
+    const seen: {
+      readonly budgetId: string | null;
+      readonly running: boolean;
+      readonly walking: boolean;
+    }[] = [];
+    const sample = (): void => {
+      seen.push({
+        budgetId: session.budgetId(),
+        running: service.running(),
+        walking: service.walking(),
+      });
+    };
+
+    // The first chunk is held while the tab changes accounts; the completion
+    // is held after it has changed back.
+    server.onChunk = (): void => {
+      if (seen.length === 0) {
+        switchToAnotherAccount();
+        sample();
+      }
+    };
+    server.beforeCompletion = (): void => {
+      session.end();
+      session.establish();
+      session.setBudgetId(BUDGET_ID);
+      sample();
+    };
+
+    // Act
+    await service.begin(ceremonyUnder(firstFactor()));
+
+    // Assert
+    // `running` is what the screens draw from, so it is the account's that
+    // began the run; `walking` guards the two key fields this object holds,
+    // whoever is signed in.
+    expect(seen).toEqual([
+      { budgetId: OTHER_BUDGET_ID, running: false, walking: true },
+      { budgetId: BUDGET_ID, running: true, walking: true },
+    ]);
+    expect(service.walking()).toBe(false);
   });
 
   it('does not tell a different account the word a run stopped on after the switch', async () => {
@@ -3871,7 +4298,7 @@ describe('a session that ended, and the one established after it', () => {
     session.end();
     session.establish();
     session.setBudgetId(BUDGET_ID);
-    expect(service.staged()).toEqual({ startedAtUtc: '2026-02-03T04:05:06Z' });
+    expect(service.staged()).toEqual({ startedAtUtc: STATE_STARTED_AT_UTC });
   });
 });
 

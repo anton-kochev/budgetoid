@@ -216,7 +216,7 @@ public sealed class KeyRotationWireContractTests
     }
 
     /// <summary>
-    /// The whole answer of the begin binds exactly the two members the artifact names.
+    /// The whole answer of the begin binds exactly the three members the artifact names.
     /// </summary>
     /// <remarks>
     /// <para>

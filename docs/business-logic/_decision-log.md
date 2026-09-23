@@ -22,16 +22,17 @@ response names no row.
 
 **Alternatives considered:**
 - **Reuse `duplicate_name`**: rejected. Every 409 names what the caller does next, and that kind's next
-  act is to adopt the existing row. Here the next act is to rename one of two rows the person owns and
+  act, on the payee create that raises it, is to adopt the existing row. Here the next act is to rename one of two rows the person owns and
   carry on with the same run.
 - **Reuse `rotation_incomplete`**: rejected. Its remedy, sending the outstanding rows, is refused the
   same way every time until a row is renamed.
 - **Carry the colliding row ids in the response**: rejected. The violation names only the index, so
-  finding the ids would take either a second read inside a transaction that has already aborted, or a
-  pre-check that restates the uniqueness rule on every chunk. The client can find the pair from the
+  finding the ids would take another query: inside the transaction it cannot run, because the
+  transaction has already aborted; after the rollback it is a second round trip whose answer may
+  already be stale; and as a pre-check it restates the uniqueness rule on every chunk. The client can find the pair from the
   incoming indexes it just computed.
-- **Block narrative writes server-side while a run is staged**: rejected, as before. An abandoned run
-  would lock the whole account.
+- **Block narrative writes server-side while a run is staged**: rejected. An abandoned run would lock
+  the whole account, which is a worse failure than a run that has to be carried on.
 
 **Affected areas:** [key-rotation.md](key-rotation.md).
 
