@@ -1554,7 +1554,9 @@ side can **open** one. Nothing can: that takes a private key, and the server hol
 ### The vector index, which is kept in four places
 
 Narrative-field vectors live in [`vectors/narrative-field-v1.json`](vectors/narrative-field-v1.json):
-one binding-only vector, one ASCII vector and the mixed-width vector.
+one binding-only vector, one ASCII vector and the mixed-width vector. They have a C# reader
+beside the client's: `ClientKeyCustodyTests` rebuilds every binding's associated data, seals
+both envelopes under their frozen nonces and opens both wire values back.
 
 Factor-keypair vectors live in
 [`vectors/factor-keypair-v1.json`](vectors/factor-keypair-v1.json): the grammar's four messages, the

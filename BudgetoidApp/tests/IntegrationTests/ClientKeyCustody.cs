@@ -22,14 +22,16 @@ namespace IntegrationTests;
 /// <para>
 /// <b>What used to be written here is that a drift from <c>+core/security/factor-keypair.ts</c> would
 /// leave this file self-consistent and still green. That is now less true, and the reason is
-/// <c>ClientKeyCustodyTests</c>.</b> Every message this type composes and both values it produces are
-/// pinned against <c>docs/business-logic/vectors/factor-keypair-v1.json</c> — known answers computed
-/// outside this repository by a third implementation, which the browser already reproduces. So the
-/// grammar below is held by frozen bytes on two independent sides, in two languages, neither of which
-/// authored them. What is still unheld is everything <em>outside</em> those vectors: they say nothing
-/// about the encapsulated plaintext's half order, nothing about which factor a handler filed a row
-/// under, and nothing about a scheme both implementations could agree on and both have wrong. A vector
-/// pins bytes; it does not pin judgement.
+/// <c>ClientKeyCustodyTests</c>.</b> Every message this type composes is pinned against a frozen vector
+/// file the browser also reproduces. The factor-keypair messages, and both values the grammar produces,
+/// against <c>docs/business-logic/vectors/factor-keypair-v1.json</c> — known answers computed outside
+/// this repository by a third implementation, so that grammar is held by frozen bytes on two
+/// independent sides, in two languages, neither of which authored them. The narrative associated data
+/// against <c>docs/business-logic/vectors/narrative-field-v1.json</c>, which records no author, so for
+/// that grammar the claim stops at two sides agreeing on frozen bytes. What is still unheld is
+/// everything <em>outside</em> those vectors: they say nothing about the encapsulated plaintext's half
+/// order, nothing about which factor a handler filed a row under, and nothing about a scheme both
+/// implementations could agree on and both have wrong. A vector pins bytes; it does not pin judgement.
 /// </para>
 /// <para>
 /// <b>What sealing here buys beyond the vectors is the one claim about <c>wrapped_account_keys</c> that
@@ -44,9 +46,9 @@ namespace IntegrationTests;
 /// </para>
 /// <para>
 /// The layout, the labels and the associated-data grammar are transcribed from <c>key-envelope.ts</c>,
-/// <c>recovery-codes.ts</c>, <c>factor-keypair.ts</c> and <c>factor-manifest.ts</c>. Each one is written
-/// out rather than pointed at, because a C# project cannot read a TypeScript module and a paraphrase
-/// would be a third spelling.
+/// <c>recovery-codes.ts</c>, <c>factor-keypair.ts</c>, <c>factor-manifest.ts</c> and
+/// <c>narrative-cipher.ts</c>. Each one is written out rather than pointed at, because a C# project
+/// cannot read a TypeScript module and a paraphrase would be a third spelling.
 /// </para>
 /// <para>
 /// <b>The three version bytes below are each written out as a number, and none may ever be spelled as
@@ -82,6 +84,14 @@ internal static class ClientKeyCustody
     /// parameterised by purpose.
     /// </remarks>
     public const string FactorKeypairLabel = "budgetoid/factor-keypair/v1";
+
+    /// <summary>The literal every narrative field's associated data opens with.</summary>
+    /// <remarks>
+    /// <c>NARRATIVE_FIELD_AAD_PREFIX</c> in <c>narrative-cipher.ts</c>, written out for the reason every
+    /// other label here is. It is part of the definition of every narrative envelope already stored: a
+    /// changed label makes all of them unopenable with the same failure a corrupted key gives.
+    /// </remarks>
+    public const string NarrativeFieldLabel = "budgetoid/field/v1";
 
     /// <summary>The HKDF <c>info</c> of the branch that turns a recovery code into a wrapping key.</summary>
     /// <remarks>
@@ -535,6 +545,53 @@ internal static class ClientKeyCustody
             Utf8(FactorKeypairLabel),
             GrammarVersion(version),
             Utf8(rotationEpoch.ToString(CultureInfo.InvariantCulture)));
+
+    /// <summary>
+    /// The associated data one narrative field is bound to:
+    /// <c>label ‖ 0x1F ‖ table ‖ 0x1F ‖ column ‖ 0x1F ‖ row id</c>, UTF-8.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Transcribed from <c>narrative-cipher.ts</c>'s <c>narrativeFieldAssociatedData</c>, field for
+    /// field and in its order.</b> Associated data is rebuilt from where a ciphertext was found, never
+    /// carried inside it, so a field dropped or two fields swapped here seals a value the browser opens
+    /// as nothing — and opens nothing the browser sealed. Each of the four catches a different move: the
+    /// label separates a narrative value from the manifest, sealed under the same content key with the
+    /// factor-keypair label; the column separates a category's name from its description; the table
+    /// separates a payee's name from a category's; and the row separates every row of a column from
+    /// every other.
+    /// </para>
+    /// <para>
+    /// <b>No version byte, and that is the grammar, not an omission.</b> This message's version lives in
+    /// its label's <c>/v1</c> suffix, as text; unlike the factor-keypair grammar, it has no raw version
+    /// field for UTF-8 to widen, so there is no <c>0x80</c> trap here and no version parameter to drive
+    /// one. Every field is text, which makes a byte composition and an interpolated one agree on every
+    /// input — the join is used anyway so the separator has one spelling in this file.
+    /// </para>
+    /// <para>
+    /// <b>The row id is rendered <c>"D"</c> — lower-case, hyphenated — and that spelling is the
+    /// binding</b>, the rule <see cref="WrappedPrivateKeyAssociatedData" /> keeps for a factor id. The
+    /// client refuses every other spelling rather than folding it; taking a <see cref="Guid" /> here
+    /// means no other spelling can be asked for. <paramref name="table" /> and
+    /// <paramref name="column" /> are not checked against the client's list of eight pairs: this is a
+    /// reproduction a test drives, and the list is the client's to own.
+    /// </para>
+    /// <para>
+    /// Pinned against <c>docs/business-logic/vectors/narrative-field-v1.json</c> by
+    /// <c>ClientKeyCustodyTests</c>.
+    /// </para>
+    /// </remarks>
+    public static byte[] NarrativeFieldAssociatedData(string table, string column, Guid rowId)
+    {
+        ArgumentNullException.ThrowIfNull(table);
+        ArgumentNullException.ThrowIfNull(column);
+
+        return JoinFields(
+            Utf8(NarrativeFieldLabel),
+            Utf8(table),
+            Utf8(column),
+            Utf8(CanonicalFactorId(rowId)));
+    }
 
     /// <summary>
     /// The HKDF <c>info</c> a factor's encapsulation key is derived under:

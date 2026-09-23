@@ -2,13 +2,16 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using TestSupport;
 
 namespace IntegrationTests;
 
 /// <summary>
-/// <see cref="ClientKeyCustody" /> against known answers it did not author:
+/// <see cref="ClientKeyCustody" /> against two frozen vector files:
 /// <c>docs/business-logic/vectors/factor-keypair-v1.json</c>, computed outside this codebase by a third
-/// implementation and already reproduced, value for value, by the browser.
+/// implementation and already reproduced, value for value, by the browser; and
+/// <c>docs/business-logic/vectors/narrative-field-v1.json</c>, which the browser also reproduces and
+/// which does not say who computed it.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -23,7 +26,8 @@ namespace IntegrationTests;
 /// <para>
 /// <b>Nothing here touches PostgreSQL, and it lives in this assembly anyway.</b> The subject is a type in
 /// this assembly that nothing else can see. Moving the pins to the unit tier would mean moving the
-/// reproduction with them, away from the eleven-factor registration test that is its only caller.
+/// reproduction with them, away from its callers here — the eleven-factor registration test,
+/// <see cref="AccountKeyFixture" /> and <c>RecoveryCodeCanonicalFormTests</c>.
 /// </para>
 /// <para>
 /// <b>Bytes are compared as lower-case hex, never as collections.</b> TUnit's <c>IsEquivalentTo</c>
@@ -38,6 +42,12 @@ namespace IntegrationTests;
 /// <c>info</c> buys is not pinned at all, here or anywhere, because a vector shows that the bytes are
 /// present and never that they help. And no vector anywhere says which factor a handler filed a row
 /// under — that claim belongs to <c>AccountRegistrationTests</c> and to the tag it opens with.
+/// </para>
+/// <para>
+/// <b>A second file is read here too: <c>docs/business-logic/vectors/narrative-field-v1.json</c></b>,
+/// which the browser also reproduces. Its cases pin the narrative associated-data grammar, the sealed
+/// envelope and its wire spelling under the frozen nonce, and the open back — what
+/// <see cref="AccountKeyFixture" /> seals and opens with.
 /// </para>
 /// </remarks>
 public sealed class ClientKeyCustodyTests
@@ -679,13 +689,136 @@ public sealed class ClientKeyCustodyTests
     }
 
     /// <summary>
+    /// The associated data of every frozen narrative vector, rebuilt from its binding.
+    /// </summary>
+    /// <remarks>
+    /// <b>The case that tells the binding from the cipher.</b> Every sealed vector fails with one
+    /// indistinguishable tag error, so a label with one byte wrong, two fields in the other order or a
+    /// separator of another value all look like a bad key from there. Green here and red below means the
+    /// cipher; red here means the grammar. All three vectors are driven, including the two sealed ones,
+    /// because they cover two bindings: <c>transactions</c>/<c>description</c> for two, and
+    /// <c>payees</c>/<c>name</c> for mixed-width alone. Reasoned, not measured against this file: a
+    /// builder that ignored its table and column and wrote <c>transactions</c> and <c>description</c>
+    /// reddens only mixed-width; one that wrote <c>payees</c> and <c>name</c> reddens only the other two.
+    /// </remarks>
+    [Test]
+    [Arguments("associated-data-only")]
+    [Arguments("ascii")]
+    [Arguments("mixed-width")]
+    public async Task NarrativeFieldAssociatedData_ReproducesTheFrozenMessage(string name)
+    {
+        // Arrange
+        NarrativeVector vector = NarrativeVectors.Single(name);
+
+        // Act
+        byte[] message = ClientKeyCustody.NarrativeFieldAssociatedData(
+            vector.Table, vector.Column, vector.RowId);
+
+        // Assert
+        await Assert.That(Hex(message)).IsEqualTo(vector.AadHex);
+        await Assert.That(message.Length).IsEqualTo(vector.AadLength);
+    }
+
+    /// <summary>
+    /// Each frozen narrative envelope, reproduced byte for byte under its frozen nonce, and its wire
+    /// spelling with it.
+    /// </summary>
+    /// <remarks>
+    /// <b>The write direction, which is the one a round trip cannot see.</b> The plaintext enters as the
+    /// frozen UTF-8 bytes rather than as the readable caption — the vector file says why at length: a
+    /// JSON string cannot tell NFC from NFD, and the hex is the contract. The associated data is rebuilt
+    /// through the builder rather than read off <c>aadHex</c>, so this case also says the builder is the
+    /// one sealing actually reaches.
+    /// </remarks>
+    [Test]
+    [Arguments("ascii")]
+    [Arguments("mixed-width")]
+    public async Task SealUnderNonce_OverTheFrozenNarrativeBinding_ReproducesTheFrozenEnvelopeAndWire(
+        string name)
+    {
+        // Arrange
+        NarrativeVector vector = NarrativeVectors.Single(name);
+
+        // Act
+        byte[] envelope = ClientKeyCustody.SealUnderNonce(
+            NarrativeVectors.ContentKey,
+            Convert.FromHexString(vector.NonceHex),
+            Convert.FromHexString(vector.PlaintextUtf8Hex),
+            ClientKeyCustody.NarrativeFieldAssociatedData(vector.Table, vector.Column, vector.RowId));
+
+        // Assert
+        await Assert.That(Hex(envelope)).IsEqualTo(vector.EnvelopeHex);
+        await Assert.That(Base64UrlText.Encode(envelope)).IsEqualTo(vector.Wire);
+    }
+
+    /// <summary>
+    /// Each frozen wire value opens, under the frozen content key and its own binding, to the frozen
+    /// UTF-8 bytes.
+    /// </summary>
+    /// <remarks>
+    /// Through <see cref="AccountKeyFixture.TryOpenNarrative" />, which is the opener the rest of the
+    /// suite reaches for, so the fixture's decode, open and UTF-8 steps are held by the same frozen
+    /// bytes. Compared as the plaintext's UTF-8 hex, never as the caption.
+    /// </remarks>
+    [Test]
+    [Arguments("ascii")]
+    [Arguments("mixed-width")]
+    public async Task TryOpenNarrative_OnTheFrozenWire_YieldsTheFrozenPlaintext(string name)
+    {
+        // Arrange
+        NarrativeVector vector = NarrativeVectors.Single(name);
+
+        // Act
+        bool opened = AccountKeyFixture.TryOpenNarrative(
+            NarrativeVectors.ContentKey,
+            vector.Table,
+            vector.Column,
+            vector.RowId,
+            vector.Wire,
+            out string text);
+
+        // Assert
+        await Assert.That(opened).IsTrue();
+        await Assert.That(Hex(Encoding.UTF8.GetBytes(text))).IsEqualTo(vector.PlaintextUtf8Hex);
+    }
+
+    /// <summary>
+    /// A frozen wire value does not open under the other vector's binding.
+    /// </summary>
+    /// <remarks>
+    /// The accepting case above passes in an opener that ignores its associated data entirely; this is
+    /// what stops it. Only the binding moves — the key, the envelope and the path are the accepting
+    /// case's.
+    /// </remarks>
+    [Test]
+    public async Task TryOpenNarrative_UnderAnotherRowsBinding_Refuses()
+    {
+        // Arrange
+        NarrativeVector sealedHere = NarrativeVectors.Single("ascii");
+        NarrativeVector elsewhere = NarrativeVectors.Single("mixed-width");
+
+        // Act
+        bool opened = AccountKeyFixture.TryOpenNarrative(
+            NarrativeVectors.ContentKey,
+            elsewhere.Table,
+            elsewhere.Column,
+            elsewhere.RowId,
+            sealedHere.Wire,
+            out _);
+
+        // Assert
+        await Assert.That(opened).IsFalse();
+    }
+
+    /// <summary>
     /// The locator throws rather than returning nothing when no ancestor holds <c>docs/</c>.
     /// </summary>
     /// <remarks>
     /// <b>"The test ran from a published output with no source tree" must never read as a pass</b>, which
     /// is the rule <c>EnvelopeSuiteCensusTests</c> keeps for the same reason and the reason this file
     /// does not skip when the vectors are missing. Every case above would go green, having asserted
-    /// nothing, and the whole point of the file is that somebody else authored the bytes.
+    /// nothing, and the whole point of the factor-keypair file, whose path this case resolves, is that
+    /// somebody else authored the bytes.
     /// </remarks>
     [Test]
     public async Task Vectors_WithNoSourceTreeAboveThem_Throw()
@@ -714,8 +847,8 @@ public sealed class ClientKeyCustodyTests
     /// </summary>
     /// <remarks>
     /// <b>Transcribed rather than read off <c>CiphertextEnvelope</c>, and that is deliberate.</b> This
-    /// file is a reproduction of the <em>client's</em> half, pinned against answers a third
-    /// implementation authored; a number taken from the server's constant would make the pin agree with
+    /// file is a reproduction of the <em>client's</em> half, pinned against frozen answers rather than
+    /// against the server; a number taken from the server's constant would make the pin agree with
     /// whatever the server later says, which is the drift the whole file exists to refuse. It is used to
     /// locate a value inside frozen bytes, never to assert one.
     /// </remarks>
@@ -791,9 +924,21 @@ public sealed class ClientKeyCustodyTests
         /// The absolute path of the frozen file, walking up from <paramref name="startDirectory" />.
         /// </summary>
         /// <exception cref="InvalidOperationException">No ancestor holds it.</exception>
-        public static string LocateFrom(string startDirectory)
+        public static string LocateFrom(string startDirectory) =>
+            LocateFrom(startDirectory, RelativePath);
+
+        /// <summary>
+        /// The absolute path of the frozen file at <paramref name="relativePath" />, walking up from
+        /// <paramref name="startDirectory" />.
+        /// </summary>
+        /// <remarks>
+        /// The one walker for both vector files, so the narrative file inherits the same refusal the
+        /// case beside it pins rather than a second walker with an opinion of its own.
+        /// </remarks>
+        /// <exception cref="InvalidOperationException">No ancestor holds it.</exception>
+        public static string LocateFrom(string startDirectory, string relativePath)
         {
-            string relative = RelativePath.Replace('/', Path.DirectorySeparatorChar);
+            string relative = relativePath.Replace('/', Path.DirectorySeparatorChar);
 
             for (DirectoryInfo? directory = new(startDirectory);
                  directory is not null;
@@ -808,9 +953,9 @@ public sealed class ClientKeyCustodyTests
             }
 
             throw new InvalidOperationException(
-                $"No ancestor of '{startDirectory}' holds {RelativePath}. These are known answers this "
-                + "codebase did not author; a run that cannot read them has pinned nothing, and it must "
-                + "not be mistaken for a run that agreed with them.");
+                $"No ancestor of '{startDirectory}' holds {relativePath}. A run that cannot read the "
+                + "frozen vectors has pinned nothing, and it must not be mistaken for a run that agreed "
+                + "with them.");
         }
 
         public static string Input(string name) =>
@@ -827,16 +972,16 @@ public sealed class ClientKeyCustodyTests
         /// dozen times.</b> The null-forgiving operator asserts something about a file on disk that this
         /// assembly does not own and cannot see at compile time — and it pays off as a
         /// <see cref="NullReferenceException" /> from inside a hex conversion two frames away. The whole
-        /// argument for reading these vectors rather than restating them is that somebody else authored
-        /// them; the matching refusal is one that says which value went missing.
+        /// argument for reading these vectors rather than restating them is that each value then has one
+        /// copy, and for the factor-keypair file that copy is a third party's; the matching refusal is
+        /// one that says which value went missing.
         /// </remarks>
         public static string Text(JsonElement owner, string property) =>
             owner.TryGetProperty(property, out JsonElement value) && value.GetString() is { } text
                 ? text
                 : throw new InvalidOperationException(
-                    $"The frozen vector file holds no string at '{property}'. These are known answers "
-                    + "this codebase did not author; a case that cannot read the value it pins has "
-                    + "pinned nothing.");
+                    $"The frozen vector file holds no string at '{property}'. A case that cannot read "
+                    + "the value it pins has pinned nothing.");
 
         /// <summary>The string <paramref name="value" /> is, or a throw.</summary>
         /// <remarks>The same refusal for an element inside an array, which has no property to name.</remarks>
@@ -950,6 +1095,69 @@ public sealed class ClientKeyCustodyTests
                     Y = point[33..65],
                 },
             });
+        }
+    }
+
+    /// <summary>One entry of the narrative file's <c>vectors</c> array, in the fields a case reads.</summary>
+    /// <remarks>
+    /// The sealed fields are read lazily: the binding-only vector carries none of them, and reads them
+    /// never.
+    /// </remarks>
+    private sealed record NarrativeVector(JsonElement Element)
+    {
+        private JsonElement Binding => Element.GetProperty("binding");
+
+        public string Table => Vectors.Text(Binding, "table");
+
+        public string Column => Vectors.Text(Binding, "column");
+
+        public Guid RowId => Guid.Parse(Vectors.Text(Binding, "rowId"));
+
+        public string AadHex => Vectors.Text(Element, "aadHex");
+
+        public int AadLength => Element.GetProperty("aadLength").GetInt32();
+
+        public string PlaintextUtf8Hex => Vectors.Text(Element, "plaintextUtf8Hex");
+
+        public string NonceHex => Vectors.Text(Element, "nonceHex");
+
+        public string EnvelopeHex => Vectors.Text(Element, "envelopeHex");
+
+        public string Wire => Vectors.Text(Element, "wire");
+    }
+
+    /// <summary>
+    /// <c>docs/business-logic/vectors/narrative-field-v1.json</c>, read off disk.
+    /// </summary>
+    /// <remarks>
+    /// Located by <see cref="Vectors.LocateFrom(string, string)" />, so a run with no source tree is red
+    /// here for the reason <see cref="Vectors_WithNoSourceTreeAboveThem_Throw" /> states, and parsed once
+    /// for the same reason <see cref="Vectors" /> is.
+    /// </remarks>
+    private static class NarrativeVectors
+    {
+        private const string RelativePath = "docs/business-logic/vectors/narrative-field-v1.json";
+
+        private static readonly JsonDocument Document = JsonDocument.Parse(
+            File.ReadAllText(Vectors.LocateFrom(AppContext.BaseDirectory, RelativePath)));
+
+        /// <summary>The one content key every sealed vector in the file is under.</summary>
+        public static byte[] ContentKey =>
+            Convert.FromHexString(Vectors.Text(Document.RootElement, "contentKeyHex"));
+
+        /// <summary>The one vector named <paramref name="name" />, failing closed on none and on two.</summary>
+        public static NarrativeVector Single(string name)
+        {
+            JsonElement[] matches =
+            [
+                .. Document.RootElement.GetProperty("vectors").EnumerateArray()
+                    .Where(vector => vector.GetProperty("name").GetString() == name),
+            ];
+
+            return matches.Length == 1
+                ? new NarrativeVector(matches[0])
+                : throw new InvalidOperationException(
+                    $"{matches.Length} frozen narrative vectors answer to '{name}'; exactly one must.");
         }
     }
 }
