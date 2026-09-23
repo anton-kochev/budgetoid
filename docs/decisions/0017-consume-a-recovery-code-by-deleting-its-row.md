@@ -53,6 +53,12 @@ by support, by the account holder, and by the product itself. If somebody report
 wrote down does not work, there is no record that distinguishes "you already spent it", "the set was
 regenerated" and "you mistyped it".
 
+That holds for this table and for the server. It is narrower for the account holder. The code's
+`wrapped_account_keys` row survives redemption on purpose, so a client holding the code and a `Full`
+session could see whether the code opens one of the account's factors. That would tell "spent from
+the current card" apart from the other two. [account-keys.md](../business-logic/account-keys.md)
+owns why the row survives.
+
 That is a real cost and it is accepted deliberately, because the product makes the same trade
 everywhere else it has come up. [erasure.md](../business-logic/erasure.md) refuses a deletion record
 outright — *"a column recording the deletion is the row surviving under a different name"* — and

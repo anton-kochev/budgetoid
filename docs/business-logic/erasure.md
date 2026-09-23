@@ -621,11 +621,12 @@ ELSE
   record or one base type, however closely their five assertion members still match.
   [account-keys.md](account-keys.md) owns the manifest rule and [passkeys.md](passkeys.md) owns the
   revocation it is stated against.
-- **A recovery code leaves nothing behind an erasure, and it left nothing behind its own redemption
-  either.** `recovery_code_hashes` carries `user_id` and cascades from `credentials`, so erasure
-  reaches it structurally. What is worth reading is that the table could never have held a remnant
-  in the first place: consuming a code is **deleting its row**, so there is no `redeemed_at_utc` for
-  `ErasureRemnantVocabulary` to refuse and no spent-code row for the count to find — see
+- **A recovery code leaves nothing behind an erasure, and its hash leaves nothing behind its own
+  redemption either.** `recovery_code_hashes` carries `user_id` and cascades from `credentials`, so
+  erasure reaches it structurally. What is worth reading is that the table could never have held a
+  remnant in the first place: consuming a code is **deleting its row**, so there is no
+  `redeemed_at_utc` for `ErasureRemnantVocabulary` to refuse and no spent-code hash for the count to
+  find — see
   [ADR 0017](../decisions/0017-consume-a-recovery-code-by-deleting-its-row.md). The cost is
   symmetrical too: *"was this code used, or never issued?"* is as unanswerable as *"was this account
   erased?"*, and deliberately so.

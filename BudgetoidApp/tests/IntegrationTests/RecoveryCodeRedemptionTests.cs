@@ -755,8 +755,8 @@ public sealed class RecoveryCodeRedemptionTests
     /// still stands" observable as more than a row count.
     /// </para>
     /// <para>
-    /// <b>A spent code's factor outlives the code.</b> Redemption deletes a <c>recovery_code_hashes</c>
-    /// row and nothing else: the code's <c>wrapped_account_keys</c> row hangs off the set's credential,
+    /// <b>A spent code's factor outlives the code.</b> Redemption deletes one <c>recovery_code_hashes</c>
+    /// row and no other row: the code's <c>wrapped_account_keys</c> row hangs off the set's credential,
     /// not off the hash, and nothing links the two tables. So every factor row the account held before
     /// the ten redemptions is still there after them, with the same bytes — which is what lets somebody
     /// who has just burned the last line of the card still open the account keys under it

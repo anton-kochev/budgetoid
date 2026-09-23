@@ -18,8 +18,9 @@ applied to a spent code too, and nothing in the repository would object.
 **Decision:** a spent code's factor stays: its wrapped private key, its encapsulated account keys,
 and its entry in the manifest. Spending a code is not revoking it. The row is load-bearing, not
 harmless. Somebody who has lost every authenticator and spent the last code opens the account keys
-through it, and that is what lets them register a replacement passkey. Two tests and the comment on
-the withheld `DELETE` grant now hold it; [account-keys.md](account-keys.md) owns the rule.
+through it, and that is what lets them register a replacement passkey. The withheld `DELETE` grant
+and two tests hold the row. The client's unlock gate holds the manifest entry, since the server
+cannot read a manifest. [account-keys.md](account-keys.md) owns the rule.
 
 **Alternatives considered:**
 - **Delete the factor on consumption and write a new manifest**: rejected. It turns every sign-in by
@@ -30,7 +31,7 @@ the withheld `DELETE` grant now hold it; [account-keys.md](account-keys.md) owns
   key-encryption key that opens the row, so the factor can still obtain the content key. Refusing
   to count it would say something false about the account.
 
-**Accepted cost:** the path back lasts only as long as the session the last redemption opened. A
+**Accepted cost:** the path back lasts only while a session a redemption opened is still live. A
 spent code can open keys but cannot sign in. The browser has no screen for either step yet, so the
 path exists at the API only.
 

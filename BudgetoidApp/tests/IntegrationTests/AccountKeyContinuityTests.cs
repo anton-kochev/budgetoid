@@ -415,9 +415,13 @@ public sealed class AccountKeyContinuityTests
 
         // Act — the last code, on a client carrying nothing at all.
         HttpResponseMessage redeemed = await RedeemAsync(host.Factory.CreateClient(), lastCode.Verifier);
+
+        // Guard: the last code redeemed.
         await Assert.That(redeemed.StatusCode).IsEqualTo(HttpStatusCode.OK);
 
         JsonNode redemption = (await JsonNode.ParseAsync(await redeemed.Content.ReadAsStreamAsync()))!;
+
+        // Guard: the card is spent, so the code above really was the last one.
         await Assert.That(redemption["remaining"]!.GetValue<int>())
             .IsEqualTo(0)
             .Because("the code redeemed here must be the last one on the card");
@@ -439,6 +443,7 @@ public sealed class AccountKeyContinuityTests
             out byte[] recoveredContentKey,
             out byte[] recoveredIndexKey);
 
+        // Guard: the spent code's factor opened the account keys for the recovery session.
         await Assert.That(recoveredKeys)
             .IsTrue()
             .Because("the spent code's served row must open under the key-encryption key derived from that code");

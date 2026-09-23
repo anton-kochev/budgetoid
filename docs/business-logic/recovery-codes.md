@@ -316,10 +316,17 @@ erDiagram
   behavioural timestamp off a schema whose data-minimization rule refuses one, it makes the
   remaining count a plain `count(*)` rather than a count of rows a predicate calls live, and it
   leaves nothing for the erasure remnant vocabulary to find.
-  - **The accepted cost**: a redeemed code leaves no trace, so *"was this code used, or never
-    issued?"* is unanswerable — by support, by the account holder, and by the product. The same
-    trade the product makes everywhere else; [erasure.md](erasure.md) refuses a deletion record for
-    the identical reason.
+  - **The accepted cost**: a redeemed code leaves no trace in this table, so the server cannot
+    answer *"was this code used, or never issued?"*, and neither can support. The same trade the
+    product makes everywhere else; [erasure.md](erasure.md) refuses a deletion record for the
+    identical reason.
+  - **The code's factor row does survive**, on purpose ([account-keys.md](account-keys.md) owns
+    why). It records nothing about spending: a spent code's row looks exactly like a live one's. But
+    it means the account holder is not entirely without an answer. With the code in hand and a
+    `Full` session, a client could check whether the code opens one of the account's factors.
+    If it does and redemption refuses it, the code was issued on the current card and has been
+    spent. If it opens nothing, it was mistyped or came from a replaced card. No client makes that
+    check.
 - **Enforced in**: the grant matrix in `app-role-grants.sql` — `SELECT, INSERT, DELETE` and no
   `UPDATE` — with `Database_RefusesEveryUpdateOnARecoveryCodeHash_…` pinning the absence.
   `RecoveryCodeHash` exposes no mutator, and `ErasureRemnantVocabulary` would refuse a `redeemed_at`
@@ -631,8 +638,8 @@ erDiagram
   too: `POST /api/recovery-codes/redemption` opens the session this rule describes, and
   `GET /api/me/account-keys` answers it with every factor of the account. What is missing is the
   browser surface in front of it: no screen redeems a code or issues a replacement set, so in the
-  browser no code has ever derived a key-encryption key outside `/register`. Custody is what makes the rule durable; on this credential possession is still the whole
-  of why it holds today.
+  browser no code has ever derived a key-encryption key outside `/register`. Custody is what makes
+  the rule durable; on this credential possession is still the whole of why it holds today.
   - **It lasts 14 days, the same interval a passkey sign-in gets, and the equality is the rule
     rather than a coincidence.** A set of codes is a secret its holder possesses exactly as an
     authenticator is, and reaches exactly as far, so a session expiring sooner here would tell

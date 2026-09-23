@@ -719,14 +719,14 @@ public sealed class AccountErasureEndpointTests
             passkey, WebAuthnCredentialIdFor(userId), CoseKey, CoseAlgorithm.Es256));
         db.PasskeySignatureCounters.Add(PasskeySignatureCounter.Start(passkey, 0));
 
-        // The account's two keys as this passkey factor holds them, in wrapped_account_keys. The
-        // registration route writes a row of its own now, but that does not make this one redundant:
-        // the survivor of Erase_LeavesAnotherAccountUntouched is furnished and never registers a
-        // passkey, so for that account this is the only thing the before-count loop finds on the
-        // table. Filed against the passkey seeded just above rather than against the credential
+        // The account's two keys as this passkey factor holds them, in wrapped_account_keys. No
+        // before-count loop needs it: the recovery-code set below already puts factor rows on the
+        // table for every furnished account. It is kept because production never writes a passkey
+        // without its factor row, and these seeds are meant to be the shape production writes. Filed
+        // against the passkey seeded just above rather than against the credential
         // RegisterPasskeyAsync registers, because a second row hung off that credential would collide
-        // on PK_wrapped_account_keys. The recovery-code set below carries factor rows of its own; either
-        // credential is legal, the federated credential is not.
+        // on PK_wrapped_account_keys. Either passkey or recovery-code credential is legal here, the
+        // federated credential is not.
         db.WrappedAccountKeys.Add(WrappedAccountKeys.For(
             passkey,
 
@@ -796,11 +796,13 @@ public sealed class AccountErasureEndpointTests
     /// factor row outnumbering the hash rows.
     /// </para>
     /// <para>
-    /// Today no production mutation separates this seed from the zero-rows assertion that was already
-    /// there: erasure is one composite cascade from <c>credentials</c>, and nothing links a factor row
-    /// to a hash row, so the spent code's factor goes with the live ones. The seed pins AC4 against a
-    /// future schema that links the two — a factor→hash foreign key with <c>ON DELETE SET NULL</c>,
-    /// say — not against today's code.
+    /// Today no production mutation separates this seed from the zero-rows assertion: erasure is one
+    /// composite cascade from <c>credentials</c>, and nothing links a factor row to a hash row, so the
+    /// spent code's factor goes with the live ones. The seed holds the rule that erasure leaves no
+    /// factor row, a spent code's included, against a future schema where a set's factor rows cascade
+    /// from their hash rows <em>instead of</em> from <c>credentials</c>. The live factors would still
+    /// go with their hashes; the spent code's factor, having no hash, would survive the erasure. It
+    /// guards that change, not today's code.
     /// </para>
     /// </remarks>
     private const int SeededSpentCodeCount = 1;

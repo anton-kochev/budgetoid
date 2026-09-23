@@ -2788,9 +2788,10 @@ must first open the account keys, because the new factor needs the existing pair
 The spent codes' factors are the only ones they can still open. Delete a factor row on consumption and
 that request fails, with no error on the redemption that caused it. Spending is not revoking:
 revocation deletes a factor's stored values, and consumption deletes only the code's power to sign in.
-- **How long the path lasts**: as long as the session the last redemption opened. A spent code opens
-  keys but cannot authenticate, so once that session ends the person needs another factor to sign in
-  at all. The browser has no redemption or add-passkey surface yet, so today this path exists at the
+- **How long the path lasts**: as long as a `Full` session one of the redemptions opened is still
+  live. Expiry is absolute, so the last redemption's session is the one that ends last. A spent code
+  opens keys but cannot authenticate, so once those sessions end the person needs another factor to
+  sign in at all. The browser has no redemption or add-passkey surface yet, so today this path exists at the
   API only.
 - **Enforced in**: the absent `DELETE` grant (its comment in `app-role-grants.sql` names this path),
   and two tests. `RecoveryCodeRedemptionTests.Redemption_OfTheLastCode_LeavesTheSetStandingWithNothingLeft`
@@ -2798,9 +2799,13 @@ revocation deletes a factor's stored values, and consumption deletes only the co
   byte. `AccountKeyContinuityTests.Redemption_OfTheLastCode_LeavesItsFactorOpeningTheKeys_AndCarriesThemOntoANewPasskey`
   walks the whole path: redeem the last code, open that spent code's served entry, then register a
   passkey minted over the keys it recovered.
-- **A spent factor is still a factor everywhere else too.** It stays in the manifest. A rotation
-  seals to it like any other, because the seal set has to equal the live factor rows in both
-  directions. Erasure takes it through the same `credentials` cascade as the rest of the set.
+- **A spent factor is still a factor everywhere else too.** It stays in the manifest. The server
+  cannot hold that, because it cannot read a manifest, and neither test above reads one. What holds
+  it is the client's unlock gate: a manifest whose set no longer matched the served factor rows in
+  both directions would make the next unlock `'inconsistent'`. A redemption never writes a manifest
+  in the first place. A rotation seals to a spent factor like any other, because the server's seal
+  set has to equal the live factor rows in both directions. Erasure takes it through the same
+  `credentials` cascade as the rest of the set.
 - **Counterexample**: whoever adds a link from a hash row to its factor row will be tempted to delete
   the factor when the code is spent, because a factor whose code is gone looks like leftover state.
   It isn't leftover. The row that looks orphaned is how its holder gets back in.

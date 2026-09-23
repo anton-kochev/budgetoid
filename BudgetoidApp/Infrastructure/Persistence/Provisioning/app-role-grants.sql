@@ -522,11 +522,11 @@ GRANT SELECT, INSERT, DELETE ON recovery_code_hashes TO budgetoid_app;
 -- document the identical mechanism for their own tables.
 --
 -- The absence also keeps a SPENT recovery code's row, and that row is not a remnant. Redeeming a code
--- deletes its recovery_code_hashes row and leaves its factor here, because the code still derives the
--- key-encryption key that opens it. For somebody who has lost every authenticator and just spent the
--- last code, the spent codes' factors are all they can still open, so one of them is how they carry
--- the account keys onto a replacement passkey. A DELETE granted to "clean up spent codes" would close that path without an
--- error. account-keys.md owns the rule.
+-- deletes its recovery_code_hashes row and leaves its factor here. It must stay, because the code
+-- still derives the key-encryption key that opens it. For somebody who has lost every authenticator
+-- and just spent the last code, the spent codes' factors are all they can still open, so one of them
+-- is how they carry the account keys onto a replacement passkey. A DELETE granted and used to "clean
+-- up spent codes" would close that path without an error. account-keys.md owns the rule.
 REVOKE ALL ON wrapped_account_keys FROM budgetoid_app;
 GRANT SELECT, INSERT ON wrapped_account_keys TO budgetoid_app;
 GRANT UPDATE (encapsulated_account_keys) ON wrapped_account_keys TO budgetoid_app;
