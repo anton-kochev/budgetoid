@@ -8,6 +8,35 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-09-23 — A name collision during a rotation is refused under a kind of its own
+
+**Context:** a rotation re-seals each indexed name under the incoming index key while rows it has not
+yet visited keep their outgoing-key index, and one unique index on `(budget_id, name_key)` holds both.
+A tab that loaded before the begin can write a name the run has already re-sealed on another row,
+nothing refuses it, and the collision surfaces a pass later inside a re-seal chunk. That chunk answered
+`500` on every send, which stranded the run for good.
+
+**Decision:** the re-seal save translates a violation of the four name indexes, and only those, into
+`409` with a new `conflictKind`, `rotation_name_collision`. The chunk rolls back whole, and the
+response names no row.
+
+**Alternatives considered:**
+- **Reuse `duplicate_name`**: rejected. Every 409 names what the caller does next, and that kind's next
+  act is to adopt the existing row. Here the next act is to rename one of two rows the person owns and
+  carry on with the same run.
+- **Reuse `rotation_incomplete`**: rejected. Its remedy, sending the outstanding rows, is refused the
+  same way every time until a row is renamed.
+- **Carry the colliding row ids in the response**: rejected. The violation names only the index, so
+  finding the ids would take either a second read inside a transaction that has already aborted, or a
+  pre-check that restates the uniqueness rule on every chunk. The client can find the pair from the
+  incoming indexes it just computed.
+- **Block narrative writes server-side while a run is staged**: rejected, as before. An abandoned run
+  would lock the whole account.
+
+**Affected areas:** [key-rotation.md](key-rotation.md).
+
+---
+
 ## 2026-09-18 — The rotation-epoch record's key is not authenticated, and the loudness argument is withdrawn
 
 **Context:** the entry *The rotation-epoch record is keyed on the budget, and one key per account*

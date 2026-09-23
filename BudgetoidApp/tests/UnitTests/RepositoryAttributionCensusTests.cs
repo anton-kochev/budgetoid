@@ -136,9 +136,10 @@ public sealed record AttributionCensus(
 /// <b>What is not claimed is that the fourteen are now uniformly covered</b> — only that every entry says
 /// which halves it holds. <c>SessionRepository</c> holds neither and says so, because it translates
 /// nothing; <c>SessionTokenRepository</c> says the stronger version of that, having no <c>catch</c> at
-/// all over a member that writes nothing; <c>NarrativeResealRepository</c> says a third version, having
-/// no <c>catch</c> at all over a member that <em>does</em> write, which is the one of the three that
-/// will stop being true the day somebody adds a filter to it; and <c>KeyRotationRepository</c> now
+/// all over a member that writes nothing; <c>NarrativeResealRepository</c> used to say a third version —
+/// no <c>catch</c> over a member that <em>does</em> write — and stopped being true the day its
+/// <c>SaveAsync</c> gained a filter on four name indexes, so its entry now names both halves of that
+/// filter and the file each is held in; and <c>KeyRotationRepository</c> now
 /// carries <b>two catches of two different shapes</b> and says which halves each one has. Its
 /// <c>StageAsync</c> gained the two-name narrowing that entry once recorded as owed, in the commit that
 /// mapped a begin route, so the translation is pinned over HTTP by the route's own tests while the
@@ -223,11 +224,14 @@ public sealed class RepositoryAttributionCensusTests
     /// <c>UserRepository</c>, which now holds only one narrowing because the insert that carried its
     /// other one was deleted with the provisioning path; and <c>RegistrationRepository</c>, which holds
     /// both halves on all four of its narrowings, the second half being <b>one</b> test rather than
-    /// four. Three — <c>SessionRepository</c>, <c>SessionTokenRepository</c> and
-    /// <c>NarrativeResealRepository</c> — have nothing to attribute at all, which is a different
-    /// statement and each says so in its own words: a <c>catch</c> narrowed by no constraint name, no
-    /// <c>catch</c> over a member that writes nothing, and no <c>catch</c> over a member that writes.
-    /// <c>KeyRotationRepository</c> used to be a third of those and is not any more: its
+    /// four. Two — <c>SessionRepository</c> and <c>SessionTokenRepository</c> — have nothing to
+    /// attribute at all, which is a different statement and each says so in its own words: a
+    /// <c>catch</c> narrowed by no constraint name, and no <c>catch</c> over a member that writes
+    /// nothing. <c>NarrativeResealRepository</c> used to be a third, with no <c>catch</c> over a member
+    /// that writes; its <c>SaveAsync</c> now narrows a <c>23505</c> on four name-index constants and
+    /// holds both halves at the repository layer in <c>RepositoryConstraintAttributionTests</c>, and it
+    /// stays in this bucket because its route-level answer is pinned in a file of its own.
+    /// <c>KeyRotationRepository</c> used to be one of those and is not any more: its
     /// <c>StageAsync</c> now narrows a <c>23505</c> on two primary-key names and its <c>PromoteAsync</c>
     /// narrows a concurrency failure on EF's entries, so that entry has been rewritten three times —
     /// from an absence into a gap, from a gap into <b>both halves in two files</b>, and now into
@@ -387,27 +391,45 @@ public sealed class RepositoryAttributionCensusTests
             + "argument in the predicate's own remarks rather than by a test"),
         new(
             nameof(NarrativeResealRepository),
-            "ResealChunkTests",
-            "NOTHING TO ATTRIBUTE, AND IT IS A THIRD SPELLING OF THAT SENTENCE RATHER THAN A COPY OF "
-            + "EITHER SESSION ONE. SessionRepository has a catch narrowed by no constraint name; "
-            + "SessionTokenRepository has no catch at all over a member that writes nothing. This class "
-            + "has NO CATCH ANYWHERE IN IT over six members, one of which WRITES — so a violation is "
-            + "genuinely reachable here and is deliberately not translated. "
-            + "WHAT THE CLASS IS: five reads keyed on the row identifiers a rotation chunk named, plus "
-            + "SaveAsync. It holds no rule of its own. Whether the chunk names the run in flight, "
-            + "whether a reseal may change what a nullable narrative column holds, and what a row the "
-            + "read could not answer for means are ALL ResealRowsHandler's — including the "
-            + "NotFoundException, which is raised by the caller and not here, because a row filtered out "
-            + "by BudgetIsolation and a row simply not asked for are the same observation at this layer "
-            + "and only the caller holds the list that tells them apart. A loader with no rules has "
-            + "nothing to translate a violation INTO, which is why the absent filter is the right shape "
-            + "rather than an omission. "
-            + "WHAT SaveAsync CAN STILL RAISE, said plainly because 'no catch' reads as 'no violation' "
-            + "and here it is not: a 42501 the day a rotation_id leaves one of the five GRANT UPDATE "
-            + "column lists, and any constraint the five tables carry. Every one of them leaves as the "
-            + "DbUpdateException EF threw, wearing no message this repository invented — which is the "
-            + "one property a mis-attribution control exists to protect and is here held by the absence "
-            + "of a catch rather than by a test. "
+            "RepositoryConstraintAttributionTests, KeyRotationUnderChangeEndpointTests and ResealChunkTests",
+            "ONE CATCH, ON SaveAsync, NARROWED ON FOUR CONSTRAINT NAMES AND ON NOTHING WIDER. This entry "
+            + "used to say the class had no catch anywhere in it and that the day one was added both "
+            + "halves became owed; that sentence is now false and is replaced rather than softened. "
+            + "WHAT IS THERE: SaveAsync catches a DbUpdateException whose inner PostgresException carries "
+            + "the unique-violation SQLSTATE and whose ConstraintName is one of the four blind-index "
+            + "uniqueness rules a chunk can break — PayeeConfiguration.NameIndexName, "
+            + "AccountConfiguration.NameIndexName, CategoryGroupConfiguration.NameIndexName and "
+            + "CategoryConfiguration.NameIndexName — and TRANSLATES it to a ConflictException spelled "
+            + "rotation_name_collision, a 409 rather than the 500 an untranslated save answered. The "
+            + "violation is reachable during a run: a row re-sealed under the incoming index key frees "
+            + "its outgoing value, a stale tab writes a second row under that freed value, and the chunk "
+            + "that re-seals the second row onto the first's new value breaks the index. The message "
+            + "names no row, because ConflictExceptionHandler copies it into the response verbatim. "
+            + "NEVER ON SQLSTATE ALONE, for this folder's usual reason: SaveAsync flushes the whole "
+            + "change tracker, so a stranger's 23505 would come back telling a client to rename a row "
+            + "that broke nothing. A 42501 the day a rotation_id leaves one of the five GRANT UPDATE "
+            + "column lists, and every other constraint the five tables carry, still leave as the "
+            + "DbUpdateException EF threw. "
+            + "BOTH HALVES ARE HELD AT THE REPOSITORY LAYER, in RepositoryConstraintAttributionTests: "
+            + "SaveAsync_WithAResealedNameAlreadyHeld_TranslatesItsOwnUniqueIndex is the translation, "
+            + "parameterised over all four tables so a filter naming three of the four indexes is red on "
+            + "the fourth, and SaveAsync_WhenATrackedRowBreaksAnotherUniqueIndex_LetsTheViolationEscape "
+            + "is one control — a tracked users row reusing a taken address, IX_users_email, the same "
+            + "23505 under a name that also begins IX_, so a filter on SQLSTATE alone or on the IX_ "
+            + "prefix swallows it. SaveAsync_WhenATrackedRowBreaksAnotherNameIndex_LetsTheViolationEscape "
+            + "is the other — a second nameless budget for the same owner, IX_budgets_user_id_name, so a "
+            + "filter keyed on the _name fragment swallows it. No real index outside the four ends in "
+            + "_name_key, so a filter on that suffix is reddened by neither. It stays in this bucket "
+            + "rather than the covered-here one because its route-level answer and its read predicate "
+            + "are pinned in two other files. "
+            + "KeyRotationUnderChangeEndpointTests holds the answer a client sees: the 409 and its "
+            + "token over HTTP on payees and on accounts, that the chunk rolls back across the two arms "
+            + "it drives there, "
+            + "that the body carries no row identifier, and that a run refused this way can still be "
+            + "completed once the colliding row is renamed on the ordinary route. "
+            + "WHAT THE CONTROL DOES NOT PIN: a filter that names a fifth unique rule by mistake — "
+            + "PK_payees, say — is not reddened by either intruder. No case stages a primary-key "
+            + "violation into this save. "
             + "WHAT ResealChunkTests PINS is the class's other half, and the file is named because that "
             + "is where this adapter is driven against a real PostgreSQL on the least-privilege role: "
             + "ResealChunk_LoadsOnlyTheRowsTheChunkNames asks ListPayeesAsync and ListTransactionsAsync "
@@ -417,20 +439,14 @@ public sealed class RepositoryAttributionCensusTests
             + "ResealChunk_StampsEveryRowItRewrites_InOneTransaction and "
             + "ResealChunk_WhenTheUnitOfWorkIsAbandoned_LeavesEveryRowAsItWas exercise SaveAsync over "
             + "that role in both directions. "
-            + "WHAT IS NOT HELD, AND IT IS THE HALF THIS CENSUS EXISTS TO MAKE SOMEBODY WRITE DOWN: "
-            + "THERE IS NO MIS-ATTRIBUTION CONTROL AND THERE IS NO TRANSLATION PIN, because there is no "
-            + "filter for either to be about. No case stages a stranger's violation into SaveAsync, and "
-            + "one written today would measure nothing — a save with no catch over it propagates "
-            + "whatever it meets whether or not anybody asserts so. THE DAY A catch IS ADDED HERE THIS "
-            + "ENTRY IS FALSE AND BOTH HALVES BECOME OWED; do not read the bucket name as covering a "
-            + "filter that did not exist when it was written. "
             + "THREE ALTERNATIVES WERE CONSIDERED AND REJECTED, and the third is the one this census was "
             + "built to catch. An internal class would have kept it out of the census entirely — "
             + "Discovery_IsBlindToARepositoryOutsideTheNamespace is a permanent demonstration that "
             + "visibility is a blind spot — so nobody would ever have had to say any of the above. "
             + "Declaring the six members on an existing repository would have spread one chunk's reads "
-            + "across five classes, and each of those already narrows a 23505 of its own, so this "
-            + "catch-free save would have arrived under a filter argued about renames. MOVING IT TO "
+            + "across five classes, and each of those already narrows a 23505 of its own on the same "
+            + "index, into a DIFFERENT answer — the create's duplicate_name and the rename's 400 — so "
+            + "this save would have arrived under a filter argued about another verb. MOVING IT TO "
             + "Infrastructure.Persistence IS THE DEFECT THIS FILE NAMES IN ITS OWN REMARKS: the scan is "
             + "scoped by namespace, so a repository placed outside Infrastructure.Repositories is not "
             + "discovered, not unlisted, and not red — the census would have gone on passing with one "

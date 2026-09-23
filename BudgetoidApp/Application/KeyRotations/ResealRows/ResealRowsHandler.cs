@@ -66,9 +66,16 @@ namespace Application.KeyRotations.ResealRows;
 /// presence-aware, so none is ever outstanding. <c>docs/business-logic/key-rotation.md</c> argues it.
 /// </para>
 /// <para>
-/// <b>No route reaches this handler yet</b>, so nothing a browser can do writes a <c>rotation_id</c>.
-/// The route that carries a chunk owes the request shape, the <c>MaxChunkBytes</c> budget
-/// <c>BeginKeyRotationHandler</c> publishes, and nothing this handler does not already hold.
+/// <b><c>POST /api/me/key-rotation/chunks</c> reaches it</b>, and owns the request shape and the decode;
+/// the <c>MaxChunkBytes</c> budget <c>BeginKeyRotationHandler</c> publishes is advice the host's body cap
+/// enforces, not a rule of this handler's.
+/// </para>
+/// <para>
+/// <b>A chunk that would give two rows one name is refused <c>409 rotation_name_collision</c> by the
+/// save, not by a check here.</b> <c>INarrativeResealRepository.SaveAsync</c> translates the index
+/// violation, and the throw leaves this delegate, so the transaction is abandoned and no arm of the chunk
+/// is written. A pre-check over what is on disk would miss the case where the chunk itself names two rows
+/// onto one value; the constraint sees both.
 /// </para>
 /// </remarks>
 public sealed class ResealRowsHandler(
@@ -220,8 +227,9 @@ public sealed class ResealRowsHandler(
     /// </para>
     /// <para>
     /// <b>A null arm is tolerated the way <c>BeginKeyRotationHandler</c> tolerates a missing seal
-    /// array.</b> The declaration says the list is present, and a missing JSON array arrives as
-    /// <see langword="null" /> anyway on the day a route reaches this handler — reading it as "this
+    /// array.</b> The declaration says the list is present, and a missing JSON array binds to
+    /// <see langword="null" /> anyway. <c>POST /api/me/key-rotation/chunks</c> already forwards such an
+    /// arm as an empty list, and this keeps the handler from depending on that — reading it as "this
     /// chunk named no rows of that kind" is what that request means, and the alternative is a
     /// <see cref="NullReferenceException" /> rendered as a 500.
     /// </para>

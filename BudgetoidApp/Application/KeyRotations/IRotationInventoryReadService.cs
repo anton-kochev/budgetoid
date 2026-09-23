@@ -19,8 +19,9 @@ namespace Application.KeyRotations;
 /// <para>
 /// <b>It refuses nothing, which is the difference from its sibling gate.</b>
 /// <c>IRotationCompletenessReadService</c> throws <see cref="RotationScopeException" /> itself, because
-/// rotation's completion route is unbuilt and a guard placed in a handler that does not exist guards
-/// nothing. Begin <em>has</em> a handler, and that handler has to make the same refusal before it
+/// it was written before the completion route existed and <c>CompleteKeyRotationHandler</c> makes no
+/// scope refusal of its own — so the guard is the port's rather than every caller's to remember. Begin's
+/// handler has to make the same refusal before it
 /// reads anything else at all — so the refusal belongs there, and a second throw in here would leave
 /// <c>BeginKeyRotationHandler</c> free to hold no such rule while every scope test still passed.
 /// </para>

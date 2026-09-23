@@ -183,12 +183,13 @@ public sealed class AppRoleGrantMatrixTests
         // what the role cannot do, which is one of two reasons KeyRotationRepository.StageAsync finds
         // and updates instead — the other being that EF batches a delete and an insert of the same
         // primary key in no guaranteed order, so the tidier-looking spelling is a coin flip on 23505.
-        // What the absence buys now is the destruction that has no repair: completion is unbuilt, and
-        // until it lands a half-written promotion path cannot clear the staging before it has promoted
-        // anything, when the staged envelopes are the only copies of the new generation until the live
-        // wrapped_account_keys row is overwritten. It fails loud — 42501 on the first reach, a red test
-        // rather than a rule going quiet — and the completion handler will arrive carrying its own
-        // argument for the privilege rather than inheriting this one.
+        // What the absence buys now is the destruction that has no repair. Completion is built, and it
+        // promotes by overwriting the live wrapped_account_keys rows and deletes nothing — a finished
+        // run leaves its staging row standing. Without this privilege, a promotion path edited into
+        // clearing the staging cannot do so before it has promoted anything, when the staged envelopes
+        // are the only copies of the new generation until the live row is overwritten. It fails loud —
+        // 42501 on the first reach, a red test rather than a rule going quiet — so a change that wants
+        // the privilege has to bring its own argument for it rather than inheriting this one.
         //
         // Rows still leave without it. The ON DELETE CASCADE from wrapped_account_keys, and through it
         // from credentials and users, runs with the referencing table owner's privileges rather than

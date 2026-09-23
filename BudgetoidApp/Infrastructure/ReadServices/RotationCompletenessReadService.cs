@@ -33,10 +33,11 @@ public sealed class RotationCompletenessReadService(BudgetoidDbContext dbContext
         // diagnose than a crash. A throw says the server cannot answer, which is what is true.
         //
         // THE ONE PLACE THIS DEPARTS FROM THE EXPORT IS THE LAYER, and it is deliberate. The export puts
-        // the throw in its handler because it HAS one and that handler is its only caller. Rotation's
-        // completion route is unbuilt, so a guard placed in a handler that does not exist yet guards
-        // nothing, and the first handler somebody writes would have to remember it — for a mistake with
-        // no repair path. Placed here it is a property of the port rather than of a caller's diligence.
+        // the throw in its handler because it HAS one and that handler is its only caller. This port was
+        // written before rotation's completion route existed, and CompleteKeyRotationHandler — which
+        // reaches it now — makes no scope refusal of its own; every caller of this gate would have to
+        // remember one, for a mistake with no repair path. Placed here it is a property of the port
+        // rather than of a caller's diligence.
         // It is not product policy leaking into Infrastructure: this is the implementation declaring
         // that its own reach does not cover the question its contract asks, which is what
         // InvalidOperationException is for.

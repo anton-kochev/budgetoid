@@ -11,8 +11,8 @@ namespace Application.KeyRotations.BeginKeyRotation;
 /// <remarks>
 /// <para>
 /// <b>The factor-set gate is back, over the seals rather than over the manifest, and the block where it
-/// stands says exactly what it does and does not hold.</b> Read that comment before adding a route, a
-/// member or a test here: the set of factors a run stages a value for is compared against the account's
+/// stands says exactly what it does and does not hold.</b> Read that comment before changing the route
+/// that reaches this handler, or adding a member or a test here: the set of factors a run stages a value for is compared against the account's
 /// live factors in both directions, while the set named <em>inside</em> the staged manifest is still
 /// authenticated by a key this server does not hold and is still judged by nothing.
 /// </para>
@@ -47,8 +47,9 @@ public sealed class BeginKeyRotationHandler(
     /// <remarks>
     /// <para>
     /// <b>A budget the client is handed, not a bound anything here enforces</b> — the route that
-    /// accepts a chunk is unbuilt, and when it ships it reads this constant rather than restating the
-    /// number. Published from the begin because a client cannot size its first chunk without it, and a
+    /// accepts a chunk, <c>POST /api/me/key-rotation/chunks</c>, judges nothing about a body's size and
+    /// neither restates nor reads this number; the request body cap in <c>Api/Program.cs</c> is the one
+    /// enforcement. Published from the begin because a client cannot size its first chunk without it, and a
     /// client that guessed would discover the answer as a 413 in the middle of a run.
     /// </para>
     /// <para>
@@ -139,7 +140,7 @@ public sealed class BeginKeyRotationHandler(
         }
 
         // THE FACTOR-SET GATE. WHAT IT HOLDS AND WHAT IT STILL DOES NOT ARE BOTH WRITTEN OUT, AND THE
-        // SECOND HALF IS THE ONE TO READ BEFORE ADDING A ROUTE.
+        // SECOND HALF IS THE ONE TO READ BEFORE CHANGING THE ROUTE THAT REACHES THIS HANDLER.
         //
         // RESTORED: a run stages a value for EXACTLY the account's live factor set, in both directions
         // — and the set now covers recovery-code factors, which it never did before. The guard this
@@ -156,8 +157,9 @@ public sealed class BeginKeyRotationHandler(
         // reading as though the requirement were now closed server-side would be the overclaim to
         // avoid.
         //
-        // No route reaches this handler, so no request can begin a run at all — which is what made the
-        // gap affordable while the guard was gone, and is still what a route has to answer first.
+        // POST /api/me/key-rotation reaches this handler, and it does not close this gap either: its
+        // decode judges the staged manifest's framing and never the set it names, so the gap is open on
+        // the wire and the client's comparison is what holds it.
         //
         // AFTER THE SCOPE REFUSAL AND BEFORE THE COUNTS, so that the three refusals below cost the
         // database nothing. Read the counting read's own comment for what that is and is not worth: it
@@ -166,9 +168,10 @@ public sealed class BeginKeyRotationHandler(
         IReadOnlyDictionary<Guid, WrappedAccountKeys> factors =
             await keyRotations.ListFactorsAsync(userId, cancellationToken);
 
-        // A missing array on the wire arrives as null despite the non-nullable declaration, the same
-        // way RecoveryCodeSetValidation meets one on a card. It is not a fault: it is a request that
-        // staged no seal, and the next guard is what says so.
+        // A missing array on the wire binds to null despite the non-nullable declaration, the same way
+        // RecoveryCodeSetValidation meets one on a card. POST /api/me/key-rotation already forwards it
+        // as an empty list; this line keeps the handler from depending on that. It is not a fault: it
+        // is a request that staged no seal, and the next guard is what says so.
         IReadOnlyList<RotationSeal> submitted = command.Seals is { } presented ? presented : [];
 
         // NO SEALS AT ALL IS ITS OWN REFUSAL, AND IT IS THE ONE THAT DOES NOT DEPEND ON THE COMPARISON

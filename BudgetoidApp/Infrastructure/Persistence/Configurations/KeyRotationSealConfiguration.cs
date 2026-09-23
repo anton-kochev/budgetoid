@@ -15,7 +15,8 @@ public sealed class KeyRotationSealConfiguration : IEntityTypeConfiguration<KeyR
     // Public for the reason PK_key_rotations is public: a 23505 under this name is "this run already
     // staged a value for that factor" — an answer with a resumable run behind it, which a caller has to
     // tell apart from every other unique violation the same INSERT could raise, and a `catch ... when`
-    // can only filter on a name. Nothing filters on it yet, because nothing writes a seal yet.
+    // can only filter on a name. KeyRotationRepository filters on it beside PK_key_rotations, so two
+    // begins racing on one account converge on the winner's row rather than answering 500.
     public const string PrimaryKeyName = "PK_key_rotation_seals";
 
     // The two checks are wrapped_account_keys' pair over its own encapsulated column, and they are

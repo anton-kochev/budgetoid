@@ -64,9 +64,10 @@ namespace Application.KeyRotations.BeginKeyRotation;
 /// <para>
 /// <b>A list rather than a dictionary keyed on the factor, and the weaker-looking shape is the one that
 /// can be refused.</b> A dictionary makes a duplicate factor id unconstructible, which reads like a
-/// guarantee and is the opposite of one on the wire: no route reaches this command yet, and the day one
-/// does, JSON deserialisation into a dictionary silently drops a repeat — last wins — so a request
-/// naming eleven seals for ten factors arrives as ten and <em>nothing anywhere says so</em>. A client
+/// guarantee and is the opposite of one on the wire: <c>POST /api/me/key-rotation</c> builds this
+/// member from a JSON body, and JSON deserialisation into a dictionary silently drops a repeat — last
+/// wins — so a request naming eleven seals for ten factors would arrive as ten and <em>nothing anywhere
+/// would say so</em>. A client
 /// whose randomness is not what it claims would have that fact absorbed by the binder. Kept as a list,
 /// the duplicate survives into the handler, which counts distinct factor ids against the number of
 /// seals and refuses first. It is the same argument

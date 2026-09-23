@@ -235,10 +235,6 @@ the last of them went; no press undoes that. `unopened` would mean *another fact
 would send somebody through a whole recovery card over a state no card touches, so the word is the
 one that says out loud that nothing they hold changes the answer.
 
-Not built: the screen — no key-rotation section renders on `/app/settings`, no control exists, and
-nothing runs the passkey ceremony either press is authorized by. Do not state it in the present tense
-until it ships.
-
 **The begin can write its row, and `key_rotations` still holds no `DELETE` of any shape.**
 `app-role-grants.sql` grants `SELECT`, `INSERT` and a column-listed `UPDATE` over `rotation_id`,
 `staged_manifest`, `staged_rotation_epoch` and `started_at_utc`. The insert and the update
@@ -744,6 +740,34 @@ carry the `BudgetIsolation` query filter, so a foreign row is *invisible* rather
 answering `403` would confirm to a caller reaching into another budget that the identifier it guessed
 names a real row. The handler resolves every arm before it mutates one, so a chunk naming a stranger's
 row last still leaves the caller's own rows unstamped.
+
+**A chunk that would give two rows one name is `409 rotation_name_collision`, and nothing in it is
+written.** The four indexed tables keep their unique index on `(budget_id, name_key)` through a run,
+and during one that index sees two keys at once: a re-sealed row carries its blind index under the
+**incoming** index key, and a row nobody has visited yet carries one under the outgoing key. A tab that
+loaded before the begin still holds the outgoing key, so it can create or rename a row onto a name the
+run has already re-sealed elsewhere. The two values differ, so nothing refuses that write. The
+collision arrives one pass later, when a chunk re-seals the new row onto the same incoming value as the
+old one. Before this refusal existed that answered `500` on the first send and on every re-send, so the
+run could never finish (measured, through the real routes). `NarrativeResealRepository.SaveAsync` now
+catches the violation **by the four `NameIndexName` constants and nothing wider**. `SaveChanges` flushes
+every tracked row, so a stranger's `23505` matched on SQLSTATE alone would tell a client to rename rows
+that broke nothing, and every other constraint still escapes. It detaches every pending re-seal, so none
+of the refused chunk can ride a later save on the same context. The throw leaves the handler's executor
+delegate, so the chunk's transaction rolls back whole, across arms.
+
+It is a kind of its own because the remedy is its own. `duplicate_name` tells a create that its list was
+stale and it should adopt the row that exists. `rotation_incomplete` tells a completion to send what is
+outstanding, and here the same chunk is refused the same way until something changes. What changes it is
+**renaming one of the two rows** through the ordinary route, which clears that row's stamp, and then
+carrying on with the same run. The response names neither row, because the violation names only the
+index, and the client does not need the server to say which rows collided: it holds every row's incoming
+index for the pass it is sending, so it can find the pair itself.
+
+A duplicate cannot outlive a completion that goes through, for as long as clients compute honest
+indexes. The gate requires every named row to carry the run's stamp, only a re-seal writes the stamp,
+and a re-seal writes `name_key` under the incoming key in the same save, so two equal names that are both
+stamped are two equal values under one index.
 
 ### Completing a run: the order is the property
 

@@ -847,12 +847,14 @@ public sealed class ErasureAtomicityTests
 
         // That run's copy of the next generation for this factor, in key_rotation_seals — the newest
         // table the enumeration discovers, and one the non-vacuity guard reports as a zero until
-        // something puts a row in it. Nothing in the product writes it: the app role holds SELECT and no
-        // write grant of any shape, and no route reaches a rotation at all. That is exactly why it is
-        // seeded here, on the container superuser like every other row in this helper — a table that
-        // only ever holds zero rows makes both of this file's claims about it vacuously true, "nothing
-        // moved" and "everything went" alike, and the guard refusing to count an empty relation is that
-        // refusal working rather than an obstacle to route around.
+        // something puts a row in it. The product writes it on one leg only: the begin route stages a
+        // seal per factor, and only behind a fresh WebAuthn re-authentication, which this helper does
+        // not run — the app role holds SELECT, INSERT and UPDATE (encapsulated_account_keys) there and
+        // no DELETE. So an account arranged here without this row would hold none, and that is exactly
+        // why it is seeded, on the container superuser like every other row in this helper — a table
+        // that holds zero rows for the account under test makes both of this file's claims about it
+        // vacuously true, "nothing moved" and "everything went" alike, and the guard refusing to count
+        // an empty relation is that refusal working rather than an obstacle to route around.
         //
         // SEEDING IT IS ALSO WHAT EXERCISES THE CASCADE. This row has TWO cascading parents —
         // (factor_id, user_id) to wrapped_account_keys and user_id to key_rotations — so an erasure

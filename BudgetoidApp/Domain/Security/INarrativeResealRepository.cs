@@ -90,5 +90,9 @@ public interface INarrativeResealRepository
     /// A save per arm would commit four of them and leave the fifth to a refusal, which is exactly the
     /// state the staging design exists to keep out of reach.
     /// </remarks>
+    /// <exception cref="Common.ConflictException">
+    /// A re-sealed name would give two rows of the budget one blind-index value, spelled
+    /// <c>rotation_name_collision</c>. Nothing the save carried is written.
+    /// </exception>
     Task SaveAsync(CancellationToken cancellationToken = default);
 }

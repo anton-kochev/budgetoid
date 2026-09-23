@@ -1,11 +1,15 @@
 using Domain.Accounts;
 using Domain.Categories;
 using Domain.CategoryGroups;
+using Domain.Common;
 using Domain.Payees;
 using Domain.Security;
 using Domain.Transactions;
 using Infrastructure.Persistence;
+using Infrastructure.Persistence.Configurations;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
+using Npgsql;
 
 namespace Infrastructure.Repositories;
 
@@ -49,6 +53,17 @@ namespace Infrastructure.Repositories;
 /// the caller's, for the reason <see cref="INarrativeResealRepository" /> gives: a miss and a row that
 /// simply was not asked for are the same observation at this layer, and only the caller holds the list
 /// that tells them apart.
+/// </para>
+/// <para>
+/// <b><see cref="SaveAsync" /> translates exactly one violation, and it is a rule it holds rather than
+/// one it borrows.</b> A run re-seals a row under the incoming index key and frees its outgoing value; a
+/// stale tab files a second row under that value; the chunk that re-seals the second row lands it on the
+/// first one's new value and breaks the <c>(budget_id, name_key)</c> index. The table's own repository
+/// catches the same index with a different answer — the create's <c>duplicate_name</c>, the rename's
+/// <c>400</c> — and neither is the remedy here, so this save answers
+/// <see cref="ConflictKind.RotationNameCollision" />. The filter names the four index constants and
+/// nothing wider; a <c>42501</c> and every other constraint these tables carry still leave as the
+/// <see cref="DbUpdateException" /> EF threw.
 /// </para>
 /// </remarks>
 public sealed class NarrativeResealRepository(BudgetoidDbContext dbContext) : INarrativeResealRepository
@@ -126,12 +141,85 @@ public sealed class NarrativeResealRepository(BudgetoidDbContext dbContext) : IN
     }
 
     /// <inheritdoc />
-    public Task SaveAsync(CancellationToken cancellationToken = default) =>
-        // ONE SAVE FOR WHATEVER THE CALLER RE-SEALED, and the transaction the caller opened is what
-        // holds it together with the rest of its unit of work. Five saves — one per arm — would commit
-        // four arms and leave the fifth to a refusal, which is the account half under each content key
-        // the staging design exists to keep out of reach.
-        dbContext.SaveChangesAsync(cancellationToken);
+    /// <exception cref="ConflictException">
+    /// A re-sealed name lands on a blind-index value another row of the budget already holds, on any of
+    /// the four name indexes a chunk can break. Spelled <c>rotation_name_collision</c>.
+    /// </exception>
+    public async Task SaveAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            // ONE SAVE FOR WHATEVER THE CALLER RE-SEALED, and the transaction the caller opened is what
+            // holds it together with the rest of its unit of work. Five saves — one per arm — would commit
+            // four arms and leave the fifth to a refusal, which is the account half under each content key
+            // the staging design exists to keep out of reach.
+            await dbContext.SaveChangesAsync(cancellationToken);
+        }
+        // Named, and never on SQLSTATE alone: SaveChanges flushes every tracked row and not only the ones
+        // a chunk re-sealed, so a stranger's 23505 matched on SQLSTATE would come back telling a client to
+        // rename a row that broke nothing. Named by the four constants, and never by the shape of a name.
+        // Two shapes are caught by a control today: an "IX_" prefix (IX_users_email begins that way too)
+        // and a "_name" substring (IX_budgets_user_id_name carries one). A "_name_key" suffix is caught by
+        // NO test, because these four are the only such indexes in the schema — the rule holds it, not a
+        // test. A PostgresException carries exactly one ConstraintName, so listing all four is one filter
+        // rather than four arms: the remedy does not vary with the table.
+        //
+        // The throw leaves the caller's executor delegate, whose transaction is disposed unfinished, so
+        // the whole chunk rolls back — every arm, not only the one that collided. ConflictException is not
+        // transient, so a retrying execution strategy does not replay the chunk into the same refusal.
+        catch (DbUpdateException exception) when (exception.InnerException is PostgresException
+        {
+            SqlState: PostgresErrorCodes.UniqueViolation,
+            ConstraintName: PayeeConfiguration.NameIndexName
+                or AccountConfiguration.NameIndexName
+                or CategoryGroupConfiguration.NameIndexName
+                or CategoryConfiguration.NameIndexName,
+        })
+        {
+            // Detach every pending reseal so none of it can ride a later SaveChanges on this context, the
+            // detach-on-conflict every sibling repository does — here over the chunk rather than one row,
+            // because the chunk is the unit that was refused.
+            DiscardPendingReseals();
+            throw RotationNameCollisionConflictException();
+        }
+    }
+
+    /// <summary>
+    /// Detaches every row of the five re-sealed sets still carrying a change the refused save did not
+    /// write.
+    /// </summary>
+    private void DiscardPendingReseals()
+    {
+        List<EntityEntry> pending =
+        [
+            .. dbContext.ChangeTracker.Entries().Where(entry =>
+                entry.State is not (EntityState.Unchanged or EntityState.Detached)
+                && entry.Entity is Account or Payee or CategoryGroup or Category or Transaction),
+        ];
+
+        foreach (EntityEntry entry in pending)
+        {
+            entry.State = EntityState.Detached;
+        }
+    }
+
+    // ConflictExceptionHandler renders this as the whole of ProblemDetails.Detail beside a Title fixed for
+    // every 409 in the product, so this sentence is all a PERSON is told; the kind is what a client
+    // branches on.
+    //
+    // IT NAMES NO ROW AND NO IDENTIFIER. The handler copies it verbatim, and the row already holding the
+    // name is one the client can find by decrypting its own list — which it has to do anyway to show a
+    // person the two names. It carries no SQLSTATE, constraint name or database text either.
+    //
+    // It deliberately does NOT say "send the outstanding chunks", which is RotationIncomplete's remedy
+    // and is useless here: this chunk is refused the same way every time until a row is renamed. Nor does
+    // it say "use the one that already exists", which is DuplicateName's and would fold two of the
+    // person's rows into one. And it does not say "send the chunk again": the renamed row carries a new
+    // name and a cleared stamp, so the refused chunk is stale and has to be collected and built afresh.
+    private static ConflictException RotationNameCollisionConflictException() => new(
+        "Two rows would end up with the same name under the new keys, so this chunk was refused and "
+        + "nothing in it was written. Rename one of them, then carry on with the rotation.",
+        ConflictKind.RotationNameCollision);
 
     /// <summary>
     /// The rows keyed on their identifier, which is how the port answers a lookup.

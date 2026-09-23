@@ -43,7 +43,7 @@ public sealed record ConflictSite(string File, IReadOnlyList<string> Raises);
 /// </param>
 /// <param name="Note">
 /// What this file does with the members it names. No default value: a row somebody pasted without
-/// saying what the site is, is the state this member exists to leave behind — and one of the fourteen
+/// saying what the site is, is the state this member exists to leave behind — and one of the fifteen
 /// rows is not a throw site at all, which nothing but a sentence can tell a reader.
 /// </param>
 public sealed record ConflictSitePin(string File, IReadOnlyList<string> Raises, string Note);
@@ -52,7 +52,7 @@ public sealed record ConflictSitePin(string File, IReadOnlyList<string> Raises, 
 /// Every discovered file sorted by what the pins say about it.
 /// </summary>
 /// <param name="Unpinned">
-/// Files naming a conflict kind that no pin claims. This is the bucket a twenty-sixth throw site in a new
+/// Files naming a conflict kind that no pin claims. This is the bucket a twenty-seventh throw site in a new
 /// file lands in, and it is red rather than derived: there is nothing to compute for a site nobody has
 /// decided the remedy of.
 /// </param>
@@ -61,7 +61,7 @@ public sealed record ConflictSitePin(string File, IReadOnlyList<string> Raises, 
 /// <c>RepositoryAttributionCensusTests</c> reports the same shape: a stale row silently shrinks the
 /// census by one and lies in wait for whatever is next put at that path. It is also the bucket that
 /// catches a scan which came back empty — a broken walker, a published output with no source tree, a
-/// stripper that swallowed the whole file — because all fourteen pins would land here at once.
+/// stripper that swallowed the whole file — because all fifteen pins would land here at once.
 /// </param>
 /// <param name="PinnedTwice">
 /// Paths more than one pin names. Two pins are two answers to "what may this file raise", and the one
@@ -92,7 +92,7 @@ public sealed record ConflictDispositionCensus(
 /// <remarks>
 /// <para>
 /// <b>The gap this closes, measured rather than argued.</b> <c>ConflictKindSpellingTests</c> pins the
-/// eight members against the eight tokens, so a kind that is <i>declared</i> wrongly is red. Nothing saw
+/// members against their tokens, so a kind that is <i>declared</i> wrongly is red. Nothing saw
 /// a kind that is declared correctly and <i>raised</i> wrongly: mutating
 /// <c>AccountRepository</c>, <c>CategoryRepository</c>, <c>CategoryGroupRepository</c> and
 /// <c>TransactionRepository</c> to raise <see cref="ConflictKind.DuplicateName" /> in place of
@@ -104,7 +104,7 @@ public sealed record ConflictDispositionCensus(
 /// <para>
 /// <b>Why it reads source text, and why nothing else could.</b> Reflection cannot see a throw site: the
 /// kind is an argument at a construction, so by the time an assembly is loaded there is nothing left to
-/// enumerate. The alternatives are staging all twenty-five conflicts over HTTP — twenty-five containers for a
+/// enumerate. The alternatives are staging all twenty-six conflicts over HTTP — twenty-six containers for a
 /// property that is decided in one argument — or reading the <c>.cs</c>. The repository already has the
 /// second shape in <c>ProjectReferenceGraphTests</c>, which walks up to <c>BudgetoidApp.sln</c> and
 /// parses every build file from disk; this follows it, including the walker's habit of throwing rather
@@ -116,8 +116,8 @@ public sealed record ConflictDispositionCensus(
 /// <b>The subject is discovered and only the disposition is written down.</b> What is discovered is
 /// every <i>code</i> occurrence of <c>ConflictKind.&lt;Member&gt;</c> in every project that does not
 /// declare <c>&lt;IsTestProject&gt;true&lt;/IsTestProject&gt;</c> — which is wider than the throw sites
-/// on purpose. A census keyed on <c>new ConflictException(</c> would have found nineteen of the twenty-five:
-/// the other six are built through a target-typed <c>new(</c> in a factory method on five of the
+/// on purpose. A census keyed on <c>new ConflictException(</c> would have found nineteen of the twenty-six:
+/// the other seven are built through a target-typed <c>new(</c> in a factory method on six of the
 /// repositories — <c>PayeeRepository</c> has two — where the type name appears only on the return type,
 /// and every one of the four sites in the measured mutation is one of those. Keying on the enum reference instead means the census does not care how the
 /// exception is constructed, or whether it is constructed at that line at all — a kind assigned to a
@@ -125,10 +125,10 @@ public sealed record ConflictDispositionCensus(
 /// to say what it is.
 /// </para>
 /// <para>
-/// <b>One of the fourteen rows is not a throw site, and that is the widening working rather than a
-/// mis-fit.</b> <c>Domain/Common/ConflictKindSpelling.cs</c> names all eleven members in its
+/// <b>One of the fifteen rows is not a throw site, and that is the widening working rather than a
+/// mis-fit.</b> <c>Domain/Common/ConflictKindSpelling.cs</c> names all twelve members in its
 /// <c>switch</c>; it is pinned like the rest and its note says what it is. The value of keeping it in is
-/// that a ninth place naming a kind — a branch on the kind in <c>ConflictExceptionHandler</c>, say,
+/// that a sixteenth place naming a kind — a branch on the kind in <c>ConflictExceptionHandler</c>, say,
 /// which would make the API's rendering depend on the remedy — cannot land without somebody writing a
 /// sentence about it here.
 /// </para>
@@ -179,7 +179,7 @@ public sealed partial class ConflictKindDispositionCensusTests
     private const string SpellingTablePath = "Domain/Common/ConflictKindSpelling.cs";
 
     /// <summary>
-    /// The fourteen files, and what each one raises. A fifteenth file naming a conflict kind is red until
+    /// The fifteen files, and what each one raises. A sixteenth file naming a conflict kind is red until
     /// it has a line here, and the line is where somebody says which remedy that site asks of a caller.
     /// </summary>
     private static readonly ConflictSitePin[] Pinned =
@@ -257,6 +257,7 @@ public sealed partial class ConflictKindDispositionCensusTests
                 nameof(ConflictKind.FactorSetMoved),
                 nameof(ConflictKind.RotationIncomplete),
                 nameof(ConflictKind.RotationAlreadyCompleted),
+                nameof(ConflictKind.RotationNameCollision),
             ],
             "NOT A THROW SITE. This is the spelling table's switch, in declaration order, and it is "
             + "pinned for the same reason the scan is keyed on the enum reference rather than on a "
@@ -294,6 +295,19 @@ public sealed partial class ConflictKindDispositionCensusTests
             + "two steps earlier, which asks for chunks rather than a ceremony. StageAsync raises "
             + "nothing at all and appears in no entry here: a second begin is the repair path, so its "
             + "23505 converges on one staged generation rather than answering a conflict"),
+        new(
+            "Infrastructure/Repositories/NarrativeResealRepository.cs",
+            [nameof(ConflictKind.RotationNameCollision)],
+            "A rotation chunk's one save landing a re-sealed name on a blind-index value another row of "
+            + "the budget already holds, narrowed on the four name-index constants and nothing wider. "
+            + "Deliberately NOT DuplicateName, though it is the same index refusing: that member tells "
+            + "the caller its list was stale and to adopt the row that already exists, which here would "
+            + "fold two of the person's own rows into one. Deliberately NOT RotationIncomplete either: "
+            + "sending the outstanding chunks cannot help, because this chunk is refused the same way "
+            + "every time until one of the two rows is renamed — after which the SAME run carries on, "
+            + "so no ceremony is owed and it is not FactorSetMoved. The table's own repository catches "
+            + "the same index with a different answer, which is why the remedy is keyed on the path "
+            + "and not on the constraint"),
         new(
             "Infrastructure/Repositories/PasskeyRepository.cs",
             [
@@ -378,7 +392,7 @@ public sealed partial class ConflictKindDispositionCensusTests
         //
         // The collection form has a ceiling of its own, also measured: past ten items it prints ten and
         // "and N more…". That ceiling is only reachable by a failure that is not about one site — a
-        // dead scanner puts all fourteen pins in NamingNoFile — so it costs nothing a reader needs, and
+        // dead scanner puts all fifteen pins in NamingNoFile — so it costs nothing a reader needs, and
         // it is written down here rather than discovered by somebody counting the ten it printed.
         await Assert.That(census.Unpinned).IsEmpty();
         await Assert.That(census.NamingNoFile).IsEmpty();
@@ -403,7 +417,7 @@ public sealed partial class ConflictKindDispositionCensusTests
         await Assert.That(census.Agreed.Count).IsEqualTo(Pinned.Length);
 
         // A second, independent net: no member of the vocabulary is dead text. The spelling table names
-        // all eleven by itself, so it is excluded — otherwise this line would be satisfied by one file
+        // all twelve by itself, so it is excluded — otherwise this line would be satisfied by one file
         // and would say nothing about whether anything RAISES a kind. Both directions, because a
         // scanner inventing a member name is as much a defect as a member nothing raises.
         string[] raisedSomewhere =
@@ -482,7 +496,7 @@ public sealed partial class ConflictKindDispositionCensusTests
     public async Task SolutionRootFrom_ThrowsWhenNoAncestorHoldsTheSolution()
     {
         // Act, Assert — a walker that quietly returned null would hand the scan an empty directory, and
-        // the whole census would report fourteen stale pins for a reason that has nothing to do with the
+        // the whole census would report fifteen stale pins for a reason that has nothing to do with the
         // code. Throwing names the real cause.
         await Assert.That(() => ConflictSiteScan.SolutionRootFrom(Path.GetTempPath()))
             .Throws<InvalidOperationException>();
@@ -522,7 +536,7 @@ public sealed partial class ConflictKindDispositionCensusTests
     [Test]
     public async Task Scan_FindsAKindPassedToATargetTypedConstruction()
     {
-        // Arrange — the spelling six of the twenty-five sites use, and the reason this census is keyed on
+        // Arrange — the spelling seven of the twenty-six sites use, and the reason this census is keyed on
         // the enum reference rather than on `new ConflictException(`: the type name appears only on the
         // return type, so a scan looking for the constructor finds nothing here.
         const string source = """

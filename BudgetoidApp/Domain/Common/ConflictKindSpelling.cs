@@ -49,6 +49,8 @@ public static class ConflictKindSpelling
 
     private const string RotationAlreadyCompletedSpelling = "rotation_already_completed";
 
+    private const string RotationNameCollisionSpelling = "rotation_name_collision";
+
     /// <summary>The token standing for <paramref name="kind"/>.</summary>
     /// <exception cref="ArgumentOutOfRangeException">
     /// <paramref name="kind"/> is not a declared member. Reachable two ways, and both are defects at the
@@ -71,6 +73,7 @@ public static class ConflictKindSpelling
         ConflictKind.FactorSetMoved => FactorSetMovedSpelling,
         ConflictKind.RotationIncomplete => RotationIncompleteSpelling,
         ConflictKind.RotationAlreadyCompleted => RotationAlreadyCompletedSpelling,
+        ConflictKind.RotationNameCollision => RotationNameCollisionSpelling,
         _ => throw new ArgumentOutOfRangeException(
             nameof(kind),
             kind,
