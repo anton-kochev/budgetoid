@@ -6,7 +6,8 @@
 // the generation everything will be rewritten under; every factor's public key,
 // so that generation reaches each of them; and the epoch the next manifest is
 // filed at. This module produces those or refuses. It performs no HTTP, holds
-// nothing between calls, and writes nowhere.
+// nothing between calls, and writes nowhere; the one thing it reads beyond its
+// arguments is this device's rotation-epoch record, and only on a begin.
 //
 // **Nothing here is Angular and nothing here ever may be** — no `inject()`, no
 // decorator, no signal, no injectable. The two imports that reach into
@@ -86,9 +87,9 @@
 // you hold will change this*, and the driver renders both of these as one
 // sentence anyway.
 //
-// **The refusals are ordered rather than arranged**, each reading something the
-// one before it proved, and every one of them aborts with no material at all. A
-// partial answer here is a run begun against material nobody verified.
+// **The refusals are ordered rather than arranged**, each reading something a
+// refusal before it proved, and every one of them aborts with no material at
+// all. A partial answer here is a run begun against material nobody verified.
 //
 //   1. A response carrying no manifest, or a manifest that does not open under
 //      the content key a factor just handed over. The rows beside a manifest
@@ -103,12 +104,17 @@
 //      somebody added, and a declared factor that was not served is a row
 //      somebody removed or a set this client is being shown half of. Checked one
 //      way only, the other passes cleanly.
-//   3. A factor whose public key will not take the next generation. Abort, and
+//   3. On a begin only, a served epoch below the highest this device has
+//      recorded for the account. Refusals 1 and 2 pass a read replayed from
+//      before a revocation, revoked factor and all, because it is not forged —
+//      only a device that watched the account move past it can tell. Compared
+//      only once refusal 1 has authenticated the epoch, and recorded never.
+//   4. A factor whose public key will not take the next generation. Abort, and
 //      stage nothing — a run that sealed the factors it could reach and left one
 //      out is the silent orphaning the whole key-pair scheme exists to prevent,
 //      discovered by whoever reaches for that factor, which is by definition the
 //      moment they have lost the others.
-//   4. A seal set that is not exactly the set the staged manifest declares, both
+//   5. A seal set that is not exactly the set the staged manifest declares, both
 //      directions again. `key-rotation.md` says outright that nothing on either
 //      side of the wire holds this comparison and that the first client to begin
 //      a run owes it; this is that client. On a resume it judges what the
@@ -159,6 +165,9 @@ import {
   sealFactorManifest,
   type FactorPublicKey,
 } from './factor-manifest';
+// The per-device high-water mark, read and never written. Two functions over
+// `localStorage` with no Angular in them, so this file stays framework-free.
+import { highestRotationEpochSeen } from './rotation-epoch-record';
 
 /**
  * Why a run could not be assembled, and the two words are two different next
@@ -290,7 +299,7 @@ interface LiveAccount {
 }
 
 // The next generation and the three values that travel with it, whichever of
-// the two paths produced them. One shape, so the fourth refusal is one function
+// the two paths produced them. One shape, so the fifth refusal is one function
 // called once rather than a comparison written on each path.
 interface StagedGeneration {
   readonly next: AccountKeyGeneration;
@@ -307,6 +316,12 @@ interface StagedGeneration {
  * **the second is what decides whether a generation is drawn or recovered**,
  * which is why it is the read itself rather than anything a caller computes from
  * it. See the head of this file for what that shape is worth.
+ *
+ * `budgetId` names the account whose rotation-epoch record `custody` is judged
+ * against — the session's own tenancy, the value every blind index is keyed
+ * under. It is the budget rather than the recorded epoch so that the record is
+ * read beside the comparison, as the unlock gate reads it, and no caller holds a
+ * number it could hand over softer. It is read and never written.
  *
  * **Over a run already in flight this is the repair**, not a second rotation: it
  * recovers the staged generation and encapsulates *that* to the factor set the
@@ -326,8 +341,13 @@ export async function assembleKeyRotationBegin(
   keyEncryptionKey: CryptoKey,
   custody: AccountKeyCustodyDto,
   state: KeyRotationStateDto,
+  budgetId: string,
 ): Promise<KeyRotationMaterial> {
   const live = await liveAccountOf(keyEncryptionKey, custody);
+
+  // Refusal 3, before anything is drawn or recovered.
+  requireNoEpochBelowTheRecord(custody.rotationEpoch, budgetId);
+
   // **The epoch comes off the live read and never off the staged run.** A
   // manifest promoted by some other path while that run sat there — a passkey
   // revoked, which is the very event that sends somebody to this repair — has
@@ -340,10 +360,10 @@ export async function assembleKeyRotationBegin(
     state.rotation === null
       ? generateAccountKeys()
       : await recoverStagedKeys(keyEncryptionKey, live, state.rotation);
-  // Refusal 3 is inside this call, over the **live** set either way.
+  // Refusal 4 is inside this call, over the **live** set either way.
   const run = await stageGeneration(keys, live.factors, rotationEpoch);
 
-  // Refusal 4, over the pair that is about to be posted.
+  // Refusal 5, over the pair that is about to be posted.
   await requireSealsCoverTheManifest(run);
 
   return materialOf(live, run);
@@ -384,7 +404,7 @@ export async function assembleKeyRotationResume(
     seals: staged.seals,
   };
 
-  // Refusal 4, over what the previous begin really posted.
+  // Refusal 5, over what the previous begin really posted.
   await requireSealsCoverTheManifest(run);
 
   return materialOf(live, run);
@@ -519,7 +539,7 @@ async function declaredFactors(
   }
 }
 
-// Refusal 2 and refusal 4, which are one rule over two different pairs of sets.
+// Refusal 2 and refusal 5, which are one rule over two different pairs of sets.
 //
 // **Two `every`s over two sets, never two lists walked in step.** Neither
 // order is a contract: the account-key read sorts on the factor id today and
@@ -555,6 +575,60 @@ function requireOneFactorSet(
   throw refusal('inconsistent', message);
 }
 
+// Refusal 3: an epoch below one this device has already watched this account
+// reach.
+//
+// **Every refusal before this one passes a replayed read.** Revoking a factor
+// promotes the manifest to the next epoch under the *same* content key, so the
+// manifest from before the revocation still opens, still declares a set that
+// really was this account's, and matches that set exactly once the revoked
+// factor's row is written back beside it. A begin over that read encapsulates
+// the next generation to the factor somebody revoked — and files it at the
+// epoch this device then records, so the gate custody runs after the
+// completion, which refuses only what is *lower*, passes it too. Whoever can
+// replay the manifest can replay the epoch beside it, so only a party that
+// watched the account move past it can tell, and on a browser that party is
+// the device. It is `manifestRefusal`'s third refusal, over the same record and
+// with the same comparison.
+//
+// **Strictly lower is refused; equal passes**, because an account that has not
+// rotated serves the same epoch every time. A device holding no record answers
+// `null` and passes — it cannot detect a replay at all, which is ASM-016.
+//
+// **After refusal 1, never before it.** The served epoch is the manifest's
+// associated data, so until the manifest has opened it is a number whoever wrote
+// the response chose. **After refusal 2 as well, and that half is arranged
+// rather than argued**: this refusal reads what refusal 1 proved and nothing of
+// what refusal 2 did, and both answer the same word with no material. It sits
+// here because refusal 2 lives inside `liveAccountOf`, which the resume shares,
+// and this one is the begin's alone. Custody runs the pair the other way round;
+// neither order changes what a person is told.
+//
+// **The begin's alone, because the begin is the entry point that encapsulates.**
+// A resume restates the seals a begin already posted and hands the generation to
+// no factor the staged run did not name, so a replayed read has no recipient to
+// add there.
+//
+// **It reads the record and never writes it.** Raising a device's high-water
+// mark is custody's act, taken only after its own four refusals pass over a
+// read it made itself; a begin that recorded the epoch it just compared would
+// be advancing the mark from a read no gate of custody's has judged.
+function requireNoEpochBelowTheRecord(
+  servedEpoch: number,
+  budgetId: string,
+): void {
+  const seen = highestRotationEpochSeen(budgetId);
+
+  if (seen === null || servedEpoch >= seen) {
+    return;
+  }
+
+  throw refusal(
+    'inconsistent',
+    `The account serves its factor manifest at epoch ${servedEpoch}, below the ${seen} this device has already watched it reach.`,
+  );
+}
+
 // One generation carried to every factor the manifest names, whether it was
 // just drawn or recovered out of a run already in flight.
 //
@@ -582,7 +656,7 @@ async function stageGeneration(
     // but it would hold one live agreement per factor at once for no gain, over
     // a set that is eleven on an ordinary account.
     for (const factor of factors) {
-      // Refusal 3. The point comes off the manifest and is handed straight
+      // Refusal 4. The point comes off the manifest and is handed straight
       // over; a point that is the right width and not on the curve is refused
       // by the platform inside this call, and a point of another encoding by
       // the guard above it.
@@ -620,7 +694,7 @@ async function stageGeneration(
   }
 }
 
-// Refusal 3, as a frame of its own so the refusal can name the factor.
+// Refusal 4, as a frame of its own so the refusal can name the factor.
 //
 // **Abort, never skip.** Staging the factors that could be reached and leaving
 // one out produces a run that completes perfectly and orphans an authenticator
@@ -721,7 +795,7 @@ function requireSomeLiveFactorHoldsASeal(
   );
 }
 
-// Refusal 4: the seals a run carries are exactly the set its manifest declares.
+// Refusal 5: the seals a run carries are exactly the set its manifest declares.
 //
 // **`key-rotation.md` names this as the comparison nothing on either side of
 // the wire holds.** The server gates a begin's seals against the account's live

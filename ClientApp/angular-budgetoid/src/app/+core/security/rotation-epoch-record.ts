@@ -1,11 +1,12 @@
 // The highest rotation epoch this device has watched an account reach. Nothing
 // here refuses anything; it is the memory a refusal elsewhere is built on — the
-// unlock gate in `account-key-custody.service.ts` reads this record and turns
-// away a response whose epoch is below it, beside the checks that gate makes on
-// the manifest itself. Memory here and judgement there is what stops this module
-// growing a policy: a store that also decided what to do about what it remembers
-// would be the one place a rollback is judged, away from the rest of the
-// response it has to be judged against.
+// unlock gate in `account-key-custody.service.ts` and the rotation begin in
+// `key-rotation-material.ts` each read this record and turn away a response
+// whose epoch is below it, beside the checks each makes on the manifest itself.
+// Only custody writes it. Memory here and judgement there is what stops this
+// module growing a policy: a store that also decided what to do about what it
+// remembers would be the one place a rollback is judged, away from the rest of
+// the response it has to be judged against.
 //
 // **What it is for is replay, not forgery.** An operator who can write the
 // database serves back an old `(manifest, epoch)` pair the account genuinely was
@@ -71,8 +72,8 @@ const DECIMAL_EPOCH = /^[1-9][0-9]*$/;
  * that cannot be read, and a stored value this reader will not accept. All three
  * mean the same thing to the caller — this device knows of no epoch to compare
  * against — and a caller that could tell them apart would have nothing different
- * to do about them. The gate that reads it does the one thing all three allow:
- * it treats `null` as a first visit and lets the response through on the other
+ * to do about them. Both gates that read it do the one thing all three allow:
+ * each treats `null` as a first visit and lets the response through on the other
  * checks, which is ASM-016 written as a branch rather than as a promise.
  *
  * Answers a `number` and never the digits it stored: `'9' < '10'` is false and

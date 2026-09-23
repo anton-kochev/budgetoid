@@ -282,6 +282,26 @@ the last of them went; no press undoes that. `unopened` would mean *another fact
 would send somebody through a whole recovery card over a state no card touches, so the word is the
 one that says out loud that nothing they hold changes the answer.
 
+**A begin refuses a served epoch below the highest this device has recorded for the account, and it
+records nothing.** Revoking a factor promotes the manifest under the *same* content key, so the
+manifest from before the revocation still opens. A database writer who restores that manifest, its
+epoch and the revoked factor's `wrapped_account_keys` row passes the manifest refusal and the set
+refusal, because nothing in that read is forged — it is only from before. A begin over it would
+encapsulate the next generation to the revoked factor and file it at the epoch this device already
+holds, which the gate custody runs after the completion also passes, because that gate refuses only
+what is *lower*. So `assembleKeyRotationBegin` takes the session's `budgetId` and reads
+`rotation-epoch-record.ts` the way the unlock gate does: **strictly lower is refused, equal
+passes**, and a device holding no record passes, because it cannot detect a replay at all (ASM-016).
+The comparison runs **after the manifest opens**, because the epoch is the manifest's associated
+data and is an unauthenticated number until then. It runs after the set refusal too, but that half is
+placement rather than argument: the set refusal is shared with the resume and this one is the
+begin's alone. The word is `inconsistent`, as the other two are, because the account's material does
+not agree with what this device watched it do, and no factor changes that. **The resume makes no such
+comparison**, because it encapsulates to nobody the staged run did not name: a restored row fails its
+own staged-against-live check as `factors-moved`. **The begin never writes the record.** Raising a
+device's high-water mark is custody's act, taken only after its own four refusals pass over a read it
+made itself. See [account-keys.md](account-keys.md).
+
 **The begin can write its row, and `key_rotations` still holds no `DELETE` of any shape.**
 `app-role-grants.sql` grants `SELECT`, `INSERT` and a column-listed `UPDATE` over `rotation_id`,
 `staged_manifest`, `staged_rotation_epoch` and `started_at_utc`. The insert and the update

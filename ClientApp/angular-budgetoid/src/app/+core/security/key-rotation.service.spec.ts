@@ -88,7 +88,15 @@ import {
   type SessionStatus,
 } from '@app-core/session/session.service';
 import { EMPTY, Observable, of, throwError } from 'rxjs';
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import { AccountKeyCustodyService } from './account-key-custody.service';
 import {
   generateAccountKeys,
@@ -123,7 +131,10 @@ import { mintNarrativeRowId } from './narrative-row-id';
 // module that owns it rather than through a key spelled here — one key per
 // account is that module's decision and its own spec is where the spelling is
 // pinned.
-import { highestRotationEpochSeen } from './rotation-epoch-record';
+import {
+  highestRotationEpochSeen,
+  recordRotationEpochSeen,
+} from './rotation-epoch-record';
 import type { NameArm } from './rotation-name-collision';
 import type { PasskeyAssertionCeremony } from './webauthn-ceremony.service';
 
@@ -1657,6 +1668,17 @@ beforeEach(() => {
   configureTestBed();
 });
 
+afterEach(async () => {
+  // **The clear above is not enough on its own, because the record lands late.**
+  // A run that finishes hands its generation to custody, which re-reads the
+  // account and records the epoch on a promise nobody awaits — so a case that
+  // never waits for it ends with that write still in flight, and it lands in
+  // the *next* case's store, after that case's clear. The begin reads the
+  // record, so the next case's begin is then refused as a replay. Waiting here
+  // puts every case's write inside its own case.
+  await settled(custody());
+});
+
 describe('a whole account through one rotation', () => {
   it('opens every narrative column under the new content key to the text it held', async () => {
     // Arrange
@@ -2162,6 +2184,25 @@ describe('the refusals a begin owes', () => {
     // Assert
     expect(service.failure()).toBe(word('inconsistent'));
     expect(server.beginBodies).toHaveLength(0);
+  });
+
+  it('refuses a served epoch below the one this device has recorded for its budget, and posts no begin', async () => {
+    // Arrange
+    // This device watched the account reach EPOCH + 1 and the server answers
+    // EPOCH: a replayed pair every other refusal passes. The record is filed
+    // under the session's own budget, so a driver that handed the material
+    // any other tenancy would miss it and begin.
+    const service = driver();
+
+    recordRotationEpochSeen(BUDGET_ID, EPOCH + 1);
+
+    // Act
+    await service.begin(ceremonyUnder(firstFactor()));
+
+    // Assert
+    expect(service.failure()).toBe(word('inconsistent'));
+    expect(server.beginBodies).toHaveLength(0);
+    expect(highestRotationEpochSeen(BUDGET_ID)).toBe(EPOCH + 1);
   });
 
   it('does not begin a run while this browser has not been told its budget', async () => {

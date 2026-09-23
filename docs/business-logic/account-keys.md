@@ -1620,7 +1620,10 @@ a high-water mark below every real epoch. **A store that throws reads as "this d
 the account", never as a refusal**: blocked-storage modes throw on the read as well as the write, and
 an escaping throw would turn a manifest this client can perfectly well open into a permanent failure
 and lock private browsing out of the product. A device holding no record answers nothing to compare
-against, which is first-visit rather than refusal — ASM-016 written as a branch.
+against, which is first-visit rather than refusal — ASM-016 written as a branch. **Two gates read
+it and one writes it**: the unlock and the rotation begin in `key-rotation-material.ts` each refuse
+a served epoch below it, and only custody raises it. A begin that skipped the read would encapsulate
+a new generation to a factor a replayed read had put back. See [key-rotation.md](key-rotation.md).
 
 **It is keyed on `budgetId`, and the alternative a reader reaches for is the one that defeats the
 control.** The budget is the only per-account identifier a browser ever holds: an account id is
@@ -2728,10 +2731,12 @@ gets back out.
    watched the account reach. `key-rotation-material.ts` is the second consumer and calls nothing:
    it is framework-free, so `KeyRotationService` makes the read and hands the body over. It spends
    the first two members the
-   same way and the third differently — a rotation files the next manifest at the epoch beside them
-   plus one, and records nothing, because rising a device's high-water mark is custody's act and only
-   after its own four refusals have passed. **That unlock reads `GET /api/me` in the same
-   breath**, because the
+   same way and the third twice. A begin compares it against this device's record exactly as the
+   unlock does, refusing strictly lower and only once the manifest has opened, and files the next
+   manifest at that epoch plus one. It takes the budget for that record from `KeyRotationService`,
+   which holds the session's. It records nothing, because rising a device's high-water mark is
+   custody's act and only after its own four refusals have passed. **That unlock reads
+   `GET /api/me` in the same breath**, because the
    epoch record is filed per account and the ambient budget is the only per-account identifier a
    browser holds. See
    [The one route that hands them back](#the-one-route-that-hands-them-back) and

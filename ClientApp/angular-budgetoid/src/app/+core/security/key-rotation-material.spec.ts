@@ -54,10 +54,22 @@ import {
   KeyRotationMaterialError,
   type KeyRotationMaterial,
 } from './key-rotation-material';
+import {
+  highestRotationEpochSeen,
+  recordRotationEpochSeen,
+} from './rotation-epoch-record';
 
 // The generation the account's manifest is in when a run begins. Four rather
 // than one, so a case that read the epoch as a constant would be visible.
 const EPOCH = 4;
+
+// The budget every case that is not about the epoch record begins in, and one
+// no case ever records an epoch under: a device that has never watched this
+// account, which is ASM-016's first visit and passes on the other refusals.
+// The cases that *are* about the record each draw a budget of their own, so
+// what one of them files is never a fixture for another — jsdom's
+// `localStorage` lives for the file, not for the case.
+const UNWATCHED_BUDGET = 'budget-this-device-never-watched';
 
 // Nothing staged. The one state in which a fresh generation may be minted.
 const NO_ROTATION: KeyRotationStateDto = { rotation: null };
@@ -230,6 +242,7 @@ async function stagedFromAMint(): Promise<{
     account.keyEncryptionKey,
     account.custody,
     NO_ROTATION,
+    UNWATCHED_BUDGET,
   );
 
   return {
@@ -266,6 +279,26 @@ async function afterRevoking(revoked: MintedFactor): Promise<{
   };
 }
 
+// A budget of its own for one case, holding the record `epoch` — or none, for a
+// device that has never watched the account.
+//
+// The throw is a harness check and not an assertion: a store that silently
+// refused the write would turn every case below into a first visit, and each
+// of them would pass for the reason ASM-016 gives rather than the one it names.
+function budgetWatchedAt(epoch: number | null): string {
+  const budgetId = `budget-${crypto.randomUUID()}`;
+
+  if (epoch !== null) {
+    recordRotationEpochSeen(budgetId, epoch);
+  }
+
+  if (highestRotationEpochSeen(budgetId) !== epoch) {
+    throw new Error('the epoch record these cases are built on was not kept');
+  }
+
+  return budgetId;
+}
+
 beforeAll(async () => {
   account = await buildAccount();
 }, 30000);
@@ -278,6 +311,7 @@ describe('assembling a key rotation', () => {
         account.keyEncryptionKey,
         account.custody,
         NO_ROTATION,
+        UNWATCHED_BUDGET,
       );
 
       // Assert
@@ -300,6 +334,7 @@ describe('assembling a key rotation', () => {
         account.keyEncryptionKey,
         account.custody,
         NO_ROTATION,
+        UNWATCHED_BUDGET,
       );
 
       // Assert
@@ -320,6 +355,7 @@ describe('assembling a key rotation', () => {
         account.keyEncryptionKey,
         account.custody,
         NO_ROTATION,
+        UNWATCHED_BUDGET,
       );
 
       // Assert
@@ -350,6 +386,7 @@ describe('assembling a key rotation', () => {
         account.keyEncryptionKey,
         account.custody,
         NO_ROTATION,
+        UNWATCHED_BUDGET,
       );
 
       // Assert
@@ -365,6 +402,7 @@ describe('assembling a key rotation', () => {
         account.keyEncryptionKey,
         account.custody,
         NO_ROTATION,
+        UNWATCHED_BUDGET,
       );
 
       for (const factor of account.factors) {
@@ -461,6 +499,7 @@ describe('assembling a key rotation', () => {
         account.keyEncryptionKey,
         custody,
         { rotation: staged },
+        UNWATCHED_BUDGET,
       );
 
       // Assert
@@ -508,6 +547,7 @@ describe('assembling a key rotation', () => {
         account.keyEncryptionKey,
         custody,
         { rotation: staged },
+        UNWATCHED_BUDGET,
       );
 
       // Assert
@@ -536,13 +576,18 @@ describe('assembling a key rotation', () => {
 
       // Act
       const refusal = await refusalFrom(
-        assembleKeyRotationBegin(account.keyEncryptionKey, account.custody, {
-          rotation: stagedRun(
-            staged.stagedManifest,
-            staged.stagedRotationEpoch,
-            staged.seals.filter((seal) => seal.factorId !== opening),
-          ),
-        }),
+        assembleKeyRotationBegin(
+          account.keyEncryptionKey,
+          account.custody,
+          {
+            rotation: stagedRun(
+              staged.stagedManifest,
+              staged.stagedRotationEpoch,
+              staged.seals.filter((seal) => seal.factorId !== opening),
+            ),
+          },
+          UNWATCHED_BUDGET,
+        ),
       );
 
       // Assert
@@ -570,17 +615,23 @@ describe('assembling a key rotation', () => {
           factors: [stranger.entry],
         },
         NO_ROTATION,
+        UNWATCHED_BUDGET,
       );
 
       // Act
       const refusal = await refusalFrom(
-        assembleKeyRotationBegin(account.keyEncryptionKey, account.custody, {
-          rotation: stagedRun(
-            elsewhere.manifest,
-            elsewhere.rotationEpoch,
-            elsewhere.seals,
-          ),
-        }),
+        assembleKeyRotationBegin(
+          account.keyEncryptionKey,
+          account.custody,
+          {
+            rotation: stagedRun(
+              elsewhere.manifest,
+              elsewhere.rotationEpoch,
+              elsewhere.seals,
+            ),
+          },
+          UNWATCHED_BUDGET,
+        ),
       );
 
       // Assert
@@ -594,6 +645,162 @@ describe('assembling a key rotation', () => {
     });
   });
 
+  describe('a begin against the epoch this device has watched the account reach', () => {
+    it('refuses a manifest from before the epoch this device has recorded, and produces nothing', async () => {
+      // Arrange
+      // The replay NFR-028 is about. This device watched a revocation promote
+      // the manifest to EPOCH + 1; what is served now is the account as it
+      // stood before that — the manifest at EPOCH, the epoch beside it, and
+      // the revoked factor's row back among the others. It is not forged: it
+      // opens under the content key, which a revocation does not change, and
+      // it declares exactly the set it is served with. Every other refusal
+      // passes it, and a begin would encapsulate the next generation to the
+      // factor that was revoked.
+      const budgetId = budgetWatchedAt(EPOCH + 1);
+
+      // Act
+      const refusal = await refusalFrom(
+        assembleKeyRotationBegin(
+          account.keyEncryptionKey,
+          account.custody,
+          NO_ROTATION,
+          budgetId,
+        ),
+      );
+
+      // Assert
+      expect(refusal.reason).toBe('inconsistent');
+      expect(refusal.message).toContain('below');
+    });
+
+    it('refuses the same replay over a run already in flight', async () => {
+      // Arrange
+      // The repair is a begin too, and it encapsulates a generation to the
+      // live set just as a fresh one does — recovered rather than drawn, which
+      // makes it no less the account's next generation.
+      const { staged } = await stagedFromAMint();
+      const budgetId = budgetWatchedAt(EPOCH + 1);
+
+      // Act
+      const refusal = await refusalFrom(
+        assembleKeyRotationBegin(
+          account.keyEncryptionKey,
+          account.custody,
+          { rotation: staged },
+          budgetId,
+        ),
+      );
+
+      // Assert
+      expect(refusal.reason).toBe('inconsistent');
+      expect(refusal.message).toContain('below');
+    });
+
+    it('begins over the epoch this device has recorded, which an account that has not rotated serves every time', async () => {
+      // Arrange
+      // Not-lower rather than strictly-higher, as the unlock gate compares it.
+      const budgetId = budgetWatchedAt(EPOCH);
+
+      // Act
+      const material = await assembleKeyRotationBegin(
+        account.keyEncryptionKey,
+        account.custody,
+        NO_ROTATION,
+        budgetId,
+      );
+
+      // Assert
+      expect(material.rotationEpoch).toBe(EPOCH + 1);
+    });
+
+    it('begins on a device that holds no record of the account, which cannot see a replay at all', async () => {
+      // Arrange
+      // ASM-016, written as a branch: a device that never watched the account
+      // has nothing to compare against, and refusing it would refuse every
+      // first rotation on every new browser.
+      const budgetId = budgetWatchedAt(null);
+
+      // Act
+      const material = await assembleKeyRotationBegin(
+        account.keyEncryptionKey,
+        account.custody,
+        NO_ROTATION,
+        budgetId,
+      );
+
+      // Assert
+      expect(material.rotationEpoch).toBe(EPOCH + 1);
+    });
+
+    it('raises no record it has compared against', async () => {
+      // Arrange
+      // Below the served epoch, so the begin passes and has something it could
+      // have raised the record to.
+      const budgetId = budgetWatchedAt(EPOCH - 1);
+
+      // Act
+      await assembleKeyRotationBegin(
+        account.keyEncryptionKey,
+        account.custody,
+        NO_ROTATION,
+        budgetId,
+      );
+
+      // Assert
+      // Raising it is custody's act, and only once its own four refusals have
+      // passed over a read it made itself.
+      expect(highestRotationEpochSeen(budgetId)).toBe(EPOCH - 1);
+    });
+
+    it('writes no record for an account this device had none of', async () => {
+      // Arrange
+      const budgetId = budgetWatchedAt(null);
+
+      // Act
+      await assembleKeyRotationBegin(
+        account.keyEncryptionKey,
+        account.custody,
+        NO_ROTATION,
+        budgetId,
+      );
+
+      // Assert
+      expect(highestRotationEpochSeen(budgetId)).toBeNull();
+    });
+
+    it('compares no epoch the manifest has not first authenticated', async () => {
+      // Arrange
+      // Below the record *and* sealed under a key this account never held, so
+      // which refusal speaks is the order. The served epoch is associated data
+      // of the manifest; until the manifest opens, it is a number whoever
+      // wrote the response chose, and comparing it first would judge an
+      // unjudged value.
+      const budgetId = budgetWatchedAt(EPOCH + 1);
+      const custody: AccountKeyCustodyDto = {
+        ...account.custody,
+        manifest: await sealFactorManifest(
+          await contentKeyOf(generateAccountKeys()),
+          declaredSetOf(account.factors),
+          EPOCH,
+        ),
+      };
+
+      // Act
+      const refusal = await refusalFrom(
+        assembleKeyRotationBegin(
+          account.keyEncryptionKey,
+          custody,
+          NO_ROTATION,
+          budgetId,
+        ),
+      );
+
+      // Assert
+      expect(refusal.reason).toBe('inconsistent');
+      expect(refusal.message).toContain('did not open');
+    });
+  });
+
   describe('the refusals, each of which produces nothing at all', () => {
     it('refuses when no factor of the account opens under the key presented', async () => {
       // Arrange
@@ -601,7 +808,12 @@ describe('assembling a key rotation', () => {
 
       // Act
       const refusal = await refusalFrom(
-        assembleKeyRotationBegin(stranger, account.custody, NO_ROTATION),
+        assembleKeyRotationBegin(
+          stranger,
+          account.custody,
+          NO_ROTATION,
+          UNWATCHED_BUDGET,
+        ),
       );
 
       // Assert
@@ -624,6 +836,7 @@ describe('assembling a key rotation', () => {
           account.keyEncryptionKey,
           custody,
           NO_ROTATION,
+          UNWATCHED_BUDGET,
         ),
       );
 
@@ -651,6 +864,7 @@ describe('assembling a key rotation', () => {
           account.keyEncryptionKey,
           custody,
           NO_ROTATION,
+          UNWATCHED_BUDGET,
         ),
       );
 
@@ -676,6 +890,7 @@ describe('assembling a key rotation', () => {
           account.keyEncryptionKey,
           custody,
           NO_ROTATION,
+          UNWATCHED_BUDGET,
         ),
       );
 
@@ -700,6 +915,7 @@ describe('assembling a key rotation', () => {
           account.keyEncryptionKey,
           custody,
           NO_ROTATION,
+          UNWATCHED_BUDGET,
         ),
       );
 
@@ -729,6 +945,7 @@ describe('assembling a key rotation', () => {
           account.keyEncryptionKey,
           custody,
           NO_ROTATION,
+          UNWATCHED_BUDGET,
         ),
       );
 
@@ -750,6 +967,7 @@ describe('assembling a key rotation', () => {
         account.keyEncryptionKey,
         account.custody,
         NO_ROTATION,
+        UNWATCHED_BUDGET,
       );
       const opening = account.custody.factors[0].factorId;
       const seals = begun.seals.filter((seal) => seal.factorId !== opening);
@@ -778,6 +996,7 @@ describe('assembling a key rotation', () => {
         account.keyEncryptionKey,
         account.custody,
         NO_ROTATION,
+        UNWATCHED_BUDGET,
       );
       const dropped = account.custody.factors[1].factorId;
 
@@ -808,6 +1027,7 @@ describe('assembling a key rotation', () => {
         account.keyEncryptionKey,
         account.custody,
         NO_ROTATION,
+        UNWATCHED_BUDGET,
       );
       const narrowed = await sealFactorManifest(
         begun.next.contentKey,

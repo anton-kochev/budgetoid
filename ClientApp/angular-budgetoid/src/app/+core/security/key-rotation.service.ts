@@ -388,7 +388,7 @@ function stagedRotationOf(
 //     believe that factor already holds the new keys.
 //
 // Checked one way only, the other passes cleanly — and it is not the same
-// comparison `key-rotation-material.ts` makes either. That module's fourth
+// comparison `key-rotation-material.ts` makes either. That module's fifth
 // refusal judges the **staged** seals against the **staged** manifest, which on
 // a resume is the set as it was when the run began: the two agree perfectly
 // while neither of them is the set the account holds now.
@@ -969,6 +969,7 @@ export class KeyRotationService {
         ceremony.keyEncryptionKey,
         custody,
         state,
+        budgetId,
       );
     } catch (error: unknown) {
       // Refused before anything was posted, so what is on file is what the
