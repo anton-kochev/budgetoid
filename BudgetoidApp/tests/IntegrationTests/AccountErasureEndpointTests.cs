@@ -221,6 +221,13 @@ public sealed class AccountErasureEndpointTests
             await Assert.That(before[table.Name]).IsGreaterThan(0L);
         }
 
+        // The set carries more factor rows than live codes under its credential, so one of them
+        // stands for a code already spent. The wrapped_account_keys count below includes that row.
+        (long setFactors, long setHashes) = await CountSetRowsAsync(admin, userId);
+        await Assert.That(setFactors)
+            .IsGreaterThan(setHashes)
+            .Because("the seeded set must carry a factor row for a code already spent");
+
         // Act
         HttpResponseMessage response = await EraseAsync(client, device, userId);
 
@@ -718,9 +725,8 @@ public sealed class AccountErasureEndpointTests
         // passkey, so for that account this is the only thing the before-count loop finds on the
         // table. Filed against the passkey seeded just above rather than against the credential
         // RegisterPasskeyAsync registers, because a second row hung off that credential would collide
-        // on PK_wrapped_account_keys. A passkey rather than the recovery-code set below because a
-        // passkey is the factor whose PRF output derives the key-encryption key in production; either
-        // is legal, the federated credential is not.
+        // on PK_wrapped_account_keys. The recovery-code set below carries factor rows of its own; either
+        // credential is legal, the federated credential is not.
         db.WrappedAccountKeys.Add(WrappedAccountKeys.For(
             passkey,
 
@@ -750,6 +756,21 @@ public sealed class AccountErasureEndpointTests
                 recoveryCodes, RecoveryCodeVerifierFor(userId, ordinal), SeedInstant));
         }
 
+        // One factor row per code, plus one more standing for a code already spent. At rest a spent
+        // code is exactly that — a set factor outnumbering the hash rows, because redemption deletes
+        // the hash and nothing links the two tables. See SeededSpentCodeCount.
+        for (int ordinal = 0; ordinal < SeededRecoveryCodeCount + SeededSpentCodeCount; ordinal++)
+        {
+            db.WrappedAccountKeys.Add(WrappedAccountKeys.For(
+                recoveryCodes,
+
+                // Fresh per row for the reason the passkey's factor id above is: the key is global.
+                Guid.CreateVersion7(),
+                WrappedPrivateKeyPayload(0xC5),
+                EncapsulatedAccountKeysPayload(0x5C),
+                SeedInstant));
+        }
+
         await db.SaveChangesAsync();
     }
 
@@ -763,6 +784,26 @@ public sealed class AccountErasureEndpointTests
     /// carry away wholesale.
     /// </remarks>
     private const int SeededRecoveryCodeCount = 3;
+
+    /// <summary>
+    /// How many of the seeded set's factor rows stand for a code already spent: factor rows with no
+    /// hash row beside them.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Seeded rather than produced by a redemption, for the reason <see cref="SeedIdentityRowsAsync" />
+    /// gives for writing out of band: the shape is what matters, and a spent code's shape at rest is a
+    /// factor row outnumbering the hash rows.
+    /// </para>
+    /// <para>
+    /// Today no production mutation separates this seed from the zero-rows assertion that was already
+    /// there: erasure is one composite cascade from <c>credentials</c>, and nothing links a factor row
+    /// to a hash row, so the spent code's factor goes with the live ones. The seed pins AC4 against a
+    /// future schema that links the two — a factor→hash foreign key with <c>ON DELETE SET NULL</c>,
+    /// say — not against today's code.
+    /// </para>
+    /// </remarks>
+    private const int SeededSpentCodeCount = 1;
 
     /// <summary>
     /// One verifier of the seeded set: the owner's id, zero padding, and the code's ordinal in the
@@ -844,6 +885,35 @@ public sealed class AccountErasureEndpointTests
             connection);
         command.Parameters.AddWithValue("owner", budgetId);
         return await ReadCountAsync(command, table);
+    }
+
+    /// <summary>
+    /// How many factor rows and how many hash rows one account's recovery-code set holds, each counted
+    /// under the set's own credential.
+    /// </summary>
+    private static async Task<(long Factors, long Hashes)> CountSetRowsAsync(NpgsqlConnection connection, Guid userId)
+    {
+        await using NpgsqlCommand factors = new(
+            """
+            select count(*) from wrapped_account_keys
+            join credentials on credentials.id = wrapped_account_keys.credential_id
+            where credentials.user_id = @owner and credentials.type = 'recovery_codes'
+            """,
+            connection);
+        factors.Parameters.AddWithValue("owner", userId);
+
+        await using NpgsqlCommand hashes = new(
+            """
+            select count(*) from recovery_code_hashes
+            join credentials on credentials.id = recovery_code_hashes.credential_id
+            where credentials.user_id = @owner and credentials.type = 'recovery_codes'
+            """,
+            connection);
+        hashes.Parameters.AddWithValue("owner", userId);
+
+        return (
+            await ReadCountAsync(factors, "set factor rows"),
+            await ReadCountAsync(hashes, "set hash rows"));
     }
 
     private static async Task<long> ScalarAsync(NpgsqlConnection connection, string sql)

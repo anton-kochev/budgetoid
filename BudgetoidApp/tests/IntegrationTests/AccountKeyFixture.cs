@@ -66,6 +66,40 @@ internal sealed class AccountKeyFixture
             RandomNumberGenerator.GetBytes(ClientKeyCustody.KeyBytes));
 
     /// <summary>
+    /// An account over two keys the caller already holds — typically ones a factor just opened out of
+    /// the server's answer — so factors minted from it carry those keys and no others.
+    /// </summary>
+    /// <remarks>
+    /// <b>The keys are the caller's, and that is the whole reason this exists beside
+    /// <see cref="Mint" />.</b> A case claiming that keys were <em>carried</em> onto a new factor has to
+    /// seal the keys it recovered, not the ones the arrangement drew: minted from the original fixture,
+    /// the new factor holds the right pair whatever the recovery handed back, and "carried" is a
+    /// tautology. The buffers are copied, so the caller's later use of its own arrays changes nothing
+    /// here.
+    /// </remarks>
+    public static AccountKeyFixture Over(byte[] contentKey, byte[] indexKey)
+    {
+        ArgumentNullException.ThrowIfNull(contentKey);
+        ArgumentNullException.ThrowIfNull(indexKey);
+
+        if (contentKey.Length != ClientKeyCustody.KeyBytes)
+        {
+            throw new ArgumentException(
+                $"A content key is {ClientKeyCustody.KeyBytes} bytes, got {contentKey.Length}.",
+                nameof(contentKey));
+        }
+
+        if (indexKey.Length != ClientKeyCustody.KeyBytes)
+        {
+            throw new ArgumentException(
+                $"An index key is {ClientKeyCustody.KeyBytes} bytes, got {indexKey.Length}.",
+                nameof(indexKey));
+        }
+
+        return new AccountKeyFixture([.. contentKey], [.. indexKey]);
+    }
+
+    /// <summary>
     /// A fresh factor: its own identifier, its own key-encryption key, its own P-256 pair, and this
     /// account's two keys encapsulated to that pair's public half.
     /// </summary>

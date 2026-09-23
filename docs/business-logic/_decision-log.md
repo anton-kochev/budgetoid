@@ -8,6 +8,34 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-09-23 — A spent recovery code keeps its factor, because it is the way back
+
+**Context:** redeeming a code has always deleted only its `recovery_code_hashes` row, and the
+code's `wrapped_account_keys` row stayed. The docs treated that row as harmless leftover state.
+Revoking a factor, on the other hand, deletes its stored values. Read literally, that rule could be
+applied to a spent code too, and nothing in the repository would object.
+
+**Decision:** a spent code's factor stays: its wrapped private key, its encapsulated account keys,
+and its entry in the manifest. Spending a code is not revoking it. The row is load-bearing, not
+harmless. Somebody who has lost every authenticator and spent the last code opens the account keys
+through it, and that is what lets them register a replacement passkey. Two tests and the comment on
+the withheld `DELETE` grant now hold it; [account-keys.md](account-keys.md) owns the rule.
+
+**Alternatives considered:**
+- **Delete the factor on consumption and write a new manifest**: rejected. It turns every sign-in by
+  code into a change to the factor set, and it closes the only way back for the person the codes
+  exist for. The failure would surface on their worst day, on a later request, with no error on the
+  redemption that caused it.
+- **Keep the row but stop counting it as a factor**: rejected. The code still derives the
+  key-encryption key that opens the row, so the factor can still obtain the content key. Refusing
+  to count it would say something false about the account.
+
+**Accepted cost:** the path back lasts only as long as the session the last redemption opened. A
+spent code can open keys but cannot sign in. The browser has no screen for either step yet, so the
+path exists at the API only.
+
+---
+
 ## 2026-09-23 — A name collision during a rotation is refused under a kind of its own
 
 **Context:** a rotation re-seals each indexed name under the incoming index key while rows it has not

@@ -625,11 +625,13 @@ erDiagram
   files eleven wrapped pairs in the same save as the account, and registration is the only way an
   account comes to exist, so **every** account has its keys wrapped under both kinds of secret.
   **The reading half is built and reached only from the other kind of secret**: a passkey sign-in
-  opens the envelopes filed under its own credential and holds the account's keys for the visit, and
-  the same class would open a redeemed code's ten — one entry or ten is a difference it was written
-  for. What is missing is the browser surface in front of it: nothing redeems a code and nothing
-  issues a replacement set, so no code has ever derived a key-encryption key outside `/register` and
-  a spec. Custody is what makes the rule durable; on this credential possession is still the whole
+  reads every factor the account holds, opens the one its own key-encryption key fits, and holds the
+  account's keys for the visit. The same class would open a redeemed code's entry, since it tries
+  every entry and does not care which kind of factor fits. The server half of a redemption is built
+  too: `POST /api/recovery-codes/redemption` opens the session this rule describes, and
+  `GET /api/me/account-keys` answers it with every factor of the account. What is missing is the
+  browser surface in front of it: no screen redeems a code or issues a replacement set, so in the
+  browser no code has ever derived a key-encryption key outside `/register`. Custody is what makes the rule durable; on this credential possession is still the whole
   of why it holds today.
   - **It lasts 14 days, the same interval a passkey sign-in gets, and the equality is the rule
     rather than a coincidence.** A set of codes is a secret its holder possesses exactly as an
@@ -700,9 +702,13 @@ erDiagram
   `credentials (id, user_id, type)` `ON DELETE CASCADE` — so deleting it would cascade the session
   away in the same request and sign the person straight back out. It would also be an **anonymous**
   request removing a `credentials` row, on a table nothing beneath the application polices.
+  - **The set's ten factor rows hang off it too**, by the same kind of cascade. Deleting the set
+    would take the spent codes' factors with it, and one of those is what somebody who has just spent
+    the last code needs to open the account keys. [account-keys.md](account-keys.md) owns that rule.
 - **Enforced in**: what `RedeemRecoveryCodeHandler` does not call, and
-  `Redemption_OfTheLastCode_LeavesTheSetStandingWithNothingLeft`, which spends all ten through the
-  real route and asserts the same credential id is still there with ten sessions hanging off it.
+  `Redemption_OfTheLastCode_LeavesTheSetStandingWithNothingLeft`. That test spends all ten through
+  the real route and asserts two things: the same credential id is still there with ten sessions
+  hanging off it, and every `wrapped_account_keys` row is unchanged, byte for byte.
 - **Counterexample** — somebody will try to clean this up, because a set with no codes looks like a
   row with no purpose. `IRecoveryCodeRepository` offers `DeleteSetAsync` and the redemption handler
   holds the port that exposes it; the call it must never make is right there.
@@ -906,6 +912,11 @@ ELSE                                                               ← first iss
   ever existed without a set. What survives is narrower: an account whose ten codes are all spent,
   or whose card is lost, needs a passkey assertion to be issued another. The settings screen states
   the count, so somebody who goes looking is told, and nobody who does not is ever prompted.
+  - **All ten spent is not a dead end, at the API.** The session the last redemption opens is
+    `Full`, and registering a passkey asks for nothing more. The spent code's factor still opens the
+    account keys, so that session can register a passkey carrying them, and the new passkey can
+    then pass this gate. [account-keys.md](account-keys.md) owns why that factor survives. The
+    browser offers neither step yet, so today nobody can take this path from a screen.
 - **`CK_credentials_type_shape`'s `recovery_codes` arm is byte-identical to its `passkey` arm**, so
   that constraint **does not discriminate between those two types**. Deliberate: both are
   self-contained credentials with no issuer and no provider subject. What tells them apart is

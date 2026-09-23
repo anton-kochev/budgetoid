@@ -34,10 +34,12 @@ namespace IntegrationTests;
 /// no real account has, since a real passkey never exists without its factor row.
 /// </para>
 /// <para>
-/// <b>The recovery-codes sign-in arm is refused, not overlooked.</b> Issuing a card replaces the
-/// account's set, and replacing the set sweeps the sessions it opened — including this client's own.
-/// The replacement cookie never reaches the client, whose <c>Cookie</c> header is pinned
-/// (<c>ApiFactory.CreateCookieClient</c>), so every request after the issue would answer 401.
+/// <b>No card is issued over a recovery-code session, and that is refused, not overlooked.</b>
+/// Issuing a card replaces the account's set, and replacing the set sweeps the sessions it opened —
+/// including this client's own. The replacement cookie never reaches the client, whose <c>Cookie</c>
+/// header is pinned (<c>ApiFactory.CreateCookieClient</c>), so every request after the issue would
+/// answer 401. A recovery-code session is still used here — the redemption test acts on one — but
+/// every card in this file is issued on the seeded passkey's session, before any code is redeemed.
 /// </para>
 /// <para>
 /// <b>Recovered keys are compared as base64url strings, never as <c>byte[]</c></b>: TUnit's
@@ -60,6 +62,8 @@ public sealed class AccountKeyContinuityTests
     private const string PayeesPath = "/api/payees";
 
     private const string RecoveryCodesPath = "/api/me/recovery-codes";
+    private const string RedemptionPath = "/api/recovery-codes/redemption";
+    private const string AccountKeysPath = "/api/me/account-keys";
 
     /// <summary>
     /// The size of a recovery-code card, declared here rather than read off the handler: a handler
@@ -348,6 +352,136 @@ public sealed class AccountKeyContinuityTests
         }
     }
 
+    /// <summary>
+    /// Somebody holding no authenticator and one spent code — the last of the card — signs in with it,
+    /// opens the account keys from what the server serves under that code's factor, and carries them
+    /// onto a passkey registered on the session the code opened.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The arranged passkey stands in for the lost authenticator, and it is never touched after the
+    /// arrangement.</b> Every request in the act rides the session the redemption opened, on a client
+    /// that carries nothing else, so no step can be quietly answered by the passkey's own session.
+    /// </para>
+    /// <para>
+    /// <b>The new factor seals the keys the test recovered, never the ones it arranged</b> —
+    /// <see cref="AccountKeyFixture.Over" /> exists for that. Minted from the arranged fixture instead,
+    /// the new factor would hold the right pair whatever the served row handed back, and "carried" would
+    /// be a tautology. The new row is then opened and compared against the <em>arranged</em> keys, so the
+    /// chain is: the served code row opened to some pair, that pair was sealed onto the new passkey, and
+    /// the stored new row opens to the pair the account started with.
+    /// </para>
+    /// <para>
+    /// <b>The spent code's row has to outlive its code.</b> A spent code is a deleted
+    /// <c>recovery_code_hashes</c> row; its factor is a <c>wrapped_account_keys</c> row hanging off the
+    /// set's credential, and redeeming the last code leaves that credential standing
+    /// (<c>RecoveryCodeRedemptionTests.Redemption_OfTheLastCode_LeavesTheSetStandingWithNothingLeft</c>).
+    /// So the factor still answers after its code is gone — which is what lets a person who has just
+    /// burned the last line of the card still reach the keys under it. The factor-set census after the
+    /// registration holds that the registration did not take it away either.
+    /// </para>
+    /// <para>
+    /// The served row is opened with the factor's key-encryption key as
+    /// <see cref="AccountKeyFixture.MintRecoveryCodeFactor" /> derived it — from the code, through
+    /// <c>ClientKeyCustody.KeyEncryptionKeyFromRecoveryCode</c> — which is the key a browser holding
+    /// that code derives.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Redemption_OfTheLastCode_LeavesItsFactorOpeningTheKeys_AndCarriesThemOntoANewPasskey()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
+
+        AccountKeyFixture keys = AccountKeyFixture.Mint();
+        SyntheticAuthenticator lostDevice = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        AccountKeyFixture.Factor lostPasskey = keys.MintFactor();
+        (await RegisterPasskeyAsync(client, lostDevice, lostPasskey)).EnsureSuccessStatusCode();
+
+        AccountKeyFixture.RecoveryCodeFactor[] card =
+            [.. Enumerable.Range(0, CardSize).Select(_ => keys.MintRecoveryCodeFactor())];
+        (await IssueRecoveryCodesAsync(client, lostDevice, userId, card)).EnsureSuccessStatusCode();
+        AccountKeyFixture.Factor[] codeFactors = [.. card.Select(code => code.Factor)];
+
+        // Every code but the last, each on a client of its own. Nothing past this line uses the
+        // passkey or the session it signed in with.
+        foreach (AccountKeyFixture.RecoveryCodeFactor code in card[..^1])
+        {
+            (await RedeemAsync(host.Factory.CreateClient(), code.Verifier)).EnsureSuccessStatusCode();
+        }
+
+        AccountKeyFixture.RecoveryCodeFactor lastCode = card[^1];
+
+        // Act — the last code, on a client carrying nothing at all.
+        HttpResponseMessage redeemed = await RedeemAsync(host.Factory.CreateClient(), lastCode.Verifier);
+        await Assert.That(redeemed.StatusCode).IsEqualTo(HttpStatusCode.OK);
+
+        JsonNode redemption = (await JsonNode.ParseAsync(await redeemed.Content.ReadAsStreamAsync()))!;
+        await Assert.That(redemption["remaining"]!.GetValue<int>())
+            .IsEqualTo(0)
+            .Because("the code redeemed here must be the last one on the card");
+
+        // The only credential this client presents is the cookie the redemption set.
+        HttpClient recovering = host.Factory.CreateClient();
+        recovering.DefaultRequestHeaders.Add(
+            "Cookie",
+            $"{SessionCookieAuthenticationTests.CookieName}={RegistrationCeremony.SessionCookieValueOf(redeemed)}");
+
+        JsonNode served = await ReadAccountKeysAsync(recovering);
+        JsonNode lastCodeEntry = FactorEntry(served, lastCode.Factor)
+            ?? throw new InvalidOperationException(
+                $"The account keys served to the recovery session carry no entry for the spent code's factor {lastCode.Factor.FactorId}.");
+
+        bool recoveredKeys = lastCode.Factor.TryOpen(
+            Base64UrlText.Decode(lastCodeEntry["wrappedPrivateKey"]!.GetValue<string>()),
+            Base64UrlText.Decode(lastCodeEntry["encapsulatedAccountKeys"]!.GetValue<string>()),
+            out byte[] recoveredContentKey,
+            out byte[] recoveredIndexKey);
+
+        await Assert.That(recoveredKeys)
+            .IsTrue()
+            .Because("the spent code's served row must open under the key-encryption key derived from that code");
+
+        // Sealed over what was recovered, never over the arranged fixture: see the remarks.
+        AccountKeyFixture carried = AccountKeyFixture.Over(recoveredContentKey, recoveredIndexKey);
+        SyntheticAuthenticator newDevice = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        AccountKeyFixture.Factor newPasskey = carried.MintFactor();
+
+        HttpResponseMessage response = await RegisterPasskeyAsync(recovering, newDevice, newPasskey);
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Created);
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        WrappedAccountKeysRow[] rows = await WrappedAccountKeysAsync(admin, userId);
+
+        await Assert.That(FactorIds(rows))
+            .IsEqualTo(FactorIds([lostPasskey, .. codeFactors, newPasskey]))
+            .Because("the account must hold the lost passkey's factor, all ten code factors and the new passkey's factor, and nothing else");
+
+        // Open only, never byte equality ahead of it: the stored row is the new passkey's, and what it
+        // must open to is the pair the account was arranged with — not the pair the fixture minted it
+        // over, which is only what the test recovered.
+        WrappedAccountKeysRow newRow = rows.Single(stored => stored.FactorId == newPasskey.Id);
+        bool opened = newPasskey.TryOpen(
+            newRow.WrappedPrivateKey,
+            newRow.EncapsulatedAccountKeys,
+            out byte[] contentKey,
+            out byte[] indexKey);
+
+        await Assert.That(opened)
+            .IsTrue()
+            .Because($"the new passkey's stored row must open under its own key and id {newPasskey.FactorId}");
+        await Assert.That(Base64UrlText.Encode(contentKey))
+            .IsEqualTo(Base64UrlText.Encode(keys.ContentKey))
+            .Because("the new passkey must hand back the content key the account started with");
+        await Assert.That(Base64UrlText.Encode(indexKey))
+            .IsEqualTo(Base64UrlText.Encode(keys.IndexKey))
+            .Because("the new passkey must hand back the index key the account started with");
+    }
+
     /// <summary>One <c>wrapped_account_keys</c> row, in the columns these tests read.</summary>
     private readonly record struct WrappedAccountKeysRow(
         Guid FactorId,
@@ -482,6 +616,30 @@ public sealed class AccountKeyContinuityTests
             userHandle = assertion.UserHandleBase64Url,
         });
     }
+
+    /// <summary>Presents one code's verifier to the redemption route, as a recovery sign-in does.</summary>
+    private static Task<HttpResponseMessage> RedeemAsync(HttpClient client, string verifier) =>
+        client.PostAsJsonAsync(RedemptionPath, new Dictionary<string, string> { ["verifier"] = verifier });
+
+    /// <summary>The account-keys read, as the client of <paramref name="client" /> is served it.</summary>
+    private static async Task<JsonNode> ReadAccountKeysAsync(HttpClient client)
+    {
+        HttpResponseMessage response = await client.GetAsync(AccountKeysPath);
+        response.EnsureSuccessStatusCode();
+
+        return (await JsonNode.ParseAsync(await response.Content.ReadAsStreamAsync()))!;
+    }
+
+    /// <summary>
+    /// The served entry filed under <paramref name="factor" />'s identifier, or <see langword="null" />.
+    /// </summary>
+    /// <remarks>
+    /// Matched on the canonical spelling, which is the one the wrapped private key is bound to: a browser
+    /// that located its entry under any other spelling would unwrap nothing.
+    /// </remarks>
+    private static JsonNode? FactorEntry(JsonNode accountKeys, AccountKeyFixture.Factor factor) =>
+        accountKeys["factors"]!.AsArray()
+            .SingleOrDefault(entry => entry!["factorId"]!.GetValue<string>() == factor.FactorId);
 
     /// <summary>Runs an options leg and returns the challenge bytes it issued.</summary>
     private static async Task<byte[]> BeginCeremonyAsync(HttpClient client, string path)

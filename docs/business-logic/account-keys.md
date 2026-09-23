@@ -2782,6 +2782,29 @@ card this system has never seen. Deleting the row would need a `DELETE` grant th
 purpose. Nothing is leaked that was not already reachable: whoever holds a spent code and a copy of
 the database could have decrypted with it before redeeming too.
 
+**The surviving row is not a remnant, and it is load-bearing.** Take somebody who has lost every
+authenticator and has just redeemed the last code on the card. To register a replacement passkey they
+must first open the account keys, because the new factor needs the existing pair encapsulated to it.
+The spent codes' factors are the only ones they can still open. Delete a factor row on consumption and
+that request fails, with no error on the redemption that caused it. Spending is not revoking:
+revocation deletes a factor's stored values, and consumption deletes only the code's power to sign in.
+- **How long the path lasts**: as long as the session the last redemption opened. A spent code opens
+  keys but cannot authenticate, so once that session ends the person needs another factor to sign in
+  at all. The browser has no redemption or add-passkey surface yet, so today this path exists at the
+  API only.
+- **Enforced in**: the absent `DELETE` grant (its comment in `app-role-grants.sql` names this path),
+  and two tests. `RecoveryCodeRedemptionTests.Redemption_OfTheLastCode_LeavesTheSetStandingWithNothingLeft`
+  spends all ten codes through the real route and asserts every factor row is still there, byte for
+  byte. `AccountKeyContinuityTests.Redemption_OfTheLastCode_LeavesItsFactorOpeningTheKeys_AndCarriesThemOntoANewPasskey`
+  walks the whole path: redeem the last code, open that spent code's served entry, then register a
+  passkey minted over the keys it recovered.
+- **A spent factor is still a factor everywhere else too.** It stays in the manifest. A rotation
+  seals to it like any other, because the seal set has to equal the live factor rows in both
+  directions. Erasure takes it through the same `credentials` cascade as the rest of the set.
+- **Counterexample**: whoever adds a link from a hash row to its factor row will be tempted to delete
+  the factor when the code is spent, because a factor whose code is gone looks like leftover state.
+  It isn't leftover. The row that looks orphaned is how its holder gets back in.
+
 ## Decision Trees
 
 **Which branch derives the key-encryption key?**

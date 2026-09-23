@@ -754,6 +754,16 @@ public sealed class RecoveryCodeRedemptionTests
     /// later code is spent — each redemption is its own sign-in — and that is what makes "the credential
     /// still stands" observable as more than a row count.
     /// </para>
+    /// <para>
+    /// <b>A spent code's factor outlives the code.</b> Redemption deletes a <c>recovery_code_hashes</c>
+    /// row and nothing else: the code's <c>wrapped_account_keys</c> row hangs off the set's credential,
+    /// not off the hash, and nothing links the two tables. So every factor row the account held before
+    /// the ten redemptions is still there after them, with the same bytes — which is what lets somebody
+    /// who has just burned the last line of the card still open the account keys under it
+    /// (<c>AccountKeyContinuityTests.Redemption_OfTheLastCode_LeavesItsFactorOpeningTheKeys_AndCarriesThemOntoANewPasskey</c>
+    /// opens one). The rows are compared by bytes rather than opened, because this file's envelopes are
+    /// <see cref="WrappedKeyFixture" /> values that open nothing — see <see cref="SubmissionsOf" />.
+    /// </para>
     /// </remarks>
     [Test]
     public async Task Redemption_OfTheLastCode_LeavesTheSetStandingWithNothingLeft()
@@ -773,6 +783,14 @@ public sealed class RecoveryCodeRedemptionTests
         // Every session standing before the act, so the ten counted below are the ten these redemptions
         // opened rather than those plus the sign-in that issued the set.
         IReadOnlyList<SessionRow> before = await ReadSessionsAsync(admin);
+
+        // Every factor row the account holds before the act, bytes and all. The set's ten are counted
+        // first, so "nothing changed" below is a claim about ten rows standing and not about an empty
+        // table agreeing with itself.
+        IReadOnlyList<FactorRow> factorsBefore = await ReadFactorRowsAsync(admin, userId);
+        await Assert.That(factorsBefore.Count(row => row.CredentialId == setId))
+            .IsEqualTo(RequiredCodeCount)
+            .Because("the issue must have filed one wrapped_account_keys row per code under the set's credential");
 
         // Act — all ten, each on a client of its own, counting down as it goes.
         for (int spent = 0; spent < RequiredCodeCount; spent++)
@@ -795,6 +813,12 @@ public sealed class RecoveryCodeRedemptionTests
         IReadOnlyList<SessionRow> sessions = await SessionsOpenedSinceAsync(admin, before);
         await Assert.That(sessions.Count).IsEqualTo(RequiredCodeCount);
         await Assert.That(sessions.All(session => session.CredentialId == setId)).IsTrue();
+
+        // And every spent code's factor still stands, byte for byte. Bytes and not only ids, because the
+        // app role holds UPDATE (encapsulated_account_keys): a row can stand and still stop opening.
+        await Assert.That(FactorDrift(factorsBefore, await ReadFactorRowsAsync(admin, userId)))
+            .IsEmpty()
+            .Because("redeeming a code deletes its hash row and must leave every wrapped_account_keys row as it was");
     }
 
     /// <summary>
@@ -805,6 +829,89 @@ public sealed class RecoveryCodeRedemptionTests
     /// has: no assertion here matches a session <em>by</em> id.
     /// </remarks>
     private sealed record SessionRow(Guid Id, Guid UserId, Guid CredentialId, string Kind);
+
+    /// <summary>One <c>wrapped_account_keys</c> row, in the columns a factor needs to open.</summary>
+    private sealed record FactorRow(
+        Guid FactorId,
+        Guid CredentialId,
+        byte[] WrappedPrivateKey,
+        byte[] EncapsulatedAccountKeys);
+
+    /// <summary>
+    /// Every <c>wrapped_account_keys</c> row of one account, on the superuser connection.
+    /// </summary>
+    /// <remarks>
+    /// Superuser for the reason <see cref="ReadSessionsAsync" /> gives: the table carries
+    /// <c>user_isolation</c>, so a policed read reports a standing row as absent.
+    /// </remarks>
+    private static async Task<IReadOnlyList<FactorRow>> ReadFactorRowsAsync(NpgsqlConnection admin, Guid userId)
+    {
+        await using NpgsqlCommand command = new(
+            """
+            select factor_id, credential_id, wrapped_private_key, encapsulated_account_keys
+            from wrapped_account_keys
+            where user_id = @userId
+            order by factor_id
+            """,
+            admin);
+        command.Parameters.AddWithValue("userId", userId);
+
+        List<FactorRow> rows = [];
+        await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            rows.Add(new FactorRow(
+                reader.GetGuid(0),
+                reader.GetGuid(1),
+                reader.GetFieldValue<byte[]>(2),
+                reader.GetFieldValue<byte[]>(3)));
+        }
+
+        return rows;
+    }
+
+    /// <summary>
+    /// One line per factor row that went, arrived, or changed a byte between <paramref name="before" />
+    /// and <paramref name="after" />; empty when the two are identical.
+    /// </summary>
+    /// <remarks>
+    /// A list of named differences rather than one joined string compared for equality: a string
+    /// assertion truncates and names only its first difference, while an emptiness assertion over this
+    /// list prints every offender and says which column moved.
+    /// </remarks>
+    private static List<string> FactorDrift(IReadOnlyList<FactorRow> before, IReadOnlyList<FactorRow> after)
+    {
+        Dictionary<Guid, FactorRow> standing = after.ToDictionary(row => row.FactorId);
+        List<string> drift = [];
+
+        foreach (FactorRow was in before)
+        {
+            if (!standing.Remove(was.FactorId, out FactorRow? now))
+            {
+                drift.Add($"factor {was.FactorId:D}: row is gone");
+                continue;
+            }
+
+            if (now.CredentialId != was.CredentialId)
+            {
+                drift.Add($"factor {was.FactorId:D}: credential_id changed");
+            }
+
+            if (!now.WrappedPrivateKey.AsSpan().SequenceEqual(was.WrappedPrivateKey))
+            {
+                drift.Add($"factor {was.FactorId:D}: wrapped_private_key changed");
+            }
+
+            if (!now.EncapsulatedAccountKeys.AsSpan().SequenceEqual(was.EncapsulatedAccountKeys))
+            {
+                drift.Add($"factor {was.FactorId:D}: encapsulated_account_keys changed");
+            }
+        }
+
+        drift.AddRange(standing.Keys.Select(factorId => $"factor {factorId:D}: row appeared"));
+
+        return drift;
+    }
 
     /// <summary>
     /// <paramref name="count" /> distinct verifiers of <see cref="VerifierLength" /> bytes each, base64url

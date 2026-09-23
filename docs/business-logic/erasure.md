@@ -629,3 +629,11 @@ ELSE
   [ADR 0017](../decisions/0017-consume-a-recovery-code-by-deleting-its-row.md). The cost is
   symmetrical too: *"was this code used, or never issued?"* is as unanswerable as *"was this account
   erased?"*, and deliberately so.
+  - **A spent code's factor row does stay behind its redemption, and erasure takes it all the
+    same.** Redemption leaves the code's `wrapped_account_keys` row on purpose
+    ([account-keys.md](account-keys.md) owns why). That row cascades from `credentials` exactly like
+    a live code's, so erasure reaches it by the same structure.
+    `AccountErasureEndpointTests.Erase_ForAFullyFurnishedAccount_LeavesNoRowInAnyTable` seeds a set
+    with more factor rows than live codes, and asserts none is left. Today no production change can
+    tell a spent code's row from a live one, because nothing links a factor row to a hash row. The
+    seed is there for the day something does.
