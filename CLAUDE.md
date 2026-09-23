@@ -352,14 +352,18 @@ Load-bearing rules. Each links the doc that argues it — **read that doc before
 - **Business logic** — start at `docs/business-logic/_overview.md`. Read the relevant file
   before modifying business rules; if none exists for the domain area, create one following
   the structure of the others.
-- **Engineering invariants** — [data isolation](docs/engineering/data-isolation.md),
+- **Engineering invariants** —
+  [adversarial properties](docs/engineering/adversarial-properties.md),
+  [data isolation](docs/engineering/data-isolation.md),
   [data inventory](docs/engineering/data-inventory.md),
   [migrations](docs/engineering/migrations.md),
   [no third-party origins](docs/engineering/no-third-party-origins.md),
   [security headers](docs/engineering/security-headers.md), and
   [whole list reads](docs/engineering/whole-list-reads.md). Each names the tests that lock it:
   removing a `HasQueryFilter` line, a policy, a self-hosted font, or a directive from the
-  shipped `Content-Security-Policy` must fail one.
+  shipped `Content-Security-Policy` must fail one. The adversarial-properties chapter is the
+  exception: its four properties are held by argument rather than by a test, so a wrong sentence
+  there is a defect.
 - A change to a design rule, business rule, or invariant updates the owning doc **in the
   same commit**.
 - **`docs/` documents only what is true today.** Agreed-but-unbuilt design lives in the

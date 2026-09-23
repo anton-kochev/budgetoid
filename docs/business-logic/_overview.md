@@ -180,9 +180,12 @@ references are additionally constrained by composite foreign keys to a row in th
 - [Key Rotation](key-rotation.md) — the remedy for a compromise of the keys themselves, why the
   next generation is staged beside the one still in force, one row per surviving factor, and the row
   stamp a server that can decrypt nothing uses to tell a finished rewrite from an unfinished one. It
-  is what the per-factor key pair exists for. Schema, domain behaviour and the begin only today; no
-  route reaches any of it, and the factor-set gate the begin holds is over its seals rather than over
-  the manifest this server cannot read.
+  is what the per-factor key pair exists for. A browser begins, resumes and completes a run over
+  four `/api/me/key-rotation` routes, and the factor-set gate the begin holds is over its seals
+  rather than over the manifest this server cannot read.
+- [Adversarial Properties](../engineering/adversarial-properties.md) — the written argument for
+  what the operator cannot read and cannot forge, the trusted-code assumption all of it rests on,
+  where each claim is narrower than its words, and what the operator and the provider do observe.
 - [Sessions](sessions.md) — an established sign-in the product records and can end itself.
 - [Budgets](budgets.md) — the pool of money a user presides over, the unit of tenancy, its default,
   and its base currency.
