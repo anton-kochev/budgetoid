@@ -625,6 +625,16 @@ ELSE
   deliberately takes no budget id, following
   `ITransactionRepository.DeleteAllForAmbientBudgetAsync`: an id parameter would be a tenancy
   argument with no ownership check to pair with it.
+- **Tenancy end to end** — `DataExportTenancyTests` signs two accounts in on one API, furnishes
+  each with one row per budget-owned table, and exports both. A tenant's user id, budget id and
+  seeded row ids all appear in its own document, and none appears in the other's. Both layers are
+  in place there, so it does not isolate either: with all five `BudgetIsolation` filters commented
+  out it stays green on the policy alone. Each layer is probed alone by `RlsIsolationTests` and
+  `BudgetIsolationTests`. What the file proves is the whole path answering two real tenants.
+  Presence is asserted before absence, by the same search, so an export whose content reads came
+  back empty, or a seeder that wrote nothing, fails rather than passing. The EF escape hatches
+  `BannedSymbols.txt` names are compile errors rather than tested — a `.IgnoreQueryFilters()`
+  added to `ExportReadService` fails the build with `RS0030`.
 - **[Erasure](erasure.md)** — `ErasureIrreversibilityTests` pins the `/api/me/erasure` **resource**
   rather than the `/api/me` namespace, and names an export of one's own data as exactly what that
   narrowing was written to leave room for. The route-table scan still applies: no reversal word may

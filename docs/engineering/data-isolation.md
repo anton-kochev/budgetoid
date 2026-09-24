@@ -390,9 +390,12 @@ endpoint-level two-factory), the `BudgetId` immutability unit test in
 `tests/UnitTests/TransactionTests.cs`, `tests/UnitTests/OwnershipKeyImmutabilityTests.cs` (the same
 rule generalised: every `UserId` and `BudgetId` the Domain declares, derived from the assembly and
 pinned, so `credentials.user_id` — the immutability the unscoped delete above rests on — is held by
-a test rather than by nobody, and a new entity carrying a tenancy key cannot arrive unchecked), and
+a test rather than by nobody, and a new entity carrying a tenancy key cannot arrive unchecked),
 `tests/IntegrationTests/DataExportRefusalTests.cs` (the
 owner-scoped `Budgets` read: a user owning a budget the request is not inside is refused rather than
-answered with the part the filters can reach — see [export.md](../business-logic/export.md)).
+answered with the part the filters can reach — see [export.md](../business-logic/export.md)), and
+`tests/IntegrationTests/DataExportTenancyTests.cs` (two tenants exporting from one API, each
+document naming its own user, budget and seeded row ids and none of the other's — both layers at
+once, so it stays green with the query filters removed, and does not stand in for the tests above).
 Removing a `HasQueryFilter` line must make the DbContext-level test fail; removing — or renaming — a policy must make the RLS ones fail, and must
 also refuse the next deploy.
