@@ -278,18 +278,15 @@ export class MeApiService extends BaseApiService {
     );
   }
 
-  // The export is bytes, never a parsed document, and that is the whole point
-  // of the feature rather than a stylistic choice. Amounts ship as JSON numbers
-  // at `numeric(14,4)` scale, which is exact for the .NET writer but not for a
-  // JavaScript reader: JSON.parse turns them into IEEE-754 doubles whose
-  // significand does not cover that column's range. Anything that parses the
-  // response and re-serializes it — including `get<ExportDocument>()`, which is
-  // what this will look like it should have been — silently degrades the very
-  // file the feature exists to hand over. The client is a pipe: it reads no
-  // property of the document and writes the bytes it received to disk.
-  // See docs/business-logic/export.md, "Money ships as JSON numbers".
-  public getExport(): Observable<Blob> {
-    return this.getBlob('api/me/export');
+  // The export as the server's text, unparsed. The client does read the
+  // document now — every name and note is opened in the tab before the file is
+  // saved — but the one parse belongs to `decodeExportDocument`, which is strict
+  // about the shape and argues why the money column survives it. A
+  // `get<ExportDocument>()` would parse here with no shape check at all and
+  // hand the decoder an object it could no longer refuse as `unrecognised`.
+  // See docs/design/components.md, "Export section".
+  public getExport(): Observable<string> {
+    return this.getText('api/me/export');
   }
 
   // Ascending by `createdAtUtc`, as the server sends it. The array is `readonly`

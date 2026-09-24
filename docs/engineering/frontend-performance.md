@@ -23,7 +23,7 @@ it](#a-profile-is-a-device-and-only-on-the-machine-that-calibrated-it).
 
 ## The read that is measured
 
-The transaction list is the widest narrative read in the product. Five sealed columns arrive
+The transaction list is the widest narrative read a screen renders. Five sealed columns arrive
 per row — the transaction's own note, plus four denormalised foreign names joined onto it —
 so a 200-row page carries **1000 envelopes**. Opened a row at a time, the same account name
 and the same counterparty name are opened once per row that references them — a budget with
@@ -39,6 +39,14 @@ the collector forgot costs one open and can never cost a rendered value.
 `TransactionsService` reads in two passes: collect the distinct requests through
 `transactionNarrativeRequests`, open them as one batch, then map the rows through the opener
 that comes back.
+
+**The export is wider than any screen, and it takes the same driver.** `openExportDocument` in
+`settings/export-document.ts` collects every narrative member of the whole document — every
+name and note in the account, not a page — opens them as one batch through custody's opener,
+and puts each answer back where its request came from. A case in `export-document.spec.ts`
+holds that it hands the frame back between chunks. **Nothing in this chapter measured it**: the
+harness drives the transaction read only, so no figure here says how long an export's opens
+take or how its frames behave.
 
 **The loop holding the list is what yields, and that is the load-bearing half.** A yield
 written inside a single field's open, under one outer `Promise.all`, chunks nothing: every
@@ -330,6 +338,7 @@ and mapping into 200 view models. It does **not** measure:
 
 - Angular change detection or template rendering;
 - HTTP, or parsing the JSON the columns arrived in;
+- the export, which opens every narrative value in the account through the same batch;
 - memory pressure or thermal throttling;
 - any engine that is not Chrome.
 

@@ -1,13 +1,26 @@
 import { HttpErrorResponse } from '@angular/common/http';
+import { signal, type Signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import {
   MeApiService,
+  type AccountKeyCustodyDto,
   type CredentialSummary,
   type MeDto,
 } from '@app-core/api/me-api.service';
+import { AccountKeyCustodyService } from '@app-core/security/account-key-custody.service';
+import {
+  KeyRotationService,
+  type StagedRotation,
+} from '@app-core/security/key-rotation.service';
+import {
+  NarrativeFieldMisuseError,
+  sealNarrativeField,
+} from '@app-core/security/narrative-cipher';
+import type { NarrativeFieldBinding } from '@app-core/security/narrative-cipher';
+import type { NarrativeText } from '@app-core/security/narrative-text';
 import { FileDownloadService } from '@app-core/services/file-download.service';
-import { Observable, Subject, of, throwError } from 'rxjs';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { NEVER, Observable, Subject, of, throwError } from 'rxjs';
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { SettingsService } from './settings.service';
 
 const PASSKEY: CredentialSummary = {
@@ -31,13 +44,152 @@ function meDto(email: string): MeDto {
   return { budgetId: BUDGET_ID, email };
 }
 
+// Canonical lower-case hyphenated UUIDs, version 7 in shape, as the server's
+// `Guid` serializes them. The binding refuses any other spelling, so a fixture
+// id written any other way would make every case below an `unrecognised`.
+const EXPORT_IDS = {
+  user: '01927f3a-6b1c-7d2e-8f30-4a5b6c7d8e01',
+  budget: '01927f3a-6b1c-7d2e-8f30-4a5b6c7d8e02',
+  account: '01927f3a-6b1c-7d2e-8f30-4a5b6c7d8e03',
+  payee: '01927f3a-6b1c-7d2e-8f30-4a5b6c7d8e08',
+  transaction: '01927f3a-6b1c-7d2e-8f30-4a5b6c7d8e0a',
+} as const;
+
+const EXPORTED_USER = {
+  id: EXPORT_IDS.user,
+  email: 'owner@budgetoid.test',
+  createdAtUtc: '2026-01-04T09:15:22.123456Z',
+} as const;
+
+// The smallest document the decoder accepts: the account and no budget, so
+// there is nothing to open and the export can finish under any key. What the
+// cases about the gate, the double press and the filename are handed.
+const EMPTY_EXPORT_TEXT = JSON.stringify({
+  schemaVersion: 1,
+  user: EXPORTED_USER,
+  budgets: [],
+});
+
+// The server's text with every narrative member a real envelope, sealed under
+// `key` for its own table, column and row — so an open through the real custody
+// service runs the real cipher and the real binding.
+//
+// `accountNameWire` replaces the account name's envelope with a value of the
+// case's choosing, for the one case about a wire string the decoder refuses.
+interface SealedExport {
+  readonly text: string;
+  readonly plaintexts: readonly string[];
+  readonly wires: readonly string[];
+}
+
+async function sealedExport(
+  key: CryptoKey,
+  accountNameWire?: string,
+): Promise<SealedExport> {
+  const plaintexts: string[] = [];
+  const wires: string[] = [];
+  const seal = async (
+    binding: NarrativeFieldBinding,
+    plaintext: string,
+  ): Promise<string> => {
+    const wire = await sealNarrativeField(key, plaintext, binding);
+    plaintexts.push(plaintext);
+    wires.push(wire);
+    return wire;
+  };
+
+  const budgetName = await seal(
+    { table: 'budgets', column: 'name', rowId: EXPORT_IDS.budget },
+    'Household ledger',
+  );
+  const accountName = await seal(
+    { table: 'accounts', column: 'name', rowId: EXPORT_IDS.account },
+    'Everyday current account',
+  );
+  const payeeName = await seal(
+    { table: 'payees', column: 'name', rowId: EXPORT_IDS.payee },
+    'Corner bakery on Elm',
+  );
+  const description = await seal(
+    {
+      table: 'transactions',
+      column: 'description',
+      rowId: EXPORT_IDS.transaction,
+    },
+    'Birthday cake for Mira',
+  );
+
+  const text = JSON.stringify({
+    schemaVersion: 1,
+    user: EXPORTED_USER,
+    budgets: [
+      {
+        id: EXPORT_IDS.budget,
+        userId: EXPORT_IDS.user,
+        name: budgetName,
+        // Null, as on every budget today: nothing sets a base currency
+        // (docs/business-logic/budgets.md).
+        baseCurrencyCode: null,
+        createdAtUtc: '2026-01-04T09:15:23.000000Z',
+        accounts: [
+          {
+            id: EXPORT_IDS.account,
+            budgetId: EXPORT_IDS.budget,
+            name: accountNameWire ?? accountName,
+            type: 'checking',
+            openingBalance: 125.5,
+            currencyCode: 'EUR',
+            createdAtUtc: '2026-01-05T10:00:00.000000Z',
+          },
+        ],
+        categoryGroups: [],
+        categories: [],
+        payees: [
+          {
+            id: EXPORT_IDS.payee,
+            budgetId: EXPORT_IDS.budget,
+            name: payeeName,
+            createdAtUtc: '2026-01-06T11:00:00.000000Z',
+          },
+        ],
+        transactions: [
+          {
+            id: EXPORT_IDS.transaction,
+            budgetId: EXPORT_IDS.budget,
+            accountId: EXPORT_IDS.account,
+            amount: -12.25,
+            date: '2026-07-14',
+            description,
+            payeeId: EXPORT_IDS.payee,
+            categoryId: null,
+            createdAtUtc: '2026-07-14T12:00:00.000000Z',
+          },
+        ],
+      },
+    ],
+  });
+
+  return { text, plaintexts, wires };
+}
+
+function generateContentKey(): Promise<CryptoKey> {
+  return crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, [
+    'encrypt',
+    'decrypt',
+  ]);
+}
+
+function generateIndexKey(): Promise<CryptoKey> {
+  return crypto.subtle.generateKey({ name: 'HMAC', hash: 'SHA-256' }, false, [
+    'sign',
+  ]);
+}
+
 class MeApiStub {
   public getMe = vi.fn(
     (): Observable<MeDto> => of(meDto('owner@budgetoid.test')),
   );
-  public getExport = vi.fn(
-    (): Observable<Blob> => of(new Blob(['{"schemaVersion":1}'])),
-  );
+  public getExport = vi.fn((): Observable<string> => of(EMPTY_EXPORT_TEXT));
   public getCredentials = vi.fn(
     (): Observable<readonly CredentialSummary[]> => of([FEDERATED, PASSKEY]),
   );
@@ -45,53 +197,106 @@ class MeApiStub {
   // both of the states the service holds apart: a stub answering `0` would make
   // "published the server's count" and "seeded a zero" the same observation.
   public getRecoveryCodes = vi.fn((): Observable<number> => of(4));
+  // The two reads a real custody makes when an unlock starts, and here only so
+  // a case can hold custody at `unlocking`: neither ever answers.
+  public getAccountKeys = vi.fn((): Observable<AccountKeyCustodyDto> => NEVER);
+  public getSessionOwner = vi.fn((): Observable<MeDto> => NEVER);
 }
 
 class FileDownloadStub {
   public save = vi.fn((blob: Blob, filename: string): void => undefined);
 }
 
+// The driver, replaced by the two signals that are "a run is in flight" on
+// every screen that reads one — `running` for a run this tab is walking,
+// `staged` for a run on file. The real one is root-provided and reaches eight
+// API services. Narrowed to the pair, so a service reaching for anything else
+// of the driver's dies loudly here rather than reading a stubbed default.
+class KeyRotationStub
+  implements Pick<KeyRotationService, 'running' | 'staged'>
+{
+  readonly #running = signal(false);
+  readonly #staged = signal<StagedRotation | null>(null);
+
+  public readonly running: Signal<boolean> = this.#running.asReadonly();
+  public readonly staged: Signal<StagedRotation | null> =
+    this.#staged.asReadonly();
+
+  public setRunning(running: boolean): void {
+    this.#running.set(running);
+  }
+
+  public setStaged(staged: StagedRotation | null): void {
+    this.#staged.set(staged);
+  }
+}
+
+// Waits for an export to end however it ends. The opens run on the platform's
+// cipher, which settles on no fixed number of ticks, so this polls the one flag
+// the service publishes for "still working" rather than counting microtasks.
+async function exportSettled(service: SettingsService): Promise<void> {
+  for (let attempt = 0; attempt < 500; attempt += 1) {
+    if (!service.exporting()) {
+      // One more turn, so a save issued in the same task as the release has
+      // landed before anything is asserted about it.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      return;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  throw new Error('Timed out waiting for the export to finish.');
+}
+
 describe('SettingsService', () => {
   let service: SettingsService;
   let api: MeApiStub;
   let download: FileDownloadStub;
+  let custody: AccountKeyCustodyService;
+  let rotations: KeyRotationStub;
+  let contentKey: CryptoKey;
 
-  beforeEach(() => {
+  // Custody is the **real** service, holding real non-extractable keys. It is
+  // where the export's opener comes from, and a real one is the only kind that
+  // catches a detached `custody.openField` — its body reads `#` fields, so an
+  // unbound reference throws where a stub's would answer. Every case starts
+  // ready: unlocked, no run. The cases about readiness move one term each.
+  beforeEach(async () => {
     api = new MeApiStub();
     download = new FileDownloadStub();
+    rotations = new KeyRotationStub();
     TestBed.configureTestingModule({
       providers: [
         SettingsService,
         { provide: MeApiService, useValue: api },
         { provide: FileDownloadService, useValue: download },
+        { provide: KeyRotationService, useValue: rotations },
       ],
     });
+    custody = TestBed.inject(AccountKeyCustodyService);
+    contentKey = await generateContentKey();
+    custody.adopt(contentKey, await generateIndexKey());
     service = TestBed.inject(SettingsService);
   });
 
-  it('saves the exported bytes under a client-minted name', () => {
-    // Arrange
-    const blob = new Blob(['{"schemaVersion":1}'], {
-      type: 'application/json',
-    });
-    api.getExport.mockReturnValue(of(blob));
-
+  it('saves a JSON file under a client-minted name', async () => {
     // Act
     service.export();
+    await exportSettled(service);
 
     // Assert
     expect(download.save).toHaveBeenCalledTimes(1);
-    // Identity, not equality — this is the whole reason the client is a pipe.
-    // `toHaveBeenCalledWith(blob)` compares structurally and would go green on
-    // a service that parsed the document and re-serialized it, which is
-    // exactly the round-trip that degrades numeric(14,4) amounts.
-    expect(download.save.mock.calls[0][0]).toBe(blob);
+    // A Blob the tab built, typed as what it holds. The served text is no
+    // longer the file: the file is the opened document written back out, so
+    // the identity pin this case used to carry would now pin the defect.
+    const [blob, filename] = download.save.mock.calls[0];
+    expect(blob.type).toBe('application/json');
     // The exact format is pinned by export-filename.spec; a regex here keeps
     // this test off the clock while still proving the name is minted locally
     // rather than read from an unreadable cross-origin Content-Disposition.
-    expect(download.save.mock.calls[0][1]).toMatch(
-      /^budgetoid-export-\d{8}T\d{6}Z\.json$/,
-    );
+    expect(filename).toMatch(/^budgetoid-export-\d{8}T\d{6}Z\.json$/);
+    expect(service.exported()).toBe(true);
   });
 
   it('saves nothing when the export fails', () => {
@@ -152,7 +357,7 @@ describe('SettingsService', () => {
     expect(service.exported()).toBe(false);
   });
 
-  it('clears a previous failure once an export succeeds', () => {
+  it('clears a previous failure once an export succeeds', async () => {
     // Arrange
     api.getExport.mockReturnValueOnce(
       throwError(() => new HttpErrorResponse({ status: 500 })),
@@ -162,6 +367,7 @@ describe('SettingsService', () => {
 
     // Act
     service.export();
+    await exportSettled(service);
 
     // Assert
     expect(service.exportFailure()).toBeNull();
@@ -170,7 +376,7 @@ describe('SettingsService', () => {
 
   it('ignores a second export while one is in flight', () => {
     // Arrange
-    const gate = new Subject<Blob>();
+    const gate = new Subject<string>();
     api.getExport.mockReturnValue(gate);
 
     // Act
@@ -183,13 +389,14 @@ describe('SettingsService', () => {
     expect(api.getExport).toHaveBeenCalledTimes(1);
   });
 
-  it('exports again once the first has finished', () => {
+  it('exports again once the first has finished', async () => {
     // Arrange
-    const gate = new Subject<Blob>();
+    const gate = new Subject<string>();
     api.getExport.mockReturnValue(gate);
     service.export();
-    gate.next(new Blob(['{"schemaVersion":1}']));
+    gate.next(EMPTY_EXPORT_TEXT);
     gate.complete();
+    await exportSettled(service);
 
     // Act
     service.export();
@@ -199,6 +406,428 @@ describe('SettingsService', () => {
     // never released it exports exactly once per page load and is green on
     // the in-flight test alone.
     expect(api.getExport).toHaveBeenCalledTimes(2);
+  });
+
+  // **Ready is one predicate, written positively**: custody says `unlocked`
+  // and no key rotation is in flight. Every other state — `locked`,
+  // `unlocking`, a run, a word added later — arrives not ready. Pressable is
+  // ready and not already exporting, and it is what both the control's
+  // `disabled` and the guard inside `export()` read. These cases are the
+  // guard's half: a press reaches `export()` whatever the attribute says,
+  // because `disabledInteractive` leaves the button in the tab order and
+  // Material halts the click on anchors only.
+  // See docs/design/components.md, "Export section".
+  describe('readiness', () => {
+    it('is pressable when the account is unlocked and no run is in flight', () => {
+      // Assert
+      // Control for the three refusals below: a service that published `false`
+      // everywhere passes every one of them and exports nothing, ever.
+      expect(service.pressable()).toBe(true);
+      expect(service.exportBlock()).toBeNull();
+    });
+
+    it('is not pressable while an export is already running', () => {
+      // Arrange
+      api.getExport.mockReturnValue(new Subject<string>());
+
+      // Act
+      service.export();
+
+      // Assert
+      // Busy, and not a reason to advise anybody: the region's in-flight line
+      // says what is happening, so no not-ready sentence is owed.
+      expect(service.pressable()).toBe(false);
+      expect(service.exportBlock()).toBeNull();
+    });
+
+    it('does not request the export while the account is locked', async () => {
+      // Arrange
+      custody.lock();
+
+      // Act
+      service.export();
+      await exportSettled(service);
+
+      // Assert
+      // No request and no outcome. The handler's gate, not the attribute's: a
+      // service that only trusted the template to hold the control off sends
+      // the request, opens nothing, and tells the person the file failed.
+      expect(api.getExport).not.toHaveBeenCalled();
+      expect(download.save).not.toHaveBeenCalled();
+      expect(service.pressable()).toBe(false);
+      expect(service.exportFailure()).toBeNull();
+      expect(service.exported()).toBe(false);
+    });
+
+    it.each([
+      {
+        name: 'a run this tab is walking',
+        arrange: (stub: KeyRotationStub): void => stub.setRunning(true),
+      },
+      {
+        name: 'a staged run on file',
+        arrange: (stub: KeyRotationStub): void =>
+          stub.setStaged({ startedAtUtc: '2026-07-01T08:00:00Z' }),
+      },
+    ])(
+      'does not request the export during $name, with the account unlocked',
+      async ({ arrange }) => {
+        // Arrange
+        // Unlocked, so custody alone would let this through. A staged run has
+        // re-sealed part of the account under keys custody does not hold, and
+        // an export over it would end `unreadable` for a reason that has a
+        // remedy. Both terms, because either alone half-works and the half
+        // that fails is the quiet one.
+        expect(custody.status()).toBe('unlocked');
+        arrange(rotations);
+
+        // Act
+        service.export();
+        await exportSettled(service);
+
+        // Assert
+        expect(api.getExport).not.toHaveBeenCalled();
+        expect(download.save).not.toHaveBeenCalled();
+        expect(service.pressable()).toBe(false);
+      },
+    );
+
+    it('does not request the export while unlocking', async () => {
+      // Arrange
+      // An unlock whose reads never answer, so custody stays mid-ceremony.
+      // `unlocking` is not `locked`, and this is the case that tells
+      // `status() === 'unlocked'` from `status() !== 'locked'`: written the
+      // second way, the export goes live mid-ceremony and opens nothing.
+      custody.unlock(await generateContentKey());
+      expect(custody.status()).toBe('unlocking');
+
+      // Act
+      service.export();
+      await exportSettled(service);
+
+      // Assert
+      expect(api.getExport).not.toHaveBeenCalled();
+      expect(service.pressable()).toBe(false);
+    });
+  });
+
+  // Which sentence the screen puts above an Export that is off: the notice's
+  // terms, not the form's. The run's sentence whenever a run is in flight,
+  // whatever custody says; the locked one on `locked` alone; nothing while
+  // unlocking — **disable when unsure, but do not advise when unsure**.
+  describe('the reason Export is off', () => {
+    it('names the run when a run is in flight and the account is locked', () => {
+      // Arrange
+      custody.lock();
+      rotations.setRunning(true);
+
+      // Assert
+      // The run wins: Unlock pressed mid-run gets the generation on its way
+      // out, so the locked sentence's advice is false here.
+      expect(service.exportBlock()).toBe('rotating');
+    });
+
+    it('names the run for a staged run on an unlocked account', () => {
+      // Arrange
+      rotations.setStaged({ startedAtUtc: '2026-07-01T08:00:00Z' });
+
+      // Assert
+      expect(service.exportBlock()).toBe('rotating');
+    });
+
+    it('names the lock when the account is locked and no run is in flight', () => {
+      // Arrange
+      custody.lock();
+
+      // Assert
+      expect(service.exportBlock()).toBe('locked');
+    });
+
+    it('names nothing while unlocking, though Export is off', async () => {
+      // Arrange
+      custody.unlock(await generateContentKey());
+      expect(custody.status()).toBe('unlocking');
+
+      // Assert
+      // Off and silent at once, the pair a single predicate cannot produce.
+      // Written `!== 'unlocked'`, the locked sentence tells somebody to press
+      // the button they are already holding down.
+      expect(service.pressable()).toBe(false);
+      expect(service.exportBlock()).toBeNull();
+    });
+  });
+
+  // **Whole file or nothing.** The file is the opened document — every name and
+  // note opened in this tab under the account's content key — and any member
+  // that does not open means no file at all.
+  describe('outcomes', () => {
+    it('saves the opened document, not the served text', async () => {
+      // Arrange
+      const served = await sealedExport(contentKey);
+      api.getExport.mockReturnValue(of(served.text));
+
+      // Act
+      service.export();
+      await exportSettled(service);
+
+      // Assert
+      expect(download.save).toHaveBeenCalledTimes(1);
+      const saved = await download.save.mock.calls[0][0].text();
+      // Every plaintext is in the file and no envelope is. Both directions: a
+      // service saving the served text carries every wire and no plaintext,
+      // and one that appended the opened values beside the sealed ones carries
+      // both.
+      for (const plaintext of served.plaintexts) {
+        expect(saved, `the saved file is missing "${plaintext}".`).toContain(
+          plaintext,
+        );
+      }
+      for (const wire of served.wires) {
+        expect(
+          saved,
+          'the saved file carries a sealed envelope.',
+        ).not.toContain(wire);
+      }
+      expect(service.exported()).toBe(true);
+      expect(service.exportFailure()).toBeNull();
+    });
+
+    it('saves nothing and reports locked when custody lets go mid-export', async () => {
+      // Arrange
+      // The request is answered and custody lets go before any field can have
+      // finished opening — the platform's cipher never settles in the same
+      // task. Every open therefore answers `locked`, whether it started before
+      // the lock or after it.
+      const served = await sealedExport(contentKey);
+      const gate = new Subject<string>();
+      api.getExport.mockReturnValue(gate);
+      service.export();
+
+      // Act
+      gate.next(served.text);
+      gate.complete();
+      custody.lock();
+      await exportSettled(service);
+
+      // Assert
+      expect(download.save).not.toHaveBeenCalled();
+      expect(service.exportFailure()).toBe('locked');
+      expect(service.exported()).toBe(false);
+    });
+
+    it('saves nothing and reports unreadable when a field does not open', async () => {
+      // Arrange
+      // Sealed under a key this tab does not hold, so every member is a value
+      // that did not authenticate — the keys were here and the bytes were not
+      // theirs.
+      const served = await sealedExport(await generateContentKey());
+      api.getExport.mockReturnValue(of(served.text));
+
+      // Act
+      service.export();
+      await exportSettled(service);
+
+      // Assert
+      // Nothing on disk: a file with a dash where a name was looks complete in
+      // a downloads folder years later.
+      expect(download.save).not.toHaveBeenCalled();
+      expect(service.exportFailure()).toBe('unreadable');
+      expect(service.exported()).toBe(false);
+    });
+
+    it('saves nothing and reports unrecognised for a body the decoder refuses', async () => {
+      // Arrange
+      // A member `ExportDocument.cs` does not declare — the loud direction of
+      // the strict decoder, a column nobody decided whether to open.
+      api.getExport.mockReturnValue(
+        of(
+          JSON.stringify({
+            schemaVersion: 1,
+            user: EXPORTED_USER,
+            budgets: [],
+            surplus: 'a member this client does not read',
+          }),
+        ),
+      );
+
+      // Act
+      service.export();
+      await exportSettled(service);
+
+      // Assert
+      // `unrecognised`, not `failed`: the server answered, and what it
+      // answered is a body this bundle cannot read, which a reload can change
+      // and a retry cannot.
+      expect(download.save).not.toHaveBeenCalled();
+      expect(service.exportFailure()).toBe('unrecognised');
+      expect(service.exported()).toBe(false);
+    });
+
+    it('saves nothing and reports unrecognised for a wire string the strict decoder refuses', async () => {
+      // Arrange
+      // Every other member a real envelope under the key custody holds, so the
+      // one malformed value is the only thing wrong with the body. Refused
+      // before any cipher runs, it is a body this client could not read — not
+      // a value that failed to open under keys it held.
+      // See docs/design/components.md, "Export section".
+      const served = await sealedExport(contentKey, 'not*base64url!');
+      api.getExport.mockReturnValue(of(served.text));
+
+      // Act
+      service.export();
+      await exportSettled(service);
+
+      // Assert
+      expect(download.save).not.toHaveBeenCalled();
+      expect(service.exportFailure()).toBe('unrecognised');
+      expect(service.exported()).toBe(false);
+    });
+
+    it('saves nothing and reports failed when the opener rejects', async () => {
+      // Arrange
+      // A rejection is a defect in the call, not a value that did not open, so
+      // it is none of the three body words. The spy is on the real custody,
+      // which this case alone needs to misbehave; the runner restores no mocks.
+      const served = await sealedExport(contentKey);
+      api.getExport.mockReturnValue(of(served.text));
+      const openField = vi
+        .spyOn(custody, 'openField')
+        .mockRejectedValue(
+          new NarrativeFieldMisuseError('A binding this call made up.'),
+        );
+      onTestFinished(() => openField.mockRestore());
+
+      // Act
+      service.export();
+      await exportSettled(service);
+
+      // Assert
+      // The opener was reached, so the rejection is what ended the export.
+      expect(openField).toHaveBeenCalled();
+      expect(download.save).not.toHaveBeenCalled();
+      expect(service.exportFailure()).toBe('failed');
+      expect(service.exported()).toBe(false);
+    });
+
+    it('saves nothing and reports locked when custody locks after the last open', async () => {
+      // Arrange
+      // Every open answers text, and the first one locks custody on its way
+      // out — so the document opens whole and custody is no longer holding
+      // the keys at the moment the file would be handed over.
+      const served = await sealedExport(contentKey);
+      api.getExport.mockReturnValue(of(served.text));
+      const openField = vi
+        .spyOn(custody, 'openField')
+        .mockImplementation((): Promise<NarrativeText> => {
+          custody.lock();
+          return Promise.resolve({ state: 'text', value: 'opened' });
+        });
+      onTestFinished(() => openField.mockRestore());
+
+      // Act
+      service.export();
+      await exportSettled(service);
+
+      // Assert
+      expect(openField).toHaveBeenCalled();
+      expect(download.save).not.toHaveBeenCalled();
+      expect(service.exportFailure()).toBe('locked');
+      expect(service.exported()).toBe(false);
+    });
+
+    it('saves nothing and reports locked when custody is mid-unlock at the hand-over', async () => {
+      // Arrange
+      // Custody let go and started taking the keys back, with reads that
+      // never answer, so it is `unlocking` when the file would be saved.
+      // `unlocking` is not `locked`: this is the case that tells the check
+      // `status() !== 'unlocked'` from `status() === 'locked'`, and written
+      // the second way a file is saved with nobody holding the keys.
+      const served = await sealedExport(contentKey);
+      const kek = await generateContentKey();
+      api.getExport.mockReturnValue(of(served.text));
+      let letGo = false;
+      const openField = vi
+        .spyOn(custody, 'openField')
+        .mockImplementation((): Promise<NarrativeText> => {
+          if (!letGo) {
+            letGo = true;
+            custody.lock();
+            custody.unlock(kek);
+          }
+          return Promise.resolve({ state: 'text', value: 'opened' });
+        });
+      onTestFinished(() => openField.mockRestore());
+
+      // Act
+      service.export();
+      await exportSettled(service);
+
+      // Assert
+      expect(custody.status()).toBe('unlocking');
+      expect(download.save).not.toHaveBeenCalled();
+      expect(service.exportFailure()).toBe('locked');
+      expect(service.exported()).toBe(false);
+    });
+
+    it('reports only the failure when an export fails after one succeeded', async () => {
+      // Arrange
+      service.export();
+      await exportSettled(service);
+      expect(service.exported()).toBe(true);
+      api.getExport.mockReturnValue(
+        throwError(() => new HttpErrorResponse({ status: 500 })),
+      );
+
+      // Act
+      service.export();
+      await exportSettled(service);
+
+      // Assert
+      // The success belongs to the previous press. Left standing, the region
+      // says `Exported.` over a request that has just failed.
+      expect(service.exportFailure()).toBe('failed');
+      expect(service.exported()).toBe(false);
+    });
+
+    it.each([403, 500])(
+      'saves nothing and reports failed for a %i',
+      async (status) => {
+        // Arrange
+        api.getExport.mockReturnValue(
+          throwError(() => new HttpErrorResponse({ status })),
+        );
+
+        // Act
+        service.export();
+        await exportSettled(service);
+
+        // Assert
+        expect(download.save).not.toHaveBeenCalled();
+        expect(service.exportFailure()).toBe('failed');
+        expect(service.exported()).toBe(false);
+      },
+    );
+
+    it('clears the previous outcome when the next export starts', async () => {
+      // Arrange
+      const served = await sealedExport(await generateContentKey());
+      api.getExport.mockReturnValueOnce(of(served.text));
+      service.export();
+      await exportSettled(service);
+      expect(service.exportFailure()).toBe('unreadable');
+      api.getExport.mockReturnValue(new Subject<string>());
+
+      // Act
+      service.export();
+
+      // Assert
+      // A press is the one thing that clears an outcome, and it clears it as
+      // the export starts — so the region never holds a stale word beside the
+      // in-flight line.
+      expect(service.exporting()).toBe(true);
+      expect(service.exportFailure()).toBeNull();
+      expect(service.exported()).toBe(false);
+    });
   });
 
   it('publishes the account email', () => {

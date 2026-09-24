@@ -4,6 +4,7 @@ import {
   provideHttpClientTesting,
 } from '@angular/common/http/testing';
 import {
+  computed,
   signal,
   type EnvironmentProviders,
   type Provider,
@@ -38,7 +39,7 @@ import {
   type SessionStatus,
 } from '@app-core/session/session.service';
 import { of, throwError, type Observable } from 'rxjs';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import {
   AccountUnlockService,
   type UnlockCeremonyFailure,
@@ -184,6 +185,41 @@ const EXPORT_SESSION_FAILURE =
   'Your session has ended. Reload the page to sign in again.';
 const EXPORT_RUNNING = 'Preparing your file…';
 const EXPORT_CONFIRMED = 'Exported.';
+// The three outcome words the export gained when the tab started opening the
+// file, verbatim from components.md's "Export section". `failed` keeps
+// `EXPORT_BUILD_FAILURE` above.
+const EXPORT_UNRECOGNISED =
+  'Budgetoid couldn’t read what the server sent back, so nothing was saved. Reload the page and export again — a reload is the one thing here that can change the answer.';
+const EXPORT_LOCKED =
+  'This tab stopped holding your account’s keys before the file was finished, so nothing was saved. Export again once it holds them.';
+const EXPORT_UNREADABLE =
+  'Some names or notes didn’t open with the keys this tab holds, so nothing was saved — Budgetoid sends the whole file or none of it.';
+// The fourth reason a control on this screen is off, in its two sentences —
+// the run's and the lock's. Neither is any of the three explanations above,
+// and neither may be pasted over them.
+const EXPORT_OFF_ROTATING =
+  'Export is off while Budgetoid gives this account new keys. It comes back when the key rotation above finishes.';
+const EXPORT_OFF_LOCKED =
+  'Export is off while this tab can’t read your names and notes — the file is written with them. Press Unlock in Account keys above to turn it back on.';
+// The section's two standing paragraphs, verbatim from components.md's "Export
+// section" — "The copy is the specification". The first names where the words
+// become readable; the second names who writes the file. Both are true in
+// every state the control can be in, so both render in every one.
+const EXPORT_CONTENTS_PARAGRAPH =
+  'Download everything Budgetoid holds about you as one JSON file — your account, your budget, and every account, category group, category, payee and transaction in it. This tab opens the names and notes with your account’s keys before saving, so every one in the file is readable.';
+const EXPORT_DELIVERY_PARAGRAPH =
+  'Budgetoid sends it all in one request, and this tab writes the file. There’s no queue, no email, and nothing to ask anyone for.';
+// The smallest document the export decoder accepts: the account and no
+// budget, so there is nothing to open and an export finishes under any key.
+const EMPTY_EXPORT_TEXT = JSON.stringify({
+  schemaVersion: 1,
+  user: {
+    id: '01927f3a-6b1c-7d2e-8f30-4a5b6c7d8e01',
+    email: OWNER_EMAIL,
+    createdAtUtc: '2026-01-04T09:15:22.123456Z',
+  },
+  budgets: [],
+});
 const EMAIL_FAILURE = 'Couldn’t load your email address. Reload the page.';
 // The transparency statement, in the three paragraphs `components.md` specifies
 // under *What we can read*, named for the three questions that chapter says the
@@ -504,6 +540,18 @@ class SettingsServiceStub {
   public readonly exporting = signal(false);
   public readonly exported = signal(false);
   public readonly exportFailure = signal<ExportFailure | null>(null);
+  // **Ready is the stub's own knob and not a copy of the predicate.** The real
+  // service computes it from custody and the rotation driver; composing it here
+  // from `AccountKeyCustodyStub` would make a template that reassembled the
+  // predicate for itself agree with one that read `pressable`, in every state.
+  // Independent, it can be put where the two part company. Starts `true`, so
+  // the default render is the section at rest on a ready tab.
+  public readonly ready = signal(true);
+  // Ready and not busy — the one composition the service's contract states,
+  // so that setting `exporting` alone moves it the way the real one moves.
+  public readonly pressable = computed(() => this.ready() && !this.exporting());
+  // Which sentence stands above an Export that is off, or `null` for none.
+  public readonly exportBlock = signal<'rotating' | 'locked' | null>(null);
   // Starts `null`, like the real service: "not asked yet" is a third state
   // beside "here they are" and "you have none", and a stub seeded with `[]`
   // would put the screen's first paint in a state the real one never reaches.
@@ -1174,6 +1222,361 @@ describe('SettingsComponent', () => {
     // plain `disabled` binding.
     expect(exportButton?.disabled).toBe(false);
     expect(exportButton?.getAttribute('tabindex')).not.toBe('-1');
+  });
+
+  // **Ready, and the fourth reason.** An Export that is not ready is off, keeps
+  // its tab stop, and says why in visible prose immediately above it, named by
+  // the control's `aria-describedby` while it shows. Which sentence is the
+  // service's word — these cases pin that the screen says it, where, and never
+  // two at once. See docs/design/components.md, "Export section".
+  describe('export readiness', () => {
+    function exportSentence(): HTMLElement | null {
+      const id = buttonNamed(host, EXPORT_BUTTON)?.getAttribute(
+        'aria-describedby',
+      );
+
+      return id ? host.querySelector<HTMLElement>(`[id="${id}"]`) : null;
+    }
+
+    function exportRegion(): Element | null {
+      return (
+        sectionFor(host, 'export-heading')?.querySelector('[role="status"]') ??
+        null
+      );
+    }
+
+    it('holds Export off and says the account is locked while it is locked', () => {
+      // Arrange
+      service.ready.set(false);
+      service.exportBlock.set('locked');
+
+      // Act
+      fixture.detectChanges();
+      const exportButton = buttonNamed(host, EXPORT_BUTTON);
+      const section = normalize(sectionFor(host, 'export-heading'));
+
+      // Assert
+      // Off the way `disabledInteractive` draws it: unavailable to assistive
+      // technology, and still in the tab order, because the state can change
+      // under the reader's focus.
+      expect(exportButton?.getAttribute('aria-disabled')).toBe('true');
+      expect(exportButton?.disabled).toBe(false);
+      expect(occurrencesOf(section, EXPORT_OFF_LOCKED)).toBe(1);
+      expect(section).not.toContain(EXPORT_OFF_ROTATING);
+    });
+
+    it('says the run and not the lock when a run is in flight on a locked account', () => {
+      // Arrange
+      // Custody locked as well, so a template reading custody for itself
+      // rather than the service's word shows the wrong sentence here.
+      custody.status.set('locked');
+      rotations.running.set(true);
+      service.ready.set(false);
+      service.exportBlock.set('rotating');
+
+      // Act
+      fixture.detectChanges();
+      const section = normalize(sectionFor(host, 'export-heading'));
+
+      // Assert
+      // The run wins: the locked sentence's advice — press Unlock — is false
+      // during a run, whose re-sealed rows the outgoing keys will never open.
+      expect(occurrencesOf(section, EXPORT_OFF_ROTATING)).toBe(1);
+      expect(section).not.toContain(EXPORT_OFF_LOCKED);
+      expect(
+        buttonNamed(host, EXPORT_BUTTON)?.getAttribute('aria-disabled'),
+      ).toBe('true');
+    });
+
+    it('advises nothing while unlocking, and still holds Export off', () => {
+      // Arrange
+      custody.status.set('unlocking');
+      service.ready.set(false);
+      service.exportBlock.set(null);
+
+      // Act
+      fixture.detectChanges();
+      const section = normalize(sectionFor(host, 'export-heading'));
+      const exportButton = buttonNamed(host, EXPORT_BUTTON);
+
+      // Assert
+      // Disable when unsure, but do not advise when unsure: the Account keys
+      // region is already saying the ceremony is running.
+      expect(exportButton?.getAttribute('aria-disabled')).toBe('true');
+      expect(section).not.toContain(EXPORT_OFF_LOCKED);
+      expect(section).not.toContain(EXPORT_OFF_ROTATING);
+      expect(exportButton?.getAttribute('aria-describedby')).toBeNull();
+    });
+
+    it('offers Export with no sentence when the tab is ready', () => {
+      // Arrange
+      service.ready.set(true);
+      service.exportBlock.set(null);
+
+      // Act
+      fixture.detectChanges();
+      const section = normalize(sectionFor(host, 'export-heading'));
+
+      // Assert
+      // Control for the three above: a template that rendered a sentence, or
+      // held the control off, unconditionally passes each of them.
+      expect(
+        buttonNamed(host, EXPORT_BUTTON)?.getAttribute('aria-disabled'),
+      ).not.toBe('true');
+      expect(section).not.toContain(EXPORT_OFF_LOCKED);
+      expect(section).not.toContain(EXPORT_OFF_ROTATING);
+    });
+
+    it('holds Export on the pressable the service publishes, not on custody', () => {
+      // Arrange
+      // A state the real service would not publish — custody unlocked, no run,
+      // and not pressable — and the only one where a template reading
+      // `pressable` and one reassembling the predicate from custody part
+      // company.
+      custody.status.set('unlocked');
+      rotations.running.set(false);
+      service.ready.set(false);
+
+      // Act
+      fixture.detectChanges();
+
+      // Assert
+      expect(
+        buttonNamed(host, EXPORT_BUTTON)?.getAttribute('aria-disabled'),
+      ).toBe('true');
+    });
+
+    it.each([
+      { block: 'locked' as const, sentence: EXPORT_OFF_LOCKED },
+      { block: 'rotating' as const, sentence: EXPORT_OFF_ROTATING },
+    ])(
+      'names the $block sentence from the control while it shows, outside the region and above the control',
+      ({ block, sentence }) => {
+        // Arrange
+        service.ready.set(false);
+        service.exportBlock.set(block);
+
+        // Act
+        fixture.detectChanges();
+        const described = exportSentence();
+        const exportButton = buttonNamed(host, EXPORT_BUTTON);
+
+        // Assert
+        // The control keeps its tab stop, so it names the reason itself — and
+        // names exactly that sentence, not the section or the region.
+        expect(normalize(described)).toBe(sentence);
+        // Advice, never drawn as an error: nothing failed, and the sentence
+        // says what turns the control back on.
+        expect(described?.classList.contains(PROSE_CLASS)).toBe(true);
+        expect(described?.classList.contains(FAILURE_CLASS)).toBe(false);
+        // Not an outcome of anything the person did, so not in the region.
+        expect(normalize(exportRegion())).toBe('');
+        // Prose in reading order immediately before the control.
+        expect(
+          described !== null &&
+            exportButton !== null &&
+            (described.compareDocumentPosition(exportButton) &
+              Node.DOCUMENT_POSITION_FOLLOWING) !==
+              0,
+        ).toBe(true);
+      },
+    );
+
+    it('carries no aria-describedby on a ready control', () => {
+      // Arrange
+      service.ready.set(true);
+      service.exportBlock.set(null);
+
+      // Act
+      fixture.detectChanges();
+
+      // Assert
+      // Absent, not pointing at an empty or missing node: a reference to
+      // nothing is read out as nothing, and one to a stale sentence is read out
+      // as a reason that no longer holds.
+      expect(
+        buttonNamed(host, EXPORT_BUTTON)?.getAttribute('aria-describedby'),
+      ).toBeNull();
+    });
+
+    it.each([
+      { name: 'locked', block: 'locked' as const },
+      { name: 'a run in flight', block: 'rotating' as const },
+      { name: 'unlocking', block: null },
+    ])('leaves aria-busy off while not ready for $name', ({ block }) => {
+      // Arrange
+      service.ready.set(false);
+      service.exportBlock.set(block);
+      service.exporting.set(false);
+
+      // Act
+      fixture.detectChanges();
+
+      // Assert
+      // Not ready is not busy. A control that is not ready is doing no work,
+      // and busy tells a screen reader to wait for something that is not
+      // coming.
+      expect(
+        buttonNamed(host, EXPORT_BUTTON)?.getAttribute('aria-busy'),
+      ).toBeNull();
+    });
+
+    it('sets aria-busy while an export runs, even once a run makes the tab not ready', () => {
+      // Arrange
+      // A rotation begun higher up the screen while an export is running: not
+      // ready and busy at once. Busy is read off `exporting` alone.
+      service.exporting.set(true);
+      service.ready.set(false);
+      service.exportBlock.set('rotating');
+
+      // Act
+      fixture.detectChanges();
+
+      // Assert
+      expect(buttonNamed(host, EXPORT_BUTTON)?.getAttribute('aria-busy')).toBe(
+        'true',
+      );
+    });
+
+    // Each outcome with the treatment the state table gives it: `--bud-text`
+    // for the in-flight line and the confirmation, `--bud-over` for the four
+    // refusals. The worse direction is a wait or a success drawn in the failure
+    // colour, which tells somebody something went wrong when it did not.
+    it.each([
+      {
+        name: 'in flight',
+        arrange: (): void => service.exporting.set(true),
+        sentence: EXPORT_RUNNING,
+        treatment: PROSE_CLASS,
+        refused: FAILURE_CLASS,
+      },
+      {
+        name: 'exported',
+        arrange: (): void => service.exported.set(true),
+        sentence: EXPORT_CONFIRMED,
+        treatment: PROSE_CLASS,
+        refused: FAILURE_CLASS,
+      },
+      {
+        name: 'failed',
+        arrange: (): void => service.exportFailure.set('failed'),
+        sentence: EXPORT_BUILD_FAILURE,
+        treatment: FAILURE_CLASS,
+        refused: PROSE_CLASS,
+      },
+      {
+        name: 'unrecognised',
+        arrange: (): void => service.exportFailure.set('unrecognised'),
+        sentence: EXPORT_UNRECOGNISED,
+        treatment: FAILURE_CLASS,
+        refused: PROSE_CLASS,
+      },
+      {
+        name: 'locked',
+        arrange: (): void => service.exportFailure.set('locked'),
+        sentence: EXPORT_LOCKED,
+        treatment: FAILURE_CLASS,
+        refused: PROSE_CLASS,
+      },
+      {
+        name: 'unreadable',
+        arrange: (): void => service.exportFailure.set('unreadable'),
+        sentence: EXPORT_UNREADABLE,
+        treatment: FAILURE_CLASS,
+        refused: PROSE_CLASS,
+      },
+    ])(
+      'says exactly the $name sentence inside the status region, drawn as $treatment',
+      ({ arrange, sentence, treatment, refused }) => {
+        // Arrange
+        arrange();
+
+        // Act
+        fixture.detectChanges();
+        const line = elementSaying(exportRegion(), sentence);
+
+        // Assert
+        // The whole region, compared whole: one outcome, one sentence, and
+        // nothing beside it. `toContain` is satisfied by a region carrying
+        // this sentence and another.
+        expect(normalize(exportRegion())).toBe(sentence);
+        expect(line?.classList.contains(treatment)).toBe(true);
+        expect(line?.classList.contains(refused)).toBe(false);
+      },
+    );
+
+    // Standing prose, so both paragraphs render once whatever state the
+    // control is in — a paragraph that came and went with readiness would be
+    // a second not-ready sentence, and one rendered twice is a paste.
+    it.each([
+      {
+        name: 'ready',
+        arrange: (): void => undefined,
+      },
+      {
+        name: 'locked',
+        arrange: (): void => {
+          service.ready.set(false);
+          service.exportBlock.set('locked');
+        },
+      },
+      {
+        name: 'a run in flight',
+        arrange: (): void => {
+          service.ready.set(false);
+          service.exportBlock.set('rotating');
+        },
+      },
+      {
+        name: 'unlocking',
+        arrange: (): void => {
+          service.ready.set(false);
+          service.exportBlock.set(null);
+        },
+      },
+      {
+        name: 'exporting',
+        arrange: (): void => service.exporting.set(true),
+      },
+    ])(
+      'carries both standing paragraphs exactly once while $name',
+      ({ arrange }) => {
+        // Arrange
+        arrange();
+
+        // Act
+        fixture.detectChanges();
+        const section = normalize(sectionFor(host, 'export-heading'));
+
+        // Assert
+        expect(
+          occurrencesOf(section, EXPORT_CONTENTS_PARAGRAPH),
+          sentenceMismatch(section, EXPORT_CONTENTS_PARAGRAPH) ||
+            'the first paragraph is not said exactly once.',
+        ).toBe(1);
+        expect(
+          occurrencesOf(section, EXPORT_DELIVERY_PARAGRAPH),
+          sentenceMismatch(section, EXPORT_DELIVERY_PARAGRAPH) ||
+            'the second paragraph is not said exactly once.',
+        ).toBe(1);
+      },
+    );
+
+    it('lets the in-flight line win over an outcome still on record', () => {
+      // Arrange
+      // A press clears the previous outcome as it starts, so the real service
+      // does not publish this pair; the book states the precedence anyway,
+      // and this is where a template that rendered the outcomes beside the
+      // in-flight line — two sentences at once — goes red.
+      service.exporting.set(true);
+      service.exportFailure.set('unreadable');
+
+      // Act
+      fixture.detectChanges();
+
+      // Assert
+      expect(normalize(exportRegion())).toBe(EXPORT_RUNNING);
+    });
   });
 
   // FR-023.
@@ -3954,7 +4357,7 @@ describe('SettingsComponent signing out', () => {
 // to the component or clears the outcome when the screen initializes.
 describe('SettingsComponent on a second visit', () => {
   async function configureWith(
-    getExport: () => Observable<Blob>,
+    getExport: () => Observable<string>,
   ): Promise<void> {
     // Only the edges are replaced — the HTTP calls and the disk write. The
     // service under test is the shipped one.
@@ -3985,6 +4388,14 @@ describe('SettingsComponent on a second visit', () => {
         ...ROTATION_SECTION_STUBS,
       ],
     }).compileComponents();
+
+    // Ready, so a press exports: the real custody holding real keys, and the
+    // stubbed driver reporting no run. Locked, the gate refuses the press and
+    // neither case below has a first visit to carry anything from.
+    TestBed.inject(AccountKeyCustodyService).adopt(
+      await generateContentKey(),
+      await generateIndexKey(),
+    );
   }
 
   // One arrival at the screen. The TestBed is not reset between calls, so
@@ -4005,12 +4416,13 @@ describe('SettingsComponent on a second visit', () => {
 
   it('does not confirm an export the previous visit finished', async () => {
     // Arrange
-    await configureWith(() =>
-      of(new Blob(['{"schemaVersion":1}'], { type: 'application/json' })),
-    );
+    await configureWith(() => of(EMPTY_EXPORT_TEXT));
     const first = visit();
     buttonNamed(first.nativeElement as HTMLElement, EXPORT_BUTTON)?.click();
-    first.detectChanges();
+    await eventually(() => {
+      first.detectChanges();
+      return exportSection(first).includes(EXPORT_CONFIRMED) ? true : null;
+    }, 'the first visit to confirm its export');
     // The first visit really did confirm. Without this line the test is green
     // on a screen that confirms nothing at all, ever.
     expect(exportSection(first)).toContain(EXPORT_CONFIRMED);
@@ -4030,7 +4442,10 @@ describe('SettingsComponent on a second visit', () => {
     );
     const first = visit();
     buttonNamed(first.nativeElement as HTMLElement, EXPORT_BUTTON)?.click();
-    first.detectChanges();
+    await eventually(() => {
+      first.detectChanges();
+      return exportSection(first).includes(EXPORT_BUILD_FAILURE) ? true : null;
+    }, 'the first visit to explain its failure');
     // Same control as above, in the failing direction: a screen that never
     // renders the failure sentence would otherwise pass this test by default.
     expect(exportSection(first)).toContain(EXPORT_BUILD_FAILURE);
@@ -4083,7 +4498,7 @@ describe('SettingsComponent unlocking on a second visit', () => {
     };
     const api: MeApiEdges = {
       getCredentials: () => of([PASSKEY]),
-      getExport: () => of(new Blob()),
+      getExport: () => of(EMPTY_EXPORT_TEXT),
       getMe: () => of(meDto(OWNER_EMAIL)),
       getRecoveryCodes: () => of(3),
     };
@@ -4284,6 +4699,117 @@ describe('SettingsComponent when the ways to sign in are loaded twice', () => {
   });
 });
 
+// The handler's half of the gate, against the **shipped** SettingsService with
+// only its edges replaced. A press on an Export that is not ready still
+// arrives — `disabledInteractive` keeps the button in the tab order and never
+// sets the DOM `disabled` property, and Material halts the click on anchors
+// only — so the attribute alone holds nothing. A signal stub cannot see this:
+// its `export` is a spy that records the press either way.
+describe('SettingsComponent pressing Export on a tab that is not ready', () => {
+  let getExport: Mock<() => Observable<string>>;
+  let fixture: ComponentFixture<SettingsComponent>;
+  let host: HTMLElement;
+
+  beforeEach(async () => {
+    getExport = vi.fn((): Observable<string> => of(EMPTY_EXPORT_TEXT));
+    fixture = await visitWithApi({ getExport });
+    host = fixture.nativeElement as HTMLElement;
+  });
+
+  it('starts nothing when the press arrives on a locked account', () => {
+    // Arrange
+    // The real custody, which nothing here has unlocked.
+    expect(TestBed.inject(AccountKeyCustodyService).status()).toBe('locked');
+    const exportButton = buttonNamed(host, EXPORT_BUTTON);
+    // The press really can arrive: off by `aria-disabled`, not by the DOM
+    // property that would swallow it.
+    expect(exportButton?.getAttribute('aria-disabled')).toBe('true');
+    expect(exportButton?.disabled).toBe(false);
+
+    // Act
+    exportButton?.click();
+    fixture.detectChanges();
+
+    // Assert
+    expect(getExport).not.toHaveBeenCalled();
+    expect(
+      normalize(
+        sectionFor(host, 'export-heading')?.querySelector('[role="status"]') ??
+          null,
+      ),
+    ).toBe('');
+  });
+
+  it('sends the request once the account is unlocked', async () => {
+    // Arrange
+    // Control for the case above: a handler that refused every press passes
+    // it and exports nothing, ever.
+    TestBed.inject(AccountKeyCustodyService).adopt(
+      await generateContentKey(),
+      await generateIndexKey(),
+    );
+    fixture.detectChanges();
+
+    // Act
+    buttonNamed(host, EXPORT_BUTTON)?.click();
+    // Polled rather than read at once, so the case claims nothing about
+    // whether the handler reaches the request in the press's own task.
+    await eventually(
+      () => (getExport.mock.calls.length > 0 ? true : null),
+      'the export request',
+    );
+
+    // Assert
+    expect(getExport).toHaveBeenCalledOnce();
+  });
+});
+
+// A second press after a first that succeeded, against the **shipped**
+// SettingsService: the stub above sets each outcome by hand, so a success left
+// standing into the next export is a transition it cannot have.
+describe('SettingsComponent exporting again after a success', () => {
+  it('says only the failure when the second export fails', async () => {
+    // Arrange
+    const getExport = vi
+      .fn(
+        (): Observable<string> =>
+          throwError(() => new HttpErrorResponse({ status: 500 })),
+      )
+      .mockReturnValueOnce(of(EMPTY_EXPORT_TEXT));
+    const fixture = await visitWithApi({ getExport });
+    const host = fixture.nativeElement as HTMLElement;
+    TestBed.inject(AccountKeyCustodyService).adopt(
+      await generateContentKey(),
+      await generateIndexKey(),
+    );
+    fixture.detectChanges();
+    const region = (): Element | null =>
+      sectionFor(host, 'export-heading')?.querySelector('[role="status"]') ??
+      null;
+    buttonNamed(host, EXPORT_BUTTON)?.click();
+    await eventually(() => {
+      fixture.detectChanges();
+      return normalize(region()) === EXPORT_CONFIRMED ? true : null;
+    }, 'the first export to confirm');
+
+    // Act
+    buttonNamed(host, EXPORT_BUTTON)?.click();
+    await eventually(() => {
+      fixture.detectChanges();
+      return getExport.mock.calls.length === 2 &&
+        !fixture.debugElement.injector.get(SettingsService).exporting()
+        ? true
+        : null;
+    }, 'the second export to end');
+    fixture.detectChanges();
+
+    // Assert
+    // The failure, whole, and nothing beside it: a `Exported.` left over from
+    // the first press would win the region's chain and hide the failure.
+    expect(normalize(region())).toBe(EXPORT_BUILD_FAILURE);
+  });
+});
+
 // The reads the screen starts on its own, plus the one it starts on a click.
 // The `Pick` is over the real `MeApiService`, so this list is what stops a stub
 // below from drifting into a shape the service no longer has.
@@ -4305,7 +4831,7 @@ async function visitWithApi(
 ): Promise<ComponentFixture<SettingsComponent>> {
   const api: MeApiEdges = {
     getMe: () => of(meDto(OWNER_EMAIL)),
-    getExport: () => of(new Blob()),
+    getExport: () => of(EMPTY_EXPORT_TEXT),
     getCredentials: () => of([PASSKEY]),
     getRecoveryCodes: () => of(3),
     ...overrides,
@@ -4468,4 +4994,17 @@ function emailValue(host: HTMLElement): string {
   return normalize(
     sectionFor(host, 'account-heading')?.querySelector('dd') ?? null,
   );
+}
+
+function generateContentKey(): Promise<CryptoKey> {
+  return crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, [
+    'encrypt',
+    'decrypt',
+  ]);
+}
+
+function generateIndexKey(): Promise<CryptoKey> {
+  return crypto.subtle.generateKey({ name: 'HMAC', hash: 'SHA-256' }, false, [
+    'sign',
+  ]);
 }

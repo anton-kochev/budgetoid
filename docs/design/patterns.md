@@ -123,8 +123,9 @@ The product publicly promises: the user only and always owns their data.
 **Today's Settings screen** is `/app/settings`, and it is a destination: the shell draws it in
 the bottom bar and the rail beside Transactions, Accounts and Categories, per
 [components](components.md). It renders the account's
-email address, a working Export that saves the server's response bytes unread, a working
-**Sign out**, and an Erase control that is present and **disabled** because *this screen* does
+email address, a working Export that opens every name and note in the tab and saves a file a
+person can read — whole or not at all, and only while this tab holds the account's keys — a
+working **Sign out**, and an Erase control that is present and **disabled** because *this screen* does
 not ask for the fresh passkey assertion erasure is confirmed with — the kind Budgetoid's own
 server checks, which is the clause the copy has to carry now that the screen asks for a
 passkey of another kind. The browser is not
@@ -144,6 +145,10 @@ passkey waits on the account's keys **as bytes**: a new factor stores its own wr
 wrapping takes the keys themselves. Generating a set waits on those bytes **and** on an assertion
 Budgetoid's server checks. Revoking and erasing wait on that checked assertion alone. Pasting any
 one of the four over another puts a sentence on the screen that is true of a different control.
+**Export carries a fourth reason, on a control that is not inert**: it is off only while this tab
+cannot open what the file is written from — a key rotation in flight, or a locked account — and
+says which in a sentence of its own, or says nothing while an unlock is running. So the screen
+holds four reasons in six sentences, and none of the six may be pasted over another.
 
 **What no sentence may say any more is that this screen asks for no passkey.** The Account keys
 section asks for one, in plain sight, so the three sentences that turn on an assertion — Revoke,

@@ -106,7 +106,9 @@ no description column has one or ever will. And every route but the budget's acc
 shape. **What reaches those columns is the product rather than the test suite**: `/app/accounts`,
 the transaction form and **both** halves of `/app/categories` seal what they write, compute the
 index where the column carries one, and open what they read, so no plaintext narrative value leaves
-this browser. What holds the keys they spend is the **custody** —
+this browser. The export on `/app/settings` opens every one of the eight before it saves a file, and
+the file it writes goes to the person's own disk, never to the server
+([export.md](export.md)). What holds the keys they spend is the **custody** —
 [The one class that holds them](#the-one-class-that-holds-them) — and what they reach it through are
 the operations that delegate to what it holds: `sealField`, `openField` and `blindIndex`, each with
 callers of its own. The index arrived last and closed the one gap left in this class:
@@ -1371,6 +1373,10 @@ be a **second store of opened narrative**, and it would need a clearer of its ow
 reach a `const` in a module it does not import, so the two would be wired together by somebody
 remembering, and the one nobody remembered would outlive the session that filled it. Clearing
 having exactly one owner is a property of what is kept, not only of who calls what.
+**The export keeps to the same rule over a whole account rather than a screenful**: the document it
+opens lives in the frame of the one export that asked for it — no signal, no field and no module
+binding in `export-document.ts` or `SettingsService` holds it — and goes from there into the file.
+That is held by review and by no test ([export.md](export.md)).
 
 **A refused unlock leaves custody exactly as it found it, and no failure branch may call `lock()`.**
 Custody drops both keys the instant `unlock` starts, so an attempt that reached it and failed has
@@ -1781,7 +1787,8 @@ cross the boundary, and what a refusal looks like — and everything below is ab
 **Every one of the three now has callers in the product.** All eight narrative columns hold
 envelopes, all four blind indexes are in the schema, and `/app/accounts`, the transaction form and
 both halves of `/app/categories` reach `sealField`, `openField` and `blindIndex` through their view
-models and services. They were settled one slice ahead of those callers on the terms
+models and services. The export reaches `openField` alone, through an arrow `SettingsService` hands
+to `openExportDocument`, and opens every narrative value in the account in one batch. They were settled one slice ahead of those callers on the terms
 [ciphertext-envelope.md](ciphertext-envelope.md) sets for the codecs beneath them: a cross-client
 format and the custody that will use it are cheaper to agree on before data exists under them than
 after — and that ordering is what let the screens be wired without a single format decision being
@@ -2750,7 +2757,8 @@ gets back out.
    them through operations that delegate — `sealField` and `openField` under the content key,
    `blindIndex` under the index key — and never through a member that returns one. All three have
    callers: `/app/accounts`, the transaction form and both halves of `/app/categories` reach them
-   through their view models and services, each of which is handed a capability and never a key.
+   through their view models and services, and the export on `/app/settings` reaches `openField`,
+   each of them handed a capability and never a key.
    **Four paths arrive here.** A
    sign-in reaches it through step 4. Registration reaches it directly, by handing over the pair it
    drew. The Settings screen's Unlock reaches it through step 4 as well, from a passkey ceremony
@@ -3000,7 +3008,7 @@ pair fails to open it and the account is not presented as unlocked.
   of the scheme genuinely did not move. **Nothing here is left standing on a spec alone**: `sealField`
   and `openField` use the content key and reach the codec one file over, `blindIndex` uses the index
   key and reaches the codec beside it, and all three are called by `/app/accounts`, the transaction
-  form and both halves of `/app/categories`. **What that costs is the cheapness of changing any of
+  form and both halves of `/app/categories` — `openField` by the export as well. **What that costs is the cheapness of changing any of
   them.** Every one of the three runs over columns that hold values, so an edit to a grammar, to the
   normalization, or to the Unicode version the fold is read at orphans rows that exist — and a
   blind index cannot be recomputed without the plaintext it was taken over, which only a browser

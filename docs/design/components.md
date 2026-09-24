@@ -167,6 +167,12 @@ the tab order would hide the gate from the only person who can open it. It needs
 it either — the thing it waits on is the visible control immediately above, and "waits on the
 checkbox above it" is noise, not help.
 
+**A fourth case: a control waiting on a state of this tab.** Export on `/app/settings` is off while
+the tab cannot open what the file is written from — a state that changes on the same screen, and can
+change under the reader's focus. It takes `disabledInteractive` for the busy case's reason, and
+unlike the third case it needs a sentence, because what it waits on is sections away rather than
+immediately above. The [Export section](#export-section) specifies both halves.
+
 **Where `disabledInteractive` is used, the gate is also in the handler, and that is not belt and
 braces.** Material's click-halt is applied to anchors only; on a `<button>` the DOM `disabled`
 property stays `false`, so the click reaches the component. A gate written only as an attribute is
@@ -665,16 +671,16 @@ And nothing asserts the loading flag comes back to false after a refused delete 
 
 ### Sign out
 
-The one live control on the Settings screen, and it sits in the **Account** section under the
-label/value row — beside who the account belongs to, not under *Ways to sign in*, which is about
+The one control on the Settings screen that is never off, and it sits in the **Account** section
+under the label/value row — beside who the account belongs to, not under *Ways to sign in*, which is about
 what is attached to the account rather than about the browser holding it right now.
 
 - **Outline**, 48px target, visible label `Sign out`. Not Primary: Export is the screen's one main
   action, and a screen with two is a screen with none. Not Destructive either — nothing is lost and
   signing in again restores everything, which is precisely what the erasure control one section down
   cannot say. Conflating the two treatments would spend the Destructive fill on the reversible act.
-- **Enabled, with no sentence beside it.** Every other control on this screen is off and explains
-  itself; this one is the way out, and a person who cannot leave an account is in a worse position
+- **Enabled, with no sentence beside it.** Every inert control on this screen is off and explains
+  itself, and Export explains itself while it is off; this one is the way out, and a person who cannot leave an account is in a worse position
   than one who cannot register a second passkey. The "not built yet" sentence pattern is for a
   control that refuses a press, and this one does not.
 - **It posts, ends the session, and then navigates to `/welcome`** — that order, because the guard on
@@ -815,8 +821,12 @@ action. **Register a passkey** (below the list) and **Revoke** (on the revocable
 passkeys) are both Outline and **disabled**, and the section carries two sentences and not one,
 because the recovery-codes section below no longer shares this one's words. Across the screen's
 four inert controls there are **three reasons said in four sentences** — Revoke and Erase share a
-reason and word it differently, one naming a row's buttons and the other the screen's — so the
-count of sentences is never the count of reasons here. The browser's ability to run a ceremony is
+reason and word it differently, one naming a row's buttons and the other the screen's. **Export
+carries a fourth reason**, on a control that is not inert: it is off only while this tab cannot
+open what the file is written from, and says so in one of two sentences or in none, per the
+[Export section](#export-section). So the screen holds **four reasons in six sentences, never more
+than five of them on screen at once**, and the count of sentences is never the count of reasons
+here. The browser's ability to run a ceremony is
 not what any of them waits on: this client creates a passkey on `/register` and asserts one on
 `/welcome`.
 
@@ -857,7 +867,9 @@ the four will be earned by a capability in exactly the same way.
   not, its assertion being minted locally and discarded. Three missing pieces across four
   sentences: the bytes here, the bytes and a checked assertion under Recovery codes, a checked
   assertion under Revoke and again under Erase — those last two sharing the piece and not the
-  wording. Pasting any one over another puts a sentence on the screen that
+  wording. Export's fourth reason is not a missing piece at all but a state of this tab, and its
+  two sentences are argued in its own chapter. Pasting any one over another puts a sentence on the
+  screen that
   is true of a different control. The quotes and their phrase constants in
   `settings.component.spec.ts` move with the template in one commit, and there are now two
   constants where one served both sites.
@@ -867,7 +879,7 @@ the four will be earned by a capability in exactly the same way.
   runs is not it. **That is the erasure section's position, and the two share the reason without
   sharing the wording** — this one names revoking and speaks of the rows' buttons in the plural,
   the erasure one names erasing and speaks of a single button. Two strings for one reason, which is
-  how three reasons come to be said in four sentences:
+  how the inert controls' three reasons come to be said in four sentences:
 
   > Revoking has to be confirmed with a passkey Budgetoid checks itself, and this screen doesn’t
   > ask for one yet. Those buttons stay off until it does.
@@ -1212,9 +1224,9 @@ measured against exactly what the two keys open — no wider and no narrower.
   the obvious move, and the state has a real consequence behind it, which makes the proposal a
   serious one. It is refused twice, and each reason stands on its own. Export is this screen's
   one main action, and a screen with two is a screen with none; and to anybody not tracking lock
-  state — which is everybody, since **nothing on this screen but this section** is drawn differently
-  when it flips, everything that changes being on three other screens — a Primary that comes and
-  goes is just two Primary buttons on one screen. **The consequence is not a third reason, and it is
+  state — which is everybody, since **on this screen only this section and the Export section** are
+  drawn differently when it flips, everything else that changes being on three other screens — a
+  Primary that comes and goes is just two Primary buttons on one screen. **The consequence is not a third reason, and it is
   not an argument for the Primary either** — a locked tab reads no name back, which makes a Primary
   here *honest* rather than right, and the two reasons above refuse an honest promise exactly as
   they refuse any other.
@@ -2052,6 +2064,10 @@ will never visit, and the completion refuses until it does — the `unfinished` 
 person is told when that happens three times. Keeping the forms live during a run means offering
 somebody a way to make their own rotation fail.
 
+**On Settings the same term holds Export off**, for the reason the lists go: a file opened while a
+run has re-sealed part of the account would meet rows the tab's keys cannot open. The sentence and
+the precedence are specified in the [Export section](#export-section).
+
 ### Accessibility
 
 Heading level `h2` under the screen's one `h1`; no level skipped. The checkbox has a programmatic
@@ -2339,6 +2355,232 @@ none of the three is summarised, shortened or split.
 **The position.** It renders below Erase, where the placement rule puts it above Export. Moving it
 is one section's worth of work and changes nothing else on the screen.
 
+## Export section
+
+The account's way out with its own records: one press, one request, one file saved by this browser.
+M3 base: **none** — two paragraphs of prose, a sentence present only while the control is off, one
+button and one `role="status"` region, for the reason the sections above it have none: one act about
+one thing is a sentence, and every component that would wrap it exists to group things there is
+more than one of.
+
+It sits on `/app/settings` **directly above Erase everything**, and nothing goes between the two:
+Export is the alternative offered beside the destructive act, per [patterns](patterns.md), and the
+recovery-codes chapter argues the placement rule that follows from that.
+
+**The file is opened in this tab, and that is the difference this chapter exists to specify.** The
+server holds every name and note as an envelope it cannot open and hands them back that way
+([export.md](../business-logic/export.md)). The client fetches that document, opens every narrative
+field with the account's content key, and saves a file whose words a person can read. So the control
+can do its job only while this tab holds the keys, which gives Export a state no other live control
+on this screen has: **ready**.
+
+**A locked session never reaches this screen**, so this chapter specifies no state for one and none
+may be added. Every *locked* below is a locked **account** — a tab holding no key, per
+[the locked account](#the-locked-account) — and no sentence here says *session* or *sign in*.
+
+### The copy is the specification
+
+> Download everything Budgetoid holds about you as one JSON file — your account, your budget, and
+> every account, category group, category, payee and transaction in it. This tab opens the names and
+> notes with your account’s keys before saving, so every one in the file is readable.
+>
+> Budgetoid sends it all in one request, and this tab writes the file. There’s no queue, no email,
+> and nothing to ask anyone for.
+
+**The first paragraph gained a sentence rather than a qualifier.** *Everything Budgetoid holds* is
+still what the file contains, and on its own it is now subtly false about the file's shape: what
+Budgetoid holds is sealed, and the file is not. The added sentence says where the words become
+readable, with what, and what that guarantees — *every one in the file is readable* is true because
+the file is whole or nothing (below), so a saved file never carries a name that did not open.
+
+**The second paragraph keeps its three noes and changes who builds the file.** *Built and sent in the
+same request* named the server as the author of the file; the server now answers the request, and
+the tab writes the file. The promise the paragraph exists for — no queue, no email, no operator — is
+unchanged.
+
+**Both paragraphs are standing prose, so both are true locked, unlocking, mid-rotation or ready.**
+Each is written as what exporting *does* — [voice](voice.md)'s rule for a long act, and the Account
+keys chapter's rule for its own two sentences. Neither may promise more than the keys open: amounts,
+dates and every other plain column are in the file whatever this tab holds, and the keys are what
+make the **names and notes** readable — no wider and no narrower. Three sentences a writer reaches
+for, refused:
+
+- *Unlock first to export.* A statement that the account is locked, standing beside a control that
+  already says it, and false on a ready tab.
+- *Your export is decrypted securely in your browser.* A badge rather than a fact, the refusal
+  *What a writer will get wrong* makes under **What we can read**.
+- *Budgetoid can’t read your export.* True of the operator and the wrong subject: what the people
+  running the service can read is the transparency statement's to say, and it says it.
+
+### The Export control
+
+- **Primary** (`mat-flat-button`), 48px target, visible label **Export**. It is the screen's one
+  main action — the reason Sign out, Unlock and Rotate keys each give for not being Primary.
+- **Pressable only when ready and not busy, and drawn off the same way in both cases**:
+  `disabledInteractive`, so the control keeps its tab stop. `aria-busy="true"` only while an export
+  is running, resolving to `null` otherwise. **Not ready is not busy**: a control that is not ready is
+  doing no work, and saying it is busy tells a screen reader to wait for something that is not coming.
+- **`disabledInteractive` while not ready, and not the plain `disabled` Register and Generate take.**
+  Those are off for the life of the screen. This one comes back on this screen, one press away, and
+  its state can change under the reader's focus — a rotation begun higher up the screen, or custody
+  letting go of the keys. A control that went truly `disabled` in that moment would drop focus to `<body>`.
+  It is the [Buttons](#buttons) chapter's fourth case.
+- **It stays Primary while off.** The rule that a control which cannot be activated does not get to
+  look like the most important thing on screen is kept by the disabled appearance, which takes the
+  fill away. Swapping to Outline while not ready is refused on Unlock's argument in reverse: a Primary
+  that comes and goes with a state nobody is tracking is two Primary buttons on one screen.
+- **The gate is in the handler as well as in the attribute, and both read one predicate with one
+  owner.** The service running the export publishes *pressable* — ready and not busy — and the
+  control's `disabled` and the handler's guard both read it; `aria-busy` and the region's in-flight
+  line read *busy* alone. Material's click-halt is applied to anchors only, so on a `<button>` the
+  press arrives whatever the attribute says. The drift two spellings produce, and the defect it
+  caused once, are argued under the Unlock control and not again here.
+
+### Ready, and the fourth reason
+
+**Ready is one predicate, written positively: custody says `unlocked` and no key rotation is in
+flight.** `locked`, `unlocking`, a run, and any state added later all arrive **not ready**. It is the
+form predicate from [Two predicates](#two-predicates-failing-safe-in-opposite-directions), read off
+the same two sources — and *a run is in flight* means what it means on the content screens, a run in
+this tab or a staged run on file. The run term is not caution for its own sake: a staged run has
+re-sealed part of the account under keys custody does not hold, so an export over it would end
+`unreadable` for a reason that has a remedy, and tell the person it has none.
+
+**Not ready is the fourth reason a control on this screen is off, and it gets its own sentence.** The
+other three — the account's keys as bytes, a passkey the server checks, and erasure's missing
+confirmation — are said above their own controls, and none of them may be pasted over this one or
+this one over them. Which sentence renders is decided on the notice's terms from the same chapter:
+the run's when a run is in flight, whatever custody says; the locked one on `locked` alone.
+
+| State | Copy | Where it renders |
+| --- | --- | --- |
+| Ready | *nothing* | No sentence; the control is live |
+| A run is in flight | "Export is off while Budgetoid gives this account new keys. It comes back when the key rotation above finishes." | Above the control, `body` `--bud-text` |
+| Locked, no run | "Export is off while this tab can’t read your names and notes — the file is written with them. Press Unlock in Account keys above to turn it back on." | Above the control, `body` `--bud-text` |
+| Unlocking, no run | *nothing* | No sentence; the control is off |
+
+The copy is the specification, not an example of it.
+
+**The run wins, because the locked sentence's advice is false during one.** Pressing Unlock mid-run
+gets the generation on its way out, which opens none of the re-sealed rows; the smallest act that
+clears the block is the run finishing. The run's sentence is the locked-account form's sentence for
+the same state, word for word where the fact is the same, so the screen says one thing about a run
+wherever it says it.
+
+**Unlocking gets no sentence at all: disable when unsure, but do not advise when unsure** — the rule
+[Two predicates](#two-predicates-failing-safe-in-opposite-directions) states for the notice. Custody
+is mid-ceremony, the Account keys region one section up is already saying so, and the locked
+sentence would tell somebody to press a button they are already holding down.
+
+**The locked sentence names the section, not the screen.** The form sentences on the content screens
+say *in Settings* because the reader is somewhere else; here the reader is on Settings and Unlock is
+a few sections up. It names **names and notes** and nothing wider, because those are what the keys
+gate — a sentence saying *your records* would send the reader looking for amounts that were never
+locked.
+
+**The sentence is visible prose immediately above the control, outside the region.** It says why a
+control is off, which is not the outcome of anything the person did, and the region is for outcomes.
+The control keeps its tab stop, so while the sentence renders the control also names it with
+`aria-describedby`: the [Buttons](#buttons) rule forbids hanging the reason *only* there, because a
+control that has left the tab order is described to nobody, and this one has not left it. No line
+box is reserved: on an unlock the sentence leaves in the same moment the Unlock control does, which
+has already moved everything beneath Account keys.
+
+### The outcomes
+
+**Whole file or nothing.** If any field fails to open, nothing is saved — no partial file, and no
+file carrying a dash where a name was. A file with a marker in it looks complete in a downloads
+folder years later, which is the truncation [export.md](../business-logic/export.md) refuses on the
+server, carried into the tab.
+
+| State | Copy | Where it renders |
+| --- | --- | --- |
+| At rest | *nothing* | The region carries no sentence |
+| Exporting | "Preparing your file…" | Inside the region, `body` `--bud-text` |
+| `exported` | "Exported." | Inside the region, `body` `--bud-text` |
+| `failed` | "The export couldn’t be built, so nothing was saved — Budgetoid sends the whole file or none of it. Try again in a few minutes." | Inside the region, `--bud-over` |
+| `unrecognised` | "Budgetoid couldn’t read what the server sent back, so nothing was saved. Reload the page and export again — a reload is the one thing here that can change the answer." | Inside the region, `--bud-over` |
+| `locked` | "This tab stopped holding your account’s keys before the file was finished, so nothing was saved. Export again once it holds them." | Inside the region, `--bud-over` |
+| `unreadable` | "Some names or notes didn’t open with the keys this tab holds, so nothing was saved — Budgetoid sends the whole file or none of it." | Inside the region, `--bud-over` |
+
+The copy is the specification, not an example of it.
+
+**One outcome at a time, and one sentence per outcome.** The export answers one word, so the region
+holds at most one line. The in-flight line wins, and a press clears the previous outcome as it
+starts — the one thing that clears it. Every word reports what was observed and none names a cause.
+
+**`failed` keeps its sentence.** It covers a request nobody answered, a server that refused to
+build the document, and anything thrown while the tab was opening and writing it — a defect in the
+call rather than a value that failed to open, since every refusal a person can act on comes back as
+one of the other three words. All of them leave nothing saved.
+
+**`unrecognised` is a body this client could not read**, and the line between it and `unreadable`
+is the one the [Account keys section](#account-keys-section) draws for a manifest: a document
+that does not parse into the shape this bundle reads, or an envelope whose wire string the strict
+decoder refuses, lands here, because both refusals come before any cipher runs and observe no key
+material. Everything from the version byte and the tag onward is `unreadable`. The two are told
+apart by the result the decoder and the opener return, never by a message. The sentence takes the
+Account keys section's logic — the act
+and not the cause, and a reload because it is the only thing that fetches different JavaScript —
+and adds that nothing was saved.
+
+**It says *reload and export again* and does not say *unlock*, though a reload locks the account.**
+After the reload the sentence above the control reads the live state and says what is needed —
+Unlock on an ordinary tab, the rotation on a staged run. An outcome naming Unlock would be advice
+given without knowing which of those the reload lands on.
+
+**`locked` is custody leaving `unlocked` before the last field opened**, checked up to the moment
+the file is handed to the browser. It names no control for the same reason: by the time somebody
+reads it the tab may be locked, mid-ceremony, or holding a generation a finished rotation handed
+over — and the sentence above the control is the one that knows which. *Export again once it holds
+them* is true in all three. **It wins over `unreadable`** when one export meets both: it has a way
+forward and `unreadable` has none, and a value that failed while the keys were leaving is only worth
+reporting once they are back and it still does not open.
+
+**`unreadable` offers nothing to do, because nothing on this screen changes it.** The keys were held
+and a value did not authenticate under them. Unlock is not the remedy — the keys are already here,
+the point the payee `duplicate_name` paragraph makes about a name that did not open. Another passkey
+is not one either — every factor encapsulates the same two keys. And a retry opens the same bytes.
+The sentence stops at the fact and the rule behind the missing file, as `inconsistent` does in the
+Account keys table. Inventing a remedy to satisfy *what happened plus what to do* would send
+somebody round a loop.
+
+**`Exported.` is the only sign of success.** The browser saves the file with no visible act of its
+own, so the region says so.
+
+**Colour is never the message** — every line above reads the same with `--bud-over` removed.
+
+### Accessibility
+
+Heading level `h2` under the screen's one `h1`; no level skipped. One `role="status"` region, polite,
+in the DOM from first paint and empty at rest, never `assertive`. The control is a 48px target and
+keeps its place in the tab order when not ready and when busy (`disabledInteractive`); `aria-busy` is
+present only while busy. The not-ready sentence is visible prose in reading order immediately before
+the control, and the control names it with `aria-describedby` while it renders. Nothing is
+communicated by colour alone.
+
+### What ships today
+
+**The section renders as this chapter specifies, and no departure is known.** Both paragraphs are
+the copy above character for character. The control is Primary, `disabledInteractive`, and reads
+`SettingsService.pressable` — custody `unlocked`, no run in flight, not already exporting — in its
+`disabled` binding and in `export()`'s guard alike; `aria-busy` reads `exporting` alone and
+resolves to `null` at rest. The not-ready sentence renders from `exportBlock`, the run's winning
+over the locked one and nothing while unlocking, and the control names it with `aria-describedby`
+only while it renders. The region carries the in-flight line, **Exported.** and all four failure
+words in the table's copy.
+
+**The file is the opened one.** The service fetches the document as text, hands it to the strict
+decoder in `export-document.ts`, opens every name and note in one batch through custody's opener,
+and saves the pretty-printed result as `application/json` — or saves nothing and publishes one of
+the four words. [export.md](../business-logic/export.md) owns the rules behind each word, the
+decoder's refusals and why the money columns survive the parse.
+
+**One property is held by review and by no test**: the opened document lives in the frame of the
+one export that opened it — no signal, no field and no module binding holds it, and
+`export-document.ts` keeps nothing between its three functions. A change that parked it anywhere
+longer-lived would redden nothing.
+
 ## The locked account
 
 **A locked account and a locked session are two different things, and the screens may not borrow
@@ -2548,6 +2790,10 @@ audible, and the new one is no different: a form left live during a run offers s
 make their own rotation fail, and Unlock advice given during a run names a control that cannot
 help. The [key-rotation](#key-rotation-section) chapter argues why a run takes the lists away at
 all; this chapter is where the predicates live.
+
+**Export on Settings reads both, and adds no third.** Its control is usable on the form's terms, and
+its advice sentence renders on the notice's, with the run's sentence winning when both are true —
+the [Export section](#export-section) applies them to one more control and restates neither.
 
 `unlocking` is **unreachable from this route today** — the ceremony runs from Settings and there is
 one tab — so the two cases naming it are the only thing keeping the split alive.

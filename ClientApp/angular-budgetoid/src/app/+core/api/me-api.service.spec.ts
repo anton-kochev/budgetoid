@@ -212,23 +212,33 @@ describe('MeApiService', () => {
 
   afterEach(() => http.verify());
 
-  it('requests the export as bytes rather than parsed JSON', () => {
+  it('requests the export as text rather than parsed JSON', () => {
+    // Arrange
+    // A money lexeme `JSON.parse` would rewrite: `-0.0100` comes back out of a
+    // parse-and-stringify as `-0.01`. The body is what `ExportDocument.cs`
+    // writes, trimmed to the one member that can tell a pipe from a parser.
+    const body = '{"schemaVersion":1,"amount":-0.0100}';
+    let received: string | undefined;
+
     // Act
-    api.getExport().subscribe();
+    api.getExport().subscribe((value) => (received = value));
     const request = http.expectOne('https://api.test/api/me/export');
 
     // Assert
     expect(request.request.method).toBe('GET');
-    // The load-bearing assertion of this file. Export amounts ship as JSON
-    // numbers at numeric(14,4) scale, and a JSON responseType hands them to
-    // JSON.parse, whose IEEE-754 doubles do not cover that range — the file
-    // would be silently degraded on its way to disk. Without this line,
-    // `getExport(): Observable<Blob> { return this.get<Blob>(...); }` — a
-    // parsed body merely *typed* as a Blob — passes the method-and-URL check
-    // above. See docs/business-logic/export.md.
-    expect(request.request.responseType).toBe('blob');
+    // **Text, and no longer bytes.** The client now opens every name and note
+    // before it saves, so it has to read the document — but the read belongs to
+    // `decodeExportDocument`, which is strict about the shape and exact about
+    // the money column, and not to HttpClient, whose `json` response type would
+    // parse the body with no shape check at all and hand the decoder an object
+    // it can no longer refuse as `unrecognised`. Text keeps the one parse in the
+    // one place that owns it. See docs/design/components.md, "Export section".
+    expect(request.request.responseType).toBe('text');
 
-    request.flush(new Blob(['{}'], { type: 'application/json' }));
+    request.flush(body);
+    // The string as served, character for character: a service that parsed
+    // the body and re-serialised it would hand back `-0.01`.
+    expect(received).toBe(body);
   });
 
   it('sends no Content-Type on the export request', () => {
@@ -241,11 +251,11 @@ describe('MeApiService', () => {
     // `Content-Type: application/json` on every request it makes, including
     // bodyless GETs, so this header is the fingerprint of the JSON path: an
     // implementation that routed through `get<T>()` and only *declared*
-    // Observable<Blob> is caught here even if a future refactor loosens the
+    // Observable<string> is caught here even if a future refactor loosens the
     // responseType assertion. A bodyless GET has no content to type.
     expect(request.request.headers.get('Content-Type')).toBeNull();
 
-    request.flush(new Blob(['{}'], { type: 'application/json' }));
+    request.flush('{}');
   });
 
   it('requests the account record as parsed JSON', () => {
@@ -258,8 +268,8 @@ describe('MeApiService', () => {
 
     // Assert
     expect(request.request.method).toBe('GET');
-    // The sibling of the blob pin, and the half that makes it mean something:
-    // a service that set `responseType: 'blob'` on *every* request would
+    // The sibling of the text pin, and the half that makes it mean something:
+    // a service that set `responseType: 'text'` on *every* request would
     // satisfy the export test perfectly. Only the pair proves the response
     // type is a per-call decision rather than a service-wide setting.
     expect(request.request.responseType).toBe('json');

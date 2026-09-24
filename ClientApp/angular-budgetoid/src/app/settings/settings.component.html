@@ -23,9 +23,10 @@
     }
   </div>
 
-  <!-- The one control on this screen that works, and it belongs under Account
-       rather than under Ways to sign in: that section is about what is attached
-       to the account, and this is about the browser holding it right now.
+  <!-- The one control on this screen that is never off, and it belongs under
+       Account rather than under Ways to sign in: that section is about what is
+       attached to the account, and this is about the browser holding it right
+       now.
 
        Outline, per the book's table: a secondary action. Not Primary — Export is
        this screen's one main action — and not Destructive, because nothing is
@@ -212,7 +213,8 @@
 
                  Plain `disabled`, unlike the export button's
                  `disabledInteractive`: that carve-out exists to hold focus on a
-                 control that is *busy* and will come back within the second.
+                 control that comes back on this screen — busy, or waiting on a
+                 state of this tab that can change under the reader's focus.
                  This one is unavailable for the whole life of the screen, so
                  keeping it focusable would only offer the keyboard a stop that
                  answers every press with silence.
@@ -650,8 +652,9 @@
        it: a Primary *while locked* reads as the obvious move. Refused twice
        over. Export is this screen's one main action, and a screen with two is a
        screen with none; and to anybody not tracking lock state — which is
-       everybody, since nothing on the page changes when it flips — a Primary
-       that comes and goes is just two Primary buttons on one screen. Not
+       everybody, since on this screen only this section and the Export section
+       are drawn differently when it flips — a Primary that comes and goes is
+       just two Primary buttons on one screen. Not
        Destructive either: nothing is lost whichever way this goes.
 
        No composed accessible name: it is the only Unlock on the screen, so there
@@ -702,37 +705,80 @@
 <section class="s-section" aria-labelledby="export-heading">
   <h2 class="s-eyebrow" id="export-heading">Export</h2>
 
+  <!-- Standing prose, so both paragraphs are true locked, unlocking, mid-run or
+       ready: each says what exporting *does*, never whether it can right now.
+       Neither promises more than the keys open — amounts and dates are in the
+       file whatever this tab holds, and the keys are what make the names and
+       notes readable. *Every one in the file is readable* holds because the file
+       is whole or nothing. -->
   <p class="s-prose">
     Download everything Budgetoid holds about you as one JSON file &mdash; your
     account, your budget, and every account, category group, category, payee and
-    transaction in it.
+    transaction in it. This tab opens the names and notes with your
+    account&rsquo;s keys before saving, so every one in the file is readable.
   </p>
   <p class="s-prose">
-    The file is built and sent in the same request. There&rsquo;s no queue, no
-    email, and nothing to ask anyone for.
+    Budgetoid sends it all in one request, and this tab writes the file.
+    There&rsquo;s no queue, no email, and nothing to ask anyone for.
   </p>
 
-  <!-- The service already refuses a second request while one is in flight, but
-       that refusal is invisible: an unmarked button looks pressable and answers
-       the press with nothing. These bindings are the visible half of the guard,
-       not a replacement for it.
+  @let block = settings.exportBlock();
 
-       `disabledInteractive` is load-bearing. It renders the disabled appearance
-       and sets `aria-disabled="true"` while leaving the DOM `disabled` property
-       false, so the control keeps its place in the tab order. A button that
-       goes truly disabled under the finger drops focus to <body>, and someone
-       who started the export from the keyboard loses their position in the
-       document just as the outcome is announced.
+  <!-- The fourth reason a control on this screen is off, in its own words —
+       none of the three sentences above may be pasted over it, nor it over them.
+       Which one renders is the service's word, on the notice's terms: the run's
+       wins whenever a run is in flight, because pressing Unlock mid-run opens
+       none of the re-sealed rows; nothing renders while unlocking, because
+       advice given while unsure is advice to press a button somebody is already
+       holding down.
 
-       `aria-busy` resolves to null rather than 'false' so the attribute is
+       Visible prose immediately above the control and outside the region: it
+       says why a control is off, which is not the outcome of anything the person
+       did. The control keeps its tab stop, so it also names this sentence with
+       `aria-describedby` while it renders — never *only* there. No line box is
+       reserved: on an unlock it leaves with the Unlock control, which has
+       already moved everything beneath Account keys. -->
+  @if (block === 'rotating') {
+    <p class="s-prose" id="export-block">
+      Export is off while Budgetoid gives this account new keys. It comes back
+      when the key rotation above finishes.
+    </p>
+  } @else if (block === 'locked') {
+    <p class="s-prose" id="export-block">
+      Export is off while this tab can&rsquo;t read your names and notes &mdash;
+      the file is written with them. Press Unlock in Account keys above to turn
+      it back on.
+    </p>
+  }
+
+  <!-- **Pressable only when ready and not busy, and drawn off the same way in
+       both cases.** `pressable` has one owner, the service, and `export()`'s
+       guard reads the same signal — Material halts the click on anchors only, so
+       on a `<button>` the press arrives whatever this attribute says, and a gate
+       written only here would be an ungated action wearing a disabled look.
+
+       `disabledInteractive` rather than the plain `disabled` Register and
+       Generate take: those are off for the life of the screen, and this one
+       comes back one press away and can change under the reader's focus — a
+       rotation begun higher up, or custody letting go of the keys. A button that
+       goes truly disabled in that moment drops focus to <body>.
+
+       Primary while off as well: the disabled appearance takes the fill away,
+       and a Primary that swapped to Outline with a state nobody is tracking is
+       two Primary buttons on one screen.
+
+       `aria-busy` reads `exporting` alone, not `!pressable`: not ready is not
+       busy, and busy tells a screen reader to wait for something that is not
+       coming. It resolves to null rather than 'false' so the attribute is
        absent at rest instead of asserting that no work is happening. -->
   <button
     class="s-button"
     mat-flat-button
     type="button"
-    [disabled]="settings.exporting()"
+    [disabled]="!settings.pressable()"
     [disabledInteractive]="true"
     [attr.aria-busy]="settings.exporting() ? 'true' : null"
+    [attr.aria-describedby]="block !== null ? 'export-block' : null"
     (click)="settings.export()"
   >
     Export
@@ -740,21 +786,54 @@
 
   <!-- The browser saves the file with no visible act of its own, so the outcome
        has to be said here. The region stays in the DOM while empty; a live
-       region inserted together with its text is announced by nothing. -->
+       region inserted together with its text is announced by nothing.
+
+       One outcome at a time, and one chain rather than an `@if` beside a
+       `@switch`: the in-flight line wins, and a press clears the previous word
+       as it starts. Every failure says nothing was saved, because the file is
+       whole or nothing — no partial file, and none with a dash where a name was.
+       Every word reports what was observed and none names a cause or a control:
+       by the time somebody reads `locked`, the sentence above the button is the
+       one that knows whether Unlock or the rotation is what is needed. Colour is
+       never the message — each reads the same with `--bud-over` removed. -->
   <div class="s-outcome" role="status">
     @if (settings.exporting()) {
       <p class="s-prose">Preparing your file&hellip;</p>
     } @else if (settings.exported()) {
       <p class="s-prose">Exported.</p>
-    }
-
-    @switch (settings.exportFailure()) {
-      @case ('failed') {
-        <p class="s-error">
-          The export couldn&rsquo;t be built, so nothing was saved &mdash;
-          Budgetoid sends the whole file or none of it. Try again in a few
-          minutes.
-        </p>
+    } @else {
+      @switch (settings.exportFailure()) {
+        @case ('failed') {
+          <p class="s-error">
+            The export couldn&rsquo;t be built, so nothing was saved &mdash;
+            Budgetoid sends the whole file or none of it. Try again in a few
+            minutes.
+          </p>
+        }
+        @case ('unrecognised') {
+          <p class="s-error">
+            Budgetoid couldn&rsquo;t read what the server sent back, so nothing
+            was saved. Reload the page and export again &mdash; a reload is the
+            one thing here that can change the answer.
+          </p>
+        }
+        @case ('locked') {
+          <p class="s-error">
+            This tab stopped holding your account&rsquo;s keys before the file
+            was finished, so nothing was saved. Export again once it holds them.
+          </p>
+        }
+        <!-- The one outcome offering nothing to do, because nothing on this
+             screen changes it: the keys were here and a value did not
+             authenticate under them, every factor holds the same two keys, and
+             a retry opens the same bytes. -->
+        @case ('unreadable') {
+          <p class="s-error">
+            Some names or notes didn&rsquo;t open with the keys this tab holds,
+            so nothing was saved &mdash; Budgetoid sends the whole file or none
+            of it.
+          </p>
+        }
       }
     }
   </div>

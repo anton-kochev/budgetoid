@@ -8,6 +8,59 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-09-24 — The export is opened in the tab, parsed with plain JSON.parse, and saved whole or not at all
+
+**Context:** the server hands every name and note back sealed, and the web client used to save its
+response unread. That was a file of envelopes. To save a file a person can read, the client has to
+parse the document, open each sealed member and write the result. Parsing was the reason the client
+had stayed a pipe: the money columns are JSON numbers, and the old argument was that a double cannot
+carry `numeric(14,4)`.
+
+**Decision:** three parts. [export.md](export.md) owns the rules.
+- **Parse with plain `JSON.parse`, behind one strict decoder, with a tripwire on the money columns.**
+  The old argument was wrong. A `numeric(14,4)` value has at most fourteen significant digits and a
+  double round-trips fifteen. Measured over 3.24M values across the whole range and both edges, the
+  parse-and-serialize round trip gave 0 mismatches. The only loss is trailing zeros (`12.5000` →
+  `12.5`), which changes no value. The decoder refuses money at or past 1e10 or finer than four
+  decimals, so a widened column is refused loudly for most values. It is not refused for all: from
+  six decimals up, near the top of the range, some values parse to the same double as a
+  four-decimal neighbour. 9,094 of 2.144M such values were accepted.
+- **Save the whole file or none of it.** One field that fails to open blocks the export, and the
+  screen says which of four things went wrong.
+- **Keep `schemaVersion` at `1`.** The version names the delivered file. The file has the
+  response's shape with eight members holding text where they held envelopes. The response itself
+  is an internal hop that nobody is handed as a file.
+
+**Alternatives considered:**
+- **A tokenizer that reads money as the raw lexeme**: rejected. It is a second JSON parser in the
+  client, hand-written or a dependency, for a loss that does not occur at this column's width. It
+  would also have to be as strict as the decoder about everything else, or it becomes the lenient
+  parser beside the strict one.
+- **Have the server send money as strings**: rejected. It changes the wire shape of a route whose
+  other callers read numbers, and moves an exact-decimal problem the client does not have onto every
+  reader that does not need it. The saved file would then carry strings where a person's tools
+  expect numbers, or the client would convert them back, which is the parse this avoids.
+- **`JSON.rawJSON` or the reviver's source text**: rejected for now. It is the one approach that
+  closes the tripwire's hole, but it sits above this client's browser floor. Angular 21's default
+  target is Baseline Widely available (Chrome and Edge 111, Firefox 112, Safari 16.4), and MDN lists
+  the feature as Baseline 2025. Revisit when the floor passes it, or the day a money column widens.
+- **Save the fields that opened, and mark the rest**: rejected. A file with a dash or an envelope
+  where a name was looks complete years later, and nothing in it says the marker is a failure. It is
+  the truncation the server already refuses.
+- **Bump `schemaVersion` to `2` for the opened file**: rejected. Nobody holds a version-1 file of
+  another shape. No sealed export was ever handed to anybody as a file, and a browser navigating to
+  the route gets the first-party `403`. A bump would announce a difference no reader can meet.
+
+**Accepted cost:** a person whose account holds one value that no longer authenticates cannot export
+at all, and the screen offers them nothing to do. The file loses the column's trailing zeros.
+Widening either money column now has to revisit the tripwire, and the tripwire's measured hole stays
+open until a raw-lexeme read is within the browser floor.
+
+**Affected areas:** [export.md](export.md), [account-keys.md](account-keys.md), the
+[Export section](../design/components.md#export-section) of the design book.
+
+---
+
 ## 2026-09-23 — A spent recovery code keeps its factor, because it is the way back
 
 **Context:** redeeming a code has always deleted only its `recovery_code_hashes` row, and the

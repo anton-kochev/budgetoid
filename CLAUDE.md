@@ -264,8 +264,8 @@ Load-bearing rules. Each links the doc that argues it — **read that doc before
   `npm run build`**. [frontend testing](docs/engineering/frontend-testing.md)
 - **`/app/settings` is reached from the shell navigation**, a layout on the `app` route — so
   **which routes carry a bar is a fact about the route table**. **Three different reasons hold the
-  disabled controls off across four sites and the screen says all three**; do not paste one sentence
-  over all of them. Home and Add are specified and not built — do not "complete" the screen.
+  inert controls off across four sites, a fourth holds Export off while this tab cannot read what
+  the file is written from, and the screen says all four**; do not paste one sentence over another. Home and Add are specified and not built — do not "complete" the screen.
   [export.md](docs/business-logic/export.md), [erasure.md](docs/business-logic/erasure.md),
   [recovery-codes.md](docs/business-logic/recovery-codes.md),
   [components.md](docs/design/components.md)
@@ -321,6 +321,16 @@ Load-bearing rules. Each links the doc that argues it — **read that doc before
   calibrated CPU-throttling profile does not transport, and the error flatters the slower rig.
   [frontend performance](docs/engineering/frontend-performance.md),
   [account-keys.md](docs/business-logic/account-keys.md)
+- **The export is opened, never piped.** The server sends envelopes; `decodeExportDocument` parses
+  the text once and **refuses every member it does not declare** — that refusal is what keeps a
+  blind index or a new column out of the saved file, so a column the server adds to the export
+  lands in the client decoder in the **same commit** or every export answers `unrecognised`.
+  Plain `JSON.parse` is exact for `numeric(14,4)` (measured) and **not** for a wider scale, which
+  the scale tripwire catches only in part. The file is **whole or absent** — `locked` wins over
+  `unreadable`, and nothing is saved on either — and Export is pressable only while custody is
+  `unlocked` and no rotation run is in flight, one `pressable` read by both the attribute and the
+  handler. The opened document never lands in a signal or a field.
+  [export.md](docs/business-logic/export.md), [components.md](docs/design/components.md)
 - **The recovery-code hand-off is the one screen that shows a secret, and it still mints and posts
   nothing.** The codes never enter a live region; what is saved or copied is the grouped codes and
   nothing else; **the acknowledgement gate is in the click handler, not only in the attribute**; and

@@ -119,7 +119,7 @@ export type RegistrationRequestBody = PasskeyRegistrationPayload &
 // one that early today, which is a fact about today's injection graph rather
 // than a property of this class. The `Content-Type` header that class attaches
 // is not missed either — the options leg has no body for it to describe, which
-// is the argument `getBlob` already makes in that file, and Angular sets it
+// is the argument `getText` already makes in that file, and Angular sets it
 // from the body on the leg that has one.
 //
 // **The two paths are imported, not written here.** `apiCredentialsInterceptor`

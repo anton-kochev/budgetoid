@@ -90,13 +90,16 @@ figures, not to copy that could just say the number).
   correction is narrower than the one before, which is the shape this rule produces when it
   is applied rather than admired.
 - **Controls blocked by different things get different sentences** — on that screen today,
-  **three reasons behind four inert controls, said in four sentences**: registering a passkey
-  waits on one thing, generating a set of codes on that thing and a second, revoking and
-  erasing on the second alone. The two sharing a reason still differ in wording, one naming a
-  row's buttons and the other the screen's, so **the count of sentences is never the count of
-  reasons** — say which of the two a number is counting, or the next reader checks it against
-  the other one and finds it false. One sentence pasted across several replaces an old
-  falsehood with a new one, and reads as an apology nobody wrote for this control.
+  **four reasons, said in six sentences**. Three stand behind four inert controls, in four
+  sentences: registering a passkey waits on one thing, generating a set of codes on that thing
+  and a second, revoking and erasing on the second alone. The fourth is on a control that is
+  not inert: Export is off only while this tab cannot open what the file is written from, and
+  says so in one of two sentences — a key rotation in flight, or a locked account — or in none.
+  The two inert controls sharing a reason still differ in wording, one naming a row's buttons
+  and the other the screen's, so **the count of sentences is never the count of reasons** — say
+  which of the two a number is counting, or the next reader checks it against the other one and
+  finds it false. One sentence pasted across several replaces an old falsehood with a new one,
+  and reads as an apology nobody wrote for this control.
 
 ## A sentence the API sends
 

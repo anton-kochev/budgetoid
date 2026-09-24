@@ -1,30 +1,44 @@
-import { Injectable, Signal, inject, signal } from '@angular/core';
+import { Injectable, Signal, computed, inject, signal } from '@angular/core';
 import { Router } from '@angular/router';
 import {
   MeApiService,
   type CredentialSummary,
 } from '@app-core/api/me-api.service';
+import { AccountKeyCustodyService } from '@app-core/security/account-key-custody.service';
+import { KeyRotationService } from '@app-core/security/key-rotation.service';
 import { FileDownloadService } from '@app-core/services/file-download.service';
 import { SessionService } from '@app-core/session/session.service';
-import { EMPTY, catchError, finalize } from 'rxjs';
+import { EMPTY, catchError, finalize, from, switchMap } from 'rxjs';
+import {
+  decodeExportDocument,
+  openExportDocument,
+  serializeExportDocument,
+} from './export-document';
 import { exportFilename } from './export-filename';
 
-// One member now that `sessionExpiryInterceptor` owns "the session ended" for
-// every request the application makes: a 401 on the export is noticed there,
-// declares the session over and takes the browser to `/welcome`, so by the time
-// this service's `catchError` runs there is no screen left to say a second
-// sentence on. What is left is the one failure that keeps the reader where they
-// are — the server refused to build the file.
+// Four words, because they are four different next steps for a person, and each
+// of them means nothing was saved.
 //
-// `loadCredentials` below argues that a discriminant nothing discriminates on is
-// a second thing to keep in step with the template, and by that argument this
-// could now be a boolean. It stays a named literal because the change is a
-// *removal*: dropping the arm the interceptor took over leaves every reader of
-// `exportFailure` — the outcome region, its tests — reading the same state with
-// one fewer value in it, where renaming the member to a flag would be a rewrite
-// of the screen's outcome contract for no behaviour. A word also reads better
-// than `true` at the point where a failure is recorded.
-export type ExportFailure = 'failed';
+// `failed` is the request: nobody answered, or the server refused to build the
+// document, and trying again later can change that. A 401 is not a fifth word —
+// `sessionExpiryInterceptor` owns "the session ended", and has taken the browser
+// to `/welcome` before this service's `catchError` runs.
+//
+// The other three are the body, judged in this tab. `unrecognised` is a document
+// this bundle could not read — the strict decoder refused its shape or an
+// envelope's wire string, before any cipher ran — and a reload is the one act
+// that can change it. `locked` is custody letting go of the keys before the file
+// was handed to the browser. `unreadable` is a value that did not open under
+// keys this tab *did* hold, which nothing on this screen changes. They are told
+// apart by the result `export-document.ts` returns, never by a message.
+export type ExportFailure = 'failed' | 'unrecognised' | 'locked' | 'unreadable';
+
+// Which sentence stands above an Export that is off. `null` beside it means
+// none: a ready control, and one that is off while custody is mid-ceremony.
+export type ExportBlock = 'rotating' | 'locked';
+
+// What one export ends as, once the server has answered.
+type ExportOutcome = 'exported' | Exclude<ExportFailure, 'failed'>;
 
 // Deliberately not `providedIn: 'root'`: every signal below is the state of one
 // visit to the settings screen, not of the application, so `SettingsComponent`
@@ -43,6 +57,11 @@ export class SettingsService {
   private readonly download = inject(FileDownloadService);
   private readonly session = inject(SessionService);
   private readonly router = inject(Router);
+  // Both root-provided and both read, never written: custody is where the
+  // export's opener comes from and whose status decides readiness, and the
+  // rotation driver is read for `running` and `staged` and nothing else.
+  private readonly custody = inject(AccountKeyCustodyService);
+  private readonly rotations = inject(KeyRotationService);
 
   private readonly emailSignal = signal<string | null>(null);
   private readonly emailFailedSignal = signal(false);
@@ -105,6 +124,45 @@ export class SettingsService {
   public readonly recoveryLoading: Signal<boolean> =
     this.recoveryLoadingSignal.asReadonly();
 
+  // A key rotation is in flight: a run this tab is walking, or one on file. Both
+  // terms, read the way the content screens read them — either alone
+  // half-works, and the half that fails is the quiet one.
+  private readonly rotating = computed(
+    () => this.rotations.running() || this.rotations.staged() !== null,
+  );
+
+  // Ready and not busy — **the one predicate the control's `disabled` and
+  // `export()`'s guard both read**, so the attribute and the handler cannot
+  // cover different states.
+  //
+  // Ready is written positively: custody says `unlocked` **and** no run is in
+  // flight. `locked`, `unlocking` and any word custody grows later arrive not
+  // ready; written `!== 'locked'`, the control goes live mid-ceremony and opens
+  // nothing. The run term is not caution: a staged run has re-sealed part of
+  // the account under keys custody does not hold, so an export over it would
+  // end `unreadable` for a reason that has a remedy.
+  public readonly pressable: Signal<boolean> = computed(
+    () =>
+      this.custody.status() === 'unlocked' &&
+      !this.rotating() &&
+      !this.exportingSignal(),
+  );
+
+  // The sentence above an Export that is off, on the notice's terms rather than
+  // the form's. The run's whenever a run is in flight, whatever custody says —
+  // Unlock pressed mid-run gets the generation on its way out, so the locked
+  // sentence's advice is false during one. The lock's on `locked` alone:
+  // `unlocking` is off and silent, because the Account keys region is already
+  // saying so and the locked sentence would tell somebody to press a button
+  // they are holding down. Busy is not a reason either; the region says that.
+  public readonly exportBlock: Signal<ExportBlock | null> = computed(() => {
+    if (this.rotating()) {
+      return 'rotating';
+    }
+
+    return this.custody.status() === 'locked' ? 'locked' : null;
+  });
+
   public loadEmail(): void {
     this.emailFailedSignal.set(false);
     // Cleared when the read *starts*, for the reason `loadRecoveryCodes` gives
@@ -142,9 +200,9 @@ export class SettingsService {
   // in-flight guard and no confirmation.
   //
   // One boolean, not an `ExportFailure`-style union. The distinction there earns
-  // its keep because a lapsed session sends the user somewhere and a refused
-  // build does not; here every way this can fail — 401, 500, offline — ends in
-  // the same next step, which is to load the page again. A discriminant nothing
+  // its keep because its four words are four different next steps; here every
+  // way this can fail — 401, 500, offline — ends in the same next step, which is
+  // to load the page again. A discriminant nothing
   // discriminates on is a second thing to keep in step with the template.
   public loadCredentials(): void {
     this.credentialsFailedSignal.set(false);
@@ -228,9 +286,12 @@ export class SettingsService {
   }
 
   public export(): void {
-    // The server builds the entire document per request, so a double-click on
-    // the button must not cost two of them.
-    if (this.exportingSignal()) {
+    // The gate the control's `disabled` draws, and it has to be here as well:
+    // `disabledInteractive` leaves the DOM `disabled` property false and
+    // Material halts the click on anchors only, so a press on a control drawn
+    // off still arrives. Its busy half is what stops a double-click costing
+    // the server two whole-document builds.
+    if (!this.pressable()) {
       return;
     }
 
@@ -241,6 +302,14 @@ export class SettingsService {
     this.api
       .getExport()
       .pipe(
+        // The work after the answer is asynchronous — every field opens on the
+        // platform's cipher — so it rides this stream rather than an `async`
+        // wrapper around it: the request still leaves in the press's own task,
+        // and a refused one still reaches `catchError` synchronously.
+        switchMap((text) => from(this.write(text))),
+        // The request, and a throw out of `write` — which is a defect in the
+        // call rather than a value that failed to open, since every refusal a
+        // person can act on comes back as a word. Either way nothing was saved.
         catchError(() => {
           this.exportFailureSignal.set('failed');
           return EMPTY;
@@ -253,11 +322,58 @@ export class SettingsService {
       // for still lands on disk. Adding `takeUntilDestroyed` here for tidiness
       // would silently cancel that download — the request the user already paid
       // the server's whole-document build for.
-      .subscribe((blob) => {
-        // The blob is handed on untouched — not read, not parsed, not rebuilt.
-        this.download.save(blob, exportFilename(new Date()));
-        this.exportedSignal.set(true);
+      .subscribe((outcome) => {
+        if (outcome === 'exported') {
+          this.exportedSignal.set(true);
+        } else {
+          this.exportFailureSignal.set(outcome);
+        }
       });
+  }
+
+  // The server's text in, a saved file or the word for why not out. **The
+  // opened document lives in this frame and nowhere else** — no signal, no
+  // field, nothing returned — so no copy of a name outlives the one export
+  // that opened it, or the keys that opened it.
+  //
+  // Whole file or nothing: `openExportDocument` answers `opened` only when
+  // every name and note came back as text, and anything else saves nothing.
+  // A file carrying a dash where a name was looks complete in a downloads
+  // folder years later.
+  private async write(text: string): Promise<ExportOutcome> {
+    const decoded = decodeExportDocument(text);
+
+    if (decoded.kind === 'unrecognised') {
+      return 'unrecognised';
+    }
+
+    // An arrow and not `this.custody.openField`: the method reads custody's
+    // `#` fields, so a detached reference type-checks and answers every open
+    // with a `TypeError` on the wrong receiver.
+    const opened = await openExportDocument(decoded.doc, (binding, wire) =>
+      this.custody.openField(binding, wire),
+    );
+
+    if (opened.kind !== 'opened') {
+      return opened.kind;
+    }
+
+    // Checked up to the moment the file is handed to the browser, and in the
+    // same synchronous block as the hand-over. Each open already answers
+    // `locked` for a lock that lands while its cipher runs; this catches one
+    // landing after the last open and before the save.
+    if (this.custody.status() !== 'unlocked') {
+      return 'locked';
+    }
+
+    this.download.save(
+      new Blob([serializeExportDocument(opened.doc)], {
+        type: 'application/json',
+      }),
+      exportFilename(new Date()),
+    );
+
+    return 'exported';
   }
 
   /**
@@ -303,10 +419,11 @@ export class SettingsService {
   }
 
   // `failureFor` used to sit here and read the status off the error. It is gone
-  // rather than reduced to a function returning one constant: every way this
-  // read can fail — a refused build, a 500, an unreachable server — now ends in
-  // the same sentence, and the one status that ended somewhere else is answered
-  // before this handler runs.
+  // rather than reduced to a function returning one constant: every way the
+  // export *request* can fail — a refused build, a 500, an unreachable server —
+  // ends in `failed`, and the one status that ended somewhere else is answered
+  // before `export`'s `catchError` runs. The three other words come from the
+  // body, and `write` names them.
   //
   // The error itself is still not logged, departing from the neighbouring
   // `accounts.service.ts`, which writes the error object to the console before

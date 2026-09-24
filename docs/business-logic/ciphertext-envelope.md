@@ -129,7 +129,8 @@ The codec's two functions — `sealNarrativeField` and `openNarrativeField` — 
 leaves that class, and every screen that writes a narrative value calls those —
 `/app/accounts`, the transaction form and both halves of
 `/app/categories`, each minting its own row id and computing a blind index where the column
-carries one. See
+carries one. The export reads all eight through `openField` and writes the opened text to a file
+on the person's own disk ([export.md](export.md)). See
 [account-keys.md](account-keys.md#the-operations-that-delegate-and-the-shape-that-was-forced),
 which argues why the operations sit there and not beside the codec. **The format was agreed a
 slice ahead of those callers on purpose, and that is what every clause of it rests on**: a
@@ -866,11 +867,15 @@ any row will ever rebuild, because there is no column to read it back out of. Bo
 to come off the **same** entry, which is what the single predicate in `refuseInvalidBinding`
 does; splitting it into two `some` calls is the same mistake wearing a different shape.
 
-**The caller that produces such a binding is a mapper, and five of them exist.**
+**The caller that produces such a binding is a mapper, and six of them exist.**
 `account-view.ts`, `payee-view.ts`, `category-view.ts`, `category-group-view.ts` and
 `transaction-view.ts` each take the opener as a function and hand it a binding, and `payee-view.ts`
 takes the indexer beside it — so the hazard this lookup is written for is **live** rather than
-anticipated. Most bindings are still the compiler's: the table and the column are closed unions
+anticipated. The sixth is `export-document.ts`, which binds every narrative member of the whole
+export document to the row it sits on, with a row id read off the server's response — and calls
+`refuseInvalidBinding` itself while decoding, so that a non-canonical id is a body this client
+could not read (`unrecognised`) rather than a `NarrativeFieldMisuseError` at the opener, which
+would name a defect in this client. Most bindings are still the compiler's: the table and the column are closed unions
 derived from `NARRATIVE_FIELDS`, so a binding written out as a literal has already been through
 them. The runtime
 lookup is for the binding the compiler never saw — a table name arriving as data, out of a
