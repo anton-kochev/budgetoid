@@ -110,6 +110,165 @@ export interface FixtureInfo {
   readonly distinctOpens: number;
 }
 
+/**
+ * Which families of cell one invocation runs.
+ *
+ * `read` is the transaction-list read the harness was built for; `export` is
+ * the whole-account export — decode, open, serialize — over a synthetic
+ * account. Selected with `NARRATIVE_PERF_CELLS`; both by default.
+ */
+export type CellFamily = 'read' | 'export';
+
+/** Both families, in the order they are reported. */
+export const CELL_FAMILIES = [
+  'read',
+  'export',
+] as const satisfies readonly CellFamily[];
+
+/**
+ * One synthetic account for the export cell: one budget, and how many rows of
+ * each owned table it carries.
+ *
+ * **The cardinalities are part of the measurement here too, and for a different
+ * reason than on the read.** Every narrative member of an export is bound to
+ * its own row, so no two members share a ciphertext and de-duplication collects
+ * nothing — the open count is the number of non-null narrative members, and
+ * that is decided by how many rows there are and how many of them carry a note.
+ */
+export interface ExportShape {
+  readonly name: string;
+  readonly transactions: number;
+  readonly accounts: number;
+  readonly payees: number;
+  readonly categories: number;
+  readonly groups: number;
+  /** One transaction in this many has no description. */
+  readonly undescribedEvery: number;
+  /** One transaction in this many has no payee. */
+  readonly payeelessEvery: number;
+  /** One transaction in this many has no category. */
+  readonly uncategorisedEvery: number;
+  /** One category, and one group, in this many carries a description. */
+  readonly describedCategoryEvery: number;
+  /**
+   * The most runs a *throttled* profile takes of this shape, or `null` for the
+   * invocation's own count. The report prints the count each cell ran.
+   */
+  readonly throttledRunCap: number | null;
+}
+
+// The one cardinality every export size shares: a person's budget of several
+// years, not a ceiling. Only the transaction count moves between the sizes, so
+// a difference between two rows is a difference in volume and nothing else.
+const EXPORT_ACCOUNT = {
+  accounts: 5,
+  payees: 150,
+  categories: 40,
+  groups: 8,
+  undescribedEvery: 5,
+  payeelessEvery: 10,
+  uncategorisedEvery: 12,
+  describedCategoryEvery: 2,
+} as const;
+
+/**
+ * The three export sizes, in the order they are reported.
+ *
+ * 50k is capped under a throttle because one run of it there took about
+ * thirteen seconds on the machine the cap was set on — ten recorded runs and a
+ * warm-up would be over two minutes for one cell, where every other cell is
+ * seconds. Its spread across runs was under 2% there, so three runs lose little.
+ * The cap is printed beside the cell rather than the size being dropped.
+ */
+export const EXPORT_SHAPES = [
+  { name: '1k', transactions: 1_000, ...EXPORT_ACCOUNT, throttledRunCap: null },
+  {
+    name: '10k',
+    transactions: 10_000,
+    ...EXPORT_ACCOUNT,
+    throttledRunCap: null,
+  },
+  { name: '50k', transactions: 50_000, ...EXPORT_ACCOUNT, throttledRunCap: 3 },
+] as const satisfies readonly ExportShape[];
+
+/** What one prepared export document turned out to be. */
+export interface ExportFixtureInfo {
+  readonly name: string;
+  readonly transactions: number;
+  /** The served text's length in UTF-16 units — all ASCII, so also its bytes. */
+  readonly textChars: number;
+  /** Non-null narrative members: every one of them is one AEAD open. */
+  readonly sealedMembers: number;
+  /** Narrative members served as `null`, which never reach the opener. */
+  readonly nullMembers: number;
+}
+
+/** The three phases of an export, in the order they run. */
+export type ExportPhase = 'decode' | 'open' | 'serialize';
+
+/** Where one phase sat on the run's clock. */
+export interface PhaseSpan {
+  readonly phase: ExportPhase;
+  readonly startMs: number;
+  readonly endMs: number;
+}
+
+/**
+ * `performance.memory.usedJSHeapSize` at the points the page could read it.
+ *
+ * The V8 JavaScript heap only: an `ArrayBuffer`'s backing store lives outside
+ * it and is not counted. And a sample is taken only when the main thread is
+ * free to take one — at a phase boundary, or from a poller that runs between
+ * the batch's chunks — so a transient peak *inside* one synchronous call, a
+ * `JSON.parse` or a `JSON.stringify`, is invisible to it. The peak is a lower
+ * bound on the true one.
+ */
+export interface HeapReading {
+  readonly beforeBytes: number;
+  readonly afterDecodeBytes: number;
+  readonly afterOpenBytes: number;
+  readonly afterSerializeBytes: number;
+  readonly peakBytes: number;
+  /** How many times the page read the heap over the run. */
+  readonly readings: number;
+}
+
+/** Everything one export run produced inside the page. */
+export interface ExportSample {
+  readonly totalMs: number;
+  readonly phases: readonly PhaseSpan[];
+  /**
+   * The synchronous part of `openExportDocument`: from the call to the promise
+   * coming back. The member walk, the de-duplication map and the first chunk's
+   * dispatch — all of it inside the task `decode` ran in.
+   */
+  readonly openPrologueMs: number;
+  /**
+   * From the last cipher settling to `openExportDocument` resolving: the last
+   * chunk's bookkeeping, one opener call per member and the second walk that
+   * puts every answer back. It runs in one task, and `serialize` continues it.
+   */
+  readonly openEpilogueMs: number;
+  /** AEAD opens the opener actually performed. */
+  readonly opens: number;
+  /** `longtask` entries overlapping the run, relative to its start. */
+  readonly longTasks: readonly LongTask[];
+  /**
+   * rAF callbacks that fired between the end of the open's prologue and the
+   * last cipher settling — the stretch where the batch alone decides whether a
+   * frame is drawn.
+   */
+  readonly interiorFrames: number;
+  /**
+   * The longest stretch inside that same window with no rAF callback, the
+   * window's own edges counting as boundaries.
+   */
+  readonly interiorWorstFrameGapMs: number;
+  readonly heap: HeapReading;
+  /** The saved file's length, so a run that wrote nothing cannot pass as fast. */
+  readonly outputChars: number;
+}
+
 /** The facts a number is not comparable without. */
 export interface Environment {
   readonly userAgent: string;
@@ -118,4 +277,6 @@ export interface Environment {
   readonly secureContext: boolean;
   /** Whether the frame yield used `scheduler.postTask` or the channel fallback. */
   readonly schedulerPostTask: boolean;
+  /** Whether Chrome's non-standard `performance.memory` exists on the page. */
+  readonly performanceMemory: boolean;
 }

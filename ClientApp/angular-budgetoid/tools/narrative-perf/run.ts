@@ -20,6 +20,8 @@
 //   NARRATIVE_PERF_HEADFUL       set to 1 to watch it happen in a window
 //   NARRATIVE_PERF_EXTRA_RATES   extra nominal rates, e.g. 20 — for reproducing
 //                                an older number taken at a hard-coded rate
+//   NARRATIVE_PERF_CELLS         which cells to run: read, export, or both
+//                                comma-separated; default both
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -30,6 +32,8 @@ import { connect, evaluate, stringProperty, waitFor, type Cdp } from './cdp.ts';
 import { launchChrome } from './chrome.ts';
 import { renderReport } from './report.ts';
 import type {
+  ExportMeasurement,
+  ExportRun,
   Measurement,
   ProfileDerivation,
   ProfileReport,
@@ -37,9 +41,15 @@ import type {
 } from './report.ts';
 import { startStaticServer, type ServedFile } from './server.ts';
 import {
+  CELL_FAMILIES,
+  EXPORT_SHAPES,
   FIXTURE_SHAPES,
   MEASURED_PATHS,
+  type CellFamily,
   type Environment,
+  type ExportFixtureInfo,
+  type ExportSample,
+  type ExportShape,
   type FixtureInfo,
   type RunSample,
 } from './shapes.ts';
@@ -61,6 +71,7 @@ async function main(): Promise<void> {
   const runs = Number.parseInt(process.env['NARRATIVE_PERF_RUNS'] ?? '9', 10);
   const headless = process.env['NARRATIVE_PERF_HEADFUL'] !== '1';
   const extraRates = readExtraRates();
+  const cells = readCells();
 
   if (!Number.isInteger(runs) || runs < 1) {
     throw new Error('NARRATIVE_PERF_RUNS must be a positive integer.');
@@ -114,6 +125,7 @@ async function main(): Promise<void> {
     process.stdout.write(
       renderReport(
         await measureEverything(cdp, site.origin, {
+          cells,
           extraRates,
           headless,
           runs,
@@ -203,7 +215,16 @@ interface RunOptions {
   readonly runs: number;
   readonly headless: boolean;
   readonly extraRates: readonly number[];
+  readonly cells: readonly CellFamily[];
 }
+
+/**
+ * The profiles the export cell runs under: unthrottled, and the low-tier
+ * device. Mid-tier sits between the two and would add minutes at 50k without
+ * answering anything the pair does not; a bare extra rate is a tool for
+ * reproducing an old *read* figure, and the export has none.
+ */
+const EXPORT_PROFILES: readonly string[] = ['1x', 'low-tier'];
 
 // Everything between an open connection and a finished report. Split out from
 // `main` so the acquisition and release of Chrome, the profile directory and
@@ -214,7 +235,7 @@ async function measureEverything(
   origin: string,
   options: RunOptions,
 ): Promise<Report> {
-  const { extraRates, headless, runs } = options;
+  const { cells, extraRates, headless, runs } = options;
   const chromeVersion = stringProperty(
     await cdp.send('Browser.getVersion'),
     'product',
@@ -249,15 +270,38 @@ async function measureEverything(
   });
 
   await throttle(1);
-  process.stderr.write('sealing the fixtures…\n');
 
-  const fixtures = await evaluate<readonly FixtureInfo[]>(
-    cdp,
-    sessionId,
-    `narrativePerf.prepare(${JSON.stringify(FIXTURE_SHAPES)})`,
-  );
+  const fixtures: FixtureInfo[] = [];
+
+  if (cells.includes('read')) {
+    process.stderr.write('sealing the fixtures…\n');
+    fixtures.push(
+      ...(await evaluate<readonly FixtureInfo[]>(
+        cdp,
+        sessionId,
+        `narrativePerf.prepare(${JSON.stringify(FIXTURE_SHAPES)})`,
+      )),
+    );
+  }
+
+  const exportFixtures: ExportFixtureInfo[] = [];
+
+  if (cells.includes('export')) {
+    for (const shape of EXPORT_SHAPES) {
+      process.stderr.write(`sealing the ${shape.name} export…\n`);
+      exportFixtures.push(
+        await evaluate<ExportFixtureInfo>(
+          cdp,
+          sessionId,
+          `narrativePerf.prepareExport(${JSON.stringify(shape)})`,
+        ),
+      );
+    }
+  }
+
   const profiles: ProfileReport[] = [];
   const measurements: Measurement[] = [];
+  const exportMeasurements: ExportMeasurement[] = [];
 
   for (const profile of profileOrder(calibration, extraRates)) {
     process.stderr.write(
@@ -291,7 +335,7 @@ async function measureEverything(
       targetScore: profile.targetScore,
     });
 
-    for (const shape of FIXTURE_SHAPES) {
+    for (const shape of cells.includes('read') ? FIXTURE_SHAPES : []) {
       const fixture = fixtures.find((info) => info.name === shape.name);
 
       if (fixture === undefined) {
@@ -312,19 +356,105 @@ async function measureEverything(
         });
       }
     }
+
+    if (!cells.includes('export') || !EXPORT_PROFILES.includes(profile.label)) {
+      continue;
+    }
+
+    for (const shape of EXPORT_SHAPES) {
+      const fixture = exportFixtures.find((info) => info.name === shape.name);
+
+      if (fixture === undefined) {
+        throw new Error(`The page prepared no export named ${shape.name}.`);
+      }
+
+      const cellRuns = exportRunsFor(shape, profile.nominalRate, runs);
+
+      process.stderr.write(
+        `  export ${shape.name}, ${cellRuns} run${cellRuns === 1 ? '' : 's'}…\n`,
+      );
+      exportMeasurements.push({
+        fixture,
+        profile: profile.label,
+        runs: await measureExportCell(cdp, sessionId, shape.name, cellRuns),
+        shape,
+      });
+    }
   }
 
   await throttle(1);
 
   return {
     calibration,
+    cells,
     chromeVersion,
     environment,
+    exportMeasurements,
     headless,
     measurements,
     profiles,
     runs,
   };
+}
+
+// The invocation's run count, or the shape's cap under a throttle. Unthrottled
+// cells always take the full count: they are the ones every stretch factor is
+// a multiple of.
+function exportRunsFor(
+  shape: ExportShape,
+  nominalRate: number,
+  runs: number,
+): number {
+  return nominalRate === 1 || shape.throttledRunCap === null
+    ? runs
+    : Math.min(runs, shape.throttledRunCap);
+}
+
+// One discarded warm-up, then `runs` recorded exports, each its own command.
+//
+// **Garbage is collected before every run and after it, from outside the
+// page.** Before, so a run's "before" heap is not carrying the previous run's
+// dead documents — at 50k those are tens of megabytes, and a collection landing
+// in the middle of the next run would be timed as the next run's work. After,
+// so what is still live once the export has returned is what the export
+// *retained*, not what it merely had not freed yet. `HeapProfiler.collectGarbage`
+// is a full, synchronous collection; it is the one the DevTools button runs.
+async function measureExportCell(
+  cdp: Cdp,
+  sessionId: string,
+  name: string,
+  runs: number,
+): Promise<readonly ExportRun[]> {
+  const once = async (): Promise<ExportRun> => {
+    await cdp.send('HeapProfiler.collectGarbage', {}, sessionId);
+
+    const sample = await evaluate<ExportSample>(
+      cdp,
+      sessionId,
+      `narrativePerf.measureExport(${JSON.stringify(name)})`,
+    );
+
+    await cdp.send('HeapProfiler.collectGarbage', {}, sessionId);
+
+    return {
+      ...sample,
+      retainedAfterGcBytes: await evaluate<number>(
+        cdp,
+        sessionId,
+        'narrativePerf.heapUsedBytes()',
+      ),
+    };
+  };
+
+  await once();
+
+  const recorded: ExportRun[] = [];
+
+  for (let run = 0; run < runs; run++) {
+    recorded.push(await once());
+  }
+
+  return recorded;
 }
 
 interface PlannedProfile {
@@ -403,6 +533,33 @@ function readExtraRates(): readonly number[] {
 
     return rate;
   });
+}
+
+// Which families of cell to run. Unset runs both, which is what the script
+// always did plus the export; a selector exists because the export at 50k under
+// the low-tier throttle is the longest thing this harness does, and somebody
+// iterating on the read should not have to sit through it.
+function readCells(): readonly CellFamily[] {
+  const raw = process.env['NARRATIVE_PERF_CELLS'];
+
+  if (raw === undefined || raw.trim() === '') {
+    return CELL_FAMILIES;
+  }
+
+  const chosen = raw.split(',').map((part) => {
+    const name = part.trim();
+    const family = CELL_FAMILIES.find((candidate) => candidate === name);
+
+    if (family === undefined) {
+      throw new Error(
+        `NARRATIVE_PERF_CELLS holds ${name}, which is not one of ${CELL_FAMILIES.join(', ')}.`,
+      );
+    }
+
+    return family;
+  });
+
+  return CELL_FAMILIES.filter((family) => chosen.includes(family));
 }
 
 async function openPage(cdp: Cdp, origin: string): Promise<string> {

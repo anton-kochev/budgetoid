@@ -24,6 +24,12 @@ export interface LaunchedChrome {
  * because a headless tab is by definition never in the foreground, and letting
  * Chrome throttle timers and rendering in it would silently change every frame
  * number the harness records.
+ *
+ * `--enable-precise-memory-info` is for the export cell's heap figures. Without
+ * it Chrome quantises `performance.memory` into coarse buckets and refreshes it
+ * on a timer, so two reads a phase apart can return the same stale number. It
+ * is a reporting flag rather than a scheduling one; the read cells were not
+ * re-baselined with and without it.
  */
 export async function launchChrome(options: {
   readonly headless: boolean;
@@ -44,6 +50,7 @@ export async function launchChrome(options: {
       '--disable-features=CalculateNativeWinOcclusion,Translate',
       '--disable-extensions',
       '--disable-sync',
+      '--enable-precise-memory-info',
       '--mute-audio',
       '--hide-scrollbars',
       '--window-size=1280,900',

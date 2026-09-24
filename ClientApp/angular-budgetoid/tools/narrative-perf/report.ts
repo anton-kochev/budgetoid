@@ -7,10 +7,17 @@
 // harness records; a person decides.
 import type { Calibration } from './calibrate.ts';
 import type {
+  CellFamily,
   Environment,
+  ExportFixtureInfo,
+  ExportPhase,
+  ExportSample,
+  ExportShape,
   FixtureInfo,
   FixtureShape,
+  LongTask,
   MeasuredPath,
+  PhaseSpan,
   RunSample,
 } from './shapes.ts';
 
@@ -42,14 +49,30 @@ export interface Measurement {
   readonly samples: readonly RunSample[];
 }
 
+/** One export run: the page's sample, and the heap after a forced collection. */
+export interface ExportRun extends ExportSample {
+  /** `usedJSHeapSize` once the driver has collected garbage after the run. */
+  readonly retainedAfterGcBytes: number;
+}
+
+/** One export cell: one account size under one profile. */
+export interface ExportMeasurement {
+  readonly profile: string;
+  readonly shape: ExportShape;
+  readonly fixture: ExportFixtureInfo;
+  readonly runs: readonly ExportRun[];
+}
+
 /** Everything one invocation of the harness learned. */
 export interface Report {
   readonly chromeVersion: string;
   readonly environment: Environment;
   readonly headless: boolean;
   readonly calibration: Calibration;
+  readonly cells: readonly CellFamily[];
   readonly profiles: readonly ProfileReport[];
   readonly measurements: readonly Measurement[];
+  readonly exportMeasurements: readonly ExportMeasurement[];
   readonly runs: number;
 }
 
@@ -58,6 +81,22 @@ export const NFR_003_BUDGET_MS = 100;
 
 /** Renders the whole report. */
 export function renderReport(report: Report): string {
+  const read = report.cells.includes('read')
+    ? [
+        ...renderTable(report),
+        '',
+        ...renderStretch(report),
+        '',
+        ...renderLongTasks(report),
+        '',
+        ...renderBudget(report),
+        '',
+      ]
+    : [];
+  const exported = report.cells.includes('export')
+    ? [...renderExport(report), '']
+    : [];
+
   return [
     ...renderEnvironment(report),
     '',
@@ -65,14 +104,8 @@ export function renderReport(report: Report): string {
     '',
     ...renderBaselines(report),
     '',
-    ...renderTable(report),
-    '',
-    ...renderStretch(report),
-    '',
-    ...renderLongTasks(report),
-    '',
-    ...renderBudget(report),
-    '',
+    ...read,
+    ...exported,
   ].join('\n');
 }
 
@@ -88,7 +121,12 @@ function renderEnvironment(report: Report): readonly string[] {
     `  secure context           ${env.secureContext ? 'yes' : 'no'}`,
     `  frame yield              ${env.schedulerPostTask ? 'scheduler.postTask' : 'MessageChannel fallback'}`,
     `  runs per cell            ${report.runs} (after one discarded warm-up)`,
-    '  fixtures                 200 rows, 5 sealed columns each = 1000 sealed columns',
+    `  cells                    ${report.cells.join(', ')}`,
+    ...(report.cells.includes('read')
+      ? [
+          '  fixtures                 200 rows, 5 sealed columns each = 1000 sealed columns',
+        ]
+      : []),
   ];
 }
 
@@ -402,6 +440,356 @@ function renderBudget(report: Report): readonly string[] {
   }
 
   return lines;
+}
+
+// The export cell: what it measured on, then three tables — time per phase,
+// what held the main thread, and the heap. Split because one row carrying all
+// of it would be two hundred columns wide and read by nobody.
+function renderExport(report: Report): readonly string[] {
+  const cells = report.exportMeasurements;
+  const first = cells[0]?.shape;
+
+  if (first === undefined) {
+    return ['Export cell — nothing was measured.'];
+  }
+
+  return [
+    'Export cell — the whole-account export as `SettingsService.write` runs it:',
+    'decode the served text, open every narrative member through',
+    '`openExportDocument` with its default frame budget, serialize the file. Back',
+    'to back, with no task boundary between the phases that the product lacks.',
+    'Sealing the fixture is setup and is not timed.',
+    '',
+    `  account                  1 budget, ${first.accounts} accounts, ${first.payees} payees, ` +
+      `${first.categories} categories, ${first.groups} groups`,
+    `                           1 in ${first.describedCategoryEvery} categories and groups described; ` +
+      `per transaction: 1 in ${first.undescribedEvery} no`,
+    `                           description, 1 in ${first.payeelessEvery} no payee, ` +
+      `1 in ${first.uncategorisedEvery} no category`,
+    '  every member distinct    each member is bound to its own row, so the batch',
+    '                           de-duplicates nothing and opens = sealed members',
+    '  opener                   custody-equivalent: refuseInvalidBinding, then the',
+    '                           real openNarrativeField under a non-extractable key',
+    `  heap instrument          performance.memory.usedJSHeapSize, precise-memory flag on` +
+      `${report.environment.performanceMemory ? '' : ' — UNAVAILABLE'}`,
+    '  garbage collection       HeapProfiler.collectGarbage before and after every run',
+    `  profiles                 ${[...new Set(cells.map((cell) => cell.profile))].join(', ')}`,
+    '',
+    padRow([
+      ['size', 8],
+      ['transactions', 14],
+      ['text', 11],
+      ['sealed members', 16],
+      ['null members', 14],
+      ['file', 10],
+    ]),
+    divider([8, 14, 11, 16, 14, 10]),
+    ...uniqueBy(cells, (cell) => cell.fixture.name).map((cell) =>
+      padRow([
+        [cell.fixture.name, 8],
+        [cell.fixture.transactions.toString(), 14],
+        [mib(cell.fixture.textChars), 11],
+        [cell.fixture.sealedMembers.toString(), 16],
+        [cell.fixture.nullMembers.toString(), 14],
+        [mib(median(cell.runs.map((run) => run.outputChars))), 10],
+      ]),
+    ),
+    '',
+    '  text — the served export, MiB (ASCII, so characters and bytes agree). file —',
+    '  the saved file’s length in UTF-16 units, MiB; it holds the opened text and',
+    '  two-space indentation, and is not all ASCII.',
+    '',
+    ...renderExportTimings(report),
+    '',
+    ...renderExportThread(report),
+    '',
+    ...renderExportHeap(report),
+  ];
+}
+
+function renderExportTimings(report: Report): readonly string[] {
+  const widths = [11, 7, 6, 8, 11, 11, 13, 11, 19, 8] as const;
+
+  return [
+    'Export timings — medians, ms. `total` is decode + open + serialize on one clock.',
+    '',
+    padRow([
+      ['profile', 11],
+      ['size', 7],
+      ['runs', 6],
+      ['opens', 8],
+      ['decode', 11],
+      ['open', 11],
+      ['serialize', 13],
+      ['total', 11],
+      ['total min–max', 19],
+      ['x 1x', 8],
+    ]),
+    divider(widths),
+    ...report.exportMeasurements.map((cell) => {
+      const totals = cell.runs.map((run) => run.totalMs);
+
+      return padRow([
+        [cell.profile, 11],
+        [cell.fixture.name, 7],
+        [cell.runs.length.toString(), 6],
+        [opensOf(cell), 8],
+        [median(cell.runs.map((run) => phaseMs(run, 'decode'))).toFixed(1), 11],
+        [median(cell.runs.map((run) => phaseMs(run, 'open'))).toFixed(1), 11],
+        [
+          median(cell.runs.map((run) => phaseMs(run, 'serialize'))).toFixed(1),
+          13,
+        ],
+        [median(totals).toFixed(1), 11],
+        [`${min(totals).toFixed(1)}–${max(totals).toFixed(1)}`, 19],
+        [exportStretchOf(report, cell), 8],
+      ]);
+    }),
+    '',
+    '  opens  — AEAD opens the opener performed, per run. Printed as a range if the',
+    '           runs disagreed, and flagged if it is not the sealed-member count.',
+    '  x 1x   — this cell’s median total over the same size’s median at 1x.',
+  ];
+}
+
+function renderExportThread(report: Report): readonly string[] {
+  const widths = [11, 7, 12, 12, 13, 11, 11, 9, 11, 10] as const;
+
+  return [
+    'Export main thread — who held it. Three `longtask` columns, each the longest',
+    'task over every run of the cell: `decode` is the one overlapping the decode',
+    'phase, `serialize` the one overlapping serialize, and `between` the longest',
+    'overlapping neither — the batch’s own chunks. `prologue` is the synchronous',
+    'start of the open, which runs inside decode’s task; `epilogue` is its end',
+    'after the last cipher, which serialize continues in the same task. Between',
+    'the two only the batch decides whether a frame is drawn: `frames` counts rAF',
+    'callbacks there (median) and `no-frame` is the longest stretch there with',
+    'none (worst run). Read that against the idle band above — one tick is the',
+    'instrument’s resolution.',
+    '',
+    padRow([
+      ['profile', 11],
+      ['size', 7],
+      ['decode', 12],
+      ['between', 12],
+      ['serialize', 13],
+      ['prologue', 11],
+      ['epilogue', 11],
+      ['frames', 9],
+      ['no-frame', 11],
+      ['tasks/run', 10],
+    ]),
+    divider(widths),
+    ...report.exportMeasurements.map((cell) => {
+      const overlapsPhase = (
+        task: LongTask,
+        run: ExportRun,
+        phase: ExportPhase,
+      ): boolean =>
+        overlapMs(task, run.phases, phase) > PHASE_OVERLAP_TOLERANCE_MS;
+
+      return padRow([
+        [cell.profile, 11],
+        [cell.fixture.name, 7],
+        [
+          worstTaskMs(cell, (task, run) => overlapsPhase(task, run, 'decode')),
+          12,
+        ],
+        [
+          worstTaskMs(
+            cell,
+            (task, run) =>
+              !overlapsPhase(task, run, 'decode') &&
+              !overlapsPhase(task, run, 'serialize'),
+          ),
+          12,
+        ],
+        [
+          worstTaskMs(cell, (task, run) =>
+            overlapsPhase(task, run, 'serialize'),
+          ),
+          13,
+        ],
+        [
+          `${median(cell.runs.map((run) => run.openPrologueMs)).toFixed(1)} ms`,
+          11,
+        ],
+        [
+          `${median(cell.runs.map((run) => run.openEpilogueMs)).toFixed(1)} ms`,
+          11,
+        ],
+        [median(cell.runs.map((run) => run.interiorFrames)).toFixed(0), 9],
+        [
+          `${max(cell.runs.map((run) => run.interiorWorstFrameGapMs)).toFixed(1)} ms`,
+          11,
+        ],
+        [median(cell.runs.map((run) => run.longTasks.length)).toFixed(0), 10],
+      ]);
+    }),
+    '',
+    '  A `longtask` is a task of 50 ms or more — `none` means no task that long —',
+    '  and its start time is coarsened, so a task is counted against a phase only',
+    `  past ${PHASE_OVERLAP_TOLERANCE_MS} ms of overlap. decode and serialize are one synchronous JSON`,
+    '  call each plus a synchronous walk, and cannot yield.',
+  ];
+}
+
+/** Overlap a coarsened `longtask` edge can produce without meaning anything. */
+const PHASE_OVERLAP_TOLERANCE_MS = 1;
+
+// The longest task over every run of `cell` that `where` admits, as a cell.
+function worstTaskMs(
+  cell: ExportMeasurement,
+  where: (task: LongTask, run: ExportRun) => boolean,
+): string {
+  const durations = cell.runs.flatMap((run) =>
+    run.longTasks
+      .filter((task) => where(task, run))
+      .map((task) => task.durationMs),
+  );
+
+  return durations.length === 0 ? 'none' : `${max(durations).toFixed(0)} ms`;
+}
+
+function renderExportHeap(report: Report): readonly string[] {
+  const widths = [11, 7, 11, 11, 20, 14, 16, 10] as const;
+
+  return [
+    'Export heap — `usedJSHeapSize`, MiB. `before` is after a forced collection and',
+    'includes every prepared fixture’s text, which the page holds for the whole',
+    'invocation; `extra` is peak over before. The peak is a lower bound: the page',
+    'reads the heap between tasks and at phase edges, never inside a JSON call, and',
+    'an ArrayBuffer’s backing store is outside this heap. `retained` is the heap',
+    'after the run and a second forced collection, over before.',
+    '',
+    padRow([
+      ['profile', 11],
+      ['size', 7],
+      ['before', 11],
+      ['peak', 11],
+      ['extra med / worst', 20],
+      ['after ser.', 14],
+      ['retained', 16],
+      ['reads', 10],
+    ]),
+    divider(widths),
+    ...report.exportMeasurements.map((cell) => {
+      const extras = cell.runs.map(
+        (run) => run.heap.peakBytes - run.heap.beforeBytes,
+      );
+      const retained = cell.runs.map(
+        (run) => run.retainedAfterGcBytes - run.heap.beforeBytes,
+      );
+
+      return padRow([
+        [cell.profile, 11],
+        [cell.fixture.name, 7],
+        [mib(median(cell.runs.map((run) => run.heap.beforeBytes))), 11],
+        [mib(median(cell.runs.map((run) => run.heap.peakBytes))), 11],
+        [`${mib(median(extras))} / ${mib(max(extras))}`, 20],
+        [
+          mib(
+            median(
+              cell.runs.map(
+                (run) => run.heap.afterSerializeBytes - run.heap.beforeBytes,
+              ),
+            ),
+          ),
+          14,
+        ],
+        [signedMib(median(retained)), 16],
+        [median(cell.runs.map((run) => run.heap.readings)).toFixed(0), 10],
+      ]);
+    }),
+    '',
+    '  after ser. — the heap just after serialize, over before: the served text,',
+    '               the decoded document, the opened one and the file all live.',
+    '  reads      — heap readings per run (median): how finely the peak was sampled.',
+  ];
+}
+
+function phaseMs(run: ExportSample, phase: ExportPhase): number {
+  const span = run.phases.find((candidate) => candidate.phase === phase);
+
+  return span === undefined ? Number.NaN : span.endMs - span.startMs;
+}
+
+function opensOf(cell: ExportMeasurement): string {
+  const counts = cell.runs.map((run) => run.opens);
+  const lowest = min(counts);
+  const highest = max(counts);
+  const spelled =
+    lowest === highest ? lowest.toString() : `${lowest}–${highest}`;
+
+  return lowest === cell.fixture.sealedMembers &&
+    highest === cell.fixture.sealedMembers
+    ? spelled
+    : `${spelled}!`;
+}
+
+// How many milliseconds of `task` fell inside `phase`.
+function overlapMs(
+  task: LongTask,
+  phases: readonly PhaseSpan[],
+  phase: ExportPhase,
+): number {
+  const span = phases.find((candidate) => candidate.phase === phase);
+
+  if (span === undefined) {
+    return 0;
+  }
+
+  return Math.max(
+    0,
+    Math.min(task.startMs + task.durationMs, span.endMs) -
+      Math.max(task.startMs, span.startMs),
+  );
+}
+
+function exportStretchOf(report: Report, cell: ExportMeasurement): string {
+  if (cell.profile === '1x') {
+    return '1.00x';
+  }
+
+  const unthrottled = report.exportMeasurements.find(
+    (other) =>
+      other.profile === '1x' && other.fixture.name === cell.fixture.name,
+  );
+
+  if (unthrottled === undefined) {
+    return '-';
+  }
+
+  return `${(
+    median(cell.runs.map((run) => run.totalMs)) /
+    median(unthrottled.runs.map((run) => run.totalMs))
+  ).toFixed(2)}x`;
+}
+
+function uniqueBy<T>(items: readonly T[], key: (item: T) => string): T[] {
+  const seen = new Set<string>();
+
+  return items.filter((item) => {
+    const name = key(item);
+
+    if (seen.has(name)) {
+      return false;
+    }
+
+    seen.add(name);
+
+    return true;
+  });
+}
+
+const BYTES_PER_MIB = 1024 * 1024;
+
+function mib(bytes: number): string {
+  return (bytes / BYTES_PER_MIB).toFixed(1);
+}
+
+function signedMib(bytes: number): string {
+  return `${bytes >= 0 ? '+' : ''}${mib(bytes)}`;
 }
 
 // Signed, because a long task can begin a fraction of a millisecond before the

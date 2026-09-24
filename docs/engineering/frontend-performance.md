@@ -44,9 +44,10 @@ that comes back.
 `settings/export-document.ts` collects every narrative member of the whole document — every
 name and note in the account, not a page — opens them as one batch through custody's opener,
 and puts each answer back where its request came from. A case in `export-document.spec.ts`
-holds that it hands the frame back between chunks. **Nothing in this chapter measured it**: the
-harness drives the transaction read only, so no figure here says how long an export's opens
-take or how its frames behave.
+holds that it hands the frame back between chunks. **It is measured, and it is not the read**:
+every member is bound to its own row, so the batch has no duplicate to collect, and the two
+longest tasks in an export are the decode before the batch and the serialize after it, which
+the batch never reaches. See [What the export costs](#what-the-export-costs).
 
 **The loop holding the list is what yields, and that is the load-bearing half.** A yield
 written inside a single field's open, under one outer `Promise.all`, chunks nothing: every
@@ -279,6 +280,168 @@ was the mechanism named for it, guessed and then written in the voice of the mea
 around it. It is recorded here so that whoever measures the ceiling next reads an accepted
 trade rather than a regression, and does not "fix" it by deleting the yield.
 
+## What the export costs
+
+**These figures were taken on a third machine, and none of them may be set beside a figure
+above.** Its BenchmarkIndex at 1x is **3819** — against **2726** on the machine
+[What was recorded](#what-was-recorded) names, and 1368–1402 on the second machine. By the rule
+[the profile section](#a-profile-is-a-device-and-only-on-the-machine-that-calibrated-it)
+sets, an export figure here and a read figure there are two machines' milliseconds. The same
+invocation re-ran the read cells too, and their numbers are not written into the tables
+above: a different machine's figures are not a re-take of them.
+
+Harness: the same `npm run perf:narrative`. `NARRATIVE_PERF_CELLS` chooses what runs —
+`read`, `export`, or `read,export` — and unset runs both. The export cell runs under two
+profiles only, 1x and low-tier (`EXPORT_PROFILES` in `run.ts`).
+
+- **The fixture is sealed in the browser with the product's own cipher**
+  (`browser/export-fixture.ts`): each member through `sealNarrativeField` under the binding
+  of the row it sits on, written the way .NET writes the document — compact, camelCase,
+  money with its four stored decimals, `baseCurrencyCode` null, `schemaVersion` 1. Sealing
+  is setup and is not timed. The decoder is strict, so a fixture that drifted from the wire
+  shape fails the run on its first decode rather than timing something else, and
+  `measureExport` throws on anything but a saved file.
+- **What is timed is what `SettingsService.write` runs**: `decodeExportDocument`, then the
+  real `openExportDocument` with its default frame budget, then `serializeExportDocument` —
+  back to back, with no task boundary between them that the product does not have.
+- **The opener is custody's less one step.** `refuseInvalidBinding`, the real
+  `openNarrativeField` under a non-extractable key, a failed open answered `unreadable` and
+  a misuse rethrown — what `AccountKeyCustodyService.openField` does with a held key,
+  without the generation compare that decides whether an answer is still the current
+  custody's. That compare was judged negligible; it was not measured.
+- **Garbage is collected before and after every run**, through
+  `HeapProfiler.collectGarbage`, so a run is not timed paying for the previous run's dead
+  documents and what is live afterwards is what the run kept. The rig's Chrome runs with
+  `--enable-precise-memory-info`, without which `performance.memory` is bucketed and stale.
+  It is a reporting flag; nobody measured the read cells with and without it.
+
+Recorded on:
+
+- Chrome **153.0.8010.53**, headless.
+- `navigator.hardwareConcurrency` **11**.
+- BenchmarkIndex at 1x **3819**.
+- Low-tier: nominal **13.93x**, scoring **267** against the reference device's 264 —
+  effective **14.30x**.
+- Idle rAF band **16.7–16.8 ms**, on both profiles.
+- **9 runs per cell**, after one warm-up run that is discarded — **except 50k at low-tier,
+  which ran 3.** One run there takes about twelve seconds, and its three totals span
+  12053.3–12217.8 ms, under 2% apart. `throttledRunCap` in `shapes.ts` sets the cap, and the
+  report prints each cell's count beside it.
+
+**The cardinalities are the measurement here too, for the opposite reason to the read's.** One
+budget, 5 accounts, 150 payees, 40 categories and 8 groups; every second category and group
+carries a description; per transaction, 1 in 5 has no description, 1 in 10 no payee and 1 in
+12 no category. Only the transaction count moves between sizes. **Nothing de-duplicates**:
+every member is bound to its own row, so no two share a ciphertext and the opens equal the
+sealed members — which the report checks, flagging a cell where they differ. That is what the
+server's document holds, not a pessimistic choice.
+
+| size | transactions | sealed members = opens | null members | served text | saved file |
+| --- | --- | --- | --- | --- | --- |
+| 1k | 1000 | 1028 | 224 | 0.5 MiB | 0.5 Mi units |
+| 10k | 10000 | 8228 | 2024 | 4.1 MiB | 4.9 Mi units |
+| 50k | 50000 | 40228 | 10024 | 20.4 MiB | 24.2 Mi units |
+
+The served text is ASCII, so its characters are its bytes. The saved file holds the opened
+text with two-space indentation and is not all ASCII, so its length is in UTF-16 units.
+
+**Medians, ms.** `total` is decode, open and serialize on one clock, and it is its own median
+— not the sum of the three beside it.
+
+| profile | size | runs | decode | open | serialize | total | total min–max | x 1x |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1x | 1k | 9 | 7.6 | 15.6 | 1.0 | 24.3 | 21.9–25.6 | 1.00x |
+| 1x | 10k | 9 | 45.0 | 113.5 | 7.8 | 165.8 | 161.3–170.4 | 1.00x |
+| 1x | 50k | 9 | 222.8 | 530.5 | 40.9 | 793.6 | 786.1–803.1 | 1.00x |
+| low-tier | 1k | 9 | 91.5 | 233.8 | 13.4 | 336.7 | 329.1–393.7 | 13.86x |
+| low-tier | 10k | 9 | 683.8 | 1846.4 | 122.6 | 2662.6 | 2569.9–2837.7 | 16.06x |
+| low-tier | 50k | 3 | 3348.4 | 8232.3 | 566.7 | 12188.4 | 12053.3–12217.8 | 15.36x |
+
+**Read the `x 1x` column the way the profile section says to** — as an order of magnitude. It
+puts the whole export at about 14–16× its unthrottled time, beside the benchmark's own
+effective 14.30x.
+
+**The opens are about two thirds of the export.** Open's median over total's median is 64–69%
+in all six cells. At low-tier 50k the rest is decode at about 27% and serialize at about 5%.
+
+**Decode is the longest task in the export, serialize the second, and neither can yield as
+written.** Decode is one synchronous call — `JSON.parse`, the strict shape walk, and the
+strict base64url decode of every wire string in `refuseNonEnvelopeWire` — and nothing is
+awaited between it and `openExportDocument`, so the open's synchronous prologue, its first
+walk over the document and the batch's first dispatch, runs in the same task. Serialize is
+the same shape at the other end: the open's epilogue — one opener call per member and the
+second walk that puts every answer back — runs in the task the last cipher settled in, and
+`JSON.stringify` continues it. The batch chunks what lies between the two and reaches
+neither.
+
+| profile | size | decode | between | serialize | prologue | epilogue | frames | no-frame | tasks |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1x | 1k | none | none | none | 0.7 ms | 0.6 ms | 1 | 14.9 ms | 0 |
+| 1x | 10k | 56 ms | none | none | 2.4 ms | 2.8 ms | 7 | 16.8 ms | 1 |
+| 1x | 50k | 245 ms | none | 58 ms | 11.5 ms | 13.7 ms | 31 | 16.8 ms | 2 |
+| low-tier | 1k | 113 ms | none | none | 8.5 ms | 7.1 ms | 13 | 16.8 ms | 1 |
+| low-tier | 10k | 781 ms | none | 202 ms | 38.1 ms | 47.9 ms | 105 | 33.3 ms | 2 |
+| low-tier | 50k | 3541 ms | 51 ms | 828 ms | 180.0 ms | 220.2 ms | 461 | 33.4 ms | 3 |
+
+`decode`, `between` and `serialize` are the longest `longtask` over every run of the cell —
+the one overlapping decode, the one overlapping neither, the one overlapping serialize — and
+`none` means no task of 50 ms or more. `prologue` and `epilogue` are medians. `frames` counts
+rAF callbacks between the prologue's end and the last cipher settling (median), and
+`no-frame` is the longest stretch there with none (worst run). `tasks` is long tasks per run
+(median).
+
+**At low-tier 50k that is three and a half seconds with no frame at all, before the batch can
+hand anything back.** The decode task ran 3541 ms and the serialize task 828 ms, and the batch
+between them cannot shorten either. At 1x the same two tasks were still 245 and 58 ms.
+
+**The opens do hand the frame back.** Between the prologue and the last cipher the median
+low-tier 50k run drew 461 frames, and the longest stretch without one in any run was 33.4 ms
+— two ticks of the idle band, so at worst one tick missed. Low-tier 10k read 33.3 ms, also two
+ticks. The four other cells — all three at 1x and low-tier 1k — read 16.8 ms or less, no tick
+missed. One tick is the resolution, as
+[Frame behaviour](#frame-behaviour) says.
+
+**One figure is not explained.** At low-tier 50k a task of 50 ms or more overlapped neither
+decode nor serialize — the longest 51 ms — in a cell whose median is three long tasks per run,
+where decode and serialize account for two. The frame column's worst stretch over the same
+cell was 33.4 ms. The rig does not reconcile the two, and does not say what ran in that task.
+
+**The heap peaks at the end, at about 7.5× the served text at 50k.** `usedJSHeapSize`, MiB.
+`before` is the heap at the start of a run, after a forced collection; `extra` is peak over
+before; `retained` is the heap after the run and a second forced collection, over before;
+`reads` is how many times the page read the heap per run (median).
+
+| profile | size | before | peak | extra, median / worst | after serialize | retained | reads |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1x | 1k | 26.2 | 30.2 | 3.9 / 6.4 | 3.9 | -0.0 | 22 |
+| 1x | 10k | 26.3 | 60.7 | 34.5 / 41.8 | 34.5 | -0.0 | 28 |
+| 1x | 50k | 26.3 | 179.5 | 153.2 / 153.3 | 153.2 | -0.0 | 53 |
+| low-tier | 1k | 26.3 | 30.5 | 4.2 / 4.4 | 4.2 | -0.0 | 33 |
+| low-tier | 10k | 26.3 | 67.4 | 41.1 / 42.2 | 41.1 | -0.0 | 108 |
+| low-tier | 50k | 26.3 | 179.5 | 153.3 / 153.3 | 153.2 | -0.0 | 413 |
+
+- **At 50k the extra is 153.2–153.3 MiB for 20.4 MiB served — about 7.5×.** In every cell the
+  median extra is the after-serialize reading, within 0.1 MiB: the high point is the end, when
+  the served text, the decoded document, the opened one and the file are all live at once.
+  The ratio is not flat across sizes — 10k read about 8.4× at 1x and 10.0× at low-tier — so
+  7.5× is the 50k figure and not a constant. 1k's text is too small to give one at the
+  report's 0.1 MiB resolution.
+- **The peak is a lower bound, three ways.** The page reads the heap at each phase edge and
+  from a 4 ms poller that can run only between tasks, so nothing a single `JSON.parse` or
+  `JSON.stringify` allocates and drops before returning is seen. An `ArrayBuffer`'s backing
+  store is outside this heap. And the cell stops at the file's text: the `Blob` that
+  `SettingsService.write` builds from it is not in the harness.
+- **Nothing is retained.** After the second collection every cell read -0.0 MiB over its
+  start. `before` sits at 26.2–26.3 MiB because the page holds every prepared fixture's text
+  for the whole invocation.
+
+**One invocation, and *A single invocation is not the number* applies to every figure here.**
+The export cells have no second invocation behind them. Their min–max is the spread inside
+one, and says nothing about where a second would land.
+
+**The export is recorded against no budget.** NFR-003 is about rendering, and the harness's
+NFR-003 block reads the transaction read alone (`renderBudget` in `report.ts`).
+
 ## This is never a CI gate
 
 **The harness records and never asserts.** Its exit code answers one question — did the
@@ -333,12 +496,14 @@ Two limits, each of which reads as an oversight to whoever finds it:
 
 ## What the harness does not measure
 
-It measures the AEAD open path, the strict base64url decode, associated-data construction,
-and mapping into 200 view models. It does **not** measure:
+On the read it measures the AEAD open path, the strict base64url decode, associated-data
+construction, and mapping into 200 view models; on the export, the decode, open and serialize
+`SettingsService.write` runs. It does **not** measure:
 
 - Angular change detection or template rendering;
-- HTTP, or parsing the JSON the columns arrived in;
-- the export, which opens every narrative value in the account through the same batch;
+- HTTP, or, on the read, parsing the JSON the columns arrived in;
+- on the export, the `Blob` the save builds, the download itself, or custody's generation
+  compare, which the export cell's opener leaves out;
 - memory pressure or thermal throttling;
 - any engine that is not Chrome.
 

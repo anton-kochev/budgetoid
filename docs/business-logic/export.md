@@ -644,7 +644,8 @@ ELSE
 - **[Key rotation](key-rotation.md)** — a run in flight holds Export off, for the reason the content
   screens take their lists away.
 - **[Frontend performance](../engineering/frontend-performance.md)** — the whole document is opened
-  through one `openNarrativeBatch`, which de-duplicates and hands the frame back between chunks.
+  through one `openNarrativeBatch`, which hands the frame back between chunks; every member is its
+  own ciphertext bound to its own row, so its de-duplication finds nothing to skip here.
 - **The design book** — the screen, its sentences and its outcome copy are the
   [Export section](../design/components.md#export-section).
 
@@ -660,9 +661,13 @@ ELSE
   - **The tab holds more than the server does.** The response text, the serialized file and the
     `Blob` handed to the download each hold the whole document as text. The decoded and opened
     trees are new row objects that share every non-narrative string between them, the opened tree
-    adding the plaintexts. So the peak at the save is about three text copies of the document plus
-    the parsed trees — reasoned from the code, not measured. Also unbounded, and also stated here
-    because nothing in the code states it.
+    adding the plaintexts. Measured on one machine, at 50,000 transactions the tab's JavaScript
+    heap peaked about **7.5×** the served text above where it started — 153 MiB for 20.4 MiB —
+    at the end of serialize, with the text, both trees and the file all live. That is a lower
+    bound: nothing inside one `JSON.parse` or `JSON.stringify` is seen, and the `Blob` was not
+    measured. The ratio is not a constant; the figures, their machine and their limits are in
+    [frontend performance](../engineering/frontend-performance.md#what-the-export-costs). Also
+    unbounded, and also stated here because nothing in the code states it.
 - **The complete-or-nothing guarantee ends when the response starts — on the server.** The status
   and the `Content-Disposition` go out before the body is serialized, so a serialization failure
   mid-write leaves a truncated document under a valid export filename with a `200` already sent,
