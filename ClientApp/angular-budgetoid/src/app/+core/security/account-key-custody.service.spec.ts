@@ -16,7 +16,8 @@
 //
 // **What a caller may see divides by kind and not by count**, which is what
 // keeps this paragraph from going stale as the class grows. About custody's
-// *state* it is entitled to `status` and `unlockFailure`, and to nothing else —
+// *state* it is entitled to `status`, `unlockFailure` and `holding` — an opaque
+// token saying *which* custody, never what it holds — and to nothing else:
 // anything further there is the accessor this file exists to refuse. About an
 // operation it asked for it is entitled to that operation's own result, which
 // says what became of the value it handed in and carries no key either; the
@@ -694,6 +695,7 @@ const PUBLIC_SURFACE = new Set([
   'adopt',
   'adoptRotated',
   'lock',
+  'holding',
   'sealField',
   'openField',
   'blindIndex',
@@ -3063,6 +3065,168 @@ describe('AccountKeyCustodyService', () => {
       ).toBeUndefined();
 
       await settled(custody);
+    });
+  });
+
+  // **Which custody, not whether.** A caller that starts work under the keys
+  // and hands its result over later has to know the keys it started under are
+  // the keys still held. `status()` cannot say so: a lock and an adoption in
+  // between read `unlocked` on both sides. The holding is that answer — opaque,
+  // the same object for as long as one custody lasts, and a new one after every
+  // change of hands, even to the very same pair of keys.
+  describe('the holding a caller can compare across a hand-over', () => {
+    async function freshKeyPair(): Promise<{
+      contentKey: CryptoKey;
+      indexKey: CryptoKey;
+    }> {
+      const keys = generateAccountKeys();
+      return {
+        contentKey: await importAesGcmKey(Uint8Array.from(keys.contentKey)),
+        indexKey: await importHmacSha256Key(Uint8Array.from(keys.indexKey)),
+      };
+    }
+
+    it('has no holding while locked', () => {
+      // Arrange, Act, Assert
+      expect(custody.status()).toBe('locked');
+      expect(custody.holding()).toBeNull();
+    });
+
+    it('has no holding while unlocking', async () => {
+      // Arrange
+      // Custody first, so the null below is the unlock ending it rather than
+      // the locked floor the previous case already pins. Reads that never
+      // answer hold the attempt at `unlocking`.
+      const { contentKey, indexKey } = await freshKeyPair();
+      custody.adopt(contentKey, indexKey);
+      api.getAccountKeys.mockReturnValue(new Subject<AccountKeyCustodyDto>());
+      api.getSessionOwner.mockReturnValue(new Subject<MeDto>());
+
+      // Act
+      custody.unlock(await keyEncryptionKey(0xd0));
+
+      // Assert
+      expect(custody.status()).toBe('unlocking');
+      expect(custody.holding()).toBeNull();
+    });
+
+    it('answers one holding for as long as custody lasts', async () => {
+      // Arrange
+      const { contentKey, indexKey } = await freshKeyPair();
+      custody.adopt(contentKey, indexKey);
+
+      // Act
+      const first = custody.holding();
+      const second = custody.holding();
+
+      // Assert
+      // Identity, not equality: a fresh object per read would make every
+      // caller's comparison fail and every hand-over refuse.
+      expect(first).not.toBeNull();
+      expect(second).toBe(first);
+    });
+
+    it('answers a new holding after letting go, even when the same keys are adopted again', async () => {
+      // Arrange
+      // The same two key objects both times, so a token derived from the keys
+      // rather than from the change of hands answers the same value and fails.
+      const { contentKey, indexKey } = await freshKeyPair();
+      custody.adopt(contentKey, indexKey);
+      const before = custody.holding();
+
+      // Act
+      custody.lock();
+      custody.adopt(contentKey, indexKey);
+      const after = custody.holding();
+
+      // Assert
+      expect(before).not.toBeNull();
+      expect(after).not.toBeNull();
+      expect(after).not.toBe(before);
+    });
+
+    it('answers a new holding after an adoption straight over live custody', async () => {
+      // Arrange
+      // No `lock()` in between, so the only thing that can move the holding is
+      // the adoption itself — the case above passes through `lock()` and cannot
+      // see an `adopt` that kept the token. The same two key objects again, so
+      // a token derived from the keys fails here too.
+      const { contentKey, indexKey } = await freshKeyPair();
+      custody.adopt(contentKey, indexKey);
+      const before = custody.holding();
+
+      // Act
+      custody.adopt(contentKey, indexKey);
+      const after = custody.holding();
+
+      // Assert
+      // `unlocked` on both sides, which is exactly why `status()` cannot answer
+      // this and the holding has to.
+      expect(custody.status()).toBe('unlocked');
+      expect(before).not.toBeNull();
+      expect(after).not.toBeNull();
+      expect(after).not.toBe(before);
+    });
+
+    it('answers a new holding after a successful unlock over live custody', async () => {
+      // Arrange
+      // The account's own keys adopted first, then the same account unlocked
+      // under a factor the body accepts, so the unlock ends `unlocked` and the
+      // assertion is about a holding that exists rather than about null.
+      const accountKeys = generateAccountKeys();
+      const kek = await keyEncryptionKey(0xd2);
+      const factor = await factorFor(kek, FIRST_FACTOR_ID, accountKeys);
+      const contentKey = await importAesGcmKey(
+        Uint8Array.from(accountKeys.contentKey),
+      );
+      const indexKey = await importHmacSha256Key(
+        Uint8Array.from(accountKeys.indexKey),
+      );
+      api.getAccountKeys.mockReturnValue(
+        of(await custodyWith(accountKeys, [factor])),
+      );
+      custody.adopt(contentKey, indexKey);
+      const before = custody.holding();
+
+      // Act
+      custody.unlock(kek);
+      await settled(custody);
+
+      // Assert
+      expect(custody.status()).toBe('unlocked');
+      expect(before).not.toBeNull();
+      expect(custody.holding()).not.toBeNull();
+      expect(custody.holding()).not.toBe(before);
+    });
+
+    it('answers a new holding once a promoted generation is adopted', async () => {
+      // Arrange
+      // A body the gate accepts, so the adoption ends `unlocked` and the
+      // assertion is about a holding that exists rather than about null.
+      const accountKeys = generateAccountKeys();
+      const kek = await keyEncryptionKey(0xd1);
+      const factor = await factorFor(kek, FIRST_FACTOR_ID, accountKeys);
+      const contentKey = await importAesGcmKey(
+        Uint8Array.from(accountKeys.contentKey),
+      );
+      const indexKey = await importHmacSha256Key(
+        Uint8Array.from(accountKeys.indexKey),
+      );
+      api.getAccountKeys.mockReturnValue(
+        of(await custodyWith(accountKeys, [factor])),
+      );
+      custody.adopt(contentKey, indexKey);
+      const before = custody.holding();
+
+      // Act
+      custody.adoptRotated(contentKey, indexKey);
+      await settled(custody);
+
+      // Assert
+      expect(custody.status()).toBe('unlocked');
+      expect(before).not.toBeNull();
+      expect(custody.holding()).not.toBeNull();
+      expect(custody.holding()).not.toBe(before);
     });
   });
 

@@ -21,7 +21,10 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { encodeBase64Url } from '@app-core/security/base64url';
-import { MINIMUM_ENVELOPE_BYTES } from '@app-core/security/key-envelope';
+import {
+  ENVELOPE_VERSION,
+  MINIMUM_ENVELOPE_BYTES,
+} from '@app-core/security/key-envelope';
 import {
   NARRATIVE_FIELDS,
   NarrativeFieldMisuseError,
@@ -176,8 +179,15 @@ function setAt(root: JsonObject, path: Path, value: JsonValue): void {
 // zeros — so a wire value built over them fails for the one reason its row
 // names and no other. None of them authenticates under anything.
 function envelopeShaped(length: number): Uint8Array {
+  return versionedAt(ENVELOPE_VERSION, length);
+}
+
+// The same bytes led by any version. Only the key envelope's own constant is
+// ever the right one here: the encapsulation and keypair framings also lead
+// with 0x01 on other suites, so their constants must never stand in for it.
+function versionedAt(version: number, length: number): Uint8Array {
   const bytes = new Uint8Array(length);
-  bytes[0] = 1;
+  bytes[0] = version;
   return bytes;
 }
 
@@ -862,6 +872,17 @@ describe('export document', () => {
       () => encodeBase64Url(envelopeShaped(MINIMUM_ENVELOPE_BYTES - 1)),
     ],
     ['no bytes at all', () => ''],
+    [
+      'the floor led by version 0x00',
+      () => encodeBase64Url(versionedAt(0x00, MINIMUM_ENVELOPE_BYTES)),
+    ],
+    [
+      'the floor led by the version after this client’s',
+      () =>
+        encodeBase64Url(
+          versionedAt(ENVELOPE_VERSION + 1, MINIMUM_ENVELOPE_BYTES),
+        ),
+    ],
   ])(
     'refuses an account name whose wire string is %s as unrecognised',
     async (what, wire) => {
@@ -897,6 +918,38 @@ describe('export document', () => {
         throw new Error(`The fixture seals no ${what}.`);
       }
       setAt(fixture.doc, member.path, 'not*base64url!');
+
+      // Act
+      const result = decodeExportDocument(serverText(fixture.doc));
+
+      // Assert
+      expect(result, what).toStrictEqual({ kind: 'unrecognised' });
+    },
+  );
+
+  // A version this client does not write is a body it cannot read, refused
+  // before any cipher — on every narrative member, so a check written for one
+  // table goes red on the member it forgot.
+  it.each(
+    NARRATIVE_FIELDS.map(
+      (field) => [`${field.table}.${field.column}`, field] as const,
+    ),
+  )(
+    'refuses a floor-length wire string led by version 0x02 on %s as unrecognised',
+    async (what, field) => {
+      // Arrange
+      const fixture = await buildFixture();
+      const member = fixture.sealed.find(
+        (value) => value.table === field.table && value.column === field.column,
+      );
+      if (member === undefined) {
+        throw new Error(`The fixture seals no ${what}.`);
+      }
+      setAt(
+        fixture.doc,
+        member.path,
+        encodeBase64Url(versionedAt(0x02, MINIMUM_ENVELOPE_BYTES)),
+      );
 
       // Act
       const result = decodeExportDocument(serverText(fixture.doc));

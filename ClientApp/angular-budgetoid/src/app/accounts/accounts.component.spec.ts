@@ -177,6 +177,12 @@ class CustodyStub
   public blindIndex(): never {
     throw new Error('the accounts screen may not index — the service does');
   }
+
+  public holding(): never {
+    throw new Error(
+      'the accounts screen may not read the holding — nothing it hands over outlives a press',
+    );
+  }
 }
 
 // The driver, stubbed for the two signals this screen reads and refusing

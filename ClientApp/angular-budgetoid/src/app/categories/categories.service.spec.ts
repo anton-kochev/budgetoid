@@ -39,6 +39,7 @@ import type { CategoryGroupDto } from '@app-core/api/category-groups-api.service
 import {
   AccountKeyCustodyService,
   type AccountKeyStatus,
+  type CustodyHolding,
   type UnlockFailure,
 } from '@app-core/security/account-key-custody.service';
 import type { WriteOutcome } from '@app-core/api/write-outcome';
@@ -214,6 +215,16 @@ class CustodyStub
 
   public setStatus(status: AccountKeyStatus): void {
     this.#status.set(status);
+  }
+
+  // The real member's shape — a token while `unlocked`, `null` otherwise — and
+  // one constant token, because nothing this service does reads it. Minted by
+  // a cast: the brand is the real service's to mint and a stub has no other
+  // way to hold one.
+  readonly #holding = Object.freeze({}) as unknown as CustodyHolding;
+
+  public holding(): CustodyHolding | null {
+    return this.#status() === 'unlocked' ? this.#holding : null;
   }
 
   public sealField(

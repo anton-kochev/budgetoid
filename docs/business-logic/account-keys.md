@@ -1315,10 +1315,10 @@ both directions.
 
 `AccountKeyCustodyService` in `+core/security/` is where the account's two keys live once a factor
 has opened them, and the one place in this client that holds them past the ceremony that produced
-them. It reports two things about itself and answers a set of operations that is expected to grow,
-and **no member of any of them is a key**: a three-word `status` — `locked`, `unlocking`,
-`unlocked` — an `unlockFailure` when an arrival ended without custody, and the results of
-`sealField`, `openField` and `blindIndex`, which
+them. It reports three things about itself and answers a set of operations that is expected to
+grow, and **no member of any of them is a key**: a three-word `status` — `locked`, `unlocking`,
+`unlocked` — an `unlockFailure` when an arrival ended without custody, a `holding()` token saying
+*which* custody is held, and the results of `sealField`, `openField` and `blindIndex`, which
 [the section below](#the-operations-that-delegate-and-the-shape-that-was-forced) is about.
 Each decision below is worth the words, and every one of them is silent when reversed. They are
 listed rather than counted: a count would have to be corrected by whoever adds the next caller, and
@@ -1477,8 +1477,8 @@ awaited version is even more tempting, because that flow has a screen to report 
 custody's answer to arrive as a rejection it can catch; what it would get is a second, competing
 account of the same attempt beside the one `status` and `unlockFailure` already give, and no rule
 about which of the two the section renders. Unreturned, the attempt is observable only through
-`status` and `unlockFailure`, which
-are exactly the two facts a caller is entitled to. The key-encryption key is a **parameter and never
+`status` and `unlockFailure`, which are exactly the two facts a caller is entitled to about how an
+attempt ended. The key-encryption key is a **parameter and never
 a field** for the neighbouring reason: retained, this class could re-unlock with no factor presented
 at all, which destroys the property the whole design rests on.
 
@@ -1787,8 +1787,10 @@ cross the boundary, and what a refusal looks like — and everything below is ab
 **Every one of the three now has callers in the product.** All eight narrative columns hold
 envelopes, all four blind indexes are in the schema, and `/app/accounts`, the transaction form and
 both halves of `/app/categories` reach `sealField`, `openField` and `blindIndex` through their view
-models and services. The export reaches `openField` alone, through an arrow `SettingsService` hands
-to `openExportDocument`, and opens every narrative value in the account in one batch. They were settled one slice ahead of those callers on the terms
+models and services. The export reaches `openField`, through an arrow `SettingsService` hands
+to `openExportDocument`, and opens every narrative value in the account in one batch; it also
+reads `holding()` at the press and again at the hand-over, and seals and indexes nothing. They
+were settled one slice ahead of those callers on the terms
 [ciphertext-envelope.md](ciphertext-envelope.md) sets for the codecs beneath them: a cross-client
 format and the custody that will use it are cheaper to agree on before data exists under them than
 after — and that ordering is what let the screens be wired without a single format decision being
@@ -1924,6 +1926,22 @@ rule reddens against the file itself, because the expected surface is a set writ
 class's own spec and a member absent from it is a finding by name. Both have to be answered, and
 the order is a good one rather than a defect: the compiler says *the stub is out of date*, the
 census says *somebody widened the surface a key could leave through*.
+
+**`holding()` is the one member that says *which* custody is held, and it carries no key.** It
+answers `CustodyHolding` — an interface branded with a unique symbol and carrying no runtime member
+— or `null` unless `status` is `unlocked`. The token is the same object for as long as one holding
+lasts, and `#forget` mints a new one on every change of hands: `lock`, the start of an `unlock` or
+an `adoptRotated`, and `adopt`. So the same pair of keys handed over again is still a new holding.
+It exists because `status` cannot answer *the same keys?* — a lock followed by an adoption reads
+`unlocked` on both sides — and that is the question the export's hand-over check asks
+([export.md](export.md)). **A method, and neither a signal nor a getter**: a signal invites an
+`effect()` reacting to a change of hands, a second owner for what `lock` already owns, and a getter
+reads exactly like the key accessor refused above. The status read inside it is `untracked`, so a
+call from a `computed` does not half-track it: an adoption over live custody moves the holding and
+leaves the status where it was. It returns no `CryptoKey`, so the return-position scan has nothing
+to find. The custody spec's holding rows pin it, among them "answers a new holding after a
+successful unlock over live custody" and "answers a new holding after an adoption straight over
+live custody".
 
 **Three rules looked held and were not, and every one of them was established by mutation.** Each
 is worth recording because each was invisible:
@@ -3008,8 +3026,9 @@ pair fails to open it and the account is not presented as unlocked.
   of the scheme genuinely did not move. **Nothing here is left standing on a spec alone**: `sealField`
   and `openField` use the content key and reach the codec one file over, `blindIndex` uses the index
   key and reaches the codec beside it, and all three are called by `/app/accounts`, the transaction
-  form and both halves of `/app/categories` — `openField` by the export as well. **What that costs is the cheapness of changing any of
-  them.** Every one of the three runs over columns that hold values, so an edit to a grammar, to the
+  form and both halves of `/app/categories` — `openField` by the export as well. **What that
+  costs is the cheapness of changing any of them.** Every one of the three runs over columns that
+  hold values, so an edit to a grammar, to the
   normalization, or to the Unicode version the fold is read at orphans rows that exist — and a
   blind index cannot be recomputed without the plaintext it was taken over, which only a browser
   holding that account's own factors can supply. **Both key fields have readers, so neither carries a
@@ -3028,15 +3047,17 @@ pair fails to open it and the account is not presented as unlocked.
   lines start protecting.
 - **Which door a key came through is observable only through an operation, and the observation
   arrives late.** No public member returns a key, so what a caller sees is `status`,
-  `unlockFailure` and what the operations answer. Each key now has one that would fail under the
+  `unlockFailure`, `holding()` — which custody, and nothing about its keys — and what the
+  operations answer. Each key now has one that would fail under the
   wrong door — measured at [The two doors](#the-two-doors-and-the-five-decisions-each-holds), the
   platform refuses `sign` under an AES-imported key and `encrypt` under an HMAC one, both with
   `InvalidAccessError` — so an index key sent through the AES door reports `unlocked` exactly as the
   right one does, and goes on doing so until something computes an index. That is the shape of the
   whole hazard rather than a gap to close: the wrong door is invisible for as long as nothing uses
   the key. How long that is has an answer: the transactions screen indexes every payee it loads, so
-  the window closes the first time somebody opens it. What watches both doors directly is the spy at `crypto.subtle.importKey`, censusing the
-  algorithms an unlock imports under; the registration side is different only because `adopt` is a
+  the window closes the first time somebody opens it. What watches both doors directly is the spy
+  at `crypto.subtle.importKey`, censusing the algorithms an unlock imports under; the registration
+  side is different only because `adopt` is a
   seam, where a spec can stand in for custody and read the two objects it is handed. That asymmetry
   is the cost of the rule under
   [The one class that holds them](#the-one-class-that-holds-them) — an accessor would close it and

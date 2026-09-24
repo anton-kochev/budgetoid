@@ -185,6 +185,12 @@ class CustodyStub
   public blindIndex(): never {
     throw new Error('the categories screen may not index — the service does');
   }
+
+  public holding(): never {
+    throw new Error(
+      'the categories screen may not read the holding — nothing it hands over outlives a press',
+    );
+  }
 }
 
 // The screen's own members are `protected`, which is right for a template and

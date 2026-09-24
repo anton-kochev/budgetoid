@@ -672,17 +672,18 @@ And nothing asserts the loading flag comes back to false after a refused delete 
 ### Sign out
 
 The one control on the Settings screen that is never off, and it sits in the **Account** section
-under the label/value row — beside who the account belongs to, not under *Ways to sign in*, which is about
-what is attached to the account rather than about the browser holding it right now.
+under the label/value row — beside who the account belongs to, not under *Ways to sign in*, which
+is about what is attached to the account rather than about the browser holding it right now.
 
 - **Outline**, 48px target, visible label `Sign out`. Not Primary: Export is the screen's one main
   action, and a screen with two is a screen with none. Not Destructive either — nothing is lost and
   signing in again restores everything, which is precisely what the erasure control one section down
   cannot say. Conflating the two treatments would spend the Destructive fill on the reversible act.
 - **Enabled, with no sentence beside it.** Every inert control on this screen is off and explains
-  itself, and Export explains itself while it is off; this one is the way out, and a person who cannot leave an account is in a worse position
-  than one who cannot register a second passkey. The "not built yet" sentence pattern is for a
-  control that refuses a press, and this one does not.
+  itself, and Export explains itself while it is off; this one is the way out, and a person who
+  cannot leave an account is in a worse position than one who cannot register a second passkey.
+  The "not built yet" sentence pattern is for a control that refuses a press, and this one does
+  not.
 - **It posts, ends the session, and then navigates to `/welcome`** — that order, because the guard on
   the way out reads the session status the moment the router is asked. It shows no busy state and no
   confirmation: the screen it would render one on is replaced within the same tick.
@@ -1226,9 +1227,10 @@ measured against exactly what the two keys open — no wider and no narrower.
   one main action, and a screen with two is a screen with none; and to anybody not tracking lock
   state — which is everybody, since **on this screen only this section and the Export section** are
   drawn differently when it flips, everything else that changes being on three other screens — a
-  Primary that comes and goes is just two Primary buttons on one screen. **The consequence is not a third reason, and it is
-  not an argument for the Primary either** — a locked tab reads no name back, which makes a Primary
-  here *honest* rather than right, and the two reasons above refuse an honest promise exactly as
+  Primary that comes and goes is just two Primary buttons on one screen. **The consequence is not
+  a third reason, and it is not an argument for the Primary either** — a locked tab reads no
+  name back, which makes a Primary here *honest* rather than right, and the two reasons above
+  refuse an honest promise exactly as
   they refuse any other.
 - **Not Destructive.** Nothing is lost either way, and the Destructive fill is a promise that a
   confirmation follows.
@@ -2423,8 +2425,8 @@ for, refused:
 - **`disabledInteractive` while not ready, and not the plain `disabled` Register and Generate take.**
   Those are off for the life of the screen. This one comes back on this screen, one press away, and
   its state can change under the reader's focus — a rotation begun higher up the screen, or custody
-  letting go of the keys. A control that went truly `disabled` in that moment would drop focus to `<body>`.
-  It is the [Buttons](#buttons) chapter's fourth case.
+  letting go of the keys. A control that went truly `disabled` in that moment would drop focus to
+  `<body>`. It is the [Buttons](#buttons) chapter's fourth case.
 - **It stays Primary while off.** The rule that a control which cannot be activated does not get to
   look like the most important thing on screen is kept by the disabled appearance, which takes the
   fill away. Swapping to Outline while not ready is refused on Unlock's argument in reverse: a Primary
@@ -2441,10 +2443,11 @@ for, refused:
 **Ready is one predicate, written positively: custody says `unlocked` and no key rotation is in
 flight.** `locked`, `unlocking`, a run, and any state added later all arrive **not ready**. It is the
 form predicate from [Two predicates](#two-predicates-failing-safe-in-opposite-directions), read off
-the same two sources — and *a run is in flight* means what it means on the content screens, a run in
-this tab or a staged run on file. The run term is not caution for its own sake: a staged run has
-re-sealed part of the account under keys custody does not hold, so an export over it would end
-`unreadable` for a reason that has a remedy, and tell the person it has none.
+the same two sources — and *a run is in flight* means what it means on the content screens, a run
+this tab is walking or one it knows is staged: read at start-up and when the rotation section
+loads, with a failed read reading as none. The run term is not caution for its own sake: a staged
+run has re-sealed part of the account under keys custody does not hold, so an export over it
+would end `unreadable` for a reason that has a remedy, and tell the person it has none.
 
 **Not ready is the fourth reason a control on this screen is off, and it gets its own sentence.** The
 other three — the account's keys as bytes, a passkey the server checks, and erasure's missing
@@ -2469,8 +2472,8 @@ wherever it says it.
 
 **Unlocking gets no sentence at all: disable when unsure, but do not advise when unsure** — the rule
 [Two predicates](#two-predicates-failing-safe-in-opposite-directions) states for the notice. Custody
-is mid-ceremony, the Account keys region one section up is already saying so, and the locked
-sentence would tell somebody to press a button they are already holding down.
+is mid-ceremony, the Account keys region above, past Key rotation, is already saying so, and the
+locked sentence would tell somebody to press a button they are already holding down.
 
 **The locked sentence names the section, not the screen.** The form sentences on the content screens
 say *in Settings* because the reader is somewhere else; here the reader is on Settings and Unlock is
@@ -2517,10 +2520,12 @@ one of the other three words. All of them leave nothing saved.
 **`unrecognised` is a body this client could not read**, and the line between it and `unreadable`
 is the one the [Account keys section](#account-keys-section) draws for a manifest: a document
 that does not parse into the shape this bundle reads, or an envelope whose wire string the strict
-decoder refuses, lands here, because both refusals come before any cipher runs and observe no key
-material. Everything from the version byte and the tag onward is `unreadable`. The two are told
-apart by the result the decoder and the opener return, never by a message. The sentence takes the
-Account keys section's logic — the act
+decoder refuses or whose version byte is not the one this client writes, lands here, because those
+refusals come before any cipher runs and observe no key material. Everything from the nonce and
+the tag onward is `unreadable`. The version byte sits on this side because it is the refusal a
+real format change hits first, and a newer envelope has to say *reload*, not *nothing changes
+this*. The two are told apart by the result the decoder and the opener return, never by a
+message. The sentence takes the Account keys section's logic — the act
 and not the cause, and a reload because it is the only thing that fetches different JavaScript —
 and adds that nothing was saved.
 
@@ -2529,21 +2534,28 @@ After the reload the sentence above the control reads the live state and says wh
 Unlock on an ordinary tab, the rotation on a staged run. An outcome naming Unlock would be advice
 given without knowing which of those the reload lands on.
 
-**`locked` is custody leaving `unlocked` before the last field opened**, checked up to the moment
-the file is handed to the browser. It names no control for the same reason: by the time somebody
-reads it the tab may be locked, mid-ceremony, or holding a generation a finished rotation handed
-over — and the sentence above the control is the one that knows which. *Export again once it holds
-them* is true in all three. **It wins over `unreadable`** when one export meets both: it has a way
-forward and `unreadable` has none, and a value that failed while the keys were leaving is only worth
+**`locked` is the custody the press was made under letting go before the file was handed to the
+browser** — a field that answered locked, or a hand-over check finding a different holding from
+the one taken at the press. It is compared on the holding and not on the status, because a lock
+followed by another unlock reads `unlocked` on both sides; for a document with nothing to open it
+is the only check between the press and the save. It names no control, for the reason the
+paragraph above gives: by the time somebody reads it the tab may be locked,
+mid-ceremony, or holding a generation a finished rotation handed over — and the sentence above the
+control is the one that knows which. *Export again once it holds them* is true in all three. **It
+wins over `unreadable`** when one export meets both: it has a way forward and `unreadable` offers
+none, and a value that failed while the keys were leaving is only worth
 reporting once they are back and it still does not open.
 
-**`unreadable` offers nothing to do, because nothing on this screen changes it.** The keys were held
-and a value did not authenticate under them. Unlock is not the remedy — the keys are already here,
-the point the payee `duplicate_name` paragraph makes about a name that did not open. Another passkey
-is not one either — every factor encapsulates the same two keys. And a retry opens the same bytes.
-The sentence stops at the fact and the rule behind the missing file, as `inconsistent` does in the
-Account keys table. Inventing a remedy to satisfy *what happened plus what to do* would send
-somebody round a loop.
+**`unreadable` offers nothing to do, because for a value that genuinely fails nothing changes it.**
+The keys were held and a value did not authenticate under them. Unlock is not the remedy — the keys
+are already here, the point the payee `duplicate_name` paragraph makes about a name that did not
+open. Another passkey is not one either — every factor encapsulates the same two keys. And a retry
+opens the same bytes. **One case has a remedy**: a rotation finished elsewhere after this tab
+unlocked, so the tab holds the retired pair, and a reload plus Unlock changes the answer. The copy
+still names no remedy, because nothing this tab has read tells the two apart — a finished run is
+no longer staged, so no read of the run says it happened. The sentence stops at the fact and the
+rule behind the missing file, as `inconsistent` does in the Account keys table. Inventing a remedy
+to satisfy *what happened plus what to do* would send somebody round a loop.
 
 **`Exported.` is the only sign of success.** The browser saves the file with no visible act of its
 own, so the region says so.

@@ -52,7 +52,7 @@
 // observes, and a page reload ends custody whatever this class does, because
 // nothing here is written anywhere a reload survives.
 import { HttpErrorResponse } from '@angular/common/http';
-import { Injectable, Signal, inject, signal } from '@angular/core';
+import { Injectable, Signal, inject, signal, untracked } from '@angular/core';
 import {
   AccountKeyResponseError,
   MeApiService,
@@ -190,6 +190,25 @@ import type {
  * exactly the same thing about what the app can read.
  */
 export type AccountKeyStatus = 'locked' | 'unlocking' | 'unlocked';
+
+declare const custodyHoldingBrand: unique symbol;
+
+/**
+ * Which custody is held — never what it holds.
+ *
+ * An opaque token {@link AccountKeyCustodyService.holding} answers while the
+ * keys are held: the same object for as long as one custody lasts, and a new
+ * one after every change of hands, even to the very same pair of keys. It is
+ * compared by identity and by nothing else, and it carries no member at all —
+ * no key, nothing derived from a key, and no counter a caller could do
+ * arithmetic on.
+ *
+ * Branded so that nothing but this class can mint one without a cast; the brand
+ * is a type and nothing at runtime, so there is no property to read off it.
+ */
+export interface CustodyHolding {
+  readonly [custodyHoldingBrand]: true;
+}
 
 /**
  * Why an unlock did not end in custody, and the five are **never** collapsed.
@@ -401,10 +420,49 @@ export class AccountKeyCustodyService {
   // later, by a promise nobody is holding.
   #generation = 0;
 
+  // The token `holding()` hands out, minted beside the generation in `#forget`
+  // and for the same reason: every change of hands is a new world, whether or
+  // not the keys that arrive are the keys that left. An empty frozen object, so
+  // there is nothing on it to read — it is the generation made comparable
+  // without being made countable.
+  #holding: CustodyHolding = AccountKeyCustodyService.mintHolding();
+
   public readonly status: Signal<AccountKeyStatus> = this.#status.asReadonly();
 
   public readonly unlockFailure: Signal<UnlockFailure | null> =
     this.#failure.asReadonly();
+
+  /**
+   * Which custody is held, as a token compared by identity, or `null` unless
+   * {@link status} is `unlocked`.
+   *
+   * **It answers "the same keys?", which `status` cannot.** A caller that starts
+   * work under the keys and hands its result over later — an export saving a
+   * file it opened — must know that what is held at the hand-over is what was
+   * held at the start. A lock followed by an adoption reads `unlocked` on both
+   * sides; the holding does not survive either. A new token is minted by every
+   * change of hands — `lock`, the start of an `unlock` or an `adoptRotated`,
+   * and `adopt` — so a successful unlock and an adoption straight over a live
+   * custody each end holding a token nobody has seen before. Both of those hold
+   * by construction, because each passes through `#forget`, and each has its own
+   * case in the spec — "answers a new holding after a successful unlock over
+   * live custody" and "answers a new holding after an adoption straight over
+   * live custody" — shown red under its own mutation.
+   *
+   * **A method, and deliberately neither a signal nor a getter.** A signal
+   * invites an `effect()` that reacts to a change of hands, which is a second
+   * owner for what `lock` already owns; a getter reads exactly like the key
+   * accessor this class refuses. The read of `status` below is `untracked` for
+   * the first reason: a call from inside a `computed` would otherwise track the
+   * status and miss an adoption over live custody, which moves the holding and
+   * leaves the status where it was — half reactive is worse than not at all.
+   *
+   * The token carries no key and nothing derived from one; see
+   * {@link CustodyHolding}.
+   */
+  public holding(): CustodyHolding | null {
+    return untracked(this.#status) === 'unlocked' ? this.#holding : null;
+  }
 
   /**
    * Reads this session's factor keypairs and opens one under
@@ -426,7 +484,8 @@ export class AccountKeyCustodyService {
    * hold it at all of them is to leave nothing there to await. Unreturned, the
    * attempt can only be observed through {@link status} and
    * {@link unlockFailure}, which are exactly the two facts a caller is entitled
-   * to.
+   * to about how an attempt ended. ({@link holding} says which custody an
+   * attempt that succeeded left behind, and nothing about the attempt itself.)
    *
    * The key-encryption key is a **parameter and never a field**. Retained, this
    * service could re-unlock with no factor presented at all, which destroys the
@@ -497,7 +556,8 @@ export class AccountKeyCustodyService {
    * round trip there is one refactor away from a `catch` that reports a whole
    * rotation as failed over a body this browser could not read, on an account
    * whose every row was rewritten perfectly. The only things a caller is
-   * entitled to are {@link status} and {@link unlockFailure}.
+   * entitled to about how the hand-over ended are {@link status} and
+   * {@link unlockFailure}.
    *
    * **{@link adopt} is the other hand-over and it does none of this**, because
    * nothing has been served to that browser yet for a manifest to disagree
@@ -1377,14 +1437,26 @@ export class AccountKeyCustodyService {
   // the two fields below are read by nothing outside this file: there is no
   // getter to read them with, and adding one is the change this paragraph exists
   // to argue against.
+  //
+  // **`holding()` is the one member that says anything about *which* custody,
+  // and it is not an accessor either**: the token is minted here, from nothing,
+  // so it names a change of hands and carries no trace of the keys that changed
+  // hands. Two holdings compare equal exactly when no `#forget` ran between them.
   #forget(status: AccountKeyStatus): number {
     this.#contentKey = null;
     this.#indexKey = null;
     this.#failure.set(null);
     this.#status.set(status);
     this.#generation += 1;
+    this.#holding = AccountKeyCustodyService.mintHolding();
 
     return this.#generation;
+  }
+
+  // The one place a holding is made, and the one cast that makes it: the brand
+  // exists only in the type, so a value has to be told it carries one.
+  private static mintHolding(): CustodyHolding {
+    return Object.freeze({}) as unknown as CustodyHolding;
   }
 
   #hold(contentKey: CryptoKey, indexKey: CryptoKey): void {

@@ -265,7 +265,8 @@ Load-bearing rules. Each links the doc that argues it — **read that doc before
 - **`/app/settings` is reached from the shell navigation**, a layout on the `app` route — so
   **which routes carry a bar is a fact about the route table**. **Three different reasons hold the
   inert controls off across four sites, a fourth holds Export off while this tab cannot read what
-  the file is written from, and the screen says all four**; do not paste one sentence over another. Home and Add are specified and not built — do not "complete" the screen.
+  the file is written from, and the screen says all four**; do not paste one sentence over another.
+  Home and Add are specified and not built — do not "complete" the screen.
   [export.md](docs/business-logic/export.md), [erasure.md](docs/business-logic/erasure.md),
   [recovery-codes.md](docs/business-logic/recovery-codes.md),
   [components.md](docs/design/components.md)
@@ -323,13 +324,18 @@ Load-bearing rules. Each links the doc that argues it — **read that doc before
   [account-keys.md](docs/business-logic/account-keys.md)
 - **The export is opened, never piped.** The server sends envelopes; `decodeExportDocument` parses
   the text once and **refuses every member it does not declare** — that refusal is what keeps a
-  blind index or a new column out of the saved file, so a column the server adds to the export
-  lands in the client decoder in the **same commit** or every export answers `unrecognised`.
-  Plain `JSON.parse` is exact for `numeric(14,4)` (measured) and **not** for a wider scale, which
-  the scale tripwire catches only in part. The file is **whole or absent** — `locked` wins over
-  `unreadable`, and nothing is saved on either — and Export is pressable only while custody is
-  `unlocked` and no rotation run is in flight, one `pressable` read by both the attribute and the
-  handler. The opened document never lands in a signal or a field.
+  blind index or a new column out of the saved file. So a member the server adds, renames or drops
+  ships in **two releases, client first** — a client that accepts it present or absent, then the
+  server — because the two deploy jobs run in parallel and an open tab keeps its old bundle; one
+  commit is still an outage. Plain `JSON.parse` is exact for `numeric(14,4)` (measured); the width
+  is held by the two `…UsesNumeric14Scale4` catalog pins, which go red in CI and gate nothing, and
+  the client's scale tripwire is an early canary that misses some 7- and 8-decimal values. The file
+  is **whole or absent** — `locked` wins over `unreadable`, and nothing is saved on either. Export
+  is pressable only while custody is `unlocked` and no rotation run this tab knows of is in flight,
+  one `pressable` read by both the attribute and the handler; and the save is refused unless
+  `custody.holding()` is still the token captured at the press — for an account with nothing to
+  open, that comparison is the only thing between a signed-out account and a saved file. The opened
+  document never lands in a signal or a field.
   [export.md](docs/business-logic/export.md), [components.md](docs/design/components.md)
 - **The recovery-code hand-off is the one screen that shows a secret, and it still mints and posts
   nothing.** The codes never enter a live region; what is saved or copied is the grouped codes and

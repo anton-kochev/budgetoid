@@ -4,7 +4,10 @@ import {
   MeApiService,
   type CredentialSummary,
 } from '@app-core/api/me-api.service';
-import { AccountKeyCustodyService } from '@app-core/security/account-key-custody.service';
+import {
+  AccountKeyCustodyService,
+  type CustodyHolding,
+} from '@app-core/security/account-key-custody.service';
 import { KeyRotationService } from '@app-core/security/key-rotation.service';
 import { FileDownloadService } from '@app-core/services/file-download.service';
 import { SessionService } from '@app-core/session/session.service';
@@ -58,8 +61,9 @@ export class SettingsService {
   private readonly session = inject(SessionService);
   private readonly router = inject(Router);
   // Both root-provided and both read, never written: custody is where the
-  // export's opener comes from and whose status decides readiness, and the
-  // rotation driver is read for `running` and `staged` and nothing else.
+  // export's opener comes from, whose status decides readiness and whose
+  // holding decides the hand-over, and the rotation driver is read for
+  // `running` and `staged` — a run this tab knows is staged — and nothing else.
   private readonly custody = inject(AccountKeyCustodyService);
   private readonly rotations = inject(KeyRotationService);
 
@@ -124,7 +128,11 @@ export class SettingsService {
   public readonly recoveryLoading: Signal<boolean> =
     this.recoveryLoadingSignal.asReadonly();
 
-  // A key rotation is in flight: a run this tab is walking, or one on file. Both
+  // A key rotation is in flight: a run this tab is walking, or one this tab
+  // knows is staged. Knows, not is: `staged` is what the rotation driver last
+  // read — at start-up, and again when this screen's rotation section loads —
+  // and a read that failed publishes none, so a run staged since by another
+  // device, or behind a read that did not answer, is not a term here. Both
   // terms, read the way the content screens read them — either alone
   // half-works, and the half that fails is the quiet one.
   private readonly rotating = computed(
@@ -295,6 +303,13 @@ export class SettingsService {
       return;
     }
 
+    // Which custody the press was made under, taken in the press's own task and
+    // before the request exists — so nothing that lands while it is out can be
+    // mistaken for the keys the person pressed with. `write` compares against
+    // it at the hand-over. Never `null` here: `pressable` has just read
+    // `unlocked`, and a holding is absent only off `unlocked`.
+    const holding = this.custody.holding();
+
     this.exportingSignal.set(true);
     this.exportedSignal.set(false);
     this.exportFailureSignal.set(null);
@@ -306,7 +321,7 @@ export class SettingsService {
         // platform's cipher — so it rides this stream rather than an `async`
         // wrapper around it: the request still leaves in the press's own task,
         // and a refused one still reaches `catchError` synchronously.
-        switchMap((text) => from(this.write(text))),
+        switchMap((text) => from(this.write(text, holding))),
         // The request, and a throw out of `write` — which is a defect in the
         // call rather than a value that failed to open, since every refusal a
         // person can act on comes back as a word. Either way nothing was saved.
@@ -340,7 +355,10 @@ export class SettingsService {
   // every name and note came back as text, and anything else saves nothing.
   // A file carrying a dash where a name was looks complete in a downloads
   // folder years later.
-  private async write(text: string): Promise<ExportOutcome> {
+  private async write(
+    text: string,
+    pressedUnder: CustodyHolding | null,
+  ): Promise<ExportOutcome> {
     const decoded = decodeExportDocument(text);
 
     if (decoded.kind === 'unrecognised') {
@@ -358,11 +376,23 @@ export class SettingsService {
       return opened.kind;
     }
 
-    // Checked up to the moment the file is handed to the browser, and in the
-    // same synchronous block as the hand-over. Each open already answers
-    // `locked` for a lock that lands while its cipher runs; this catches one
-    // landing after the last open and before the save.
-    if (this.custody.status() !== 'unlocked') {
+    // **The load-bearing hand-over check**: the custody held now must be the
+    // custody the press was made under, compared by identity, in the same
+    // synchronous block as the save so nothing can land between the two.
+    //
+    // For a document with nothing to open — a just-registered account, one
+    // budget, no name — this is the **only** check between the press and the
+    // save, and that window crosses macrotasks: the response lands in a task of
+    // its own, and a sign-out followed by a second account's unlock can land
+    // before it. Where opens did run, each answers `locked` for a change of
+    // hands while its cipher runs, and after the last one only microtasks
+    // remain — narrow, not empty.
+    //
+    // Compared on the holding and never on `status()`: a lock followed by an
+    // adoption reads `unlocked` on both sides, and a status check would save a
+    // file opened — or, with nothing to open, merely requested — under one
+    // custody while another is held.
+    if (pressedUnder === null || this.custody.holding() !== pressedUnder) {
       return 'locked';
     }
 

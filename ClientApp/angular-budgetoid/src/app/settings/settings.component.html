@@ -727,10 +727,10 @@
   <!-- The fourth reason a control on this screen is off, in its own words —
        none of the three sentences above may be pasted over it, nor it over them.
        Which one renders is the service's word, on the notice's terms: the run's
-       wins whenever a run is in flight, because pressing Unlock mid-run opens
-       none of the re-sealed rows; nothing renders while unlocking, because
-       advice given while unsure is advice to press a button somebody is already
-       holding down.
+       wins whenever this tab knows a run is in flight, because pressing Unlock
+       mid-run opens none of the re-sealed rows; nothing renders while unlocking,
+       because advice given while unsure is advice to press a button somebody is
+       already holding down.
 
        Visible prose immediately above the control and outside the region: it
        says why a control is off, which is not the outcome of anything the person
@@ -823,10 +823,16 @@
             was finished, so nothing was saved. Export again once it holds them.
           </p>
         }
-        <!-- The one outcome offering nothing to do, because nothing on this
-             screen changes it: the keys were here and a value did not
-             authenticate under them, every factor holds the same two keys, and
-             a retry opens the same bytes. -->
+        <!-- The one outcome offering nothing to do: the keys were here and a
+             value did not authenticate under them, every factor holds the same
+             two keys, and a retry opens the same bytes. The run gate does not
+             rule out a rotation. It closes over a run this tab *knows* is
+             staged — read at start-up and when the rotation section loads, with
+             a failed read reading as none — so after a rotation finished on
+             another device this tab can still hold the retired pair, and a
+             reload plus Unlock does change this answer. For a value that
+             genuinely fails, nothing does, and the copy cannot tell the two
+             apart. -->
         @case ('unreadable') {
           <p class="s-error">
             Some names or notes didn&rsquo;t open with the keys this tab holds,

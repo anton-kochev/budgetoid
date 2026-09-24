@@ -103,6 +103,8 @@ public sealed class TransactionRepositoryTests
         // column: BHD and KWD have three decimal places and would otherwise be silently rounded on
         // write. Ten integer digits are left, which still clears the domain's 1e9 magnitude cap
         // tenfold. This column and accounts.opening_balance must not drift apart.
+        // The web client's export decoder parses this column as a double and is exact only at (14,4) —
+        // widening it must revisit docs/business-logic/export.md in the same change.
         await using RepositoryTestHost host = await StartHostAsync();
         await using NpgsqlConnection connection = new(host.ConnectionString);
         await connection.OpenAsync();

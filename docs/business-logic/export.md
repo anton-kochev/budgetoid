@@ -335,10 +335,13 @@ is where a table joining this list has to earn its place.
   - **Opening the names in the tab did not bump it.** The delivered file's shape is the response's
     shape with eight members holding text where they held envelopes — same members, same order,
     same types. The one reader a bump would have warned is somebody holding a sealed file, and no
-    sealed export has been handed to anybody as a file: a browser navigating to the route gets the
-    first-party control's `403`, and the web client's own save is now the opened one.
-  - **The day the file's shape changes, the number moves and the decoder moves with it.** A
-    decoder still pinned to `1` refuses a `2` as `unrecognised`, which is the loud direction.
+    web client the deploy pipeline has published ever saved one: the client that saved the sealed
+    body lived only on `develop`, which the pipeline does not deploy, and nobody exported from the
+    earlier production. A non-browser caller can still save the sealed body — the disposition rule
+    below says so — and it is not the reader this number is for.
+  - **The day the file's shape changes, the number moves, and the decoder learns it a release
+    first** — the two-release order the decoder rule below sets out. A decoder still pinned to `1`
+    refuses a `2` as `unrecognised`, which is the loud direction.
 - **Enforced in**: `ExportDocument.CurrentSchemaVersion`, pinned by
   `DataExportEndpointTests.Export_CarriesSchemaVersionOne` — which asserts the **literal**, never
   the constant. A test reading the constant agrees with whatever the code says and stays green
@@ -395,32 +398,43 @@ is where a table joining this list has to earn its place.
 - **Rule**: **The web client saves the whole opened document or nothing.** One export ends in one of
   five words: `exported`, or one of four failures, each of which means nothing was saved —
   `failed` (the request failed, or anything threw after it), `unrecognised` (the decoder refused the
-  body), `locked` (a field answered locked, or custody was not `unlocked` at the hand-over) and
-  `unreadable` (a field failed from the envelope's version byte and tag onward). **`locked` wins over
-  `unreadable`**, whichever field was asked first.
+  body), `locked` (a field answered locked, or the custody held at the hand-over is not the one the
+  press was made under) and `unreadable` (a field failed from the envelope's nonce and tag onward).
+  **`locked` wins over `unreadable`**, whichever field was asked first.
 - **Why**: a file with one name missing — or carrying a dash, or the envelope left where the name
   failed — looks complete in a downloads folder years later. That is the truncation the server's
   completeness rule refuses, carried into the tab, and it gets the same answer.
   - **Four failure words, because they are four next steps.** `failed` says try again later.
     `unrecognised` is a body this bundle could not read, and a reload is the one act that can change
-    it. `locked` says present a factor and export again. `unreadable` is a value that did not open under
-    keys this tab *did* hold, which nothing on the screen changes — every factor encapsulates the same
-    two keys, and a retry opens the same bytes.
+    it. `locked` says present a factor and export again. `unreadable` is a value that did not open
+    under keys this tab *did* hold. For a value that genuinely fails, nothing changes it — every
+    factor encapsulates the same two keys, and a retry opens the same bytes. The exception is a
+    rotation finished elsewhere: this tab holds the retired pair, and a reload plus Unlock changes
+    the answer.
   - **`locked` wins because it has a way forward.** Unlock and every field comes back, so it is the
     word worth showing while it is true. A field that failed while the keys were leaving is only
     worth reporting as `unreadable` once they are back and it still does not open.
-  - **The hand-over check closes the last gap.** Each open already answers `locked` for a lock that
-    lands while its cipher runs. `SettingsService` checks custody again in the same synchronous block
-    as the save, which catches a lock landing after the last open and before the file leaves.
+  - **The hand-over check is load-bearing, not a last guard.** `export()` takes
+    `custody.holding()` at the press, and `write` saves only while `holding()` still answers that
+    same token, compared by identity in the same synchronous block as the save. For a document
+    with nothing to open — a just-registered account, one budget, no name — it is the **only**
+    check between press and save, and that window crosses macrotasks: a sign-out, a second account
+    signing in and unlocking, and then the first account's response landing. A status check reads
+    `unlocked` on both sides of that and would save the first account's file. Where opens did run,
+    each answers `locked` for a change of hands while its cipher runs, and after the last one only
+    microtasks remain — narrow, not empty.
   - **The cost is accepted, and it is a person who cannot export at all.** One value that no longer
     authenticates blocks the whole file, and `unreadable` offers nothing to do. Saving the rest was
     refused for the reason above: a partial file that says nothing about its gap is worse than no
     file and a sentence saying why.
 - **Enforced in**: `openExportDocument` answers `opened` only when every narrative member came back
-  as text, and `SettingsService.write` saves only on `opened` and a custody still `unlocked`.
-  `export-document.spec.ts` — "delivers nothing when … alone is unreadable" and "answers locked when
-  … alone is locked", each over all eight fields, and "answers locked over unreadable" in both
-  orders; `settings.service.spec.ts` for the words the screen publishes.
+  as text, and `SettingsService.write` saves only on `opened` and only while `custody.holding()`
+  is the token taken at the press. `export-document.spec.ts` — "delivers nothing when … alone is
+  unreadable" and "answers locked when … alone is locked", each over all eight fields, and "answers
+  locked over unreadable" in both orders; `settings.service.spec.ts` for the words the screen
+  publishes, with "saves nothing and reports locked when another custody is held by the time a
+  document with nothing to open lands" and "… when custody changes hands after the last open" for
+  the hand-over.
 - **Example**: every field opens — the document is pretty-printed, saved as `application/json` under
   the client's filename, and the screen says **Exported.**
 - **Counterexample**: one payee name fails, and the file is saved with `—` in its place. Nothing in
@@ -434,28 +448,40 @@ is where a table joining this list has to earn its place.
   its declared members — none missing, none extra — each with the JSON type it serializes as, `null`
   only where the record declares a nullable member, `schemaVersion` the number `1`, every narrative
   row id in its canonical spelling, every narrative wire string accepted by the strict base64url
-  decoder and at least the envelope's 29-byte floor, and money below 1e10 at no more than four
-  decimals.
+  decoder, at least the envelope's 29-byte floor and led by `ENVELOPE_VERSION`, and money below
+  1e10 at no more than four decimals.
 - **Why**: **the extra-member refusal is the FR-015 guard.** A column the server starts shipping is,
   until somebody looks at it, a column nobody decided whether to open. Passed through, a new sealed
   column lands on disk as ciphertext in a file that claims to be readable, and a new blind index
   lands as the per-account fingerprint the rule above argues out of the document.
   - **The coupling is the point, and it is loud on purpose.** Any column added to the export —
-    and any member renamed or removed — must land in the client decoder **in the same commit**, or
-    every export fails `unrecognised` from the first deploy that carries it. That is the direction
-    chosen: an export that stops working and says so, rather than one that goes on working and
-    ships something nobody decided about. `export-document.spec.ts` builds its fixture by hand in
-    the shape `ExportDocument.cs` writes, so a server-only change leaves the client suite green, and
-    the first sign of it is every export answering `unrecognised`. [Guessing] No test reads both
-    sides of this contract; the
-    decoder's tables are tied to the TypeScript interfaces by `satisfies`, and nothing ties those
-    interfaces to the C# records but this rule.
+    and any member renamed or removed — ships in **two releases**, never one commit: `deploy.yml`
+    runs `deploy-backend` and `deploy-frontend` in parallel with no `needs:` between them, and a tab
+    opened before a deploy keeps its old bundle, so no single release can put both halves in front
+    of every reader at once. First a client that declares the member optional — accepted present
+    or absent, opened if sealed — and still refuses every undeclared member; `isObjectOf` has no
+    optional member today, so that release adds one. Then the server change. Skip the first and
+    every export fails `unrecognised` from the deploy that carries the second. That is the
+    direction chosen: an export that stops working and says so, rather than one that goes on
+    working and ships something nobody decided about. `export-document.spec.ts` builds its fixture
+    by hand in the shape `ExportDocument.cs` writes, so a server-only change leaves the client suite
+    green, and the first sign of it is every export answering `unrecognised`. No test reads both
+    sides of this contract: the account-keys pair shares a vector file
+    (`vectors/account-keys-wire-v1.json`), and the export has none. The decoder's tables are tied
+    to the TypeScript interfaces by `satisfies`, and nothing ties those interfaces to the C#
+    records but this rule.
   - **A row id and a wire string are judged here rather than at the opener**, because both refusals
     precede the cipher and observe no key material. At the opener, a bad row id would be a
     `NarrativeFieldMisuseError` — a defect in this client — and a bad wire string would come back
     `unreadable`, the word for keys that were here and bytes that were not theirs. Both are a body
     this client could not read, which is `unrecognised`. The line is the one
     [account-keys.md](account-keys.md) draws for a manifest.
+  - **The envelope's version byte sits on the same side of that line.** It is refused after the
+    floor — the order the server's `CiphertextEnvelopeText` refuses in — and before any cipher, so
+    a version other than `ENVELOPE_VERSION` is `unrecognised` and everything from the nonce and
+    the tag onward is the opener's. It is the refusal a real format change hits first, and it
+    makes a newer bundle's envelope say *reload* rather than *nothing changes this*. The constant
+    is the envelope module's own, never an alias of another framing's `0x01`.
   - **The one parse belongs to the decoder.** `MeApiService.getExport` asks for
     `responseType: 'text'`, through `BaseApiService.getText`, which also sends no `Content-Type` a
     bodyless GET has nothing to describe. `get<ExportDocument>()` would parse with no shape check
@@ -464,8 +490,10 @@ is where a table joining this list has to earn its place.
   member is counted and refused like any other stranger. `export-document.spec.ts` — "refuses an
   undeclared member" (including `nameKey` on all four indexed rows), "refuses a declared member
   that is …" (missing, wrong type, null where not nullable), "refuses schemaVersion", the
-  non-canonical id rows, the wire-string rows over every narrative member, and the money rows, each
-  beside a control that decodes. `me-api.service.spec.ts` — "requests the export as text rather
+  non-canonical id rows, the wire-string rows — the alphabet row and the version `0x02` sweep over
+  all eight narrative members, the framing, floor, version `0x00` and `ENVELOPE_VERSION + 1` rows
+  on the account name — and the money rows, each beside a control that decodes.
+  `me-api.service.spec.ts` — "requests the export as text rather
   than parsed JSON", with "requests the account record as parsed JSON" beside it proving the
   response type is per call, and "sends no Content-Type on the export request".
 - **Example**: a server that starts writing `nameKey` on accounts again. Every export answers
@@ -478,9 +506,10 @@ is where a table joining this list has to earn its place.
 ---
 
 - **Rule**: **Export is pressable only while the tab can open what the file is written from**:
-  custody says `unlocked`, no key rotation is in flight — a run this tab is walking or one staged on
-  file — and no export is already running. One signal, `SettingsService.pressable`, is read by the
-  control's `disabled` and by `export()`'s guard.
+  custody says `unlocked`, no key rotation is in flight — a run this tab is walking, or one it
+  knows is staged, read at start-up and when the rotation section loads, with a failed read
+  reading as none — and no export is already running. One signal, `SettingsService.pressable`,
+  is read by the control's `disabled` and by `export()`'s guard.
 - **Why**: the file is written with the opened names, so a tab holding no keys can only end
   `locked`, and a request made for that answer costs the server a whole-document build for nothing.
   The run term is not caution: a staged run has re-sealed part of the account under keys custody does
@@ -515,6 +544,7 @@ sequenceDiagram
     participant D as export-document.ts
     participant K as AccountKeyCustodyService
     Note over S: pressable — custody unlocked, no run in flight, not exporting
+    S->>K: holding() — the token taken at the press
     S->>M: GET /api/me/export (responseType text)
     M-->>S: 401 (no cookie, or one naming no live session)
     M->>H: identity and ambient budget published
@@ -524,19 +554,21 @@ sequenceDiagram
     H->>R: ReadAmbientBudgetContentsAsync()
     H-->>S: 200 application/json + Content-Disposition
     S->>D: decodeExportDocument(text)
-    D-->>S: unrecognised (shape, version, row id, wire framing, money)
+    D-->>S: unrecognised (shape, schema version, row id, wire framing, envelope version, money)
     S->>D: openExportDocument(sealed document, custody's opener)
     D->>K: openField, once per distinct value, through one openNarrativeBatch
     D-->>S: locked, unreadable, or the opened document
-    S->>K: status() — still unlocked at the hand-over?
+    S->>K: holding() — still the token taken at the press?
     S->>S: save the pretty-printed document as application/json
 ```
 
 The gate sits **before** the contents are read, so a document that will not be assembled costs
 nobody a round trip over their own transactions. On the client the order is the same idea turned
 round: the decoder runs **before** any cipher, so a body this bundle cannot read costs no key
-material, and the custody check runs **after** the last open and in the same synchronous block as
-the save, so nothing leaves the tab after the keys have.
+material, and the hand-over check runs **after** the last open and in the same synchronous block
+as the save, comparing custody's holding against the one taken at the press — so nothing leaves
+the tab after the keys have, or under a custody other than the one it was pressed under. With
+nothing to open, it is the only check across the whole round trip.
 
 ## Decision Trees
 
@@ -566,12 +598,14 @@ ELSE IF the request fails, or anything throws after it      ← a 401 is session
   THEN failed                                                  which has already left the screen
 ELSE IF the text does not decode                            ← before any cipher runs
     — not JSON, a member missing or extra, a wrong JSON type, a null where none is declared,
-      schemaVersion ≠ 1, a non-canonical row id, a wire string the strict decoder refuses or
-      shorter than 29 bytes, money at or past 1e10 or finer than four decimals
+      schemaVersion ≠ 1, a non-canonical row id, a wire string the strict decoder refuses,
+      shorter than 29 bytes or led by a version other than ENVELOPE_VERSION, money at or past
+      1e10 or finer than four decimals
   THEN unrecognised
-ELSE IF any field answers locked, or custody is not unlocked at the hand-over
+ELSE IF any field answers locked, or custody's holding at the hand-over is not the one
+        taken at the press
   THEN locked                                               ← wins over unreadable
-ELSE IF any field fails from the version byte and the tag onward
+ELSE IF any field fails from the nonce and the tag onward
   THEN unreadable
 ELSE
   THEN exported — the opened document, pretty-printed, saved as application/json
@@ -599,14 +633,14 @@ ELSE
   handler creates them, reachable from one group whose policy names the provider's scheme, and this
   route inherits a fallback policy naming the cookie's.
 - **[Account keys](account-keys.md)** — the client opens the document through
-  `AccountKeyCustodyService.openField`, the opener every narrative screen uses, and reads custody's
-  status for both the pressable gate and the hand-over check. The export never holds a key of its
-  own and never reads one out of custody.
+  `AccountKeyCustodyService.openField`, the opener every narrative screen uses, reads custody's
+  status for the pressable gate, and reads `holding()` — a token carrying no key — for the
+  hand-over check. The export never holds a key of its own and never reads one out of custody.
 - **[The ciphertext envelope](ciphertext-envelope.md)** — every narrative member is opened under the
   binding of the row it sits on (`budgets.name` under the budget's id), so a value moved to another
   row, column or table comes back `unreadable` rather than as somebody else's text. The decoder
-  applies the envelope's 29-byte floor and the strict base64url decoder before the opener sees a
-  value.
+  applies the strict base64url decoder, the envelope's 29-byte floor and its version byte before
+  the opener sees a value.
 - **[Key rotation](key-rotation.md)** — a run in flight holds Export off, for the reason the content
   screens take their lists away.
 - **[Frontend performance](../engineering/frontend-performance.md)** — the whole document is opened
@@ -623,9 +657,11 @@ ELSE
   through a `PipeWriter` in buffers rather than into one string, so the peak is nearer one copy than
   two — but one copy is still unbounded. Small enough for one person's budget today; the ceiling is
   stated here because nothing in the code states it.
-  - **The tab holds more than the server does.** The response text, the decoded tree, the opened
-    tree and the serialized file are live together at the save, so the peak in the browser is about
-    four copies of the document plus the `Blob` handed to the download. Also unbounded, and also stated here
+  - **The tab holds more than the server does.** The response text, the serialized file and the
+    `Blob` handed to the download each hold the whole document as text. The decoded and opened
+    trees are new row objects that share every non-narrative string between them, the opened tree
+    adding the plaintexts. So the peak at the save is about three text copies of the document plus
+    the parsed trees — reasoned from the code, not measured. Also unbounded, and also stated here
     because nothing in the code states it.
 - **The complete-or-nothing guarantee ends when the response starts — on the server.** The status
   and the `Content-Disposition` go out before the body is serialized, so a serialization failure
@@ -646,8 +682,8 @@ ELSE
 - **`Content-Disposition` is unreadable to browser JavaScript.** `Api/Program.cs` sets no
   `Access-Control-Expose-Headers`, so a cross-origin `fetch` sees the body and not the filename. The
   web client names the file itself — it writes the file too — from the **browser's** clock, in the
-  same `budgetoid-export-{yyyyMMdd}T{HHmmss}Z.json` shape (`settings/export-filename.ts`) — two clocks,
-  differing by seconds, and **neither authoritative**.
+  same `budgetoid-export-{yyyyMMdd}T{HHmmss}Z.json` shape (`settings/export-filename.ts`) — two
+  clocks, differing by seconds, and **neither authoritative**.
 - **Exactly one 401 reaches this route.** No cookie, a cookie naming nothing, a dead session, or a
   provider bearer this route's policy does not read are all answered by the fallback policy through
   `UseStatusCodePages`, titled `"Unauthorized"` from the status map alone. There is no second,
@@ -685,28 +721,39 @@ ELSE
     finer than four decimals, tested as `Math.round(x·1e4)/1e4 === x`. Over the same 3.24M values it
     refused none; it catches every five-decimal value tested. A column widened either way would
     otherwise start losing digits silently, in a file whose whole purpose is to be a faithful copy.
-  - **The tripwire has a measured hole, and no check on a parsed number can close it.** From six
-    decimals up, near the top of the range, some values parse to the exact double of a four-decimal
-    neighbour — 9060010800.764401 is one — and are indistinguishable from it once parsed: 9,094 of
-    2.144M five-to-eight-decimal values were accepted, every one of them that case. So a widened
-    scale is caught loudly for most values and read silently as the neighbour for some.
-  - **Only reading the raw lexeme closes it** — `JSON.rawJSON`, or the reviver's source text. Both
-    sit above the browser floor this client builds for: Angular 21 targets Baseline Widely
-    available (Chrome and Edge 111, Firefox 112, Safari 16.4), and MDN lists the feature as Baseline
-    2025. `export-document.spec.ts` uses the reviver's source text to check its own output, which
-    runs on Node and says nothing about a browser.
+  - **The tripwire has a measured hole, and no check on a parsed number can close it.** Both money
+    columns carry a CHECK of `abs(x) <= 1000000000`, pinned in `SchemaConstraintSnapshotTests`, so
+    that cap is the range that matters. Under it, over 200k values per scale, the tripwire accepted
+    0 at five and six decimals, 52 at seven and 132 at eight — `607494524.2388999` is one. A
+    seventh or later decimal can be finer than a double resolves at that magnitude, so it parses to
+    the very double of its four-decimal neighbour and is indistinguishable from it once parsed. So
+    a widened scale is caught loudly for nearly every value and read silently as the neighbour for
+    a few: **an early canary, not the last line.**
+  - **What holds the scale is two schema tests, and they gate nothing.**
+    `AccountSchemaTests.OpeningBalanceColumn_UsesNumeric14Scale4` and
+    `TransactionRepositoryTests.AmountColumn_UsesNumeric14Scale4` pin both columns at
+    `numeric(14,4)`, and each carries a comment pointing here. They go red in CI and stop no
+    deploy: `main` has no branch protection, and `deploy.yml` triggers on a push to `main` without
+    waiting for `ci.yml`.
+  - **Only reading the raw lexeme closes the hole** — a reviver's `context.source`, which hands the
+    reviver each value's source text. `JSON.rawJSON` is the other half of the same feature and sits
+    on the stringify side, so it reads nothing. Both are Baseline 2025, above the browser floor
+    this client builds for: Angular 21 targets Baseline Widely available (Chrome and Edge 111,
+    Firefox 112, Safari 16.4). `export-document.spec.ts` uses `context.source` to check its own
+    output, which runs on Node and says nothing about a browser.
   - **Widening either money column must revisit this edge case in the same commit.** The exactness
     argument, the tripwire's two constants and its measured hole are all facts about fourteen digits
-    at four decimals, and none of them survives a change to either number.
+    at four decimals under a 1e9 cap, and none of them survives a change to any of the three.
   - **Enforced in**: `export-document.spec.ts` — "keeps every amount value exact through decode, open
     and serialize", which compares the written lexemes as scaled integers at both edges of the range;
     the "refuses …" money rows past the ceiling and past the scale; and "decodes … as an amount and
     as an opening balance" over values a naive `Number.isInteger(x·1e4)` would refuse. The 3.24M
-    sweep and the 2.144M hole count are one-off measurements, not tests.
+    sweep and the 200k-per-scale hole count are one-off measurements, not tests.
 - **A locked session never reaches the Export control, so the client carries no word for one.**
   No path creates a locked session today. If one existed, its cold-load probe would be refused with
   the same `403` this route gives it, the session would read `anonymous`, and the guard would turn it
   away from `/app/settings` before the screen rendered.
-  `LockedSessionTests.ALockedSession_IsRefusedTheExport` holds the server half; `session.service.spec.ts`, `auth.guard.spec.ts` and `app.routes.spec.ts`
-  hold the client half. Every *locked* in this chapter's client rules is a locked **account** — a tab
+  `LockedSessionTests.ALockedSession_IsRefusedTheExport` holds the server half;
+  `session.service.spec.ts`, `auth.guard.spec.ts` and `app.routes.spec.ts` hold the client half.
+  Every *locked* in this chapter's client rules is a locked **account** — a tab
   holding no key — never a session.

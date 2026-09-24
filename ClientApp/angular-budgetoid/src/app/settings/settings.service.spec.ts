@@ -769,6 +769,87 @@ describe('SettingsService', () => {
       expect(service.exported()).toBe(false);
     });
 
+    it('saves nothing and reports locked when another custody is held by the time a document with nothing to open lands', async () => {
+      // Arrange
+      // A just-registered account: one budget, no name, nothing in it — so no
+      // open runs, and no open can answer `locked` on the way. Custody lets go
+      // and takes up a different pair while the request is out, and reads
+      // `unlocked` again by the time the text lands. Only a holding captured
+      // at the press can tell the export it is no longer the same custody.
+      const gate = new Subject<string>();
+      api.getExport.mockReturnValue(gate);
+      const freshContentKey = await generateContentKey();
+      const freshIndexKey = await generateIndexKey();
+      const justRegistered = JSON.stringify({
+        schemaVersion: 1,
+        user: EXPORTED_USER,
+        budgets: [
+          {
+            id: EXPORT_IDS.budget,
+            userId: EXPORT_IDS.user,
+            name: null,
+            baseCurrencyCode: null,
+            createdAtUtc: '2026-01-04T09:15:23.000000Z',
+            accounts: [],
+            categoryGroups: [],
+            categories: [],
+            payees: [],
+            transactions: [],
+          },
+        ],
+      });
+      service.export();
+      custody.lock();
+      custody.adopt(freshContentKey, freshIndexKey);
+
+      // Act
+      gate.next(justRegistered);
+      gate.complete();
+      await exportSettled(service);
+
+      // Assert
+      expect(custody.status()).toBe('unlocked');
+      expect(download.save).not.toHaveBeenCalled();
+      expect(service.exportFailure()).toBe('locked');
+      expect(service.exported()).toBe(false);
+    });
+
+    it('saves nothing and reports locked when custody changes hands after the last open', async () => {
+      // Arrange
+      // Every open answers text, and the first one lets go and takes up other
+      // keys on its way out — so the document opens whole, and custody reads
+      // `unlocked` at the hand-over under keys the export never started with.
+      const served = await sealedExport(contentKey);
+      api.getExport.mockReturnValue(of(served.text));
+      const otherContentKey = await generateContentKey();
+      const otherIndexKey = await generateIndexKey();
+      let changedHands = false;
+      const openField = vi
+        .spyOn(custody, 'openField')
+        .mockImplementation((): Promise<NarrativeText> => {
+          if (!changedHands) {
+            changedHands = true;
+            custody.lock();
+            custody.adopt(otherContentKey, otherIndexKey);
+          }
+          return Promise.resolve({ state: 'text', value: 'opened' });
+        });
+      onTestFinished(() => openField.mockRestore());
+
+      // Act
+      service.export();
+      await exportSettled(service);
+
+      // Assert
+      // `unlocked` at the end is what makes this case: a check on the status
+      // alone sees nothing wrong here and saves the file.
+      expect(openField).toHaveBeenCalled();
+      expect(custody.status()).toBe('unlocked');
+      expect(download.save).not.toHaveBeenCalled();
+      expect(service.exportFailure()).toBe('locked');
+      expect(service.exported()).toBe(false);
+    });
+
     it('reports only the failure when an export fails after one succeeded', async () => {
       // Arrange
       service.export();

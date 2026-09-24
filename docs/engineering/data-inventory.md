@@ -367,13 +367,19 @@ neighbouring gate's verdict, not this one's. `EnvelopeBudgetingIsolationTests` r
 inventory nor the schema; its subject is IL.
 
 **One gap, stated rather than closed:** the client's `NARRATIVE_FIELDS` is a second executed list, in
-another language, and nothing reconciles it with the inventory at build time. The export's
-`mapNarrative` in `export-document.ts` is a third — the one place that says which members of the
-export document get opened — and it is held to `NARRATIVE_FIELDS`, not to the inventory, by a case
-in `export-document.spec.ts` asking that the opener is handed exactly the eight listed pairs and no
-other member. So a ninth narrative column reaches the export's opener only once somebody adds it to
-both client lists; until then the export's decoder refuses the new member as undeclared, and every
-export answers `unrecognised` ([export.md](../business-logic/export.md)).
+another language, and nothing reconciles it with the inventory at build time. Two more lists sit
+beside it, each held to `NARRATIVE_FIELDS` — not to the inventory — by its own spec census:
+
+- The export's `mapNarrative` in `export-document.ts`, the one place that says which members of the
+  export document get opened. "opens exactly the fields NARRATIVE_FIELDS lists and hands the opener
+  no other member" in `export-document.spec.ts` holds it to the eight pairs.
+- The rotation driver's seven field constants in `key-rotation.service.ts` — every pair but
+  `budgets.name`, on purpose ([key-rotation.md](../business-logic/key-rotation.md)). `cellsFor` in
+  `key-rotation.service.spec.ts` ties them to `NARRATIVE_FIELDS`.
+
+So a ninth narrative column reaches the export's opener only once somebody adds it to both client
+lists; until then the export's decoder refuses the new member as undeclared, and every export
+answers `unrecognised` ([export.md](../business-logic/export.md)).
 
 ## Adding a column edits the inventory and nothing else
 

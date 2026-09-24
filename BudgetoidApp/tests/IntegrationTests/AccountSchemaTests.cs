@@ -225,6 +225,8 @@ public sealed class AccountSchemaTests
         // decimal places and numeric scale rounds silently rather than refusing, so a scale-2 column
         // would corrupt a balance instead of rejecting it. The two money columns must not drift
         // apart, which is why this assertion exists separately rather than being assumed.
+        // The web client's export decoder parses this column as a double and is exact only at (14,4) —
+        // widening it must revisit docs/business-logic/export.md in the same change.
         await using RepositoryTestHost host = await StartHostAsync();
         await using NpgsqlConnection connection = new(host.ConnectionString);
         await connection.OpenAsync();

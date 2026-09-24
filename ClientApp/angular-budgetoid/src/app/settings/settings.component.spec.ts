@@ -20,6 +20,7 @@ import {
 import {
   AccountKeyCustodyService,
   type AccountKeyStatus,
+  type CustodyHolding,
   type UnlockFailure,
 } from '@app-core/security/account-key-custody.service';
 import {
@@ -605,14 +606,33 @@ type AccountKeyCustodySurface = Pick<
 class AccountKeyCustodyStub implements AccountKeyCustodySurface {
   public readonly status = signal<AccountKeyStatus>('locked');
   public readonly unlockFailure = signal<UnlockFailure | null>(null);
+  // Bumped by `lock` and `adopt`, so the holding below changes hands when
+  // either runs even if `status` reads the same word on both sides.
+  readonly #handOvers = signal(0);
+  // The real member's contract: one token for as long as a custody lasts and a
+  // new one after every change of hands, `null` off `unlocked`. A computed, so
+  // two reads between changes are the same object — a fresh object per call
+  // would make `SettingsService` see custody change at every hand-over and
+  // turn every "Exported." case into `locked`. Minted by a cast: the brand is
+  // the real service's to mint and a stub has no other way to hold one.
+  public readonly holding = computed((): CustodyHolding | null => {
+    this.#handOvers();
+    return this.status() === 'unlocked'
+      ? (Object.freeze({}) as unknown as CustodyHolding)
+      : null;
+  });
   public unlock = vi.fn();
-  public adopt = vi.fn();
+  public adopt = vi.fn((): void => {
+    this.#handOvers.update((count) => count + 1);
+  });
   // The hand-over a finished rotation makes. Nothing on this screen calls it —
   // the key-rotation section is unbuilt — and it is here because the `Pick`
   // census above did its job again: the service's public surface grew, and this
   // stub was a compile error naming the missing member before anything ran.
   public adoptRotated = vi.fn();
-  public lock = vi.fn();
+  public lock = vi.fn((): void => {
+    this.#handOvers.update((count) => count + 1);
+  });
   // The three key-backed operations, here because the `Pick` census above did
   // exactly the job its own comment describes — twice now. The service's public
   // surface grew by `sealField` and `openField`, and then again by

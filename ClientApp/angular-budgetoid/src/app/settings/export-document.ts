@@ -32,14 +32,18 @@
 // the ledger held it.
 //
 // **A narrative member is refused here when it cannot be an envelope at all.**
-// A wire string the strict decoder refuses, or one that decodes to fewer bytes
-// than the envelope floor, is a body this client could not read: the refusal
-// comes before any cipher and observes no key material, so it is
-// `unrecognised`. From the version byte and the tag onward the question is the
-// opener's, and a failure there is `unreadable` — the keys were here and the
-// bytes were not theirs, which is a different next step for a person.
+// A wire string the strict decoder refuses, one that decodes to fewer bytes
+// than the envelope floor, or one led by a version byte other than the one
+// this client writes, is a body this client could not read: the refusal comes
+// before any cipher and observes no key material, so it is `unrecognised`.
+// From the nonce and the tag onward the question is the opener's, and a
+// failure there is `unreadable` — the keys were here and the bytes were not
+// theirs, which is a different next step for a person.
 import { decodeBase64Url } from '@app-core/security/base64url';
-import { MINIMUM_ENVELOPE_BYTES } from '@app-core/security/key-envelope';
+import {
+  ENVELOPE_VERSION,
+  MINIMUM_ENVELOPE_BYTES,
+} from '@app-core/security/key-envelope';
 import { openNarrativeBatch } from '@app-core/security/narrative-batch';
 import type {
   FrameBudget,
@@ -167,8 +171,8 @@ export type ExportDocumentOpening =
  * wrong JSON type or `null` where none is declared, money at or past 1e10 or
  * finer than four decimals, a narrative member whose row id is not the
  * canonical spelling, and a narrative member whose wire string the strict
- * base64url decoder refuses or which decodes to fewer bytes than an envelope's
- * floor. The row id is refused here rather than left for the opener, where the
+ * base64url decoder refuses, which decodes to fewer bytes than an envelope's
+ * floor, or whose first byte is not this client's envelope version. The row id is refused here rather than left for the opener, where the
  * same id would be a `NarrativeFieldMisuseError` — a defect in this client —
  * when what it actually is, is a body this client cannot read. The wire string
  * is refused here for the reason at the head of the file.
@@ -212,10 +216,16 @@ class NotAnEnvelopeError extends Error {
   public override readonly name = 'NotAnEnvelopeError';
 }
 
-// The repository's one strict decoder and the envelope's own floor — never a
-// second decoder here. `decodeBase64Url` throws a bare `Error`, so the `catch`
-// wraps that one call and nothing else: whatever it throws is its refusal, and
-// no message is read to decide so.
+// The repository's one strict decoder, the envelope's own floor and its own
+// version — never a second decoder here. `decodeBase64Url` throws a bare
+// `Error`, so the `catch` wraps that one call and nothing else: whatever it
+// throws is its refusal, and no message is read to decide so.
+//
+// Floor first, then version, the order the server's `CiphertextEnvelopeText`
+// refuses in. The version is `ENVELOPE_VERSION` from the envelope's own module
+// and never the keypair's or the encapsulation's constant: all three framings
+// lead with `0x01` on different suites, so an alias would compare equal today
+// and stop meaning this framing the day either of the others moves.
 function refuseNonEnvelopeWire(wire: string): void {
   let bytes: Uint8Array;
 
@@ -231,6 +241,12 @@ function refuseNonEnvelopeWire(wire: string): void {
   if (bytes.length < MINIMUM_ENVELOPE_BYTES) {
     throw new NotAnEnvelopeError(
       'A narrative member is too short to hold a version, a nonce and a tag.',
+    );
+  }
+
+  if (bytes[0] !== ENVELOPE_VERSION) {
+    throw new NotAnEnvelopeError(
+      'A narrative member leads with an envelope version this client does not write.',
     );
   }
 }
@@ -376,12 +392,21 @@ const isInteger: Check = (value) => Number.isSafeInteger(value);
 // was parsed from such a decimal. Measured over 3.24M `numeric(14,4)` values —
 // random across the range, every step in [-2, 2], ±50k steps around ±1e9, the
 // top 100k below either edge, every power of ten — with 0 refused, where
-// `Number.isInteger(x · 10⁴)` refuses 386,368 of the same set. Over 1M
-// five-to-eight-decimal values it accepted 4,658, none of them five-decimal,
-// and every one parsed to the very same double as its four-decimal neighbour:
-// a sixth or later decimal can be finer than a double resolves near the top of
-// the range, so no check on the parsed number can see it, and it reads as
-// that neighbour.
+// `Number.isInteger(x · 10⁴)` refuses 386,368 of the same set.
+//
+// **A tripwire for a widened scale, and an early canary rather than the last
+// line.** Both money columns carry a CHECK of `abs(x) <= 1e9` (pinned in
+// `SchemaConstraintSnapshotTests`), and their `numeric(14,4)` type is pinned by
+// `AccountSchemaTests.OpeningBalanceColumn_UsesNumeric14Scale4` and
+// `TransactionRepositoryTests.AmountColumn_UsesNumeric14Scale4` — which go red
+// in CI and gate nothing, since `main` carries no branch protection and the
+// deploy does not wait on CI. Under that cap, over 200k values per scale, this
+// check accepted 0 at five and six decimals, 52 at seven
+// (`607494524.2388999`, say) and 132 at eight: a seventh or later decimal can be finer than a
+// double resolves at that magnitude, so it parses to the very double of its
+// four-decimal neighbour and no check on the parsed number can see it. Only a
+// reviver's `context.source` reads the raw lexeme — `JSON.rawJSON` is the
+// write side — and both sit above this app's browser floor.
 const hasMoneyScale = (value: number): boolean =>
   Math.round(value * MONEY_SCALE) / MONEY_SCALE === value;
 

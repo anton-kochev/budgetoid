@@ -867,7 +867,7 @@ any row will ever rebuild, because there is no column to read it back out of. Bo
 to come off the **same** entry, which is what the single predicate in `refuseInvalidBinding`
 does; splitting it into two `some` calls is the same mistake wearing a different shape.
 
-**The caller that produces such a binding is a mapper, and six of them exist.**
+**The caller that produces such a binding is a mapper, and seven of them exist.**
 `account-view.ts`, `payee-view.ts`, `category-view.ts`, `category-group-view.ts` and
 `transaction-view.ts` each take the opener as a function and hand it a binding, and `payee-view.ts`
 takes the indexer beside it — so the hazard this lookup is written for is **live** rather than
@@ -875,7 +875,11 @@ anticipated. The sixth is `export-document.ts`, which binds every narrative memb
 export document to the row it sits on, with a row id read off the server's response — and calls
 `refuseInvalidBinding` itself while decoding, so that a non-canonical id is a body this client
 could not read (`unrecognised`) rather than a `NarrativeFieldMisuseError` at the opener, which
-would name a defect in this client. Most bindings are still the compiler's: the table and the column are closed unions
+would name a defect in this client. The seventh is the rotation driver, `key-rotation.service.ts`,
+which builds bindings from the rows the server's list reads return, over seven field constants of
+its own — every pair but `budgets.name`, which a run does not carry, as
+[key-rotation.md](key-rotation.md) argues. Most bindings are still the compiler's: the table and
+the column are closed unions
 derived from `NARRATIVE_FIELDS`, so a binding written out as a literal has already been through
 them. The runtime
 lookup is for the binding the compiler never saw — a table name arriving as data, out of a
