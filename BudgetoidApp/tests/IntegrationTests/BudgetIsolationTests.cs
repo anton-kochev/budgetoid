@@ -5,6 +5,7 @@ using Domain.Accounts;
 using Domain.Transactions;
 using Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
+using TestSupport;
 
 namespace IntegrationTests;
 
@@ -26,17 +27,21 @@ public sealed class BudgetIsolationTests
         Guid transactionId;
         await using (BudgetoidDbContext dbA = CreateDb(host, budgetA))
         {
-            Account account = Account.Create(budgetA, "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, DateTime.UtcNow);
+            Account account = Account.Create(
+                Guid.CreateVersion7(),
+                budgetA,
+                SealedNarrative.Indexed("Checking"), AccountType.Checking, 0m, "USD", UsdMinorUnit, DateTime.UtcNow);
             dbA.Accounts.Add(account);
             await dbA.SaveChangesAsync();
 
             Transaction transaction = Transaction.Create(
+                Guid.CreateVersion7(),
                 budgetA,
                 account.Id,
                 -10m,
                 UsdMinorUnit,
                 new DateOnly(2026, 6, 12),
-                "Budget A groceries",
+                SealedNarrative.Description("Budget A groceries"),
                 new DateTime(2026, 6, 12, 13, 14, 15, DateTimeKind.Utc));
             transactionId = transaction.Id;
             dbA.Transactions.Add(transaction);
@@ -78,8 +83,9 @@ public sealed class BudgetIsolationTests
         await using (BudgetoidDbContext dbA = CreateDb(host, budgetA))
         {
             dbA.Accounts.Add(Account.Create(
+                Guid.CreateVersion7(),
                 budgetA,
-                "Checking",
+                SealedNarrative.Indexed("Checking"),
                 AccountType.Checking,
                 0m,
                 "USD",
@@ -97,7 +103,7 @@ public sealed class BudgetIsolationTests
     [Test]
     public async Task GetTransactions_DoesNotReturnAnotherBudgetsTransactions()
     {
-        await using PostgresTestHost host = new();
+        await using PostgresTestHost host = new(usesApplicationAuthentication: true);
         await host.StartAsync();
         const string userA = "google-a";
         const string userB = "google-b";
@@ -106,19 +112,20 @@ public sealed class BudgetIsolationTests
         await using ApiFactory factoryA = host.CreateFactory(userA);
         await using ApiFactory factoryB = host.CreateFactory(userB);
 
-        HttpClient clientA = factoryA.CreateAuthenticatedClient();
+        (HttpClient clientA, _, _) = await factoryA.CreateSignedInClientAsync();
         Guid accountId = await CreateAccountAsync(clientA);
         HttpResponseMessage created = await clientA.PostAsJsonAsync("/api/transactions", new
         {
+            id = Guid.CreateVersion7().ToString("D"),
             amount = -42.50m,
             date = "2026-06-12",
             accountId,
-            description = "Budget A lunch",
+            description = SealedNarrative.EncodedDescription("Budget A lunch"),
         });
         await Assert.That(created.StatusCode).IsEqualTo(HttpStatusCode.Created);
 
         // Budget B must not see budget A's transaction.
-        HttpClient clientB = factoryB.CreateAuthenticatedClient();
+        (HttpClient clientB, _, _) = await factoryB.CreateSignedInClientAsync();
         HttpResponseMessage listB = await clientB.GetAsync("/api/transactions");
         await Assert.That(listB.StatusCode).IsEqualTo(HttpStatusCode.OK);
         JsonNode? jsonB = await JsonNode.ParseAsync(await listB.Content.ReadAsStreamAsync());
@@ -134,7 +141,14 @@ public sealed class BudgetIsolationTests
     {
         HttpResponseMessage response = await client.PostAsJsonAsync("/api/accounts", new
         {
-            name = "Checking",
+            // Sealed, indexed and identified through SealedNarrative rather than sent as the word
+            // "Checking": accounts.name is an AEAD envelope and accounts.name_key a blind index, so a flat
+            // name is a 400 from CreateAccountHandler and this seeding would never reach the subject of
+            // the test. The id is on the body because the client mints it — it is the associated data the
+            // name was sealed against, so this API has to hand back the spelling it was sent.
+            id = Guid.CreateVersion7().ToString("D"),
+            name = SealedNarrative.EncodedName("Checking"),
+            nameKey = SealedNarrative.EncodedIndex("Checking"),
             type = "Checking",
             openingBalance = 0m,
             currencyCode = "USD",

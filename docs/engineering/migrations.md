@@ -1,6 +1,6 @@
 # Migration Invariant
 
-> Read this before touching `Infrastructure/Migrations/`.
+> Read this before touching `Infrastructure/Persistence/Migrations/`.
 
 **Applied migrations are frozen.** The repo used to keep a single baseline it regenerated freely.
 Production's `__EFMigrationsHistory` now references the current migration id, and the deploy pipeline
@@ -24,6 +24,19 @@ because the production database holds no data, and because the schema changes st
 worth landing as one initial migration rather than as a chain of migrations no database ever replays
 step by step.
 
+The baseline is **`20260914230000_InitialCreate`** today, and
+`Migrations_KeepTheBaselineFrozen` pins that exact id.
+
+**The most recent regeneration dropped columns, which is the case this window exists for and not
+merely a case it permits.** `wrapped_account_keys` lost both of its wrapped account-key columns and
+`key_rotations` lost a factor and both of its staged envelopes, so there is no additive migration
+that expresses the change: an `ALTER TABLE … DROP COLUMN` against a populated database destroys the
+rows' contents, and against this one it destroys nothing because there are no rows. Every earlier
+rebaseline collapsed additions; this one removed columns that a database holding data could not have
+given up. That difference is worth carrying, because it is the argument for keeping the window open
+until the schema settles and the argument for closing it the moment the database starts collecting
+anything.
+
 The window makes a regenerated baseline *permitted*, not *free*. The new baseline carries a new id,
 so production's history no longer matches anything the pipeline is about to apply. Whoever
 regenerates the baseline resets that history in the same deploy — `DEPLOYMENT.md`, Step 3, holds
@@ -34,6 +47,11 @@ The window covers the CI job and nothing else. `Migrations_KeepTheBaselineFrozen
 regenerated baseline, by design: the literal id in that test is a checkpoint a human edits
 deliberately, which is precisely what a rebaseline should be. Regenerating the baseline therefore
 means editing that literal too, in the same commit.
+
+`FROZEN_FROM` does **not** move when the baseline is regenerated. It is a lower bound, and every
+file present sorts above the id it names, so the guard already polices all of them; advancing it
+while the window is open would be a second, silent change to what the guard covers. It moves once,
+together with the window closing.
 
 Closing the window is two lines in `migrations-guard`: set `REBASELINE_WINDOW` to `closed` and
 `FROZEN_FROM` to the new baseline's id. That belongs in the commit that lands the last schema change

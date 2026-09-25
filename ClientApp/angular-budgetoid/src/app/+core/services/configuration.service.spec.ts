@@ -17,7 +17,7 @@ const validConfig = {
     google: {
       clientId: 'client-id',
       redirectUri: 'https://app.example.test/callback',
-      scope: 'openid profile email',
+      scope: 'openid email',
     },
   },
 };

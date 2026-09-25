@@ -1,3 +1,4 @@
+using System.Reflection;
 using Domain.Common;
 using Domain.Users;
 
@@ -5,203 +6,69 @@ namespace UnitTests;
 
 public sealed class UserTests
 {
+    /// <summary>
+    /// The account comes back under the identifier it was handed, with the address trimmed.
+    /// </summary>
+    /// <remarks>
+    /// <b>The id is compared against the one passed in, not merely against
+    /// <see cref="Guid.Empty" />.</b> That is what this test gained when the minting factory beside
+    /// <see cref="User.CreateWithId" /> was deleted: while <c>User.Create</c> chose the id itself,
+    /// "not empty" was the strongest thing a caller could say about it. It is now the whole point —
+    /// the identifier is the WebAuthn user handle the authenticator was given when the ceremony
+    /// opened, and a row written under any other value answers no assertion that device will ever
+    /// produce, silently and permanently.
+    /// </remarks>
     [Test]
-    public async Task Create_WithValidInput_ReturnsInitializedUser()
+    public async Task CreateWithId_WithValidInput_ReturnsInitializedUser()
     {
+        // Arrange
+        var id = Guid.CreateVersion7();
         DateTime createdAtUtc = UtcNow();
 
-        User user = User.Create(" google-subject ", " person@example.com ", " Person ", createdAtUtc);
+        // Act
+        User user = User.CreateWithId(id, " person@example.com ", createdAtUtc);
 
-        await Assert.That(user.Id).IsNotEqualTo(Guid.Empty);
-        await Assert.That(user.GoogleSubject).IsEqualTo("google-subject");
+        // Assert
+        await Assert.That(user.Id).IsEqualTo(id);
         await Assert.That(user.Email.Value).IsEqualTo("person@example.com");
-        await Assert.That(user.DisplayName).IsEqualTo("Person");
         await Assert.That(user.CreatedAtUtc).IsEqualTo(createdAtUtc);
     }
 
     [Test]
-    public async Task Create_WithBlankGoogleSubject_ThrowsValidationException()
+    public async Task CreateWithId_WithBlankEmail_ThrowsValidationException()
     {
-        ValidationException exception = ThrowsValidationException(() => User.Create("   ", "person@example.com", null, UtcNow()));
-
-        await Assert.That(exception.Errors.ContainsKey("GoogleSubject")).IsTrue();
-    }
-
-    [Test]
-    public async Task Create_WithBlankEmail_ThrowsValidationException()
-    {
-        ValidationException exception = ThrowsValidationException(() => User.Create("google-subject", "   ", null, UtcNow()));
-
-        await Assert.That(exception.Errors.ContainsKey("Email")).IsTrue();
-    }
-
-    [Test]
-    public async Task Create_WithTheMaximumLengthGoogleSubject_IsAccepted()
-    {
-        // Arrange — Google's documented maximum for the sub claim, which the column is sized to.
-        string googleSubject = new('s', User.MaxGoogleSubjectLength);
-
-        // Act
-        User user = User.Create(googleSubject, "person@example.com", null, UtcNow());
-
-        // Assert
-        await Assert.That(user.GoogleSubject.Length).IsEqualTo(User.MaxGoogleSubjectLength);
-    }
-
-    [Test]
-    public async Task Create_WithAnOverLongGoogleSubject_ThrowsValidationException()
-    {
-        // Arrange
-        string googleSubject = new('s', User.MaxGoogleSubjectLength + 1);
-
-        // Act
-        ValidationException exception = ThrowsValidationException(() =>
-            User.Create(googleSubject, "person@example.com", null, UtcNow()));
-
-        // Assert
-        await Assert.That(exception.Errors.ContainsKey("GoogleSubject")).IsTrue();
-    }
-
-    [Test]
-    public async Task Create_MeasuresGoogleSubjectLengthAfterTrimming()
-    {
-        // Arrange — the trimmed value is what reaches the column, so it is what the bound applies to.
-        string googleSubject = $"   {new string('s', User.MaxGoogleSubjectLength)}   ";
-
-        // Act
-        User user = User.Create(googleSubject, "person@example.com", null, UtcNow());
-
-        // Assert
-        await Assert.That(user.GoogleSubject.Length).IsEqualTo(User.MaxGoogleSubjectLength);
-    }
-
-    [Test]
-    public async Task Create_WithTheMaximumLengthDisplayName_IsAccepted()
-    {
-        // Arrange
-        string displayName = new('d', User.MaxDisplayNameLength);
-
-        // Act
-        User user = User.Create("google-subject", "person@example.com", displayName, UtcNow());
-
-        // Assert
-        await Assert.That(user.DisplayName?.Length).IsEqualTo(User.MaxDisplayNameLength);
-    }
-
-    [Test]
-    public async Task Create_WithAnOverLongDisplayName_ThrowsValidationException()
-    {
-        // Arrange
-        string displayName = new('d', User.MaxDisplayNameLength + 1);
-
-        // Act
-        ValidationException exception = ThrowsValidationException(() =>
-            User.Create("google-subject", "person@example.com", displayName, UtcNow()));
-
-        // Assert
-        await Assert.That(exception.Errors.ContainsKey("DisplayName")).IsTrue();
-    }
-
-    [Test]
-    public async Task Create_MeasuresDisplayNameLengthAfterTrimming()
-    {
-        // Arrange
-        string displayName = $"   {new string('d', User.MaxDisplayNameLength)}   ";
-
-        // Act
-        User user = User.Create("google-subject", "person@example.com", displayName, UtcNow());
-
-        // Assert
-        await Assert.That(user.DisplayName?.Length).IsEqualTo(User.MaxDisplayNameLength);
-    }
-
-    [Test]
-    public async Task Create_WithAWhitespaceOnlyDisplayName_StoresNull()
-    {
-        // Arrange, Act — a missing display name is normal (Google need not supply one) and is not an
-        // error; only an over-long one is.
-        User user = User.Create("google-subject", "person@example.com", "   ", UtcNow());
-
-        // Assert
-        await Assert.That(user.DisplayName).IsNull();
-    }
-
-    [Test]
-    public async Task Create_WithSeveralOverLongFields_ReportsThemAllAtOnce()
-    {
-        // Arrange — Create was restructured to share its profile validation with UpdateProfile; this
-        // is the guard that the restructuring did not turn aggregation into fail-fast.
-        string googleSubject = new('s', User.MaxGoogleSubjectLength + 1);
-        string email = new string('a', Email.MaxLength + 1 - "@example.com".Length) + "@example.com";
-        string displayName = new('d', User.MaxDisplayNameLength + 1);
-
-        // Act
-        ValidationException exception = ThrowsValidationException(() =>
-            User.Create(googleSubject, email, displayName, UtcNow()));
-
-        // Assert
-        await Assert.That(exception.Errors.Keys.ToArray())
-            .IsEquivalentTo(new[] { "GoogleSubject", "Email", "DisplayName" });
-    }
-
-    [Test]
-    public async Task UpdateProfile_RefreshesEmailAndDisplayName()
-    {
-        User user = User.Create("google-subject", "old@example.com", "Old", UtcNow());
-
-        user.UpdateProfile(" new@example.com ", " New ");
-
-        await Assert.That(user.Email.Value).IsEqualTo("new@example.com");
-        await Assert.That(user.DisplayName).IsEqualTo("New");
-    }
-
-    [Test]
-    public async Task UpdateProfile_WithAWhitespaceOnlyDisplayName_ClearsIt()
-    {
-        // Arrange
-        User user = User.Create("google-subject", "old@example.com", "Old", UtcNow());
-
-        // Act
-        user.UpdateProfile("new@example.com", "   ");
-
-        // Assert
-        await Assert.That(user.DisplayName).IsNull();
-    }
-
-    [Test]
-    public async Task UpdateProfile_WithAnOverLongDisplayName_ThrowsAndLeavesTheEntityUntouched()
-    {
-        // Arrange — a returning user cannot bypass a bound a new user is held to, and the rejection
-        // must not half-apply: the email here is valid and new, so an assign-then-validate order
-        // would leave the entity holding it.
-        User user = User.Create("google-subject", "old@example.com", "Old", UtcNow());
-        string displayName = new('d', User.MaxDisplayNameLength + 1);
-
-        // Act
-        ValidationException exception = ThrowsValidationException(() =>
-            user.UpdateProfile("new@example.com", displayName));
-
-        // Assert — the handler's old-vs-new change detection reads these two properties, so a
-        // half-updated entity would be persisted as a refresh that was never accepted.
-        await Assert.That(exception.Errors.ContainsKey("DisplayName")).IsTrue();
-        await Assert.That(user.Email.Value).IsEqualTo("old@example.com");
-        await Assert.That(user.DisplayName).IsEqualTo("Old");
-    }
-
-    [Test]
-    public async Task UpdateProfile_WithAnOverLongEmail_ThrowsAndLeavesTheEntityUntouched()
-    {
-        // Arrange
-        User user = User.Create("google-subject", "old@example.com", "Old", UtcNow());
-        string email = new string('a', Email.MaxLength + 1 - "@example.com".Length) + "@example.com";
-
-        // Act
-        ValidationException exception = ThrowsValidationException(() => user.UpdateProfile(email, "New"));
+        // Arrange, Act
+        ValidationException exception = ThrowsValidationException(
+            () => User.CreateWithId(Guid.CreateVersion7(), "   ", UtcNow()));
 
         // Assert
         await Assert.That(exception.Errors.ContainsKey("Email")).IsTrue();
-        await Assert.That(user.Email.Value).IsEqualTo("old@example.com");
-        await Assert.That(user.DisplayName).IsEqualTo("Old");
+    }
+
+    [Test]
+    public async Task User_PinsEveryPublicInstanceProperty()
+    {
+        // Arrange
+        PropertyInfo[] properties = typeof(User).GetProperties(
+            BindingFlags.Public | BindingFlags.Instance);
+
+        // Act
+        string[] names = properties
+            .Select(property => property.Name)
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToArray();
+
+        // Assert — an account row is an internal identifier, an email address and a creation
+        // timestamp, and nothing else. Everything an identity provider says about a person is read
+        // to answer who is asking and then dropped, so a DisplayName, a picture URL or a locale
+        // reappearing here is the rule breaking rather than a field being added. Joined into one
+        // string so a failure names the offender instead of reporting a count.
+        string[] expected = ["CreatedAtUtc", "Email", "Id"];
+        await Assert.That(string.Join(", ", names)).IsEqualTo(string.Join(", ", expected));
+
+        // Without this, a reflection query that silently returned nothing would pass the assertion
+        // above while proving nothing at all.
+        await Assert.That(properties.Length).IsGreaterThan(0);
     }
 
     private static DateTime UtcNow() => new(2026, 6, 12, 13, 14, 15, DateTimeKind.Utc);

@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json.Nodes;
+using TestSupport;
 
 namespace IntegrationTests;
 
@@ -19,8 +20,14 @@ public sealed class ResourceByIdIntegrationTests
     {
         // Arrange — one of each resource whose creation returns a Location. There are exactly four.
         await using PostgresTestHost host = await StartApiHostAsync();
-        HttpClient client = host.Factory.CreateAuthenticatedClient();
-        HttpResponseMessage createGroup = await CreateCategoryGroupAsync(client, "Essentials");
+        (HttpClient client, _, _) = await host.Factory.CreateSignedInClientAsync();
+        // "Sinking Funds" AND NOT "Essentials", and the label is chosen rather than picked. Two members
+        // below are assertions about an ENCODED response — group.name and category.categoryGroupName —
+        // and Name("Essentials") is 39 bytes that spell identically under padded standard base64 and
+        // unpadded base64url, so both would have been green whichever encoder the read services reached
+        // for. SealedNarrative.EncodedName carries the measurement and the list of the four such labels
+        // in this suite. This one's 42-byte envelope carries a 62/63 byte, so the two alphabets differ.
+        HttpResponseMessage createGroup = await CreateCategoryGroupAsync(client, "Sinking Funds");
         Guid categoryGroupId = await ReadIdAsync(createGroup);
         HttpResponseMessage createCategory =
             await CreateCategoryAsync(client, categoryGroupId, "Groceries");
@@ -52,19 +59,46 @@ public sealed class ResourceByIdIntegrationTests
         await Assert.That(getGroup.StatusCode).IsEqualTo(HttpStatusCode.OK);
         JsonNode group = await ReadJsonAsync(getGroup);
         await Assert.That(group["id"]!.GetValue<Guid>()).IsEqualTo(categoryGroupId);
-        await Assert.That(group["name"]!.GetValue<string>()).IsEqualTo("Essentials");
+        // The ENVELOPE, not the word, on the account's terms one table over: category_groups.name is
+        // sealed, so "Sinking Funds" is in no payload this API can produce. The check does two jobs now
+        // — the envelope is deterministic in its label, so it says the row that came back is the row
+        // this test created, AND the label is one the two base64 alphabets disagree about, so it also
+        // says CategoryGroupReadService encoded it as base64url. Dropping it would let a 200 carrying
+        // somebody else's group pass.
+        await Assert.That(group["name"]!.GetValue<string>())
+            .IsEqualTo(SealedNarrative.EncodedName("Sinking Funds"));
 
         await Assert.That(getCategory.StatusCode).IsEqualTo(HttpStatusCode.OK);
         JsonNode category = await ReadJsonAsync(getCategory);
         await Assert.That(category["id"]!.GetValue<Guid>()).IsEqualTo(categoryId);
-        await Assert.That(category["name"]!.GetValue<string>()).IsEqualTo("Groceries");
         await Assert.That(category["categoryGroupId"]!.GetValue<Guid>()).IsEqualTo(categoryGroupId);
-        await Assert.That(category["categoryGroupName"]!.GetValue<string>()).IsEqualTo("Essentials");
+
+        // ONE RECORD, TWO KINDS OF NAME, AND THE PAIR IS THE POINT. CategoryDto carries the category's
+        // own name as text and the GROUP's name as an envelope, because categories.name is not sealed
+        // yet and category_groups.name is. That mixed state lasts one slice; until it ends, these two
+        // lines sitting beside each other are what stops somebody "correcting" either into the other's
+        // shape. The envelope member is bound to the GROUP's row id, which is already on the wire above.
+        //
+        // This line is also the ONE place CategoryReadService's encoding of categoryGroupName is
+        // observable outside CategoryIntegrationTests, which is why the label had to stop being blind:
+        // the two sites are a different projection over a different query and either could re-encode
+        // with the other still green.
+        await Assert.That(category["name"]!.GetValue<string>())
+            .IsEqualTo(SealedNarrative.EncodedName("Groceries"));
+        await Assert.That(category["categoryGroupName"]!.GetValue<string>())
+            .IsEqualTo(SealedNarrative.EncodedName("Sinking Funds"));
 
         await Assert.That(getAccount.StatusCode).IsEqualTo(HttpStatusCode.OK);
         JsonNode account = await ReadJsonAsync(getAccount);
         await Assert.That(account["id"]!.GetValue<Guid>()).IsEqualTo(accountId);
-        await Assert.That(account["name"]!.GetValue<string>()).IsEqualTo("Checking");
+        // The ENVELOPE, not the word, and the assertion still does its job. This case is about a
+        // Location header pointing at a route that really answers, so what it needs from the body is
+        // that the row it got back is the row it created; the envelope is deterministic in its label,
+        // so it says exactly that. accounts.name is sealed, so the word "Checking" is in no payload
+        // this API can produce — and dropping the check instead would leave a 200 from a route that
+        // answered with somebody else's account passing.
+        await Assert.That(account["name"]!.GetValue<string>())
+            .IsEqualTo(SealedNarrative.EncodedName("Checking"));
         await Assert.That(account["currencyCode"]!.GetValue<string>()).IsEqualTo("USD");
         await Assert.That(account["currencyName"]!.GetValue<string>()).IsEqualTo("US Dollar");
         await Assert.That(account["currencySymbol"]!.GetValue<string>()).IsEqualTo("$");
@@ -75,7 +109,8 @@ public sealed class ResourceByIdIntegrationTests
         await Assert.That(transaction["amount"]!.GetValue<decimal>()).IsEqualTo(-42.50m);
         await Assert.That(transaction["date"]!.GetValue<string>()).IsEqualTo("2026-06-12");
         await Assert.That(transaction["accountId"]!.GetValue<Guid>()).IsEqualTo(accountId);
-        await Assert.That(transaction["accountName"]!.GetValue<string>()).IsEqualTo("Checking");
+        await Assert.That(transaction["accountName"]!.GetValue<string>())
+            .IsEqualTo(SealedNarrative.EncodedName("Checking"));
 
         await Assert.That(unknownGroup.StatusCode).IsEqualTo(HttpStatusCode.NotFound);
         await Assert.That(unknownCategory.StatusCode).IsEqualTo(HttpStatusCode.NotFound);
@@ -87,12 +122,12 @@ public sealed class ResourceByIdIntegrationTests
     public async Task AccountById_IsHiddenFromAnotherBudgetButVisibleToItsOwner()
     {
         // Arrange
-        await using PostgresTestHost host = new();
+        await using PostgresTestHost host = new(usesApplicationAuthentication: true);
         await host.StartAsync();
         await using ApiFactory factoryA = host.CreateFactory("google-a");
         await using ApiFactory factoryB = host.CreateFactory("google-b");
-        HttpClient clientA = factoryA.CreateAuthenticatedClient();
-        HttpClient clientB = factoryB.CreateAuthenticatedClient();
+        (HttpClient clientA, _, _) = await factoryA.CreateSignedInClientAsync();
+        (HttpClient clientB, _, _) = await factoryB.CreateSignedInClientAsync();
         HttpResponseMessage create = await CreateAccountAsync(clientA, "Checking A");
         Guid accountId = await ReadIdAsync(create);
 
@@ -116,12 +151,12 @@ public sealed class ResourceByIdIntegrationTests
     public async Task TransactionById_IsHiddenFromAnotherBudgetButVisibleToItsOwner()
     {
         // Arrange
-        await using PostgresTestHost host = new();
+        await using PostgresTestHost host = new(usesApplicationAuthentication: true);
         await host.StartAsync();
         await using ApiFactory factoryA = host.CreateFactory("google-a");
         await using ApiFactory factoryB = host.CreateFactory("google-b");
-        HttpClient clientA = factoryA.CreateAuthenticatedClient();
-        HttpClient clientB = factoryB.CreateAuthenticatedClient();
+        (HttpClient clientA, _, _) = await factoryA.CreateSignedInClientAsync();
+        (HttpClient clientB, _, _) = await factoryB.CreateSignedInClientAsync();
         Guid accountId = await ReadIdAsync(await CreateAccountAsync(clientA, "Checking A"));
         HttpResponseMessage create = await CreateTransactionAsync(clientA, accountId);
         Guid transactionId = await ReadIdAsync(create);
@@ -139,13 +174,26 @@ public sealed class ResourceByIdIntegrationTests
         await Assert.That(owner.StatusCode).IsEqualTo(HttpStatusCode.OK);
     }
 
+    /// <summary>
+    /// Creates one category group from <paramref name="label" /> and returns the whole response, whose
+    /// <c>Location</c> header is what the caller is here to read.
+    /// </summary>
+    /// <remarks>
+    /// <b>The parameter is a LABEL, not a name</b> — category_groups.name is an AEAD envelope and
+    /// category_groups.name_key a blind index, so a flat string is a 400 and the Location header this
+    /// helper exists to produce would never be written. The response, not the id, is returned because
+    /// the caller's subject is the header; the body's id and the minted id agree, and asserting that
+    /// belongs to the create route's own cases rather than to this seeding.
+    /// </remarks>
     private static async Task<HttpResponseMessage> CreateCategoryGroupAsync(
         HttpClient client,
-        string name)
+        string label)
     {
         HttpResponseMessage response = await client.PostAsJsonAsync("/api/category-groups", new
         {
-            name,
+            id = Guid.CreateVersion7().ToString("D"),
+            name = SealedNarrative.EncodedName(label),
+            nameKey = SealedNarrative.EncodedIndex(label),
             description = (string?)null,
         });
         response.EnsureSuccessStatusCode();
@@ -155,11 +203,15 @@ public sealed class ResourceByIdIntegrationTests
     private static async Task<HttpResponseMessage> CreateCategoryAsync(
         HttpClient client,
         Guid categoryGroupId,
-        string name)
+        string label)
     {
+        // The id is minted here and sent, because the route requires one: it is the associated data both
+        // narrative members were sealed against. The label is not the name and is never read back as one.
         HttpResponseMessage response = await client.PostAsJsonAsync("/api/categories", new
         {
-            name,
+            id = Guid.CreateVersion7().ToString("D"),
+            name = SealedNarrative.EncodedName(label),
+            nameKey = SealedNarrative.EncodedIndex(label),
             description = (string?)null,
             categoryGroupId,
         });
@@ -167,11 +219,24 @@ public sealed class ResourceByIdIntegrationTests
         return response;
     }
 
-    private static async Task<HttpResponseMessage> CreateAccountAsync(HttpClient client, string name)
+    /// <summary>
+    /// Creates one account, taking <paramref name="label" /> as the text both halves of the name are
+    /// built from rather than as a value any column holds.
+    /// </summary>
+    /// <remarks>
+    /// The parameter kept its job and changed its meaning, which is why it was renamed: callers pass it
+    /// to keep two seeded accounts apart, and it still does that, because SealedNarrative is
+    /// deterministic in its label. What no longer happens is the words reaching the database — the
+    /// envelope and the blind index are what travel, and a flat name is a 400 before any case here
+    /// begins.
+    /// </remarks>
+    private static async Task<HttpResponseMessage> CreateAccountAsync(HttpClient client, string label)
     {
         HttpResponseMessage response = await client.PostAsJsonAsync("/api/accounts", new
         {
-            name,
+            id = Guid.CreateVersion7().ToString("D"),
+            name = SealedNarrative.EncodedName(label),
+            nameKey = SealedNarrative.EncodedIndex(label),
             type = "Checking",
             openingBalance = 100m,
             currencyCode = "USD",
@@ -186,10 +251,11 @@ public sealed class ResourceByIdIntegrationTests
     {
         HttpResponseMessage response = await client.PostAsJsonAsync("/api/transactions", new
         {
+            id = Guid.CreateVersion7().ToString("D"),
             amount = -42.50m,
             date = "2026-06-12",
             accountId,
-            description = "Groceries",
+            description = SealedNarrative.EncodedDescription("Groceries"),
         });
         response.EnsureSuccessStatusCode();
         return response;
@@ -204,9 +270,13 @@ public sealed class ResourceByIdIntegrationTests
     private static async Task<JsonNode> ReadJsonAsync(HttpResponseMessage response) =>
         (await JsonNode.ParseAsync(await response.Content.ReadAsStreamAsync()))!;
 
+    /// <summary>
+    /// A host whose factory leaves the application's own authentication standing, because every request
+    /// in this file authenticates from a session cookie rather than from a provider bearer.
+    /// </summary>
     private static async Task<PostgresTestHost> StartApiHostAsync()
     {
-        PostgresTestHost host = new();
+        PostgresTestHost host = new(usesApplicationAuthentication: true);
         await host.StartAsync();
         return host;
     }

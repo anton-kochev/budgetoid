@@ -22,8 +22,37 @@ traps); this chapter is what the system adds and what every component must satis
 - Every interactive element shows `2px solid var(--bud-focus-ring)` with
   `outline-offset: 2px` on `:focus-visible`. The token is theme-aware (deep green on
   light, mint on dark) so the ring always clears 3:1 against paper.
+- **No button shows that ring unless `src/styles.scss` puts it there.** Material sets
+  `outline: none` on `.mdc-button`, so until the global block landed no button in the
+  application drew one at all. It is a single `:focus-visible` block naming every
+  interactive selector, written globally rather than per component so it reaches
+  Material's buttons, the hand-rolled ones, and anything a later screen adds.
+  - **Element selectors, not `:where()`.** The rule has to out-specify
+    `.mdc-button { outline: none }` at (0,1,0), and `:where()` contributes zero
+    specificity — so the tidier selector ships a ring that loses the cascade and looks
+    like the rule was never written.
+  - `mat.strong-focus-indicators()` is not included and is not the answer: it draws an
+    inset border on a pseudo-element and has no offset option, so it cannot express the
+    `outline-offset: 2px` above.
+- **`src/focus-ring.spec.ts` proves the rule *ships*, not that it wins.** It reads the
+  emitted production stylesheet and requires one rule carrying both the token and
+  `outline-offset` — both, because a `:focus-visible` selector naming only the token draws
+  a ring flush against the control, where it reads as a border. It reads `.css` only:
+  component styles are inlined into the JavaScript chunks, so a ring written in one
+  component's stylesheet would otherwise satisfy, on its own, a rule about every
+  interactive element in the application. What it cannot see is specificity, source order
+  and contrast — those belong to the keyboard walkthrough below, which no automated check
+  replaces. It needs a build first; see
+  [frontend testing](../engineering/frontend-testing.md).
 - Fields signal focus through their 2px primary border instead of an outer ring; that
   border must remain the only exception.
+- **A checkbox is not a second exception, it is the rule applied to the right element.**
+  Material renders the real `<input type="checkbox">` at `opacity: 0`, stretched over the
+  visible box, so the global `:focus-visible` ring is painted on something nobody can
+  see — the control looks unfocused while being focused. The ring moves to the visible
+  box with `:has(:focus-visible)`, at the same 2px and the same offset. It is the same
+  ring in the same place to a sighted keyboard user; what changes is which node draws it.
+  The same will be true of any control Material builds this way.
 - Focus is never hidden, never `outline: none` without replacement, and never trapped
   outside overlays. Dialogs and sheets trap focus while open and restore it on close
   (Material behavior — do not disable it).
@@ -63,9 +92,23 @@ Figures are visually compressed; their accessible names are not.
 - Form fields always have programmatic labels; errors bind via `aria-describedby` and
   announce on submit.
 - Snackbar confirmations announce politely (`aria-live="polite"`); nothing uses
-  `assertive` except a failed save of user-entered data.
+  `assertive` except a failed save of user-entered data — and that carve-out is for a
+  save whose failure lands **after attention has moved on**, out of sight of the press
+  that started it. A write refused in front of the person is answered `status`: the
+  press is a second old, the form is still on screen holding what was typed, and the
+  region sits in reading order where they are already pointed, so interrupting buys
+  nothing ([components](components.md), *A write that does not happen*). Spending the
+  carve-out also costs a second live region — politeness is a property of the node, so
+  raising a screen's one region to `alert` raises its loading line and its notices with
+  it.
 - The kinetic sentence on Welcome is `aria-live="off"` — decorative narrative, not an
   announcement stream; its static reduced-motion rendering is the accessible baseline.
+- **Secrets are content, not announcements.** The ten recovery codes are a semantic list
+  in reading order and never inside a live region. A `role="status"` holding a list
+  narrates every entry as an event and puts ten secrets into a speech buffer, which buys
+  nothing a reader could not get by reading — the list role already announces the count,
+  and the download is the route that does not require hearing any of them. Only the
+  one-sentence outcomes of the save and copy controls go in the region.
 
 ## Language
 

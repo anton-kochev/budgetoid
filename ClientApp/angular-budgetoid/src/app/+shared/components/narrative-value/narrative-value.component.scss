@@ -1,0 +1,23 @@
+// The value sits inside somebody else's line — a row, a cell, a heading — so the
+// host is inline and inherits the type of whatever it lands in. It sets no size,
+// weight or family of its own: the value is the surrounding text, not a widget
+// pasted into it.
+:host {
+  display: inline;
+}
+
+// Nothing of its own. The opened value is ordinary text and the moment this
+// block acquires a colour or a weight, a name renders differently here from the
+// same name rendered anywhere else.
+.nv-text {
+  display: inline;
+}
+
+// Both dashes, in one rule, because both dashes are one element. Muted rather
+// than accented: it is the absence of a value and not a state anybody has to
+// act on from here. Colour is never the message — with every accent removed
+// the two are still told apart, by their accessible names.
+.nv-marker {
+  display: inline;
+  color: var(--bud-text-muted);
+}

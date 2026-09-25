@@ -1,0 +1,2614 @@
+using System.Net;
+using System.Net.Http.Json;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json.Nodes;
+using Api.Infrastructure;
+using Application.Passkeys;
+using Domain.Users;
+using Npgsql;
+using TestSupport;
+
+namespace IntegrationTests;
+
+/// <summary>
+/// Drives both WebAuthn ceremonies over real HTTP with a real authenticator.
+/// </summary>
+/// <remarks>
+/// The unit suite already proves the verifier reads the wire format the way the specification
+/// describes it. What only a request can show is the rest of the exchange: that the anonymous legs are
+/// reachable without a token, that a challenge is spent exactly once whichever way the attempt ends,
+/// that every refusal leaves byte-identical, and that a verified assertion writes one session for the
+/// account the passkey belongs to and for nobody else.
+/// </remarks>
+public sealed class PasskeyCeremonyTests
+{
+    [Test]
+    public async Task Registration_ThenAssertion_EstablishesOneFullSessionForThatAccount()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        ApiFactory.SignedInClient owner = await factory.CreateSignedInClientAsync(
+            OwnerSubject, OwnerEmail, opensWith: CredentialType.RecoveryCodes);
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await RegisterAsync(owner.Client, authenticator);
+
+        // Every session standing before the act, so what is counted afterwards is what this sign-in
+        // opened rather than what the arrangement was handed.
+        IReadOnlyList<SessionRow> before = await ReadSessionsAsync(host);
+
+        // Act — the two anonymous legs, on a client carrying no credential at all, which is the state a
+        // sign-in actually arrives in.
+        HttpClient anonymous = factory.CreateClient();
+        AssertionResult assertion = await BuildAssertionAsync(anonymous, authenticator, owner.UserId);
+        HttpResponseMessage response = await PostAssertionAsync(anonymous, assertion);
+        JsonNode body = await ReadJsonAsync(response);
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        await Assert.That(body["kind"]!.GetValue<string>()).IsEqualTo("full");
+
+        // Read through the seeding connection, because the response deliberately carries no session
+        // id: the row is the only place the established session is observable at all.
+        Guid credentialId = await FindPasskeyCredentialIdAsync(host, authenticator.CredentialId);
+        IReadOnlyList<SessionRow> opened = await SessionsOpenedSinceAsync(host, before);
+        await Assert.That(opened.Count).IsEqualTo(1);
+        await Assert.That(opened[0].UserId).IsEqualTo(owner.UserId);
+        await Assert.That(opened[0].CredentialId).IsEqualTo(credentialId);
+        await Assert.That(opened[0].Kind).IsEqualTo("full");
+    }
+
+    [Test]
+    public async Task Assertion_ForACredentialThatWasNeverRegistered_Returns401AndEstablishesNoSession()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateApiFactory(host);
+        await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
+        HttpClient anonymous = factory.CreateClient();
+        SyntheticAuthenticator stranger = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+
+        // Act
+        AssertionResult assertion = await BuildAssertionAsync(anonymous, stranger, userId: null);
+        HttpResponseMessage response = await PostAssertionAsync(anonymous, assertion);
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
+        await Assert.That(await ReadTitleAsync(response)).IsEqualTo(PasskeyVerificationExceptionHandler.Title);
+        await Assert.That((await ReadSessionsAsync(host)).Count).IsEqualTo(0);
+    }
+
+    /// <summary>
+    /// Every refusal the sign-in leg can reach, driven end to end and compared whole — status and
+    /// body together, not the body alone.
+    /// </summary>
+    /// <remarks>
+    /// A refusal that named its cause would be a credential-enumeration oracle: "no such credential"
+    /// told apart from "wrong signature" is how a caller discovers which handles are registered without
+    /// ever holding one, and a status code that varied would tell them the same thing without a single
+    /// byte of the body changing. Two reasons compared against each other prove only that those two
+    /// agree, so this drives all of them and asserts they collapse to one value; that is what makes it
+    /// the test a newly added refusal has to pass rather than one it can quietly sit beside.
+    /// </remarks>
+    [Test]
+    public async Task EveryReachableAssertionRefusal_ProducesTheIdenticalResponse()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        ApiFactory.SignedInClient owner = await factory.CreateSignedInClientAsync(
+            OwnerSubject, OwnerEmail, opensWith: CredentialType.RecoveryCodes);
+        RepositoryTestHost.SeededOwner bystander = await host.SeedOwnerAsync(OtherSubject, OtherEmail);
+        SyntheticAuthenticator registered = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await host.SeedPasskeyAsync(owner.UserId, registered.CredentialId, registered.CoseKey, registered.Algorithm);
+
+        // A second passkey on the same account, standing at ten, because a counter regression is only
+        // reachable against a stored value an assertion can report below.
+        SyntheticAuthenticator counted = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await host.SeedPasskeyAsync(
+            owner.UserId,
+            counted.CredentialId,
+            counted.CoseKey,
+            counted.Algorithm,
+            signatureCounter: SeededCounter);
+        SyntheticAuthenticator unknown = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        HttpClient anonymous = factory.CreateClient();
+        HttpClient authenticated = owner.Client;
+        byte[] ownerHandle = PasskeyEncoding.ToUserHandle(owner.UserId);
+
+        // Every session standing before the act, so the count below is what these refusals opened
+        // rather than what the arrangement was handed.
+        IReadOnlyList<SessionRow> before = await ReadSessionsAsync(host);
+
+        // Act
+        List<(string Reason, HttpResponseMessage Response)> refusals = [];
+
+        AssertionResult stranger = await BuildAssertionAsync(anonymous, unknown, userId: null);
+        refusals.Add(("unknown credential", await PostAssertionAsync(anonymous, stranger)));
+
+        // One challenge answered twice: the tampered attempt burns it, so the second post is a
+        // faultless response refused for nothing but the nonce already being spent.
+        byte[] spentChallenge = await BeginCeremonyAsync(anonymous, AssertionOptionsPath);
+        AssertionResult answered = registered.Authenticate(spentChallenge, ApiFactory.PasskeyOrigin, ownerHandle);
+        refusals.Add(("invalid signature", await PostAssertionAsync(anonymous, WithFlippedSignature(answered))));
+        refusals.Add(("consumed challenge", await PostAssertionAsync(anonymous, answered)));
+
+        byte[] originChallenge = await BeginCeremonyAsync(anonymous, AssertionOptionsPath);
+        AssertionResult elsewhere = registered.Authenticate(originChallenge, LookalikeOrigin, ownerHandle);
+        refusals.Add(("untrusted origin", await PostAssertionAsync(anonymous, elsewhere)));
+
+        byte[] counterChallenge = await BeginCeremonyAsync(anonymous, AssertionOptionsPath);
+        AssertionResult wentBackwards = counted.Authenticate(
+            counterChallenge,
+            ApiFactory.PasskeyOrigin,
+            ownerHandle,
+            signCount: RegressedCounter);
+        refusals.Add(("counter regression", await PostAssertionAsync(anonymous, wentBackwards)));
+
+        byte[] handleChallenge = await BeginCeremonyAsync(anonymous, AssertionOptionsPath);
+        AssertionResult wrongAccount = registered.Authenticate(
+            handleChallenge,
+            ApiFactory.PasskeyOrigin,
+            PasskeyEncoding.ToUserHandle(bystander.UserId));
+        refusals.Add(("mismatched user handle", await PostAssertionAsync(anonymous, wrongAccount)));
+
+        // A registration nonce, issued to the signed-in account on the authenticated leg and spent on
+        // the anonymous one.
+        byte[] registrationChallenge = await BeginCeremonyAsync(authenticated, RegistrationOptionsPath);
+        AssertionResult wrongCeremony = registered.Authenticate(
+            registrationChallenge,
+            ApiFactory.PasskeyOrigin,
+            ownerHandle);
+        refusals.Add(("wrong ceremony type", await PostAssertionAsync(anonymous, wrongCeremony)));
+
+        // Every payload ceiling, one entry each. An oversized member is the cheapest oracle of the
+        // lot — reachable without a credential handle, a signature, or a challenge — so an early
+        // exit that answered differently would be the one worth attacking. Each member is driven on
+        // its own so a ceiling that stopped being applied is one failing entry rather than a gap
+        // some other member's ceiling covers up.
+        //
+        // Every entry answers a live challenge, and that is not decoration. Four of the five members
+        // are decoded before clientDataJSON is parsed, so a nonce nobody issued would do for them;
+        // the user handle is not read until the credential has been found, well past the point the
+        // nonce is consumed, so an entry for it against a dead challenge would be refused for the
+        // challenge and never reach the ceiling at all. One challenge per member rather than one
+        // shared: the handle entry spends the one it answers, and the entries are driven in whatever
+        // order the enum lists them.
+        foreach (AssertionMember member in Enum.GetValues<AssertionMember>())
+        {
+            byte[] ceilingChallenge = await BeginCeremonyAsync(anonymous, AssertionOptionsPath);
+            AssertionResult oversized = registered.Authenticate(
+                ceilingChallenge,
+                ApiFactory.PasskeyOrigin,
+                ownerHandle);
+            refusals.Add((
+                $"oversized {member}",
+                await PostAssertionAsync(anonymous, oversized, member, CeilingFor(member) * 2)));
+        }
+
+        List<(string Reason, string Response)> observed = [];
+        foreach ((string reason, HttpResponseMessage response) in refusals)
+        {
+            observed.Add((reason, $"{(int)response.StatusCode} {await ReadComparableBodyAsync(response)}"));
+        }
+
+        // Assert — each refusal against the first, with its own name on both sides of the comparison so
+        // a failure says which one drifted rather than only that something did.
+        string first = observed[0].Response;
+        foreach ((string reason, string response) in observed)
+        {
+            await Assert.That($"{reason} => {response}").IsEqualTo($"{reason} => {first}");
+        }
+
+        // The count, so that deleting a refusal from the list above is a failure rather than a shorter
+        // and still perfectly green test.
+        await Assert.That(observed.Count).IsEqualTo(ReachableAssertionRefusals);
+        await Assert.That(observed.Select(entry => entry.Response).Distinct().Count()).IsEqualTo(1);
+        await Assert.That(refusals[0].Response.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
+        await Assert.That(first.Contains(PasskeyVerificationExceptionHandler.Title, StringComparison.Ordinal))
+            .IsTrue();
+        await Assert.That((await SessionsOpenedSinceAsync(host, before)).Count).IsEqualTo(0);
+    }
+
+    /// <summary>
+    /// A response assembled from two ceremonies: a genuine signature by a registered authenticator,
+    /// carrying the user handle of a different account. Nothing but the handle check refuses it.
+    /// </summary>
+    [Test]
+    public async Task Assertion_WhoseUserHandleNamesAnotherAccount_Returns401AndEstablishesNoSession()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateApiFactory(host);
+        RepositoryTestHost.SeededOwner owner = await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
+        RepositoryTestHost.SeededOwner bystander = await host.SeedOwnerAsync(OtherSubject, OtherEmail);
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await host.SeedPasskeyAsync(owner.UserId, authenticator.CredentialId, authenticator.CoseKey, authenticator.Algorithm);
+        HttpClient anonymous = factory.CreateClient();
+
+        // Act
+        AssertionResult assertion = await BuildAssertionAsync(anonymous, authenticator, bystander.UserId);
+        HttpResponseMessage response = await PostAssertionAsync(anonymous, assertion);
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
+        await Assert.That(await ReadTitleAsync(response)).IsEqualTo(PasskeyVerificationExceptionHandler.Title);
+        await Assert.That((await ReadSessionsAsync(host)).Count).IsEqualTo(0);
+    }
+
+    /// <summary>
+    /// The other half of the handle rule: absent is tolerated. A conforming authenticator may omit the
+    /// handle, and it proves nothing the signature has not already proved — so a check written as
+    /// "the handle must name the account" rather than "a handle that is there must" would lock out
+    /// every device that omits it.
+    /// </summary>
+    [Test]
+    public async Task Assertion_WithNoUserHandle_EstablishesTheSessionForTheCredentialsOwner()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateApiFactory(host);
+        RepositoryTestHost.SeededOwner owner = await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await host.SeedPasskeyAsync(owner.UserId, authenticator.CredentialId, authenticator.CoseKey, authenticator.Algorithm);
+        HttpClient anonymous = factory.CreateClient();
+
+        // Act — userId: null is what leaves the handle off the response entirely.
+        AssertionResult assertion = await BuildAssertionAsync(anonymous, authenticator, userId: null);
+        HttpResponseMessage response = await PostAssertionAsync(anonymous, assertion);
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        IReadOnlyList<SessionRow> sessions = await ReadSessionsAsync(host);
+        await Assert.That(sessions.Count).IsEqualTo(1);
+        await Assert.That(sessions[0].UserId).IsEqualTo(owner.UserId);
+    }
+
+    /// <summary>
+    /// The two nonce pools are kept apart by the ceremony a challenge was issued for, and by nothing
+    /// else: the store looks a challenge up by its bytes alone. A signed-in caller who took a
+    /// registration nonce off the authenticated leg would otherwise be able to spend it here.
+    /// </summary>
+    [Test]
+    public async Task Assertion_BuiltOnARegistrationChallenge_Returns401AndEstablishesNoSession()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        ApiFactory.SignedInClient owner = await factory.CreateSignedInClientAsync(
+            OwnerSubject, OwnerEmail, opensWith: CredentialType.RecoveryCodes);
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await host.SeedPasskeyAsync(owner.UserId, authenticator.CredentialId, authenticator.CoseKey, authenticator.Algorithm);
+        HttpClient anonymous = factory.CreateClient();
+
+        // Every session standing before the act, so the count below is what this attempt opened rather
+        // than what the arrangement was handed.
+        IReadOnlyList<SessionRow> before = await ReadSessionsAsync(host);
+
+        // Act — a live, unspent challenge in every respect except the ceremony it was issued for.
+        byte[] registrationChallenge = await BeginCeremonyAsync(owner.Client, RegistrationOptionsPath);
+        AssertionResult assertion = authenticator.Authenticate(
+            registrationChallenge,
+            ApiFactory.PasskeyOrigin,
+            PasskeyEncoding.ToUserHandle(owner.UserId));
+        HttpResponseMessage response = await PostAssertionAsync(anonymous, assertion);
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
+        await Assert.That(await ReadTitleAsync(response)).IsEqualTo(PasskeyVerificationExceptionHandler.Title);
+        await Assert.That((await SessionsOpenedSinceAsync(host, before)).Count).IsEqualTo(0);
+    }
+
+    /// <summary>
+    /// The mirror: an authentication nonce spent on the registration leg. Cheap, and it says the rule
+    /// is a two-way one rather than a single guard on the sign-in side.
+    /// </summary>
+    [Test]
+    public async Task Registration_BuiltOnAnAssertionChallenge_IsRefused()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        HttpClient authenticated = await SignedInOverRecoveryCodesAsync(factory);
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+
+        // Act
+        byte[] assertionChallenge = await BeginCeremonyAsync(factory.CreateClient(), AssertionOptionsPath);
+        AttestationResult attestation = authenticator.Register(assertionChallenge, ApiFactory.PasskeyOrigin);
+        HttpResponseMessage response = await PostRegistrationAsync(authenticated, attestation);
+
+        // Assert — the registration leg is authenticated throughout, so it may say what was wrong, and
+        // a refused response leaves nothing filed.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(await CountPasskeyPublicKeysAsync(host)).IsEqualTo(0L);
+    }
+
+    /// <summary>
+    /// The third pool, spent on the sign-in leg. A re-authentication nonce authorizes account
+    /// destruction, so one that could also open a session would let a person talked through one
+    /// erasure prompt be signed in instead — and, worse, the reverse door is what this file's
+    /// companion test on the erasure side closes.
+    /// </summary>
+    /// <remarks>
+    /// This completes as a 3×3 what the two tests above keep as a 2×2. Without it the new ceremony is
+    /// a one-way guard: erasure refuses the older pools while the older legs accept the new one.
+    /// </remarks>
+    [Test]
+    public async Task Assertion_BuiltOnAReauthenticationChallenge_Returns401AndEstablishesNoSession()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        ApiFactory.SignedInClient owner = await factory.CreateSignedInClientAsync(
+            OwnerSubject, OwnerEmail, opensWith: CredentialType.RecoveryCodes);
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await host.SeedPasskeyAsync(owner.UserId, authenticator.CredentialId, authenticator.CoseKey, authenticator.Algorithm);
+        HttpClient anonymous = factory.CreateClient();
+
+        // Every session standing before the act, so the count below is what this attempt opened rather
+        // than what the arrangement was handed.
+        IReadOnlyList<SessionRow> before = await ReadSessionsAsync(host);
+
+        // Act — a live, unspent challenge in every respect except the ceremony it was issued for.
+        byte[] reauthenticationChallenge = await BeginCeremonyAsync(owner.Client, ReauthenticationOptionsPath);
+        AssertionResult assertion = authenticator.Authenticate(
+            reauthenticationChallenge,
+            ApiFactory.PasskeyOrigin,
+            PasskeyEncoding.ToUserHandle(owner.UserId));
+        HttpResponseMessage response = await PostAssertionAsync(anonymous, assertion);
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
+        await Assert.That(await ReadTitleAsync(response)).IsEqualTo(PasskeyVerificationExceptionHandler.Title);
+        await Assert.That((await SessionsOpenedSinceAsync(host, before)).Count).IsEqualTo(0);
+    }
+
+    /// <summary>
+    /// The last cell of the 3×3: a re-authentication nonce spent on the registration leg. Cheap, and
+    /// it says the separation is a property of the vocabulary rather than a guard someone remembered
+    /// to write on two of the three finish legs.
+    /// </summary>
+    [Test]
+    public async Task Registration_BuiltOnAReauthenticationChallenge_IsRefused()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        HttpClient authenticated = await SignedInOverRecoveryCodesAsync(factory);
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+
+        // Act
+        byte[] reauthenticationChallenge = await BeginCeremonyAsync(authenticated, ReauthenticationOptionsPath);
+        AttestationResult attestation = authenticator.Register(reauthenticationChallenge, ApiFactory.PasskeyOrigin);
+        HttpResponseMessage response = await PostRegistrationAsync(authenticated, attestation);
+
+        // Assert — the registration leg is authenticated throughout, so it may say what was wrong, and
+        // a refused response leaves nothing filed.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(await CountPasskeyPublicKeysAsync(host)).IsEqualTo(0L);
+    }
+
+    /// <summary>
+    /// A counter that went backwards is what a cloned authenticator produces, and the domain reports it
+    /// by throwing. This is the test of the <b>translation</b>: an untranslated regression escapes as a
+    /// 500 while an unknown credential answers 401, and a caller who can tell those apart has learned
+    /// that the handle they presented is real.
+    /// </summary>
+    [Test]
+    public async Task Assertion_WhoseReportedCounterWentBackwards_Returns401AndEstablishesNoSession()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateApiFactory(host);
+        RepositoryTestHost.SeededOwner owner = await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await host.SeedPasskeyAsync(
+            owner.UserId,
+            authenticator.CredentialId,
+            authenticator.CoseKey,
+            authenticator.Algorithm,
+            signatureCounter: SeededCounter);
+        HttpClient anonymous = factory.CreateClient();
+
+        // Act — genuinely signed and correct in every other respect, reporting a counter below the
+        // stored one.
+        byte[] challenge = await BeginCeremonyAsync(anonymous, AssertionOptionsPath);
+        AssertionResult assertion = authenticator.Authenticate(
+            challenge,
+            ApiFactory.PasskeyOrigin,
+            PasskeyEncoding.ToUserHandle(owner.UserId),
+            signCount: RegressedCounter);
+        HttpResponseMessage response = await PostAssertionAsync(anonymous, assertion);
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
+        await Assert.That(await ReadTitleAsync(response)).IsEqualTo(PasskeyVerificationExceptionHandler.Title);
+        await Assert.That((await ReadSessionsAsync(host)).Count).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Assertion_ReplayingAConsumedChallenge_Returns401()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateApiFactory(host);
+        RepositoryTestHost.SeededOwner owner = await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await host.SeedPasskeyAsync(owner.UserId, authenticator.CredentialId, authenticator.CoseKey, authenticator.Algorithm);
+        HttpClient anonymous = factory.CreateClient();
+        AssertionResult assertion = await BuildAssertionAsync(anonymous, authenticator, owner.UserId);
+
+        // Act — the identical request twice. Single use is the property, so nothing about the second
+        // request differs from the first, down to the bytes.
+        HttpResponseMessage first = await PostAssertionAsync(anonymous, assertion);
+        HttpResponseMessage replay = await PostAssertionAsync(anonymous, assertion);
+
+        // Assert
+        await Assert.That(first.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        await Assert.That(replay.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
+        await Assert.That((await ReadSessionsAsync(host)).Count).IsEqualTo(1);
+    }
+
+    /// <summary>
+    /// A failed attempt has to burn the nonce, or one issued challenge becomes something an attacker
+    /// can grind responses against. The second attempt here is a <b>valid</b> assertion over the same
+    /// challenge: only a challenge the failure already spent refuses it.
+    /// </summary>
+    [Test]
+    public async Task Assertion_WhenVerificationFails_StillConsumesTheChallenge()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateApiFactory(host);
+        RepositoryTestHost.SeededOwner owner = await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await host.SeedPasskeyAsync(owner.UserId, authenticator.CredentialId, authenticator.CoseKey, authenticator.Algorithm);
+        HttpClient anonymous = factory.CreateClient();
+        byte[] challenge = await BeginCeremonyAsync(anonymous, AssertionOptionsPath);
+        byte[] userHandle = PasskeyEncoding.ToUserHandle(owner.UserId);
+
+        // Act
+        AssertionResult failing = authenticator.Authenticate(challenge, ApiFactory.PasskeyOrigin, userHandle);
+        HttpResponseMessage refused = await PostAssertionAsync(anonymous, WithFlippedSignature(failing));
+
+        AssertionResult valid = authenticator.Authenticate(challenge, ApiFactory.PasskeyOrigin, userHandle);
+        HttpResponseMessage afterFailure = await PostAssertionAsync(anonymous, valid);
+
+        // Assert
+        await Assert.That(refused.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
+        await Assert.That(afterFailure.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
+        await Assert.That((await ReadSessionsAsync(host)).Count).IsEqualTo(0);
+    }
+
+    /// <summary>
+    /// The anonymous leg may be called by a browser that is already signed in as somebody else. The
+    /// session belongs to whoever the verified passkey belongs to, which need not be the same person.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The credential on the request used to be a provider bearer and is now a session cookie, and
+    /// the rule is the same rule.</b> While the bearer was a credential this application authenticated,
+    /// a provisioning middleware put the bystander's account on the request before the ceremony ran,
+    /// and this test said the ceremony took its account from the verified assertion instead. A bearer
+    /// authenticates nothing now — the fallback policy names the cookie scheme and the only policy
+    /// naming the provider is registration's — so a bearer presented here is an inert header and the
+    /// test would have degraded into a second copy of the happy path with a spare row in the table.
+    /// </para>
+    /// <para>
+    /// <b>The cookie is the sharper arrangement, not merely the available one.</b> It is read on every
+    /// request by <c>SessionCookieAuthenticationHandler</c>, which publishes the bystander's identity
+    /// <em>and</em> ambient budget before this route's delegate is entered — so the request really does
+    /// arrive naming an account, and it is the wrong one. That is exactly the state a person signing in
+    /// on a shared browser produces, and it is the one a handler reading the ambient identity instead
+    /// of the verified credential would get wrong.
+    /// </para>
+    /// <para>
+    /// The bystander is signed in over a set of recovery codes rather than a passkey, this file's
+    /// convention, so the seeding files no <c>passkey_public_keys</c> row that the discovery lookup
+    /// could match instead of the one under test.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Assertion_PresentedWithAnotherAccountsSession_EstablishesTheSessionForThePasskeysOwner()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        RepositoryTestHost.SeededOwner passkeyOwner = await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await host.SeedPasskeyAsync(
+            passkeyOwner.UserId,
+            authenticator.CredentialId,
+            authenticator.CoseKey,
+            authenticator.Algorithm);
+        ApiFactory.SignedInClient bystander = await factory.CreateSignedInClientAsync(
+            OtherSubject,
+            OtherEmail,
+            opensWith: CredentialType.RecoveryCodes);
+
+        // Read before the act, because the bystander's own sign-in is already a row: an absolute count
+        // would be measuring the arrangement rather than what the ceremony wrote.
+        IReadOnlyList<SessionRow> before = await ReadSessionsAsync(host);
+
+        // Act
+        AssertionResult assertion = await BuildAssertionAsync(
+            bystander.Client, authenticator, passkeyOwner.UserId);
+        HttpResponseMessage response = await PostAssertionAsync(bystander.Client, assertion);
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+
+        IReadOnlyList<SessionRow> opened = await SessionsOpenedSinceAsync(host, before);
+        await Assert.That(opened.Count).IsEqualTo(1);
+        await Assert.That(opened[0].UserId).IsEqualTo(passkeyOwner.UserId);
+        await Assert.That(opened[0].UserId).IsNotEqualTo(bystander.UserId);
+    }
+
+    [Test]
+    public async Task Assertion_DoesNotProvisionAUserFromTheAnonymousRequest()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateApiFactory(host);
+        RepositoryTestHost.SeededOwner owner = await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await host.SeedPasskeyAsync(owner.UserId, authenticator.CredentialId, authenticator.CoseKey, authenticator.Algorithm);
+        long usersBefore = await CountUsersAsync(host);
+        HttpClient anonymous = factory.CreateClient();
+
+        // Act
+        AssertionResult assertion = await BuildAssertionAsync(anonymous, authenticator, owner.UserId);
+        HttpResponseMessage response = await PostAssertionAsync(anonymous, assertion);
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        await Assert.That(await CountUsersAsync(host)).IsEqualTo(usersBefore);
+    }
+
+    [Test]
+    public async Task AssertionEndpoints_AreReachableWithoutAuthentication()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateApiFactory(host);
+        HttpClient anonymous = factory.CreateClient();
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+
+        // Act
+        HttpResponseMessage options = await anonymous.PostAsync(AssertionOptionsPath, content: null);
+        AssertionResult assertion = await BuildAssertionAsync(anonymous, authenticator, userId: null);
+        HttpResponseMessage completion = await PostAssertionAsync(anonymous, assertion);
+
+        // Assert — the completion leg is refused, but by the ceremony rather than by authentication,
+        // and the title is what tells the two 401s apart.
+        await Assert.That(options.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        await Assert.That(await ReadTitleAsync(completion)).IsEqualTo(PasskeyVerificationExceptionHandler.Title);
+    }
+
+    [Test]
+    public async Task RegistrationEndpoints_Return401WithoutAuthentication()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateApiFactory(host);
+        HttpClient anonymous = factory.CreateClient();
+
+        // Act
+        HttpResponseMessage options = await anonymous.PostAsync(RegistrationOptionsPath, content: null);
+        HttpResponseMessage completion = await anonymous.PostAsJsonAsync(RegistrationPath, new
+        {
+            clientDataJson = "AA",
+            attestationObject = "AA",
+        });
+
+        // Assert
+        await Assert.That(options.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
+        await Assert.That(completion.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
+        await Assert.That(await ReadTitleAsync(options)).IsNotEqualTo(PasskeyVerificationExceptionHandler.Title);
+    }
+
+    [Test]
+    public async Task RegistrationOptions_RequestThePrfExtension()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        HttpClient authenticated = (await factory.CreateSignedInClientAsync(OwnerSubject, OwnerEmail)).Client;
+
+        // Act
+        JsonNode options = await PostForJsonAsync(authenticated, RegistrationOptionsPath);
+
+        // Assert — on the JSON that actually leaves the server, because the extension is only requested
+        // if the client sees it. A property present in the options type but dropped on the wire asks
+        // for nothing.
+        await Assert.That(options["extensions"]).IsNotNull();
+        await Assert.That(options["extensions"]!["prf"]).IsNotNull();
+    }
+
+    [Test]
+    public async Task RegistrationOptions_RequireADiscoverableCredentialAndUserVerification()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        HttpClient authenticated = (await factory.CreateSignedInClientAsync(OwnerSubject, OwnerEmail)).Client;
+
+        // Act
+        JsonNode options = await PostForJsonAsync(authenticated, RegistrationOptionsPath);
+        JsonNode selection = options["authenticatorSelection"]!;
+
+        // Assert — a credential that is not discoverable is one the sign-in leg can never offer, since
+        // it sends no allowCredentials; a preferred user verification is one an authenticator may skip.
+        await Assert.That(selection["residentKey"]!.GetValue<string>()).IsEqualTo("required");
+        await Assert.That(selection["requireResidentKey"]!.GetValue<bool>()).IsTrue();
+        await Assert.That(selection["userVerification"]!.GetValue<string>()).IsEqualTo("required");
+    }
+
+    [Test]
+    public async Task RegistrationOptions_OfferOnlyAlgorithmsTheServerCanVerify()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        HttpClient authenticated = (await factory.CreateSignedInClientAsync(OwnerSubject, OwnerEmail)).Client;
+
+        // Act
+        JsonNode options = await PostForJsonAsync(authenticated, RegistrationOptionsPath);
+        JsonArray parameters = options["pubKeyCredParams"]!.AsArray();
+
+        // Assert — exactly, not at least: an algorithm offered here and unverifiable on the way back is
+        // a registration that succeeds and a sign-in that never can.
+        await Assert.That(parameters.Count).IsEqualTo(2);
+        await Assert.That(parameters[0]!["alg"]!.GetValue<int>()).IsEqualTo((int)CoseAlgorithm.Es256);
+        await Assert.That(parameters[1]!["alg"]!.GetValue<int>()).IsEqualTo((int)CoseAlgorithm.Rs256);
+        await Assert.That(parameters[0]!["type"]!.GetValue<string>()).IsEqualTo("public-key");
+        await Assert.That(parameters[1]!["type"]!.GetValue<string>()).IsEqualTo("public-key");
+    }
+
+    /// <summary>
+    /// The test that notices <c>ListWebAuthnCredentialIdsForUserAsync</c> losing its owner filter.
+    /// <c>passkey_public_keys</c> carries no row-level security policy and no query filter, so nothing
+    /// beneath the application narrows that read — an exempt table cannot catch this for itself, and an
+    /// unfiltered read would hand one account every other account's credential handles.
+    /// </summary>
+    [Test]
+    public async Task RegistrationOptions_ForOneAccount_ExcludeNoOtherAccountsCredential()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+
+        // Signed in over a set of recovery codes, so the account holds exactly the one passkey seeded
+        // below rather than that one and the harness's own — which would make the count read two and
+        // say nothing about whose credentials came back.
+        ApiFactory.SignedInClient owner = await factory.CreateSignedInClientAsync(
+            OwnerSubject, OwnerEmail, opensWith: CredentialType.RecoveryCodes);
+        RepositoryTestHost.SeededOwner other = await host.SeedOwnerAsync(OtherSubject, OtherEmail);
+        SyntheticAuthenticator ownersDevice = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        SyntheticAuthenticator othersDevice = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await host.SeedPasskeyAsync(owner.UserId, ownersDevice.CredentialId, ownersDevice.CoseKey, ownersDevice.Algorithm);
+        await host.SeedPasskeyAsync(other.UserId, othersDevice.CredentialId, othersDevice.CoseKey, othersDevice.Algorithm);
+        HttpClient authenticated = owner.Client;
+
+        // Act
+        JsonNode options = await PostForJsonAsync(authenticated, RegistrationOptionsPath);
+        JsonArray excluded = options["excludeCredentials"]!.AsArray();
+
+        // Assert
+        await Assert.That(excluded.Count).IsEqualTo(1);
+        await Assert.That(excluded[0]!["id"]!.GetValue<string>())
+            .IsEqualTo(Base64UrlText.Encode(ownersDevice.CredentialId));
+        await Assert.That(excluded[0]!["id"]!.GetValue<string>())
+            .IsNotEqualTo(Base64UrlText.Encode(othersDevice.CredentialId));
+    }
+
+    [Test]
+    public async Task AssertionOptions_ReturnNoAllowCredentials()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateApiFactory(host);
+        RepositoryTestHost.SeededOwner owner = await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await host.SeedPasskeyAsync(owner.UserId, authenticator.CredentialId, authenticator.CoseKey, authenticator.Algorithm);
+
+        // Act
+        JsonNode options = await PostForJsonAsync(factory.CreateClient(), AssertionOptionsPath);
+
+        // Assert — sending one means the server first decided whose credentials these are, which means
+        // the request had to name an account, and an endpoint that answers differently per account is
+        // an account-enumeration oracle.
+        await Assert.That(options.AsObject().ContainsKey("allowCredentials")).IsFalse();
+    }
+
+    /// <summary>
+    /// Registration refuses an authenticator that reports no <c>prf</c> extension result, and says so
+    /// in a sentence the person holding the device can act on.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Two cases rather than one is what forces the predicate to be "present <b>and</b> true". A check
+    /// written against a missing member — "the client sent no extension results" — passes the
+    /// unreported case and lets the disabled one straight through; a check written against the flag
+    /// alone — "the reported value is false" — does the exact reverse. Neither mistake survives both
+    /// cases, and either survives one of them.
+    /// </para>
+    /// <para>
+    /// What keeps the two distinguishable at all is <see cref="PostRegistrationAsync"/>, which sends
+    /// <c>clientExtensionResults</c> as JSON null when the result is null instead of sending a present
+    /// object carrying false. "Simplifying" that helper to always send the object would silently turn
+    /// this into one case run twice, and the pair would stop proving anything.
+    /// </para>
+    /// <para>
+    /// The sentence says the device "did not report an enabled prf extension result" rather than that
+    /// it "returned no prf extension result", because <c>prf.enabled: false</c> <b>is</b> a returned
+    /// result — one that means no. The wording is a literal transcription of the predicate and is
+    /// therefore true of every form this refusal covers rather than of only one of them.
+    /// </para>
+    /// </remarks>
+    [Test]
+    [Arguments(false)]
+    [Arguments(null)]
+    public async Task Registration_WhoseAuthenticatorReportsNoPrfResult_Returns400NamingTheAuthenticator(
+        bool? prfEnabled)
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        HttpClient authenticated = (await factory.CreateSignedInClientAsync(OwnerSubject, OwnerEmail)).Client;
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+
+        // Act — a genuine ceremony in every respect except what the device says about the extension.
+        byte[] challenge = await BeginCeremonyAsync(authenticated, RegistrationOptionsPath);
+        AttestationResult attestation = authenticator.Register(
+            challenge,
+            ApiFactory.PasskeyOrigin,
+            prfEnabled: prfEnabled);
+        HttpResponseMessage response = await PostRegistrationAsync(authenticated, attestation);
+
+        // Assert — the sentence is the acceptance criterion, so it is pinned whole rather than by a
+        // fragment of it: it names the authenticator as the reason, says what to use instead, and
+        // names no vendor.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(await ReadValidationErrorAsync(response)).IsEqualTo(
+            "This authenticator cannot hold the account's keys: it did not report an enabled prf "
+            + "extension result. Register a passkey from a device whose authenticator supports the prf "
+            + "extension — most current phones, laptops and hardware security keys do.");
+    }
+
+    /// <summary>
+    /// A response whose <c>prf</c> result is present but says nothing: the object is there and the
+    /// <c>enabled</c> member is absent. Refused, in the same sentence as every other form.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is the form where the client object exists but says nothing about the extension. With the
+    /// member absent, <c>Enabled</c> binds to <c>null</c> — not to <c>false</c> — so nothing here
+    /// states a negative; what refuses the request is the gate's own requirement that the flag be
+    /// <b>present and true</b>. The test pins that silence refuses rather than passes, which is what a
+    /// check written as "not explicitly false" would get wrong.
+    /// </para>
+    /// <para>
+    /// The body is assembled by hand because <see cref="PostRegistrationAsync"/> cannot express it:
+    /// its parameter is a <c>bool?</c>, and neither of its two shapes is a present object with no
+    /// members. Everything else is the genuine ceremony — only <c>clientExtensionResults</c> is built
+    /// here.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Registration_WhosePrfResultCarriesNoEnabledMember_Returns400NamingTheAuthenticator()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        HttpClient authenticated = (await factory.CreateSignedInClientAsync(OwnerSubject, OwnerEmail)).Client;
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+
+        // Act — a genuine ceremony carrying a prf object with the enabled member left out.
+        byte[] challenge = await BeginCeremonyAsync(authenticated, RegistrationOptionsPath);
+        AttestationResult attestation = authenticator.Register(challenge, ApiFactory.PasskeyOrigin);
+        HttpResponseMessage response = await authenticated.PostAsJsonAsync(RegistrationPath, new
+        {
+            clientDataJson = attestation.ClientDataJsonBase64Url,
+            attestationObject = attestation.AttestationObjectBase64Url,
+            clientExtensionResults = new { prf = new { } },
+        });
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(await ReadValidationErrorAsync(response)).IsEqualTo(
+            "This authenticator cannot hold the account's keys: it did not report an enabled prf "
+            + "extension result. Register a passkey from a device whose authenticator supports the prf "
+            + "extension — most current phones, laptops and hardware security keys do.");
+    }
+
+    /// <summary>
+    /// A response whose <c>prf</c> result reports <c>enabled</c> as an explicit JSON null. Refused, in
+    /// the same sentence as every other form.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This form used to fail model binding: with <c>Enabled</c> a non-nullable <c>bool</c>, an
+    /// explicit null was rejected before the handler ran and the caller got the framework's own
+    /// ProblemDetails rather than this feature's sentence. Widening the member to <c>bool?</c> is what
+    /// routes it to the handler instead, where the "present and true" gate judges it like any other
+    /// form, and this test is what holds that — a member narrowed back to <c>bool</c> stops answering
+    /// with the sentence asserted here.
+    /// </para>
+    /// <para>
+    /// The body is assembled by hand for the same reason as the test above:
+    /// <see cref="PostRegistrationAsync"/> takes a <c>bool?</c> and can express neither a present
+    /// object with no members nor one carrying an explicit null.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Registration_WhosePrfResultReportsANullEnabledMember_Returns400NamingTheAuthenticator()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        HttpClient authenticated = (await factory.CreateSignedInClientAsync(OwnerSubject, OwnerEmail)).Client;
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+
+        // Act — a genuine ceremony carrying a prf object whose enabled member is an explicit null.
+        byte[] challenge = await BeginCeremonyAsync(authenticated, RegistrationOptionsPath);
+        AttestationResult attestation = authenticator.Register(challenge, ApiFactory.PasskeyOrigin);
+        HttpResponseMessage response = await authenticated.PostAsJsonAsync(RegistrationPath, new
+        {
+            clientDataJson = attestation.ClientDataJsonBase64Url,
+            attestationObject = attestation.AttestationObjectBase64Url,
+            clientExtensionResults = new { prf = new { enabled = (bool?)null } },
+        });
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(await ReadValidationErrorAsync(response)).IsEqualTo(
+            "This authenticator cannot hold the account's keys: it did not report an enabled prf "
+            + "extension result. Register a passkey from a device whose authenticator supports the prf "
+            + "extension — most current phones, laptops and hardware security keys do.");
+    }
+
+    /// <summary>
+    /// A present <c>clientExtensionResults</c> object carrying no <c>prf</c> member at all. Refused, in
+    /// the same sentence as every other form.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is the form a real browser sends. <c>getClientExtensionResults()</c> always returns an
+    /// object, so an authenticator with no PRF support produces <c>{}</c> — a present object with the
+    /// member missing. It is <b>not</b> a JSON null: that is what the <c>[Arguments(null)]</c> case
+    /// exercises, and it only appears on the wire if client code deliberately substitutes it.
+    /// </para>
+    /// <para>
+    /// Said plainly so the enumeration of forms in these tests is not misleading about which one
+    /// arrives first in production: this one does, and the others are the shapes a hand-written or
+    /// hostile client can also produce.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Registration_WhoseClientExtensionResultsCarryNoPrfMember_Returns400NamingTheAuthenticator()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        HttpClient authenticated = (await factory.CreateSignedInClientAsync(OwnerSubject, OwnerEmail)).Client;
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+
+        // Act — a genuine ceremony carrying the empty object a device without PRF support produces.
+        byte[] challenge = await BeginCeremonyAsync(authenticated, RegistrationOptionsPath);
+        AttestationResult attestation = authenticator.Register(challenge, ApiFactory.PasskeyOrigin);
+        HttpResponseMessage response = await authenticated.PostAsJsonAsync(RegistrationPath, new
+        {
+            clientDataJson = attestation.ClientDataJsonBase64Url,
+            attestationObject = attestation.AttestationObjectBase64Url,
+            clientExtensionResults = new { },
+        });
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(await ReadValidationErrorAsync(response)).IsEqualTo(
+            "This authenticator cannot hold the account's keys: it did not report an enabled prf "
+            + "extension result. Register a passkey from a device whose authenticator supports the prf "
+            + "extension — most current phones, laptops and hardware security keys do.");
+    }
+
+    /// <summary>
+    /// A response that is wrong twice over — wrong origin <b>and</b> no <c>prf</c> result — is refused
+    /// for the origin, not for its authenticator.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This test owns the ordering that the handler's own comment, <c>passkeys.md</c> and ADR 0013 all
+    /// assert: the extension claim is weighed last, after everything signed has been judged. A
+    /// response that is malformed, replayed or wrong-origin must never be told its authenticator is at
+    /// fault, because that sentence would be a lie about the device — and one the person would act on
+    /// by going out to buy another.
+    /// </para>
+    /// <para>
+    /// Before this test the ordering held only incidentally: the unrelated ceiling tests happen to
+    /// send no <c>clientExtensionResults</c> and so would have noticed a prf check moved to the front,
+    /// but none of them is about the ordering and any of them could stop covering it without anyone
+    /// noticing.
+    /// </para>
+    /// <para>
+    /// One assertion is enough. The prf sentence starts differently, so the prefix asserted here
+    /// excludes it; a second assertion saying the same thing the other way round would only be a
+    /// second thing to keep in step.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Registration_WhoseOriginIsWrongAndReportsNoPrfResult_IsRefusedForTheOriginRatherThanTheAuthenticator()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        HttpClient authenticated = (await factory.CreateSignedInClientAsync(OwnerSubject, OwnerEmail)).Client;
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+
+        // Act — two faults in one response, so only the order of the checks can decide which is named.
+        byte[] challenge = await BeginCeremonyAsync(authenticated, RegistrationOptionsPath);
+        AttestationResult attestation = authenticator.Register(
+            challenge,
+            LookalikeOrigin,
+            prfEnabled: null);
+        HttpResponseMessage response = await PostRegistrationAsync(authenticated, attestation);
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(await ReadValidationErrorAsync(response))
+            .StartsWith("The registration response was refused:");
+    }
+
+    /// <summary>
+    /// A response that is wrong twice over the other way — no <c>prf</c> result <b>and</b> a malformed
+    /// key-custody member — is refused for its authenticator, not for its payload.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The mirror of
+    /// <see cref="Registration_WhoseOriginIsWrongAndReportsNoPrfResult_IsRefusedForTheOriginRatherThanTheAuthenticator" />
+    /// and the other half of the same ordering: everything signed is judged <b>before</b> the extension
+    /// claim, and the three members that carry the account's key custody are judged <b>after</b> it.
+    /// This is the half nothing owned. A client that cannot do PRF cannot have produced a wrapped key
+    /// either, so these members are very often absent or nonsense on exactly the requests the gate is
+    /// for — and judged first, such a request is told its <em>payload</em> is malformed. That sends
+    /// somebody holding a device which genuinely lacks the extension off to debug their client, when
+    /// what they need to hear is that the device cannot hold the account's keys.
+    /// </para>
+    /// <para>
+    /// It was held only incidentally before this test.
+    /// <see cref="Registration_WhoseAuthenticatorReportsNoPrfResult_Returns400NamingTheAuthenticator" />
+    /// goes through <see cref="PostRegistrationAsync(HttpClient, AttestationResult, WrappedKeyFixture)" />,
+    /// which mints a <b>valid</b> <see cref="WrappedKeyFixture" />, so it never reaches a payload check
+    /// at all and cannot see the ordering. What did cover it were the two hand-built tests that happen
+    /// to omit the three members — coverage that would vanish silently the moment either was tidied onto
+    /// the shared helper. Here the members are <b>present and wrong</b>, so only the order of the checks
+    /// can decide which sentence answers.
+    /// </para>
+    /// <para>
+    /// One case per member, because each is a separate check in the handler and any one of them could be
+    /// moved above the gate on its own. The body is assembled by hand for the reason the sibling prf
+    /// tests assemble theirs: neither helper can express a request that carries no extension results
+    /// <em>and</em> a member the fixture is incapable of producing.
+    /// </para>
+    /// </remarks>
+    [Test]
+    [Arguments(KeyCustodyMember.FactorId)]
+    [Arguments(KeyCustodyMember.WrappedPrivateKey)]
+    [Arguments(KeyCustodyMember.EncapsulatedAccountKeys)]
+    public async Task Registration_WhoseKeyCustodyMemberIsMalformedAndReportsNoPrfResult_IsRefusedForTheAuthenticatorRatherThanThePayload(
+        KeyCustodyMember member)
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        HttpClient authenticated = (await factory.CreateSignedInClientAsync(OwnerSubject, OwnerEmail)).Client;
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        WrappedKeyFixture keys = WrappedKeyFixture.Mint();
+
+        // Act — a genuine ceremony in every signed respect, reporting nothing about the extension, with
+        // exactly one key-custody member the handler is bound to refuse if it ever looks at it.
+        byte[] challenge = await BeginCeremonyAsync(authenticated, RegistrationOptionsPath);
+        AttestationResult attestation = authenticator.Register(challenge, ApiFactory.PasskeyOrigin);
+        string malformed = MalformedEnvelopeText(
+            FactorPayload.PrivateKey, MalformedEnvelope.OneByteShort);
+        HttpResponseMessage response = await authenticated.PostAsJsonAsync(RegistrationPath, new
+        {
+            clientDataJson = attestation.ClientDataJsonBase64Url,
+            attestationObject = attestation.AttestationObjectBase64Url,
+
+            // The empty object a device with no PRF support really produces, rather than the JSON null
+            // a hand-written client would have to choose: the ordering has to hold on the shape that
+            // actually arrives.
+            clientExtensionResults = new { },
+            factorId = member is KeyCustodyMember.FactorId ? NotOneCanonicalUuid : keys.FactorId,
+            wrappedPrivateKey = member is KeyCustodyMember.WrappedPrivateKey
+                ? malformed
+                : keys.WrappedPrivateKey,
+            encapsulatedAccountKeys = member is KeyCustodyMember.EncapsulatedAccountKeys
+                ? malformed
+                : keys.EncapsulatedAccountKeys,
+        });
+
+        // Assert — the sentence is pinned whole rather than by a prefix, because what this test is about
+        // is which of two true sentences the caller is told, and a prefix long enough to tell them apart
+        // is most of the sentence anyway.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(await ReadValidationErrorAsync(response)).IsEqualTo(
+            "This authenticator cannot hold the account's keys: it did not report an enabled prf "
+            + "extension result. Register a passkey from a device whose authenticator supports the prf "
+            + "extension — most current phones, laptops and hardware security keys do.");
+    }
+
+    /// <summary>
+    /// The provable-fail control beside the refusal above: an authenticator that does report a
+    /// <c>prf</c> result registers, and the whole passkey is filed.
+    /// </summary>
+    /// <remarks>
+    /// Without this, a handler that refused <b>every</b> registration passes the refusal test
+    /// perfectly. This is the test such a handler fails, and that is what makes the pair provable
+    /// rather than one-sided.
+    /// </remarks>
+    [Test]
+    public async Task Registration_WhoseAuthenticatorReportsAPrfResult_FilesTheCredentialAndItsKeyAndCounter()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        HttpClient authenticated = await SignedInOverRecoveryCodesAsync(factory);
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+
+        // Act
+        byte[] challenge = await BeginCeremonyAsync(authenticated, RegistrationOptionsPath);
+        AttestationResult attestation = authenticator.Register(
+            challenge,
+            ApiFactory.PasskeyOrigin,
+            prfEnabled: true);
+        HttpResponseMessage response = await PostRegistrationAsync(authenticated, attestation);
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Created);
+
+        // Nothing in the body: reporting the flag back would read as the server having established
+        // it, when all it did was repeat what the client just said.
+        await Assert.That(await response.Content.ReadAsStringAsync()).IsEqualTo(string.Empty);
+
+        await Assert.That(await CountPasskeyCredentialsAsync(host)).IsEqualTo(1L);
+        await Assert.That(await CountPasskeyPublicKeysAsync(host)).IsEqualTo(1L);
+        await Assert.That(await CountPasskeySignatureCountersAsync(host)).IsEqualTo(1L);
+    }
+
+    /// <summary>
+    /// A registration refused for its authenticator files nothing at all against the account.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is true by <b>where the refusal sits</b> rather than by code written to make it true: the
+    /// check precedes <c>Credential.CreatePasskey</c>, so there is no row to undo. The test exists so
+    /// that moving the refusal below the save goes red rather than passing on the strength of a
+    /// rollback nobody wrote.
+    /// </para>
+    /// <para>
+    /// It does <b>not</b> prove FR-108's first clause — that an incomplete registration owns no
+    /// budget-owned row — and cannot, because it is not about registration: this account was created
+    /// whole, budget included, by <c>POST /api/registration</c>, and what is refused here is a
+    /// <em>second</em> passkey being added to it afterwards. That clause is proved next door, by
+    /// <c>AccountRegistrationTests</c>' refusal battery, every member of which asserts that the whole
+    /// thirty-row save left nothing anywhere.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Registration_RefusedForItsAuthenticator_FilesNothingAgainstTheAccount()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        HttpClient authenticated = await SignedInOverRecoveryCodesAsync(factory);
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+
+        // Act
+        byte[] challenge = await BeginCeremonyAsync(authenticated, RegistrationOptionsPath);
+        AttestationResult attestation = authenticator.Register(
+            challenge,
+            ApiFactory.PasskeyOrigin,
+            prfEnabled: false);
+        HttpResponseMessage response = await PostRegistrationAsync(authenticated, attestation);
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(await CountPasskeyCredentialsAsync(host)).IsEqualTo(0L);
+        await Assert.That(await CountPasskeyPublicKeysAsync(host)).IsEqualTo(0L);
+        await Assert.That(await CountPasskeySignatureCountersAsync(host)).IsEqualTo(0L);
+    }
+
+    /// <summary>
+    /// A registration refused for its authenticator has already spent the challenge, so the same device
+    /// cannot simply answer again — it has to go back to the options leg for a fresh nonce.
+    /// </summary>
+    /// <remarks>
+    /// <c>passkeys.md</c> states this, and it is true by construction: <c>ConsumeAsync</c> precedes the
+    /// prf gate. Nothing pinned it, though, and the plausible "optimisation" — not burning a nonce on a
+    /// refusal that judged nothing but a client-written claim — would make the document false with
+    /// nothing going red. The second attempt here is a <b>fully valid</b> response from the same
+    /// authenticator over the same challenge, so only the spent nonce can refuse it, and the sentence
+    /// asserted is the one that says exactly that.
+    /// </remarks>
+    [Test]
+    public async Task Registration_RefusedForItsAuthenticator_ThenRetriedOnTheSameChallenge_FindsItSpent()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        HttpClient authenticated = await SignedInOverRecoveryCodesAsync(factory);
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        byte[] challenge = await BeginCeremonyAsync(authenticated, RegistrationOptionsPath);
+
+        // Act — refused for the authenticator, then the same device answering the same challenge with
+        // nothing at all wrong with the response.
+        AttestationResult refusedAttempt = authenticator.Register(
+            challenge,
+            ApiFactory.PasskeyOrigin,
+            prfEnabled: false);
+        HttpResponseMessage refused = await PostRegistrationAsync(authenticated, refusedAttempt);
+
+        AttestationResult retry = authenticator.Register(
+            challenge,
+            ApiFactory.PasskeyOrigin,
+            prfEnabled: true);
+        HttpResponseMessage afterRefusal = await PostRegistrationAsync(authenticated, retry);
+
+        // Assert
+        await Assert.That(refused.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(afterRefusal.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(await ReadValidationErrorAsync(afterRefusal))
+            .IsEqualTo("The challenge is not a live registration challenge.");
+        await Assert.That(await CountPasskeyPublicKeysAsync(host)).IsEqualTo(0L);
+    }
+
+    [Test]
+    public async Task Registration_OfTheSameAuthenticatorCredentialTwice_IsRefused()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        HttpClient authenticated = (await factory.CreateSignedInClientAsync(OwnerSubject, OwnerEmail)).Client;
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await RegisterAsync(authenticated, authenticator);
+
+        // Act — a second complete ceremony from the same device, on its own fresh challenge.
+        byte[] challenge = await BeginCeremonyAsync(authenticated, RegistrationOptionsPath);
+        AttestationResult again = authenticator.Register(challenge, ApiFactory.PasskeyOrigin);
+        HttpResponseMessage response = await PostRegistrationAsync(authenticated, again);
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Conflict);
+    }
+
+    /// <summary>
+    /// A registration that carries no share of the account keys is refused, and nothing about the
+    /// passkey is filed.
+    /// </summary>
+    /// <remarks>
+    /// The three members are absent rather than malformed, which is the shape a client written against
+    /// the older contract sends — and the shape a handler binding them into optional members would let
+    /// straight through. A passkey filed without its envelopes is a factor that unlocks nothing: it
+    /// looks like a registered device to every screen in the product, and the discovery that it opens
+    /// no key happens on the day somebody signs in on it.
+    /// </remarks>
+    [Test]
+    public async Task PasskeyRegistration_RefusesAResponseCarryingNoWrappedKeys_AndWritesNoCredential()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        HttpClient authenticated = await SignedInOverRecoveryCodesAsync(factory);
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+
+        // Act — a genuine ceremony whose device reports the extension, so the prf gate is passed and
+        // only the missing members can decide the answer.
+        byte[] challenge = await BeginCeremonyAsync(authenticated, RegistrationOptionsPath);
+        AttestationResult attestation = authenticator.Register(
+            challenge,
+            ApiFactory.PasskeyOrigin,
+            prfEnabled: true);
+        HttpResponseMessage response = await authenticated.PostAsJsonAsync(RegistrationPath, new
+        {
+            clientDataJson = attestation.ClientDataJsonBase64Url,
+            attestationObject = attestation.AttestationObjectBase64Url,
+            clientExtensionResults = new { prf = new { enabled = true } },
+
+            // The manifest and its generation ARE sent, and only the three key-custody members are
+            // missing. Without them this request would be refused by the manifest's own gate as well,
+            // and the case would stay green on a route whose key-custody checks had been deleted
+            // outright — which is exactly what its name says it is measuring.
+            manifest = ManifestFixture.Mint().Text,
+            rotationEpoch = await FactorGeneration.NextAsync(authenticated),
+        });
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(await CountPasskeyCredentialsAsync(host)).IsEqualTo(0L);
+        await Assert.That(await CountPasskeyPublicKeysAsync(host)).IsEqualTo(0L);
+        await Assert.That(await CountPasskeySignatureCountersAsync(host)).IsEqualTo(0L);
+        await Assert.That(await CountWrappedAccountKeysAsync(host)).IsEqualTo(0L);
+    }
+
+    /// <summary>
+    /// An envelope of any width but the one the contract defines, and text outside the alphabet it
+    /// travels in, are refused before anything is stored.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Both sides of the width, because neither may be repaired: a padded or truncated envelope is a
+    /// well-formed row holding bytes whose tag cannot verify, and the account looks registered until
+    /// the day somebody needs the keys. One byte over never reaches the width: it clears the
+    /// encoded-length gate — 62 bytes is 83 characters against an allowance of 84 — and is then
+    /// refused by <c>PasskeyEncoding.TryDecode</c>, which measures the decoded buffer against the
+    /// ceiling the caller named, here <c>PasskeyPayloadLimits.WrappedPrivateKeyBytes</c>, the same 167 bytes
+    /// the width is. What the width covers instead is the short side, the 29-to-60-byte band that
+    /// clears the format's floor and the ceiling alike; both sides are gone before a column sees them.
+    /// </para>
+    /// <para>
+    /// Every case is driven against each of the two members on its own. The columns are written from
+    /// two independently supplied values, so a handler that decodes one and passes the other through
+    /// files whatever the client felt like sending into half of the account's key custody — and one
+    /// member covering the other's gap is exactly what a shared case would hide.
+    /// </para>
+    /// </remarks>
+    [Test]
+    [Arguments(FactorPayload.PrivateKey, MalformedEnvelope.OneByteShort)]
+    [Arguments(FactorPayload.PrivateKey, MalformedEnvelope.OneByteTooWide)]
+    [Arguments(FactorPayload.PrivateKey, MalformedEnvelope.OutsideTheAlphabet)]
+    [Arguments(FactorPayload.AccountKeys, MalformedEnvelope.OneByteShort)]
+    [Arguments(FactorPayload.AccountKeys, MalformedEnvelope.OneByteTooWide)]
+    [Arguments(FactorPayload.AccountKeys, MalformedEnvelope.OutsideTheAlphabet)]
+    public async Task PasskeyRegistration_RefusesAPayloadThatIsNotBase64UrlOfItsOwnExactWidth(
+        FactorPayload payload,
+        MalformedEnvelope fault)
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        HttpClient authenticated = await SignedInOverRecoveryCodesAsync(factory);
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        WrappedKeyFixture keys = WrappedKeyFixture.Mint();
+
+        // Act — a genuine ceremony carrying one malformed member and one well-formed one.
+        byte[] challenge = await BeginCeremonyAsync(authenticated, RegistrationOptionsPath);
+        AttestationResult attestation = authenticator.Register(
+            challenge,
+            ApiFactory.PasskeyOrigin,
+            prfEnabled: true);
+        string malformed = MalformedEnvelopeText(payload, fault);
+        HttpResponseMessage response = await PostRegistrationAsync(
+            authenticated,
+            attestation,
+            keys.FactorId,
+            payload is FactorPayload.PrivateKey ? malformed : keys.WrappedPrivateKey,
+            payload is FactorPayload.AccountKeys ? malformed : keys.EncapsulatedAccountKeys);
+
+        // Assert — filed under the key this leg's every other refusal is filed under, because a caller
+        // reading one field learns nothing from a refusal written into another.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await AssertNamesTheMalformedEnvelopeAsync(response, payload);
+        await Assert.That(await CountPasskeyCredentialsAsync(host)).IsEqualTo(0L);
+        await Assert.That(await CountPasskeyPublicKeysAsync(host)).IsEqualTo(0L);
+        await Assert.That(await CountPasskeySignatureCountersAsync(host)).IsEqualTo(0L);
+        await Assert.That(await CountWrappedAccountKeysAsync(host)).IsEqualTo(0L);
+    }
+
+    /// <summary>
+    /// An envelope of the right width whose leading byte names a version this deployment does not
+    /// implement is refused, on both members.
+    /// </summary>
+    /// <remarks>
+    /// The two versions are the two ways the byte goes wrong and they arrive from opposite directions:
+    /// the one below is what a field nobody set sends — an all-zero buffer of the legal width satisfies
+    /// every other rule — and the one above is a client claiming a contract that does not exist, whose
+    /// bytes no version of this system could interpret.
+    /// </remarks>
+    [Test]
+    [Arguments(FactorPayload.PrivateKey, (byte)(WrappedAccountKeys.WrappedPrivateKeyVersion - 1))]
+    [Arguments(FactorPayload.PrivateKey, (byte)(WrappedAccountKeys.WrappedPrivateKeyVersion + 1))]
+    [Arguments(
+        FactorPayload.AccountKeys, (byte)(WrappedAccountKeys.EncapsulatedAccountKeysVersion - 1))]
+    [Arguments(
+        FactorPayload.AccountKeys, (byte)(WrappedAccountKeys.EncapsulatedAccountKeysVersion + 1))]
+    public async Task PasskeyRegistration_RefusesAPayloadWhoseFramingVersionIsUnknown(
+        FactorPayload payload,
+        byte version)
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        HttpClient authenticated = await SignedInOverRecoveryCodesAsync(factory);
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        WrappedKeyFixture keys = WrappedKeyFixture.Mint();
+
+        // Act — the exact width the contract defines, so the version byte is the only fault.
+        byte[] challenge = await BeginCeremonyAsync(authenticated, RegistrationOptionsPath);
+        AttestationResult attestation = authenticator.Register(
+            challenge,
+            ApiFactory.PasskeyOrigin,
+            prfEnabled: true);
+        string unknownVersion = EnvelopeText(LengthOf(payload), version);
+        HttpResponseMessage response = await PostRegistrationAsync(
+            authenticated,
+            attestation,
+            keys.FactorId,
+            payload is FactorPayload.PrivateKey ? unknownVersion : keys.WrappedPrivateKey,
+            payload is FactorPayload.AccountKeys ? unknownVersion : keys.EncapsulatedAccountKeys);
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await AssertNamesTheMalformedEnvelopeAsync(response, payload);
+        await Assert.That(await CountPasskeyCredentialsAsync(host)).IsEqualTo(0L);
+        await Assert.That(await CountPasskeyPublicKeysAsync(host)).IsEqualTo(0L);
+        await Assert.That(await CountPasskeySignatureCountersAsync(host)).IsEqualTo(0L);
+        await Assert.That(await CountWrappedAccountKeysAsync(host)).IsEqualTo(0L);
+    }
+
+    /// <summary>
+    /// The factor identifier is one uuid in one spelling: the hyphenated 36-character form and nothing
+    /// else.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The first three cases are a single genuine uuid written the other three ways
+    /// <see cref="Guid.ToString(string)"/> can produce, and every one of them is accepted by
+    /// <see cref="Guid.TryParse(string, out Guid)"/> — which is why they are here rather than assumed
+    /// impossible. The value is the associated data both envelopes were sealed with and the browser
+    /// needs back the bytes it bound, so a server that accepted four spellings would be storing a
+    /// value the client cannot recognise as its own.
+    /// </para>
+    /// <para>
+    /// The all-zero uuid is refused on a different argument: it is storable, it is what an unset field
+    /// sends, and it is the one value two accounts reach independently — so accepting it turns a
+    /// table-wide unique index into a cross-account collision the second account meets as a refusal to
+    /// register.
+    /// </para>
+    /// <para>
+    /// The last four cases are the 36-character hyphenated form itself, written the ways
+    /// <see cref="Guid.TryParseExact(string, string, out Guid)"/> also admits under <c>"D"</c>: hex in
+    /// upper case, hex in mixed case, and the same uuid with a leading or a trailing space, which that
+    /// overload trims before it looks at anything. Each is a different value on the wire and the same
+    /// <see cref="Guid"/> in the row, and the row is what every later read hands back — rendered lower
+    /// case, unspaced, once. A second client that binds its associated data to the spelling it sent
+    /// therefore rebuilds associated data the stored value cannot reproduce, and <b>both</b> of that
+    /// factor's envelopes stop opening permanently, with nothing anywhere naming the cause. This
+    /// client is safe only because its own canonical form lower-cases before sealing; the server owes
+    /// the same guarantee to a client whose source it does not hold.
+    /// </para>
+    /// </remarks>
+    [Test]
+    [Arguments("0198f2c0d1e474a0b9c6e2f8a1b3c5d7")]
+    [Arguments("{0198f2c0-d1e4-74a0-b9c6-e2f8a1b3c5d7}")]
+    [Arguments("(0198f2c0-d1e4-74a0-b9c6-e2f8a1b3c5d7)")]
+    [Arguments("not a factor identifier at all")]
+    [Arguments("00000000-0000-0000-0000-000000000000")]
+    [Arguments("C1D2E3F4-5A6B-7C8D-9E0F-A1B2C3D4E5F6")]
+    [Arguments("C1d2E3f4-5A6b-7C8d-9E0f-A1b2C3d4E5f6")]
+    [Arguments(" 0198f2c0-d1e4-74a0-b9c6-e2f8a1b3c5d7")]
+    [Arguments("0198f2c0-d1e4-74a0-b9c6-e2f8a1b3c5d7 ")]
+    public async Task PasskeyRegistration_RefusesAFactorIdentifierThatIsNotOneCanonicalUuid(string factorId)
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        HttpClient authenticated = await SignedInOverRecoveryCodesAsync(factory);
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        WrappedKeyFixture keys = WrappedKeyFixture.Mint();
+
+        // Act — both envelopes well-formed, so the identifier is the only fault.
+        byte[] challenge = await BeginCeremonyAsync(authenticated, RegistrationOptionsPath);
+        AttestationResult attestation = authenticator.Register(
+            challenge,
+            ApiFactory.PasskeyOrigin,
+            prfEnabled: true);
+        HttpResponseMessage response = await PostRegistrationAsync(
+            authenticated,
+            attestation,
+            factorId,
+            keys.WrappedPrivateKey,
+            keys.EncapsulatedAccountKeys);
+
+        // Assert — the sentence is pinned whole, because it carries no bound that could move and because
+        // "some sentence arrived" is satisfied by a refusal about any of the other five members of this
+        // request. It names the member on the wire, which is the only spelling a caller can act on.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(await ReadValidationErrorAsync(response)).IsEqualTo(
+            "factorId must be a uuid in the lower-case 36-character hyphenated form with no "
+            + "surrounding whitespace, and not the all-zero uuid.");
+        await Assert.That(await CountPasskeyCredentialsAsync(host)).IsEqualTo(0L);
+        await Assert.That(await CountPasskeyPublicKeysAsync(host)).IsEqualTo(0L);
+        await Assert.That(await CountPasskeySignatureCountersAsync(host)).IsEqualTo(0L);
+        await Assert.That(await CountWrappedAccountKeysAsync(host)).IsEqualTo(0L);
+    }
+
+    /// <summary>
+    /// A registration files the credential, its public key, its signature counter and its share of the
+    /// account keys — and each value lands in the column it belongs to.
+    /// </summary>
+    /// <remarks>
+    /// Read back column by column rather than counted, and the two envelope columns are the reason.
+    /// They are the same width, carry the same version and are both <c>NOT NULL</c>, so a handler that
+    /// files each in the other's column satisfies every check constraint, every foreign key and every
+    /// schema test in this suite. What separates them is the associated data each envelope was sealed
+    /// with, which binds the key's purpose — so a swap has no server-side symptom at any point and is
+    /// discovered in a browser months later, by somebody whose content key will not open. Bytes told
+    /// apart by which column they landed in are the only thing that can catch it, which is why
+    /// <see cref="WrappedKeyFixture"/> mints a pair that differs by a byte chosen for the purpose.
+    /// </remarks>
+    [Test]
+    public async Task PasskeyRegistration_FilesTheCredentialItsKeyItsCounterAndItsWrappedKeys_InOneSave()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        ApiFactory.SignedInClient owner = await factory.CreateSignedInClientAsync(
+            OwnerSubject, OwnerEmail, opensWith: CredentialType.RecoveryCodes);
+        HttpClient authenticated = owner.Client;
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        WrappedKeyFixture keys = WrappedKeyFixture.Mint();
+
+        // Act
+        byte[] challenge = await BeginCeremonyAsync(authenticated, RegistrationOptionsPath);
+        AttestationResult attestation = authenticator.Register(
+            challenge,
+            ApiFactory.PasskeyOrigin,
+            prfEnabled: true);
+        HttpResponseMessage response = await PostRegistrationAsync(authenticated, attestation, keys);
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Created);
+        await Assert.That(await CountPasskeyCredentialsAsync(host)).IsEqualTo(1L);
+        await Assert.That(await CountPasskeyPublicKeysAsync(host)).IsEqualTo(1L);
+        await Assert.That(await CountPasskeySignatureCountersAsync(host)).IsEqualTo(1L);
+
+        IReadOnlyList<WrappedAccountKeysRow> rows = await ReadWrappedAccountKeysAsync(host);
+        await Assert.That(rows.Count).IsEqualTo(1);
+
+        WrappedAccountKeysRow row = rows[0];
+        Guid credentialId = await FindPasskeyCredentialIdAsync(host, authenticator.CredentialId);
+        await Assert.That(row.CredentialId).IsEqualTo(credentialId);
+        await Assert.That(row.FactorId).IsEqualTo(keys.Factor);
+        await Assert.That(row.UserId).IsEqualTo(owner.UserId);
+        await Assert.That(row.CredentialType).IsEqualTo(CredentialTypeSpelling.Of(CredentialType.Passkey));
+
+        // Re-encoded and compared against the text the request carried, so the comparison is over the
+        // exact bytes in their exact order.
+        await Assert.That(Base64UrlText.Encode(row.WrappedPrivateKey)).IsEqualTo(keys.WrappedPrivateKey);
+        await Assert.That(Base64UrlText.Encode(row.EncapsulatedAccountKeys)).IsEqualTo(keys.EncapsulatedAccountKeys);
+    }
+
+    /// <summary>
+    /// A factor identifier that is already registered is refused as a conflict, and the attempt leaves
+    /// nothing of its own behind.
+    /// </summary>
+    /// <remarks>
+    /// A second device, whose own ceremony is faultless, claiming the factor the first one holds. The
+    /// identifier is minted by the client and unique across the whole table, so a duplicate is a claim
+    /// on somebody's existing factor rather than an internal accident — and since it is the associated
+    /// data of all four envelopes involved, a shared one would let a client seal one factor's keys and
+    /// open them against another's.
+    /// </remarks>
+    [Test]
+    public async Task PasskeyRegistration_RefusesAFactorIdentifierAlreadyRegistered()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        HttpClient authenticated = await SignedInOverRecoveryCodesAsync(factory);
+        SyntheticAuthenticator registered = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        WrappedKeyFixture claimed = WrappedKeyFixture.Mint();
+        await RegisterAsync(authenticated, registered, claimed);
+
+        // Act — a different authenticator, on its own fresh challenge, against the claimed factor.
+        SyntheticAuthenticator second = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        byte[] challenge = await BeginCeremonyAsync(authenticated, RegistrationOptionsPath);
+        AttestationResult attestation = second.Register(
+            challenge,
+            ApiFactory.PasskeyOrigin,
+            prfEnabled: true);
+        HttpResponseMessage response = await PostRegistrationAsync(
+            authenticated,
+            attestation,
+            WrappedKeyFixture.MintFor(claimed.Factor));
+
+        // Assert — the first registration is untouched and the second added nothing, so every count is
+        // the one the first ceremony left.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Conflict);
+        await Assert.That(await CountPasskeyCredentialsAsync(host)).IsEqualTo(1L);
+        await Assert.That(await CountPasskeyPublicKeysAsync(host)).IsEqualTo(1L);
+        await Assert.That(await CountPasskeySignatureCountersAsync(host)).IsEqualTo(1L);
+        await Assert.That(await CountWrappedAccountKeysAsync(host)).IsEqualTo(1L);
+    }
+
+    /// <summary>
+    /// The negative side of "only a passkey opens a session that reads budget content": a provider
+    /// token reaches an ordinary endpoint, establishes nothing, and is now not even let in.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The status assertion was <c>200</c> and is now <c>401</c>, and that inversion is the claim
+    /// getting stronger rather than the test changing its mind.</b> What it has always said is that a
+    /// Google token opens no session — a bearer holder could read their budget but held no
+    /// <c>sessions</c> row, so a later revocation had nothing to revoke. The bridge policy scheme that
+    /// let a bearer authenticate an ordinary route is gone: the fallback policy names the session
+    /// cookie's scheme, and the one policy that names the provider is the registration group's. So this
+    /// account, reached by its Google token alone, now reaches nothing at all.
+    /// </para>
+    /// <para>
+    /// <b>The session count stays and is the half worth keeping.</b> A refusal that nonetheless wrote a
+    /// session would be a request establishing an unrevokable sign-in on its way to being turned away,
+    /// and the status alone cannot see it. The account is seeded, so the refusal is a verdict on the
+    /// credential rather than on a subject nobody has heard of.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task AnAccountReachedByItsGoogleTokenAlone_IsRefusedAndHasNoSessionRow()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateApiFactory(host);
+        await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
+        HttpClient authenticated = factory.CreateAuthenticatedClient(OwnerSubject, OwnerEmail);
+
+        // Act
+        HttpResponseMessage response = await authenticated.GetAsync("/api/transactions");
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
+        await Assert.That((await ReadSessionsAsync(host)).Count).IsEqualTo(0);
+    }
+
+    /// <summary>
+    /// A member above its ceiling is refused before the ceremony begins, and the proof is the
+    /// challenge: it is still there afterwards.
+    /// </summary>
+    /// <remarks>
+    /// Every refusal on this leg returns the identical response, so the status and body cannot say
+    /// which check turned a request down. The nonce can. The ceilings are applied before
+    /// <c>clientDataJSON</c> is parsed and therefore before the challenge is spent, while every
+    /// refusal past that point spends it — so a genuine assertion still succeeding on the same
+    /// challenge is the one observation that says the request was refused for its size and never
+    /// reached the ceremony at all. That is what makes this a test of the ceiling rather than of the
+    /// 401 the request would have earned anyway.
+    /// </remarks>
+    [Test]
+    [Arguments(AssertionMember.ClientDataJson)]
+    [Arguments(AssertionMember.AuthenticatorData)]
+    [Arguments(AssertionMember.Signature)]
+    [Arguments(AssertionMember.CredentialId)]
+    public async Task Assertion_WhoseMemberExceedsItsCeiling_IsRefusedWithoutReachingTheCeremony(
+        AssertionMember member)
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateApiFactory(host);
+        RepositoryTestHost.SeededOwner owner = await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await host.SeedPasskeyAsync(
+            owner.UserId,
+            authenticator.CredentialId,
+            authenticator.CoseKey,
+            authenticator.Algorithm);
+        HttpClient anonymous = factory.CreateClient();
+        byte[] challenge = await BeginCeremonyAsync(anonymous, AssertionOptionsPath);
+        AssertionResult genuine = authenticator.Authenticate(
+            challenge,
+            ApiFactory.PasskeyOrigin,
+            PasskeyEncoding.ToUserHandle(owner.UserId));
+
+        // Act — the same ceremony twice over one challenge, with one member blown past its ceiling
+        // the first time and left alone the second.
+        HttpResponseMessage oversized = await PostAssertionAsync(
+            anonymous,
+            genuine,
+            member,
+            CeilingFor(member) * 2);
+        HttpResponseMessage afterwards = await PostAssertionAsync(anonymous, genuine);
+
+        // Assert
+        await Assert.That(oversized.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
+        await Assert.That(await ReadTitleAsync(oversized)).IsEqualTo(PasskeyVerificationExceptionHandler.Title);
+        await Assert.That(afterwards.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        await Assert.That((await ReadSessionsAsync(host)).Count).IsEqualTo(1);
+    }
+
+    /// <summary>
+    /// The other side of every ceiling, and the reason none of them can be quietly set to zero: a
+    /// member at the largest size its ceiling admits still runs the whole ceremony.
+    /// </summary>
+    /// <remarks>
+    /// Without this, each "too big" test above passes just as well against a limit of one byte — and
+    /// a ceiling one byte below what a conforming authenticator produces refuses real devices while
+    /// answering the same 401 an attacker gets, which is the one failure mode a bound like this must
+    /// not have. The observation is again the challenge: reaching the ceremony spends it, so the
+    /// genuine assertion that follows is refused for the nonce rather than accepted.
+    /// </remarks>
+    [Test]
+    [Arguments(AssertionMember.ClientDataJson)]
+    [Arguments(AssertionMember.AuthenticatorData)]
+    [Arguments(AssertionMember.Signature)]
+    [Arguments(AssertionMember.CredentialId)]
+    public async Task Assertion_WhoseMemberSitsAtItsCeiling_ReachesTheCeremonyAndSpendsTheChallenge(
+        AssertionMember member)
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateApiFactory(host);
+        RepositoryTestHost.SeededOwner owner = await host.SeedOwnerAsync(OwnerSubject, OwnerEmail);
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await host.SeedPasskeyAsync(
+            owner.UserId,
+            authenticator.CredentialId,
+            authenticator.CoseKey,
+            authenticator.Algorithm);
+        HttpClient anonymous = factory.CreateClient();
+        byte[] challenge = await BeginCeremonyAsync(anonymous, AssertionOptionsPath);
+        AssertionResult genuine = authenticator.Authenticate(
+            challenge,
+            ApiFactory.PasskeyOrigin,
+            PasskeyEncoding.ToUserHandle(owner.UserId));
+
+        // Act
+        HttpResponseMessage atCeiling = await PostAssertionAsync(anonymous, genuine, member, CeilingFor(member));
+        HttpResponseMessage afterwards = await PostAssertionAsync(anonymous, genuine);
+
+        // Assert — refused, but for what the member says rather than for how long it is, and the
+        // spent challenge is what says the difference.
+        await Assert.That(atCeiling.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
+        await Assert.That(afterwards.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
+        await Assert.That((await ReadSessionsAsync(host)).Count).IsEqualTo(0);
+    }
+
+    /// <summary>
+    /// The registration leg carries the same ceilings and answers differently, because it may: this
+    /// caller is signed in, so it is told which member was too large and how large it may be.
+    /// </summary>
+    [Test]
+    public async Task Registration_WhoseAttestationObjectExceedsItsCeiling_Returns400NamingTheMember()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        HttpClient authenticated = await SignedInOverRecoveryCodesAsync(factory);
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+
+        // Act — a real ceremony in every respect except the size of the one member under test.
+        byte[] challenge = await BeginCeremonyAsync(authenticated, RegistrationOptionsPath);
+        AttestationResult attestation = authenticator.Register(challenge, ApiFactory.PasskeyOrigin);
+        HttpResponseMessage response = await authenticated.PostAsJsonAsync(RegistrationPath, new
+        {
+            clientDataJson = attestation.ClientDataJsonBase64Url,
+            attestationObject = Base64UrlText.Encode(
+                RandomNumberGenerator.GetBytes(PasskeyPayloadLimits.AttestationObjectBytes * 2)),
+        });
+
+        // Assert — a sentence a person can act on, and nothing filed against the account.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(await ReadValidationErrorAsync(response)).IsEqualTo(
+            $"attestationObject was not base64url text within {PasskeyPayloadLimits.AttestationObjectBytes} bytes.");
+        await Assert.That(await CountPasskeyPublicKeysAsync(host)).IsEqualTo(0L);
+    }
+
+    /// <summary>
+    /// The other side of the registration ceiling, and the reason it cannot be quietly cut down: an
+    /// attestation object within the bound is judged by the ceremony rather than turned away for its
+    /// length.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Without this, the "too big" test above passes just as well against a ceiling of five hundred
+    /// bytes — and a ceiling below what a conforming authenticator produces locks a whole device
+    /// family out of registering while every test stays green, which is the one failure mode a bound
+    /// like this must not have.
+    /// </para>
+    /// <para>
+    /// The two sizes are what make the pair a pair, and only one of them could do the job alone. A
+    /// payload measured from the ceiling shrinks with the ceiling, so it reaches the ceremony however
+    /// far the ceiling is cut and can never notice the cut; what it does pin is the boundary being
+    /// inclusive, which an off-by-one in the decode would move. The other is measured from what the
+    /// product must be able to accept whatever the ceiling says, so a ceiling lowered beneath it goes
+    /// red.
+    /// </para>
+    /// <para>
+    /// The observable is the sentence the caller is told, which this leg may answer honestly because
+    /// the caller is signed in: "the registration response was refused" says the object got past both
+    /// decodes and the challenge and reached the verifier, and the size sentence says it never did.
+    /// Random bytes rather than a real attestation object, because what is being measured is which
+    /// check the request reaches, not whether an object this large can be assembled — no device
+    /// produces one, which is exactly why the ceiling has room to spare above it.
+    /// </para>
+    /// </remarks>
+    [Test]
+    [Arguments(PasskeyPayloadLimits.AttestationObjectBytes)]
+    [Arguments(LargestStorableAttestationObjectBytes)]
+    public async Task Registration_WhoseAttestationObjectIsWithinItsCeiling_ReachesTheCeremony(
+        int decodedBytes)
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateSignedInApiFactory(host);
+        HttpClient authenticated = await SignedInOverRecoveryCodesAsync(factory);
+        SyntheticAuthenticator authenticator = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+
+        // Act — a real ceremony in every respect except the size of the one member under test.
+        byte[] challenge = await BeginCeremonyAsync(authenticated, RegistrationOptionsPath);
+        AttestationResult attestation = authenticator.Register(challenge, ApiFactory.PasskeyOrigin);
+        HttpResponseMessage response = await authenticated.PostAsJsonAsync(RegistrationPath, new
+        {
+            clientDataJson = attestation.ClientDataJsonBase64Url,
+            attestationObject = Base64UrlText.Encode(RandomNumberGenerator.GetBytes(decodedBytes)),
+        });
+
+        // Assert — refused, but for what the object says rather than for how long it is, and nothing
+        // filed against the account either way.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(await ReadValidationErrorAsync(response))
+            .StartsWith("The registration response was refused:");
+        await Assert.That(await CountPasskeyPublicKeysAsync(host)).IsEqualTo(0L);
+    }
+
+    [Test]
+    public async Task AssertionOptions_RemoveChallengesThatHaveExpired()
+    {
+        // Arrange — a row inserted directly, because the sweep is only observable on a challenge that
+        // is already past its expiry, and no ceremony can produce one from the outside.
+        await using RepositoryTestHost host = await StartRepositoryHostAsync();
+        await using ApiFactory factory = CreateApiFactory(host);
+        Guid expiredId = await InsertExpiredChallengeAsync(host);
+
+        // Act
+        HttpResponseMessage options = await factory.CreateClient().PostAsync(AssertionOptionsPath, content: null);
+
+        // Assert
+        await Assert.That(options.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        await Assert.That(await CountChallengeAsync(host, expiredId)).IsEqualTo(0L);
+    }
+
+    private const string OwnerSubject = "passkey-owner";
+    private const string OwnerEmail = "passkey-owner@example.com";
+    private const string OtherSubject = "passkey-other";
+    private const string OtherEmail = "passkey-other@example.com";
+
+    /// <summary>
+    /// A domain the attacker owns outright, whose name begins with the one allowed origin. Refused by
+    /// an equality comparison and accepted by a prefix one.
+    /// </summary>
+    private const string LookalikeOrigin = ApiFactory.PasskeyOrigin + ".attacker.example";
+
+    /// <summary>
+    /// A stored counter and a value below it. Ten rather than one because the reported counter has to
+    /// be below the stored one <b>and</b> above zero: a pair where either is zero lands in the synced
+    /// authenticator carve-out instead, which is not a regression at all.
+    /// </summary>
+    private const uint SeededCounter = 10;
+
+    private const uint RegressedCounter = 5;
+
+    /// <summary>
+    /// How many refusals the test above drives: the seven distinct checks that can turn a sign-in
+    /// down, plus one oversized member for each of the five the payload ceilings bound. Every one of
+    /// them has to leave the identical response.
+    /// </summary>
+    private const int ReachableAssertionRefusals = 12;
+
+    /// <summary>
+    /// What attested credential data costs before the credential id and the key it wraps: the
+    /// 37-byte authenticator data header — a relying party id hash, one flags byte and a four-byte
+    /// counter — the 16-byte AAGUID, and the two bytes stating how long the credential id is.
+    /// </summary>
+    private const int AttestedCredentialDataOverheadBytes = 37 + 16 + 2;
+
+    /// <summary>
+    /// The largest attestation object this product could be handed and still store everything inside
+    /// it: the two domain maxima, plus what the shape carries around them.
+    /// </summary>
+    /// <remarks>
+    /// Read from the domain's own ceilings rather than from the payload one, and that is the whole
+    /// point of the constant. A credential id longer than
+    /// <see cref="PasskeyPublicKey.MaxWebAuthnCredentialIdLength"/> or a key longer than
+    /// <see cref="PasskeyPublicKey.MaxCoseKeyLength"/> could not be stored if it were accepted, so
+    /// this is the size above which the payload ceiling is refusing nothing the product could have
+    /// used — and below which it is refusing a device the product could have registered.
+    /// </remarks>
+    private const int LargestStorableAttestationObjectBytes =
+        AttestedCredentialDataOverheadBytes
+        + PasskeyPublicKey.MaxWebAuthnCredentialIdLength
+        + PasskeyPublicKey.MaxCoseKeyLength;
+
+    private const string RegistrationOptionsPath = "/api/passkeys/registration/options";
+    private const string RegistrationPath = "/api/passkeys/registration";
+    private const string AssertionOptionsPath = "/api/passkeys/assertion/options";
+    private const string AssertionPath = "/api/passkeys/assertion";
+
+    /// <summary>
+    /// The third nonce pool's options leg, which lives in this file's authenticated group. Named here
+    /// because the two cross-ceremony refusals above have to draw from it, and there is no finish leg
+    /// for it in this file — the ceremony is completed by the erasure endpoint, whose own tests live
+    /// in <c>ErasureReauthenticationTests</c>.
+    /// </summary>
+    private const string ReauthenticationOptionsPath = "/api/passkeys/reauthentication/options";
+
+    /// <summary>
+    /// One <c>sessions</c> row, read out of the database rather than out of a response, because the
+    /// assertion response deliberately carries no session id.
+    /// </summary>
+    /// <remarks>
+    /// The id is carried for one purpose and no assertion reads it: it is what
+    /// <see cref="SessionsOpenedSinceAsync" /> tells an existing row from a new one by. The three
+    /// columns beside it repeat across rows — one account signing in twice produces two identical
+    /// triples — so a difference computed without the key would report one session where there are two.
+    /// </remarks>
+    private readonly record struct SessionRow(Guid Id, Guid UserId, Guid CredentialId, string Kind);
+
+    /// <summary>
+    /// Hosts the API over the repository host's container: that host is the one with the passkey
+    /// seeding on it, and it hands over both identities the application expects — the least-privilege
+    /// role it serves requests on, and the elevated account startup migrates and provisions with.
+    /// </summary>
+    private static ApiFactory CreateApiFactory(RepositoryTestHost host) =>
+        new(host.AppConnectionString, adminConnectionString: host.ConnectionString);
+
+    /// <summary>
+    /// The same factory with the application's own authentication left standing, so
+    /// <see cref="ApiFactory.CreateSignedInClientAsync" /> can hand out a client the cookie handler
+    /// really answers.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>It stands beside <see cref="CreateApiFactory" /> rather than replacing it, and what is left
+    /// over there is one test whose subject is the provider bearer itself</b> —
+    /// <see cref="AnAccountReachedByItsGoogleTokenAlone_IsRefusedAndHasNoSessionRow" /> — plus the
+    /// anonymous tests, which authenticate as nobody and need no factory flag either way. Its former
+    /// companion,
+    /// <see cref="Assertion_PresentedWithAnotherAccountsSession_EstablishesTheSessionForThePasskeysOwner" />,
+    /// moved to this factory when the credential its arrangement carries stopped being a bearer and
+    /// became a cookie.
+    /// </para>
+    /// <para>
+    /// <b>What used to keep the counting tests over there, and what closed it.</b> Seeding a sign-in
+    /// wrote an account, a whole passkey — credential, public key and signature counter — and a session,
+    /// while every count here is deliberately <b>unscoped</b>: the claim is that a refused ceremony wrote
+    /// nothing <em>anywhere</em>, which a count filtered to one account cannot make. The passkey half is
+    /// gone, because <see cref="SignedInOverRecoveryCodesAsync" /> opens the same full session over a set
+    /// of recovery codes and files no passkey row of any kind. The session half is not gone and cannot
+    /// be — a session is what a sign-in harness is for — so the four tests that count sessions read the
+    /// table before the act and assert what the act changed. Both moves keep the claim unscoped, which
+    /// is the property that mattered.
+    /// </para>
+    /// </remarks>
+    private static ApiFactory CreateSignedInApiFactory(RepositoryTestHost host) =>
+        new(
+            host.AppConnectionString,
+            adminConnectionString: host.ConnectionString,
+            usesApplicationAuthentication: true);
+
+    private static async Task<RepositoryTestHost> StartRepositoryHostAsync()
+    {
+        RepositoryTestHost host = new();
+        await host.StartAsync();
+        return host;
+    }
+
+    /// <summary>
+    /// Runs an options leg and returns the challenge bytes it issued.
+    /// </summary>
+    private static async Task<byte[]> BeginCeremonyAsync(HttpClient client, string path)
+    {
+        JsonNode options = await PostForJsonAsync(client, path);
+        return Base64UrlText.Decode(options["challenge"]!.GetValue<string>());
+    }
+
+    private static async Task<JsonNode> PostForJsonAsync(HttpClient client, string path)
+    {
+        HttpResponseMessage response = await client.PostAsync(path, content: null);
+        response.EnsureSuccessStatusCode();
+        return await ReadJsonAsync(response);
+    }
+
+    /// <summary>
+    /// Runs both authenticated legs of a registration and returns what the device produced.
+    /// </summary>
+    private static async Task<AttestationResult> RegisterAsync(
+        HttpClient client,
+        SyntheticAuthenticator authenticator,
+        WrappedKeyFixture? wrappedKeys = null)
+    {
+        byte[] challenge = await BeginCeremonyAsync(client, RegistrationOptionsPath);
+        AttestationResult result = authenticator.Register(challenge, ApiFactory.PasskeyOrigin);
+        HttpResponseMessage response = await PostRegistrationAsync(client, result, wrappedKeys);
+        response.EnsureSuccessStatusCode();
+        return result;
+    }
+
+    /// <param name="wrappedKeys">
+    /// The share of the account keys this factor is to hold. Null mints a fresh one, which is what
+    /// every test that is not about the wrapped keys wants — and it has to be fresh, because
+    /// <c>factor_id</c> is the table's primary key — <c>PK_wrapped_account_keys</c> — so it is unique
+    /// table-wide, and several tests here register twice to measure something else.
+    /// </param>
+    /// <param name="manifest">
+    /// The account's next factor manifest, as text on the wire. Null mints a fresh well-formed one,
+    /// which is what every test that is not about the manifest wants. It is a <see cref="string" />
+    /// rather than a <see cref="ManifestFixture" /> so a caller can post a spelling no fixture can
+    /// produce — malformed text, or the empty string — and a caller that needs to compare the stored
+    /// bytes against what it sent passes <c>fixture.Text</c> and keeps the fixture.
+    /// </param>
+    /// <param name="rotationEpoch">
+    /// The generation the request claims. Null reads the account's current one and adds one, which is
+    /// the only value the route accepts and the only one a test not about the epoch wants. Named by the
+    /// cases that are about it — an epoch two generations on, or one already spent — which is the whole
+    /// of what tells a server validating the client's number from one computing its own.
+    /// </param>
+    private static async Task<HttpResponseMessage> PostRegistrationAsync(
+        HttpClient client,
+        AttestationResult result,
+        WrappedKeyFixture? wrappedKeys = null,
+        string? manifest = null,
+        int? rotationEpoch = null)
+    {
+        // JSON null rather than a present object carrying false when the device reported nothing about
+        // the extension: the two are different claims, and collapsing them here would hide the
+        // response reporting them as one.
+        object? clientExtensionResults = result.PrfEnabled is { } enabled
+            ? new { prf = new { enabled } }
+            : null;
+        WrappedKeyFixture keys = wrappedKeys ?? WrappedKeyFixture.Mint();
+
+        // Read off the running API unless the caller named one, because a file that registers a second
+        // passkey has to send a different number from the first and this helper does not know which
+        // call it is on. See FactorGeneration.
+        int epoch = rotationEpoch ?? await FactorGeneration.NextAsync(client);
+
+        return await client.PostAsJsonAsync(RegistrationPath, new
+        {
+            clientDataJson = result.ClientDataJsonBase64Url,
+            attestationObject = result.AttestationObjectBase64Url,
+            clientExtensionResults,
+            factorId = keys.FactorId,
+            wrappedPrivateKey = keys.WrappedPrivateKey,
+            encapsulatedAccountKeys = keys.EncapsulatedAccountKeys,
+
+            // ONE FACTOR JOINS THE SET HERE, so the account's one authenticated statement of what the
+            // set contains moves with it, under the generation above.
+            manifest = manifest ?? ManifestFixture.Mint().Text,
+            rotationEpoch = epoch,
+        });
+    }
+
+    /// <summary>
+    /// Posts a registration whose three key-custody members are exactly what the caller supplies, for
+    /// the values <see cref="WrappedKeyFixture"/> cannot express — a malformed envelope, a factor
+    /// identifier that is not one canonical uuid.
+    /// </summary>
+    /// <remarks>
+    /// Everything else is the genuine ceremony, so the member under test is the only thing that can
+    /// decide the response. The two envelopes are supplied separately rather than as a pair, because
+    /// what several of these tests measure is a handler judging one of them and not the other.
+    /// </remarks>
+    private static async Task<HttpResponseMessage> PostRegistrationAsync(
+        HttpClient client,
+        AttestationResult result,
+        string factorId,
+        string wrappedPrivateKey,
+        string encapsulatedAccountKeys)
+    {
+        // WELL FORMED, AND THAT IS WHAT KEEPS THESE CASES ATTRIBUTABLE. The manifest is judged AFTER
+        // the three members above it, so a request sending none would still be refused — by the
+        // manifest's own sentence, on a route whose key-custody checks had all been deleted. Sending a
+        // legal one leaves the member the caller corrupted as the only thing that can decide the
+        // answer, which is what each of these tests claims to be measuring.
+        int rotationEpoch = await FactorGeneration.NextAsync(client);
+
+        return await client.PostAsJsonAsync(RegistrationPath, new
+        {
+            clientDataJson = result.ClientDataJsonBase64Url,
+            attestationObject = result.AttestationObjectBase64Url,
+            clientExtensionResults = new { prf = new { enabled = result.PrfEnabled } },
+            factorId,
+            wrappedPrivateKey,
+            encapsulatedAccountKeys,
+            manifest = ManifestFixture.Mint().Text,
+            rotationEpoch,
+        });
+    }
+
+    /// <summary>
+    /// The two columns a wrapped account key crosses the wire in, named so a failing case says which
+    /// of them stopped being judged.
+    /// </summary>
+    /// <remarks>
+    /// Public because TUnit builds the parameterised cases from these values.
+    /// </remarks>
+    public enum FactorPayload
+    {
+        PrivateKey,
+        AccountKeys,
+    }
+
+    /// <summary>
+    /// The three members of a registration that carry the account's key custody, each of which the
+    /// handler judges <b>after</b> the <c>prf</c> gate.
+    /// </summary>
+    /// <remarks>
+    /// Separate from <see cref="FactorPayload" /> rather than an extension of it, because the two
+    /// enumerations answer different questions: that one names the pair a test corrupts one of, this one
+    /// names every member whose check could be moved above the gate. Public because TUnit builds the
+    /// parameterised cases from these values.
+    /// </remarks>
+    public enum KeyCustodyMember
+    {
+        FactorId,
+        WrappedPrivateKey,
+        EncapsulatedAccountKeys,
+    }
+
+    /// <summary>
+    /// A factor identifier no spelling of a uuid produces, so the identifier check refuses it wherever
+    /// that check happens to sit.
+    /// </summary>
+    /// <remarks>
+    /// One of the cases
+    /// <see cref="PasskeyRegistration_RefusesAFactorIdentifierThatIsNotOneCanonicalUuid" /> drives,
+    /// restated here rather than shared with it: that test's arguments are attribute literals, and a
+    /// constant folded into them would make one edit move both a refusal test and an ordering test.
+    /// </remarks>
+    private const string NotOneCanonicalUuid = "not a factor identifier at all";
+
+    /// <summary>
+    /// The member name a refusal about <paramref name="member" /> has to lead with — the spelling the
+    /// wire uses, which is the only one a caller can act on.
+    /// </summary>
+    /// <remarks>
+    /// Written out rather than read off the command record, and the copy is the point: a test taking its
+    /// expectation from the type under test agrees with whatever that type later says, including with
+    /// the two members swapped.
+    /// </remarks>
+    private static string WireNameOf(FactorPayload payload) => payload switch
+    {
+        FactorPayload.PrivateKey => "wrappedPrivateKey",
+        FactorPayload.AccountKeys => "encapsulatedAccountKeys",
+        _ => throw new ArgumentOutOfRangeException(
+            nameof(payload), payload, "No wire name is defined for this payload."),
+    };
+
+    /// <summary>The member of the pair that this case left well formed.</summary>
+    private static FactorPayload Other(FactorPayload payload) =>
+        payload is FactorPayload.PrivateKey ? FactorPayload.AccountKeys : FactorPayload.PrivateKey;
+
+    /// <summary>
+    /// The width the named payload's own suite defines, and the version byte it leads with.
+    /// </summary>
+    /// <remarks>
+    /// <b>Two suites, two widths, two version constants, and the pairs may not be crossed.</b>
+    /// <c>wrappedPrivateKey</c> is an AEAD envelope over a PKCS#8 P-256 private key;
+    /// <c>encapsulatedAccountKeys</c> is an ECDH encapsulation over both account keys. Reading one
+    /// payload's width beside the other's version compiles and renders plausible bytes, and the two
+    /// version constants hold the same number today — so a cross-read would go on passing. Each arm
+    /// below reads both numbers off the same suite, which is the only arrangement a later edit cannot
+    /// half-apply.
+    /// </remarks>
+    private static int LengthOf(FactorPayload payload) => payload switch
+    {
+        FactorPayload.PrivateKey => WrappedAccountKeys.WrappedPrivateKeyLength,
+        FactorPayload.AccountKeys => WrappedAccountKeys.EncapsulatedAccountKeysLength,
+        _ => throw new ArgumentOutOfRangeException(
+            nameof(payload), payload, "No width is defined for this payload."),
+    };
+
+    /// <inheritdoc cref="LengthOf" />
+    private static byte VersionOf(FactorPayload payload) => payload switch
+    {
+        FactorPayload.PrivateKey => WrappedAccountKeys.WrappedPrivateKeyVersion,
+        FactorPayload.AccountKeys => WrappedAccountKeys.EncapsulatedAccountKeysVersion,
+        _ => throw new ArgumentOutOfRangeException(
+            nameof(payload), payload, "No version is defined for this payload."),
+    };
+
+    /// <summary>
+    /// The refusal names the member this case corrupted, states the width and states the version.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The member name is the assertion that discriminates, and it is why "a sentence arrived" is not
+    /// enough here.</b> The two envelopes are supplied separately, judged separately and refused in
+    /// sentences that differ by one word — so swapping the two arguments the handler builds those
+    /// sentences from leaves every case of every parameterised test green while telling a caller to go
+    /// and fix the member that was fine. Asserting the message is non-empty cannot see that: it fails
+    /// only if the route stops returning a validation body at all, which the status assertion beside it
+    /// already implies. The <c>prf</c> tests in this file pin their sentence with an equality, so this is
+    /// an inconsistency inside one file rather than the file's style.
+    /// </para>
+    /// <para>
+    /// The prose in between is deliberately not restated. The width and the version are read off the
+    /// entity that refuses a row against them — a test carrying its own copy of either goes on being
+    /// confident after the real bound has moved — and the wording is left free to improve, since what a
+    /// caller needs from it is which member and which two facts.
+    /// </para>
+    /// </remarks>
+    private static async Task AssertNamesTheMalformedEnvelopeAsync(
+        HttpResponseMessage response,
+        FactorPayload payload)
+    {
+        string message = await ReadValidationErrorAsync(response);
+
+        await Assert.That(message).StartsWith(WireNameOf(payload));
+        await Assert.That(message).DoesNotContain(WireNameOf(Other(payload)));
+        await Assert.That(message).Contains($"{LengthOf(payload)} bytes");
+        await Assert.That(message).Contains($"version {VersionOf(payload)}");
+
+        // The OTHER payload's width must not appear, and this is the assertion the widths diverging
+        // made possible. 167 and 158 are two different sentences now, so a handler that judged the
+        // encapsulated value against the AEAD bound — or built its refusal from the wrong constant —
+        // is caught here rather than on the day a client's decoder meets bytes it cannot slice.
+        await Assert.That(message).DoesNotContain($"{LengthOf(Other(payload))} bytes");
+    }
+
+    /// <summary>
+    /// The ways a wrapped key member can be wrong about its width or its alphabet, each one thing at a
+    /// time.
+    /// </summary>
+    public enum MalformedEnvelope
+    {
+        OneByteShort,
+        OneByteTooWide,
+        OutsideTheAlphabet,
+    }
+
+    /// <summary>
+    /// A wrapped key member with exactly one fault in it and everything else about it right.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Both width cases carry the version byte, so the width is the only thing wrong with either.
+    /// The alphabet case is a well-formed envelope's text with one character replaced by one
+    /// base64url does not define — the character a client that reached for the standard encoder emits
+    /// — so it is the right length and refused for its alphabet alone.
+    /// </para>
+    /// <para>
+    /// <b>That character sits at index 4, and the position is the whole of what makes the case prove
+    /// anything.</b> Base64 carries three decoded bytes per four characters, so characters 0-3 hold
+    /// bytes 0-2 — the version among them. Measured on this fixture: put the character at index 0 and a
+    /// decoder that skipped the alphabet check reads the text as standard base64, where <c>+</c> is 62,
+    /// and gets a leading byte of <b>249</b>. The envelope comes back refused for its version, the case
+    /// stays green, and the alphabet has been tested by nothing. At index 4 the damage lands in bytes
+    /// 3-5, which are random filler: the same decoder reads the right number of bytes leading with the version byte and
+    /// would <em>accept</em> them, so a refusal has exactly one source left.
+    /// <c>WrappedPrivateKeyEnvelopeTests</c> keeps its own substitution off the leading group for this reason.
+    /// </para>
+    /// </remarks>
+    private static string MalformedEnvelopeText(FactorPayload payload, MalformedEnvelope fault) =>
+        fault switch
+        {
+            MalformedEnvelope.OneByteShort =>
+                EnvelopeText(LengthOf(payload) - 1, VersionOf(payload)),
+            MalformedEnvelope.OneByteTooWide =>
+                EnvelopeText(LengthOf(payload) + 1, VersionOf(payload)),
+            MalformedEnvelope.OutsideTheAlphabet =>
+                EnvelopeText(LengthOf(payload), VersionOf(payload))
+                    .Remove(4, 1)
+                    .Insert(4, OutsideTheBase64UrlAlphabet.ToString()),
+            _ => throw new ArgumentOutOfRangeException(
+                nameof(fault), fault, "No text is defined for this fault."),
+        };
+
+    /// <summary>
+    /// A character standard base64 defines and base64url does not.
+    /// </summary>
+    private const char OutsideTheBase64UrlAlphabet = '+';
+
+    /// <summary>
+    /// An envelope of exactly <paramref name="length"/> bytes whose leading byte is
+    /// <paramref name="version"/>, as the wire carries one.
+    /// </summary>
+    private static string EnvelopeText(int length, byte version)
+    {
+        byte[] envelope = RandomNumberGenerator.GetBytes(length);
+        envelope[0] = version;
+
+        return Base64UrlText.Encode(envelope);
+    }
+
+    /// <summary>
+    /// Runs the anonymous options leg and has the device answer the challenge it issued.
+    /// </summary>
+    private static async Task<AssertionResult> BuildAssertionAsync(
+        HttpClient client,
+        SyntheticAuthenticator authenticator,
+        Guid? userId)
+    {
+        byte[] challenge = await BeginCeremonyAsync(client, AssertionOptionsPath);
+        return authenticator.Authenticate(
+            challenge,
+            ApiFactory.PasskeyOrigin,
+            userId is { } id ? PasskeyEncoding.ToUserHandle(id) : null);
+    }
+
+    private static Task<HttpResponseMessage> PostAssertionAsync(HttpClient client, AssertionResult result) =>
+        client.PostAsJsonAsync(AssertionPath, new
+        {
+            credentialId = result.CredentialIdBase64Url,
+            clientDataJson = result.ClientDataJsonBase64Url,
+            authenticatorData = result.AuthenticatorDataBase64Url,
+            signature = result.SignatureBase64Url,
+            userHandle = result.UserHandleBase64Url,
+        });
+
+    /// <summary>
+    /// The caller-supplied members of an assertion that <see cref="PasskeyPayloadLimits"/> bounds.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Public because TUnit builds the parameterised cases from these values. Named rather than
+    /// numbered so a failing case says which ceiling drifted.
+    /// </para>
+    /// <para>
+    /// <see cref="UserHandle"/> is bounded like the rest and reached at a different moment, which is
+    /// why it appears in the identical-response test below and in neither of the parameterised
+    /// ceiling pairs. The other four are decoded before <c>clientDataJSON</c> is parsed, so their
+    /// ceilings are applied before the challenge is spent and the surviving nonce is what tells a
+    /// size refusal from a ceremony one. The handle is not read until the credential has been found,
+    /// well past the point the nonce is consumed, so both sides of its ceiling spend the challenge
+    /// and that observable can say nothing about it. Its at-ceiling half is pinned in the unit suite
+    /// instead, on <c>CompleteAssertionHandler</c>, where the refusal's reason is visible and the two
+    /// refusals are genuinely different sentences.
+    /// </para>
+    /// </remarks>
+    public enum AssertionMember
+    {
+        ClientDataJson,
+        AuthenticatorData,
+        Signature,
+        CredentialId,
+        UserHandle,
+    }
+
+    /// <summary>
+    /// The ceiling each member is bounded by, read from the production constants rather than
+    /// restated — a test carrying its own copy of the number would keep passing after the real one
+    /// moved.
+    /// </summary>
+    private static int CeilingFor(AssertionMember member) => member switch
+    {
+        AssertionMember.ClientDataJson => PasskeyPayloadLimits.ClientDataJsonBytes,
+        AssertionMember.AuthenticatorData => PasskeyPayloadLimits.AssertionAuthenticatorDataBytes,
+        AssertionMember.Signature => PasskeyPayloadLimits.SignatureBytes,
+        AssertionMember.CredentialId => PasskeyPayloadLimits.CredentialIdBytes,
+        AssertionMember.UserHandle => PasskeyPayloadLimits.UserHandleBytes,
+        _ => throw new ArgumentOutOfRangeException(nameof(member), member, "No ceiling is defined for this member."),
+    };
+
+    /// <summary>
+    /// The same ceremony with one member resized to <paramref name="decodedBytes"/> and everything
+    /// else left genuine, so the only thing that can decide the response is the member under test.
+    /// </summary>
+    /// <remarks>
+    /// <c>clientDataJSON</c> is padded rather than replaced, and that difference is load-bearing.
+    /// The handler parses it and recovers the challenge from it before anything is verified, so
+    /// random bytes of the right length would be refused as malformed <b>before</b> the challenge is
+    /// spent — which is the same observation an oversized member produces, and the test would no
+    /// longer be able to tell the two apart. Padding keeps the object valid and the challenge intact,
+    /// so a member within its ceiling reaches the ceremony exactly as a real one does.
+    /// </remarks>
+    private static Task<HttpResponseMessage> PostAssertionAsync(
+        HttpClient client,
+        AssertionResult result,
+        AssertionMember member,
+        int decodedBytes)
+    {
+        string resized = member is AssertionMember.ClientDataJson
+            ? Base64UrlText.Encode(PadClientDataJson(result.ClientDataJson, decodedBytes))
+            : Base64UrlText.Encode(RandomNumberGenerator.GetBytes(decodedBytes));
+
+        return client.PostAsJsonAsync(AssertionPath, new
+        {
+            credentialId = member is AssertionMember.CredentialId ? resized : result.CredentialIdBase64Url,
+            clientDataJson = member is AssertionMember.ClientDataJson ? resized : result.ClientDataJsonBase64Url,
+            authenticatorData = member is AssertionMember.AuthenticatorData
+                ? resized
+                : result.AuthenticatorDataBase64Url,
+            signature = member is AssertionMember.Signature ? resized : result.SignatureBase64Url,
+            userHandle = member is AssertionMember.UserHandle ? resized : result.UserHandleBase64Url,
+        });
+    }
+
+    /// <summary>
+    /// Grows a genuine <c>clientDataJSON</c> to exactly <paramref name="decodedBytes"/> by appending
+    /// one more member to the object.
+    /// </summary>
+    /// <remarks>
+    /// A member the specification does not define, which a client is explicitly permitted to send and
+    /// the parser is required to ignore — so this is a larger response of the shape a real one has,
+    /// not a malformed one that happens to be long.
+    /// </remarks>
+    private static byte[] PadClientDataJson(byte[] clientDataJson, int decodedBytes)
+    {
+        const string opening = ",\"padding\":\"";
+        const string closing = "\"}";
+
+        // The trailing brace is replaced by the appended member and a new one.
+        int padding = decodedBytes - clientDataJson.Length - opening.Length - closing.Length + 1;
+        if (padding < 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(decodedBytes),
+                decodedBytes,
+                "The target is smaller than the client data the ceremony produced.");
+        }
+
+        StringBuilder builder = new(Encoding.UTF8.GetString(clientDataJson));
+        builder.Length -= 1;
+        builder.Append(opening).Append('a', padding).Append(closing);
+
+        return Encoding.UTF8.GetBytes(builder.ToString());
+    }
+
+    /// <summary>
+    /// The one validation message a refused registration carries, so a test asserts on the sentence
+    /// the caller is actually told rather than on the status alone.
+    /// </summary>
+    /// <remarks>
+    /// Read from the <c>Response</c> key by name rather than from whichever key happens to come first.
+    /// Every refusal on this leg is filed under that field by <c>CompleteRegistrationHandler</c>, and
+    /// several tests now depend on this helper — taking the first key would keep them green after a
+    /// refusal moved to a different field, which is a change the caller would see.
+    /// </remarks>
+    private static async Task<string> ReadValidationErrorAsync(HttpResponseMessage response)
+    {
+        JsonNode errors = (await ReadJsonAsync(response))["errors"]!;
+
+        return errors["Response"]!.AsArray()[0]!.GetValue<string>();
+    }
+
+    /// <summary>
+    /// The same ceremony with one bit of the signature moved, so the response is genuine in every
+    /// respect except the one under test.
+    /// </summary>
+    private static AssertionResult WithFlippedSignature(AssertionResult result)
+    {
+        byte[] signature = [.. result.Signature];
+        signature[^1] ^= 0xFF;
+        return result with { Signature = signature };
+    }
+
+    /// <summary>
+    /// The whole response body, with the one member that varies per <b>request</b> rather than per
+    /// <b>cause</b> replaced by a fixed placeholder.
+    /// </summary>
+    /// <remarks>
+    /// <c>traceId</c> is the correlation identifier the problem-details pipeline stamps on every
+    /// problem response in this application; it is a new value on every request, including two
+    /// requests refused for the identical reason, so comparing it would compare the trace and not the
+    /// refusal. Nothing else is normalised, and that is what keeps the comparison a whole-body one:
+    /// the member is replaced rather than removed, so a <c>traceId</c> that stopped being emitted
+    /// still fails, and any other member appearing, disappearing or differing fails with it.
+    /// </remarks>
+    private static async Task<string> ReadComparableBodyAsync(HttpResponseMessage response)
+    {
+        JsonObject body = (await ReadJsonAsync(response)).AsObject();
+        if (body.ContainsKey(TraceIdMember))
+        {
+            body[TraceIdMember] = "<one per request>";
+        }
+
+        return body.ToJsonString();
+    }
+
+    private const string TraceIdMember = "traceId";
+
+    private static async Task<JsonNode> ReadJsonAsync(HttpResponseMessage response) =>
+        (await JsonNode.ParseAsync(await response.Content.ReadAsStreamAsync()))!;
+
+    private static async Task<string> ReadTitleAsync(HttpResponseMessage response) =>
+        (await ReadJsonAsync(response))["title"]!.GetValue<string>();
+
+    /// <summary>
+    /// Every <c>sessions</c> row in the database, on the container's superuser connection so that
+    /// row-level security cannot make an existing row look absent — the whole point of several of the
+    /// assertions above is that no row was written at all.
+    /// </summary>
+    private static async Task<IReadOnlyList<SessionRow>> ReadSessionsAsync(RepositoryTestHost host)
+    {
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
+        await using NpgsqlCommand command = new(
+            "select id, user_id, credential_id, kind from sessions order by created_at_utc",
+            connection);
+        await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
+
+        List<SessionRow> rows = [];
+        while (await reader.ReadAsync())
+        {
+            rows.Add(new SessionRow(
+                reader.GetGuid(0), reader.GetGuid(1), reader.GetGuid(2), reader.GetString(3)));
+        }
+
+        return rows;
+    }
+
+    /// <summary>
+    /// Every <c>sessions</c> row in the database that was not there when <paramref name="before" /> was
+    /// read.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>A difference, and deliberately not a count scoped to an account.</b> What the callers claim is
+    /// that an act opened one session, or none, <em>anywhere</em> — including on somebody else's
+    /// account, which is the row a handler that took the wrong owner writes and which a scoped count
+    /// would never see. The unscoped absolute those assertions used to be said the same thing only while
+    /// the arrangement left the table empty, which stopped being true the day the account under test was
+    /// signed in rather than provisioned.
+    /// </para>
+    /// <para>
+    /// It re-reads the whole table rather than filtering in SQL on the ids it already holds, because the
+    /// query is the one <see cref="ReadSessionsAsync" /> already owns and a second, subtly different
+    /// one would be a second definition of "every session there is". Still on the container superuser
+    /// connection, for the reason that member gives.
+    /// </para>
+    /// </remarks>
+    private static async Task<IReadOnlyList<SessionRow>> SessionsOpenedSinceAsync(
+        RepositoryTestHost host,
+        IReadOnlyList<SessionRow> before)
+    {
+        HashSet<Guid> standing = [.. before.Select(row => row.Id)];
+
+        return [.. (await ReadSessionsAsync(host)).Where(row => !standing.Contains(row.Id))];
+    }
+
+    /// <summary>
+    /// A client already signed in as the owner account, over a set of recovery codes.
+    /// </summary>
+    /// <remarks>
+    /// <b>The credential is named rather than left to the kind, and every caller depends on it.</b> A
+    /// full session opens over a passkey or over a set of recovery codes alike, and the sign-in harness
+    /// defaults to the passkey — which files a <c>credentials</c> row, a <c>passkey_public_keys</c> row
+    /// and a <c>passkey_signature_counters</c> row the tests below are counting. Over a set, the
+    /// arrangement writes one <c>credentials</c> row and touches neither passkey table, so every "no
+    /// passkey was filed", "exactly one was" and "one credential was excluded" assertion here reads the
+    /// act rather than the seeding.
+    /// </remarks>
+    private static async Task<HttpClient> SignedInOverRecoveryCodesAsync(ApiFactory factory) =>
+        (await factory.CreateSignedInClientAsync(
+            OwnerSubject, OwnerEmail, opensWith: CredentialType.RecoveryCodes)).Client;
+
+    private static async Task<Guid> FindPasskeyCredentialIdAsync(
+        RepositoryTestHost host,
+        byte[] webAuthnCredentialId)
+    {
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
+        await using NpgsqlCommand command = new(
+            "select credential_id from passkey_public_keys where webauthn_credential_id = @handle",
+            connection);
+        command.Parameters.AddWithValue("handle", webAuthnCredentialId);
+
+        return await command.ExecuteScalarAsync() switch
+        {
+            Guid credentialId => credentialId,
+            var unexpected => throw new InvalidOperationException(
+                $"Expected a credential id from 'passkey_public_keys', got '{unexpected ?? "null"}'."),
+        };
+    }
+
+    private static Task<long> CountPasskeyPublicKeysAsync(RepositoryTestHost host) =>
+        ScalarCountAsync(host, "select count(*) from passkey_public_keys", parameter: null);
+
+    /// <summary>
+    /// Scoped to the passkey rows, because <c>credentials</c> holds both kinds and seeding an account
+    /// already writes it a federated one — an unscoped count would never be zero and would never be
+    /// one either.
+    /// </summary>
+    private static Task<long> CountPasskeyCredentialsAsync(RepositoryTestHost host) =>
+        ScalarCountAsync(host, "select count(*) from credentials where type = 'passkey'", parameter: null);
+
+    private static Task<long> CountPasskeySignatureCountersAsync(RepositoryTestHost host) =>
+        ScalarCountAsync(host, "select count(*) from passkey_signature_counters", parameter: null);
+
+    private static Task<long> CountWrappedAccountKeysAsync(RepositoryTestHost host) =>
+        ScalarCountAsync(host, "select count(*) from wrapped_account_keys", parameter: null);
+
+    /// <summary>
+    /// One <c>wrapped_account_keys</c> row, every column of it.
+    /// </summary>
+    /// <remarks>
+    /// <c>credential_type</c> as the column spells it rather than as the enum member it parses to, so
+    /// the assertion is over the token the database actually holds.
+    /// </remarks>
+    private readonly record struct WrappedAccountKeysRow(
+        Guid CredentialId,
+        Guid FactorId,
+        Guid UserId,
+        string CredentialType,
+        byte[] WrappedPrivateKey,
+        byte[] EncapsulatedAccountKeys);
+
+    /// <summary>
+    /// Every <c>wrapped_account_keys</c> row, on the container's superuser connection for the reason
+    /// <see cref="ReadSessionsAsync"/> gives: the policy on this table is keyed on the owner, and a
+    /// read that ran without one would make a present row look absent.
+    /// </summary>
+    private static async Task<IReadOnlyList<WrappedAccountKeysRow>> ReadWrappedAccountKeysAsync(
+        RepositoryTestHost host)
+    {
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
+        await using NpgsqlCommand command = new(
+            """
+            select credential_id, factor_id, user_id, credential_type, wrapped_private_key, encapsulated_account_keys
+            from wrapped_account_keys
+            order by created_at_utc
+            """,
+            connection);
+        await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
+
+        List<WrappedAccountKeysRow> rows = [];
+        while (await reader.ReadAsync())
+        {
+            rows.Add(new WrappedAccountKeysRow(
+                reader.GetGuid(0),
+                reader.GetGuid(1),
+                reader.GetGuid(2),
+                reader.GetString(3),
+                reader.GetFieldValue<byte[]>(4),
+                reader.GetFieldValue<byte[]>(5)));
+        }
+
+        return rows;
+    }
+
+    private static Task<long> CountUsersAsync(RepositoryTestHost host) =>
+        ScalarCountAsync(host, "select count(*) from users", parameter: null);
+
+    private static Task<long> CountChallengeAsync(RepositoryTestHost host, Guid id) =>
+        ScalarCountAsync(host, "select count(*) from webauthn_challenges where id = @id", ("id", id));
+
+    private static async Task<long> ScalarCountAsync(
+        RepositoryTestHost host,
+        string sql,
+        (string Name, object Value)? parameter)
+    {
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
+        await using NpgsqlCommand command = new(sql, connection);
+        if (parameter is { } bound)
+        {
+            command.Parameters.AddWithValue(bound.Name, bound.Value);
+        }
+
+        return await command.ExecuteScalarAsync() switch
+        {
+            long count => count,
+            var unexpected => throw new InvalidOperationException($"Expected a count, got '{unexpected ?? "null"}'."),
+        };
+    }
+
+    /// <summary>
+    /// Writes a challenge that expired before the request under test ran. Created earlier than it
+    /// expires, because <c>CK_webauthn_challenges_lifetime</c> refuses a row that was never live.
+    /// </summary>
+    private static async Task<Guid> InsertExpiredChallengeAsync(RepositoryTestHost host)
+    {
+        Guid id = Guid.CreateVersion7();
+        DateTime nowUtc = DateTime.UtcNow;
+
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
+        await using NpgsqlCommand command = new(
+            """
+            insert into webauthn_challenges (id, challenge, ceremony, created_at_utc, expires_at_utc)
+            values (@id, @challenge, 'authentication', @created, @expires)
+            """,
+            connection);
+        command.Parameters.AddWithValue("id", id);
+        command.Parameters.AddWithValue("challenge", new byte[32]);
+        command.Parameters.AddWithValue("created", nowUtc.AddMinutes(-10));
+        command.Parameters.AddWithValue("expires", nowUtc.AddMinutes(-5));
+        await command.ExecuteNonQueryAsync();
+
+        return id;
+    }
+}

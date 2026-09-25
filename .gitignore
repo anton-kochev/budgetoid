@@ -49,12 +49,16 @@ __queuestorage__/
 /BudgetoidApp/AppHost/infra/
 
 CLAUDE.local.md
-/.claude/agent-memory
+# Same leading **/ as the two rules above, and for the same reason: subagents write
+# their memory next to the directory they were working in, so it lands under
+# BudgetoidApp/ or ClientApp/ rather than at the root. A root-anchored rule caught
+# none of those, and they were committed by accident twice.
+**/.claude/agent-memory/
 /.claude/skills/grimoire.*
 /.claude/agents/grimoire.*
 /.claude/grimoire.json
 
-# Backlog tooling — both skills drive the private budgetoid-specs repository and the
+# Backlog tooling — these skills drive the private budgetoid-specs repository and the
 # personal GitHub Project, so they are useful only to an account that can reach those.
 /.claude/skills/budgetoid.publish-backlog/
 /.claude/skills/budgetoid.story-context/
@@ -62,3 +66,32 @@ CLAUDE.local.md
 # Pending hardening backlog — lives in the private budgetoid-specs repository,
 # because a public list of unclosed weaknesses is a map.
 TECH_DEBT.md
+
+# Same rule, same reason: a working list of the places the schema is not yet covered
+# is the same map under a different name.
+/PLAN.md
+
+# Specifications for capabilities that do not exist yet. docs/ documents only what is
+# true today, and agreed-but-unbuilt design lives in the private budgetoid-specs
+# repository until the day it ships.
+/SRS-*.md
+/SPEC-*.md
+/USER-STORIES.md
+
+# Personal tooling that drives this checkout rather than the product: the grimoire CLI
+# and its manifest belong to whoever installed them, not to the repository.
+/package.json
+/package-lock.json
+/.pithos
+/.pi/
+
+# The same grimoire assets again, mirrored for a second agent runtime: skills under
+# .agents/, subagents and hooks under .codex/. The rules above already exclude every
+# one of them under .claude/, and this pair was simply missed — so they sat untracked
+# and unignored, which is how three separate sessions each ended up investigating
+# them from scratch. AGENTS.md joins them because it is a copy of CLAUDE.md, and two
+# copies of the context file means one of them is wrong; the mirror regenerates it,
+# so deleting it does not lose anything.
+/.agents/
+/.codex/
+/AGENTS.md

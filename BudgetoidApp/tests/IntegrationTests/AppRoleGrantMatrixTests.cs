@@ -1,0 +1,795 @@
+using Npgsql;
+
+namespace IntegrationTests;
+
+/// <summary>
+/// Pins the application role's privileges as a <b>set</b>: exactly these tables, exactly these
+/// privileges on each, and exactly these columns on each <c>UPDATE</c>. Every other test of the
+/// grant matrix in this suite measures one statement at a time — <c>AppRoleGrantsTests</c> asks
+/// "is this column refused" and "is this one permitted" — and a statement-shaped question can only
+/// ever notice a privilege somebody thought to write a probe for. A <c>DELETE</c> granted on
+/// <c>currencies</c>, a <c>TRUNCATE</c> granted anywhere, or a <c>GRANT UPDATE (name)</c> quietly
+/// widened to table-wide are all invisible to every one of them, and the whole immutability
+/// doctrine — a column is immutable by being <i>absent</i> from a <c>GRANT UPDATE</c> column list —
+/// rests on those lists being what somebody wrote rather than a superset of it.
+/// </summary>
+/// <remarks>
+/// <para>
+/// The comparison runs in <b>both directions</b>, and each direction catches the failure the other
+/// cannot. A subset check — "everything the role holds is on the list" — passes a grant that is too
+/// narrow, so a deleted line ships as a feature failing with <c>42501</c> in production. A superset
+/// check — "everything on the list is held" — passes a grant that is too wide, which is the whole
+/// hazard this file exists for. So one assertion carries both halves and its failure names the
+/// unexpected entries and the missing ones together: a widened column list shows up as both at once
+/// (the table-wide privilege appears, the per-column ones vanish), and reading only one half of that
+/// would describe it as the wrong bug.
+/// </para>
+/// <para>
+/// The expected matrix is <b>restated here</b> rather than parsed out of
+/// <c>app-role-grants.sql</c>. A test that derives its expectation from the file it checks has the
+/// subject as its own oracle: rewrite the SQL and the expectation rewrites itself, so the assertion
+/// can never fail. This is the argument <c>DeploymentProvisioningTests</c> already makes for its
+/// policy-name and predicate constants, and it applies here with more force, because the thing being
+/// pinned <i>is</i> the content of that file. The duplication fails closed and announces itself: a
+/// new grant is red until somebody writes it down twice, on purpose, which is exactly the
+/// conversation widening the role's reach ought to start.
+/// </para>
+/// <para>
+/// The catalogs are read through <c>aclexplode</c> over <c>pg_class.relacl</c> and
+/// <c>pg_attribute.attacl</c>, never through <c>information_schema.role_table_grants</c> or
+/// <c>.column_privileges</c>. The reason is not the membership filter those views apply — on the
+/// superuser connection this test uses, <c>pg_has_role</c> is true against every role, so that
+/// filter would remove nothing. It is that the views cannot express two of the three ways this
+/// matrix can be widened. <c>aclexplode</c> reports a grant to <c>PUBLIC</c> as grantee oid
+/// <c>0</c>, a row those views render as a grantee named <c>PUBLIC</c> that no matrix keyed on a
+/// role name would ever match; and it returns <c>is_grantable</c>, which is the difference between
+/// a privilege the role holds and one it can hand to anybody — including <c>PUBLIC</c>, which
+/// closes the loop back to the first. Both are read here, and both are part of the set key below.
+/// </para>
+/// <para>
+/// Three widening vectors follow from that, and the grantee predicate answers all three at once
+/// with <c>acl.grantee = 0 or pg_has_role(@role, acl.grantee, 'USAGE')</c>. A join to
+/// <c>pg_roles</c> on the grantee oid — the shape this query used to have — silently drops the
+/// <c>PUBLIC</c> row, because oid <c>0</c> has no <c>pg_roles</c> entry; it also drops a privilege
+/// the role holds through membership in another role, because the grantee there is the
+/// <i>parent</i>. Both are genuinely held: <c>has_table_privilege</c> says so. And a
+/// <c>REVOKE ALL … FROM budgetoid_app</c> does not remove a <c>PUBLIC</c> grant, so the grants
+/// file's own convergence does not cover for it either. <c>grantee = 0</c> catches <c>PUBLIC</c>,
+/// <c>pg_has_role(…, 'USAGE')</c> resolves direct grants and inherited membership together, and
+/// projecting <c>is_grantable</c> into the entry makes <c>users: SELECT WITH GRANT OPTION</c> a
+/// different string from <c>users: SELECT</c> — the expected matrix holds none of the former, so
+/// any grant option lands in the unexpected half.
+/// </para>
+/// <para>
+/// What this still does not cover is <b>known and deferred</b> to the story that owns the
+/// enumerated privilege list, not overlooked. Schema privileges are invisible here
+/// (<c>pg_namespace.nspacl</c> — <c>GRANT CREATE ON SCHEMA public</c> is the largest widening
+/// available and this query never reads that catalog). So are role attributes:
+/// <c>ALTER ROLE budgetoid_app BYPASSRLS</c> voids every policy in the project and no grant matrix
+/// of any shape would see it. So are <c>pg_default_acl</c>, which decides what future objects are
+/// granted at creation, and <c>pg_proc.proacl</c>, which carries <c>EXECUTE</c> on functions. This
+/// file pins table and column privileges on relations in <c>public</c>, and a reader must not trust
+/// it one step further than that.
+/// </para>
+/// <para>
+/// The two catalogs are read separately because PostgreSQL stores the two kinds of grant in
+/// different places: a column-level <c>GRANT UPDATE (email)</c> lands in that column's
+/// <c>attacl</c> and puts <b>nothing</b> in the table's <c>relacl</c>, while a table-wide
+/// <c>GRANT UPDATE</c> lands in <c>relacl</c> and puts nothing in any <c>attacl</c>. That is what
+/// makes a widened list observable at all: the two shapes are genuinely different rows, not the same
+/// row spelled differently.
+/// </para>
+/// <para>
+/// Every observation is made on the container superuser connection, and that is correct rather than
+/// a privilege blind spot. <c>pg_class</c>, <c>pg_attribute</c> and <c>pg_roles</c> describe the
+/// cluster, and the cluster reads the same whoever asks — the same point
+/// <c>RowLevelSecurityCoverage.DiscoverAsync</c> makes about its own catalog reads. Sending these
+/// queries on the application role's own connection would only reintroduce the filtering the
+/// paragraph above rejects.
+/// </para>
+/// <para>
+/// No <c>relkind</c> filter narrows the table query, on purpose. A privilege granted on a view, a
+/// sequence or a materialized view in <c>public</c> is a widening of the role's reach exactly like a
+/// privilege on a table, and a kind filter would be one more discovery filter deciding in silence
+/// what this test is allowed to see.
+/// </para>
+/// </remarks>
+public sealed class AppRoleGrantMatrixTests
+{
+    /// <summary>
+    /// The grantee every row is filtered to. A literal for the same reason the matrix below is one:
+    /// reading it from <c>DatabaseProvisioning</c> would let a rename in production rename the
+    /// expectation with it.
+    /// </summary>
+    private const string AppRoleName = "budgetoid_app";
+
+    /// <summary>
+    /// Every table-level privilege the role is meant to hold, by table. Restated from
+    /// <c>app-role-grants.sql</c> — see the class remarks for why it is restated rather than read.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>UPDATE</c> appears on no line here, and its absence is the load-bearing half of this
+    /// constant rather than an omission. Every <c>UPDATE</c> this role holds is column-level and
+    /// therefore belongs in <see cref="ExpectedUpdateColumnGrants" />; a table-wide one would show up
+    /// here as an unexpected entry, which is precisely how a "simplified" column list is caught.
+    /// </para>
+    /// <para>
+    /// <c>__EFMigrationsHistory</c> is spelled the way EF creates it and the way the catalog stores
+    /// it — mixed case, no quoting, because a catalog name is not SQL — so every comparison in this
+    /// file is <see cref="StringComparison.Ordinal" />.
+    /// </para>
+    /// </remarks>
+    private static readonly (string Table, string[] Privileges)[] ExpectedTableGrants =
+    [
+        ("currencies", ["SELECT"]),
+        ("users", ["SELECT", "INSERT", "DELETE"]),
+        ("credentials", ["SELECT", "INSERT", "DELETE"]),
+        ("sessions", ["SELECT", "INSERT"]),
+        // The third table in this matrix with no DELETE, and it inherits the reason from the row above
+        // rather than arguing a new one: a token row is how a session is found, so a role that could
+        // remove one could sign a browser out leaving nothing that says when access ended — which is
+        // the opposite of what revocation is for, and revocation already has its own column on
+        // sessions. Rows leave here by the cascade from sessions, and through it from credentials and
+        // users, which is a deletion somebody asked for rather than one a bug can reach. It appears on
+        // no line of ExpectedUpdateColumnGrants either: all three columns are the row's identity, so
+        // the table holds no UPDATE of any shape — a re-issued handle is a new row, not an edited one.
+        ("session_tokens", ["SELECT", "INSERT"]),
+        ("passkey_public_keys", ["SELECT", "INSERT"]),
+        ("passkey_signature_counters", ["SELECT", "INSERT"]),
+        ("webauthn_challenges", ["SELECT", "INSERT", "DELETE"]),
+        // DELETE is the redemption, not a cleanup: a recovery code is consumed by its row leaving,
+        // never by a column being stamped used. That is the whole reason this table appears on no
+        // line of ExpectedUpdateColumnGrants — see the remarks there, and
+        // AppRoleGrantsTests.Database_RefusesEveryUpdateOnARecoveryCodeHash_WhileStillAllowingInsertAndDelete
+        // for the statement-shaped half.
+        ("recovery_code_hashes", ["SELECT", "INSERT", "DELETE"]),
+        // The second table in this matrix with no DELETE, alongside sessions, and the absence is the
+        // rule rather than a privilege nothing needs yet. Revoking a recovery factor removes its
+        // wrapped keys through the ON DELETE CASCADE from credentials, which runs with the referencing
+        // table owner's privileges rather than this role's — so the cascade succeeds while this role
+        // cannot issue the statement itself. With DELETE granted, an EF cascade into rows the change
+        // tracker happens to be holding would succeed SILENTLY and the rows would leave by the
+        // application instead of by the database, with no SQLSTATE to say so; without it, the same
+        // mistake dies loudly with 42501. None of that is weakened by the two-column UPDATE this table
+        // now holds on ExpectedUpdateColumnGrants: a rotation rewrites the envelopes of a row that
+        // stays where it is, so it wants no DELETE and is not an argument for one — the ten factors of
+        // a replaced recovery-code set still leave by the cascade from credentials and by nothing else.
+        // See the remarks there for why that UPDATE is the only shape a rotation had available.
+        ("wrapped_account_keys", ["SELECT", "INSERT"]),
+        // INSERT JOINS THE SELECT THIS LINE USED TO HOLD ALONE, and what the line has to say changed
+        // with it. It used to be the one entry in the matrix reading SELECT-only about a table the
+        // application would eventually write, and its argument was about waiting: the writers had not
+        // landed, a withheld privilege costs nothing, only SELECT could not wait because an ungranted
+        // SELECT is the one absence that hides something — NarrativeSecrecyTests' plaintext scan meets
+        // 42501 and reports the table UNSCANNABLE, so two secrecy gates pass over one table fewer than
+        // the schema holds. That argument has been spent. A begin now writes this row, so the question
+        // this entry answers is no longer why the table is read-only but which two of the four
+        // privileges it still is not, and why each stays off.
+        //
+        // NO TABLE-WIDE UPDATE, AND THAT ABSENCE IS THIS LINE'S LOAD-BEARING HALF — more than the
+        // INSERT beside it, because the INSERT is the ordinary half. Staging is an upsert forced by the
+        // primary key: user_id is the whole of PK_key_rotations, and begin is also the repair path, so
+        // a second begin has to rewrite the row that is already there rather than add one. The
+        // privilege that allows it is column-level, five columns listed in ExpectedUpdateColumnGrants,
+        // and user_id is not among them. Widen that list to the table and this matrix names the edit
+        // from both ends at once — a table-wide UPDATE appears HERE with nothing to match it, and the
+        // five column grants vanish from the other half — which is the two-directional failure the
+        // class remarks describe.
+        //
+        // STILL NO DELETE, AND IT IS NO LONGER THE "NOTHING USES IT YET" KIND. The old entry predicted
+        // the wrong shape for this table: it said a staged envelope is never edited and that changing
+        // one means deleting the row and beginning again under a new rotation id. Deleting is exactly
+        // what the role cannot do, which is one of two reasons KeyRotationRepository.StageAsync finds
+        // and updates instead — the other being that EF batches a delete and an insert of the same
+        // primary key in no guaranteed order, so the tidier-looking spelling is a coin flip on 23505.
+        // What the absence buys now is the destruction that has no repair. Completion is built, and it
+        // promotes by overwriting the live wrapped_account_keys rows and deletes nothing — a finished
+        // run leaves its staging row standing. Without this privilege, a promotion path edited into
+        // clearing the staging cannot do so before it has promoted anything, when the staged envelopes
+        // are the only copies of the new generation until the live row is overwritten. It fails loud —
+        // 42501 on the first reach, a red test rather than a rule going quiet — so a change that wants
+        // the privilege has to bring its own argument for it rather than inheriting this one.
+        //
+        // Rows still leave without it. The ON DELETE CASCADE from wrapped_account_keys, and through it
+        // from credentials and users, runs with the referencing table owner's privileges rather than
+        // this role's — the same referential action this matrix relies on three lines up. That is what
+        // lets an account erasure, or a revoked passkey, carry a staging row away that this role could
+        // not have deleted itself.
+        ("key_rotations", ["SELECT", "INSERT"]),
+        // THE INSERT ARRIVED WITH ITS CALLER, and so did a one-column UPDATE that is not on this line.
+        // One row per surviving factor per run, holding the next generation of the account's two keys
+        // encapsulated to that factor's public half — the value a promotion copies into
+        // wrapped_account_keys.encapsulated_account_keys.
+        //
+        // INSERT, BECAUSE A BEGIN STAGES ONE SEAL PER FACTOR. KeyRotationRepository.StageAsync writes
+        // them in the SAME SaveChanges as the staging row itself: a row committed without its seals, or
+        // seals without their row, is a staged generation that cannot be completed. This entry used to
+        // predict that the INSERT would arrive with a later continue leg; it arrived with the begin,
+        // because the begin is where the factor set is judged against the account's live factors and a
+        // leg that wrote them later would be writing a set nothing had compared.
+        //
+        // A COLUMN-LISTED UPDATE ARRIVED TOO, AND IT IS NOT ON THIS LINE. GRANT UPDATE
+        // (encapsulated_account_keys) is a column privilege, so it does not appear in the table-level
+        // command list this array pins — the same asymmetry factor_manifests records two entries down.
+        // The one-column list is pinned in ExpectedUpdateColumnGrants instead, and a TABLE-WIDE UPDATE
+        // would show up HERE as an unexpected command with nothing in that array to match it, which is
+        // the two-directional failure the class remarks describe. user_id and factor_id are off that
+        // list deliberately: together they are the primary key, and one statement able to move either
+        // could re-file an account's staged generation against another account's factor.
+        //
+        // SELECT STILL CAME FIRST IN THE ARGUMENT, for the reason key_rotations records rather than a
+        // precedent borrowed from it: without it NarrativeSecrecyTests' plaintext scan meets 42501,
+        // reports the table UNSCANNABLE, and two secrecy gates pass while covering one table fewer than
+        // the schema holds. An ungranted write hides nothing — it fails loudly on first reach, which is
+        // the fail-closed direction, and is why the two writes waited for a statement that needed them.
+        //
+        // STILL NO DELETE — AND THIS ENTRY'S OLD REASON FOR THAT WAS WRONG, WHICH IS RECORDED RATHER
+        // THAN QUIETLY OVERWRITTEN BECAUSE THE REASON IS THE PART A READER REUSES. It said a second
+        // begin replaces the staging row and FK_key_rotation_seals_key_rotations cascades, so the
+        // previous run's seals leave with the row that named them. THAT CASCADE FIRES WHEN THE PARENT
+        // ROW IS DELETED, and a second begin UPDATES it in place — key_rotations is keyed on user_id
+        // and holds no DELETE of any shape — so it never runs on that path at all. It is precisely why
+        // the INSERT and the UPDATE above are both needed: nothing clears the previous run's seals, so
+        // a begin rewrites them one by one.
+        //
+        // WHAT IS RIGHT IS THE OTHER CASCADE. FK_key_rotation_seals_wrapped_account_keys is the
+        // composite (factor_id, user_id) edge, ON DELETE CASCADE, and it fires on the only event that
+        // can take a factor out of the set a begin submits: BeginKeyRotationHandler refuses any begin
+        // whose seals are not exactly the account's live wrapped_account_keys rows, so a seal for a
+        // factor a later begin does not name is a seal whose own factor row is gone — and the statement
+        // that removed it took the seal along, with the referencing table owner's privileges rather
+        // than this role's. A revoked passkey and an account erasure both reach this table down that
+        // edge. So the DELETE would be a privilege on a table holding key material for a statement
+        // nothing can issue. WHAT WOULD CHANGE IT: a begin allowed to stage a SUBSET of the account's
+        // factors, or a path that removed a factor without deleting its wrapped_account_keys row.
+        ("key_rotation_seals", ["SELECT", "INSERT"]),
+        // THE INSERT ARRIVED WITH ITS CALLER, which is what this line used to promise as an absence and
+        // is now stating as a fact. The entry above still carries the read-only argument alone; this one
+        // is the worked example of a privilege being granted on the day a statement needed it, and not
+        // one release earlier.
+        //
+        // INSERT, BECAUSE REGISTRATION NOW WRITES THE FIRST MANIFEST. RegisterAccountHandler builds the
+        // account's first manifest at FactorManifest.MinimumRotationEpoch and files it in the SAME
+        // SaveChanges as the user, its three credentials and the eleven wrapped_account_keys rows the
+        // manifest names. There is no transaction on that path — see the 22P02 argument at that handler
+        // — so the atomicity is the single save's, and an ungranted INSERT here would turn the whole of
+        // registration into a 42501 rather than losing one row quietly. The statement is policed:
+        // user_isolation's WITH CHECK compares user_id against app.current_user_id, which the handler
+        // publishes before the save opens its connection.
+        //
+        // SELECT STILL COMES FIRST IN THE ARGUMENT, and an ungranted one is the absence that hides
+        // something: NarrativeSecrecyTests' plaintext scan runs on the app-role connection, meets 42501
+        // on an unreadable table and reports it UNSCANNABLE, so two secrecy gates pass over one table
+        // fewer than the schema holds. A table nothing can read is a table nothing can check, and this
+        // is the one place the account's whole set of factor public keys is written down.
+        //
+        // A COLUMN-LISTED UPDATE ARRIVED WITH ITS OWN CALLER, AND IT IS NOT ON THIS LINE. GRANT UPDATE
+        // (manifest, rotation_epoch) is a column privilege, so it does not appear in the table-level
+        // command list this array pins — users carries SELECT, INSERT and DELETE here while holding a
+        // one-column UPDATE on email, and that asymmetry is the shape rather than an inconsistency. The
+        // two-column list is pinned in ExpectedUpdateColumnGrants instead, and a TABLE-WIDE UPDATE
+        // would show up here as an unexpected command with nothing in that array to match it — the
+        // two-directional failure the class remarks describe.
+        //
+        // STILL NO DELETE, and that absence has a reason of its own rather than being the same one
+        // waiting: DELETE has no caller in view at all.
+        //
+        // Rows still leave without DELETE. FK_factor_manifests_users cascades from users, and a
+        // referential action runs with the referencing table owner's privileges rather than this
+        // role's — the same mechanism three lines up — so an account erasure carries this row away
+        // although the role could not have deleted it itself.
+        ("factor_manifests", ["SELECT", "INSERT"]),
+        ("budgets", ["SELECT", "INSERT"]),
+        ("accounts", ["SELECT", "INSERT", "DELETE"]),
+        ("category_groups", ["SELECT", "INSERT", "DELETE"]),
+        ("categories", ["SELECT", "INSERT", "DELETE"]),
+        ("payees", ["SELECT", "INSERT"]),
+        ("transactions", ["SELECT", "INSERT", "DELETE"]),
+        ("__EFMigrationsHistory", ["SELECT"]),
+    ];
+
+    /// <summary>
+    /// Every column the role may write, by table — the load-bearing half of the matrix. Each list is
+    /// the whole of one <c>GRANT UPDATE (…)</c> in <c>app-role-grants.sql</c>, and every column of
+    /// those tables that is <i>not</i> named here is immutable by that absence:
+    /// <c>created_at_utc</c> everywhere, <c>budget_id</c> and <c>user_id</c> on every owned table,
+    /// <c>accounts.currency_code</c>, <c>budgets.base_currency_code</c>,
+    /// <c>wrapped_account_keys.factor_id</c>, <c>key_rotations.user_id</c> — which is that table's
+    /// whole primary key, and the one column of that table its four-column list does not name — and
+    /// <c>key_rotation_seals.user_id</c> and <c>key_rotation_seals.factor_id</c>, which together are
+    /// <i>its</i> whole primary key, and every identity column of a session or a counter.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The tables absent from this array hold no <c>UPDATE</c> grant of any shape —
+    /// <c>currencies</c>, <c>credentials</c>, <c>passkey_public_keys</c>,
+    /// <c>webauthn_challenges</c>, <c>recovery_code_hashes</c>, <c>session_tokens</c> and
+    /// <c>__EFMigrationsHistory</c> — and their absence is checked in
+    /// the same direction as everything else: a column grant appearing on one of them has no entry to
+    /// match and is reported as unexpected.
+    /// </para>
+    /// <para>
+    /// <c>budgets</c> is on this array for <b>one</b> column and that is the whole of the rule:
+    /// <c>name</c> is rewritten by a content-key rotation and by nothing else. Every other column is
+    /// immutable to the domain — no command changes a budget's owner, its base currency or when it was
+    /// created — and the single-column list is what keeps them that way, because the alternative
+    /// anybody reaches for is a table-wide <c>GRANT UPDATE ON budgets</c>, which would reopen all four
+    /// at once to buy the one. Nothing exercises this grant through the product today: registration
+    /// writes the nameless budget, every <c>budgets.name</c> in the database is NULL, and naming is
+    /// unbuilt — so the statement-shaped half in
+    /// <c>AppRoleGrantsTests.Database_AllowsRewritingABudgetsName_AndRefusesEveryOtherColumn</c> has to
+    /// seed a named budget to have anything to rewrite. The grant is written now because the rotation
+    /// is the reason the column exists in a writable shape at all, and adding it later is a
+    /// conversation nobody has scheduled.
+    /// </para>
+    /// <para>
+    /// <c>wrapped_account_keys</c> is here for <b>one</b> column — a promotion rewrites
+    /// <c>encapsulated_account_keys</c> and nothing else — and the in-place <c>UPDATE</c> is
+    /// <b>forced rather than chosen</b>, which is why it arrives as one envelope column and not as a
+    /// wider list or a <c>DELETE</c>. A rotation rewrites exactly one row per surviving factor, and
+    /// every other shape of that write is closed: deleting the row's <c>credentials</c> parent would
+    /// destroy the registration itself rather than re-key it; inserting a row under a new
+    /// <c>factor_id</c> and removing the old one needs the <c>DELETE</c> this table deliberately does
+    /// not hold and must never hold; and inserting without removing leaves permanent litter on
+    /// <c>GET /api/me/account-keys</c> — the one route a client opens its account through — carrying an
+    /// entry that opens with a key nothing encrypts with any more. <c>wrapped_private_key</c> came off
+    /// this list when every factor gained a key pair and its absence is a decision: a rotation
+    /// encapsulates to a factor's public half and never touches the pair itself. So one envelope column
+    /// is the whole writable surface, and <c>credential_id</c>, <c>user_id</c>, <c>factor_id</c>,
+    /// <c>credential_type</c>, <c>wrapped_private_key</c> and <c>created_at_utc</c> all stay off —
+    /// <c>factor_id</c> most of all, because it <i>is</i> the associated data the wrapped private key
+    /// was sealed against.
+    /// </para>
+    /// <para>
+    /// <c>recovery_code_hashes</c> is absent for a reason of its own, and it is the reason worth
+    /// writing down rather than filing under "nothing here happens to be updatable yet". A recovery
+    /// code is consumed by <b>deleting</b> its row. Every alternative design stamps something instead
+    /// — a <c>redeemed_at_utc</c>, a <c>used</c> flag, a decremented counter — and every one of them
+    /// leaves behind a row saying a particular code existed and was spent, which is per-code history
+    /// the product has no use for and an erasure would then have to reach. The absence of any
+    /// <c>UPDATE</c> is what makes that decision checkable in one statement: the day somebody adds a
+    /// stamped column they must add a grant for it, and the grant lands here as an unexpected entry
+    /// before the column ever ships.
+    /// </para>
+    /// <para>
+    /// So this is <b>not</b> a snapshot of what happens to be immutable today, the way
+    /// <c>credentials</c>' absence is described as being. It is closer to
+    /// <c>passkey_public_keys</c>: a property of the table. An updatable column arriving here is a
+    /// different table with a different consumption rule, and this paragraph is what has to be
+    /// re-argued rather than quietly extended.
+    /// </para>
+    /// </remarks>
+    private static readonly (string Table, string[] Columns)[] ExpectedUpdateColumnGrants =
+    [
+        ("users", ["email"]),
+        ("sessions", ["revoked_at_utc"]),
+        ("passkey_signature_counters", ["signature_counter"]),
+        // ONE column, and the entry is entirely about the SECOND one that used to be here.
+        // wrapped_private_key came off this list when every factor gained a key pair, and its absence
+        // is a decision rather than a narrowing nobody got round to reversing. A rotation draws new
+        // account keys and encapsulates them to every surviving factor's PUBLIC half; it does not touch
+        // the key pair itself, because the key-encryption key a factor derives is unchanged by the
+        // account's keys changing. So wrapped_private_key is written once, when the factor is
+        // registered, and an UPDATE on it could only be somebody replacing a private key whose public
+        // half the manifest already names — after which every value ever encapsulated to that factor
+        // opens with nothing, and no earlier generation can be recovered either.
+        //
+        // What the one remaining column buys is the only shape a rotation had available: the promotion
+        // rewrites exactly this row, because deleting its credentials parent would destroy the
+        // registration, filing a new row under a new factor id and removing the old one needs the DELETE
+        // this table must never hold, and filing one without removing the other leaves
+        // GET /api/me/account-keys handing the browser two entries for one factor.
+        ("wrapped_account_keys", ["encapsulated_account_keys"]),
+        // FOUR columns, and the entry is entirely about the FIFTH. user_id is the whole of
+        // PK_key_rotations and it is the column user_isolation appends its predicate over, so a
+        // statement able to move it could reassign somebody's staged rotation to another account in one
+        // UPDATE — on the one table whose entire purpose is to hold what the next generation of an
+        // account's keys was staged against. Leaving it out of the list is the only spelling that makes
+        // it unwritable: column privileges are additive and REVOKE UPDATE (user_id) cannot subtract
+        // from a table-wide grant.
+        //
+        // THE OTHER FOUR ARE ON THE LIST BECAUSE A SECOND BEGIN REWRITES ALL OF THEM. This is the one
+        // entry in this array where the column list is "every column but the key", and it reads like
+        // the table-wide grant it must never become — so the distinction is worth stating rather than
+        // leaving to the reader. A rotation is replaced, not amended: beginning again after a
+        // completion refused for a moved factor set stages a new rotation id, a new manifest, a new
+        // epoch and a later instant, all onto the row the account already has, because the primary key
+        // allows it no second row and the role holds no DELETE to clear the first. EF emits that as one
+        // UPDATE naming all four, so a list short by any one of them refuses the whole statement with
+        // 42501 and a second begin becomes impossible for this role — the same failure mode the accounts
+        // and categories entries below record for their own pairs.
+        //
+        // THE LIST LOST TWO COLUMNS AND GAINED TWO, AND IT IS NOT THE SAME LIST RENAMED. factor_id and
+        // the two envelope columns left the table: a run no longer names one factor, because it
+        // encapsulates to every surviving factor's public half and needs none of them present. What
+        // replaced them is the factor SET the run committed to — staged_manifest and
+        // staged_rotation_epoch — and the per-factor value moved to key_rotation_seals, which now holds
+        // an INSERT and a one-column UPDATE of its own, two entries down. THAT SENTENCE USED TO READ
+        // "which holds no write grant at all", and it was true for exactly as long as nothing staged a
+        // seal: a second begin rewrites this row IN PLACE, so the cascade that would have cleared the
+        // previous run's seals never fires and the seals have to be rewritten one by one. The two
+        // entries move together for that reason, and neither can be read without the other.
+        //
+        // WHAT WOULD BE WRONG TO CONCLUDE from a list this wide is that the table is freely mutable.
+        // Nothing amends a staged rotation in place: KeyRotationRepository.StageAsync copies every
+        // mapped scalar off a whole new KeyRotation and forces the entity Modified, so what reaches the
+        // database is always a complete generation rather than a field somebody touched. A future
+        // narrower write — a handler updating started_at_utc to keep a long run alive, say — would pass
+        // this grant untouched and is a decision about the write path that this matrix cannot see.
+        (
+            "key_rotations",
+            ["rotation_id", "staged_manifest", "staged_rotation_epoch", "started_at_utc"]),
+        // ONE column, and the entry is entirely about the two that are NOT on it. user_id and factor_id
+        // are together the whole of PK_key_rotation_seals, and user_id is the column user_isolation
+        // appends its predicate over — so a statement able to move either could re-file this account's
+        // next generation against another account's factor, or against another account outright, on a
+        // table whose entire contents are key material. Leaving them off is the only spelling that makes
+        // them unwritable: column privileges are additive, and REVOKE UPDATE (user_id) cannot subtract
+        // from a table-wide grant. The composite foreign key to wrapped_account_keys(factor_id, user_id)
+        // would refuse the resulting row and leaning on it would still be the wrong call — grants fail
+        // closed with 42501, referential integrity and row-level security are the second line.
+        //
+        // THE ONE COLUMN IS ON THE LIST BECAUSE A SECOND BEGIN RESTAGES A VALUE FOR A FACTOR ALREADY
+        // SEALED, and it is the only shape that write had available. Begin is the repair path, so a
+        // second one rewrites the staging row in place — which means FK_key_rotation_seals_key_rotations
+        // never cascades on that path and nothing clears the previous run's seals. Deleting each seal
+        // and re-inserting it needs a DELETE this table deliberately does not hold, and EF batches a
+        // delete and an insert of one primary key in no guaranteed order besides, so the pair is a coin
+        // flip on 23505 — a whole set of them here rather than one row. What is left is copying the new
+        // value onto the tracked row and forcing it Modified, which EF emits as an UPDATE naming exactly
+        // this column.
+        //
+        // There is still NO DELETE of any shape, and that absence is argued at length on the table-level
+        // entry above: a seal leaves only by the composite cascade from wrapped_account_keys, which runs
+        // with the referencing table owner's privileges rather than this role's.
+        ("key_rotation_seals", ["encapsulated_account_keys"]),
+        // ONE column, and the entry is as much about the four columns that are not on it. FR-099 grants
+        // UPDATE on budgets.name because a content-key rotation has to re-encrypt it, and ASM-004 says
+        // in the same breath what that must not become: a table-wide grant would reopen user_id,
+        // base_currency_code, created_at_utc and id together to buy the one column somebody needed. The
+        // rule this line replaced was "a budgets row is never updated at all", so a reader arriving here
+        // from app-role-grants.sql's rule B2 or from an older test name is reading a rule that moved
+        // rather than a list that drifted.
+        //
+        // rotation_id IS ABSENT FROM THIS LIST AND ITS ABSENCE IS THE DECISION, NOT AN OVERSIGHT — WHICH
+        // IS WHY THIS LINE SAYS SO WHILE THE FIVE BELOW SAY THE OPPOSITE. A content-key rotation stamps
+        // every row it re-seals with the run that rewrote it, and five tables gained the column on their
+        // UPDATE lists for that. budgets is the sixth table carrying one and it did not, because FR-099
+        // is precise about this role and this table: UPDATE on budgets.name AND ON NO OTHER COLUMN.
+        // Granting a sixth would satisfy a chunk and break the requirement, so the budget arm of the
+        // rotation is REFUSED rather than missing — Budget.ResealName is internal, Domain's internals go
+        // to Infrastructure alone, and the Application ring therefore cannot write a sixth arm at all.
+        // The refusal is a compile error rather than the 42501 this list would otherwise produce, which
+        // is the direction worth having: nothing reaches a running database to be diagnosed from a
+        // message that names only the table.
+        //
+        // Nothing is lost by it today. No route names a budget, every budgets.name in every database is
+        // NULL, and the completeness gate that decides when a rotation may promote is presence-aware, so
+        // a budget row is never counted as outstanding. The day a naming screen ships, that commit owes
+        // the sixth arm, this grant and an argument against FR-099 as written, in that order — and a
+        // reader who arrives here first and simply adds the column will have done the second without the
+        // third.
+        ("budgets", ["name"]),
+        // TWO columns, and the entry is as much about the THIRD that is not on it. user_id is the whole
+        // of PK_factor_manifests and it is the column user_isolation appends its predicate over, so one
+        // statement able to move it would re-file an account's entire factor set against another
+        // account — every recovery factor's public key on one row, and nothing else on that row looking
+        // wrong afterwards. Leaving it out of the list is the only spelling that makes it unwritable:
+        // column privileges are additive, and REVOKE UPDATE (user_id) cannot subtract from a table-wide
+        // grant. user_isolation's WITH CHECK refuses that row today and leaning on it would still be
+        // the wrong call — grants fail closed with 42501, row-level security fails open.
+        //
+        // THE TWO THAT ARE ON THE LIST ARE ON IT BECAUSE A PROMOTION REWRITES BOTH, and the pairing is
+        // the rule rather than two facts sitting beside each other. FactorManifest.Promote assigns the
+        // blob and the generation together and offers no spelling for half of one: the manifest is
+        // sealed with its epoch as associated data, so bytes stored under the old number are bytes no
+        // client can open and a number moved over the old bytes is a generation whose factor list does
+        // not name the factor the same request just registered. Grant one without the other and EF's
+        // two-column UPDATE answers 42501 — the whole promotion, not the half it was allowed — so both
+        // routes that change an account's factor set stop working for this role.
+        //
+        // There is still NO DELETE of any shape, and that is not an omission waiting to be filled: a
+        // manifest leaves by FK_factor_manifests_users cascading from an account erasure, and a
+        // referential action runs with the referencing table owner's privileges rather than this
+        // role's.
+        ("factor_manifests", ["manifest", "rotation_epoch"]),
+        // name_key joins name, and the two are ONE entry on this line rather than two facts that
+        // happen to sit beside each other. A rename writes the sealed envelope and the blind index
+        // over the same text in one UPDATE, because Account.Update takes an IndexedName and offers
+        // no spelling for half a name. Grant one without the other and that statement fails with
+        // 42501 — the whole rename, not the half it was not allowed — so renaming an account becomes
+        // impossible for the application role while a test that writes `name` alone stays green. That
+        // is not a hypothetical: it is exactly what
+        // AppRoleGrantsTests.Database_RefusesToChangeAnAccountsCurrency_WhileStillAllowingRename
+        // measured for the whole time the grant named one column, which is why that case now writes
+        // both halves in one statement. Removing either column from this list is therefore not a
+        // narrowing of what may be edited; it is the rename path going away.
+        //
+        // rotation_id IS THE FIFTH COLUMN AND THIS IS THE ONE ENTRY THAT ARGUES IT; THE OTHER FOUR POINT
+        // HERE. A rotation chunk re-seals a narrative column and stamps the row with the run that
+        // rewrote it, and the two arrive in ONE statement rather than two — every reseal member takes
+        // the row's new value and writes the stamp beside it, and there is no overload that writes a
+        // stamp on its own. So the stamp cannot be withheld while the narrative half is granted: EF
+        // names both columns, PostgreSQL refuses the whole statement, and a chunk cannot run at all.
+        // That is the same coupling the name/name_key argument above makes, reaching a third column.
+        //
+        // IT WAS MEASURED BEFORE IT WAS GRANTED, WITH THE CONTROL THAT MAKES IT A FACT ABOUT A COLUMN
+        // RATHER THAN ABOUT A TABLE. On the app-role connection, against each of the five: the reseal
+        // statement naming the narrative pair and the stamp was refused; the stamp on its own was
+        // refused; and the identical statement with the stamp dropped from the SET list succeeded. The
+        // third is what says the refusal is this grant and not the budget_isolation policy — and it had
+        // to be run, because 42501 names the TABLE and never the column, so the message alone points at
+        // nothing. The grants file carries those statements and they are not restated here.
+        //
+        // The sixth table carrying this column is budgets, and it is deliberately NOT on the list. Its
+        // entry above is where that reason lives.
+        ("accounts", ["name", "name_key", "type", "opening_balance", "rotation_id"]),
+        // The same name/name_key pair the accounts line above argues, and a THIRD column that makes a
+        // half grant harder to see here than on either neighbour. This table's update writes three
+        // columns the client sealed or keyed — the narrative pair `name` and `description`, plus the
+        // blind index `name_key`, which is NOT narrative: NarrativeField types exactly `name` and
+        // `description`, and KeyMaterialSecrecyTests gives the index a kind of its own. EF names
+        // only the ones that changed, so a rename leaving the description alone emits
+        // `name, name_key` and SUCCEEDS under a grant missing `description` —
+        // measured on postgres:17.10: that two-column statement answers UPDATE 1, the three-column one
+        // answers 42501, and `set description = null` answers 42501.
+        //
+        // THIS PARAGRAPH USED TO END BY SPLITTING THE FOUR SEALED TABLES INTO A LOUD GROUP AND A QUIET
+        // ONE — "on accounts and payees any rename at all names both halves and a half grant is loud on
+        // the first one anybody exercises; here the loud case has to be written on purpose" — AND THAT
+        // SPLIT WAS ABOUT THE WRONG VARIABLE. Every one of the four takes an IndexedName and offers no
+        // spelling for half a name, so on ALL of them a rename names both halves; accounts and payees
+        // are not special in that. What actually decides loudness is WHICH COLUMN IS MISSING:
+        //
+        //   name or name_key missing  -> loud on any genuine rename, on all four tables alike;
+        //   description or position missing -> quiet on a rename, because EF names only what changed,
+        //                                      so the hole needs a control written on purpose.
+        //
+        // The second half of the old sentence was worse, because it was a claim about THE SUITE wearing
+        // the grammar of a claim about the schema. "Loud on the first one anybody exercises" is only
+        // true where a rename is actually exercised. Measured this slice on `categories`, whose grant
+        // list was missing `name_key`: a genuine rename answers 42501 — loud, exactly as on accounts —
+        // and the whole suite issued ZERO of them, because every case that renames a category died
+        // earlier on a seeding 400. A hole that is loud in the schema and silent in the run ships.
+        //
+        // The raw control in TenancySchemaTests therefore spells all FOUR columns in one statement here
+        // — `position` shares this list, so a three-column control cannot tell a four-column grant from
+        // a three-column one — and `categories` needed its own for the same reason and did not have one
+        // at all until this slice.
+        //
+        // rotation_id is the fifth column, for the reason the accounts entry above argues once for all
+        // five and does not get restated here. What this table adds to that argument is the quietness
+        // the paragraph above already measures: a chunk here writes `name`, `name_key`, `description`
+        // and the stamp together, so a withheld stamp is loud on any chunk at all — the description's
+        // quiet direction has no counterpart on this column, because no reseal ever leaves it out.
+        ("category_groups", ["name", "name_key", "description", "position", "rotation_id"]),
+        // name_key JOINS THIS LIST IN THE SAME COMMIT THAT MEASURED ITS ABSENCE, and the entry is
+        // written rather than corrected into agreement, because THE MATRIX IS A MIRROR AND NOT A JUDGE.
+        // This census reads the database's grant matrix and asserts it equals the list above; that
+        // catches DRIFT in either direction and can never catch a list that was wrong the day it was
+        // written. Here both sides were wrong TOGETHER — the SQL granted four columns, this line
+        // expected the same four, they matched, and the one test in the repository named after grants
+        // went green over a rename path the application role could not execute. Nothing was broken; the
+        // expectation simply never asked the right question.
+        //
+        // What that means for the next person is the property the accounts and category_groups entries
+        // above do not state, so it is stated here once for the file: A NEW COLUMN ON THIS LINE IS A
+        // DECISION TO BE ARGUED, NEVER A LINE TO BE BROUGHT INTO AGREEMENT WITH THE SQL. If this census
+        // reddens, exactly one of the two sides is right, and which one is a question about the write
+        // path — not something the diff can answer. Editing this list to match the database is always
+        // available, always makes the red go away, and is wrong roughly half the time.
+        //
+        // The name/name_key argument itself is the accounts entry's and the category_groups entry's and
+        // is not restated. What this table adds beyond them is only that its list is the longest of the
+        // four at FIVE columns — category_group_id is here because a category can be moved between
+        // groups — so its raw control in TenancySchemaTests has to name five in one statement, for the
+        // reason category_groups needed four.
+        //
+        // rotation_id joins for the reason the accounts entry above argues once for all five, taking
+        // this list to six columns. The length is the thing to read carefully rather than a fact about
+        // size: a list this wide reads like the table-wide grant it must never become, and budget_id
+        // and created_at_utc are immutable BY OMISSION from it — column privileges are additive, so no
+        // REVOKE can take back what a table-wide GRANT UPDATE would hand out.
+        ("categories",
+            ["name", "name_key", "description", "position", "category_group_id", "rotation_id"]),
+        // The same pair, on the same terms, and it is ONE entry rather than two facts sitting beside
+        // each other for the reason the accounts line above states: Payee.Rename takes an IndexedName
+        // and offers no spelling for half a name, so a rename is one UPDATE naming both columns and a
+        // grant covering one of them refuses the whole statement with 42501.
+        //
+        // What differs is what a lost rename costs here. On accounts it is a feature that stops
+        // working. On payees the deduplication of counterparties runs through this column pair, so a
+        // half-grant that somehow admitted only `name` would leave rows indexed under names they no
+        // longer hold — a payee the client can neither find nor re-create. PostgreSQL refuses the
+        // statement outright rather than half-applying it, which is what keeps that state unreachable
+        // from here; the reason it is written down is that the ONE-COLUMN PROBE is what hid this exact
+        // defect on accounts, and TenancySchemaTests now spells both columns out for that reason.
+        //
+        // rotation_id joins for the reason the accounts entry above argues once for all five. It is
+        // the same pair-travels-together coupling one column further out: Payee.Reseal takes the
+        // IndexedName and writes the stamp beside it, so a chunk naming a payee is one UPDATE over all
+        // three and a list short by the stamp refuses the whole of it.
+        ("payees", ["name", "name_key", "rotation_id"]),
+        // rotation_id joins for the reason the accounts entry above argues once for all five, and THIS
+        // IS THE ARM WHERE A WITHHELD STAMP COSTS THE MOST. transactions is the largest table an
+        // account holds by a wide margin, so a rotation spends most of its chunks here — a run that
+        // could not stamp this table would stall with more rows already rewritten than the other four
+        // arms hold between them, and the completeness gate would refuse it for ever with the account
+        // sitting part under each content key.
+        ("transactions",
+            ["amount", "date", "description", "account_id", "payee_id", "category_id", "rotation_id"]),
+    ];
+
+    [Test]
+    public async Task AppRoleGrants_MatchTheDeclaredMatrix()
+    {
+        // Arrange — a provisioned container, and the superuser connection to read its catalogs
+        // through. StartAsync has already migrated the schema and run the grants script, so what the
+        // catalogs hold at this point is what a deploy would leave behind.
+        await using RepositoryTestHost host = await StartHostAsync();
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+
+        // Act — what the role actually holds, in the same "subject: PRIVILEGE" shape the expectation
+        // is flattened into, so a difference between the two sets reads as a line of the grants file
+        // rather than as a row of a catalog.
+        HashSet<string> heldTablePrivileges = await ReadTablePrivilegesAsync(admin);
+        HashSet<string> heldColumnPrivileges = await ReadColumnPrivilegesAsync(admin);
+
+        HashSet<string> held = new(heldTablePrivileges, StringComparer.Ordinal);
+        held.UnionWith(heldColumnPrivileges);
+        HashSet<string> expected = ExpectedMatrix();
+
+        // Assert — one set-equality assertion carrying both directions. Anything held and not
+        // declared is a widening; anything declared and not held is a privilege the application will
+        // discover as a 42501 in production. Collected rather than asserted one at a time so a single
+        // red run names every difference instead of stopping at the first.
+        List<string> differences =
+        [
+            .. held.Except(expected, StringComparer.Ordinal)
+                .Order(StringComparer.Ordinal)
+                .Select(entry => $"unexpected grant: {entry}"),
+            .. expected.Except(held, StringComparer.Ordinal)
+                .Order(StringComparer.Ordinal)
+                .Select(entry => $"missing grant: {entry}"),
+        ];
+
+        await Assert.That(differences).IsEmpty();
+    }
+
+    /// <summary>
+    /// Flattens both halves of the declared matrix into the one comparable set. Table entries read
+    /// <c>table: PRIVILEGE</c> and column entries <c>table.column: UPDATE</c>, which keeps the two
+    /// kinds of grant distinguishable in the same set — a table-wide <c>UPDATE</c> can never
+    /// accidentally satisfy a column-level expectation, or the widening this file is about would
+    /// cancel itself out.
+    /// </summary>
+    private static HashSet<string> ExpectedMatrix()
+    {
+        HashSet<string> expected = new(StringComparer.Ordinal);
+
+        foreach ((string table, string[] privileges) in ExpectedTableGrants)
+        {
+            foreach (string privilege in privileges)
+            {
+                expected.Add(TableEntry(table, privilege));
+            }
+        }
+
+        foreach ((string table, string[] columns) in ExpectedUpdateColumnGrants)
+        {
+            foreach (string column in columns)
+            {
+                expected.Add(ColumnEntry(table, column, "UPDATE"));
+            }
+        }
+
+        return expected;
+    }
+
+    private static string TableEntry(string table, string privilege) => $"{table}: {privilege}";
+
+    private static string ColumnEntry(string table, string column, string privilege) =>
+        $"{table}.{column}: {privilege}";
+
+    /// <summary>
+    /// Marks an entry read out of the catalog as grantable, so a privilege carrying
+    /// <c>WITH GRANT OPTION</c> is a different member of the set from the plain privilege of the
+    /// same name. Nothing in the expected matrix is ever built through this, which is the point: the
+    /// declared matrix holds no grant option anywhere, so a grantable privilege can only ever land in
+    /// the unexpected half of the comparison.
+    /// </summary>
+    private static string Grantable(string entry, bool isGrantable) =>
+        isGrantable ? $"{entry} WITH GRANT OPTION" : entry;
+
+    /// <summary>
+    /// Every table-level privilege the role holds on a relation in <c>public</c>, straight out of
+    /// <c>relacl</c>.
+    /// </summary>
+    /// <remarks>
+    /// <c>aclexplode</c> turns the access-control list into one row per (grantor, grantee,
+    /// privilege, is_grantable), which is what makes both the grantee and the grant option
+    /// observable: <c>relacl</c> stores oids and option flags packed into an aclitem, and neither is
+    /// readable without exploding it. <c>cross join lateral</c> rather than a plain call so that a
+    /// relation with a null <c>relacl</c> — no grant of any kind, the default — contributes no rows
+    /// instead of a null one. The grantee predicate is the whole of the class remarks' second
+    /// paragraph in one line: oid <c>0</c> is <c>PUBLIC</c>, which has no <c>pg_roles</c> row to join
+    /// to, and <c>pg_has_role(…, 'USAGE')</c> answers both a direct grant and one inherited through
+    /// membership. <c>cast(@role as name)</c> because the parameter arrives as <c>text</c> and the
+    /// three-argument overloads are declared over <c>name</c>.
+    /// </remarks>
+    private const string TablePrivilegeSql =
+        """
+        select c.relname, acl.privilege_type, acl.is_grantable
+        from pg_class c
+        join pg_namespace n on n.oid = c.relnamespace
+        cross join lateral aclexplode(c.relacl) acl
+        where n.nspname = 'public'
+          and (acl.grantee = 0 or pg_has_role(cast(@role as name), acl.grantee, 'USAGE'))
+        """;
+
+    /// <summary>
+    /// Every column-level privilege the role holds in <c>public</c>, straight out of <c>attacl</c>.
+    /// </summary>
+    /// <remarks>
+    /// <c>attnum &gt; 0</c> excludes the system columns, which carry no grants and would only add
+    /// noise; <c>not attisdropped</c> excludes the tombstones a dropped column leaves behind, whose
+    /// name is a placeholder rather than anything a grants file could have written. The privilege
+    /// type is read rather than assumed to be <c>UPDATE</c>: a column-level <c>SELECT</c> or
+    /// <c>INSERT</c> grant is a widening too, and one nobody would think to probe for. The grantee
+    /// predicate and <c>is_grantable</c> are read exactly as they are for
+    /// <see cref="TablePrivilegeSql" /> — a column grant can be made to <c>PUBLIC</c>, inherited
+    /// through membership, or handed out <c>WITH GRANT OPTION</c> just as a table grant can.
+    /// </remarks>
+    private const string ColumnPrivilegeSql =
+        """
+        select c.relname, a.attname, acl.privilege_type, acl.is_grantable
+        from pg_attribute a
+        join pg_class c on c.oid = a.attrelid
+        join pg_namespace n on n.oid = c.relnamespace
+        cross join lateral aclexplode(a.attacl) acl
+        where n.nspname = 'public'
+          and a.attnum > 0
+          and not a.attisdropped
+          and (acl.grantee = 0 or pg_has_role(cast(@role as name), acl.grantee, 'USAGE'))
+        """;
+
+    private static async Task<HashSet<string>> ReadTablePrivilegesAsync(NpgsqlConnection connection)
+    {
+        HashSet<string> held = new(StringComparer.Ordinal);
+        await using NpgsqlCommand command = new(TablePrivilegeSql, connection);
+        command.Parameters.AddWithValue("role", AppRoleName);
+        await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            held.Add(Grantable(
+                TableEntry(reader.GetString(0), reader.GetString(1)), reader.GetBoolean(2)));
+        }
+
+        return held;
+    }
+
+    private static async Task<HashSet<string>> ReadColumnPrivilegesAsync(NpgsqlConnection connection)
+    {
+        HashSet<string> held = new(StringComparer.Ordinal);
+        await using NpgsqlCommand command = new(ColumnPrivilegeSql, connection);
+        command.Parameters.AddWithValue("role", AppRoleName);
+        await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            held.Add(Grantable(
+                ColumnEntry(reader.GetString(0), reader.GetString(1), reader.GetString(2)),
+                reader.GetBoolean(3)));
+        }
+
+        return held;
+    }
+
+    private static async Task<RepositoryTestHost> StartHostAsync()
+    {
+        RepositoryTestHost host = new();
+        await host.StartAsync();
+        return host;
+    }
+}

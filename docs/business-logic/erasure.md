@@ -1,0 +1,640 @@
+# Erasure
+
+## Table of Contents
+
+- [Purpose](#purpose)
+- [Key Entities](#key-entities)
+- [Constraints](#constraints)
+- [Business Rules & Invariants](#business-rules--invariants)
+- [Workflows & State Transitions](#workflows--state-transitions)
+- [Decision Trees](#decision-trees)
+- [Integration Points](#integration-points)
+- [Edge Cases & Known Gotchas](#edge-cases--known-gotchas)
+
+## Purpose
+
+Erasure is the one action that destroys an account and everything owned beneath it. It exists so
+that leaving the product means actually leaving, rather than being archived: after it completes, no
+row in any table references the erased user or any budget it owned. Because it is irreversible, it
+is the one action a signed-in session does not buy on its own — a request must carry a WebAuthn
+assertion made moments earlier on an authenticator registered to the account, so a stolen session
+cannot destroy a budget. It cuts across almost every domain area, so the ordering rule and the
+post-condition live here rather than being split across the files whose rows it removes.
+
+## Key Entities
+
+Erasure owns no entity of its own. It acts on the account graph that already exists, and the shape
+of that graph is what the rules below are about:
+
+```mermaid
+erDiagram
+    USER ||--o{ CREDENTIAL : "cascade"
+    USER ||--o{ BUDGET : "cascade"
+    USER ||--o| FACTOR_MANIFEST : "cascade"
+    USER ||--o| KEY_ROTATION : "cascade"
+    CREDENTIAL ||--o{ SESSION : "cascade"
+    SESSION ||--o{ SESSION_TOKEN : "cascade"
+    CREDENTIAL ||--o| PASSKEY_PUBLIC_KEY : "cascade"
+    CREDENTIAL ||--o| PASSKEY_SIGNATURE_COUNTER : "cascade"
+    CREDENTIAL ||--o{ RECOVERY_CODE_HASH : "cascade"
+    CREDENTIAL ||--o{ WRAPPED_ACCOUNT_KEYS : "cascade"
+    KEY_ROTATION ||--o{ KEY_ROTATION_SEAL : "cascade"
+    WRAPPED_ACCOUNT_KEYS ||--o| KEY_ROTATION_SEAL : "cascade"
+    BUDGET ||--o{ ACCOUNT : "cascade"
+    BUDGET ||--o{ PAYEE : "cascade"
+    BUDGET ||--o{ CATEGORY_GROUP : "cascade"
+    BUDGET ||--o{ CATEGORY : "cascade"
+    CATEGORY_GROUP ||--o{ CATEGORY : "restrict"
+    BUDGET ||--o{ TRANSACTION : "restrict"
+    ACCOUNT ||--o{ TRANSACTION : "restrict"
+    CATEGORY ||--o{ TRANSACTION : "restrict"
+    PAYEE ||--o{ TRANSACTION : "restrict"
+```
+
+Every edge is `ON DELETE CASCADE` except the five marked `restrict`, and that distinction is the
+whole of the deletion order below. Four of the five have `transactions` as their child, which is why
+that is the one table erasure empties itself.
+
+**`KEY_ROTATION_SEAL` is reached twice and that is the graph rather than a mistake in the drawing.**
+It carries two foreign keys — `user_id` to `key_rotations` and `(factor_id, user_id)` to
+`wrapped_account_keys` — so a delete of either parent takes its rows. PostgreSQL permits the two
+cascading paths that creates; the multiple-cascade-path restriction is SQL Server's, not this
+server's. `KEY_ROTATION` itself moved up a level when it stopped carrying a factor: its one remaining
+key names `users`, so an erasure reaches it in one hop rather than through the wrapped keys, and
+without that edge an erased account would have left a staging row behind carrying its own user id —
+which the post-condition below forbids outright, and which no grant could have cleaned up, because the
+role holds no `DELETE` there of any shape.
+
+## Constraints
+
+### MUST
+
+- **Leave no row in any table referencing the erased user or any budget it owned** — the
+  post-condition the feature exists to deliver, asserted by a verification query rather than by a
+  count of statements issued. `ErasureAtomicityTests.Erasure_WhenNothingFails_RemovesEveryOwnedRow`.
+- **Run as one database transaction, deleting every row it covers or leaving every one exactly as it
+  found them** — a half-finished erasure is worse than none: the person cannot tell what survived,
+  and nothing in the product would be left to tell them. → the atomicity rule below.
+- **Run as the least-privilege application role, on the connection serving the request** — an
+  elevated connection would dissolve
+  [ADR 0004](../decisions/0004-connect-as-a-least-privilege-role.md), and an administrator is not
+  subject to row-level security at all. No elevated path exists.
+- **Discard the context's tracked entities before deleting the user row.** Not retry hygiene → the
+  change-tracker rule below, where the reason is the grant matrix.
+- **Delete, in dependency order and before the user row, every table a `RESTRICT` edge would
+  otherwise block.** → the deletion-order rule below.
+- **Be authorized by a fresh WebAuthn assertion on a `reauthentication` challenge, for a passkey
+  registered to the account the request is authenticated as** — a live session alone is not proof;
+  it is the thing the gate exists to distrust. Pinned across `ErasureReauthenticationTests`.
+
+### MUST NOT
+
+- **Take the account's identity from the request** — not from the route, not from the body, not from
+  a query string. → the no-account-named rule below.
+- **Answer `404` for an account that is already gone** — it states a post-condition rather than
+  acting on a row. → the never-`404` rule below.
+- **Publish an identity from the re-authentication gate.** The sign-in handler does exactly that and
+  the rule does not transfer, which makes this the most inviting wrong turn in the area.
+  `SessionContextInterceptor` writes `app.current_user_id` and `app.current_budget_id` together at
+  connection open, so a user id re-published mid-request does **not** move the budget: Alice's
+  session with Bob's passkey would empty Alice's budget while deleting Bob's user row.
+  `PasskeyReauthentication` takes `IUserContext` and never `IUserContextWriter` — see
+  [passkeys.md](passkeys.md).
+- **Run the gate inside the transactional delegate.** → the gate-outside rule below; the reasons are
+  the nonce, not the `22P02` that governs the sign-in path.
+- **Grant the application role `DELETE` on `budgets`** — budget rows leave by the database's own
+  cascade from `users`, which runs with the referencing table owner's privileges. A `42501` naming
+  `budgets` is a change-tracker fault, never a missing grant.
+- **Leave a row or a column behind** — no soft-delete flag, tombstone, deletion record, anonymized
+  remnant or archived copy. → the no-remnant rule below.
+- **Write an identifier of an erased account to a log, a trace or a metric** — a line naming the
+  user id that was just erased is a deletion record kept outside the database, and the cheapest
+  remnant in this product to create. Every other gate reads names in a catalog or a route table, and
+  a log line has no name for either to read. → the logging rule below.
+- **Offer any path that reverses an erasure that has taken effect** — no cancellation, no grace
+  period, no restore. → the irreversibility rule below.
+
+## Business Rules & Invariants
+
+- **Rule**: The freshness window is the **challenge's own server-issued lifetime**, five minutes. No
+  re-authentication instant is stored anywhere, and no timestamp is accepted from the client.
+- **Why**: the assertion travels in the erasure request itself, so the only thing that can be stale
+  is the nonce it was built on — and that nonce is minted, held and expired by the server inside
+  `ConsumeAsync`. There is nothing for a client to supply and therefore nothing to trust. **The gate
+  reads no clock at all**; a `TimeProvider` on it would suggest a second instant somewhere matters.
+  - **This is stricter than the requirement, not looser.** The window is measured from **challenge
+    issue**, which is strictly before the person touched their authenticator.
+  - **The absence of a stored instant is a decision, not an omission.** A `reauthentications` table
+    would be mutable per-user state on an account whose whole point is that it can be destroyed
+    wholesale. Anyone reaching for one should read the decision-log entry first.
+- **Enforced in**: `DbWebAuthnChallengeStore.ChallengeLifetime` and the expiry comparison inside
+  `ConsumeAsync`.
+  `ErasureReauthenticationTests.Erasure_OnAChallengeOlderThanTheWindow_IsRefusedAndErasesNothing`
+  inserts a pre-expired `reauthentication` row out of band and signs those exact bytes;
+  `…Erasure_OnALiveChallengeInsertedTheSameWay_ReturnsNoContent` is its control, without which a
+  gate refusing every out-of-band challenge for an unrelated reason would pass the first vacuously.
+  `…Erasure_SendsNoTimestampAndReadsNone` pins the shape on both legs.
+- **Source**: `[SOURCE: user-story]`
+
+---
+
+- **Rule**: The gate runs to completion **outside** the transactional delegate.
+- **Why**: two reasons, and **neither is the `22P02` one** that governs `CompleteAssertionHandler`.
+  Identity here is published while the request authenticates, before the handler runs.
+  1. `ConsumeAsync` deletes the nonce on its own save. Inside the erasure transaction, a rolled-back
+     erasure would **restore the spent nonce** and make the same assertion replayable.
+  2. The delegate is replayed under `NpgsqlRetryingExecutionStrategy`. A gate inside it would
+     consume a second time, find the nonce spent, and refuse a **valid** erasure with the same 401
+     an attacker gets, because the database blinked.
+- **Enforced in**: the call ordering in `EraseAccountHandler`, with both reasons on the call site.
+  `EraseAccountHandlerTests.HandleAsync_WhenTheUnitOfWorkIsReplayed_StillErasesTheAccount` runs a
+  single-use challenge stub through `RetryingTransactionalExecutor(2)` and goes red the moment the
+  call moves below `ExecuteAsync`. It is an outcome pin, not a call-order pin.
+- **Counterexample**: wrapping gate and erasure in one transaction for tidiness. Both halves of the
+  damage are invisible on a green day.
+- **Source**: `[SOURCE: user-story]`
+
+---
+
+- **Rule**: The unit of atomicity is the **transactional delegate, not the request**. Everything
+  erasure covers commits together or not at all — but the gate's writes commit *before* the
+  transaction opens and are deliberately **not** rolled back with it.
+- **Why**: an erasure either deletes every row **it covers** or none, and the condition that
+  triggers the guarantee is a failure in *part of an erasure*. The gate is the authorization
+  deciding whether an erasure begins at all, not a part of one.
+  - **There are exactly two such writes**: the spent nonce, which `ConsumeAsync` deletes from
+    `webauthn_challenges` on its own save, and the advanced
+    `passkey_signature_counters.signature_counter`, which `SaveCounterAsync` flushes. One moves a
+    row count; the other moves only a value, so a verification that counted rows would catch the
+    first and be structurally blind to the second. Both are pinned, and by different means.
+  - **What the literal reading would cost**, beyond the two reasons above: a rolled-back erasure
+    would also rewind the counter, so a cloned authenticator could re-assert at a value it had
+    already used.
+- **Enforced in**: `EraseAccountHandler`, whose single `ITransactionalExecutor.ExecuteAsync` covers
+  both saves, and `DbContextTransactionalExecutor`, which opens one transaction inside the execution
+  strategy and commits once.
+  `ErasureAtomicityTests.Erasure_WhenTheUserDeleteFails_LeavesEveryRowCountUnchanged` fails the
+  **second** save and compares every ordinary table either side of the request; the claim is that
+  whole comparison, and the surviving `transactions` rows are the count that carries the conclusion,
+  because two transactions would have committed the first.
+  `…Erasure_WhenNothingFails_RemovesEveryOwnedRow` is the control that keeps the comparison from
+  passing vacuously. `…Erasure_WhenTheUserDeleteFails_SpendsTheAssertionAnyway` pins the boundary
+  from the other side, the nonce by count and the counter by value.
+- **Counterexample**: proving the boundary with a verification that counts rows. It catches the
+  spent nonce and is structurally blind to the advanced counter, which is why the counter is pinned
+  by value.
+- **Source**: `[SOURCE: user-story]`
+
+---
+
+- **Rule**: Erasure deletes explicitly **only what a `RESTRICT` edge would otherwise block**, in
+  dependency order; everything joined to the account by `CASCADE` alone is left to the cascade.
+  Today exactly one table satisfies that, and the sequence is **transactions → the user row**.
+- **Why**: stated as a rule rather than as a list of statements because the list is what a future
+  table has to be measured against. The owned graph carries five `RESTRICT` edges, and
+  `transactions` is the child of four — `→ budgets`, `→ accounts`, `→ categories`, `→ payees`. Those
+  four are the guard that stops an ordinary delete taking recorded money movement with it, so a
+  delete leaning on the cascade answers `23503` for any account that ever recorded a transaction,
+  which in a budgeting product is the ordinary case. Emptying that one table also disarms the fifth
+  edge, because a `RESTRICT` edge cannot bite once its child rows are gone.
+  - **`categories → category_groups` is left to the cascade, and that does not rest on constraint
+    ordering.** Both tables cascade from `budgets`, so one `budgets` delete reaches two tables
+    joined to each other by a `RESTRICT` edge — but PostgreSQL queues the check for that edge as an
+    after-row trigger when the `category_groups` row is deleted, which is strictly after the cascade
+    into `categories` was already queued, and the after-trigger queue is FIFO. `RESTRICT` being
+    non-deferrable does not make the check fire mid-statement. Verified on PostgreSQL 17 against
+    schemas built with the two constraints created in either order, so that their OIDs — and with
+    them the RI trigger names that decide firing order — were reversed: both leave the tables empty.
+- **Enforced in**: `EraseAccountHandler`, whose two saves are ordered by the method rather than by
+  EF. `AccountErasureEndpointTests.Erase_ForAFullyFurnishedAccount_ReturnsNoContent` seeds a
+  categorized transaction, which puts four of the five edges in the path;
+  `…Erase_ForAnAccountWithCategoriesAndNoTransaction_LeavesNoneOfEither` covers the fifth in
+  isolation, and is what goes red if the FIFO behaviour ever stops holding.
+  `EraseAccountHandlerTests.HandleAsync_DeletesTheTransactionsBeforeTheUser` pins the order itself.
+  `SchemaConstraintSnapshotTests.Schema_PinsEveryForeignKeyAndItsDeleteRule` is the schema tripwire:
+  a new `RESTRICT` edge into the owned graph moves a line there.
+- **Example**: an account with one categorized transaction. Deleting the user row first cascades
+  into `budgets`, which is refused by `FK_transactions_budgets_budget_id` with `23503`.
+- **Counterexample**: collapsing the two saves into one and letting EF order the batch. EF sorts
+  topologically by the foreign keys *between the entity types in the batch* — `Transaction` points
+  at `Budget`, `Budget` points at `User`, and `Budget` is not in the tracker — so there is no edge
+  and no guarantee. It may draw the right order today and a different one after an EF upgrade.
+- **Source**: `[SOURCE: user-story]`
+
+---
+
+- **Rule**: The handler discards the context's tracked entities before it deletes anything, and that
+  call is load-bearing on the **first** attempt of the **first** request, not only under retry.
+- **Why**: authenticating the request has already resolved the identity and the ambient budget
+  through the same scoped context, which leaves the `Budget` entity tracked. Removing the `User`
+  with that dependent still in the tracker makes EF cascade to the copy it can see and emit its own
+  `DELETE FROM budgets` — and the role holds `SELECT`, `INSERT` and `UPDATE (name)` on `budgets` and
+  deliberately no `DELETE`, so the request dies with `42501` before it deletes anything. **The failure names a
+  permission and the cause is the change tracker.** Answering it with a grant would widen the role's
+  reach, fail `AppRoleGrantMatrixTests`, and leave the real fault in place.
+- **Enforced in**: `IPersistenceState.DiscardTrackedEntities()`, called as the first line inside the
+  `ITransactionalExecutor` delegate, with the reason written on the call. Every test in
+  `AccountErasureEndpointTests` that expects `204` fails with `42501` without it, including the one
+  that seeds nothing at all.
+- **Source**: `[SOURCE: user-story]`
+
+---
+
+- **Rule**: The whole sequence runs on **one** session shape, not two.
+- **Why**: `transactions` is policed by `budget_isolation`, which reads `app.current_budget_id`,
+  while `users` is policed by `user_isolation`, which reads `app.current_user_id`. Two policies, not
+  two connections: `SessionContextInterceptor` writes both settings in the same statement on every
+  connection open.
+- **Enforced in**: `SessionContextInterceptor`, unchanged by this feature — see
+  [ADR 0008](../decisions/0008-read-the-ambient-budget-inside-the-policy.md) for why it must stay a
+  connection-opened interceptor.
+- **Source**: `[SOURCE: user-story]`
+
+---
+
+- **Rule**: The account erased is whichever one the request is authenticated as. The identity comes
+  from `IUserContext` and from nowhere else, and **no field exists for a caller to name an account
+  in**. `EraseAccountCommand` carries the assertion and nothing else: its members name a credential
+  *handle*, and the owner-scoped lookup makes a handle incapable of selecting an account. The rule
+  is "no account may be named", not "no members".
+- **Why**: `user_isolation` is `FOR ALL`, so a `DELETE` naming another user's id affects **zero rows
+  and reports success**. There is no error to catch and no refusal to log; a handler that took an id
+  from the request and got it wrong would answer `204` having erased nothing. Keeping the id out of
+  the command makes that state unreachable by the type system rather than by a check.
+- **Enforced in**: `EraseAccountCommand`, `EraseAccountHandler` (reads `IUserContext.UserId`), and
+  the route, which carries no id segment.
+  `AccountErasureEndpointTests.Erase_LeavesAnotherAccountUntouched` is the counterweight: without
+  it, a handler that emptied every table in the database would satisfy every other assertion.
+- **Counterexample**: `POST /api/me/{userId}/erasure`. Even with an ownership check it would be a
+  second place the identity could come from, and the check would be the only thing between a typo
+  and a silent no-op.
+- **Source**: `[SOURCE: user-story]`
+
+---
+
+- **Rule**: Erasure never answers `404`. A handler reached over an account already gone completes
+  with `204`.
+- **Why**: the caller asked for a post-condition — that the account not exist — and it holds. A
+  `404` would be an answer about a row, and the one thing it would communicate is uncertainty about
+  whether their data is still there.
+  - **Erasure is therefore not idempotent to the caller**, and the cost is real: a client retrying
+    after a lost `204` sees a failure over data that is already destroyed. The remedy is client-side
+    — do not re-run the ceremony on a presumed-lost response. It must **not** be answered by storing
+    a marker that an erasure happened, nor by answering `204` without a valid assertion, which would
+    put a path through this handler that reports success having verified nothing.
+- **Enforced in**: `UserRepository.DeleteAsync`, which removes whatever the id matched and saves; an
+  absent row leaves an empty set and the save is a no-op rather than a branch.
+  - **A second request from the same client is refused, and — this is the part that matters — it
+    creates nothing.** The session cookie the first request presented names a `session_tokens` row
+    the cascade took with the account, so the lookup matches nothing and the fallback policy answers
+    `401`. A provider bearer left over from registration fares no better — the fallback names the
+    cookie scheme. Either way the answer makes no claim about data.
+    `AccountErasureEndpointTests.Erase_CalledASecondTime_IsRefusedAndCreatesNoAccount` pins both
+    halves — the second call is `401` **and** `select count(*) from users` comes back `0`. That
+    count is the whole assertion: while a middleware could mint on the way past it would leave `1`.
+  - **This holds for a row that leaves between the read and the save, too.** Two erasures of the
+    same account in flight at once both load the rows; the loser blocks on the winner's locks, then
+    finds nothing to delete and gets zero rows affected against EF's expected one. Left alone that
+    is a `DbUpdateConcurrencyException` and a `500`, which tells the user their erasure failed when
+    it succeeded. Both repositories therefore treat a conflict **naming only rows this call marked
+    deleted** as the post-condition already holding, and let any other conflict propagate. They also
+    detach those rows from the change tracker, sweeping the tracker rather than the entries the
+    exception reported — EF reports only the first mismatching command's entries, so a surplus entry
+    would otherwise be re-flushed by the next save and abort the erasure outright. Carried by
+    `TransactionRepository.DeleteAllForAmbientBudgetAsync` and `UserRepository.DeleteAsync`;
+    `…_WhenAnotherRequestDeletedTheRowsFirst_LetsTheErasureFinish` stages the conflict on **two**
+    rows, because one row passes under the broken shape as well.
+    `…_WhenTheConflictNamesAnotherEntity_LetsItEscape` pins the narrowing on both.
+- **Example**: a person double-clicks the confirm control on a slow connection. The winner's request
+  erases and answers `204`; the loser finds the rows already gone and answers `204` too. A third
+  call on the still-valid token is `401` — and mints nothing.
+- **Source**: `[SOURCE: user-story]`
+
+---
+
+- **Rule**: Erasure reaches every budget the user owns, which today is exactly one.
+- **Why**: the repositories it calls are scoped by the `BudgetIsolation` query filter, which
+  resolves the **ambient** budget, and a user has exactly one budget with no way to create a second.
+  So "every budget it owns" and "the ambient budget" name the same rows.
+  - **This is the assumption a multi-budget change must revisit.** The schema is multi-budget-ready
+    and this handler is not: a second budget's transactions would sit outside the ambient filter, be
+    left in place, and refuse the user delete with `23503`. Loud rather than silent, but the first
+    thing to fix on the day a second budget can exist.
+- **Enforced in**: `ITransactionRepository.DeleteAllForAmbientBudgetAsync` and
+  `ICategoryRepository.DeleteAllForAmbientBudgetAsync`, neither of which takes a budget id — the
+  filter is the tenancy, and an id parameter would be a tenancy argument with no ownership check to
+  pair with it.
+- **Source**: `[SOURCE: user-story]`
+
+---
+
+- **Rule**: There is no remnant, and two gates of different shapes say so — the **schema** refuses
+  the names a remnant arrives under, and a **row count** refuses the rows. No table carries a
+  soft-delete flag, a tombstone, a deletion record, an anonymized remnant, or a column naming an
+  archived copy.
+- **Why**: every one of those is the same defect wearing a different name — a row that outlived the
+  erasure that was supposed to destroy it, kept where a query can still reach it. "Deleted means
+  deleted" has to be a property of the schema rather than a habit of whoever wrote the last handler,
+  because a handler is one review away from being changed and a column is not.
+- **Enforced in**: `ErasureRemnantVocabulary`, whose sixteen patterns each carry the argument for
+  refusing them, matched by whole-token runs through `IdentifierTokens`. Each pattern is matched
+  both as written and in the plural — the matcher does not stem, and the plural is the form a
+  remnant *table* arrives in. `ErasureRemnantVocabularyTests` holds the vocabulary honest from above
+  — the strongest of its controls reads every mapped column off the EF model and fails naming any
+  real column a widened pattern swallowed. `ErasureRemnantSchemaTests` scans the live catalog for
+  both columns and relation names, with one probe per axis.
+  - **What the name half holds is names it recognises, and that bound is stated rather than
+    implied.** A vocabulary refuses `deleted_at`, `tombstones` and `users_archive`; it has nothing
+    to say about `users_shadow`, `legacy_users`, `closed_accounts` or `retained_profiles`, and it
+    never will, because a list of refused words cannot enumerate the words nobody has thought of.
+    What catches those is the row count, which reads no names at all.
+  - **The row-shaped half is carried elsewhere and deliberately not duplicated here.**
+    `ErasureAtomicityTests.Erasure_WhenNothingFails_RemovesEveryOwnedRow` enumerates every relation
+    that stores rows of its own — ordinary tables, materialized views and foreign tables — and
+    asserts each is empty after a successful erasure. Views and partitioned parents are excluded
+    because they would report rows already counted underneath them, not because their rows are safe.
+    A materialized view is counted for the opposite of the obvious reason: nothing in a request
+    writes to it, so an erasure does not reach it either, and a reporting matview over
+    `transactions` would keep an erased budget's money movement until somebody refreshed it.
+  - **Naming a table in that test's `TablesOutsideTheTransactionBoundary` removes it from this
+    assertion too.** The list feeds the shared counting helper, so it excuses a table from the
+    completeness check as well as from the drift comparison it was written for — and the comment
+    beside it invites exactly that as the remedy when a new table reds the guard. Splitting the two
+    effects has not been done; until it is, a table added there is a table neither gate covers.
+  - **Two of the five nouns are held by the row count alone, and no name refuses them.** An
+    anonymized remnant is a row that stays with its identifying columns *overwritten under their
+    existing names* — an `email` holding `deleted-user-4f2a@example.invalid` is the shape it
+    actually arrives in. A deletion record can arrive the same way: an outbox row carrying
+    `event_type = 'AccountErased'` with a user id inside `event_data`, under column names the
+    vocabulary blesses as proof it is narrow.
+  - **The omissions are deliberate, and each is an argument rather than a gap.** `archived_at` and
+    `is_archived` are permitted, because hiding an account somebody no longer uses is a plausible
+    live-row product state, and a rule that cannot tell "this account is closed" from "this user's
+    data was copied aside" would refuse the feature. **What that costs is stated rather than waved
+    away.** The account row is guarded on this axis by a narrower test —
+    `DataMinimizationSchemaTests.Schema_PinsTheColumnsOfTheUserRow` — and that pin, with the two
+    beside it, reaches three tables: `users`, `passkey_public_keys` and
+    `passkey_signature_counters`. On every other table a `transactions.is_archived` is refused by
+    neither the pins nor the vocabulary, deliberately. `backup` and `history` are permitted against
+    collisions that exist today — `__EFMigrationsHistory` is a relation EF owns and cannot be
+    renamed, and `backup_eligible` / `backup_state` are the WebAuthn authenticator-data flags.
+  - **`discarded` is refused, and *discard* being this product's word for an intentional hard delete
+    is not an argument against that.** The vocabulary classifies catalog and model *names*, and a
+    hard delete leaves no column behind — so every `discarded_at` reaching the classifier is a soft
+    delete wearing the product's own hard-delete word.
+- **Counterexample**: a `deleted_at` on `users` so support can undo a mistake. It converts every
+  erasure into a hide, and the person who asked to be forgotten stays in the table indefinitely with
+  no way to tell.
+- **Source**: `[SOURCE: user-story]`
+
+---
+
+- **Rule**: No identifier of an erased account is written to a log, a trace or a metric.
+- **Why**: a log line naming the user id that was just erased is a deletion record that outlives the
+  row, kept where no gate on this page can see it. Both other gates read *names* — a column in a
+  catalog, a pattern in a route table — and a log line has no name to read. It is also the cheapest
+  remnant in the product to create: adding a logger to a destructive handler and recording who was
+  erased is the ordinary next step after such an endpoint ships.
+- **Enforced in**: `ErasureLoggingTests`, which asserts by reflection that the two types carrying an
+  erasure out — `EraseAccountHandler` and `PasskeyReauthentication`, the two that hold the account
+  id — take no `ILogger` or `ILoggerFactory` constructor dependency.
+  - **The test is narrow on purpose and its scope is stated rather than implied.** It reds on
+    exactly the move it names and covers nothing else: not the endpoint mapping, not the
+    repositories those handlers call, and not the ASP.NET Core, EF Core and hosting stacks, all of
+    which log on their own. A rule this shape cannot be made to cover an application; it can be made
+    to cover the one move that would otherwise happen by habit.
+- **Counterexample**: `logger.LogInformation("Erased account {UserId}", userId)` at the end of the
+  handler, added so an operator can answer "did the erasure run?". It answers that question by
+  keeping the identifier the erasure existed to remove.
+- **Source**: `[SOURCE: user-story]`
+
+---
+
+- **Rule**: No path reverses an erasure that has taken effect, and the **route table** is what says
+  so.
+- **Why**: a corollary of the rule above rather than an independent promise. A restore path needs
+  something to restore *from*; once no remnant exists, a reversal has no source. What the route pins
+  add is that nobody can build the front half of such a path and discover the back half missing
+  later.
+- **Enforced in**: `ErasureIrreversibilityTests`, with two pins of different shapes. One scans every
+  route's pattern, display name and endpoint name for a vocabulary of reversal words, each spelling
+  proved by a case of its own so the list cannot grow an entry nothing exercises. The other pins the
+  **`/api/me/erasure` resource** exhaustively to `POST /api/me/erasure`, which closes the naming
+  loophole a word list cannot see — a route called `/api/me/erasure/second-chance` trips the second
+  pin and not the first. Each has its own control built from a hand-made endpoint list.
+  - **The second pin is scoped to the erasure resource, not to `/api/me`.** `/api/me` is the
+    current-principal namespace: freezing it would refuse `GET /api/me`, `/api/me/sessions` and
+    `/api/me/export` on erasure's behalf, and a rule that argues with unrelated features gets
+    widened by whoever meets it. Comparison is by path segment and case-insensitive, matching how
+    ASP.NET routing itself matches — a raw ordinal prefix would have pulled in `/api/members` and
+    let `/API/Me/erasure` escape.
+  - **`cancel` is deliberately not a reversal word.** Cancelling something before it takes effect
+    brings nothing back; every word on the list names retrieving something already gone. Were a
+    delayed, cancellable erasure ever built, the cancellable window would belong to the *schedule*
+    and the erasure-resource pin — not the word list — is the line that would have to move.
+  - **`recover` is deliberately not a reversal word either, for the opposite reason.** In a passkey
+    product *account recovery* means regaining access to a live account, and a word that cannot
+    separate that from resurrecting an erased one narrows to nothing. The derived forms of every
+    other word are on the list — `restoration`, `reinstatement`, `reactivation`, `reversal`,
+    `undeleted` — because the matcher compares whole tokens and does not stem.
+  - **The limits are stated rather than engineered around.** The route table is the capability
+    boundary only because this codebase has no background jobs and no second entry point: a reversal
+    driven from a hosted service, a queue consumer or a deploy-time tool would slip both pins. Both
+    pins also boot the host in `Production`, and `Api/Program.cs` maps at least one route inside an
+    `IsDevelopment()` branch — so a reversal registered there is a surface that already exists and
+    neither pin reads.
+- **Counterexample**: a "restore within 30 days" endpoint added because it seems kind. It cannot
+  work without keeping the rows, so it silently reintroduces the remnant the rule above forbids.
+- **Source**: `[SOURCE: user-story]`
+
+---
+
+- **Rule**: The backup window is erasure's one physical limit. Erased rows persist in point-in-time
+  database backups for up to seven days, and in no other location **this service holds**.
+  - **That scope is the claim and is narrower than it reads at a glance.** Every gate on this page
+    answers for rows in this database: the schema vocabulary, the row count and the route table each
+    read something the service owns. What a **browser** keeps of its own is outside all three — the
+    erasure path issues no instruction to a client, and no cascade reaches a device. So a sentence
+    promising that nothing survives an erasure *anywhere* would be a promise about somebody else's
+    storage, made by a handler that cannot see it.
+- **Why**: erasure is irreversible *as an offered capability* and time-bounded *as a physical fact*,
+  and both sentences are true at once. A point-in-time restore rebuilds the whole database as an
+  operator action against the whole service — it cannot be aimed at one account, and it is reachable
+  from no route, handler, role or grant.
+- **Enforced in**: nothing. `BackupRetentionDays = 7` is set on the Postgres resource in
+  `AppHost/Program.cs`, but no test reads it — editing that literal to `35` reds nothing, and
+  neither does an operator changing retention on the server directly. This is the one rule on this
+  page held by a value in a file rather than by a gate.
+  - **The product tells a person about this window, and the number in the copy is held by nothing.**
+    The account settings screen states the seven-day limit in words — `settings.component.spec.ts`
+    pins the sentence, so the copy cannot drift on its own — which makes `BackupRetentionDays = 7`
+    the number a user was told. Nothing ties the two together, and they live in different projects
+    and different languages, so editing the literal leaves the screen quietly lying about a privacy
+    guarantee. **Whoever changes retention changes the copy in the same commit**; until a gate holds
+    that pairing, this sentence is the only thing that says so. A gate is possible — a test reading
+    `AppHost/Program.cs` as text — and was deliberately not written, because no test in this
+    repository reads a source file. It is on the hardening backlog.
+- **Source**: `[SOURCE: user-story]`
+
+## Workflows & State Transitions
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant O as POST /api/passkeys/reauthentication/options
+    participant A as POST /api/me/erasure
+    participant H as EraseAccountHandler
+    participant G as PasskeyReauthentication
+    participant D as PostgreSQL
+
+    C->>O: authenticated
+    O->>D: issue a reauthentication challenge (lives 5 minutes)
+    O-->>C: challenge
+    Note over C: the authenticator signs it
+    C->>A: assertion (authenticated)
+    A->>H: EraseAccountCommand(assertion)
+    H->>G: VerifyAsync — outside the transaction
+    G->>D: consume the nonce, require ceremony = reauthentication
+    G->>D: find the key BY HANDLE AND OWNER, verify, accept the counter
+    G-->>H: proved, nothing returned
+    H->>H: DiscardTrackedEntities()
+    H->>D: BEGIN
+    H->>D: delete transactions (ambient budget)
+    H->>D: delete the user row
+    D-->>D: cascade: credentials, sessions, passkey rows, budgets,<br/>accounts, category groups, categories, payees
+    H->>D: COMMIT
+    A-->>C: 204 No Content
+```
+
+There is no state to transition through: an account is present or it is not. Nothing is marked,
+scheduled or flagged, and no row survives to record that an erasure happened — including the proof
+that authorized it, which leaves as the deleted nonce.
+
+## Decision Trees
+
+How a request to `POST /api/me/erasure` is answered:
+
+```
+IF the request carries no valid token                        ← arms are mutually exclusive
+  THEN 401 from the fallback policy
+ELSE IF the caller's session reads no budget content         ← a federated sign-in; the route
+  THEN 403 from the fallback policy's                          carries no opt-out marker
+       FullSessionRequirement, before the handler runs
+ELSE IF the presented cookie names no live session           ← including one the cascade just took
+  THEN 401 from the fallback policy — nothing is minted on the way past,
+       because nothing outside /api/registration writes a users row
+ELSE IF the gate refuses the assertion                       ← consumed/expired/wrong-pool nonce,
+  THEN 401, the nonce spent                                    bad signature, another account's key
+ELSE
+  THEN transactions → user row, one transaction, cascade takes the rest — 204
+```
+
+## Integration Points
+
+- **The grant matrix** — `app-role-grants.sql` gives the role `DELETE` on `users` and
+  `transactions`, which is everything erasure needs. `AppRoleGrantMatrixTests` pins the set in both
+  directions, so a grant added to make an erasure problem go away fails a test rather than shipping.
+  - **Two of the role's other `DELETE` grants look like they belong to erasure and do not.**
+    `credentials` holds one for passkey revocation and `recovery_code_hashes` for redeeming a code.
+    Erasure uses neither: it empties both tables through the cascade from `users`, and would still
+    work if both grants were revoked tomorrow.
+- **Row-level security** — `user_isolation` scopes the `users` delete, `budget_isolation` scopes the
+  `transactions` delete. Both are `FOR ALL`, so they constrain a delete exactly as they constrain a
+  read. See [data isolation](../engineering/data-isolation.md).
+- **The referential cascade** — everything not listed above leaves because PostgreSQL performs the
+  referential action through internal triggers running with the **referencing table owner's**
+  privileges, not the caller's. That is why no grant on any child table is needed.
+- **[Passkeys](passkeys.md)** — the `reauthentication` ceremony, the third nonce pool, and the rule
+  that on this path the account comes from the request rather than from the credential. The gate
+  reads `passkey_public_keys`, writes `passkey_signature_counters.signature_counter`, and deletes a
+  `webauthn_challenges` row — all already granted, so `AppRoleGrantMatrixTests` and
+  `RlsCoverageTests.Exemptions_PinTheColumnsTheirReasonCovers` staying green **untouched** is the
+  proof this design added neither a privilege nor a column.
+
+## Edge Cases & Known Gotchas
+
+- **A `42501` naming `budgets` is a change-tracker fault.** It means the tracked `Budget` the
+  request resolved while authenticating was still attached; the fix is `DiscardTrackedEntities()`,
+  never a grant. The single most likely wrong turn in this area, because the error message points at
+  exactly the wrong layer.
+- **An erased account cannot be resurrected by a token that outlives it, and the mechanism is
+  structural rather than a rule some route could forget.** A Google ID token stays valid for up to
+  an hour after the account it names is gone, so any path where being authenticated *creates* an
+  account lets a second erasure attempt, an in-flight poll or a second tab write a fresh `users` row
+  moments after they asked to be forgotten. Two things close it. **A provider token reaches exactly
+  two routes**, both under `/api/registration`, because the fallback policy names the session cookie
+  scheme. And **those two cannot complete without a fresh server-minted challenge and a WebAuthn
+  credential the caller's own authenticator produced**. Any scheme that reinstates creation behind a
+  route marker reopens this.
+  - **What a stale token still buys is one new account, and that is not a resurrection.** Somebody
+    holding a live provider token after erasing can run `/api/registration` again and create a fresh
+    account under the same address — consciously, through the whole ceremony, with a new identifier,
+    a new passkey and a new set of codes. A person choosing to come back, not a poll bringing them
+    back.
+- **The request's own session row is deleted mid-request.** A request carrying the session cookie
+  reads its `session_tokens` row and then its `sessions` row to authenticate at all, so this
+  endpoint deletes — by cascade, from `users` through `credentials` — the rows that authorized the
+  request it is running inside. It completes normally, and the reason is ordering rather than luck:
+  both reads finish before the route delegate starts, and nothing downstream re-reads them. What the
+  route does **not** do is clear the cookie. The browser is left holding a handle that names
+  nothing, every later request answers `401`, and the client's expiry interceptor takes it from
+  there — the correct outcome and not a gap, since a cleared cookie would be one more thing to get
+  right on a path whose whole point is that it leaves nothing behind.
+- **`archived_at` is permitted by the schema scan and forbidden on `users` by a different test.**
+  Two rules meet here and neither alone is the whole answer, so somebody reading only the vocabulary
+  sees a gap and widens the pattern — which takes a plausible product feature down with it. The
+  remnant rule above states the division; read it before touching either side.
+- **A client surface describes an erasure; none can start one, and nothing technical is in the
+  way.** The account settings screen carries an erasure section — what will be destroyed, that there
+  is no undo, and the backup window above — but its control is **disabled**. **Nothing technical
+  blocks it**: the route is live, and the assertion that authorizes it is a ceremony this client
+  already runs, creating a passkey on `/register` and asserting one on `/welcome`. What is missing
+  is narrower and less flattering: the confirmation flow [components.md](../design/components.md)
+  specifies, and the wiring between this button and that assertion. Do not write the copy as though
+  the browser were incapable — it is not. The screen says so in its own words, and the load-bearing
+  clause is the qualifier: what erasing waits on is a passkey **Budgetoid checks itself**. The
+  wording is the design book's — see the *Not built yet* pattern in
+  [voice.md](../design/voice.md) and the erasure and revocation sentences in
+  [components.md](../design/components.md) — and the qualifier is not decoration. The same screen
+  now carries an **Unlock** control that runs a passkey ceremony minted and discarded in the
+  browser, so a sentence saying this screen asks for no passkey would be false in front of somebody
+  who watched their authenticator answer one two sections up. What is missing is narrower: an
+  assertion a **server** verifies. That copy is deliberately **not** the sentence the credential
+  section uses, and only half of the recovery-code one: those wait on the account's keys **as
+  bytes** — which unlocking does not hand over, and which erasing an account needs nothing of — and
+  the recovery-code control waits on a server-checked assertion on top of that.
+- **A failed erasure still spends the assertion, and still advances the signature counter.** Both
+  are the gate's writes, both committed before the transaction opened, and neither returns with the
+  rollback — so the person has to run the ceremony again. Correct rather than a defect, and it must
+  **not** be answered by moving the gate inside the transaction.
+- **`webauthn_challenges` is not in the verification query, and that is not an oversight.** A
+  challenge belongs to a ceremony rather than to a person and carries neither `user_id` nor
+  `budget_id`, so "no row references the erased user" holds vacuously.
+- **Erasure is the one act that changes an account's factor set and writes no manifest, and that is
+  a consequence rather than an omission.** Every other path that moves a set — registration, adding
+  a passkey, replacing a card of recovery codes, revoking a passkey — carries the account's new list
+  of factor public keys and the epoch it was sealed under, and lands it in the unit of work that
+  moved the set. This one has nobody left for a list to describe: `factor_manifests` cascades from
+  `users`, so the row a promotion would be applied to leaves in the same transaction. A `manifest`
+  member on `ErasureRequest` would therefore be a value the handler could only write and then
+  delete — which is also why `ErasureRequest` and `RevocationRequest` must not be folded onto one
+  record or one base type, however closely their five assertion members still match.
+  [account-keys.md](account-keys.md) owns the manifest rule and [passkeys.md](passkeys.md) owns the
+  revocation it is stated against.
+- **A recovery code leaves nothing behind an erasure, and its hash leaves nothing behind its own
+  redemption either.** `recovery_code_hashes` carries `user_id` and cascades from `credentials`, so
+  erasure reaches it structurally. What is worth reading is that the table could never have held a
+  remnant in the first place: consuming a code is **deleting its row**, so there is no
+  `redeemed_at_utc` for `ErasureRemnantVocabulary` to refuse and no spent-code hash for the count to
+  find — see
+  [ADR 0017](../decisions/0017-consume-a-recovery-code-by-deleting-its-row.md). The cost is
+  symmetrical too: *"was this code used, or never issued?"* is as unanswerable as *"was this account
+  erased?"*, and deliberately so.
+  - **A spent code's factor row does stay behind its redemption, and erasure takes it all the
+    same.** Redemption leaves the code's `wrapped_account_keys` row on purpose
+    ([account-keys.md](account-keys.md) owns why). That row cascades from `credentials` exactly like
+    a live code's, so erasure reaches it by the same structure.
+    `AccountErasureEndpointTests.Erase_ForAFullyFurnishedAccount_LeavesNoRowInAnyTable` seeds a set
+    with more factor rows than live codes, and asserts none is left. Today no production change can
+    tell a spent code's row from a live one, because nothing links a factor row to a hash row. The
+    seed is there for the day something does.

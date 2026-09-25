@@ -32,9 +32,12 @@ It opens from the Add button as a sheet (compact) or dialog (expanded).
 - **Amount first.** The amount field is focused on open, numeric keypad up. An
   expense/income toggle sits beside it, defaulting to expense.
 - **Everything else is pre-answered**: date pre-filled with today, account remembered
-  from last time, payee autocompletes from history (recent first), category suggests
-  the payee's last-used category. Category and payee stay optional — never block the
-  record on classification.
+  from last time, payee completes from the counterparties this browser could open,
+  ordered by name and narrowed by what has been typed (ordering them by recency is
+  work, and unreachable from any read the product has: a payee carries an id and a
+  sealed name and no timestamp, and *recently used* would need transaction history
+  besides), category suggests the payee's last-used category. Category and payee stay
+  optional — never block the record on classification.
 - Field order: amount → payee → category → account → date → note. Submit enables once
   amount and account are valid.
 - **An empty amount is not a zero.** An untouched amount field blocks submit; it never
@@ -67,6 +70,17 @@ of orientation, one action.
 
 The bead may breathe once on an empty state ([motion](motion.md)).
 
+**Registration is not first run, and the two take opposite shapes on purpose.** First run is what
+somebody who already has an account meets inside the app: nothing is required of them, they may do
+the four things in any order or none, and the screens they land on are ordinary screens with nothing
+in them yet — which is why the rule above forbids a checklist. Registration is the opposite animal.
+It is one **ordered, atomic transaction**: three things happen in one sequence, none of them is
+optional, and until the last press nothing exists. So it is a **linear sequence of full screens**,
+one step at a time, each with a plain **`Step 2 of 3`** caption above its own heading — the caption
+belongs to the step, per [components](components.md). Not a checklist, which would offer an order
+that is not available, and not `MatStepper`, which draws a header a person can navigate and implies
+they may go back to a step whose state is gone.
+
 ## Budget-state feedback
 
 The three states from [color](color.md), applied with plain words and calm thresholds:
@@ -83,11 +97,12 @@ when the person asks.
 
 ## Theme
 
-Both themes are first-class. Default follows the OS (`color-scheme`); a manual
-override (System / Light / Dark) lives in future Settings, persisted to
-`localStorage['budgetoid-theme']` and applied before first paint (the shipped
-`ThemeService` + `index.html` bootstrap). Every new surface is designed and reviewed
-in both themes before shipping.
+Both themes are first-class. Default follows the OS (`color-scheme`). `ThemeService`
+already resolves, applies and persists a chosen mode to `localStorage['budgetoid-theme']`,
+and `public/theme-prepaint.js`, loaded from `index.html`, applies it before first
+paint — but **no UI calls it**: the Settings screen carries no theme control, so the
+override exists in code and nowhere on screen.
+Every new surface is designed and reviewed in both themes before shipping.
 
 ## Data ownership
 
@@ -97,9 +112,92 @@ The product publicly promises: the user only and always owns their data.
   Settings, one screen deep, always — never buried, never gated on contact/support.
 - Erase is the one place the UI is deliberately slow: a dialog states plainly what
   will be deleted, requires typing a confirmation word, and its commit button is the
-  Destructive variant. Export sits adjacent as the offered alternative.
+  Destructive variant. Export sits adjacent as the offered alternative. (The dialog and
+  its confirmation word are not built; today's control is disabled — see below.)
 - Deleting lesser things (an account with transactions, a category in use) follows the
   same shape at smaller scale: state the consequence in plain words, then confirm.
   Blocked deletes (domain guards) explain what to do instead, and "instead" is the
   smallest act that clears the block — remove the transactions holding the account, not
   everything the user owns: "This account has transactions. Delete them first."
+
+**Today's Settings screen** is `/app/settings`, and it is a destination: the shell draws it in
+the bottom bar and the rail beside Transactions, Accounts and Categories, per
+[components](components.md). It renders the account's
+email address, a working Export that opens every name and note in the tab and saves a file a
+person can read — whole or not at all, and only while this tab holds the account's keys — a
+working **Sign out**, and an Erase control that is present and **disabled** because *this screen* does
+not ask for the fresh passkey assertion erasure is confirmed with — the kind Budgetoid's own
+server checks, which is the clause the copy has to carry now that the screen asks for a
+passkey of another kind. The browser is not
+incapable of one — `/welcome` runs an assertion, and the Account keys section below asks for
+one on this very screen — and the copy must not say it is. It states
+in plain words what the operator can read, and that erased rows survive in point-in-time
+backups for up to seven days.
+
+It also lists **every way of signing in** — each entry its type in words and the day behind
+it, and nothing more. A recovery-code set is one of those entries, because redeeming a code
+opens a full session the way the other kinds do. Registering and revoking are present and
+**disabled**, and the section carries two sentences rather than one. **Three missing pieces
+stand behind the screen's four inert controls, and four sentences name them** — the count of
+sentences is not the count of reasons, because Revoke and Erase share a reason and still word
+it differently, one naming a row's buttons and the other the screen's. Registering a
+passkey waits on the account's keys **as bytes**: a new factor stores its own wrapped copy, and
+wrapping takes the keys themselves. Generating a set waits on those bytes **and** on an assertion
+Budgetoid's server checks. Revoking and erasing wait on that checked assertion alone. Pasting any
+one of the four over another puts a sentence on the screen that is true of a different control.
+**Export carries a fourth reason, on a control that is not inert**: it is off only while this tab
+cannot open what the file is written from — a key rotation in flight, or a locked account — and
+says which in a sentence of its own, or says nothing while an unlock is running. So the screen
+holds four reasons in six sentences, and none of the six may be pasted over another.
+
+**What no sentence may say any more is that this screen asks for no passkey.** The Account keys
+section asks for one, in plain sight, so the three sentences that turn on an assertion — Revoke,
+Generate and Erase — say which *kind* is missing: one the server checks, rather than the locally
+minted and discarded ceremony an unlock runs. The registration sentence, the fourth, turns on
+nothing of the sort: `GET /api/me/account-keys` hands the
+envelopes back and the browser opens them, but what comes out is held as non-extractable key
+objects behind no accessor, and reaching bytes means unwrapping again under a key-encryption key
+held long enough to wrap with — which the unlock path deliberately never does. That is the fact
+explaining why an account whose only passkey is gone cannot add another. Each sentence sits
+above the list rather than beside each row, so a screen reader hears it once
+instead of once per entry. An entry nothing can ever revoke carries no button at all, not even
+a disabled one.
+
+Below that list sits **Recovery codes**, which says how many are left and
+nothing more — no code, no part of one, no identifier, no date. It reads and never writes:
+its Generate control is present and **disabled**, and it now carries a sentence of its own rather
+than the credential list's, because two facts hold it off where one holds its neighbour off — a
+set being ten factors that each wrap those keys, on a route gated by an assertion the server
+verifies. Generating a set **from here** and redeeming
+one are unbuilt, as are the email-change action and the erasure confirmation
+dialog. Showing a set once is built and lives elsewhere — the last
+step of registration, where the account's first set is issued.
+
+Below Recovery codes sits **Account keys**, and it is **built**: one Outline
+**Unlock** running a passkey ceremony the browser mints and throws away, so that a person whose tab
+reloaded gets their keys back without leaving the account. It is drawn only while there is
+something to unlock, it carries no sentence saying what it waits on because it waits on nothing,
+and [components](components.md) owns the rest of its specification.
+
+Below Account keys sits **Key rotation**, and it is **built**: two blocks of prose, an
+acknowledgement, one Destructive control — the first in the book to take that fill without deleting
+anything — a polite region carrying the phase sentence and eleven refusals, and a determinate bar
+beside it rather than inside it. The control is **Rotate keys**, or **Finish rotating** over a run
+this account staged and never finished, and never both.
+[components](components.md) holds the chapter and the four places what ships departs from it. The
+one decision in it that reaches other screens is still unbuilt: while a rotation runs, the three
+content screens are to render the locked-account notice in place of their lists, and today they
+render their lists.
+
+**Sign out is no longer the only exit from a locked account.** Count the producers of a
+key-encryption key in this client and there are **four** — the assertion on `/welcome`, the
+registration flow, this Unlock, and the rotation flow below it. The first two sit behind the guard
+that turns an authenticated visitor away, so before the Account keys section shipped the only route
+back to your own keys was to leave the account and come back in through one of them. That exit is
+still on the screen, several sections up, and it is now one of three: a finished rotation hands the
+promoted generation to custody on its way out, which unlocks the tab. **No copy anywhere says so**,
+because somebody who wants to read their records should press the control that takes a second.
+
+Nothing between the two is by accident: Export and Erase are a pair, so nothing goes between *them*
+and everything else arrives above. The bullets above stay as written because they are the target,
+not a description of what shipped.

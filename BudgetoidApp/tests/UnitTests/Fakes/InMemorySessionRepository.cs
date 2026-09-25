@@ -1,0 +1,236 @@
+using System.Security.Cryptography;
+using Domain.Sessions;
+
+namespace UnitTests.Fakes;
+
+public sealed class InMemorySessionRepository : ISessionRepository
+{
+    private readonly List<Session> _sessions = [];
+    private readonly List<SessionToken> _tokens = [];
+    private readonly List<Guid> _identityWhenFindByIdWasEntered = [];
+    private RecordingUserContextWriter? _observedWriter;
+
+    /// <summary>Every session this repository holds, in the order it was added.</summary>
+    /// <remarks>
+    /// Exposed because the sessions a revocation deliberately left alone are the interesting ones,
+    /// and no method on the interface hands them back.
+    /// </remarks>
+    public IReadOnlyList<Session> Sessions => _sessions;
+
+    /// <summary>
+    /// Every handle filed beside a session, in the order it was written.
+    /// </summary>
+    /// <remarks>
+    /// A second list rather than a pair, so the two can be counted independently: what the port
+    /// promises is that a session is never written without its handle, and a fake that stored them as
+    /// one value would make that promise true of itself rather than measurable.
+    /// </remarks>
+    public IReadOnlyList<SessionToken> Tokens => _tokens;
+
+    /// <summary>How many times <see cref="RevokeForCredentialAsync"/> was asked to run.</summary>
+    public int RevokeForCredentialCallCount { get; private set; }
+
+    /// <summary>The instant the last call was told to revoke at.</summary>
+    /// <remarks>
+    /// Recorded so a test can pin where the clock is read. The real repository writes whatever
+    /// instant it is handed; a caller that let the repository stamp its own <c>now</c> instead would
+    /// spread one revocation sweep across as many instants as it touched rows.
+    /// </remarks>
+    public DateTime? LastRevokedAtUtc { get; private set; }
+
+    /// <summary>
+    /// Forgets every session added so far, which is what clearing the change tracker does to a row
+    /// that is still only queued for insert.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="Sessions"/> is the set of rows a save would write, so discarding is emptying it. A
+    /// handler that adds a session inside a unit of work the provider replays adds a second one on
+    /// the replay, and both are still queued when the surviving attempt commits — one sign-in, two
+    /// rows. Only a fake that keeps them both can show that.
+    /// </remarks>
+    public void DiscardTrackedEntities()
+    {
+        _sessions.Clear();
+
+        // The handles go with them, because they were queued by the same save. A discard that dropped
+        // the sessions and kept their tokens would model a store nothing can produce — a handle naming
+        // a session that was never written is exactly what one write path taking both exists to make
+        // impossible.
+        _tokens.Clear();
+    }
+
+    /// <summary>
+    /// Removes every session the credential established, which is what the database's own
+    /// <c>ON DELETE CASCADE</c> from <c>credentials</c> does when that row goes.
+    /// </summary>
+    /// <remarks>
+    /// Here rather than assumed away, because a test about <em>ordering</em> around that delete is
+    /// only honest if the cascade really happens. A handler that ended a credential's sessions
+    /// <em>after</em> removing the credential would, against a fake that ignored the cascade, still
+    /// find the rows and report a plausible number — the exact wrong implementation the ordering
+    /// exists to refuse. With the cascade modelled it matches nothing and reports zero, which is also
+    /// what deleting the revocation outright reports, so a test asserting the count reddens on both.
+    /// <para>
+    /// A caller wires this in; nothing here calls it. The credential row is not this repository's, and
+    /// a fake that removed sessions on its own initiative would be inventing a rule.
+    /// </para>
+    /// </remarks>
+    public void RemoveForCredential(Guid credentialId) =>
+        _sessions.RemoveAll(session => session.CredentialId == credentialId);
+
+    /// <summary>
+    /// Arms the recording of <see cref="IdentityWhenFindByIdWasEntered"/> against
+    /// <paramref name="writer"/>.
+    /// </summary>
+    /// <remarks>
+    /// Off unless a test asks for it, the shape
+    /// <see cref="InMemoryBudgetRepository.ObservePublicationsDuring"/> established: the ordinary tests
+    /// in this suite are not paying for a snapshot nothing reads, and a test that does read it has said
+    /// so in its own Arrange block.
+    /// </remarks>
+    public void ObservePublicationsDuring(RecordingUserContextWriter writer) => _observedWriter = writer;
+
+    /// <summary>
+    /// The identity the session carried at the instant each <see cref="FindByIdAsync"/> call was
+    /// entered — the last id published, or <see cref="Guid.Empty"/> when nothing had been published
+    /// yet. Empty list unless <see cref="ObservePublicationsDuring"/> armed it.
+    /// </summary>
+    /// <remarks>
+    /// <b><see cref="Guid.Empty"/> is not "no identity" — it is the request the database refuses.</b>
+    /// <c>sessions</c> is policed by <c>user_isolation</c>, and an unset <c>app.current_user_id</c>
+    /// reaches that policy as <c>''::uuid</c>, which raises <c>22P02</c> rather than matching nothing.
+    /// So a caller that read this table before publishing an identity does not get a quiet miss in
+    /// production; it gets a server fault on every authenticated request in the product, and this list
+    /// is what lets a unit test say so without a database.
+    /// </remarks>
+    public IReadOnlyList<Guid> IdentityWhenFindByIdWasEntered => _identityWhenFindByIdWasEntered;
+
+    public Task AddAsync(
+        Session session,
+        SessionToken token,
+        CancellationToken cancellationToken = default)
+    {
+        // Both, always, because the port has no shape that writes one of them. A fake that accepted a
+        // null handle would be modelling a call production cannot make.
+        ArgumentNullException.ThrowIfNull(token);
+
+        _sessions.Add(session);
+        _tokens.Add(token);
+
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Seeds a session with a throwaway handle, for arrangements that are about what a revocation or a
+    /// lookup does to sessions and have no opinion about the handle beside them.
+    /// </summary>
+    /// <remarks>
+    /// <b>Not on <see cref="ISessionRepository" />, and it must never be added there.</b> That port
+    /// deliberately offers no member taking a session alone: a session committed without its handle is
+    /// a sign-in nobody can present, and the absence of the overload is the enforcement. This one is a
+    /// convenience of the store, reachable only through the concrete type — a handler holds the
+    /// interface, so nothing under test can call it — and it mints its own handle so that what it
+    /// leaves behind is a state the real path could have produced.
+    /// </remarks>
+    public Task AddAsync(Session session) =>
+        AddAsync(
+            session,
+            SessionToken.For(session, RandomNumberGenerator.GetBytes(SessionToken.TokenLength)));
+
+    public Task<Session?> FindByIdAsync(Guid sessionId, CancellationToken cancellationToken = default)
+    {
+        // The id alone, which is the whole of the real repository's predicate too: sessions is POLICED
+        // by user_isolation, so the owner filter is appended by PostgreSQL underneath the read rather
+        // than written above it. The port therefore hands this method no owner id, and a fake that
+        // invented one — a "current user" property to narrow on — would be modelling a filter the
+        // production code deliberately does not have.
+        //
+        // What that costs, stated rather than hidden: this fake cannot refuse another account's
+        // session the way the policy does. Nothing reachable produces one — session_tokens carries a
+        // composite foreign key onto sessions(id, user_id), so a token naming a stranger's session is
+        // unstorable — and a unit test that wants "the handle names a session this request cannot see"
+        // arranges the absence, which is exactly what the policy leaves behind. RevokeAsync below makes
+        // the same trade for the same reason.
+        //
+        // SingleOrDefault rather than FirstOrDefault, matching the real read: id is the primary key, so
+        // two rows under one id is a broken store to throw over rather than a case to choose between.
+        //
+        // The snapshot is taken before the read, not after, for InMemoryBudgetRepository's reason: it
+        // stands in for the identity the statement would have run under, and a value sampled once the
+        // call had returned would include a publication the statement never saw.
+        if (_observedWriter is not null)
+        {
+            _identityWhenFindByIdWasEntered.Add(
+                _observedWriter.Published.Count > 0 ? _observedWriter.Published[^1] : Guid.Empty);
+        }
+
+        // A REVOKED OR EXPIRED SESSION IS RETURNED, not filtered out, and the difference from
+        // RevokeAsync three methods down is the point rather than an inconsistency. That one narrows on
+        // revoked_at_utc IS NULL because it reports what a call ended; this one hands the entity back
+        // and leaves "is it live" to Session.IsActiveAt, where the domain owns it. A fake that copied
+        // the revocation predicate here would answer null for a dead handle, and the authentication
+        // handler would then report an ended session as one nobody ever issued — signing out twice
+        // would answer 401 instead of 204.
+        Session? session = _sessions.SingleOrDefault(session => session.Id == sessionId);
+
+        return Task.FromResult(session);
+    }
+
+    public Task<int> RevokeForCredentialAsync(
+        Guid credentialId,
+        DateTime revokedAtUtc,
+        CancellationToken cancellationToken = default)
+    {
+        RevokeForCredentialCallCount++;
+        LastRevokedAtUtc = revokedAtUtc;
+
+        int revoked = 0;
+
+        foreach (Session session in _sessions.Where(session => session.CredentialId == credentialId))
+        {
+            // Counting the sessions that were still live rather than the rows that matched: a
+            // re-run — a retry, or a second report of the same compromise — matches the same rows
+            // and ends nothing, and a matched-row count would report it as having cut off access a
+            // second time. The real repository's UPDATE narrows on revoked_at IS NULL for the same
+            // reason, so the number it reports means the same thing this one does.
+            bool wasActive = session.RevokedAtUtc is null;
+            session.Revoke(revokedAtUtc);
+
+            if (wasActive)
+            {
+                revoked++;
+            }
+        }
+
+        return Task.FromResult(revoked);
+    }
+
+    public Task<bool> RevokeAsync(
+        Guid sessionId,
+        DateTime revokedAtUtc,
+        CancellationToken cancellationToken = default)
+    {
+        // Neither RevokeForCredentialCallCount nor LastRevokedAtUtc is touched. Both were added for
+        // the credential sweep and every assertion on them today is about that sweep; a second writer
+        // would make "the last call" mean two different things depending on which member ran.
+        Session? session = _sessions.SingleOrDefault(session => session.Id == sessionId);
+
+        // A session this does not hold is not a distinguishable answer from one already revoked, the
+        // reading the real repository's own predicate produces: it narrows on id AND revoked_at_utc is
+        // null, so never-established, already-revoked and belonging-to-somebody-else all fall out of
+        // it together and all report false.
+        if (session is null || session.RevokedAtUtc is not null)
+        {
+            return Task.FromResult(false);
+        }
+
+        // Session.Revoke keeps the first instant, so the answer has to be decided BEFORE the call
+        // rather than read off the entity afterwards — the entity looks identically revoked either
+        // way. That is the same reason RevokeForCredentialAsync above counts wasActive rather than
+        // matched rows: what is being reported is what THIS call ended, never what is true of the
+        // session afterwards.
+        session.Revoke(revokedAtUtc);
+
+        return Task.FromResult(true);
+    }
+}

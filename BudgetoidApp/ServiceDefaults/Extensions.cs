@@ -11,6 +11,14 @@ namespace ServiceDefaults;
 
 public static class Extensions
 {
+    /// <summary>The path the liveness probe answers on.</summary>
+    /// <remarks>
+    /// A constant because it is named twice and the two must not drift: here, and in the API's
+    /// first-party-client check, which exempts this one route and nothing else. Mapped raw by
+    /// <c>MapHealthChecks</c>, so the endpoint carries no metadata that could identify it instead.
+    /// </remarks>
+    public const string HealthPath = "/health";
+
     public static TBuilder AddServiceDefaults<TBuilder>(this TBuilder builder) where TBuilder : IHostApplicationBuilder
     {
         builder.Services.AddHealthChecks();
@@ -23,7 +31,7 @@ public static class Extensions
         // Production-safe liveness endpoint for container platform probes (e.g. Azure Container Apps).
         // Do not include dependency checks here: a failing database should not cause the platform
         // to restart otherwise healthy API containers.
-        app.MapHealthChecks("/health", new HealthCheckOptions
+        app.MapHealthChecks(HealthPath, new HealthCheckOptions
         {
             Predicate = _ => false,
         })

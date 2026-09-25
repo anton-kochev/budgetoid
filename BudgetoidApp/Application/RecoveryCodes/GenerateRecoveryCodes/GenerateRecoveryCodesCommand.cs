@@ -1,0 +1,144 @@
+using Application.Passkeys;
+using Application.Passkeys.Reauthentication;
+using Domain.Users;
+
+namespace Application.RecoveryCodes.GenerateRecoveryCodes;
+
+/// <summary>
+/// Asks for the signed-in account's set of recovery codes to be issued, presenting one whole
+/// submission per code and the fresh WebAuthn assertion that authorizes the issue.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <b>No account may be named here</b>, the same rule <c>EraseAccountCommand</c> and
+/// <c>RevokePasskeyCommand</c> state: the only identity the handler may act on is
+/// <see cref="Application.Abstractions.IUserContext.UserId"/>, because a user id declared on a command
+/// is an account a caller can choose. Issuing <em>replaces</em>, so a chooseable account here would be
+/// a way to destroy a stranger's recovery codes.
+/// </para>
+/// <para>
+/// <b>Ten whole submissions, never ten bare verifiers beside one factor and one pair of values.</b>
+/// A set is ten separate secrets filed under a single <c>credentials</c> row, and the client derives a
+/// key-encryption key from each <em>code</em> — so ten codes are ten key-encryption keys, ten ECDH key
+/// pairs and ten copies of the account's keys, no one of which can stand for the others. One factor for
+/// the whole set would put the account behind whichever code that key pair belonged to: the person
+/// redeems any one of the ten, is handed a session, and nine times out of ten unlocks nothing. See
+/// <see cref="WrappedAccountKeys"/> and ADR 0018.
+/// </para>
+/// <para>
+/// <b>Verifiers, never codes.</b> The browser mints each code, derives
+/// <c>V = HKDF(canonical(code), …)</c> and sends only <c>V</c>; the key-encryption key that wrapped that
+/// same code's private key comes off the same code on an independent HKDF branch, so a code arriving
+/// here would hand the operator that key — and through it the private key, and through that the
+/// account's own two keys. There is deliberately no member a code could travel in.
+/// </para>
+/// <para>
+/// <c>canonical</c> sits inside the derivation rather than in the ellipsis, because a derivation is
+/// not specified until it says what text goes in: the client upper-cases the code, strips the
+/// whitespace and hyphens it was grouped with when it was written down, and folds <c>I</c> and
+/// <c>L</c> onto <c>1</c> and <c>O</c> onto <c>0</c>. Nothing on this side can check that it did — a
+/// verifier derived from the raw text is a perfectly well-formed 32 bytes, and the mismatch surfaces
+/// only when the person types the code back and no row answers to it.
+/// </para>
+/// <para>
+/// The assertion is a member of the command rather than a separate call from the endpoint so that
+/// issuing without proof is unreachable rather than merely uncustomary: one command, one handler, the
+/// gate inside it.
+/// </para>
+/// </remarks>
+/// <param name="Codes">The set, one whole submission per code.</param>
+/// <param name="Manifest">
+/// The account's factor manifest as it stands <em>after</em> this set replaces the previous one: every
+/// factor's public key, <em>sealed under</em> the account's content key, as one base64url envelope of
+/// the AEAD framing, judged by <see cref="Application.Passkeys.FactorManifestEnvelope.TryDecode"/>.
+/// <b>A factor change unaccompanied by one is refused.</b> Ten factors leave here and ten arrive, so the
+/// manifest the account held names ten key pairs that no longer exist and none of the ten that do —
+/// and it is the sole carrier of every factor's public key, so a rotation would encapsulate the
+/// account's keys to a set of authenticators the person has thrown away. Nothing on this side can check
+/// that the blob names these ten codes: it is sealed under a key this server has never held, so what is
+/// enforced is presence, framing and the epoch below.
+/// </param>
+/// <param name="RotationEpoch">
+/// The generation the manifest above is written under, which the client sets to one greater than the
+/// epoch the server last reported and binds into the manifest's associated data. <b>The server stores
+/// the client's number and never one it computes</b>; its job is to refuse anything that is not the
+/// stored generation plus one, which is <see cref="FactorManifest.Promote"/>'s arithmetic against the
+/// loaded row.
+/// <para>
+/// <b>An <see cref="int"/> where <see cref="RecoveryCodeSubmission"/>'s members are all
+/// <see cref="string"/>, and the difference is the wire rather than a departure.</b> Those are text
+/// standing for bytes or for one chosen spelling of a uuid, and a typed member there would let the
+/// framework widen the format or refuse it in front of the re-authentication gate; a generation is a
+/// JSON number with one spelling and nothing for a parse to be lenient about. Not <c>required</c>, like
+/// every other member: an omitted one binds to <c>0</c>, which
+/// <see cref="FactorManifest.MinimumRotationEpoch"/> keeps free to mean <em>no manifest row</em>, so it
+/// reaches <see cref="FactorManifest.Promote"/> past the gate and is refused there.
+/// </para>
+/// </param>
+/// <param name="Assertion">The fresh re-authentication the issue is authorized by.</param>
+public sealed record GenerateRecoveryCodesCommand(
+    IReadOnlyList<RecoveryCodeSubmission> Codes,
+    string Manifest,
+    int RotationEpoch,
+    ReauthenticationAssertion Assertion);
+
+/// <summary>
+/// One code of a set: the verifier derived from it, the ECDH private key wrapped under the
+/// key-encryption key derived from that same code, and the account's keys encapsulated to that key
+/// pair's public half.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <b>The three key-custody members belong to the code and not to the set</b>, which is the whole of
+/// why this type exists — see <see cref="GenerateRecoveryCodesCommand"/>.
+/// </para>
+/// <para>
+/// <b>Every member is <see cref="string"/>, none is <c>required</c>, and neither is a style choice.</b>
+/// Every one of them is text on the wire, the factor identifier included: a <see cref="Guid"/> member
+/// would earn a framework 400 on a malformed value, raised before the handler is entered and therefore
+/// before the re-authentication gate has run — telling an unproven caller that the server has an
+/// opinion about this account's key custody, which is the exact disclosure the handler's
+/// gate-before-validation ordering exists to prevent. It would also silently widen the wire format,
+/// since the framework parses more spellings of a uuid than this contract accepts. Non-nullable and
+/// not <c>required</c> for the same reason: an absent member binds to <see langword="null"/> despite
+/// the declaration and is refused past the gate with a sentence, rather than in front of it with a
+/// framework 400.
+/// </para>
+/// <para>
+/// <b>Neither member is a key in the clear.</b> One is a private key wrapped under a key-encryption key
+/// derived from the code the client minted; the other is ciphertext under a public key. The server can
+/// open neither and holds no value that could, which is why they may cross this boundary at all when a
+/// recovery code may not.
+/// </para>
+/// </remarks>
+/// <param name="Verifier">The verifier derived from this code, as base64url text.</param>
+/// <param name="FactorId">
+/// The client-minted identifier of the factor this code stands for, and the associated data of the
+/// wrapped private key below — see <see cref="WrappedAccountKeys.FactorId"/> for why it is
+/// deliberately not <c>credentials.id</c>. One uuid in one spelling: the <b>lower-case</b> 36-character
+/// hyphenated form with no surrounding whitespace, which is what a <see cref="Guid"/> renders as and
+/// therefore what every later read hands back. This contract is cross-client, and a value the browser
+/// cannot recognise as the bytes it bound is a code that opens nothing. Enforced by
+/// <see cref="Application.Security.CanonicalIdentifier.TryParse"/>, which compares the text against what
+/// the parsed value renders as — <see cref="Guid.TryParseExact(string, string, out Guid)"/> under
+/// <c>"D"</c> admits upper-case and mixed-case hex and trims whitespace before it reads the format at
+/// all, so the format alone does not pin a spelling.
+/// </param>
+/// <param name="WrappedPrivateKey">
+/// This factor's ECDH P-256 private key as this code holds it: one base64url envelope of the AEAD
+/// framing, judged by <see cref="WrappedPrivateKeyEnvelope.TryDecode"/>. It is <em>wrapped under</em> a
+/// key-encryption key the client derived from this code, on an HKDF branch independent of the verifier
+/// above — so nothing on this command lets the server open it, and nothing may be added that would.
+/// </param>
+/// <param name="EncapsulatedAccountKeys">
+/// The account's content key and index key as one 64-byte plaintext, <em>encapsulated to</em> the public
+/// half of that key pair: one base64url value of the encapsulation framing, judged by
+/// <see cref="EncapsulatedAccountKeysEnvelope.TryDecode"/>. <b>Not the same shape and not judged by the
+/// same rule as the member above</b> — a different suite, a different floor and a different width — which
+/// is why it names its own decoder rather than borrowing that one's sentence.
+/// </param>
+public sealed record RecoveryCodeSubmission(
+    string Verifier,
+    string FactorId,
+    string WrappedPrivateKey,
+    string EncapsulatedAccountKeys);

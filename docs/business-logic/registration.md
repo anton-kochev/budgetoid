@@ -1,0 +1,941 @@
+# Registration
+
+## Table of Contents
+
+- [Purpose](#purpose)
+- [Key Entities](#key-entities)
+- [Constraints](#constraints)
+  - [MUST](#must)
+  - [MUST NOT](#must-not)
+- [Business Rules & Invariants](#business-rules--invariants)
+- [Workflows & State Transitions](#workflows--state-transitions)
+- [Decision Trees](#decision-trees)
+- [Integration Points](#integration-points)
+- [Edge Cases & Known Gotchas](#edge-cases--known-gotchas)
+
+## Purpose
+
+This area covers **the one request that brings an account into existence on purpose**. A caller the
+identity provider has vouched for runs a WebAuthn registration ceremony, and the request that
+finishes it writes the account, its budget, its three credentials, the passkey's key material, ten
+recovery-code hashes, every factor's share of the account keys, the one manifest naming all eleven
+of those factors and the session it signs the person in on — **in one save, or not at all**.
+
+**One act and two commits, and the second half of that sentence is the one a reader loses.** The
+single save covers every row the account is made of. It does not cover the ceremony's nonce: rung 4
+deletes that row through a `SaveChanges` of its own, with no transaction around it, deliberately —
+a refused ceremony must still spend the challenge it answered. So "one save, or not at all" is a
+claim about the account and never about the request.
+
+Identity lives in [users-and-ownership.md](users-and-ownership.md); the ceremony's cryptography is
+in [passkeys.md](passkeys.md); the set is in [recovery-codes.md](recovery-codes.md); what a
+credential opens lives in [sessions.md](sessions.md). This file covers **the act**: its two routes,
+the order its checks run in, and the one value it derives rather than chooses.
+
+**This is the only way an account comes to exist**, so every invariant below, stated as what **this
+path** establishes, is also a claim about every account in the schema — nothing else writes a `users`
+row.
+
+**The two sides of the path meet, and this is the one write path in the product where they do.** The
+`/register` screen runs the ceremony, draws the account's keys, mints the set, mints a keypair for
+each of the eleven factors, seals the manifest naming all eleven public halves and posts the body
+these routes take. The three routes that **promote** a manifest have no client surface at all, so
+what they take is exercised by the integration suite alone —
+[account-keys.md](account-keys.md) owns that asymmetry.
+
+The client's half of this act is the run of rules at the end of *Business Rules & Invariants*. What
+the screen looks like is the **Registration** chapter of [components.md](../design/components.md).
+
+## Key Entities
+
+- **`RegisterAccountCommand`** — everything one consented registration presents. Two members are
+  read off the request's own authenticated principal by the endpoint — the provider `sub` and the
+  `email` — and **never bound from the body**. The rest are the wire: `clientDataJson`,
+  `attestationObject`, `clientExtensionResults`, `factorId`, `wrappedPrivateKey`,
+  `encapsulatedAccountKeys`, `codes`, `manifest`.
+- **`manifest`** — the account's first factor manifest: an unpadded base64url **ciphertext
+  envelope** — `version(1) ‖ nonce(12) ‖ ciphertext ‖ tag(16)` — *sealed under* the account's
+  content key, between 29 and 4096 bytes. **Last on the record on purpose**: it is the one statement
+  about the whole factor set the members above it file, so it is read after them rather than beside
+  any one of them. `FactorManifestEnvelope` is its one decode, and what that decode judges is the
+  framing and nothing else — see [account-keys.md](account-keys.md), which owns what the server
+  cannot check about these bytes and never will be able to.
+- **`RegistrationAccountId`** — the pure function both legs call.
+  `SHA-256(domain-separation prefix ‖ challenge)`, first 16 bytes, RFC 9562 version 8 stamped on the
+  big-endian layout. It throws rather than padding or truncating a challenge of the wrong width: a
+  quietly reshaped challenge derives a perfectly well-formed identifier nothing downstream can tell
+  from a real one.
+- **`Domain.Users.Registration`** — everything one ceremony brings into existence, **already built
+  and already consistent**, so the repository adds and saves and decides nothing. Every member is an
+  entity rather than the raw material it was built from, because each domain factory reads its
+  owner, its credential and its type off the object beside it.
+- **`RegistrationOutcome`** — `SubjectTaken`, `Registered`, `EmailTaken`, `AuthenticatorTaken`,
+  `FactorTaken`. `SubjectTaken` is `0` so that `default` is a **refusal**, the fail-closed direction
+  `CredentialType` and `SessionKind` already take.
+- **`RegistrationClaimGate`** — the `IEndpointFilter` on the group that judges `sub`, `email` and
+  `email_verified`, with a distinct title for each of its two refusals. It carries no value out: the
+  route delegate reads the two claim members off the principal itself, so nothing plumbed through
+  the filter can disagree with what the handler is given.
+- **`RegistrationResponse`** — one member, describing the sign-in:
+  `{"session": {"kind": "full", "expiresAtUtc": …}}`. Nested rather than flattened, so widening it
+  later cannot produce "kind present, expiry absent".
+
+Deliberately **absent** from the request: any member naming an account, a subject or an address.
+Deliberately **absent** from the response: the account id, the credential ids, the session id, the
+factor ids and any echo of the address. Each identifier this request brings into existence is either
+the associated data an envelope was sealed with or a stable handle to something, and a value in a
+response body is a value in a client log, a proxy cache and a browser's network panel.
+
+```mermaid
+erDiagram
+    USER ||--|| BUDGET : "provisioned with"
+    USER ||--o{ CREDENTIAL : "signs in with"
+    CREDENTIAL ||--o| PASSKEY_PUBLIC_KEY : "is verified by"
+    CREDENTIAL ||--o| PASSKEY_SIGNATURE_COUNTER : "is counted by"
+    CREDENTIAL ||--o{ RECOVERY_CODE_HASH : "one row per code"
+    CREDENTIAL ||--o{ WRAPPED_ACCOUNT_KEYS : "one row per factor"
+    CREDENTIAL ||--o{ SESSION : establishes
+    SESSION ||--o{ SESSION_TOKEN : "is presented by"
+    USER ||--|| FACTOR_MANIFEST : "names all eleven factors in"
+```
+
+One ceremony writes **ten relations** and thirty-one rows: 1 user, 1 default budget, 3 credentials,
+1 passkey public key, 1 signature counter, 10 recovery-code hashes, 11 wrapped-key rows, 1 factor
+manifest, 1 session and 1 session token. **The manifest hangs off the user rather than off a
+credential**, and that is the asymmetry to read rather than smooth over: eleven rows carry one
+factor's share of the account keys each, and one row names the set. What has to be unforgeable is
+the *set*, so it is authenticated once.
+
+## Constraints
+
+### MUST
+
+- **Both routes MUST authenticate on the identity provider's scheme, named by the group's own
+  policy.**
+  - **Why**: an account cannot exist without a completed provider exchange, and the scheme is what
+    enforces that. Naming it is also what makes `AuthorizationMiddleware` re-authenticate against
+    the provider's handler rather than against the default, which is the session cookie's — so
+    without the name a browser already holding a session could create an account nobody's provider
+    vouched for, and no bearer would be read at all. Declaring a policy at all takes both routes out
+    of the **fallback** policy and therefore out of `FullSessionRequirement`, which is correct
+    rather than worked around: this caller holds no session, so a rule about what kind of session
+    may read budget content has nothing to judge.
+    - **This policy is the only reason `JwtBearer` is still registered.** Nothing defaults to it and
+      no other route names it, so a provider bearer presented anywhere else authenticates nothing.
+  - **Enforced in**: `RegistrationEndpoints`, one `RequireAuthorization` call on the group, over
+    `ProviderAuthentication.SchemeName` — a name rather than the `JwtBearer` literal, because "did
+    the provider vouch for this caller?" and "which handler validates the bearer" are the same value
+    only until sign-in leaves the identity provider. `RegistrationRouteTests` reads the group's
+    scheme off the route table.
+
+- **Both routes MUST carry `RegistrationClaimGate`, declared on the group.**
+  - **Why**: the policy says which scheme may speak for this caller; the gate says what that scheme
+    has to have said. An account may not exist without a completed provider exchange, and it may not
+    exist under an address that exchange declines to vouch for. It runs on **both** legs because the
+    options leg mints the challenge the account identifier is derived from.
+  - **Enforced in**: `.AddEndpointFilter<RegistrationClaimGate>()` beside the group's
+    `RequireAuthorization`, read off the route table rather than opted into with a marker — a marker
+    would rebuild the deleted provisioning middleware under another name, with the same silence when
+    a group forgets it. The two refusal titles must stay distinct; `RegistrationClaimGateTests`
+    holds that.
+
+- **The account identifier MUST be derived from the ceremony's own challenge, and MUST be derived
+  only after the challenge store has answered.**
+  - **Why**: `user.id` in the creation options is the WebAuthn **user handle**, and the assertion
+    path compares a presented handle byte-for-byte against the account id — so a `users.id` that
+    differs from the handle answers no assertion that device will ever produce, silently and
+    permanently. On the finish leg the only source of the challenge is the client's own
+    `clientDataJSON`, so deriving before `ConsumeAsync` has confirmed the bytes were issued and
+    spent for the `AccountRegistration` pool is deriving from a value the caller chose.
+  - **Enforced in**: `RegistrationAccountId.For`, called from `BeginAccountRegistrationHandler` on
+    the bytes the store just issued and from `RegisterAccountHandler` at rung 13 — **after** the
+    consume at rung 4. `User.CreateWithId` is the only factory `User` offers and it takes the
+    identifier from its caller, so "which path may name an account" is a fact about the call site —
+    one a reviewer reads, not one the compiler holds.
+
+- **The identity MUST be published before the insert, and no transaction may wrap the write.**
+  - **Why**: an identity published after the insert is one that statement ran without, so every
+    policed row in the save meets `''::uuid` and the request dies with `22P02` — the mechanism is
+    the rule below, which owns it. It is published *only* then, and not off the provider token at
+    the top, because naming an account before the signature verified would be trusting a value the
+    caller sent.
+  - **Enforced in**: rung 14 of `RegisterAccountHandler`, and by there being **no**
+    `ITransactionalExecutor` on this path.
+
+- **Every row of the account MUST land in one `SaveChanges`.**
+  - **Why**: half an account is unreachable and unrepairable in every direction. A user with no
+    credential holds the unique email forever; a passkey with no wrapped keys is a factor that opens
+    nothing; a set of codes with no hashes can never be redeemed; an account with no manifest reads
+    back as one that has never had a factor set; and a session with no handle is a person told they
+    are signed in whose next request is a `401`.
+  - **Enforced in**: `RegistrationRepository.RegisterAsync`, which adds every entity and calls
+    `SaveChangesAsync` once. EF orders the statements from the foreign keys between the entity
+    types, so `users` precedes `credentials` whatever order they were added in; what the single save
+    buys is the other direction, that there is no window in which some are committed and the rest
+    are not.
+  - **What it does not cover**: the nonce. Rung 4 deletes the challenge row through a save of its
+    own, above everything here, so this request commits **twice** — and that is the design rather
+    than a leak in it, because a ceremony refused at rung 5 or rung 12 must still have spent the
+    challenge it answered. *Of the account*, in the rule above, is doing real work.
+
+- **The request MUST carry a set of exactly ten submissions, and the passkey's factor identifier
+  MUST differ from all ten.**
+  - **Why**: an account whose only factor is one passkey is an account whose keys leave with that
+    device, so the set is minted in the same consented act. The eleventh-against-the-ten check is
+    not the set's own distinctness rule: left to `PK_wrapped_account_keys` it arrives mid-save as a
+    conflict whose sentence tells the caller an identifier is **already registered** — naming a
+    factor nobody registered, on a request that was merely wrong.
+  - **Enforced in**: `RecoveryCodeSetValidation.DecodeAndValidate` for the set — the one definition
+    every write path that accepts a set shares — and rung 11 for the eleventh factor.
+
+- **The request MUST carry a factor manifest, and the server MUST enforce presence, framing and
+  epoch — never what the bytes say.**
+  - **Why**: the manifest is the only carrier of every factor's public key, so an account written
+    without one is an account whose client cannot learn what its own factor set is and cannot
+    rotate. That is why it rides this request rather than a later one. **What cannot follow from
+    that is any check on its contents**: it is *sealed under* the account's content key, which this
+    server has never held, so a well-formed envelope over an empty plaintext, a manifest naming only
+    the passkey, and 4096 bytes of noise are one value to every layer beneath the decode. Each of
+    them stores, reads back and reddens nothing, forever. The check that matters — the served factor
+    set against the set the manifest names — belongs to the client, which holds the key. This is the
+    same shape as the content-key-first ordering inside the encapsulated plaintext, and the next
+    reader will try to close it by parsing the blob.
+  - **Enforced in**: rung 12 and `FactorManifestEnvelope.TryDecode` — absent, not base64url, below
+    29 bytes, above 4096 or carrying any version but `1` is a `400` keyed under `Manifest`, and
+    nothing is written. The epoch is `FactorManifest.MinimumRotationEpoch` and never a literal.
+    **The bounds are a band rather than a width**, unlike both members beside it: a manifest's
+    plaintext grows with the number of factors it names, so there is no single legal size for a
+    check to compare against. See [account-keys.md](account-keys.md).
+
+### MUST NOT
+
+- **The request body MUST NOT carry a `sub` or an `email`, and neither may ever be added.**
+  - **Why**: both arrive on the request's own authentication. A subject a caller could type is an
+    account filed under somebody else's provider identity; an address a caller could type makes the
+    `email_verified` gate worthless.
+  - **Enforced in**: the endpoint reads both off the `ClaimsPrincipal` and passes them on the
+    command, which is also what keeps `System.Security.Claims` out of the Application ring.
+
+- **The options leg MUST refuse a subject that already holds an account, before it issues a nonce.**
+  - **Why**: the ceremony runs in the browser, and the authenticator stores the credential the
+    instant it agrees. A refusal that waits for the finish leg therefore costs a **passkey** — one
+    saved on somebody's device, under a fresh user handle, for an account that was never created —
+    and WebAuthn gives a relying party no way to delete it. Only the person can, in their password
+    manager. The refusal must also sit **above** `IssueAsync`, or the same request still spends a
+    nonce it was always going to be told no about.
+  - **Why it is legal to read here**: the lookup is `credentials` by `(provider, subject)` — the
+    discovery shape, with no join on `users` — and `credentials` is exempt from row-level security,
+    so it answers on a connection naming nobody. It is not an enumeration oracle either: the caller
+    holds a provider-verified token for that exact subject, so they can only ever probe themselves.
+  - **What does NOT move, and it is a limit rather than an oversight**: the **email** conflict stays
+    on the finish leg. Answering it needs a read of `users.email`, `users` is policed by
+    `user_isolation`, and this leg publishes no identity — so that read would return nothing or die
+    with `22P02`. Somebody whose address another account holds therefore still mints a passkey
+    before being refused. The same is true of a race between the two legs, of an abandoned flow, and
+    of `AuthenticatorTaken` and `FactorTaken`. This closes the common case, not the class.
+  - **Enforced in**: `BeginAccountRegistrationHandler`, above `IssueAsync`, answering the same
+    sentence the finish leg does through the shared `RegistrationConflicts`. The finish leg keeps
+    its own check, because two requests mean an account can be created between them — which is the
+    only way its subject conflict is now reachable at all.
+
+- **The options leg MUST NOT emit an `excludeCredentials` list.**
+  - **Why**: three reasons, no one of which settles it alone. There is nothing to exclude, because
+    the account does not exist. The read that would produce a list has no acceptable shape — scoped
+    to the derived id it is always empty, and unscoped it is an enumeration of every handle in the
+    table, which is precisely what the `passkey_public_keys` exemption was argued as **not**
+    permitting. And a non-empty list would refuse a legitimate act: a WebAuthn credential is keyed
+    on (rpId, user handle) and every registration mints a fresh handle, so somebody opening a second
+    account from the same laptop would be turned away at the authenticator, by an error the server
+    never sees.
+  - **Enforced in**: `BeginAccountRegistrationHandler`, which sets `ExcludeCredentials = []` with
+    the argument written beside it.
+
+- **The session MUST NOT be opened over the recovery-codes credential.**
+  - **Why**: both open a `Full` session, so the mistake satisfies every check constraint, every
+    foreign key and every test that reads the response. What it changes is which credential a later
+    revocation sweeps — revoking the passkey would leave the session standing, and replacing the set
+    would sign the person out of a session their passkey opened.
+  - **Enforced in**: `Session.Establish(passkey, …)`, built from the `Credential` and never from a
+    kind named here.
+
+- **The response MUST NOT carry a `Location` header or any identifier.**
+  - **Why**: the resource created is the account and this API exposes no address for it, so a
+    `Location` naming one would publish the account identifier in a **header** — the one value every
+    envelope on this request was sealed against, and the one a body census walks straight past.
+  - **Enforced in**: `TypedResults.Created((string?)null, …)` and the shape of
+    `RegistrationResponse`.
+
+- **The cookie MUST NOT be written before the handler returns.**
+  - **Why**: every refusal on this route leaves by exception, so a cookie written earlier is a
+    cookie a refusal leaves behind, naming a session that was never written, on the client of
+    whoever was guessing.
+  - **Enforced in**: the endpoint issues the cookie from the returned handoff, after the `await`.
+
+## Business Rules & Invariants
+
+- **Rule**: The validation ladder is **fourteen rungs and its order is the security property**, not
+  an implementation detail.
+- **Why**: four rungs carry the whole of it, and each is the one a reader will move.
+  - **The nonce is consumed at rung 4, before the response is verified at rung 5.** Consuming
+    afterwards leaves every refusal below replayable, so a caller could grind responses against one
+    issued challenge — and on this path the challenge is *also* what the account identifier is
+    derived from, so a replayable nonce is a replayable account id.
+  - **The `prf` gate is rung 6, after verification.** Everything above judges signed material; this
+    judges a sentence the client wrote about its own device, so it is weighed only once the response
+    is genuine in every verifiable respect.
+  - **The key-custody payload is rungs 7 to 11, after the `prf` gate.** A client that cannot do PRF
+    cannot have produced a wrapped key either, so those members are very often absent on exactly the
+    requests that gate is for. Judged first, such a request would be told its **payload** was
+    malformed, sending somebody holding a genuinely incapable device off to debug their client.
+  - **The manifest is rung 12, below both.** It is after the `prf` gate for the rung above's reason
+    rather than a new one — a client that cannot do PRF has no account keys, so no factor key pairs,
+    so no manifest to seal, and an absent manifest is very often exactly what such a request
+    carries. It is also after **rung 11**, and that half is about what a refusal means: this value
+    is one statement about the whole factor set the rungs above have just established, so refusing
+    it while two of those factors are still known to collide would key the refusal on the manifest
+    for a request whose *factors* were the thing that was wrong.
+- **Enforced in**: `RegisterAccountHandler`, with the reason written at each rung.
+  `CompleteRegistrationHandler` is the ladder this one mirrors, and where a rung's argument is
+  already written out there this one points at it rather than re-deriving it — two copies of an
+  argument are two things to keep in step.
+- **Counterexample**: hoisting the payload checks to the top "so the cheap validation runs first".
+  Every happy path passes, every ordinary refusal passes, and what changes is the sentence somebody
+  with an old authenticator is told about why they cannot create an account.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: **Three rungs of the ladder are not in the handler, and they are the first three.** That
+  the request carries a live provider token is judged by the group's own **policy**; that the
+  principal has a `sub` and an `email`, and that the provider asserts the address as verified, are
+  judged by `RegistrationClaimGate`, an **endpoint filter on the same group**. Neither is in the
+  Application ring.
+- **Why**: that is why the two claim members arrive **on the command** rather than being re-read in
+  the handler. The empty-string fallback the endpoint uses when reading them is not a second gate:
+  it exists so the expression has a total answer rather than a null-forgiving operator asserting a
+  rule enforced one filter away, and an empty address reaches `Email.Create` and is refused there.
+  - **They cannot come down into the Application ring, which is where a reader will try to put
+    them.** Judging `email_verified` there needs one of two things and may have neither. A
+    `ClaimsPrincipal` inside `Application` is against the rule that keeps `System.Security.Claims`
+    out of that project altogether. And a member on `RegisterAccountCommand` for the answer to land
+    in is argued against by name in [users-and-ownership.md](users-and-ownership.md): the
+    verified-email claim is read and never stored, and the command carries only the subject and the
+    address precisely so there is nowhere for it to go. What is left is the boundary that already
+    holds the principal.
+  - **Three earlier positions were each refused, and the reasons are not interchangeable.** A
+    `RequireAssertion` on the policy and a custom `IAuthorizationRequirement` both answer **403 with
+    no title**, collapsing two refusals a caller acts on differently — *your token is unusable* and
+    *your provider does not vouch for this address* — into one untitled status.
+    `JwtBearerEvents.OnTokenValidated` runs earliest and *can* answer 401, but a titled
+    `ProblemDetails` from there needs `OnChallenge` written too, and the gate then becomes a
+    property of the **scheme** rather than of the route, invisible to anybody reading the route
+    table. And a new middleware reading a new marker is the deleted one under another name.
+  - **One accepted behaviour change, recorded because nothing measures it.** A filter runs after
+    model binding, so a caller sending an unverified address **and** a malformed body is answered
+    `400` by the framework where the middleware answered `401`. It was put to the repository owner
+    and accepted. Such a caller learns their body is wrong before they learn their address was never
+    going to be accepted, which is a worse order to debug in. It is **not** a disclosure — a
+    deserialization failure is a fact about the caller's own request.
+- **Enforced in**: `RegistrationEndpoints`, on the group — one `RequireAuthorization` naming the
+  provider scheme and one `AddEndpointFilter<RegistrationClaimGate>()`. `RegistrationClaimGateTests`
+  is now the only thing holding the two claim rules; it stayed green through the middleware's
+  deletion, which is what proved the filter was carrying them rather than duplicating them.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: **No transaction wraps the write, and that is a correctness ruling rather than a cost
+  one.**
+- **Why**: an `ITransactionalExecutor` opens its transaction through `CreateExecutionStrategy()`,
+  and `BeginTransactionAsync` is what opens the connection — which is when
+  `SessionContextInterceptor` writes `app.current_user_id`. A wrap whose delegate contains the
+  identity publication therefore configures the connection while the setting is still empty, and the
+  `users` INSERT meets `''::uuid` in its `WITH CHECK`: a `22P02`. Publishing outside the wrap fixes
+  it at the price of an ordering rule nobody may re-break and a retry that must not re-publish; one
+  save carries no such rule.
+- **Enforced in**: `RegisterAccountHandler` taking no executor, and by `IRegistrationRepository`
+  carrying the argument on the port itself, where the reader who wants to "fix" this back into two
+  calls has to go first. **This is the single most likely thing a later reader improves.**
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: The registration repository writes `sessions` and `session_tokens` **itself**, a
+  deliberate departure from the boundary `GenerateRecoveryCodesHandler` keeps by hand.
+- **Why**: that handler refuses to let `IRecoveryCodeRepository` open a session, because a
+  repository named for recovery codes that also opens sessions puts a route's session rule where
+  nobody reading the route would look — and it can afford the second call, because both its saves
+  run inside one transaction. There is no transaction here, so two calls would be two transactions
+  and the atomicity requirement would be lost **silently**: a committed account with no session
+  answers `201` and signs nobody in. This repository is named for the act that opens the session,
+  which is what makes the fold legible rather than surprising.
+- **Enforced in**: `RegistrationRepository`, which adds the session and its token to the same save.
+  `ISessionRepository.AddAsync`'s own invariant survives untouched: `Registration` carries the
+  session **and** its token, so there is still no shape of any call in this system that writes one
+  without the other. See [sessions.md](sessions.md).
+- **Counterexample**: "tidying" this back into `RegisterAsync` followed by
+  `sessionRepository.AddAsync`. Nothing goes red — the tests that read the response still see a
+  session, because on the happy path both saves commit.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: Four collisions answer `409`, each narrowed on a **pinned constraint name**, and
+  `EmailTaken` is **ambiguous by construction**.
+- **Why**: this save writes rows carrying a dozen unique rules between them, so a `23505` says only
+  that some rule broke; naming the index is what makes each catch mean the one thing a caller can
+  act on. A losing insert can breach the credential's `(provider, subject)` **and** the email at
+  once, and PostgreSQL names only one, picked by the order the rows are written. EF writes `users`
+  before `credentials`, so the credential index being named means the email did **not** collide and
+  is unambiguous; the email index being named says nothing about the subject. Only the handler can
+  settle it, by re-reading the federated credential — sound because a reported unique violation
+  means the conflicting transaction committed, so a winning credential on this subject is visible by
+  now.
+  - **The race winner is never adopted**: adopting would sign the caller into an account **their
+    brand-new passkey cannot open**.
+  - **The re-read runs on `credentials`**, which is exempt from row-level security, so it is
+    unaffected by the identity published at rung 14 naming a row that was never written.
+- **Enforced in**: `RegistrationRepository` filters four catches on
+  `IX_credentials_provider_subject`, `IX_users_email`,
+  `IX_passkey_public_keys_webauthn_credential_id` and `PK_wrapped_account_keys`, detaching every
+  queued entity on each so the rejected rows cannot ride along on a later save;
+  `RegisterAccountHandler.RefusalFor` chooses the sentence, with a discard arm written out so that
+  adding a member is a decision made there. Any other unique violation **propagates on purpose** — a
+  500 naming the constraint is more useful than a confident, specific, false answer.
+  - **Three indexes are deliberately not among them, and each is unreachable here besides.**
+    `IX_budgets_user_id_name`, `IX_credentials_user_id_federated` and
+    `IX_credentials_user_id_recovery_codes` are all keyed on `user_id`, and the `user_id` every row
+    in this call carries is derived for **this** registration from a challenge this server minted
+    and has just spent. `PK_users` is not narrowed either: at 122 bits off a single-use nonce, two
+    registrations reaching one account identifier is not chance.
+  - **One test controls all four, and it stages a rule kept by a stranger.**
+    `RegistrationRepositoryTests.RegisterAsync_WhenAnotherUniqueRuleIsBroken_LetsTheViolationEscape`
+    registers a bystander, keeps one of the ten recovery-code **verifiers** it minted, and submits a
+    second registration — different subject, different address, fresh handle, fresh factor ids,
+    fresh account id — with exactly one of its ten hash rows rebuilt from that verifier. The rule it
+    breaks is `PK_recovery_code_hashes`, unique table-wide whoever owns the row, so the refusal
+    arrives from an account the caller has never seen. It asserts the escaping exception is a
+    `23505` naming that key and **none of the four**.
+    - **Why a table-wide rule and not a neighbouring one.** The three indexes above cannot be
+      staged: they are keyed on a `user_id` derived for this registration alone, so nothing this
+      save writes can reach them. `IX_users_email` and `IX_credentials_provider_subject` are keyed
+      on values a stranger holds — the entire point of both rules — and the control has to be
+      breachable the same way to stand in for them.
+    - **Four clauses, one test**, because widening any one of them to the bare SQLSTATE swallows
+      this violation. It was watched failing against the **email** clause specifically, where it
+      reports `EmailTaken` and nothing escapes; the file's other test stayed green, so this is the
+      only thing in the suite that notices. The control it replaces was deleted with
+      `IUserRepository.TryAddAsync`, which carried the same two-index filter.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: **Eleven `wrapped_account_keys` rows, never two**, and the set's rows are projected from
+  the one validated list rather than zipped from three.
+- **Why**: a factor is not a credential. Each code derives its own key-encryption key and a person
+  redeems whichever one they still hold, so a single pair for the whole set would seal the account
+  under one code and leave the other nine unlocking nothing — with a session handed over either way
+  and nothing red until a browser months later. The projection matters for the same reason one step
+  down: pairing one code's verifier with another's envelopes satisfies every constraint the database
+  holds and is discovered by somebody who redeemed a code, was handed a session, and found the
+  account still locked.
+- **Enforced in**: `RegisterAccountHandler`, which builds the passkey's pair against the `passkey`
+  credential and the set's ten against the `recoveryCodes` credential — never both against whichever
+  credential is nearest to hand, since the two factors derive different key-encryption keys and a
+  misfiled row satisfies every check constraint and every foreign key here. See
+  [account-keys.md](account-keys.md).
+- **Source**: `[SOURCE: user-story]`
+
+---
+
+- **Rule**: **One manifest against those eleven rows, at epoch 1, in the same save** — and this is
+  the one path in the product that **files** a `factor_manifests` row rather than promoting one that
+  already stands.
+- **Why**: the eleven rows are each one factor's share of the account keys; the manifest is the
+  single authenticated statement of *which factors exist* and what a later rotation may encapsulate
+  to. The asymmetry follows from what must be unforgeable: a per-row public key column is a row at a
+  time, so an added, removed or swapped row would each need its own authentication and a client
+  choosing what to encapsulate to would have no way to ask whether it was looking at all of them.
+  - **It rides this save for the same reason the session does.** There is no transaction here, so a
+    manifest written by a second call is a second commit: an account committed without one answers
+    `201` and hands over a session, while its client cannot learn what its own factor set is and no
+    status code says so. Atomicity here is the property of one save and of nothing else.
+  - **Epoch 1 is `FactorManifest.MinimumRotationEpoch` and never a literal.** Epoch 0 is the
+    *absence* of a row, so the first generation is one — and the constant is where that argument
+    lives rather than in the eleven places a literal would end up.
+  - **Because this path is the only way an account comes to exist, `manifest: null` is unreachable
+    through the API.** The read that serves it answers `null` at epoch 0 for an account holding no
+    row, and no route can produce one — a session exists only after a registration, and a
+    registration files the manifest in the same save as the session. That answer is the read's
+    defensive shape, reached by an account a test seeded by hand and by nothing else;
+    [account-keys.md](account-keys.md) owns it, including why nothing could repair a real one.
+- **Enforced in**: `RegisterAccountHandler` building the `FactorManifest` beside the eleven rows,
+  `Domain.Users.Registration` carrying it as a required member so a registration without one does
+  not compile, and the `INSERT` in `app-role-grants.sql` — an
+  ungranted insert here would turn the whole registration into a `42501` rather than losing a row
+  quietly. The grant beside it is `UPDATE (manifest, rotation_epoch)`, which this path never spends:
+  it belongs to the two routes that **promote** a generation. There is still no `DELETE` — a
+  manifest leaves by `FK_factor_manifests_users` cascading from an account erasure.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: The set arrives on a member spelled **`codes`**, matching the generation route, and it
+  is `RecoveryCodeSubmission` rather than a wire record of this route's own.
+- **Why**: `POST /api/me/recovery-codes` is the other write path that accepts a set, so one name
+  across both is **one wire contract** for the two write paths a client has, and one shared
+  validation. A copy of the submission record would be four declarations able to disagree with that
+  one about which spellings a caller may send, on the one member whose shape is a cryptographic
+  binding. Renaming it to `RecoveryCodes` would also camel-case to `recoveryCodes` on the wire,
+  which the request-surface census refuses: it admits the token `recovery_code` only directly in
+  front of `hash`, so a member able to hold key material has to be looked at — and answering that
+  with a `JsonPropertyName` on a differently-named property is the evasion the census exists to
+  catch.
+- **Enforced in**: `RegisterAccountCommand.Codes` and `RegistrationRequest.Codes`, both typed
+  `IReadOnlyList<RecoveryCodeSubmission>`.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: No member of the request is `required`.
+- **Why**: an absent member binds to `null` despite the declaration and reaches the handler's own
+  refusal — a sentence worded for the person holding the device, raised past the `prf` gate —
+  instead of a framework `400` telling somebody whose authenticator genuinely cannot do PRF that
+  their *payload* was malformed. It bites hardest on `codes`, where an absent set is refused as a
+  set of the wrong size, which is what it is. `factorId` is a `string` for one more reason: the
+  framework parses more spellings of a uuid than this contract accepts, so a `Guid` member would
+  silently widen the wire format past what `CanonicalFactorId` allows — and that value is the
+  associated data both envelopes were sealed with.
+- **Enforced in**: the declarations on `RegistrationRequest` and `RegisterAccountCommand`. That
+  envelope covers what binds, not what fails to: no body at all, a literal `null`, or a member of
+  the wrong JSON type is a framework `400` raised before the handler is entered, accepted for the
+  reason [erasure.md](erasure.md) states.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: **The device agrees before anything secret is minted.** On the client the order is: ask
+  for the creation options, run the WebAuthn ceremony, and only then draw the account keys, mint the
+  ten codes, mint eleven factor keypairs, import the account's two keys and seal the manifest naming
+  the eleven public halves.
+- **Why**: this departs from the obvious order — mint the set first, then run the ceremony — and the
+  departure is the point. **Cancelling the system passkey sheet is the most common thing that
+  happens on that screen.** Minting first leaves that browser holding ten live recovery codes for a
+  flow that ended: secrets created for an account that does not exist, on a page whose whole premise
+  is that the ten values on it are the account's. It costs nothing to reorder, because the challenge
+  is already spent either way.
+  - **The one thing that happens even earlier**: whether the browser can run a ceremony at all is
+    asked **before** the options call, the only position that costs nothing. A browser that was
+    never going to finish would otherwise spend a challenge on its way to being told so — and here
+    the challenge is also what the account identifier is derived from.
+  - **That question is now asked in two places, because the options call moved.**
+    `RegisterService.begin` reads it before *its* request for the same reason, and what it does with
+    a `false` is not what the passkey step does: it advances the step with no options in hand and no
+    word published, leaving the `unsupported` sentence to the screen that has one. Refusing on the
+    introduction instead would be a third sentence for a state already spoken for, and would still
+    have to be repeated below, because a restart re-enters through the passkey step.
+  - **The last three steps are ordered by force and not by preference**, which is the half a later
+    reader will rearrange. All eleven encapsulations run **before** the two key imports, because an
+    import zero-fills the material it is handed — hoisted above the loop, every factor after it
+    encapsulates thirty-two zero bytes, which mints, opens, posts and creates an account whose every
+    later read is against a key nobody drew. The manifest is sealed **after** those imports, because
+    it needs the content key as a key object. The two rules point in opposite directions, so the
+    arrangement that looks tidiest cannot be written at all — and the one that satisfies both makes
+    the manifest the content key's first real use in the product.
+- **Enforced in**: the statement order in `RegisterService.mintUnder`, argued at each line, and by
+  `register.service.spec.ts` driving a refusing authenticator and asserting that nothing was
+  published, no request was made and no code exists.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: **There is no retry of the POST — only a restart of the whole ceremony.** A refused
+  registration offers *Start again*, never *Try again*, and the assembled body is discarded on every
+  outcome.
+- **Why**: the challenge is consumed at rung 4, before anything is verified, so a second POST of the
+  same body meets the undifferentiated challenge refusal with certainty. A retry control would look
+  like a way out and be a way to be told no twice — and it would re-send a whole set's key custody
+  to do it. A restart re-draws **everything**: a new challenge, a new passkey, new account keys, ten
+  new codes, eleven new factor identifiers, eleven new keypairs and a new manifest over the eleven
+  public halves those keypairs produced. Nothing from the abandoned attempt is reused, and
+  nothing could be — the nonce is spent and the account keys were wiped.
+- **Enforced in**: `RegisterService.create` clearing the pending body on the `201` and on every
+  failure alike, `RegisterService.restart` re-entering at the passkey step, and the screen offering
+  no control that re-posts. `refuses to post the same registration twice` and
+  `starts over with a different set of codes` hold both halves.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: **A refusal and a lost answer are separate readings, and they may never be collapsed.**
+  A `400`, a `401`, a `403` and a `409` mean *certainly not created*; a network failure, a timeout
+  and every `5xx` mean *cannot be told*. **This is about the POST leg**, and the two legs read a
+  `401` differently on purpose: here it is one of four refusals meaning the codes on screen are
+  dead, while on the options leg it is `provider-token-refused` and nothing has been minted to be
+  dead.
+- **Why**: every `400` leaves the handler by exception before the save is reached, a `401` and a
+  `403` are refused before the handler is entered at all, and a `409` refuses this request against
+  an account that already stands — so on all four the ten codes on screen open nothing, and saying
+  so is a kindness. A request that got **no answer** is not evidence: it may have arrived, committed
+  all thirty-one rows and had its `201` lost on the way back. Telling that person their codes are
+  worthless tells them to discard the only key to an account they cannot make more codes for,
+  because `POST /api/me/recovery-codes` has no caller in this client. It is
+  [sessions.md](sessions.md)'s four-valued reading of a probe, on the one screen where collapsing it
+  costs an account nobody can ever open again.
+- **Enforced in**: `RegisterService.failureOf`, a `switch` on the status with the two groups written
+  out and a `default` arm that reads status `0`, every `5xx` and anything a proxy invents as *cannot
+  be told*; the screen renders a different heading, sentence and control for each. Four tests drive
+  `400`, `409`, status `0` and `500`, and the component spec pins the two sentences whole and
+  asserts they are not the same string.
+- **Counterexample**: `error.status >= 400 ? 'refused' : 'unknown'`, the shape a reader reaches for,
+  which files every `5xx` and every dropped connection under *your account was not created*.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: **The server's four distinct `409` sentences are not reachable from the client, and the
+  two states it does render are told apart by what the previous POST ended as — never by anything
+  the person pressed.** The first half is a gap with a named cause; the second is a rule.
+- **Why**: `ConflictExceptionHandler` writes an identical `Title` for every conflict in the product
+  and puts the distinguishing sentence in `Detail` as free text. The client has never been able to
+  match on `Detail` — that is a second copy of the server's copy held across the wire, with nothing
+  to redden when the two drift — and one wrong sentence is worse than a general one: it would send
+  somebody to sign in with a passkey the account does not hold.
+  - **The server now carries the discriminant this entry asked for, and the client has not been
+    taught it.** Every 409 carries a `conflictKind` extension member naming the caller's next step,
+    and all four of these sentences have their own word: `subject_already_registered`,
+    `email_already_linked`, `authenticator_already_registered`, `factor_already_registered`. The
+    vocabulary and its argument are in [payees.md](payees.md), where the pair that forced it lives.
+    So the remaining half is client work: rendering four states from one member instead of two from
+    an inference. **Do not close it by reading prose.**
+  - **What the client *can* know is how its own earlier request ended, and that is the fork that
+    matters.** A lost answer is the only ending that leaves the question open, so a `409` after one
+    is very likely that browser's own committed registration answering, while a `409` with no such
+    ending is a stranger at the front door.
+  - **Forking on *Start again* instead was a defect, and the shape is worth keeping.** That control
+    is offered from two states, so `400` → restart → `409` rendered *"Your first attempt did create
+    your account"* — false in every clause, because every `400`, `401` and `403` leaves the handler
+    before a row is written. That person was then sent to sign in with a passkey this server never
+    saw, and met the byte-identical `401` the assertion route answers everything with. **A press is
+    not a fact about the server.**
+  - **The reading is set only from a lost answer, and nothing later clears it.** A `400` and a `409`
+    are judgements, so neither ever opens the question, while a request that may have committed
+    thirty-one rows stays one whatever the next attempt answers.
+  - **Both readings carry the same one control**, a *Go to sign in* routing to the one screen
+    running a passkey assertion. *Start again* is deliberately absent from both: it spends another
+    challenge and another passkey to meet the same `409`.
+- **Enforced in**: `RegisterService.failureOf` mapping `409` to a single word;
+  `RegisterService.mayHaveCreatedAccount`, published from the answer inside the error branch and
+  only for the *cannot be told* word; and the shell rendering two states for one word, with the
+  control outside the fork.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: **The `duplicate` ceremony refusal is unreachable from this route today, and the client
+  handles it anyway.**
+- **Why**: that refusal is the authenticator declining a credential named in `excludeCredentials`,
+  and this leg sends an **empty** list by design. It is handled because the ceremony's failure union
+  is closed and mapped exhaustively: a swallowed arm is a screen showing a spinner or an empty
+  region with no sentence on it, and the day a second ceremony reaches this service the compiler
+  carries the decision rather than a reviewer.
+- **Enforced in**: `BeginAccountRegistrationHandler` setting `ExcludeCredentials = []`;
+  `RegisterService.ceremonyFailureOf`, a `switch` over the closed union so a sixth word fails to
+  compile; and the passkey step's own map from every one of the flow's words to a sentence.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: **The flow is one route with no `children`, and the service holding its secrets is
+  provided by the component.** `/register` carries `guestGuard`, declares no child routes, and
+  `RegisterComponent` lists `RegisterService` in its own `providers`.
+- **Why**: the two halves answer different questions and neither works alone.
+  - **No `children`, because a step is in-memory state.** The account keys, the eleven
+    key-encryption keys, the ten codes, the eleven factors' envelopes and the manifest over their
+    public halves live in a service that dies
+    with the screen, so `/register/codes` as an address would break two things at once: Back would
+    land on a step whose state is already gone, and the address would be a link somebody could open
+    — or be sent — onto a screen whose whole premise is that ten codes were minted moments ago and
+    are on it. The step is a signal inside `register.component.ts`, so no step URL exists to
+    deep-link.
+  - **Component-provided is custody, not a lifetime preference.** Held at the root, the codes of an
+    **abandoned** registration would still be readable from the injector on an unrelated screen an
+    hour later, and there is nowhere in this product they could legitimately be read from. It is the
+    same rule the service keeps from its own end: a value is a signal only if a template renders it,
+    which is why the eleven key-encryption keys never touch the instance and the ten codes — which
+    the codes step must render — are the one secret published there.
+  - **`guestGuard`, because registration has nothing to offer somebody already holding a session**,
+    and reaching the second step would spend a challenge and a passkey to find that out. The
+    provider's `redirectUri` is this same address, so somebody who pressed **Continue with Google**
+    comes back to the screen that uses what they consented to.
+- **Enforced in**: the `register` entry in `app.routes.ts` — `canActivate: [guestGuard]` and no
+  `children`, with the argument written beside it — and the `providers: [RegisterService]` array on
+  `RegisterComponent`. `register.component.spec.ts` pulls the service out of
+  `fixture.debugElement.injector` and drives the real one, so deleting that array reddens rather than
+  silently promoting the secrets to the root injector.
+- **Counterexample**: a `children` array added "so the steps are linkable", which is exactly the
+  property the third step must not have.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: **Nothing asks on the way out.** There is no `canDeactivate` guard and no `beforeunload`
+  handler on this flow, and adding either is a regression.
+- **Why**: abandoning costs nothing. Until the last press nothing has been created, and the ten codes
+  on screen are inert verifiers no server has ever seen — so a confirmation dialog would imply the
+  opposite, that something is being lost, on the one screen where a person's caution is already at
+  its highest. The copy says the true thing instead: **"Nothing is saved until the last step."**
+  stands on every step. After the last press there is nothing to guard either, because the screen
+  navigates itself to `/app`.
+- **Enforced in**: the absence, argued in `register.component.ts`'s header so it reads as a decision,
+  and the standing line in every step's copy — see the Registration chapter of
+  [components.md](../design/components.md).
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: **The identity provider's redirect lands on `/register`, and the matching entry in the
+  Google Cloud console's authorized redirect URIs is part of that change.**
+- **Why**: the registration screen is the only surface that can do anything with a fresh provider
+  token — it reads the asserted address off the id token **while that token is still valid**, and
+  both legs authenticate as the provider scheme and nothing else. The validity clause is
+  load-bearing: `AuthService.providerEmail` answers `null` for a token whose hour has run out, which
+  is what puts the screen back on its **Continue with Google** arm instead of showing an address
+  under a promise the next press cannot keep. The site root is the wrong target for the same reason
+  it is the obvious one: the app reads that address as *somebody arriving with a session*, which a
+  person consenting in order to **create** an account does not have.
+  - **The answer is read in the `APP_INITIALIZER`, before the router's first navigation, and only
+    on that page load.** `AuthService.isProviderReturn()` recognises the configured redirect
+    address carrying a fragment or a query; for a visitor the probe did not recognise, the
+    initializer then awaits `AuthService.initialize()`, which fetches the discovery document and
+    reads the tokens off the URL. A resolver on `/register` is the obvious home and the wrong one:
+    the library clears the fragment once it has read it, but the router writes its navigation's
+    target — fragment included — back to the address bar *after* resolvers run, so the tokens
+    would come straight back. A bare `/register` contacts nobody; the press that starts the
+    exchange prepares the client itself, and `AuthService` prepares it at most once per page load.
+    See [no third-party origins](../engineering/no-third-party-origins.md).
+  - **No test in this repository can see the other half.** A mismatch is refused by Google with
+    `redirect_uri_mismatch` before a single line of this application runs: the browser never comes
+    back, so nothing here is reached to fail. Changing the value without changing the console entry
+    takes provider sign-in down for everybody, and the only thing that goes red is a person's
+    browser.
+- **Enforced in**: `auth.google.redirectUri` in the shipped `app-config.json`, pinned by
+  `src/registration-redirect-uri.spec.ts`, which reads the **emitted build** rather than the source
+  file and also fails when the key is renamed or dropped. The console entry is enforced by nothing
+  and is named here so it is read as part of the change rather than as a follow-up. That the return
+  leg alone contacts the provider at bootstrap is pinned by `core.providers.spec.ts`, and what counts
+  as a return by `auth-service.spec.ts`.
+- **Source**: `[SOURCE: discussion]`
+
+## Workflows & State Transitions
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> ChallengeIssued : POST /api/registration/options — a nonce in the AccountRegistration pool
+    ChallengeIssued --> Consumed : POST /api/registration — the nonce is deleted before anything is checked
+    Consumed --> Verified : format, origin, relying party, flags, signature
+    Verified --> Accepted : prf reported, factor id and both envelopes well-formed, ten codes valid, manifest framed
+    Accepted --> Registered : one save — thirty-one rows across ten relations
+    Accepted --> Conflicted : one of four unique rules already stands
+    Consumed --> Refused : any check fails
+    ChallengeIssued --> Expired : five minutes pass
+    Registered --> [*] : 201, a Set-Cookie, and a body naming only the session
+    Conflicted --> [*] : 409
+    Refused --> [*]
+    Expired --> [*]
+```
+
+| Transition | Triggered by | Validations |
+|---|---|---|
+| → ChallengeIssued | `POST /api/registration/options` | a live provider token on the named scheme; `sub`, `email` and `email_verified` from `RegistrationClaimGate` on the same group; **and the subject must hold no account** — judged before the nonce is issued, so a caller who already registered is refused without a passkey being minted. `POST` rather than `GET` because it persists a nonce, so it is neither safe nor idempotent and a `GET` would be cacheable and prefetchable |
+| ChallengeIssued → Consumed | `POST /api/registration` | the nonce must exist, be unexpired, and name the **`AccountRegistration`** pool — one undifferentiated refusal covering never issued, already spent, expired, and any of the other three pools |
+| Consumed → Verified | `PasskeyRegistrationVerifier.Verify` | client-data type; origin by equality; not cross-origin; `SHA-256(rpId)`; user present **and** verified; attestation `none`; algorithm offered and supported; key strength; the signature |
+| Verified → Accepted | rungs 6 to 12 | `prf` reported present and true; `factorId` in the one canonical spelling; `wrappedPrivateKey` exactly 167 bytes at version 1 and `encapsulatedAccountKeys` exactly 158 at version 1, each judged by its own framing's constants; ten submissions, every verifier and every factor identifier distinct; the passkey's identifier differing from all ten; and the `manifest` between 29 and 4096 bytes at version 1 — a **band**, because its plaintext grows with the factor count |
+| Accepted → Registered | `IRegistrationRepository.RegisterAsync` | one `SaveChanges`; the identity is published first, and no transaction wraps it |
+| Accepted → Conflicted | the same save | the provider subject, the email, the authenticator's handle, or one of the eleven factor identifiers is already stored |
+
+The session's lifetime is **14 days**, read from `SessionPolicy.Lifetime` — the same value the three
+other establishing paths read, which is a rule rather than a coincidence; see
+[sessions.md](sessions.md).
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant O as POST /api/registration/options
+    participant A as POST /api/registration
+    participant H as RegisterAccountHandler
+    participant D as PostgreSQL
+
+    C->>O: provider bearer, no account
+    O->>D: issue a nonce in the AccountRegistration pool
+    O->>O: user.id = RegistrationAccountId.For(those bytes)
+    O-->>C: creation options — rp, user handle, algorithms, no excludeCredentials
+    Note over C: the authenticator creates the credential and returns a prf output
+    Note over C: the client mints the account keys, ten codes, eleven factor identifiers and the manifest
+    C->>A: the ceremony response + factorId + two envelopes + ten submissions + the manifest
+    A->>H: RegisterAccountCommand, with sub and email off the principal
+    H->>D: consume the nonce — its OWN save, BEFORE the response is verified
+    H->>H: verify, then the prf gate, then the key-custody payload, then the manifest
+    H->>H: accountId = RegistrationAccountId.For(the challenge the store just spent)
+    H->>H: ResolveUser(accountId) — before the insert, never after
+    H->>D: ONE SaveChanges — ten relations, no transaction
+    A-->>C: 201, Set-Cookie, {"session": {"kind": "full", "expiresAtUtc": …}}
+```
+
+## Decision Trees
+
+How the finish leg treats a presented registration:
+
+```
+IF clientDataJSON or attestationObject is past its ceiling or not base64url   ← nothing is spent
+  THEN 400 keyed under Response
+ELSE IF clientDataJSON is not the JSON object a ceremony produces             ← nothing is spent
+  THEN 400 keyed under Response
+ELSE consume the nonce — from here every outcome has burnt it
+  IF the row is absent, expired, or names any other pool
+    THEN 400 keyed under Response, one undifferentiated sentence
+  ELSE IF the registration response does not verify
+    THEN 400 keyed under Response
+  ELSE IF the client reported no enabled prf result
+    THEN 400 naming the authenticator, never the payload
+  ELSE IF factorId, either envelope, or the set is malformed
+    THEN 400 keyed under the member the caller can correct
+  ELSE IF the passkey's factor identifier repeats one of the ten
+    THEN 400 keyed under FactorId
+  ELSE IF the manifest is absent, not base64url, outside 29..4096 bytes, or not version 1
+    THEN 400 keyed under Manifest         ← framing only; what the bytes NAME is never judged here
+  ELSE derive the account id, publish it, and save once
+    IF the save lost to the credential's (provider, subject)
+      THEN 409 "already registered — sign in with the passkey it holds, or redeem a recovery code"
+    ELSE IF it lost to the email index
+      re-read the federated credential                       ← the name alone cannot separate the two
+      IF one holds this subject now
+        THEN 409, the same sentence as above
+      ELSE
+        THEN 409 "this email address is already linked to a different Google account"
+    ELSE IF it lost to the authenticator's handle
+      THEN 409 "this authenticator is already registered"
+    ELSE IF it lost to a factor identifier
+      THEN 409 "mint a fresh one, wrap the account keys under it, and run the ceremony again"
+    ELSE
+      THEN 201, a Set-Cookie, and a body naming only the session
+```
+
+## Integration Points
+
+- **[Passkeys](passkeys.md)** — the ceremony itself, the `AccountRegistration` pool, and why this
+  leg sends no `allowCredentials` and no `excludeCredentials`. The `prf` gate and its argument are
+  that file's; this route runs the same one at the same position in its own ladder.
+- **[Recovery Codes](recovery-codes.md)** — the set. This is the **first issue** for an account and
+  the second write path that accepts a set; it sweeps nothing, replaces nothing, and reports no
+  `sessionsEnded`.
+- **[Account Keys](account-keys.md)** — the eleven pairs of envelopes and the one spelling of a
+  factor identifier. This is the **third** path that writes `wrapped_account_keys`, and the one that
+  **files** a `factor_manifests` row; adding a passkey, regenerating the card and revoking a passkey
+  each **promote** the one this path laid down, in the unit of work that changed the factor set.
+  That chapter owns the promotion rule, the epoch, and why
+  `manifest: null` survives in the read's shape without being a state anybody reaches.
+- **[Sessions](sessions.md)** — the **fourth** thing that establishes a session, and like the other
+  three it mints a handle and sets the cookie.
+- **[Users & Ownership](users-and-ownership.md)** — the account, its credentials, and the invariant
+  this path establishes, which is the invariant of every account there is.
+- **[Budgets](budgets.md)** — the nameless default budget, created in the same save.
+- **`FirstPartyRequestMiddleware`** — both routes require a non-empty `X-Budgetoid-Client` header
+  like every route but `GET /health`. That control covers this surface for the reason it covers the
+  anonymous one: these are routes that **set a cookie**.
+- **The `/register` screen** — the caller for all of it. Its anatomy, its passkey refusal sentences
+  and its four post-request states are the **Registration** chapter of
+  [components.md](../design/components.md); why it is a linear sequence of full screens rather than
+  a checklist is in [patterns.md](../design/patterns.md). Both of its requests carry the
+  `EXPECTS_UNAUTHENTICATED` context token, so a `401` from either is read as this request's verdict
+  rather than as a session ending. **What the options leg then does with that verdict is its own
+  word.** A `401` there means the provider token this browser attached was rejected, almost always
+  an hour having passed, so the client publishes `provider-token-refused` and both steps that can
+  receive it offer **Continue with Google**. It is deliberately not `start-failed`: that sentence
+  says the server could not be reached, and this server answered. A `403` on the same route **is**
+  `start-failed`, because that is the `X-Budgetoid-Client` refusal, a client defect no provider
+  exchange repairs.
+
+## Edge Cases & Known Gotchas
+
+- **What is built and what is not.** Both routes exist, the whole write is tested end to end by the
+  integration suite, and **`/register` reaches them**: the screen runs the ceremony, mints eleven
+  factor keypairs, seals the manifest and posts the body the finish leg binds. A returning person
+  signs in with a passkey from `/welcome`, and the provider is not contacted on that path at all.
+  What is **not** built beside it is the rest of the client's passkey
+  surface: nothing registers a second passkey, and nothing runs the fresh assertion the erasure,
+  revocation and recovery-code-generation gates need — so **no browser has ever promoted a
+  manifest**, only filed one. **The unlock ceremony on `/app/settings` is
+  not that assertion and cannot be mistaken for it**: it is minted in the browser, answered by no
+  route and thrown away, so it satisfies no gate — see [account-keys.md](account-keys.md).
+- **Somebody who already has an account is refused at the options leg, and the passkey sheet never
+  opens.** The welcome screen offers two ways in and **Create account** is the Primary, so an
+  existing account holder reaching for it rather than for **Sign in with a passkey** lands on
+  `/register` — and the first request that screen makes comes back `409`. No system sheet, no ten
+  codes, no credential left on the authenticator. **That request is made by the introduction's own
+  `Continue`**, so the refusal replaces the promise that named the address rather than arriving a
+  screen after it.
+  - **This is not the enumeration oracle a dedicated route would be.** There is still **no route
+    that answers "does this subject have an account?"**, and there must not be. What the options leg
+    answers is narrower: it refuses *this caller's own* registration, to a caller who arrived
+    holding a provider-verified token for that exact subject.
+  - **What it does not cover is written down beside it**, because the shape is easy to mistake for a
+    guarantee: a passkey is still minted before the refusal when the *address* collides rather than
+    the subject, when the account is created between the two legs, and whenever somebody abandons
+    the flow after agreeing on the device. A relying party cannot delete a credential from an
+    authenticator.
+- **After a lost answer and a restart, the live codes are the *first* attempt's.** The *cannot be
+  told* state offers *Start again* precisely because a second attempt settles the question: if the
+  first request did commit, the second meets the `409` and says so. But the account it names is the
+  one the first attempt created, locked under the first attempt's keys — so somebody who discarded
+  that first card and kept the second holds a passkey and no codes and no way to make more. The
+  screen's sentence therefore says **keep** the codes you saved, and the `409` that follows says the
+  same thing from the other end.
+- **A `409` is rendered on all three steps, and no two of the sentences are copies.** The options
+  leg's lands on the **introduction**, where `RegisterService.begin` asks — nothing minted, no
+  challenge issued, no sheet opened. It still lands on the **passkey** step for the refetch a
+  restart or a failed ceremony makes, which another tab or device can have raced in between. The
+  finish leg's lands in place of the codes step. The sentences differ in the one clause a person
+  acts on: the shell's two both say the ten codes just shown open nothing, which is false on the
+  earlier leg; and the passkey step's ends "no passkey was made", worth saying where a system sheet
+  was on the screen a moment ago and saying nothing at all on the introduction. Those are three
+  controls rather than one shared one **on purpose**: each renders on a different step and none can
+  hand its markup to another, so what a shared owner would save is the address and nothing else,
+  while an output left unbound compiles, lints, passes the step's own spec and ships a dead button.
+  All three are pinned by specs that press the control and read where the router was asked to go.
+  - **On the codes step the one control serves both readings of the `409`, and is rendered outside
+    the fork** — a control written twice is one somebody forgets. It is a **button** rather than a
+    link: `/register` carries no navigation of its own, so this is an exit from a flow that has
+    ended, and opening it in a new tab would leave the dead end standing in the old one with ten
+    worthless codes on it.
+- **Moving the derivation up is the one edit that turns a function into a vulnerability.** Rung 13
+  sits after rung 4 and nothing about the code's shape says so — `clientData.Challenge` is in scope
+  from rung 3, so hoisting the derivation beside the parse compiles, reads tidier, and passes every
+  test in the suite. What it changes is that the identifier is then derived from a value the caller
+  supplied.
+- **A short challenge derives a perfectly good-looking identifier.** `RegistrationAccountId.For`
+  throws on any width but 32 rather than padding or truncating, because the dangerous direction is
+  the quiet one. The constant is restated in the Application ring rather than shared with the
+  challenge store, which sits in Infrastructure — the refusal is what keeps the two honest.
+- **The account identifier is not time-ordered, and every other identifier in this schema is.** A
+  version 7 uuid appends at the right-hand edge of an index; a hash-derived one scatters `users`
+  primary-key inserts. `users` is low-volume and one row per account is the rarest insert in the
+  product, so the trade is right — but it is a real cost, recorded in
+  [ADR 0021](../decisions/0021-make-registration-one-consented-act-and-derive-the-account-id-from-its-own-challenge.md).
+- **A `409` here is not an enumeration oracle, and the reason is the provider.** The email conflict
+  is answered to a caller who has **just proved control of that address**, so it discloses nothing
+  they could not learn by signing in. The other two facts are about their own device and about a
+  value their own client chose. Do not "harden" these into one undifferentiated refusal: the
+  sentences are what tell somebody holding a completed ceremony and a set of codes their client has
+  very likely already shown them that none of it is needed.
+- **The refusals past the decode all spend the challenge.** The two ceiling refusals and the parse
+  refusal sit above `ConsumeAsync` and spend nothing; everything from rung 4 down burns the nonce.
+  So a client refused for its authenticator, its payload or a lost race must return to the options
+  leg for a fresh nonce — and a fresh nonce means a **different account identifier**, which is why
+  the factor conflict's sentence says to mint a fresh identifier and wrap the keys again rather than
+  to retry.
+- **The `null` arm on the cookie write is unreachable and is written as a pattern anyway.** A
+  registration that returns has established a session. The alternative is a null-forgiving operator
+  asserting a rule that lives in another project, and the shape matches the three other establishing
+  legs.

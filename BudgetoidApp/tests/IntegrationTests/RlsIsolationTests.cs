@@ -6,18 +6,24 @@ using Domain.Transactions;
 using Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
+using TestSupport;
+using TUnit.Assertions.Enums;
 
 namespace IntegrationTests;
 
 /// <summary>
-/// Covers budget isolation as the <b>database</b> enforces it, on the five budget-owned tables:
-/// <c>accounts</c>, <c>category_groups</c>, <c>categories</c>, <c>payees</c>, <c>transactions</c>.
-/// Today that isolation exists only in EF's <c>BudgetIsolation</c> global query filters, which are
-/// application code and therefore hold exactly as long as the application remembers them: raw SQL,
-/// <c>IgnoreQueryFilters</c>, a repository written in a hurry, and a hand-run script all walk
-/// straight past. Row-level security is the layer that holds when they do, which is why every
-/// statement in this file is raw Npgsql on <see cref="RepositoryTestHost.AppConnectionString" /> —
-/// going through EF would only re-measure the filters these tests exist to be independent of.
+/// Covers tenant isolation as the <b>database</b> enforces it, on two axes. The budget-owned tables
+/// — <c>accounts</c>, <c>category_groups</c>, <c>categories</c>, <c>payees</c>,
+/// <c>transactions</c> — are isolated by the session's ambient budget; <c>users</c>, <c>budgets</c>
+/// and <c>sessions</c> sit above that scope (a user owns budgets rather than belonging to one, a
+/// budget is the tenant rather than a tenant's row, and a sign-in reaches an account before it
+/// reaches any budget) and are isolated by the session's user instead.
+/// Both axes exist in EF's global query filters too, which are application code and therefore hold
+/// exactly as long as the application remembers them: raw SQL, <c>IgnoreQueryFilters</c>, a
+/// repository written in a hurry, and a hand-run script all walk straight past. Row-level security is
+/// the layer that holds when they do, which is why every statement in this file is raw Npgsql on
+/// <see cref="RepositoryTestHost.AppConnectionString" /> — going through EF would only re-measure the
+/// filters these tests exist to be independent of.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -39,7 +45,8 @@ namespace IntegrationTests;
 /// column lists and <c>budget_id</c> is on none of them, so <c>set budget_id = …</c> is refused
 /// with <c>42501</c> by the column grant before row-level security is consulted — a probe shaped
 /// that way passes today, against no policy at all, and measures the grant matrix instead. The
-/// updates below therefore write a granted text column, and the inserts satisfy every foreign key
+/// updates below therefore write a granted narrative column — text on three tables, a <c>bytea</c>
+/// envelope on <c>accounts</c> and <c>payees</c> — and the inserts satisfy every foreign key
 /// they touch by building each row out of the parents of the very budget it names, so that the only
 /// thing wrong with a rejected statement is the budget.
 /// </para>
@@ -67,11 +74,16 @@ public sealed class RlsIsolationTests
     ];
 
     /// <summary>
-    /// One writable text column per budget-owned table, with the value the seeding gives it. The
+    /// One writable narrative column per budget-owned table, with the label the seeding gives it. The
     /// column is chosen off the role's <c>UPDATE</c> grant lists, so a refusal can only come from
     /// row-level security: <c>transactions</c> has no <c>name</c>, hence <c>description</c>.
     /// </summary>
-    private static readonly (string Table, string Column, string SeededValue)[] WritableTextColumns =
+    /// <remarks>
+    /// <b>The third member is a LABEL and no longer always a value.</b> Three of the five columns are
+    /// <c>bytea</c> now, so what is written is derived from the label rather than being it — see
+    /// <see cref="NarrativeValueFor" />, which is the one place that decision is taken.
+    /// </remarks>
+    private static readonly (string Table, string Column, string SeededLabel)[] WritableNarrativeColumns =
     [
         ("accounts", "name", "Checking"),
         ("category_groups", "name", "Everyday"),
@@ -79,6 +91,48 @@ public sealed class RlsIsolationTests
         ("payees", "name", "Corner Shop"),
         ("transactions", "description", "Weekly shop"),
     ];
+
+    /// <summary>
+    /// The value a probe writes into <paramref name="table" />'s narrative column, and the value the
+    /// read-back compares against.
+    /// </summary>
+    /// <remarks>
+    /// <b>EVERY COLUMN IN THIS TABLE IS BYTEA NOW — <c>categories.name</c> and
+    /// <c>transactions.description</c> were the last two text ones and this slice sealed both — so the
+    /// VALUE still follows the table, but the fork is between the two CAPS rather than between sealed
+    /// and plain.</b> Writing a text literal into a
+    /// sealed column comes back <c>42804</c> from the type checker, before any policy is consulted —
+    /// and this test reads its verdict off an AFFECTED-ROW COUNT, so a type error does not merely
+    /// mislead it, it throws out of the loop entirely and DESTROYS the case rather than failing it. A
+    /// short buffer would be the same trap one step later, refused by <c>CK_accounts_name_length</c>,
+    /// <c>CK_payees_name_length</c> or <c>CK_category_groups_name_length</c> with <c>23514</c>. All
+    /// three go through the shared fixture, so what is written is an envelope this server would accept
+    /// from a client.
+    /// </remarks>
+    private static object NarrativeValueFor(string table, string label) => table switch
+    {
+        // Four NAME columns, under NarrativeFieldLimits.NameBytes.
+        "accounts" or "payees" or "category_groups" or "categories" =>
+            SealedNarrative.Name(label).Envelope.ToArray(),
+
+        // transactions.description is a DESCRIPTION column and takes the other cap. Folding it in with
+        // the four above would seal it under NameBytes, which is a different number about a different
+        // field class - harmless for these short labels and wrong the day one of them grows.
+        "transactions" => SealedNarrative.Description(label).Envelope.ToArray(),
+
+        _ => label,
+    };
+
+    /// <summary>
+    /// Compares what a column actually holds against the label it was written from, bytes for the three
+    /// sealed columns and text for the rest.
+    /// </summary>
+    private static bool NarrativeColumnHolds(string table, object? actual, string label) =>
+        NarrativeValueFor(table, label) switch
+        {
+            byte[] expected => actual is byte[] bytes && bytes.AsSpan().SequenceEqual(expected),
+            var expected => actual is string text && text == (string)expected,
+        };
 
     /// <summary>
     /// The deletable budget-owned tables, ordered so a budget's rows can be removed without tripping
@@ -101,8 +155,8 @@ public sealed class RlsIsolationTests
         // Arrange — both budgets carry the same shape of rows, so "budget B has none of this table"
         // is never the reason a count comes back zero.
         await using RepositoryTestHost host = await StartHostAsync();
-        (BudgetRows ambient, BudgetRows other) = await SeedTwoPopulatedBudgetsAsync(host);
-        await using NpgsqlConnection app = await host.OpenAppConnectionAsync(ambient.BudgetId);
+        (Guid ownerId, BudgetRows ambient, BudgetRows other) = await SeedTwoPopulatedBudgetsAsync(host);
+        await using NpgsqlConnection app = await host.OpenAppConnectionAsync(ownerId, ambient.BudgetId);
 
         // Act — both halves per table. The ambient half is not decoration: a policy that hides every
         // row from everyone satisfies the foreign half on its own, and only this count notices.
@@ -133,8 +187,8 @@ public sealed class RlsIsolationTests
     {
         // Arrange
         await using RepositoryTestHost host = await StartHostAsync();
-        (BudgetRows ambient, BudgetRows other) = await SeedTwoPopulatedBudgetsAsync(host);
-        await using NpgsqlConnection app = await host.OpenAppConnectionAsync(ambient.BudgetId);
+        (Guid ownerId, BudgetRows ambient, BudgetRows other) = await SeedTwoPopulatedBudgetsAsync(host);
+        await using NpgsqlConnection app = await host.OpenAppConnectionAsync(ownerId, ambient.BudgetId);
 
         // Act — a cross-budget update is not refused with an error under row-level security; the row
         // simply is not there to match, so the statement succeeds having affected nothing. That is
@@ -143,15 +197,17 @@ public sealed class RlsIsolationTests
         const string renamed = "Renamed in place";
         List<string> foreignRowsReached = [];
         List<string> ownRowsUnreachable = [];
-        foreach ((string table, string column, _) in WritableTextColumns)
+        foreach ((string table, string column, _) in WritableNarrativeColumns)
         {
-            int foreign = await UpdateTextAsync(app, table, column, other.RowIn(table), overwritten);
+            int foreign = await UpdateTextAsync(
+                app, table, column, other.RowIn(table), NarrativeValueFor(table, overwritten));
             if (foreign != 0)
             {
                 foreignRowsReached.Add($"{table}.{column}: affected {foreign} of another budget's rows");
             }
 
-            int own = await UpdateTextAsync(app, table, column, ambient.RowIn(table), renamed);
+            int own = await UpdateTextAsync(
+                app, table, column, ambient.RowIn(table), NarrativeValueFor(table, renamed));
             if (own != 1)
             {
                 ownRowsUnreachable.Add($"{table}.{column}: affected {own} of its own rows, wanted 1");
@@ -168,12 +224,12 @@ public sealed class RlsIsolationTests
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
         List<string> foreignRowsChanged = [];
-        foreach ((string table, string column, string seeded) in WritableTextColumns)
+        foreach ((string table, string column, string seeded) in WritableNarrativeColumns)
         {
             object? actual = await ReadColumnAsync(admin, table, column, other.RowIn(table));
-            if (actual is not string text || text != seeded)
+            if (!NarrativeColumnHolds(table, actual, seeded))
             {
-                foreignRowsChanged.Add($"{table}.{column}: '{actual ?? "null"}', wanted '{seeded}'");
+                foreignRowsChanged.Add($"{table}.{column}: does not still hold '{seeded}'");
             }
         }
 
@@ -185,8 +241,8 @@ public sealed class RlsIsolationTests
     {
         // Arrange
         await using RepositoryTestHost host = await StartHostAsync();
-        (BudgetRows ambient, BudgetRows other) = await SeedTwoPopulatedBudgetsAsync(host);
-        await using NpgsqlConnection app = await host.OpenAppConnectionAsync(ambient.BudgetId);
+        (Guid ownerId, BudgetRows ambient, BudgetRows other) = await SeedTwoPopulatedBudgetsAsync(host);
+        await using NpgsqlConnection app = await host.OpenAppConnectionAsync(ownerId, ambient.BudgetId);
 
         // Act — the foreign deletes run first and in dependency order. Order matters even though
         // every one of them is expected to affect nothing: if the policy is missing they will all
@@ -239,8 +295,8 @@ public sealed class RlsIsolationTests
     {
         // Arrange
         await using RepositoryTestHost host = await StartHostAsync();
-        (BudgetRows ambient, BudgetRows other) = await SeedTwoPopulatedBudgetsAsync(host);
-        await using NpgsqlConnection app = await host.OpenAppConnectionAsync(ambient.BudgetId);
+        (Guid ownerId, BudgetRows ambient, BudgetRows other) = await SeedTwoPopulatedBudgetsAsync(host);
+        await using NpgsqlConnection app = await host.OpenAppConnectionAsync(ownerId, ambient.BudgetId);
 
         // Act — unlike UPDATE and DELETE, a refused INSERT is loud: the WITH CHECK half of the
         // policy raises 42501, "new row violates row-level security policy". Each probe row is built
@@ -296,7 +352,7 @@ public sealed class RlsIsolationTests
         // budget. This is the shape of every bug where application code forgets to set one, and it
         // must fail loudly rather than quietly returning an empty result that reads as "no data".
         await using RepositoryTestHost host = await StartHostAsync();
-        (BudgetRows ambient, _) = await SeedTwoPopulatedBudgetsAsync(host);
+        (_, BudgetRows ambient, _) = await SeedTwoPopulatedBudgetsAsync(host);
         await using NpgsqlConnection bare = new(host.AppConnectionString);
         await bare.OpenAsync();
 
@@ -327,6 +383,1157 @@ public sealed class RlsIsolationTests
         await using NpgsqlConnection admin = new(host.ConnectionString);
         await admin.OpenAsync();
         await Assert.That(await CountRowsAsync(admin, "accounts", ambient.BudgetId)).IsEqualTo(1L);
+    }
+
+    [Test]
+    public async Task Database_ShowsOnlyTheSessionsOwnUserRow()
+    {
+        // Arrange — two owners, because users is isolated by user and not by budget: a second budget
+        // under the same owner would be invisible to this rule, and the foreign count would come
+        // back zero with or without a policy.
+        await using RepositoryTestHost host = await StartHostAsync();
+        (RepositoryTestHost.SeededOwner session, RepositoryTestHost.SeededOwner other) =
+            await SeedTwoOwnersAsync(host);
+        await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(session.UserId);
+
+        // Act — both halves, on one session. The own count is not decoration: a policy that hides
+        // every row from everyone satisfies the foreign half on its own, and only this notices.
+        long own = await CountKeyedRowsAsync(app, "users", "id", session.UserId);
+        long foreign = await CountKeyedRowsAsync(app, "users", "id", other.UserId);
+
+        // Assert
+        await Assert.That(own).IsEqualTo(1L);
+        await Assert.That(foreign).IsEqualTo(0L);
+    }
+
+    [Test]
+    public async Task Database_RefusesToDeleteAnotherUsersRow_WhileStillAllowingItsOwn()
+    {
+        // Arrange — two owners, because users is isolated by user: a second budget under one owner is
+        // not a second tenant to this rule, and a delete aimed at anything else would measure the
+        // budget axis instead.
+        await using RepositoryTestHost host = await StartHostAsync();
+        (RepositoryTestHost.SeededOwner session, RepositoryTestHost.SeededOwner other) =
+            await SeedTwoOwnersAsync(host);
+        await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(session.UserId);
+
+        // Act — standalone rather than through DeletableTablesInDependencyOrder, which is a
+        // budget-owned array driven by budget-owned seeding: its rows are reached by RowIn(table) off
+        // a BudgetRows, users has no entry there and no budget_id for the ordering to be about, and
+        // bending it to carry one table with a different tenancy axis and a different session shape
+        // would make the array mean two things.
+        //
+        // The foreign delete first, then the identical statement aimed at this session's own row. The
+        // pair is the file's usual one and it is not decoration here: users is the ONLY user-owned
+        // table the role holds DELETE on, so without the positive half a zero could just as well mean
+        // the grant was never there — which would be a green run measuring nothing.
+        int foreignDeleted = await DeleteAsync(app, "users", other.UserId);
+        int ownDeleted = await DeleteAsync(app, "users", session.UserId);
+
+        // Assert — zero rows affected, NOT a 42501, and that distinction is the whole content of this
+        // test. A refusal would say the grant matrix stopped the statement; an affected count of zero
+        // says the POLICY did — the row was simply not in reach of this session, so there was nothing
+        // to delete. Only a table the role genuinely holds DELETE on can tell those two answers apart,
+        // which is why this probe could not be written until users was granted one.
+        await Assert.That(foreignDeleted).IsEqualTo(0);
+        await Assert.That(ownDeleted).IsEqualTo(1);
+
+        // And the other owner is still there. An affected count of zero and a statement that was
+        // silently filtered are indistinguishable from the count alone, so the read-back runs on the
+        // superuser connection, which row-level security does not apply to — no policed session could
+        // answer this question about another owner's row.
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await Assert.That(await CountKeyedRowsAsync(admin, "users", "id", other.UserId))
+            .IsEqualTo(1L);
+        await Assert.That(await CountKeyedRowsAsync(admin, "users", "id", session.UserId))
+            .IsEqualTo(0L);
+    }
+
+    [Test]
+    public async Task Database_ShowsOnlyTheSessionsOwnBudgets()
+    {
+        // Arrange — two owners with one budget each, both keyed on user_id, so "the other owner has
+        // no budgets" is never the reason the foreign count is zero.
+        await using RepositoryTestHost host = await StartHostAsync();
+        (RepositoryTestHost.SeededOwner session, RepositoryTestHost.SeededOwner other) =
+            await SeedTwoOwnersAsync(host);
+        await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(session.UserId);
+
+        // Act
+        long own = await CountKeyedRowsAsync(app, "budgets", "user_id", session.UserId);
+        long foreign = await CountKeyedRowsAsync(app, "budgets", "user_id", other.UserId);
+
+        // Assert
+        await Assert.That(own).IsEqualTo(1L);
+        await Assert.That(foreign).IsEqualTo(0L);
+    }
+
+    [Test]
+    public async Task Database_RefusesToInsertABudgetForAnotherUser_WhileStillAllowingItsOwn()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartHostAsync();
+        (RepositoryTestHost.SeededOwner session, RepositoryTestHost.SeededOwner other) =
+            await SeedTwoOwnersAsync(host);
+        await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(session.UserId);
+
+        // Act — the WITH CHECK half, which is the only half a SELECT cannot reach: hiding another
+        // owner's budgets says nothing about whether this session can create one under their name.
+        // A refused INSERT is loud, unlike a filtered UPDATE — 42501, "new row violates row-level
+        // security policy".
+        await using NpgsqlCommand forOther = BuildBudgetInsertProbe(app, other.UserId);
+        PostgresException? refusal = await CaptureRefusalAsync(forOther);
+
+        await using NpgsqlCommand forOwn = BuildBudgetInsertProbe(app, session.UserId);
+        int inserted = await forOwn.ExecuteNonQueryAsync();
+
+        // Assert — the null coalesce is for the failure message: a bare refusal?.SqlState renders a
+        // statement that went through as the empty string, which reads as a blank SQLSTATE rather
+        // than as no exception at all.
+        await Assert.That(refusal?.SqlState ?? "no error")
+            .IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(inserted).IsEqualTo(1);
+
+        // And nothing landed. A SQLSTATE says the statement was rejected; only this says the other
+        // owner still holds exactly the one budget they were seeded with. On the superuser
+        // connection, which row-level security does not apply to — no policed session could answer
+        // this question about another owner's rows.
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await Assert.That(await CountKeyedRowsAsync(admin, "budgets", "user_id", other.UserId))
+            .IsEqualTo(1L);
+        await Assert.That(await CountKeyedRowsAsync(admin, "budgets", "user_id", session.UserId))
+            .IsEqualTo(2L);
+    }
+
+    [Test]
+    public async Task Database_RefusesToReadAUserWhenTheSessionNamesNoUser()
+    {
+        // Arrange — a bare app-role connection: no set_config, so the session declares no user. This
+        // is the shape of every bug where application code forgets to set one, and it must fail
+        // loudly rather than quietly returning an empty result that reads as "no such account".
+        await using RepositoryTestHost host = await StartHostAsync();
+        (RepositoryTestHost.SeededOwner session, _) = await SeedTwoOwnersAsync(host);
+        await using NpgsqlConnection bare = new(host.AppConnectionString);
+        await bare.OpenAsync();
+
+        // Act — users is seeded, and that is a precondition rather than a convenience. A policy qual
+        // is only evaluated when there are candidate rows, so the same query over an empty table
+        // returns zero rows without ever touching the setting and this guarantee does not reach it.
+        // That is the honest limit of what this test proves.
+        await using NpgsqlCommand read = new("select count(*) from users", bare);
+        PostgresException? refusal = await CaptureRefusalAsync(read);
+
+        // Assert — 22P02, not "unrecognized configuration parameter", for the same reason as the
+        // budget-less session above. The determinism comes from the shape of the policy, which reads
+        // the setting as COALESCE(current_setting('app.current_user_id', true), '')::uuid. Strict
+        // current_setting would be 42704 on a backend that has never seen the setting and 22P02 on
+        // one Npgsql had already recycled, which is not a thing a test can assert; the missing_ok
+        // overload turns the first case into NULL and the COALESCE turns that NULL into the same
+        // ''::uuid cast the recycled connection already produced. One bug, one SQLSTATE.
+        await Assert.That(refusal?.SqlState ?? "no error")
+            .IsEqualTo(PostgresErrorCodes.InvalidTextRepresentation);
+
+        // The session's own row is still there — the refusal above is the session's doing, not a
+        // seeding failure that would make the SQLSTATE assertion meaningless.
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await Assert.That(await CountKeyedRowsAsync(admin, "users", "id", session.UserId))
+            .IsEqualTo(1L);
+    }
+
+    [Test]
+    public async Task Database_ShowsOnlyTheSignedInUsersSessionRows()
+    {
+        // Arrange — two owners with one session each, because sessions is isolated by user: a second
+        // session under the same owner would be invisible to this rule, and the foreign count would
+        // come back zero with or without a policy.
+        await using RepositoryTestHost host = await StartHostAsync();
+        (RepositoryTestHost.SeededOwner session, RepositoryTestHost.SeededOwner other) =
+            await SeedTwoOwnersAsync(host);
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await SeedSessionAsync(admin, session.UserId);
+        await SeedSessionAsync(admin, other.UserId);
+        await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(session.UserId);
+
+        // Act — both halves, on one session. The own count is not decoration: a policy that hides
+        // every row from everyone satisfies the foreign half on its own, and only this notices.
+        long own = await CountKeyedRowsAsync(app, "sessions", "user_id", session.UserId);
+        long foreign = await CountKeyedRowsAsync(app, "sessions", "user_id", other.UserId);
+
+        // Assert
+        await Assert.That(own).IsEqualTo(1L);
+        await Assert.That(foreign).IsEqualTo(0L);
+    }
+
+    [Test]
+    public async Task Database_RefusesToInsertASessionForAnotherUser()
+    {
+        // Arrange — the probe below names the other owner's own credential, so the composite foreign
+        // key on (credential_id, user_id) is satisfied by construction and the only thing wrong with
+        // the row is whose session it is.
+        await using RepositoryTestHost host = await StartHostAsync();
+        (RepositoryTestHost.SeededOwner session, RepositoryTestHost.SeededOwner other) =
+            await SeedTwoOwnersAsync(host);
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        Guid ownCredentialId = await ReadCredentialIdAsync(admin, session.UserId);
+        Guid otherCredentialId = await ReadCredentialIdAsync(admin, other.UserId);
+        await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(session.UserId);
+
+        // Act — the WITH CHECK half, which is the only half a SELECT cannot reach: hiding another
+        // owner's sessions says nothing about whether this session can establish one in their name,
+        // and a USING-only policy would let this through. A refused INSERT is loud, unlike a filtered
+        // UPDATE — 42501, "new row violates row-level security policy".
+        await using NpgsqlCommand forOther = BuildSessionInsertProbe(
+            app, other.UserId, otherCredentialId);
+        PostgresException? refusal = await CaptureRefusalAsync(forOther);
+
+        await using NpgsqlCommand forOwn = BuildSessionInsertProbe(
+            app, session.UserId, ownCredentialId);
+        int inserted = await forOwn.ExecuteNonQueryAsync();
+
+        // Assert — the null coalesce is for the failure message: a bare refusal?.SqlState renders a
+        // statement that went through as the empty string, which reads as a blank SQLSTATE rather
+        // than as no exception at all.
+        await Assert.That(refusal?.SqlState ?? "no error")
+            .IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(inserted).IsEqualTo(1);
+
+        // And nothing landed. A SQLSTATE says the statement was rejected; only this says the other
+        // owner still has no session at all. On the superuser connection, which row-level security
+        // does not apply to — no policed session could answer this question about another owner.
+        await Assert.That(await CountKeyedRowsAsync(admin, "sessions", "user_id", other.UserId))
+            .IsEqualTo(0L);
+        await Assert.That(await CountKeyedRowsAsync(admin, "sessions", "user_id", session.UserId))
+            .IsEqualTo(1L);
+    }
+
+    [Test]
+    public async Task Database_RefusesToRevokeAnotherUsersSession()
+    {
+        // Arrange — one live session for each owner, because the foreign half of this measurement is
+        // a count of rows that were there to be touched: against an owner with no session at all,
+        // "affected zero rows" is true with or without a policy.
+        await using RepositoryTestHost host = await StartHostAsync();
+        (RepositoryTestHost.SeededOwner session, RepositoryTestHost.SeededOwner other) =
+            await SeedTwoOwnersAsync(host);
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await SeedSessionAsync(admin, session.UserId);
+        await SeedSessionAsync(admin, other.UserId);
+        await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(session.UserId);
+
+        // Act — the UPDATE half of the policy, and the half whose failure mode is silent. An INSERT
+        // across the boundary raises 42501 and an unpoliced read returns visibly wrong rows, but
+        // row-level security narrows an UPDATE by filtering it: a statement reaching another owner's
+        // session is not refused, it simply matches nothing, and the only observable difference
+        // between "the policy stopped me" and "the policy is gone and I rewrote their row" is the
+        // count. revoked_at_utc is the one column the role's UPDATE grant reaches, so the grant
+        // matrix cannot be what stops this and the policy is the only thing being measured.
+        int foreignRevoked = await RevokeSessionsOfAsync(app, other.UserId);
+
+        // The paired positive, on the same connection and the same statement shape. Without it a
+        // policy of USING (false) — or a grant that had quietly lost the column — satisfies the
+        // assertion above on its own.
+        int ownRevoked = await RevokeSessionsOfAsync(app, session.UserId);
+
+        // Assert — this is what measures the claim SessionRepository.RevokeForCredentialAsync makes
+        // by omission: it takes a credential id from outside and narrows on it alone, with no check
+        // in application code that the credential belongs to whoever is asking. The database is the
+        // only thing standing between that call and one person ending another's sessions, and the
+        // read-back on the superuser connection is what says the row is genuinely untouched rather
+        // than merely unreported.
+        await Assert.That(foreignRevoked).IsEqualTo(0);
+        await Assert.That(ownRevoked).IsEqualTo(1);
+        await Assert.That(await ReadRevocationOfAsync(admin, other.UserId)).IsEqualTo(DBNull.Value);
+        await Assert.That(await ReadRevocationOfAsync(admin, session.UserId))
+            .IsEqualTo(RevocationInstant);
+    }
+
+    [Test]
+    public async Task Database_RefusesToReadSessionsWhenTheConnectionNamesNoUser()
+    {
+        // Arrange — a bare app-role connection: no set_config, so the session declares no user. This
+        // is the shape of every bug where application code forgets to set one, and it must fail
+        // loudly rather than quietly returning an empty result that reads as "signed out everywhere".
+        await using RepositoryTestHost host = await StartHostAsync();
+        (RepositoryTestHost.SeededOwner session, _) = await SeedTwoOwnersAsync(host);
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await SeedSessionAsync(admin, session.UserId);
+        await using NpgsqlConnection bare = new(host.AppConnectionString);
+        await bare.OpenAsync();
+
+        // Act — sessions is seeded, and that is a precondition rather than a convenience. A policy
+        // qual is only evaluated when there are candidate rows, so the same query over an empty table
+        // returns zero rows without ever touching the setting and this guarantee does not reach it.
+        // That is the honest limit of what this test proves.
+        await using NpgsqlCommand read = new("select count(*) from sessions", bare);
+        PostgresException? refusal = await CaptureRefusalAsync(read);
+
+        // Assert — 22P02, the same failure the other policed tables pin, and for the same reason: the
+        // policy reads the setting as COALESCE(current_setting('app.current_user_id', true), '')::uuid,
+        // so an unset setting reaches it as the ''::uuid cast. One bug, one SQLSTATE.
+        await Assert.That(refusal?.SqlState ?? "no error")
+            .IsEqualTo(PostgresErrorCodes.InvalidTextRepresentation);
+
+        // The session's own row is still there — the refusal above is the connection's doing, not a
+        // seeding failure that would make the SQLSTATE assertion meaningless.
+        await Assert.That(await CountKeyedRowsAsync(admin, "sessions", "user_id", session.UserId))
+            .IsEqualTo(1L);
+    }
+
+    [Test]
+    public async Task Database_HidesAnotherUsersSignatureCounter()
+    {
+        // Arrange — two owners with one registered passkey each, because the counter is isolated by
+        // user: a second passkey under the same owner would be invisible to this rule, and the
+        // foreign count would come back zero with or without a policy. The two handles differ, or the
+        // unique index over webauthn_credential_id would refuse the second registration.
+        await using RepositoryTestHost host = await StartHostAsync();
+        (RepositoryTestHost.SeededOwner session, RepositoryTestHost.SeededOwner other) =
+            await SeedTwoOwnersAsync(host);
+        await host.SeedPasskeyAsync(session.UserId, PasskeyHandle(0xC1));
+        await host.SeedPasskeyAsync(other.UserId, PasskeyHandle(0xD2));
+        await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(session.UserId);
+
+        // Act — both halves, on one session. The own count is not decoration: a policy that hides
+        // every row from everyone satisfies the foreign half on its own, and only this notices.
+        long own = await CountKeyedRowsAsync(
+            app, "passkey_signature_counters", "user_id", session.UserId);
+        long foreign = await CountKeyedRowsAsync(
+            app, "passkey_signature_counters", "user_id", other.UserId);
+
+        // Assert — the counter is where the passkey ceremony crosses from anonymous to identified.
+        // Its sibling passkey_public_keys is read one step earlier and is exempt precisely because
+        // nobody has said who they are yet; by the time this table is read the signature has verified,
+        // so there is an identity to police on and a leak here would be a leak with no excuse.
+        await Assert.That(own).IsEqualTo(1L);
+        await Assert.That(foreign).IsEqualTo(0L);
+    }
+
+    [Test]
+    public async Task Database_RefusesToInsertASignatureCounterForAnotherUser()
+    {
+        // Arrange — a bare passkey credential for each owner, with no counter filed against it yet.
+        // Bare on purpose: credential_id is the primary key of the counter table, so a probe needs a
+        // credential whose slot is free, and each probe names its own owner's credential so the
+        // composite foreign key is satisfied by construction and the only thing wrong with the row is
+        // whose counter it is.
+        await using RepositoryTestHost host = await StartHostAsync();
+        (RepositoryTestHost.SeededOwner session, RepositoryTestHost.SeededOwner other) =
+            await SeedTwoOwnersAsync(host);
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        Guid ownCredentialId = await InsertPasskeyCredentialAsync(admin, session.UserId);
+        Guid otherCredentialId = await InsertPasskeyCredentialAsync(admin, other.UserId);
+        await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(session.UserId);
+
+        // Act — the WITH CHECK half, which is the only half a SELECT cannot reach: hiding another
+        // owner's counter says nothing about whether this session can create one in their name, and a
+        // USING-only policy would let this through. A refused INSERT is loud, unlike a filtered
+        // UPDATE — 42501, "new row violates row-level security policy".
+        await using NpgsqlCommand forOther = BuildSignatureCounterInsertProbe(
+            app, other.UserId, otherCredentialId);
+        PostgresException? refusal = await CaptureRefusalAsync(forOther);
+
+        await using NpgsqlCommand forOwn = BuildSignatureCounterInsertProbe(
+            app, session.UserId, ownCredentialId);
+        int inserted = await forOwn.ExecuteNonQueryAsync();
+
+        // Assert — planting a counter under somebody else's name is how the monotonic comparison
+        // would be attacked from the side: the row the clone check reads would be one this session
+        // chose the starting value of. The null coalesce is for the failure message — a bare
+        // refusal?.SqlState renders a statement that went through as the empty string, which reads as
+        // a blank SQLSTATE rather than as no exception at all.
+        await Assert.That(refusal?.SqlState ?? "no error")
+            .IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(inserted).IsEqualTo(1);
+
+        // And nothing landed. A SQLSTATE says the statement was rejected; only this says the other
+        // owner still has no counter at all. On the superuser connection, which row-level security
+        // does not apply to — no policed session could answer this question about another owner.
+        await Assert.That(await CountKeyedRowsAsync(
+                admin, "passkey_signature_counters", "user_id", other.UserId))
+            .IsEqualTo(0L);
+        await Assert.That(await CountKeyedRowsAsync(
+                admin, "passkey_signature_counters", "user_id", session.UserId))
+            .IsEqualTo(1L);
+    }
+
+    [Test]
+    public async Task Database_RefusesToReadASignatureCounterWithNoUserOnTheSession()
+    {
+        // Arrange — a bare app-role connection: no set_config, so the session declares no user. This
+        // is the shape of every bug where application code forgets to set one, and it must fail
+        // loudly rather than quietly returning an empty result that reads as "this passkey has no
+        // counter yet" — which, on this table, is a result the caller would happily start from zero.
+        await using RepositoryTestHost host = await StartHostAsync();
+        (RepositoryTestHost.SeededOwner session, _) = await SeedTwoOwnersAsync(host);
+        await host.SeedPasskeyAsync(session.UserId, PasskeyHandle(0xE3));
+        await using NpgsqlConnection bare = new(host.AppConnectionString);
+        await bare.OpenAsync();
+
+        // Act — the counter is seeded, and that is a precondition rather than a convenience. A policy
+        // qual is only evaluated when there are candidate rows, so the same query over an empty table
+        // returns zero rows without ever touching the setting and this guarantee does not reach it.
+        // That is the honest limit of what this test proves.
+        await using NpgsqlCommand read = new(
+            "select count(*) from passkey_signature_counters", bare);
+        PostgresException? refusal = await CaptureRefusalAsync(read);
+
+        // Assert — 22P02, the same failure every other policed table pins, and for the same reason:
+        // the policy reads the setting as COALESCE(current_setting('app.current_user_id', true),
+        // '')::uuid, so an unset setting reaches it as the ''::uuid cast. One bug, one SQLSTATE.
+        await Assert.That(refusal?.SqlState ?? "no error")
+            .IsEqualTo(PostgresErrorCodes.InvalidTextRepresentation);
+
+        // The owner's own counter is still there — the refusal above is the connection's doing, not a
+        // seeding failure that would make the SQLSTATE assertion meaningless.
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await Assert.That(await CountKeyedRowsAsync(
+                admin, "passkey_signature_counters", "user_id", session.UserId))
+            .IsEqualTo(1L);
+    }
+
+    [Test]
+    public async Task Database_HidesAnotherAccountsWrappedKeys_FromASessionNamingThisUser()
+    {
+        // Arrange — two owners, each with a registered passkey and the account's two keys filed
+        // against it. Two owners because this table is isolated by user: a second factor under the
+        // same owner would be invisible to this rule, and the foreign count would come back zero with
+        // or without a policy. The handles differ, or IX_passkey_public_keys_webauthn_credential_id
+        // would refuse the second registration; the factor ids differ because factor_id is the table's
+        // primary key, PK_wrapped_account_keys, unique across the whole table rather than per account.
+        await using RepositoryTestHost host = await StartHostAsync();
+        (RepositoryTestHost.SeededOwner session, RepositoryTestHost.SeededOwner other) =
+            await SeedTwoOwnersAsync(host);
+        Guid sessionCredentialId = await host.SeedPasskeyAsync(session.UserId, PasskeyHandle(0x15));
+        Guid otherCredentialId = await host.SeedPasskeyAsync(other.UserId, PasskeyHandle(0x26));
+        await host.SeedWrappedAccountKeysAsync(sessionCredentialId, SessionFactorId);
+        await host.SeedWrappedAccountKeysAsync(otherCredentialId, OtherAccountFactorId);
+        await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(session.UserId);
+
+        // Act — both halves, on one session. The own count is not decoration: a policy that hides
+        // every row from everyone satisfies the foreign half on its own, and only this notices.
+        long own = await CountKeyedRowsAsync(app, "wrapped_account_keys", "user_id", session.UserId);
+        long foreign = await CountKeyedRowsAsync(app, "wrapped_account_keys", "user_id", other.UserId);
+
+        // Assert — and this file's whole reason for existing is at its plainest on this table. Nothing
+        // in the application reads wrapped_account_keys today: there is no unlock path and no endpoint
+        // that returns a wrapped key, so no EF query filter is in the way of a statement aimed at it
+        // and the policy is the only thing standing between one account's session and another
+        // account's two envelopes. Those envelopes are the account — the content key its transaction
+        // data is encrypted under and the index key its search is derived under — so a leak here is not
+        // one row of somebody's data, it is every row of it, in a form whose only remaining protection
+        // is a key-encryption key derived from a factor this server never sees.
+        await Assert.That(own).IsEqualTo(1L);
+        await Assert.That(foreign).IsEqualTo(0L);
+    }
+
+    [Test]
+    public async Task Database_RefusesAWrappedKeyReadOnASessionNamingNobody()
+    {
+        // Arrange — a bare app-role connection: no set_config, so the session declares nobody. Every
+        // exempt table below reads that state as the requirement; on this one it is the bug, and it must
+        // fail loudly rather than quietly returning an empty result — which on this table would read as
+        // "this account has no way back into its own data", the one answer a caller must never be
+        // handed by accident.
+        await using RepositoryTestHost host = await StartHostAsync();
+        (RepositoryTestHost.SeededOwner session, _) = await SeedTwoOwnersAsync(host);
+        Guid credentialId = await host.SeedPasskeyAsync(session.UserId, PasskeyHandle(0x37));
+        await host.SeedWrappedAccountKeysAsync(credentialId, SessionFactorId);
+        await using NpgsqlConnection bare = new(host.AppConnectionString);
+        await bare.OpenAsync();
+
+        // Act — the row is seeded, and that is a precondition rather than a convenience. A policy qual
+        // is only evaluated when there are candidate rows, so the same query over an empty table
+        // returns zero rows without ever touching the setting and this guarantee does not reach it.
+        // That is the honest limit of what this test proves.
+        await using NpgsqlCommand read = new("select count(*) from wrapped_account_keys", bare);
+        PostgresException? refusal = await CaptureRefusalAsync(read);
+
+        // Assert — 22P02, the same failure every other policed table pins, and for the same reason: the
+        // policy reads the setting as COALESCE(current_setting('app.current_user_id', true), '')::uuid,
+        // so an unset setting reaches it as the ''::uuid cast. One bug, one SQLSTATE.
+        await Assert.That(refusal?.SqlState ?? "no error")
+            .IsEqualTo(PostgresErrorCodes.InvalidTextRepresentation);
+
+        // The owner's own row is still there — the refusal above is the connection's doing, not a
+        // seeding failure that would make the SQLSTATE assertion meaningless.
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await Assert.That(await CountKeyedRowsAsync(
+                admin, "wrapped_account_keys", "user_id", session.UserId))
+            .IsEqualTo(1L);
+    }
+
+    [Test]
+    public async Task Database_RefusesAWrappedKeyInsertNamingAnotherAccount()
+    {
+        // Arrange — a bare passkey credential for each owner, with no wrapped keys filed against it
+        // yet. Not because the credential needs a free slot — credential_id is an ordinary, non-unique
+        // column of this table and a credential carries as many rows as it has factors, since the key
+        // is factor_id — but so that nothing already filed under it can be mistaken for what a probe
+        // wrote. Each probe names its own owner's credential, so the composite foreign key over
+        // (credential_id, user_id, credential_type) is satisfied by construction and the only thing
+        // wrong with the row is whose keys it is.
+        await using RepositoryTestHost host = await StartHostAsync();
+        (RepositoryTestHost.SeededOwner session, RepositoryTestHost.SeededOwner other) =
+            await SeedTwoOwnersAsync(host);
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        Guid ownCredentialId = await InsertPasskeyCredentialAsync(admin, session.UserId);
+        Guid otherCredentialId = await InsertPasskeyCredentialAsync(admin, other.UserId);
+        await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(session.UserId);
+
+        // Act — the WITH CHECK half, which is the only half a SELECT cannot reach: hiding another
+        // owner's wrapped keys says nothing about whether this session can file a pair in their name,
+        // and a USING-only policy would let this through. A refused INSERT is loud, unlike a filtered
+        // UPDATE — 42501, "new row violates row-level security policy". The two probes carry different
+        // factor ids, so PK_wrapped_account_keys is never what refuses either.
+        await using NpgsqlCommand forOther = BuildWrappedKeysInsertProbe(
+            app, other.UserId, otherCredentialId, OtherAccountFactorId);
+        PostgresException? refusal = await CaptureRefusalAsync(forOther);
+
+        await using NpgsqlCommand forOwn = BuildWrappedKeysInsertProbe(
+            app, session.UserId, ownCredentialId, SessionFactorId);
+        int inserted = await forOwn.ExecuteNonQueryAsync();
+
+        // Assert — writing here is a different kind of harm from reading, and the worse one on this
+        // table. A row filed under somebody else's name is presented to them as a recovery factor: two
+        // envelopes wrapped under a key-encryption key this session chose, offered as their way back
+        // into their own account. The database cannot tell one envelope from another — that binding is
+        // in the associated data and is checkable only by a client holding the key — so nothing below
+        // the browser would ever notice. The null coalesce is for the failure message: a bare
+        // refusal?.SqlState renders a statement that went through as the empty string, which reads as a
+        // blank SQLSTATE rather than as no exception at all.
+        await Assert.That(refusal?.SqlState ?? "no error")
+            .IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(inserted).IsEqualTo(1);
+
+        // And nothing landed. A SQLSTATE says the statement was rejected; only this says the other
+        // owner still has no wrapped keys at all. On the superuser connection, which row-level security
+        // does not apply to — no policed session could answer this question about another owner.
+        await Assert.That(await CountKeyedRowsAsync(
+                admin, "wrapped_account_keys", "user_id", other.UserId))
+            .IsEqualTo(0L);
+        await Assert.That(await CountKeyedRowsAsync(
+                admin, "wrapped_account_keys", "user_id", session.UserId))
+            .IsEqualTo(1L);
+    }
+
+    /// <summary>
+    /// One account's session cannot file a factor manifest in another account's name.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The <c>WITH CHECK</c> arm of <c>factor_manifests</c>' policy, and until this test nothing
+    /// anywhere had watched it refuse anything.</b> The table's three claims are held in three
+    /// different places and it is worth naming which is which, because two of them look like this one
+    /// and are not. The <c>USING</c> arm is held by
+    /// <c>FactorManifestSchemaTests.Database_HidesAnotherAccountsManifest_FromASessionNamingThisUser</c>,
+    /// which reads and therefore says only what a session may <em>see</em>. The <b>accept</b> direction
+    /// of this arm is held incidentally, by the whole registration suite: <c>AccountRegistrationTests</c>
+    /// drives the real least-privilege connection, <c>RegisterAccountHandler</c> publishes
+    /// <c>app.current_user_id</c> before the save, and every manifest one green registration writes
+    /// passes through this same predicate on its way in. The <b>refuse</b> direction — a row named for
+    /// somebody else — was held by nothing.
+    /// </para>
+    /// <para>
+    /// <b>It was not a gap last week, and the grant is what changed.</b> The app role held <c>SELECT</c>
+    /// on this table and no write command of any shape, so the <c>WITH CHECK</c> arm was unreachable: a
+    /// probe like this one could not get past the privilege check to be judged by a policy at all.
+    /// Registration took the <c>INSERT</c>, and an unreachable arm became a live, unobserved rule
+    /// guarding the one place an account's whole set of recovery factors is written down.
+    /// </para>
+    /// <para>
+    /// <b>What a leak costs here is the write-side mirror of what the read test describes, and it is the
+    /// worse half.</b> A manifest is the single authenticated statement of which factors an account has
+    /// — the list its client reads to decide what to encapsulate the account's keys to. A row filed
+    /// under somebody else's name is that person being handed a factor set this session chose: the
+    /// database cannot tell a well-formed manifest from a forged one, because the binding is the
+    /// authentication tag and is checkable only by a client holding the account's content key, which
+    /// this server has never held. Nothing below the browser would notice.
+    /// </para>
+    /// <para>
+    /// <b>Two assertions separate the two things <c>42501</c> can mean, and neither is redundant.</b>
+    /// A missing privilege and a <c>WITH CHECK</c> violation share that SQLSTATE, so a SQLSTATE
+    /// comparison on its own passes against a role holding no <c>INSERT</c> at all — which is the state
+    /// this table was in until the grant moved, and therefore not a hypothetical. The <b>positive
+    /// control</b> settles it: the identical statement naming the session's own account, on the same
+    /// connection, must land. The <b>message</b> settles it a second way and says which of the two
+    /// refusals arrived rather than leaving it to be inferred from the pair. The fragment is
+    /// transcribed from what this server really sends — <c>new row violates row-level security policy
+    /// for table "factor_manifests"</c>, read off a deliberately broken assertion rather than guessed —
+    /// and it carries the <b>table name</b>, so a refusal raised by some other table's policy is not
+    /// mistaken for this one's. It does assume the server's messages are in English, which is a
+    /// dependency the other probes in this file do not take and the reason they lean on the control
+    /// alone.
+    /// </para>
+    /// <para>
+    /// <b>The bystander is seeded by <see cref="SeedTwoOwnersAsync" /> on the elevated path, never
+    /// through a second application session.</b> Arranging the other account through the arm this test
+    /// measures would make a green here mean "whatever the policy does, it does consistently" — which
+    /// is true of a policy that does nothing. It is the same rule the read test next door keeps about
+    /// its own two seeded rows.
+    /// </para>
+    /// <para>
+    /// The probe's manifest sits inside the length band and its epoch is above the floor, so
+    /// <c>CK_factor_manifests_manifest_length</c> and <c>CK_factor_manifests_rotation_epoch</c> refuse
+    /// nothing and the owner is the only thing wrong with the row. Which of a constraint and a policy
+    /// PostgreSQL consults first is not a fact this suite asserts — see
+    /// <c>FactorManifestSchemaTests</c>' remarks — so a malformed probe would be reading a refusal it
+    /// could not attribute.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Database_RefusesAManifestInsertNamingAnotherAccount()
+    {
+        // Arrange — two owners and no manifest for either, so the row each probe writes is that
+        // account's first and PK_factor_manifests cannot be what refuses anything. No credential is
+        // needed: this table hangs off users directly, which is the point of it — a manifest belongs to
+        // the ACCOUNT and names every factor at once.
+        //
+        // The flag is what buys that, and it is the only call in this file that names it: the seeding
+        // helper files an account's first manifest by default, because registration does — and a row
+        // already standing would answer both probes with a 23505 from the primary key, which reads as
+        // the policy refusing a statement it never saw.
+        await using RepositoryTestHost host = await StartHostAsync();
+        (RepositoryTestHost.SeededOwner session, RepositoryTestHost.SeededOwner other) =
+            await SeedTwoOwnersAsync(host, withFactorManifest: false);
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(session.UserId);
+
+        // Act — the WITH CHECK half, which is the only half a SELECT cannot reach: hiding another
+        // account's manifest says nothing about whether this session can file one in their name, and a
+        // USING-only policy would let this through. A refused INSERT is loud — 42501, "new row violates
+        // row-level security policy".
+        await using NpgsqlCommand forOther = BuildManifestInsertProbe(app, other.UserId);
+        PostgresException? refusal = await CaptureRefusalAsync(forOther);
+
+        // The positive control, on the SAME connection and differing in one column. Without it every
+        // assertion below is satisfied by a role that holds no INSERT here at all, because a privilege
+        // failure answers the same 42501 — and that was this table's real state until registration took
+        // the grant.
+        await using NpgsqlCommand forOwn = BuildManifestInsertProbe(app, session.UserId);
+        int inserted = await forOwn.ExecuteNonQueryAsync();
+
+        // Assert — the null coalesce is for the failure message: a bare refusal?.SqlState renders a
+        // statement that went through as the empty string, which reads as a blank SQLSTATE rather than
+        // as no exception at all.
+        await Assert.That(refusal?.SqlState ?? "no error")
+            .IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(inserted).IsEqualTo(1);
+
+        // And it was the POLICY that refused rather than the grant, said by the server rather than
+        // inferred from the pair above. "permission denied for table factor_manifests" is the other
+        // sentence this SQLSTATE carries, and it is the one a role with no INSERT would answer to both
+        // probes.
+        await Assert.That(refusal?.MessageText ?? "no error")
+            .Contains("row-level security policy for table \"factor_manifests\"");
+
+        // And nothing landed. A SQLSTATE says the statement was rejected; only this says the other
+        // account still has no manifest at all. On the superuser connection, which row-level security
+        // does not apply to — no policed session could answer this question about another account.
+        await Assert.That(await CountKeyedRowsAsync(admin, "factor_manifests", "user_id", other.UserId))
+            .IsEqualTo(0L);
+        await Assert.That(await CountKeyedRowsAsync(admin, "factor_manifests", "user_id", session.UserId))
+            .IsEqualTo(1L);
+    }
+
+    /// <summary>
+    /// One account's session cannot promote another account's factor manifest.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The <c>UPDATE</c> arm of <c>factor_manifests</c>' policy, and it is the arm whose failure a
+    /// caller could never see.</b> Row-level security refuses a cross-account <c>UPDATE</c>
+    /// <em>silently</em> — the row is not in reach, so the statement succeeds having matched nothing.
+    /// There is no error, no SQLSTATE and nothing to catch, which is why the observation is the
+    /// affected count and why this test cannot be written as an assertion about a response.
+    /// </para>
+    /// <para>
+    /// <b>And the response it would have to assert on is the most dangerous one in the product to lean
+    /// on.</b> A manifest promotion whose UPDATE matches zero rows is exactly what EF's concurrency
+    /// token on <c>rotation_epoch</c> reports as a lost race, and both repositories translate that into
+    /// <c>409 factor_set_moved</c> — a sentence that deliberately does not blame the caller and tells
+    /// them to read the account's keys back and try again. So an isolation failure and an ordinary
+    /// concurrent registration arrive at a client as the same status, the same kind and the same
+    /// reassuring words, for causes that could not be further apart. Nothing above this line can tell
+    /// them apart, which is why this probe reads rows back rather than reading an answer.
+    /// </para>
+    /// <para>
+    /// <b>It was unreachable until this slice and is live now.</b> The role held <c>SELECT</c> and
+    /// <c>INSERT</c> on this table and no <c>UPDATE</c> of any shape, so a probe like this one would
+    /// have been refused by the grant matrix with <c>42501</c> before a policy was consulted — a green
+    /// run measuring nothing. <c>GRANT UPDATE (manifest, rotation_epoch)</c> arrived with the promotion
+    /// path, and the arm it exposed was watched by nothing: the <c>USING</c> arm's <em>read</em> half is
+    /// held by <c>FactorManifestSchemaTests</c>, the <c>WITH CHECK</c> arm's refusal by the insert probe
+    /// above, and neither of those statements can be silently filtered the way this one is.
+    /// </para>
+    /// <para>
+    /// <b>The positive control is the whole discriminator, exactly as the <c>42501</c> ambiguity was on
+    /// the insert side.</b> Zero rows affected is what a statement matching nothing produces for
+    /// <em>any</em> reason — a predicate naming a row that is not there, an account that never had a
+    /// manifest, a seeding that silently did not run — and none of those is the policy. The identical
+    /// statement against this session's <b>own</b> row, on the same connection, affecting exactly one
+    /// and leaving behind the values it wrote, is what says the statement was capable of landing and
+    /// that isolation is the only thing that stopped the other one.
+    /// </para>
+    /// <para>
+    /// <b>Both accounts are seeded on the elevated path</b>, which is the rule the two probes beside
+    /// this one keep: arranging the bystander through the arm under test would make a green here mean
+    /// "whatever the policy does, it does consistently", and that is true of a policy that does nothing.
+    /// The seeding files each account's first manifest at the floor with bytes of its own, so the
+    /// read-back below compares against what was really stored rather than against a number this file
+    /// chose.
+    /// </para>
+    /// <para>
+    /// The probe's epoch is above the column's floor and its manifest is inside the band, so
+    /// <c>CK_factor_manifests_rotation_epoch</c> and <c>CK_factor_manifests_manifest_length</c> refuse
+    /// nothing and the owner is the only thing that can be wrong. The statement names exactly the two
+    /// columns <c>GRANT UPDATE (manifest, rotation_epoch)</c> covers — a third would answer
+    /// <c>42501</c> from the grant and this probe would be reading the column list instead of the
+    /// policy.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Database_RefusesToUpdateAnotherAccountsManifest_WhileStillAllowingItsOwn()
+    {
+        // Arrange — two owners, each holding the manifest the seeding files for every account. Unlike
+        // the insert probe next door this one WANTS those rows: there has to be a row on the far side
+        // for the policy to hide, and a row on this side for the control to move.
+        await using RepositoryTestHost host = await StartHostAsync();
+        (RepositoryTestHost.SeededOwner session, RepositoryTestHost.SeededOwner other) =
+            await SeedTwoOwnersAsync(host);
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+
+        // What the far account really holds, read before anything runs. Read rather than assumed,
+        // because the seeding mints each account's bytes per call — so the comparison afterwards is
+        // against the row that was actually there rather than against a value this file wrote down.
+        StoredFactorManifest otherBefore = await ReadManifestAsync(admin, other.UserId);
+
+        await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(session.UserId);
+
+        // Act — the foreign promotion first, then the identical statement aimed at this session's own
+        // row. Same connection, same session, same two columns; the owner in the predicate is the only
+        // difference between them.
+        int foreignAffected = await PromoteManifestAsync(app, other.UserId);
+        int ownAffected = await PromoteManifestAsync(app, session.UserId);
+
+        // Assert — the counts first. Zero rows affected and NOT a 42501 is the whole content of the
+        // first line: a refusal would say the grant matrix stopped the statement, an affected count of
+        // zero says the POLICY did, because the row was never in reach for there to be anything to
+        // update.
+        await Assert.That(foreignAffected).IsEqualTo(0);
+
+        // The control, without which the line above passes against a role that holds no UPDATE here at
+        // all and against a statement that matched nothing for a reason no policy is involved in.
+        await Assert.That(ownAffected).IsEqualTo(1);
+
+        // And what actually survived. An affected count of zero and a statement silently filtered are
+        // indistinguishable from the count alone — and on THIS table the difference between them
+        // reaches a caller as one 409 wearing one kind, so the read-back is the only place the two
+        // answers are ever separable. On the superuser connection, which row-level security does not
+        // apply to: no policed session could ask this question about another account.
+        StoredFactorManifest otherAfter = await ReadManifestAsync(admin, other.UserId);
+        await Assert.That(otherAfter.RotationEpoch).IsEqualTo(otherBefore.RotationEpoch);
+        await Assert.That(otherAfter.Manifest)
+            .IsEquivalentTo(otherBefore.Manifest, CollectionOrdering.Matching);
+
+        // BOTH HALVES OF THE FAR ROW, because they fail separately and a promotion writes both: an
+        // epoch that moved over the old blob leaves that account claiming a generation whose factor
+        // list is not the one it holds, and bytes that landed under the old number hand that account a
+        // set of factors this session chose. The second is the forgery the insert probe describes,
+        // arriving by the other arm.
+        //
+        // And the control's row really did take what the statement wrote, which is what makes "affected
+        // one row" a claim about this statement rather than about some row it happened to touch.
+        StoredFactorManifest ownAfter = await ReadManifestAsync(admin, session.UserId);
+        await Assert.That(ownAfter.RotationEpoch).IsEqualTo(ProbeRotationEpoch);
+        await Assert.That(ownAfter.Manifest).IsEquivalentTo(ProbeManifest(), CollectionOrdering.Matching);
+
+        // The premise, and it reads as an assertion but is really a guard: the probe has to write
+        // something the seeding did not, or "the far row did not move" and "the near row did" are both
+        // true of a statement that wrote the values back unchanged.
+        await Assert.That(otherBefore.Manifest).IsNotEquivalentTo(ProbeManifest());
+
+        // AND THE SHARPEST CONTROL, LAST BECAUSE IT MOVES THE FAR ROW. The own-row control above says
+        // the statement can land, but it says it against a DIFFERENT predicate value — so a zero on the
+        // foreign half could still be a predicate that matches nothing for a reason no session is
+        // involved in. This runs the IDENTICAL statement, same columns, same values, same owner in the
+        // predicate, on the superuser connection that row-level security does not apply to. One row
+        // affected there and zero on the app connection leaves exactly one difference between the two
+        // runs: which account the session declares.
+        //
+        // It is destructive to the far row and every assertion about that row has already been made, so
+        // it sits at the end rather than in the arrangement — read as the closing argument, not as an
+        // act.
+        await Assert.That(await PromoteManifestAsync(admin, other.UserId)).IsEqualTo(1);
+    }
+
+    /// <summary>
+    /// One account's session cannot stage a rotation seal in another account's name.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The <c>WITH CHECK</c> arm of <c>key_rotation_seals</c>' policy, live since the grant widened
+    /// and watched by nothing until this test.</b> The table's other rules are held next door and it is
+    /// worth naming which is which, because two of them look like this one and are not.
+    /// <c>KeyRotationSealSchemaTests</c> owns the composite key (one seal per factor per account), the
+    /// two payload checks, both foreign keys — including the cross-account factor, which is that table's
+    /// reason for existing — and the <c>USING</c> arm, read-side, on an application connection. None of
+    /// those is this: hiding another account's seals says nothing about whether this session can file
+    /// one in their name, and a <c>USING</c>-only policy would let this through.
+    /// </para>
+    /// <para>
+    /// <b>It was not a gap last week, and the grant is what changed.</b> The role held <c>SELECT</c> on
+    /// this table and no write command of any shape, so a probe like this one could not get past the
+    /// privilege check to be judged by a policy at all —
+    /// <c>KeyRotationSealSchemaTests.Database_HidesAnotherAccountsSeals</c> says so in its own remarks,
+    /// which is why it is a read probe. A begin took the <c>INSERT</c>, and an unreachable arm became a
+    /// live, unobserved rule on a table whose every row is key material.
+    /// </para>
+    /// <para>
+    /// <b>What a leak costs here.</b> A seal is one factor's copy of the <em>next</em> generation of an
+    /// account's content key and index key. A row filed under somebody else's name is a value staged
+    /// against their factor that this session chose — and a promotion copies a seal straight into
+    /// <c>wrapped_account_keys.encapsulated_account_keys</c>, at the one moment in an account's life
+    /// when the old generation has already gone. The database cannot tell one encapsulated value from
+    /// another: it is ciphertext under a public key, and the only thing that could judge it is a client
+    /// holding the private half, which this server has never stored.
+    /// </para>
+    /// <para>
+    /// <b>The positive control is not optional, because <c>42501</c> is ambiguous.</b> A missing
+    /// privilege and a <c>WITH CHECK</c> violation share that SQLSTATE, so a SQLSTATE comparison alone
+    /// passes against a role holding no <c>INSERT</c> here at all — which is the state this table was in
+    /// until the grant moved, and therefore not a hypothetical. The identical statement naming the
+    /// session's own account, on the same connection, must land. The <b>message</b> settles it a second
+    /// way and says which of the two refusals arrived rather than leaving it to be inferred: the
+    /// fragment carries the table name, so a refusal raised by some other table's policy is not mistaken
+    /// for this one's. It assumes the server's messages are in English, the same dependency the manifest
+    /// probe above takes and for the same reason.
+    /// </para>
+    /// <para>
+    /// <b>Both accounts are seeded on the elevated path</b>, the rule every probe in this file keeps:
+    /// arranging the bystander through the arm under test would make a green here mean "whatever the
+    /// policy does, it does consistently", which is true of a policy that does nothing. Each account
+    /// gets its own factor and its own run in flight, so the two foreign keys on this table are both
+    /// satisfied and the owner is the only thing wrong with the refused row — a probe naming a factor
+    /// the far account does not hold would be refused by <c>23503</c> before a policy was consulted, and
+    /// would be reading <c>KeyRotationSealSchemaTests</c>' rule in its place.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Database_RefusesASealInsertNamingAnotherAccount()
+    {
+        // Arrange — two accounts, each with a passkey, a factor of its own and a rotation in flight, and
+        // no seal staged for either: the row each probe writes is that account's first, so
+        // PK_key_rotation_seals cannot be what refuses anything.
+        await using RepositoryTestHost host = await StartHostAsync();
+        (RepositoryTestHost.SeededOwner session, RepositoryTestHost.SeededOwner other) =
+            await SeedTwoOwnersAsync(host);
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await SeedFactorAndRunAsync(host, admin, session.UserId, 0x21, SessionFactorId);
+        await SeedFactorAndRunAsync(host, admin, other.UserId, 0x22, OtherAccountFactorId);
+        await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(session.UserId);
+
+        // Act — the WITH CHECK half. Both halves of the far row are genuinely that account's: their
+        // factor, their run, a well-formed payload. The only thing wrong with it is whose it is.
+        await using NpgsqlCommand forOther = BuildSealInsertProbe(app, other.UserId, OtherAccountFactorId);
+        PostgresException? refusal = await CaptureRefusalAsync(forOther);
+
+        // The positive control, on the SAME connection and differing in the owner and the factor it
+        // names. Without it every assertion below is satisfied by a role that holds no INSERT here at
+        // all, because a privilege failure answers the same 42501 — and that was this table's real state
+        // until a begin took the grant.
+        await using NpgsqlCommand forOwn = BuildSealInsertProbe(app, session.UserId, SessionFactorId);
+        int inserted = await forOwn.ExecuteNonQueryAsync();
+
+        // Assert — the null coalesce is for the failure message: a bare refusal?.SqlState renders a
+        // statement that went through as the empty string, which reads as a blank SQLSTATE rather than
+        // as no exception at all.
+        await Assert.That(refusal?.SqlState ?? "no error")
+            .IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(inserted).IsEqualTo(1);
+
+        // And it was the POLICY that refused rather than the grant, said by the server rather than
+        // inferred from the pair above. "permission denied for table key_rotation_seals" is the other
+        // sentence this SQLSTATE carries, and it is the one a role with no INSERT would answer to both
+        // probes.
+        await Assert.That(refusal?.MessageText ?? "no error")
+            .Contains("row-level security policy for table \"key_rotation_seals\"");
+
+        // And nothing landed. A SQLSTATE says the statement was rejected; only this says the other
+        // account still has no seal at all. On the superuser connection, which row-level security does
+        // not apply to — no policed session could answer this question about another account.
+        await Assert.That(await CountKeyedRowsAsync(
+                admin, "key_rotation_seals", "user_id", other.UserId))
+            .IsEqualTo(0L);
+        await Assert.That(await CountKeyedRowsAsync(
+                admin, "key_rotation_seals", "user_id", session.UserId))
+            .IsEqualTo(1L);
+    }
+
+    /// <summary>
+    /// One account's session cannot restage another account's seal.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The <c>UPDATE</c> arm, and it is the arm whose failure a caller could never see.</b> Row-level
+    /// security refuses a cross-account <c>UPDATE</c> <em>silently</em> — the row is not in reach, so
+    /// the statement succeeds having matched nothing. There is no error, no SQLSTATE and nothing to
+    /// catch, which is why the observation is the affected count and why this cannot be written as an
+    /// assertion about a response.
+    /// </para>
+    /// <para>
+    /// <b>It was unreachable until this slice and is live now.</b> The role held <c>SELECT</c> alone,
+    /// so a statement like this one would have been refused by the grant matrix with <c>42501</c> before
+    /// a policy was consulted — a green run measuring nothing.
+    /// <c>GRANT UPDATE (encapsulated_account_keys)</c> arrived because a second begin has to rewrite
+    /// the previous run's seals one by one: begin is the repair path, it updates the
+    /// <c>key_rotations</c> row in place rather than replacing it, so the cascade that would have
+    /// cleared the children never fires.
+    /// </para>
+    /// <para>
+    /// <b>The positive control is the whole discriminator</b>, exactly as the <c>42501</c> ambiguity was
+    /// on the insert side. Zero rows affected is what a statement matching nothing produces for
+    /// <em>any</em> reason — a predicate naming a row that is not there, a seeding that silently did not
+    /// run, a column list the grant does not cover — and none of those is the policy. The identical
+    /// statement against this session's <b>own</b> row, on the same connection, affecting exactly one
+    /// and leaving behind the bytes it wrote, is what says the statement was capable of landing. The
+    /// sharpest control comes last: the identical statement, same owner in the predicate, on the
+    /// superuser connection that row-level security does not apply to, affecting one — which leaves
+    /// exactly one difference between the two runs, and that is which account the session declares.
+    /// </para>
+    /// <para>
+    /// The statement names exactly the one column
+    /// <c>GRANT UPDATE (encapsulated_account_keys)</c> covers — a second would answer <c>42501</c> from
+    /// the grant and this probe would be reading the column list instead of the policy — and the payload
+    /// is at the framing's exact width carrying its own version, so neither check constraint is what
+    /// answers.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Database_RefusesToUpdateAnotherAccountsSeal_WhileStillAllowingItsOwn()
+    {
+        // Arrange — two accounts, each with a factor, a run in flight and a seal already staged. Unlike
+        // the insert probe next door this one WANTS those rows: there has to be a row on the far side
+        // for the policy to hide and a row on this side for the control to move.
+        await using RepositoryTestHost host = await StartHostAsync();
+        (RepositoryTestHost.SeededOwner session, RepositoryTestHost.SeededOwner other) =
+            await SeedTwoOwnersAsync(host);
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await SeedFactorAndRunAsync(host, admin, session.UserId, 0x31, SessionFactorId);
+        await SeedFactorAndRunAsync(host, admin, other.UserId, 0x32, OtherAccountFactorId);
+        await SeedSealAsync(admin, session.UserId, SessionFactorId);
+        await SeedSealAsync(admin, other.UserId, OtherAccountFactorId);
+
+        byte[] otherBefore = await ReadSealAsync(admin, other.UserId, OtherAccountFactorId);
+
+        await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(session.UserId);
+
+        // Act — the foreign restage first, then the identical statement aimed at this session's own row.
+        // Same connection, same column, same value; the owner in the predicate is the only difference.
+        int foreignAffected = await RestageSealAsync(app, other.UserId, OtherAccountFactorId);
+        int ownAffected = await RestageSealAsync(app, session.UserId, SessionFactorId);
+
+        // Assert — zero rows affected and NOT a 42501 is the whole content of the first line: a refusal
+        // would say the grant matrix stopped the statement, an affected count of zero says the POLICY
+        // did, because the row was never in reach for there to be anything to update.
+        await Assert.That(foreignAffected).IsEqualTo(0);
+
+        // The control, without which the line above passes against a role that holds no UPDATE here at
+        // all and against a statement that matched nothing for a reason no policy is involved in.
+        await Assert.That(ownAffected).IsEqualTo(1);
+
+        // And what actually survived. On the superuser connection, which row-level security does not
+        // apply to: no policed session could ask this question about another account.
+        await Assert.That(await ReadSealAsync(admin, other.UserId, OtherAccountFactorId))
+            .IsEquivalentTo(otherBefore, CollectionOrdering.Matching);
+        await Assert.That(await ReadSealAsync(admin, session.UserId, SessionFactorId))
+            .IsEquivalentTo(ProbeSealPayload(), CollectionOrdering.Matching);
+
+        // The premise, and it reads as an assertion but is really a guard: the probe has to write
+        // something the seeding did not, or "the far row did not move" and "the near row did" are both
+        // true of a statement that wrote the values back unchanged.
+        await Assert.That(otherBefore).IsNotEquivalentTo(ProbeSealPayload());
+
+        // AND THE SHARPEST CONTROL, LAST BECAUSE IT MOVES THE FAR ROW. The own-row control above says
+        // the statement can land, but it says it against a DIFFERENT predicate value — so a zero on the
+        // foreign half could still be a predicate that matches nothing for a reason no session is
+        // involved in. This runs the IDENTICAL statement on the superuser connection that row-level
+        // security does not apply to. It is destructive to the far row and every assertion about that
+        // row has already been made, so it sits at the end rather than in the arrangement.
+        await Assert.That(await RestageSealAsync(admin, other.UserId, OtherAccountFactorId))
+            .IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task Database_ReadsAPasskeyPublicKeyWithNoUserOnTheSession()
+    {
+        // Arrange — one registered passkey and a bare app-role connection: no set_config, so the
+        // session declares nobody. Every test above reads that state as a bug; this one reads it as
+        // the requirement.
+        await using RepositoryTestHost host = await StartHostAsync();
+        (RepositoryTestHost.SeededOwner session, _) = await SeedTwoOwnersAsync(host);
+        await host.SeedPasskeyAsync(session.UserId, PasskeyHandle(0xF4));
+        await using NpgsqlConnection bare = new(host.AppConnectionString);
+        await bare.OpenAsync();
+
+        // Act — the read the assertion ceremony performs, on the session it performs it from.
+        await using NpgsqlCommand read = new("select count(*) from passkey_public_keys", bare);
+        PostgresException? refusal = await CaptureRefusalAsync(read);
+        long visible = refusal is null
+            ? await CountKeyedRowsAsync(bare, "passkey_public_keys", "user_id", session.UserId)
+            : 0L;
+
+        // Assert — this is the positive control for the exemption, and it is the most important test
+        // in this group. A public key MUST be readable on a connection naming nobody, because a
+        // WebAuthn assertion arrives carrying a credential handle and a signature and nothing else:
+        // the ceremony has to verify that signature against the stored key before it can say whose
+        // account is being opened, so a policy keyed on that identity would refuse the very read that
+        // produces it. Without this test, a policy accidentally added to passkey_public_keys — by the
+        // coverage rule being widened, by someone "tidying" the exemption list, by a well-meant
+        // hardening pass — would break nothing in this file and surface only as a mysterious 401 in
+        // an end-to-end run, with the database reporting 22P02 from inside a code path nobody was
+        // looking at. Do not "fix" this test by giving the connection a user: that is the one change
+        // that makes it agree with everything and measure nothing.
+        await Assert.That(refusal?.SqlState ?? "no error").IsEqualTo("no error");
+        await Assert.That(visible).IsEqualTo(1L);
+    }
+
+    [Test]
+    public async Task Database_ReadsASessionTokenWithNoUserOnTheSession()
+    {
+        // Arrange — two owners, one live session each, and a stored handle against each. Both, because
+        // the exemption is that this table is readable full stop: a policy narrowing it to one identity
+        // is exactly the change being guarded against, and a count of one row would pass under it. The
+        // bare app-role connection declares nobody, which every test above reads as a bug and this one
+        // reads as the requirement.
+        await using RepositoryTestHost host = await StartHostAsync();
+        (RepositoryTestHost.SeededOwner session, RepositoryTestHost.SeededOwner other) =
+            await SeedTwoOwnersAsync(host);
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await SeedSessionAsync(admin, session.UserId);
+        await SeedSessionAsync(admin, other.UserId);
+        await SeedSessionTokenAsync(admin, session.UserId, SessionTokenHash(0x71));
+        await SeedSessionTokenAsync(admin, other.UserId, SessionTokenHash(0x82));
+        await using NpgsqlConnection bare = new(host.AppConnectionString);
+        await bare.OpenAsync();
+
+        // Act — the read every authenticated request in the product begins with, on the connection it
+        // begins on: a cookie has arrived and nothing else has been established yet.
+        await using NpgsqlCommand read = new("select count(*) from session_tokens", bare);
+        PostgresException? refusal = await CaptureRefusalAsync(read);
+        long visible = refusal is null
+            ? await CountKeyedRowsAsync(bare, "session_tokens", "user_id", session.UserId)
+                + await CountKeyedRowsAsync(bare, "session_tokens", "user_id", other.UserId)
+            : 0L;
+
+        // Assert — this is the positive control for the newest exemption and the most load-bearing test
+        // in this group, because it covers more requests than any of the others. A session token MUST be
+        // readable on a connection naming nobody: the request arrives carrying a token and nothing else,
+        // and this row is what turns that into a user id, so a policy keyed on app.current_user_id would
+        // refuse the very query that produces the value the policy wants to compare against — and refuse
+        // it loudly, as ''::uuid and 22P02, on EVERY authenticated request rather than on one path.
+        //
+        // The failure this test stands between the product and is a hardening pass adding user_isolation
+        // to session_tokens, which is a plausible and well-meant change — the table carries user_id, so
+        // it looks exactly like the tables that owe a policy. RlsCoverageTests does NOT go red under it:
+        // an exemption says a policy is not required, never that one is forbidden. Without this test the
+        // only symptom would be every request in the product answering 401, with the database reporting
+        // 22P02 from inside the one code path that runs before any identity exists, and nothing anywhere
+        // pointing at the cause. Do not "fix" this test by giving the connection a user: that is the one
+        // change that makes it agree with everything and measure nothing.
+        //
+        // The sibling half of the split is asserted next door rather than here, and it is what keeps the
+        // exemption honest: whether the session is live — unexpired, unrevoked — is a question about the
+        // sessions row, which IS policed, and Database_RefusesToReadSessionsWhenTheConnectionNamesNoUser
+        // is the test that says so. A token matching is not a session being open.
+        await Assert.That(refusal?.SqlState ?? "no error").IsEqualTo("no error");
+        await Assert.That(visible).IsEqualTo(2L);
+    }
+
+    [Test]
+    public async Task Database_ReadsACredentialWithNoUserOnTheSession()
+    {
+        // Arrange — two owners, each with the federated credential provisioning gives them, and a
+        // bare app-role connection: no set_config, so the session declares nobody. Every test above
+        // reads that state as a bug; this one reads it as the requirement.
+        await using RepositoryTestHost host = await StartHostAsync();
+        (RepositoryTestHost.SeededOwner session, RepositoryTestHost.SeededOwner other) =
+            await SeedTwoOwnersAsync(host);
+        await using NpgsqlConnection bare = new(host.AppConnectionString);
+        await bare.OpenAsync();
+
+        // Act — the read every sign-in starts with, on the session it starts from. Both owners are
+        // counted because the exemption is that this table is readable, full stop: a policy narrowing
+        // it to one identity is exactly the change being guarded against, and a count of one row
+        // would pass under it.
+        await using NpgsqlCommand read = new("select count(*) from credentials", bare);
+        PostgresException? refusal = await CaptureRefusalAsync(read);
+        long visible = refusal is null
+            ? await CountKeyedRowsAsync(bare, "credentials", "user_id", session.UserId)
+                + await CountKeyedRowsAsync(bare, "credentials", "user_id", other.UserId)
+            : 0L;
+
+        // Assert — this is the positive control for the oldest and most load-bearing exemption in the
+        // schema. A credential MUST be readable on a connection naming nobody, because it is the
+        // table read to discover who is asking: the request arrives carrying a provider subject and
+        // nothing else, and the row is what turns that into a user id, so a policy keyed on that
+        // identity would refuse the very query that produces it.
+        //
+        // The failure this test stands between the product and is a hardening pass adding
+        // user_isolation to credentials, which is a plausible and well-meant change. RlsCoverageTests
+        // does NOT go red under it — an exemption says a policy is not required, never that one is
+        // forbidden — and the only symptom is that provisioning fails on every single sign-in, for
+        // everybody, with the database reporting 22P02 from inside the one code path that runs before
+        // any identity exists. Do not "fix" this test by giving the connection a user: that is the
+        // one change that makes it agree with everything and measure nothing.
+        await Assert.That(refusal?.SqlState ?? "no error").IsEqualTo("no error");
+        await Assert.That(visible).IsEqualTo(2L);
+    }
+
+    [Test]
+    public async Task Database_ReadsAWebAuthnChallengeWithNoUserOnTheSession()
+    {
+        // Arrange — one live challenge, written on the superuser connection, and a bare app-role
+        // connection to read it back from.
+        await using RepositoryTestHost host = await StartHostAsync();
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        Guid challengeId = await SeedChallengeAsync(admin);
+        await using NpgsqlConnection bare = new(host.AppConnectionString);
+        await bare.OpenAsync();
+
+        // Act
+        await using NpgsqlCommand read = new("select count(*) from webauthn_challenges", bare);
+        PostgresException? refusal = await CaptureRefusalAsync(read);
+        long visible = refusal is null
+            ? await CountKeyedRowsAsync(bare, "webauthn_challenges", "id", challengeId)
+            : 0L;
+
+        // Assert — the same argument as the public key above, one step earlier and with no owner to
+        // key on even in principle. The authentication ceremony issues a challenge before anybody has
+        // said who they are — that is what makes a discoverable credential discoverable — so the row
+        // carries no user_id, and the second message of the ceremony has to find it by the nonce
+        // alone on a session that still names nobody. A policy here could only ever hide every row
+        // from every session, and it would do so silently: the read would come back empty and the
+        // ceremony would report a challenge that had expired or was never issued.
+        await Assert.That(refusal?.SqlState ?? "no error").IsEqualTo("no error");
+        await Assert.That(visible).IsEqualTo(1L);
     }
 
     /// <summary>
@@ -366,8 +1573,8 @@ public sealed class RlsIsolationTests
 
     /// <summary>
     /// Seeds one owner with two budgets, <b>both populated with the same shape of rows</b>, and
-    /// returns them: the budget every probe session declares, and the budget every probe tries to
-    /// reach across into.
+    /// returns them together with the owner: the budget every probe session declares, and the budget
+    /// every probe tries to reach across into.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -377,9 +1584,17 @@ public sealed class RlsIsolationTests
     /// "affected zero rows" would be true because there was nothing there, with or without a policy.
     /// </para>
     /// <para>
-    /// Names repeat across the two budgets on purpose — the unique indexes are on
-    /// <c>(budget_id, name)</c>, so identical names are legal and make the two tenants genuinely
-    /// indistinguishable except by <c>budget_id</c>. The budget names themselves differ, against
+    /// One owner, on purpose: these probes are about the budget axis, and a session whose user owns
+    /// both budgets is the strictest form of the question — the only thing that can separate the two
+    /// tenants is <c>budget_id</c>. The user axis has <see cref="SeedTwoOwnersAsync" />, which needs
+    /// two owners for the mirrored reason.
+    /// </para>
+    /// <para>
+    /// Names repeat across the two budgets on purpose — every unique index here leads with
+    /// <c>budget_id</c>, over <c>name</c> on <c>categories</c> and over <c>name_key</c> on
+    /// <c>accounts</c>, <c>payees</c> and <c>category_groups</c>, whose name column is a <c>bytea</c>
+    /// envelope — so identical names are legal in both shapes and make the two tenants genuinely
+    /// indistinguishable except by <c>budget_id</c>. The two budgets themselves differ, against
     /// <c>IX_budgets_user_id_name</c>.
     /// </para>
     /// <para>
@@ -388,8 +1603,8 @@ public sealed class RlsIsolationTests
     /// the context's own ambient budget never reaches an INSERT.
     /// </para>
     /// </remarks>
-    private static async Task<(BudgetRows Ambient, BudgetRows Other)> SeedTwoPopulatedBudgetsAsync(
-        RepositoryTestHost host)
+    private static async Task<(Guid OwnerId, BudgetRows Ambient, BudgetRows Other)>
+        SeedTwoPopulatedBudgetsAsync(RepositoryTestHost host)
     {
         Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
         Guid ambientBudgetId = await host.SeedAdditionalBudgetAsync(userId, "Household");
@@ -399,7 +1614,36 @@ public sealed class RlsIsolationTests
         BudgetRows ambient = AddRows(seed, ambientBudgetId);
         BudgetRows other = AddRows(seed, otherBudgetId);
         await seed.SaveChangesAsync();
-        return (ambient, other);
+        return (userId, ambient, other);
+    }
+
+    /// <summary>
+    /// Seeds <b>two</b> owners, each with the default budget provisioning gives them, and returns
+    /// both: the owner every probe session declares, and the owner every probe tries to reach across
+    /// into.
+    /// </summary>
+    /// <remarks>
+    /// Separate from <see cref="SeedTwoPopulatedBudgetsAsync" /> rather than an extension of it. The
+    /// <c>users</c> and <c>budgets</c> probes are isolated by user, so a second budget under the
+    /// same owner is not a second tenant to them at all — every "sees nothing" would be true because
+    /// there was only ever one owner, with or without a policy. Both owners are seeded with the same
+    /// nameless default budget, which is legal because <c>IX_budgets_user_id_name</c> keys on
+    /// <c>user_id</c> too.
+    /// </remarks>
+    /// <param name="withFactorManifest">
+    /// Whether each owner gets the <c>factor_manifests</c> row every account the product creates holds.
+    /// Default, because that is the state a probe should find the database in — and
+    /// <see langword="false" /> for the one probe that writes a manifest itself, where a row already
+    /// standing would be refused by <c>PK_factor_manifests</c> instead of by the policy under test.
+    /// </param>
+    private static async Task<(RepositoryTestHost.SeededOwner Session, RepositoryTestHost.SeededOwner Other)>
+        SeedTwoOwnersAsync(RepositoryTestHost host, bool withFactorManifest = true)
+    {
+        RepositoryTestHost.SeededOwner session =
+            await host.SeedOwnerAsync("google-1", "person@example.com", withFactorManifest);
+        RepositoryTestHost.SeededOwner other =
+            await host.SeedOwnerAsync("google-2", "other@example.com", withFactorManifest);
+        return (session, other);
     }
 
     /// <summary>
@@ -409,17 +1653,33 @@ public sealed class RlsIsolationTests
     private static BudgetRows AddRows(BudgetoidDbContext seed, Guid budgetId)
     {
         Account account = Account.Create(
-            budgetId, "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, SeedInstant);
-        CategoryGroup group = CategoryGroup.Create(budgetId, "Everyday", null, 0, SeedInstant);
-        Category category = Category.Create(budgetId, group.Id, "Groceries", null, 0, SeedInstant);
-        Payee payee = Payee.Create(budgetId, "Corner Shop", SeedInstant);
+            Guid.CreateVersion7(),
+            budgetId,
+            SealedNarrative.Indexed("Checking"), AccountType.Checking, 0m, "USD", UsdMinorUnit, SeedInstant);
+        CategoryGroup group = CategoryGroup.Create(
+            Guid.CreateVersion7(),
+            budgetId,
+            SealedNarrative.Indexed("Everyday"),
+            null,
+            0,
+            SeedInstant);
+        Category category = Category.Create(
+            Guid.CreateVersion7(),
+            budgetId,
+            group.Id,
+            SealedNarrative.Indexed("Groceries"),
+            null,
+            0,
+            SeedInstant);
+        Payee payee = Payee.Create(Guid.CreateVersion7(), budgetId, SealedNarrative.Indexed("Corner Shop"), SeedInstant);
         Transaction transaction = Transaction.Create(
+            Guid.CreateVersion7(),
             budgetId,
             account.Id,
             -10m,
             UsdMinorUnit,
             new DateOnly(2026, 6, 12),
-            "Weekly shop",
+            SealedNarrative.Description("Weekly shop"),
             SeedInstant);
 
         seed.Accounts.Add(account);
@@ -431,6 +1691,588 @@ public sealed class RlsIsolationTests
         return new BudgetRows(
             budgetId, account.Id, group.Id, category.Id, payee.Id, transaction.Id);
     }
+
+    /// <summary>
+    /// The expiry every seeded session carries. Strictly after <see cref="SeedInstant" />, which is
+    /// the whole content of <c>CK_sessions_lifetime</c>.
+    /// </summary>
+    private static readonly DateTime SessionExpiryInstant =
+        new(2026, 6, 13, 13, 14, 15, DateTimeKind.Utc);
+
+    /// <summary>
+    /// Reads back the id of the federated credential <see cref="RepositoryTestHost.SeedOwnerAsync" />
+    /// gave an owner. Every session names one, and a probe that named somebody else's would trip the
+    /// composite foreign key before any policy was consulted.
+    /// </summary>
+    private static async Task<Guid> ReadCredentialIdAsync(NpgsqlConnection connection, Guid userId)
+    {
+        await using NpgsqlCommand command = new(
+            "select id from credentials where user_id = @id",
+            connection);
+        command.Parameters.AddWithValue("id", userId);
+        return await command.ExecuteScalarAsync() switch
+        {
+            Guid credentialId => credentialId,
+            var unexpected => throw new InvalidOperationException(
+                $"Expected one credential id, got '{unexpected ?? "null"}'."),
+        };
+    }
+
+    /// <summary>
+    /// The instant a revocation probe writes. Distinct from every other constant here, so a
+    /// read-back cannot pass on a column nobody wrote.
+    /// </summary>
+    private static readonly DateTime RevocationInstant =
+        new(2026, 6, 12, 18, 0, 0, DateTimeKind.Utc);
+
+    /// <summary>
+    /// Ends every session of one owner and returns the affected-row count. Keyed on
+    /// <c>user_id</c> rather than on a session id because that is the shape of the statement the
+    /// policy has to narrow, and the count is the whole measurement: a filtered UPDATE raises
+    /// nothing.
+    /// </summary>
+    private static async Task<int> RevokeSessionsOfAsync(NpgsqlConnection connection, Guid ownerId)
+    {
+        await using NpgsqlCommand command = new(
+            "update sessions set revoked_at_utc = @value where user_id = @id",
+            connection);
+        command.Parameters.AddWithValue("value", RevocationInstant);
+        command.Parameters.AddWithValue("id", ownerId);
+        return await command.ExecuteNonQueryAsync();
+    }
+
+    /// <summary>
+    /// Reads one owner's session revocation instant back. On the superuser connection, which
+    /// row-level security does not apply to — no policed session could answer this about another
+    /// owner, which is the whole reason the question is worth asking. A SQL NULL comes back as
+    /// <see cref="DBNull.Value" />.
+    /// </summary>
+    private static async Task<object?> ReadRevocationOfAsync(
+        NpgsqlConnection connection,
+        Guid ownerId)
+    {
+        await using NpgsqlCommand command = new(
+            "select revoked_at_utc from sessions where user_id = @id",
+            connection);
+        command.Parameters.AddWithValue("id", ownerId);
+        return await command.ExecuteScalarAsync();
+    }
+
+    /// <summary>
+    /// Writes one live session for an owner on the superuser connection, which row-level security
+    /// does not apply to — the seeding is a precondition of these probes rather than one of them.
+    /// </summary>
+    private static async Task SeedSessionAsync(NpgsqlConnection connection, Guid userId)
+    {
+        Guid credentialId = await ReadCredentialIdAsync(connection, userId);
+        await using NpgsqlCommand command = BuildSessionInsertProbe(connection, userId, credentialId);
+        await command.ExecuteNonQueryAsync();
+    }
+
+    /// <summary>
+    /// Writes the stored handle one owner's seeded session is presented by, on the superuser
+    /// connection, and returns nothing: the digest a caller passed in is the only value worth holding
+    /// on to.
+    /// </summary>
+    /// <remarks>
+    /// The session id is read back rather than threaded through <see cref="SeedSessionAsync" />,
+    /// because the composite foreign key over <c>(session_id, user_id)</c> demands the pair agree and
+    /// the honest way to satisfy it is to take both off the row that exists. <paramref name="tokenHash"
+    /// /> is required for the reason <see cref="PasskeyHandle" />'s fill byte is: <c>token_hash</c> is
+    /// the primary key, so two owners seeded with "a token" would collide on it and the seeding would
+    /// fail before the probe ran.
+    /// </remarks>
+    private static async Task SeedSessionTokenAsync(
+        NpgsqlConnection connection,
+        Guid userId,
+        byte[] tokenHash)
+    {
+        await using NpgsqlCommand command = new(
+            "insert into session_tokens (token_hash, session_id, user_id) " +
+            "select @token_hash, id, user_id from sessions where user_id = @user_id",
+            connection);
+        command.Parameters.AddWithValue("token_hash", tokenHash);
+        command.Parameters.AddWithValue("user_id", userId);
+
+        // The affected count is the assertion this helper makes for itself: the select-from form writes
+        // as many rows as the inner query returns, so an owner with no seeded session would insert
+        // nothing at all and the probe above would read a zero it could not explain.
+        if (await command.ExecuteNonQueryAsync() != 1)
+        {
+            throw new InvalidOperationException(
+                $"Expected exactly one seeded session for owner '{userId}' to hang a token off.");
+        }
+    }
+
+    /// <summary>
+    /// A 32-byte session-token digest, every byte <paramref name="fill" />. Nothing here hashes
+    /// anything: the column holds a digest and cannot tell one from 32 bytes of anything else, and the
+    /// width is the whole of what <c>CK_session_tokens_token_hash_length</c> asks.
+    /// </summary>
+    private static byte[] SessionTokenHash(byte fill) => [.. Enumerable.Repeat(fill, 32)];
+
+    /// <summary>
+    /// Builds the INSERT probe for <c>sessions</c>, owned by <paramref name="ownerId" /> and
+    /// established by <paramref name="credentialId" />. Separate from
+    /// <see cref="BuildInsertProbe" /> because a session names no budget: it is user-owned, so the
+    /// column a policy could object to is <c>user_id</c>.
+    /// </summary>
+    /// <remarks>
+    /// <c>('federated', 'locked')</c> because every owner seeded here has a federated credential and
+    /// nothing else, and <c>CK_sessions_kind_matches_credential</c> refuses a full session opened by
+    /// one. These probes are about the policy rather than about the kind, so the cheapest row the
+    /// schema accepts is the right one: a row refused by a CHECK would never reach the policy at
+    /// all, and the refusal being read would be the wrong one.
+    /// </remarks>
+    private static NpgsqlCommand BuildSessionInsertProbe(
+        NpgsqlConnection connection,
+        Guid ownerId,
+        Guid credentialId)
+    {
+        NpgsqlCommand command = new(
+            "insert into sessions " +
+            "(id, user_id, credential_id, credential_type, kind, " +
+            "created_at_utc, expires_at_utc, revoked_at_utc) " +
+            "values (@id, @user_id, @credential_id, 'federated', 'locked', " +
+            "@created_at_utc, @expires_at_utc, null)",
+            connection);
+        command.Parameters.AddWithValue("id", Guid.CreateVersion7());
+        command.Parameters.AddWithValue("user_id", ownerId);
+        command.Parameters.AddWithValue("credential_id", credentialId);
+        command.Parameters.AddWithValue("created_at_utc", SeedInstant);
+        command.Parameters.AddWithValue("expires_at_utc", SessionExpiryInstant);
+        return command;
+    }
+
+    /// <summary>
+    /// Builds a WebAuthn credential handle of 32 bytes, every one of them <paramref name="fill" />.
+    /// The fill byte is required rather than defaulted: <c>webauthn_credential_id</c> is unique, so
+    /// two owners registering "a passkey" would collide on the index and the seeding would fail
+    /// before the probe ran.
+    /// </summary>
+    private static byte[] PasskeyHandle(byte fill) => [.. Enumerable.Repeat(fill, 32)];
+
+    /// <summary>
+    /// Writes a passkey credential with <b>no counter filed against it</b> on the superuser
+    /// connection, and returns its id. Bare rather than a whole registered passkey because
+    /// <c>credential_id</c> is the primary key of <c>passkey_signature_counters</c>: an INSERT probe
+    /// needs a credential whose slot is free, or it would be refused with <c>23505</c> before any
+    /// policy was consulted. <c>(passkey, null, null)</c> is the shape
+    /// <c>CK_credentials_type_shape</c> permits, and the partial unique index on
+    /// <c>(provider, subject)</c> names only federated rows, so it does not collide with the owner's
+    /// Google credential.
+    /// </summary>
+    private static async Task<Guid> InsertPasskeyCredentialAsync(
+        NpgsqlConnection connection,
+        Guid userId)
+    {
+        Guid credentialId = Guid.CreateVersion7();
+        await using NpgsqlCommand command = new(
+            "insert into credentials (id, user_id, type, provider, subject, created_at_utc) " +
+            "values (@id, @user_id, 'passkey', null, null, @created_at_utc)",
+            connection);
+        command.Parameters.AddWithValue("id", credentialId);
+        command.Parameters.AddWithValue("user_id", userId);
+        command.Parameters.AddWithValue("created_at_utc", SeedInstant);
+        await command.ExecuteNonQueryAsync();
+        return credentialId;
+    }
+
+    /// <summary>
+    /// Builds the INSERT probe for <c>passkey_signature_counters</c>, owned by
+    /// <paramref name="ownerId" /> and keyed on <paramref name="credentialId" />. Separate from
+    /// <see cref="BuildInsertProbe" /> because a counter names no budget: it is user-owned, so the
+    /// column a policy could object to is <c>user_id</c>.
+    /// </summary>
+    /// <remarks>
+    /// <c>'passkey'</c> and a counter of zero because <c>CK_passkey_signature_counters_credential_type</c>
+    /// accepts nothing else and zero is what a registration reports. These probes are about the
+    /// policy rather than about the value, so the cheapest row the schema accepts is the right one: a
+    /// row refused by a CHECK would never reach the policy at all, and the refusal being read would
+    /// be the wrong one.
+    /// </remarks>
+    private static NpgsqlCommand BuildSignatureCounterInsertProbe(
+        NpgsqlConnection connection,
+        Guid ownerId,
+        Guid credentialId)
+    {
+        NpgsqlCommand command = new(
+            "insert into passkey_signature_counters " +
+            "(credential_id, user_id, credential_type, signature_counter) " +
+            "values (@credential_id, @user_id, 'passkey', 0)",
+            connection);
+        command.Parameters.AddWithValue("credential_id", credentialId);
+        command.Parameters.AddWithValue("user_id", ownerId);
+        return command;
+    }
+
+    /// <summary>
+    /// The factor identifiers the two accounts' wrapped keys carry. Fixed rather than minted per call
+    /// so a failure message names a value that can be found in this file, and <b>distinct</b> because
+    /// <c>factor_id</c> is the table's primary key — <c>PK_wrapped_account_keys</c> — unique across the
+    /// whole table rather than per account: two accounts sharing one would collide on that key, and the
+    /// <c>23505</c> would arrive
+    /// during seeding instead of the refusal the probe is reading.
+    /// </summary>
+    private static readonly Guid SessionFactorId =
+        new("0199f3a1-0000-7000-8000-000000000001");
+
+    private static readonly Guid OtherAccountFactorId =
+        new("0199f3a1-0000-7000-8000-000000000002");
+
+    /// <summary>
+    /// Builds the INSERT probe for <c>wrapped_account_keys</c>, owned by <paramref name="ownerId" />
+    /// and filed against <paramref name="credentialId" />. Separate from
+    /// <see cref="BuildInsertProbe" /> because a pair of wrapped keys names no budget: it is
+    /// user-owned, so the column a policy could object to is <c>user_id</c>.
+    /// </summary>
+    /// <remarks>
+    /// <c>'passkey'</c> because every credential these probes name is one, and
+    /// <c>CK_wrapped_account_keys_credential_type</c> accepts only <c>passkey</c> or
+    /// <c>recovery_codes</c> while the composite foreign key compares the column against the
+    /// credential's own type. The envelopes are well-formed at the one legal width and version, so the
+    /// four length and version checks refuse nothing: a row refused by a CHECK would never reach the
+    /// policy at all, and the refusal being read would be the wrong one.
+    /// </remarks>
+    private static NpgsqlCommand BuildWrappedKeysInsertProbe(
+        NpgsqlConnection connection,
+        Guid ownerId,
+        Guid credentialId,
+        Guid factorId)
+    {
+        NpgsqlCommand command = new(
+            "insert into wrapped_account_keys " +
+            "(credential_id, user_id, factor_id, credential_type, " +
+            "wrapped_private_key, encapsulated_account_keys, created_at_utc) " +
+            "values (@credential_id, @user_id, @factor_id, 'passkey', " +
+            "@wrapped_private_key, @encapsulated_account_keys, @created_at_utc)",
+            connection);
+        command.Parameters.AddWithValue("credential_id", credentialId);
+        command.Parameters.AddWithValue("user_id", ownerId);
+        command.Parameters.AddWithValue("factor_id", factorId);
+        command.Parameters.AddWithValue(
+            "wrapped_private_key",
+            RepositoryTestHost.WrappedPrivateKeyPayload(RepositoryTestHost.SeededPrivateKeyFiller));
+        command.Parameters.AddWithValue(
+            "encapsulated_account_keys",
+            RepositoryTestHost.EncapsulatedAccountKeysPayload(RepositoryTestHost.SeededAccountKeysFiller));
+        command.Parameters.AddWithValue("created_at_utc", SeedInstant);
+        return command;
+    }
+
+    /// <summary>
+    /// Builds the INSERT probe for <c>factor_manifests</c>, owned by <paramref name="ownerId" />.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Three columns and no fourth: this table carries no <c>created_at_utc</c>, because a generation
+    /// is identified by its epoch rather than by when it landed. It names no credential either — the
+    /// key is <c>user_id</c> alone, so <c>user_id</c> is both the only column a policy could object to
+    /// and the whole primary key.
+    /// </para>
+    /// <para>
+    /// The manifest is well inside <c>CK_factor_manifests_manifest_length</c>'s band and the epoch is
+    /// above <c>CK_factor_manifests_rotation_epoch</c>'s floor, so neither check refuses anything and
+    /// the owner is the only thing that can be wrong with the row. <see cref="BuildWrappedKeysInsertProbe" />
+    /// keeps the same rule for its four length and version checks, and for the same reason: a row
+    /// refused by a constraint would be a refusal the probe could not attribute to a policy.
+    /// </para>
+    /// <para>
+    /// Filled bytes rather than a real envelope, and not because the column holds anything else: a real
+    /// manifest is an AEAD envelope sealed under the account's content key, in the same framing
+    /// <see cref="RepositoryTestHost.WrappedPrivateKeyPayload" /> builds. Filler is honest here because
+    /// the column checks only a length band and an owner, and a probe that looked like a real envelope
+    /// would suggest it checks more. Nothing here or anywhere else on this side of the wire can verify
+    /// the envelope — the tag is checkable only by a client holding the account's content key — so the
+    /// band and the owner are the whole of what a row has to satisfy.
+    /// </para>
+    /// </remarks>
+    private static NpgsqlCommand BuildManifestInsertProbe(NpgsqlConnection connection, Guid ownerId)
+    {
+        NpgsqlCommand command = new(
+            "insert into factor_manifests (user_id, manifest, rotation_epoch) " +
+            "values (@user_id, @manifest, @rotation_epoch)",
+            connection);
+        command.Parameters.AddWithValue("user_id", ownerId);
+        command.Parameters.AddWithValue("manifest", ProbeManifest());
+        command.Parameters.AddWithValue("rotation_epoch", ProbeRotationEpoch);
+        return command;
+    }
+
+    /// <summary>
+    /// Promotes <paramref name="ownerId" />'s manifest through the two columns the role's
+    /// <c>GRANT UPDATE (manifest, rotation_epoch)</c> covers, and returns the rows affected.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The affected count is the answer and there is nothing to catch.</b> A cross-account UPDATE is
+    /// filtered by <c>user_isolation</c>'s <c>USING</c> arm rather than refused by it, so the statement
+    /// succeeds having matched no row. The count is the only thing the server says about it.
+    /// </para>
+    /// <para>
+    /// <b>Exactly two columns, and naming a third would change what this measures.</b> The grant is
+    /// column-listed; a statement touching <c>user_id</c> would answer <c>42501</c> from the grant
+    /// matrix before any policy was consulted, and the probe would be reading the column list instead
+    /// of the isolation rule. The values are the shared probe shape, so neither check constraint is
+    /// what answers.
+    /// </para>
+    /// </remarks>
+    private static async Task<int> PromoteManifestAsync(NpgsqlConnection connection, Guid ownerId)
+    {
+        await using NpgsqlCommand command = new(
+            "update factor_manifests set manifest = @manifest, rotation_epoch = @rotation_epoch " +
+            "where user_id = @user_id",
+            connection);
+        command.Parameters.AddWithValue("user_id", ownerId);
+        command.Parameters.AddWithValue("manifest", ProbeManifest());
+        command.Parameters.AddWithValue("rotation_epoch", ProbeRotationEpoch);
+
+        return await command.ExecuteNonQueryAsync();
+    }
+
+    /// <summary>What one account's manifest row holds.</summary>
+    /// <remarks>
+    /// Both columns together, because a promotion writes both and they fail separately: the pair is
+    /// what an account's generation actually is, and reading either alone would call a half-written row
+    /// unchanged.
+    /// </remarks>
+    private readonly record struct StoredFactorManifest(byte[] Manifest, int RotationEpoch);
+
+    /// <summary>
+    /// Reads one account's manifest row, keyed on the owner because <c>user_id</c> is the whole primary
+    /// key of this table.
+    /// </summary>
+    /// <remarks>
+    /// Written out rather than routed through <see cref="ReadColumnAsync" />, which keys on <c>id</c> —
+    /// a column this table does not have, and deliberately: one manifest per account is what makes the
+    /// list of factors a <em>set</em> rather than a claim among several.
+    /// </remarks>
+    private static async Task<StoredFactorManifest> ReadManifestAsync(
+        NpgsqlConnection connection,
+        Guid ownerId)
+    {
+        await using NpgsqlCommand command = new(
+            "select manifest, rotation_epoch from factor_manifests where user_id = @user_id",
+            connection);
+        command.Parameters.AddWithValue("user_id", ownerId);
+
+        await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
+        if (!await reader.ReadAsync())
+        {
+            throw new InvalidOperationException("That account holds no factor manifest row.");
+        }
+
+        return new StoredFactorManifest((byte[])reader[0], reader.GetInt32(1));
+    }
+
+    /// <summary>
+    /// The manifest bytes every probe in this file writes — a fresh array per call, because a shared
+    /// one handed to two commands is a buffer two statements could reuse.
+    /// </summary>
+    private static byte[] ProbeManifest() =>
+        [.. Enumerable.Repeat(ProbeManifestFiller, ProbeManifestLength)];
+
+    /// <summary>
+    /// The shape of the manifest both probes above carry: a width comfortably inside the column's band
+    /// and a generation above its floor, so that neither check constraint is what answers.
+    /// </summary>
+    /// <remarks>
+    /// The epoch is <b>2</b> rather than 1 — not because the floor is wrong, but because 1 is the
+    /// generation registration writes and 0 is the absence of a row, so a probe carrying either would
+    /// read as an arrangement borrowed from somewhere. Nothing here turns on the number; the constraint
+    /// admits every value from 1 upward.
+    /// </remarks>
+    private const int ProbeManifestLength = 64;
+
+    private const byte ProbeManifestFiller = 0x5E;
+
+    private const int ProbeRotationEpoch = 2;
+
+    /// <summary>
+    /// Gives <paramref name="userId" /> what a seal needs to exist at all: a passkey, one factor filed
+    /// against it, and one rotation in flight.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Both of <c>key_rotation_seals</c>' foreign keys are satisfied here rather than at the probe</b>,
+    /// which is what leaves the owner as the only thing a refused row can be wrong about. Without the
+    /// factor the composite <c>(factor_id, user_id)</c> edge to <c>wrapped_account_keys</c> answers
+    /// <c>23503</c>; without the run, <c>FK_key_rotation_seals_key_rotations</c> does — and both are
+    /// raised before any policy is consulted, so a probe missing either would be reading
+    /// <c>KeyRotationSealSchemaTests</c>' rules in this file's place.
+    /// </para>
+    /// <para>
+    /// On the elevated connection. The role does hold <c>INSERT</c> on <c>key_rotations</c>, but a
+    /// policed write needs an identity published on the session and the arrangement is a precondition of
+    /// these probes rather than one of them. <paramref name="handleFill" /> is required for
+    /// <see cref="PasskeyHandle" />'s reason: <c>webauthn_credential_id</c> is unique, so two accounts
+    /// seeded with "a passkey" would collide before a probe ran.
+    /// </para>
+    /// </remarks>
+    private static async Task SeedFactorAndRunAsync(
+        RepositoryTestHost host,
+        NpgsqlConnection admin,
+        Guid userId,
+        byte handleFill,
+        Guid factorId)
+    {
+        Guid credentialId = await host.SeedPasskeyAsync(userId, PasskeyHandle(handleFill));
+        await host.SeedWrappedAccountKeysAsync(credentialId, factorId);
+
+        await using NpgsqlCommand rotation = new(
+            "insert into key_rotations " +
+            "(user_id, rotation_id, staged_manifest, staged_rotation_epoch, started_at_utc) " +
+            "values (@user_id, @rotation_id, @staged_manifest, @staged_rotation_epoch, @started_at_utc)",
+            admin);
+        rotation.Parameters.AddWithValue("user_id", userId);
+        rotation.Parameters.AddWithValue("rotation_id", Guid.CreateVersion7());
+        rotation.Parameters.AddWithValue("staged_manifest", ProbeManifest());
+        rotation.Parameters.AddWithValue("staged_rotation_epoch", ProbeRotationEpoch);
+        rotation.Parameters.AddWithValue("started_at_utc", SeedInstant);
+        await rotation.ExecuteNonQueryAsync();
+    }
+
+    /// <summary>
+    /// Stages one seal on the superuser connection, carrying the <b>seeded</b> filler rather than the
+    /// probe's — so an UPDATE that landed is distinguishable from one that wrote the value back
+    /// unchanged.
+    /// </summary>
+    private static async Task SeedSealAsync(
+        NpgsqlConnection admin,
+        Guid userId,
+        Guid factorId)
+    {
+        await using NpgsqlCommand command = new(
+            "insert into key_rotation_seals (user_id, factor_id, encapsulated_account_keys) " +
+            "values (@user_id, @factor_id, @encapsulated_account_keys)",
+            admin);
+        command.Parameters.AddWithValue("user_id", userId);
+        command.Parameters.AddWithValue("factor_id", factorId);
+        command.Parameters.AddWithValue(
+            "encapsulated_account_keys",
+            RepositoryTestHost.EncapsulatedAccountKeysPayload(RepositoryTestHost.SeededAccountKeysFiller));
+        await command.ExecuteNonQueryAsync();
+    }
+
+    /// <summary>
+    /// Builds the INSERT probe for <c>key_rotation_seals</c>, owned by <paramref name="ownerId" /> and
+    /// staged against <paramref name="factorId" />.
+    /// </summary>
+    /// <remarks>
+    /// Three columns and no fourth: this table carries no <c>created_at_utc</c>, because a seal lives
+    /// entirely inside one run and the run carries its own instant. The payload is at the framing's
+    /// exact width carrying its own version, so neither of the column's two check constraints refuses
+    /// anything — a row refused by a constraint would be a refusal the probe could not attribute to a
+    /// policy.
+    /// </remarks>
+    private static NpgsqlCommand BuildSealInsertProbe(
+        NpgsqlConnection connection,
+        Guid ownerId,
+        Guid factorId)
+    {
+        NpgsqlCommand command = new(
+            "insert into key_rotation_seals (user_id, factor_id, encapsulated_account_keys) " +
+            "values (@user_id, @factor_id, @encapsulated_account_keys)",
+            connection);
+        command.Parameters.AddWithValue("user_id", ownerId);
+        command.Parameters.AddWithValue("factor_id", factorId);
+        command.Parameters.AddWithValue("encapsulated_account_keys", ProbeSealPayload());
+        return command;
+    }
+
+    /// <summary>
+    /// Restages one account's seal through the one column the role's
+    /// <c>GRANT UPDATE (encapsulated_account_keys)</c> covers, and returns the rows affected.
+    /// </summary>
+    /// <remarks>
+    /// <b>The affected count is the answer and there is nothing to catch.</b> A cross-account UPDATE is
+    /// filtered by <c>user_isolation</c>'s <c>USING</c> arm rather than refused by it, so the statement
+    /// succeeds having matched no row. Naming a second column would answer <c>42501</c> from the grant
+    /// matrix before any policy was consulted, and the probe would be reading the column list.
+    /// </remarks>
+    private static async Task<int> RestageSealAsync(
+        NpgsqlConnection connection,
+        Guid ownerId,
+        Guid factorId)
+    {
+        await using NpgsqlCommand command = new(
+            "update key_rotation_seals set encapsulated_account_keys = @value " +
+            "where user_id = @user_id and factor_id = @factor_id",
+            connection);
+        command.Parameters.AddWithValue("value", ProbeSealPayload());
+        command.Parameters.AddWithValue("user_id", ownerId);
+        command.Parameters.AddWithValue("factor_id", factorId);
+
+        return await command.ExecuteNonQueryAsync();
+    }
+
+    /// <summary>
+    /// Reads one staged seal's payload back, keyed on both halves of <c>PK_key_rotation_seals</c>.
+    /// </summary>
+    private static async Task<byte[]> ReadSealAsync(
+        NpgsqlConnection connection,
+        Guid ownerId,
+        Guid factorId)
+    {
+        await using NpgsqlCommand command = new(
+            "select encapsulated_account_keys from key_rotation_seals " +
+            "where user_id = @user_id and factor_id = @factor_id",
+            connection);
+        command.Parameters.AddWithValue("user_id", ownerId);
+        command.Parameters.AddWithValue("factor_id", factorId);
+
+        return await command.ExecuteScalarAsync() switch
+        {
+            byte[] payload => payload,
+            var unexpected => throw new InvalidOperationException(
+                $"Expected one staged seal payload, got '{unexpected ?? "null"}'."),
+        };
+    }
+
+    /// <summary>
+    /// The encapsulated account keys every seal probe in this file writes — a fresh array per call,
+    /// because a shared one handed to two commands is a buffer two statements could reuse.
+    /// </summary>
+    /// <remarks>
+    /// The filler is neither the one <see cref="SeedSealAsync" /> stages nor either of the two
+    /// <c>RepositoryTestHost</c> defaults, so a read-back says which statement wrote the row that is
+    /// there. The width and the version are the encapsulation framing's own, read off
+    /// <c>WrappedAccountKeys</c> — which is where this column's check constraints are rendered from as
+    /// well, so a probe cannot drift into being refused for a bound that moved. The AEAD suite's
+    /// constants are never read here: they hold the same version number today, so a cross-read would
+    /// render plausible bytes and be refused for the wrong reason.
+    /// </remarks>
+    private static byte[] ProbeSealPayload() =>
+        RepositoryTestHost.EncapsulatedAccountKeysPayload(ProbeSealFiller);
+
+    private const byte ProbeSealFiller = 0x7C;
+
+    /// <summary>
+    /// Writes one live challenge on the superuser connection and returns its id. The nonce is 32
+    /// bytes and the expiry is strictly after the creation, which are the whole content of
+    /// <c>CK_webauthn_challenges_length</c> and <c>CK_webauthn_challenges_lifetime</c>.
+    /// </summary>
+    private static async Task<Guid> SeedChallengeAsync(NpgsqlConnection connection)
+    {
+        Guid challengeId = Guid.CreateVersion7();
+        await using NpgsqlCommand command = new(
+            "insert into webauthn_challenges (id, challenge, ceremony, created_at_utc, expires_at_utc) " +
+            "values (@id, @challenge, 'authentication', @created_at_utc, @expires_at_utc)",
+            connection);
+        command.Parameters.AddWithValue("id", challengeId);
+        command.Parameters.AddWithValue("challenge", PasskeyHandle(0xA7));
+        command.Parameters.AddWithValue("created_at_utc", SeedInstant);
+        command.Parameters.AddWithValue("expires_at_utc", ChallengeExpiryInstant);
+        await command.ExecuteNonQueryAsync();
+        return challengeId;
+    }
+
+    /// <summary>
+    /// The expiry the seeded challenge carries. Strictly after <see cref="SeedInstant" />, which is
+    /// the whole content of <c>CK_webauthn_challenges_lifetime</c>.
+    /// </summary>
+    private static readonly DateTime ChallengeExpiryInstant =
+        new(2026, 6, 12, 13, 19, 15, DateTimeKind.Utc);
 
     /// <summary>
     /// Builds the INSERT probe for one table, aimed at <paramref name="target" />'s budget and using
@@ -445,8 +2287,10 @@ public sealed class RlsIsolationTests
         string table,
         BudgetRows target)
     {
-        // Distinct from every seeded name, so the case-insensitive unique index on
-        // (budget_id, name) never turns a probe into a 23505 about something else.
+        // Distinct from every seeded name, so no per-budget uniqueness index turns a probe into a
+        // 23505 about something else — the case-insensitive one over (budget_id, name) on categories,
+        // and the one over (budget_id, name_key) on accounts, payees and category_groups, which the
+        // parameter block below derives from this same label.
         const string probeName = "Inserted by an isolation probe";
 
         // 'USD' is a real currencies row seeded by the migration and 'Checking' satisfies
@@ -454,21 +2298,38 @@ public sealed class RlsIsolationTests
         // any of this is about.
         (string sql, Guid? parentId) = table switch
         {
+            // accounts carries BOTH halves of a sealed name — name_key is NOT NULL, so a probe that
+            // named only `name` would be refused with 23502 before any policy was consulted, and this
+            // test would read a not-null violation as the row-level-security verdict it is hunting.
             "accounts" => (
-                "insert into accounts (id, budget_id, name, type, opening_balance, currency_code, created_at_utc) " +
-                "values (@id, @budget_id, @name, 'Checking', 0, 'USD', @created_at_utc)",
+                "insert into accounts (id, budget_id, name, name_key, type, opening_balance, currency_code, created_at_utc) " +
+                "values (@id, @budget_id, @name, @name_key, 'Checking', 0, 'USD', @created_at_utc)",
                 (Guid?)null),
+            // category_groups carries both halves of a sealed name now, and the same 23502 trap the two
+            // tables above describe: name_key is NOT NULL, so a probe naming only `name` is refused
+            // before any policy is consulted and this test reads a not-null violation as the
+            // row-level-security verdict. `description` stays null deliberately — a probe writing one
+            // tests nothing this case is about and adds two CHECK constraints to trip over.
             "category_groups" => (
-                "insert into category_groups (id, budget_id, name, description, position, created_at_utc) " +
-                "values (@id, @budget_id, @name, null, 1, @created_at_utc)",
+                "insert into category_groups (id, budget_id, name, name_key, description, position, created_at_utc) " +
+                "values (@id, @budget_id, @name, @name_key, null, 1, @created_at_utc)",
                 null),
+            // categories joined the sealed tables in this slice and brought the SAME 23502 trap with it:
+            // name_key is NOT NULL, so a probe naming only `name` is refused before any policy is
+            // consulted and this test would read a not-null violation as the row-level-security verdict.
+            // Measured: dropping name_key here answers `23502: null value in column "name_key" of
+            // relation "categories"`. `description` stays null deliberately, for the reason
+            // category_groups gives above.
             "categories" => (
-                "insert into categories (id, budget_id, category_group_id, name, description, position, created_at_utc) " +
-                "values (@id, @budget_id, @parent_id, @name, null, 1, @created_at_utc)",
+                "insert into categories (id, budget_id, category_group_id, name, name_key, description, position, created_at_utc) " +
+                "values (@id, @budget_id, @parent_id, @name, @name_key, null, 1, @created_at_utc)",
                 target.CategoryGroupId),
+            // payees carries BOTH halves of a sealed name too, for the same reason and with the same
+            // trap: name_key is NOT NULL, so a probe naming only `name` is refused with 23502 before
+            // any policy is consulted and this test reads a not-null violation as the RLS verdict.
             "payees" => (
-                "insert into payees (id, budget_id, name, created_at_utc) " +
-                "values (@id, @budget_id, @name, @created_at_utc)",
+                "insert into payees (id, budget_id, name, name_key, created_at_utc) " +
+                "values (@id, @budget_id, @name, @name_key, @created_at_utc)",
                 null),
             "transactions" => (
                 "insert into transactions (id, budget_id, account_id, amount, date, description, created_at_utc) " +
@@ -481,14 +2342,80 @@ public sealed class RlsIsolationTests
         NpgsqlCommand command = new(sql, connection);
         command.Parameters.AddWithValue("id", Guid.CreateVersion7());
         command.Parameters.AddWithValue("budget_id", target.BudgetId);
-        command.Parameters.AddWithValue("name", probeName);
         command.Parameters.AddWithValue("created_at_utc", SeedInstant);
+
+        // accounts.name, payees.name and category_groups.name are bytea and the other two probes still
+        // write text, so the value follows the table rather than the parameter name. THE ENVELOPE HAS TO BE WELL FORMED
+        // AND NOT MERELY BINARY, which is the point of going through the shared fixture instead of
+        // handing over a few bytes: each column carries a length band and a version check, so a short
+        // buffer is refused with 23514 and a text literal with 42804 — from the type checker, before
+        // any policy is consulted. Either would be read here as the row-level-security refusal this
+        // test is looking for, on the INSERT that is supposed to be REFUSED, while the one that is
+        // supposed to SUCCEED failed the same way and took the whole pair down with it.
+        //
+        // The label survives only as what makes the probe's row distinguishable; nothing reads it back.
+        // On all three sealed tables it also does the job the comment above the literal describes — the
+        // unique index is over (budget_id, name_key) now, so it is the INDEX that has to be unlike
+        // anything seeded, and DERIVING BOTH HALVES FROM ONE DISTINCTIVE LABEL is what keeps that true.
+        // A fixed index would collide with whatever a seeder happened to write and answer 23505, which
+        // this test would read as the policy firing.
+        // TWO SHAPES. The FOUR tables carrying a blind index beside the name bind both halves; only
+        // transactions does not, because it has no name at all - its @name parameter feeds `description`,
+        // which is why that value comes from NarrativeValueFor rather than from SealedNarrative.Name.
+        if (table is "accounts" or "payees" or "category_groups" or "categories")
+        {
+            command.Parameters.AddWithValue("name", SealedNarrative.Name(probeName).Envelope.ToArray());
+            command.Parameters.AddWithValue("name_key", SealedNarrative.BlindIndex(probeName).ToArray());
+        }
+        else
+        {
+            command.Parameters.AddWithValue("name", NarrativeValueFor(table, probeName));
+        }
 
         if (parentId is { } parent)
         {
             command.Parameters.AddWithValue("parent_id", parent);
         }
 
+        return command;
+    }
+
+    /// <summary>
+    /// Builds the INSERT probe for <c>budgets</c>, owned by <paramref name="ownerId" />. Separate
+    /// from <see cref="BuildInsertProbe" /> because a budget names no budget: it is the tenant, so
+    /// the column a policy could object to is <c>user_id</c>.
+    /// </summary>
+    /// <remarks>
+    /// The name is explicit and unlike anything seeded, and that is load-bearing rather than tidy.
+    /// <c>IX_budgets_user_id_name</c> is unique on <c>(user_id, name)</c> with <c>NULLS NOT
+    /// DISTINCT</c>, and every seeded budget here is the nameless default — so a probe that left the
+    /// name null would collide with the owner's own default budget and be refused with <c>23505</c>,
+    /// which is not the refusal this test is reading. <c>base_currency_code</c> is left off the
+    /// column list because it is nullable and naming a currency here would only add a foreign key
+    /// that could fail for its own reasons.
+    /// </remarks>
+    private static NpgsqlCommand BuildBudgetInsertProbe(NpgsqlConnection connection, Guid ownerId)
+    {
+        NpgsqlCommand command = new(
+            "insert into budgets (id, user_id, name, created_at_utc) " +
+            "values (@id, @user_id, @name, @created_at_utc)",
+            connection);
+        command.Parameters.AddWithValue("id", Guid.CreateVersion7());
+        command.Parameters.AddWithValue("user_id", ownerId);
+
+        // A sealed envelope rather than the label itself, because the column is bytea now. The label
+        // survives only as what makes this probe's row distinguishable by eye; nothing reads it back.
+        //
+        // The envelope has to be WELL FORMED and not merely binary, and that is the point of going
+        // through the shared helper rather than handing over a few bytes. budgets.name carries a length
+        // band and a version check, so a short buffer is refused with 23514 — a refusal this test would
+        // then read as the row-level security verdict it is looking for, on the INSERT that is supposed
+        // to be REFUSED, while the one that is supposed to succeed failed for the same reason and took
+        // the whole pair down with it. Passing text was the same trap one step earlier: it came back
+        // 42804 from the type checker before any policy was consulted.
+        command.Parameters.AddWithValue(
+            "name", SealedNarrative.Name("user isolation probe").Envelope.ToArray());
+        command.Parameters.AddWithValue("created_at_utc", SeedInstant);
         return command;
     }
 
@@ -516,18 +2443,22 @@ public sealed class RlsIsolationTests
     }
 
     /// <summary>
-    /// Writes one granted text column of one row and returns the affected-row count. Never
+    /// Writes one granted narrative column of one row and returns the affected-row count. Never
     /// <c>budget_id</c> — see the class remarks for why that column would make the probe vacuous.
+    /// The name is older than the columns: two of the five it is called on are <c>bytea</c>, which is
+    /// why <paramref name="value" /> is an <see cref="object" /> rather than a <see cref="string" />.
     /// </summary>
     private static async Task<int> UpdateTextAsync(
         NpgsqlConnection connection,
         string table,
         string column,
         Guid rowId,
-        string value)
+        object value)
     {
         // Table and column are interpolated because every call site passes them from the literal
-        // arrays above; the values are parameters, as they must be.
+        // arrays above; the values are parameters, as they must be. The value is an `object` because
+        // accounts.name and payees.name are bytea while the other three narrative columns are still
+        // text — see NarrativeValueFor for what a text literal in a sealed column actually does here.
         await using NpgsqlCommand command = new(
             $"update {table} set {column} = @value where id = @id",
             connection);
@@ -566,15 +2497,28 @@ public sealed class RlsIsolationTests
     /// Counts a budget's rows in one table. On the app connection this measures what the session can
     /// see; on the superuser connection it measures what is actually there.
     /// </summary>
-    private static async Task<long> CountRowsAsync(
+    private static Task<long> CountRowsAsync(
         NpgsqlConnection connection,
         string table,
-        Guid budgetId)
+        Guid budgetId) =>
+        CountKeyedRowsAsync(connection, table, "budget_id", budgetId);
+
+    /// <summary>
+    /// The same count keyed on whichever column identifies the tenant. <c>users</c> and
+    /// <c>budgets</c> have no <c>budget_id</c> to filter on — a user is reached by <c>id</c> and a
+    /// budget by its owner's <c>user_id</c> — and widening <see cref="CountRowsAsync" /> instead
+    /// would let a budget-owned call site quietly pass the wrong column.
+    /// </summary>
+    private static async Task<long> CountKeyedRowsAsync(
+        NpgsqlConnection connection,
+        string table,
+        string column,
+        Guid id)
     {
         await using NpgsqlCommand command = new(
-            $"select count(*) from {table} where budget_id = @budget_id",
+            $"select count(*) from {table} where {column} = @id",
             connection);
-        command.Parameters.AddWithValue("budget_id", budgetId);
+        command.Parameters.AddWithValue("id", id);
 
         // Pattern-matched rather than cast-and-null-forgive: a null or unexpected scalar means the
         // query changed shape, and that should fail loudly here instead of at the assertion.

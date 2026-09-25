@@ -86,6 +86,47 @@
   text-align: center;
 }
 
+// Phone first: the two calls to action stack and take the column's width, so
+// neither is a narrow target on the narrowest screen. They sit side by side from
+// the tablet breakpoint down the file.
+.w-actions {
+  display: grid;
+  gap: var(--bud-space-3);
+  width: 100%;
+}
+
+// Material's M3 button is shorter than the system's touch minimum.
+.w-button {
+  min-height: var(--bud-touch-target);
+}
+
+// Holds its box while empty, so the screen does not shift under the reader when
+// the outcome of a press arrives — and it is empty for the whole of the first
+// paint, which is the state this screen spends most of its life in.
+.w-outcome {
+  display: grid;
+  gap: var(--bud-space-2);
+  min-height: 1lh;
+}
+
+// The sizes here are literals for the reason the register steps give at their
+// own: the book names no type-scale token, so there is nothing to reference yet,
+// and these match the body scale this file already uses.
+.w-prose {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.55;
+}
+
+// Colour is never the message: the line reads as a sentence with the colour
+// removed.
+.w-error {
+  margin: 0;
+  color: var(--bud-over);
+  font-size: 13.5px;
+  line-height: 1.55;
+}
+
 .w-fine {
   margin: 0;
   font-size: 12.5px;
@@ -120,5 +161,11 @@
   }
   .w-h1 {
     font-size: clamp(30px, 4.5vw, 44px);
+  }
+  // Room for both controls on one line, each as wide as its own label.
+  .w-actions {
+    grid-auto-flow: column;
+    grid-auto-columns: max-content;
+    justify-content: center;
   }
 }

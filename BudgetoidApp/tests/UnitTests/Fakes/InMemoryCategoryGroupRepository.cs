@@ -1,5 +1,6 @@
 using Application.CategoryGroups;
 using Domain.CategoryGroups;
+using Domain.Security;
 
 namespace UnitTests.Fakes;
 
@@ -75,11 +76,10 @@ public sealed class InMemoryCategoryGroupRepository(Guid budgetId, TimeProvider 
         IReadOnlyList<CategoryGroupDto> groups = _categoryGroups
             .OrderBy(group => group.Position)
             .ThenBy(group => group.Id)
-            .Select(group => new CategoryGroupDto(
-                group.Id,
-                group.Name,
-                group.Description,
-                group.Position))
+            // Through the production factory rather than a constructor call here: the members it
+            // shapes are envelopes now, and a fake that encoded them its own way would let a handler
+            // test agree with a spelling no route emits.
+            .Select(CategoryGroupDto.FromCategoryGroup)
             .ToList();
         return Task.FromResult(groups);
     }
@@ -92,11 +92,25 @@ public sealed class InMemoryCategoryGroupRepository(Guid budgetId, TimeProvider 
         return groups.SingleOrDefault(group => group.Id == id);
     }
 
+    /// <summary>
+    /// Seeds one group at the next free position.
+    /// </summary>
+    /// <param name="name">The sealed name and its blind index — <see cref="TestSupport.SealedNarrative.Indexed" /> builds one from a label.</param>
+    /// <param name="description">The sealed note, or <see langword="null" /> for a group filing none.</param>
+    /// <remarks>
+    /// <b>It takes the sealed values rather than the labels they were built from, and the extra noise at
+    /// every call site is the point.</b> A <see cref="string" /> parameter here would read as a name and
+    /// would put the one place a test could hand this fake plaintext behind a default argument. It also
+    /// mints the identifier, which <see cref="CategoryGroup.Create" /> deliberately no longer does — a
+    /// seeder is the one caller for which inventing one is honest, because nothing seeded here was
+    /// sealed against a real id.
+    /// </remarks>
     public async Task<CategoryGroup> CreateAsync(
-        string name = "Essential Obligations",
-        string? description = null)
+        IndexedName name,
+        NarrativeField? description = null)
     {
         CategoryGroup group = CategoryGroup.Create(
+            Guid.CreateVersion7(),
             budgetId,
             name,
             description,

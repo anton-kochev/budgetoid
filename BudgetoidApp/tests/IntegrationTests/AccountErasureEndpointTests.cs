@@ -1,0 +1,1040 @@
+using System.Net;
+using System.Net.Http.Json;
+using System.Text.Json.Nodes;
+using Api.Infrastructure;
+using Application.Passkeys;
+using Domain.Sessions;
+using Domain.Users;
+using Infrastructure.Persistence;
+using Microsoft.EntityFrameworkCore;
+using Npgsql;
+using TestSupport;
+
+namespace IntegrationTests;
+
+/// <summary>
+/// Erasure is one action that removes an account and everything owned beneath it. These tests drive
+/// the real HTTP pipeline rather than the handler directly, so they run through the least-privilege
+/// role, the row-level security policies and the referential cascade exactly as a request does.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Every after-the-fact count is read on <see cref="PostgresTestHost.ConnectionString" /> — the
+/// container superuser — and never on the application role. Both policies are <c>FOR ALL</c>, so a
+/// policed connection reports zero rows for a row that is still there exactly as it does for one
+/// that is gone. Verified on the app role, the central assertion of this file could not fail.
+/// </para>
+/// <para>
+/// Every count asserted zero after the erasure is asserted non-zero before it, against the same
+/// predicate on the same connection. Without that half, a suite whose every assertion is "no rows"
+/// passes just as happily against a database where the seeding never worked.
+/// </para>
+/// <para>
+/// Every test here now performs a real WebAuthn ceremony first, because erasure is authorized by a
+/// fresh assertion rather than by the bearer token. That is why each one registers a
+/// <see cref="SyntheticAuthenticator" /> over HTTP instead of relying on the passkey material
+/// <see cref="SeedIdentityRowsAsync" /> writes out of band: the seeded key answers to no private key,
+/// so no signature could ever verify against it. The seeded rows stay, and are still what puts a row
+/// in <c>sessions</c> — a table no endpoint writes to yet.
+/// </para>
+/// <para>
+/// What this file is about is unchanged: the deletion order, the post-condition, and the tables the
+/// cascade reaches. The gate itself — which nonce pool authorizes an erasure, and whose credential
+/// has to answer it — is measured in <c>ErasureReauthenticationTests</c>.
+/// </para>
+/// </remarks>
+public sealed class AccountErasureEndpointTests
+{
+    /// <summary>
+    /// Which id a table files its owner under. The distinction is not cosmetic: an enumeration that
+    /// guessed from the column name would keep working right up until a table carried both.
+    /// </summary>
+    private enum OwnedBy
+    {
+        /// <summary>The row names the erased user, directly or through a credential of theirs.</summary>
+        User,
+
+        /// <summary>The row names a budget the erased user owns.</summary>
+        Budget,
+    }
+
+    /// <summary>
+    /// One table an account owns, with the column naming its owner and which id that column holds.
+    /// </summary>
+    private readonly record struct OwnedTable(string Name, string OwnerColumn, OwnedBy Owner);
+
+    /// <summary>
+    /// The tables an account owns. Held as one list because the point of the FR-025 assertion is
+    /// that <b>no</b> table keeps a row, and a test that enumerated its tables inline would silently
+    /// stop covering the one added next.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>webauthn_challenges</c> is absent on purpose rather than by oversight: a challenge belongs
+    /// to a ceremony rather than to a person, carries neither <c>user_id</c> nor <c>budget_id</c>,
+    /// and so satisfies "no row references the erased user" vacuously. <c>currencies</c> is global
+    /// reference data and is owned by nobody.
+    /// </para>
+    /// <para>
+    /// <c>passkey_public_keys</c> and <c>passkey_signature_counters</c> are keyed on
+    /// <c>credential_id</c> and carry <c>user_id</c> beside it, which is the column asserted on here:
+    /// it is the one that says whose material this is, and it is what a stray row would still be
+    /// naming after the account it belongs to is gone.
+    /// </para>
+    /// <para>
+    /// <c>recovery_code_hashes</c> is in the list for that same reason and needs it more than either.
+    /// It is keyed on the verifier hash and carries <c>user_id</c> beside it, and unlike every other
+    /// name here it is <b>exempt from row-level security</b> — a redemption arrives anonymous and
+    /// adopts the <c>user_id</c> it finds on the row, so a code the erasure failed to take is not a
+    /// dormant remnant but a live credential naming a person who asked to be forgotten. Nothing
+    /// beneath the application is watching it, which is what makes this row of the list the one no
+    /// other layer would have caught.
+    /// </para>
+    /// <para>
+    /// <c>wrapped_account_keys</c> is keyed on <c>credential_id</c> and carries <c>user_id</c> beside
+    /// it, like the two passkey tables, and it is in the list because what it holds is the account's
+    /// content and index keys as one recovery factor wrapped them. A row the erasure failed to take is
+    /// two envelopes still filed under a person who asked to be forgotten. The application role holds
+    /// no <c>DELETE</c> on it at all, so the only thing that can remove one is the
+    /// <c>ON DELETE CASCADE</c> from <c>credentials</c> — this row of the list is what proves the
+    /// cascade really reaches it rather than that some statement was issued.
+    /// </para>
+    /// <para>
+    /// <b>This list is hand-written and nothing checks it against the live schema</b>, which is why
+    /// <c>wrapped_account_keys</c> could be added to the database and leave every test in this file
+    /// green while the FR-025 claim quietly covered one table less than it says.
+    /// <c>ErasureAtomicityTests</c> is the file that discovers its tables from the catalog; the next
+    /// table added here has to be added by hand, exactly as this one was.
+    /// </para>
+    /// </remarks>
+    private static readonly OwnedTable[] OwnedTables =
+    [
+        new("users", "id", OwnedBy.User),
+        new("credentials", "user_id", OwnedBy.User),
+        new("sessions", "user_id", OwnedBy.User),
+        new("passkey_public_keys", "user_id", OwnedBy.User),
+        new("passkey_signature_counters", "user_id", OwnedBy.User),
+        new("recovery_code_hashes", "user_id", OwnedBy.User),
+        new("wrapped_account_keys", "user_id", OwnedBy.User),
+        new("budgets", "user_id", OwnedBy.User),
+        new("accounts", "budget_id", OwnedBy.Budget),
+        new("category_groups", "budget_id", OwnedBy.Budget),
+        new("categories", "budget_id", OwnedBy.Budget),
+        new("payees", "budget_id", OwnedBy.Budget),
+        new("transactions", "budget_id", OwnedBy.Budget),
+    ];
+
+    /// <summary>
+    /// The Google subject every single-account test authenticates as. Named here rather than left to
+    /// the factory's default because the furnishing helper resolves the seeded ids by looking the
+    /// credential up on it — a client and a lookup that disagreed would furnish one account and
+    /// assert about another.
+    /// </summary>
+    private const string Subject = "google-erasing";
+
+    [Test]
+    public async Task Erase_ForAnAuthenticatedUserWithAFreshAssertion_ReturnsNoContent()
+    {
+        // Arrange — nothing seeded beyond the account itself, plus the passkey the ceremony needs. The
+        // bare case is worth its own test: it is the only one that fails if the route is simply missing.
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
+        SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await RegisterPasskeyAsync(client, device);
+
+        // Act
+        HttpResponseMessage response = await EraseAsync(client, device, userId);
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
+    }
+
+    [Test]
+    public async Task Erase_WithoutAuthentication_IsRefused()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartHostAsync();
+
+        // Act — no subject header, so nothing authenticates and the fallback policy decides. The body
+        // is well formed on purpose: a request turned away for its shape would prove nothing about
+        // authorization.
+        HttpResponseMessage response = await host.Factory.CreateClient().PostAsJsonAsync(ErasurePath, new
+        {
+            credentialId = "AA",
+            clientDataJson = "AA",
+            authenticatorData = "AA",
+            signature = "AA",
+            userHandle = (string?)null,
+        });
+
+        // Assert — the endpoint declares no authorization metadata of its own, so this is the test
+        // that would notice an AllowAnonymous added to it. The title is what separates this 401 from
+        // the others: three distinct ones are reachable on this route — nothing authenticated, an
+        // authenticated token naming an account that no longer exists, and the gate's own refusal —
+        // and only the last carries PasskeyVerificationExceptionHandler.Title. Without the title
+        // asserted, a route that had lost its authorization entirely would still pass here on the 401
+        // the gate answers a well-formed body with, which is exactly the body this test sends.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
+        await Assert.That(await ReadTitleAsync(response)).IsNotEqualTo(PasskeyVerificationExceptionHandler.Title);
+    }
+
+    [Test]
+    public async Task Erase_ForAFullyFurnishedAccount_ReturnsNoContent()
+    {
+        // Arrange — an account carrying a row in every table it can own, including a categorized
+        // transaction. That transaction is what makes this test different from the bare one above:
+        // transactions is the child of four RESTRICT edges — to budgets, accounts, categories and
+        // payees — so an erasure that leant on the cascade, or that deleted in the wrong order,
+        // answers 23503 here.
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
+        SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await FurnishAccountAsync(host, client, Subject);
+        await RegisterPasskeyAsync(client, device);
+
+        // Act
+        HttpResponseMessage response = await EraseAsync(client, device, userId);
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
+    }
+
+    [Test]
+    public async Task Erase_ForAFullyFurnishedAccount_LeavesNoRowInAnyTable()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, Guid userId, Guid budgetId) = await host.Factory.CreateSignedInClientAsync(Subject);
+        SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await FurnishAccountAsync(host, client, Subject);
+        await RegisterPasskeyAsync(client, device);
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+
+        // The seeding is proved before the act, table by table, on the same connection and with the
+        // same predicates the assertion below uses. This half is not decoration: without it every
+        // assertion in this test is "count is zero", which an empty database satisfies.
+        IReadOnlyDictionary<string, long> before = await CountOwnedRowsAsync(admin, userId, budgetId);
+        foreach (OwnedTable table in OwnedTables)
+        {
+            await Assert.That(before[table.Name]).IsGreaterThan(0L);
+        }
+
+        // The set carries more factor rows than live codes under its credential, so one of them
+        // stands for a code already spent. The wrapped_account_keys count below includes that row.
+        (long setFactors, long setHashes) = await CountSetRowsAsync(admin, userId);
+        await Assert.That(setFactors)
+            .IsGreaterThan(setHashes)
+            .Because("the seeded set must carry a factor row for a code already spent");
+
+        // Act
+        HttpResponseMessage response = await EraseAsync(client, device, userId);
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
+
+        IReadOnlyDictionary<string, long> after = await CountOwnedRowsAsync(admin, userId, budgetId);
+        foreach (OwnedTable table in OwnedTables)
+        {
+            await Assert.That(after[table.Name]).IsEqualTo(0L);
+        }
+    }
+
+    /// <summary>
+    /// The one erasure step the handler does <b>not</b> take, measured on its own.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>categories → category_groups</c> is the fifth RESTRICT edge in the owned graph and the only
+    /// one no explicit delete answers: both tables cascade from <c>budgets</c>, PostgreSQL queues that
+    /// edge's check as an after-row trigger when the <c>category_groups</c> row is deleted — strictly
+    /// after the cascade into <c>categories</c> was queued — and the after-trigger queue is FIFO. So
+    /// the categories are gone whichever of the two triggers fires first, and the order the
+    /// constraints happen to have been created in does not come into it.
+    /// </para>
+    /// <para>
+    /// This is the test that goes red if that ever stops holding. It cannot be left to
+    /// <see cref="Erase_ForAFullyFurnishedAccount_LeavesNoRowInAnyTable" />, which seeds a
+    /// transaction: the explicit transactions delete runs first there and empties the table the
+    /// category is referenced from, so a cascade that could not reach the categories would never be
+    /// asked to. No transaction here, which leaves the categories to the cascade alone.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Erase_ForAnAccountWithCategoriesAndNoTransaction_LeavesNoneOfEither()
+    {
+        // Arrange — a categorised budget with no movement in it at all.
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, Guid userId, Guid budgetId) = await host.Factory.CreateSignedInClientAsync(Subject);
+        SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await RegisterPasskeyAsync(client, device);
+        Guid categoryGroupId = await CreateAsync(client, "/api/category-groups", new
+        {
+            // Sealed and indexed through SealedNarrative rather than sent as a flat name:
+            // category_groups.name is an AEAD envelope and category_groups.name_key a blind index, so
+            // plain text is a 400 from CreateCategoryGroupHandler and this seeding would never reach
+            // the subject of the test. The id is client-minted because it is the associated data the
+            // name is sealed against; CreateAsync reads the same value back off the 201.
+            id = Guid.CreateVersion7().ToString("D"),
+            name = SealedNarrative.EncodedName("Essentials"),
+            nameKey = SealedNarrative.EncodedIndex("Essentials"),
+            description = (string?)null,
+        });
+        await CreateAsync(client, "/api/categories", new
+        {
+            id = Guid.CreateVersion7().ToString("D"),
+            name = SealedNarrative.EncodedName("Groceries"),
+            nameKey = SealedNarrative.EncodedIndex("Groceries"),
+            description = (string?)null,
+            categoryGroupId,
+        });
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await Assert.That(await CountBudgetRowsAsync(admin, "category_groups", budgetId)).IsEqualTo(1L);
+        await Assert.That(await CountBudgetRowsAsync(admin, "categories", budgetId)).IsEqualTo(1L);
+
+        // Act
+        HttpResponseMessage response = await EraseAsync(client, device, userId);
+
+        // Assert — a cascade that reached the groups before the categories would answer 23503 and
+        // this would be a 500 rather than two zeros.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
+        await Assert.That(await CountBudgetRowsAsync(admin, "categories", budgetId)).IsEqualTo(0L);
+        await Assert.That(await CountBudgetRowsAsync(admin, "category_groups", budgetId)).IsEqualTo(0L);
+    }
+
+    [Test]
+    public async Task Erase_LeavesAnotherAccountUntouched()
+    {
+        // Arrange — two furnished accounts. Without this test a handler that emptied every table in
+        // the database would satisfy every other assertion in this file.
+        const string erasedSubject = "google-erased";
+        const string survivorSubject = "google-survivor";
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient erased, Guid erasedUserId, _) =
+            await host.Factory.CreateSignedInClientAsync(erasedSubject);
+        (HttpClient survivor, Guid survivorUserId, Guid survivorBudgetId) =
+            await host.Factory.CreateSignedInClientAsync(survivorSubject);
+        SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await FurnishAccountAsync(host, erased, erasedSubject);
+        await RegisterPasskeyAsync(erased, device);
+        await FurnishAccountAsync(host, survivor, survivorSubject);
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        IReadOnlyDictionary<string, long> before =
+            await CountOwnedRowsAsync(admin, survivorUserId, survivorBudgetId);
+        foreach (OwnedTable table in OwnedTables)
+        {
+            await Assert.That(before[table.Name]).IsGreaterThan(0L);
+        }
+
+        // Act
+        HttpResponseMessage response = await EraseAsync(erased, device, erasedUserId);
+
+        // Assert — the survivor's counts are compared to what they were, not merely to "more than
+        // zero": an erasure that took some of another account's rows and left others would pass a
+        // non-zero check.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
+
+        IReadOnlyDictionary<string, long> after =
+            await CountOwnedRowsAsync(admin, survivorUserId, survivorBudgetId);
+        foreach (OwnedTable table in OwnedTables)
+        {
+            await Assert.That(after[table.Name]).IsEqualTo(before[table.Name]);
+        }
+    }
+
+    /// <summary>
+    /// Erasure is not idempotent to the caller — the second call is refused rather than answered — and
+    /// it leaves <b>no</b> account behind.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This replaces <c>Erase_CalledASecondTime_IsRefusedAndLeavesTheNewAccountIntact</c>, and the
+    /// final assertion is inverted from that test's: it demanded exactly one <c>users</c> row after the
+    /// second call, and one row is the defect. A Google id token stayed valid for up to an hour after
+    /// the account it named was gone, so the second request — a retry, a poll, a forgotten second tab —
+    /// arrived authenticated and provisioning minted a whole new account for it: a <c>users</c> row
+    /// carrying the address, a <c>credentials</c> row carrying the subject, and a default budget. That
+    /// account then held no passkey, so the erasure gate refused it forever. Leaving stopped meaning
+    /// leaving, and the wreckage was unerasable.
+    /// </para>
+    /// <para>
+    /// <b>The stale credential is now a session cookie rather than a provider token, and the arrangement
+    /// had to move with it.</b> This test used to hold a bearer client, because a bearer was the thing
+    /// that outlived the account. Nothing but the cookie authenticates this route now, and the cookie
+    /// outlives an erasure in a different and shorter way: the <c>session_tokens</c> row it is looked up
+    /// by is cascaded away with the account, so the handle names nothing and the second call is refused
+    /// by the authentication handler rather than by a middleware. The claim being made is the same one —
+    /// the second call is refused, and the refusal creates nothing — and the unscoped <c>users</c> count
+    /// at the end is still the only line that would see a resurrected account under a different id.
+    /// </para>
+    /// <para>
+    /// The refusal itself is unchanged and is not the subject here: a 401 makes no claim about data, it
+    /// says the request did not prove who it was, which is true of a handle naming a session that no
+    /// longer exists. What changed is that the refusal now writes nothing.
+    /// </para>
+    /// <para>
+    /// The first call's 204 and the per-table zeros are kept deliberately, and they are the control: a
+    /// pipeline that refused <b>every</b> erasure — before or after — would satisfy an empty
+    /// <c>users</c> table perfectly and would have destroyed the feature.
+    /// </para>
+    /// <para>
+    /// The wart is real and is accepted rather than solved: a client retrying a lost 204 sees a
+    /// failure over data that is genuinely gone. There is deliberately no stored record that an
+    /// erasure happened, so nothing on the server could answer differently; the mitigation is
+    /// client-side.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Erase_CalledASecondTime_IsRefusedAndCreatesNoAccount()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, Guid firstUserId, Guid firstBudgetId) =
+            await host.Factory.CreateSignedInClientAsync(Subject);
+        SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await FurnishAccountAsync(host, client, Subject);
+        await RegisterPasskeyAsync(client, device);
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+
+        // The seeding is proved before the act, table by table, on the same connection and with the
+        // same predicates the assertions below use — the promise this class's remarks make about
+        // every count it asserts zero. Without it, twelve "count is zero" assertions are all satisfied
+        // by a database the furnishing never reached.
+        IReadOnlyDictionary<string, long> before = await CountOwnedRowsAsync(admin, firstUserId, firstBudgetId);
+        foreach (OwnedTable table in OwnedTables)
+        {
+            await Assert.That(before[table.Name]).IsGreaterThan(0L);
+        }
+
+        await Assert.That(await ScalarAsync(admin, "select count(*) from users")).IsGreaterThan(0L);
+
+        // Act — one ceremony, answered twice. The second call posts the same body directly instead of
+        // beginning another ceremony: the options leg is itself an authenticated request, so for a
+        // caller whose session row the erasure cascaded away it answers 401 too, and the
+        // EnsureSuccessStatusCode inside it would end this test before its own assertion.
+        AssertionResult assertion = await AuthenticateAsync(client, device, firstUserId);
+        HttpResponseMessage first = await PostErasureAsync(client, assertion);
+        HttpResponseMessage second = await PostErasureAsync(client, assertion);
+
+        // The same stale handle knocking on the ceremony's own door, which is the request a retrying
+        // client actually makes first. Asserted separately because it is the one that used to provision.
+        HttpResponseMessage retriedOptions =
+            await client.PostAsync(ReauthenticationOptionsPath, content: null);
+
+        // Assert
+        await Assert.That(first.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
+        await Assert.That(second.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
+        await Assert.That(retriedOptions.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
+
+        IReadOnlyDictionary<string, long> afterFirst =
+            await CountOwnedRowsAsync(admin, firstUserId, firstBudgetId);
+        foreach (OwnedTable table in OwnedTables)
+        {
+            await Assert.That(afterFirst[table.Name]).IsEqualTo(0L);
+        }
+
+        // No rows at all, not "none belonging to the erased id". The loop above is scoped to the ids
+        // the erasure took, so a resurrected account — a different id entirely — passes every one of
+        // those twelve assertions. This unscoped count is the only line that sees it.
+        await Assert.That(await ScalarAsync(admin, "select count(*) from users")).IsEqualTo(0L);
+        await Assert.That(await ScalarAsync(admin, "select count(*) from credentials")).IsEqualTo(0L);
+        await Assert.That(await ScalarAsync(admin, "select count(*) from budgets")).IsEqualTo(0L);
+    }
+
+    private const string ErasurePath = "/api/me/erasure";
+    private const string ReauthenticationOptionsPath = "/api/passkeys/reauthentication/options";
+    private const string RegistrationOptionsPath = "/api/passkeys/registration/options";
+    private const string RegistrationPath = "/api/passkeys/registration";
+
+    /// <summary>
+    /// Runs both authenticated legs of a registration so the account holds a passkey a signature can
+    /// actually be verified against.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A real ceremony rather than seeded rows, and that is not preference. <see cref="SeedIdentityRowsAsync" />
+    /// writes four bytes of stand-in key material that no private key answers to, so an assertion
+    /// checked against it could never verify — the erasure would be refused and every test in this
+    /// file would fail for a reason that has nothing to do with what it measures.
+    /// </para>
+    /// <para>
+    /// The account already exists when this runs, and never because of this call. Neither passkey leg
+    /// mints one — only the data route groups do — so a registration is the second authenticated request
+    /// an account makes, never the first. Every caller above is either handed a client by
+    /// <see cref="ApiFactory.CreateSignedInClientAsync" />, which seeds the whole account behind it, or
+    /// furnishes an account first through a route that is allowed to mint one.
+    /// </para>
+    /// </remarks>
+    private static async Task RegisterPasskeyAsync(HttpClient client, SyntheticAuthenticator device)
+    {
+        byte[] challenge = await BeginCeremonyAsync(client, RegistrationOptionsPath);
+        AttestationResult attestation = device.Register(challenge, ApiFactory.PasskeyOrigin, prfEnabled: true);
+        WrappedKeyFixture keys = WrappedKeyFixture.Mint();
+
+        // The generation this registration promotes the account's factor manifest to. Read off the
+        // running API rather than written out, because a file that registers a second passkey has to
+        // send a different number from the first and this helper does not know which call it is on —
+        // an epoch that is not exactly one greater than the stored one is a 400 naming rotationEpoch,
+        // which reads as the ceremony being broken. See FactorGeneration.
+        int rotationEpoch = await FactorGeneration.NextAsync(client);
+
+        HttpResponseMessage response = await client.PostAsJsonAsync(RegistrationPath, new
+        {
+            clientDataJson = attestation.ClientDataJsonBase64Url,
+            attestationObject = attestation.AttestationObjectBase64Url,
+            clientExtensionResults = new { prf = new { enabled = true } },
+            factorId = keys.FactorId,
+            wrappedPrivateKey = keys.WrappedPrivateKey,
+            encapsulatedAccountKeys = keys.EncapsulatedAccountKeys,
+
+            // ONE FACTOR JOINS THE SET HERE, so the account's one authenticated statement of what the
+            // set contains moves with it. The bytes are minted per call and are never opened by
+            // anything below the wire — a manifest is sealed under the account's content key, which no
+            // server here has ever held — so what has to be right is the framing and the generation.
+            manifest = ManifestFixture.Mint().Text,
+            rotationEpoch,
+        });
+        response.EnsureSuccessStatusCode();
+    }
+
+    /// <summary>
+    /// Runs the whole erasure exchange: the authenticated options leg, the authenticator, and the
+    /// erasure request carrying what it produced.
+    /// </summary>
+    private static async Task<HttpResponseMessage> EraseAsync(
+        HttpClient client,
+        SyntheticAuthenticator device,
+        Guid userId) =>
+        await PostErasureAsync(client, await AuthenticateAsync(client, device, userId));
+
+    /// <summary>
+    /// Runs the options leg and answers its challenge, stopping short of the erasure request.
+    /// </summary>
+    /// <remarks>
+    /// Split out of <see cref="EraseAsync" /> for the one test that has to post an erasure <b>without</b>
+    /// running another options leg first. That leg is an authenticated request on a route that no longer
+    /// mints an account, so for a caller whose account is already gone it answers 401 — and the
+    /// <c>EnsureSuccessStatusCode</c> inside <see cref="BeginCeremonyAsync" /> would end the test before
+    /// the assertion it exists for.
+    /// </remarks>
+    private static async Task<AssertionResult> AuthenticateAsync(
+        HttpClient client,
+        SyntheticAuthenticator device,
+        Guid userId)
+    {
+        byte[] challenge = await BeginCeremonyAsync(client, ReauthenticationOptionsPath);
+
+        return device.Authenticate(
+            challenge,
+            ApiFactory.PasskeyOrigin,
+            PasskeyEncoding.ToUserHandle(userId));
+    }
+
+    private static Task<HttpResponseMessage> PostErasureAsync(HttpClient client, AssertionResult assertion) =>
+        client.PostAsJsonAsync(ErasurePath, new
+        {
+            credentialId = assertion.CredentialIdBase64Url,
+            clientDataJson = assertion.ClientDataJsonBase64Url,
+            authenticatorData = assertion.AuthenticatorDataBase64Url,
+            signature = assertion.SignatureBase64Url,
+            userHandle = assertion.UserHandleBase64Url,
+        });
+
+    /// <summary>Runs an options leg and returns the challenge bytes it issued.</summary>
+    private static async Task<byte[]> BeginCeremonyAsync(HttpClient client, string path)
+    {
+        HttpResponseMessage response = await client.PostAsync(path, content: null);
+        response.EnsureSuccessStatusCode();
+        JsonNode options = (await JsonNode.ParseAsync(await response.Content.ReadAsStreamAsync()))!;
+
+        return Base64UrlText.Decode(options["challenge"]!.GetValue<string>());
+    }
+
+    /// <summary>
+    /// The <c>title</c> of a problem-details body, which is the only member that says which of this
+    /// route's three 401s answered.
+    /// </summary>
+    private static async Task<string> ReadTitleAsync(HttpResponseMessage response) =>
+        (await JsonNode.ParseAsync(await response.Content.ReadAsStreamAsync()))!["title"]!.GetValue<string>();
+
+    /// <summary>
+    /// Writes one row into every table an account can own and returns the ids the assertions key on.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The money data goes in over HTTP, so every row is one the application itself could really have
+    /// written — through the same validation, the same repositories and the same least-privilege role
+    /// a request uses. A seeding path that wrote those rows directly could put the account into a
+    /// shape no request produces, and an erasure proved against that shape proves nothing.
+    /// </para>
+    /// <para>
+    /// The identity rows have no endpoint that creates them yet, so they are written out of band on
+    /// the container superuser — but through the domain factories rather than raw SQL, which is what
+    /// keeps a seeded passkey the same shape a registration would write. The transaction carries both
+    /// a category and a payee name: the category is what makes the <c>transactions → categories</c>
+    /// RESTRICT edge live, and the payee name is the only thing that puts a row in <c>payees</c>.
+    /// </para>
+    /// </remarks>
+    private static async Task<(Guid UserId, Guid BudgetId)> FurnishAccountAsync(
+        PostgresTestHost host,
+        HttpClient client,
+        string subject)
+    {
+        Guid accountId = await CreateAsync(client, "/api/accounts", new
+        {
+            // Sealed, indexed and identified through SealedNarrative rather than sent as the word
+            // "Checking": accounts.name is an AEAD envelope and accounts.name_key a blind index, so a flat
+            // name is a 400 from CreateAccountHandler and this seeding would never reach the subject of
+            // the test. The id is on the body because the client mints it — it is the associated data the
+            // name was sealed against, so this API has to hand back the spelling it was sent.
+            id = Guid.CreateVersion7().ToString("D"),
+            name = SealedNarrative.EncodedName("Checking"),
+            nameKey = SealedNarrative.EncodedIndex("Checking"),
+            type = "Checking",
+            openingBalance = 0m,
+            currencyCode = "USD",
+        });
+        Guid categoryGroupId = await CreateAsync(client, "/api/category-groups", new
+        {
+            // Sealed and indexed through SealedNarrative rather than sent as a flat name:
+            // category_groups.name is an AEAD envelope and category_groups.name_key a blind index, so
+            // plain text is a 400 from CreateCategoryGroupHandler and this seeding would never reach
+            // the subject of the test. The id is client-minted because it is the associated data the
+            // name is sealed against; CreateAsync reads the same value back off the 201.
+            id = Guid.CreateVersion7().ToString("D"),
+            name = SealedNarrative.EncodedName("Essentials"),
+            nameKey = SealedNarrative.EncodedIndex("Essentials"),
+            description = (string?)null,
+        });
+        Guid categoryId = await CreateAsync(client, "/api/categories", new
+        {
+            id = Guid.CreateVersion7().ToString("D"),
+            name = SealedNarrative.EncodedName("Groceries"),
+            nameKey = SealedNarrative.EncodedIndex("Groceries"),
+            description = (string?)null,
+            categoryGroupId,
+        });
+        // The payee is a request of its own now: POST /api/transactions takes an identifier, and the
+        // server can no longer resolve a name into a row — payees.name is an AEAD envelope drawn under
+        // a fresh nonce, so two seals of one name are different bytes. Seeded here rather than dropped
+        // because a budget with no payee row would leave this file measuring one relation fewer than
+        // its name claims, silently.
+        Guid payeeId = await CreateAsync(client, "/api/payees", new
+        {
+            id = Guid.CreateVersion7().ToString("D"),
+            name = SealedNarrative.EncodedName("Starbucks"),
+            nameKey = SealedNarrative.EncodedIndex("Starbucks"),
+        });
+        await CreateAsync(client, "/api/transactions", new
+        {
+            id = Guid.CreateVersion7().ToString("D"),
+            amount = -10m,
+            date = "2026-06-26",
+            accountId,
+            description = SealedNarrative.EncodedDescription("Coffee"),
+            payeeId,
+            categoryId,
+        });
+
+        (Guid userId, Guid budgetId) = await ResolveOwnerAsync(host, subject);
+        await SeedIdentityRowsAsync(host, userId);
+        return (userId, budgetId);
+    }
+
+    /// <summary>
+    /// Reads back the user and default budget that provisioning minted for
+    /// <paramref name="subject" />. Nothing the API returns names either id, so the lookup goes
+    /// through the credential the middleware resolved the request on.
+    /// </summary>
+    private static async Task<(Guid UserId, Guid BudgetId)> ResolveOwnerAsync(
+        PostgresTestHost host,
+        string subject)
+    {
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
+        await using NpgsqlCommand command = new(
+            """
+            select credentials.user_id, budgets.id
+            from credentials
+            join budgets on budgets.user_id = credentials.user_id
+            where credentials.provider = 'google' and credentials.subject = @subject
+            """,
+            connection);
+        command.Parameters.AddWithValue("subject", subject);
+        await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
+
+        if (!await reader.ReadAsync())
+        {
+            throw new InvalidOperationException(
+                $"Provisioning wrote no account for subject '{subject}'.");
+        }
+
+        (Guid userId, Guid budgetId) = (reader.GetGuid(0), reader.GetGuid(1));
+
+        // A second row would mean two budgets, which the product cannot produce — and would silently
+        // scope every budget-owned assertion in this file to whichever one came back first.
+        if (await reader.ReadAsync())
+        {
+            throw new InvalidOperationException(
+                $"Subject '{subject}' owns more than one budget; the enumeration assumes exactly one.");
+        }
+
+        return (userId, budgetId);
+    }
+
+    /// <summary>
+    /// Adds the passkey material, the session row, the set of recovery codes and the wrapped account
+    /// keys, so the FR-025 enumeration has something to find in every user-owned table rather than only
+    /// in the two provisioning fills.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Written out of band on the container superuser, through the domain factories rather than
+    /// through the routes that will one day mint these rows — and that stays the right choice after
+    /// those routes exist. What this file measures is which tables an erasure empties, and what it
+    /// needs from an arrangement is a row in every one of them. Reaching them through an issuance
+    /// route would tie every test here to that route's request shape, its own authorization and its
+    /// own rules about how large a set is, so a change to any of them would redden an erasure test for
+    /// a reason that has nothing to do with erasure. The factories are what keep the seeded rows the
+    /// shape production writes.
+    /// </para>
+    /// </remarks>
+    private static async Task SeedIdentityRowsAsync(PostgresTestHost host, Guid userId)
+    {
+        await using BudgetoidDbContext db = new(
+            new DbContextOptionsBuilder<BudgetoidDbContext>()
+                .UseNpgsql(host.ConnectionString)
+                .Options);
+
+        Credential passkey = Credential.CreatePasskey(userId, SeedInstant);
+        db.Credentials.Add(passkey);
+        db.PasskeyPublicKeys.Add(PasskeyPublicKey.Register(
+            passkey, WebAuthnCredentialIdFor(userId), CoseKey, CoseAlgorithm.Es256));
+        db.PasskeySignatureCounters.Add(PasskeySignatureCounter.Start(passkey, 0));
+
+        // The account's two keys as this passkey factor holds them, in wrapped_account_keys. No
+        // before-count loop needs it: the recovery-code set below already puts factor rows on the
+        // table for every furnished account. It is kept because production never writes a passkey
+        // without its factor row, and these seeds are meant to be the shape production writes. Filed
+        // against the passkey seeded just above rather than against the credential
+        // RegisterPasskeyAsync registers, because a second row hung off that credential would collide
+        // on PK_wrapped_account_keys. Either passkey or recovery-code credential is legal here, the
+        // federated credential is not.
+        db.WrappedAccountKeys.Add(WrappedAccountKeys.For(
+            passkey,
+
+            // Minted here rather than derived from the owner, which is what production does: the value
+            // is chosen by the client and its unique index is global. Nothing asserts on it, and a fresh
+            // one per call is what keeps the two accounts of Erase_LeavesAnotherAccountUntouched from
+            // colliding on that index.
+            Guid.CreateVersion7(),
+            WrappedPrivateKeyPayload(0xC0),
+            EncapsulatedAccountKeysPayload(0x1D),
+            SeedInstant));
+
+        // Established against the passkey rather than the federated credential because
+        // CK_sessions_kind_matches_credential ties the two together; the seeded row is the full
+        // session a passkey earns, which is the shape production writes.
+        db.Sessions.Add(Session.Establish(passkey, SeedInstant, SeedInstant.AddDays(14)));
+
+        // One credential for the whole set — IX_credentials_user_id_recovery_codes admits no second
+        // one — carrying SeededRecoveryCodeCount codes rather than one. See that constant for why the
+        // count is what makes the erasure observable as a set going rather than as a row going.
+        Credential recoveryCodes = Credential.CreateRecoveryCodes(userId, SeedInstant);
+        db.Credentials.Add(recoveryCodes);
+
+        for (int ordinal = 0; ordinal < SeededRecoveryCodeCount; ordinal++)
+        {
+            db.RecoveryCodeHashes.Add(RecoveryCodeHash.From(
+                recoveryCodes, RecoveryCodeVerifierFor(userId, ordinal), SeedInstant));
+        }
+
+        // One factor row per code, plus one more standing for a code already spent. At rest a spent
+        // code is exactly that — a set factor outnumbering the hash rows, because redemption deletes
+        // the hash and nothing links the two tables. See SeededSpentCodeCount.
+        for (int ordinal = 0; ordinal < SeededRecoveryCodeCount + SeededSpentCodeCount; ordinal++)
+        {
+            db.WrappedAccountKeys.Add(WrappedAccountKeys.For(
+                recoveryCodes,
+
+                // Fresh per row for the reason the passkey's factor id above is: the key is global.
+                Guid.CreateVersion7(),
+                WrappedPrivateKeyPayload(0xC5),
+                EncapsulatedAccountKeysPayload(0x5C),
+                SeedInstant));
+        }
+
+        await db.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// How many unredeemed codes the seeded set holds, and it is deliberately more than one.
+    /// </summary>
+    /// <remarks>
+    /// A set of one cannot tell "the erasure took the set" from "the erasure took a row" — both leave
+    /// the count at zero. One <see cref="Credential" /> per set and one row per code is the whole
+    /// shape of <c>recovery_code_hashes</c>, and it is what the cascade from <c>credentials</c> has to
+    /// carry away wholesale.
+    /// </remarks>
+    private const int SeededRecoveryCodeCount = 3;
+
+    /// <summary>
+    /// How many of the seeded set's factor rows stand for a code already spent: factor rows with no
+    /// hash row beside them.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Seeded rather than produced by a redemption, for the reason <see cref="SeedIdentityRowsAsync" />
+    /// gives for writing out of band: the shape is what matters, and a spent code's shape at rest is a
+    /// factor row outnumbering the hash rows.
+    /// </para>
+    /// <para>
+    /// Today no production mutation separates this seed from the zero-rows assertion: erasure is one
+    /// composite cascade from <c>credentials</c>, and nothing links a factor row to a hash row, so the
+    /// spent code's factor goes with the live ones. The seed holds the rule that erasure leaves no
+    /// factor row, a spent code's included, against a future schema where a set's factor rows cascade
+    /// from their hash rows <em>instead of</em> from <c>credentials</c>. The live factors would still
+    /// go with their hashes; the spent code's factor, having no hash, would survive the erasure. It
+    /// guards that change, not today's code.
+    /// </para>
+    /// </remarks>
+    private const int SeededSpentCodeCount = 1;
+
+    /// <summary>
+    /// One verifier of the seeded set: the owner's id, zero padding, and the code's ordinal in the
+    /// last byte.
+    /// </summary>
+    /// <remarks>
+    /// Distinct in both directions, and both are load-bearing here for the reason
+    /// <see cref="WebAuthnCredentialIdFor" /> is derived from the owner. <c>verifier_hash</c> is the
+    /// primary key, so two codes of one set derived from the same bytes would hash alike and be one
+    /// row — which is the ordinal — and the two accounts of
+    /// <see cref="Erase_LeavesAnotherAccountUntouched" /> seeded alike would make the second one
+    /// unstorable, which is the owner's id. The width is
+    /// <see cref="RecoveryCodeHash.VerifierLength" /> because <see cref="RecoveryCodeHash.From" />
+    /// refuses any other, from both sides.
+    /// </remarks>
+    private static byte[] RecoveryCodeVerifierFor(Guid userId, int ordinal)
+    {
+        byte[] verifier = new byte[RecoveryCodeHash.VerifierLength];
+
+        // Written straight into the buffer rather than through ToByteArray().CopyTo, so there is no
+        // intermediate array — and the bool is the one failure this call has: a VerifierLength
+        // shortened below the sixteen bytes of a Guid, which would otherwise leave a verifier with no
+        // owner in it and make the two accounts of Erase_LeavesAnotherAccountUntouched collide on the
+        // primary key.
+        if (!userId.TryWriteBytes(verifier))
+        {
+            throw new InvalidOperationException(
+                $"A verifier of {RecoveryCodeHash.VerifierLength} bytes has no room for an owner id.");
+        }
+
+        // checked, so a SeededRecoveryCodeCount raised past a byte overflows here rather than wrapping
+        // to an ordinal already used — a repeated ordinal is a repeated verifier, which is one row
+        // where the seeding meant two, and the before-count loop would still read greater than zero.
+        verifier[^1] = checked((byte)ordinal);
+
+        return verifier;
+    }
+
+    /// <summary>
+    /// Counts the rows each owned table holds for one account, on whichever id that table files its
+    /// owner under.
+    /// </summary>
+    private static async Task<IReadOnlyDictionary<string, long>> CountOwnedRowsAsync(
+        NpgsqlConnection connection,
+        Guid userId,
+        Guid budgetId)
+    {
+        Dictionary<string, long> counts = new(OwnedTables.Length, StringComparer.Ordinal);
+
+        foreach (OwnedTable table in OwnedTables)
+        {
+            // The table and column names are compile-time constants from the private list above, not
+            // anything a caller supplies; the owner id is bound as a parameter like everywhere else.
+            await using NpgsqlCommand command = new(
+                $"select count(*) from {table.Name} where {table.OwnerColumn} = @owner",
+                connection);
+            command.Parameters.AddWithValue(
+                "owner",
+                table.Owner is OwnedBy.Budget ? budgetId : userId);
+            counts[table.Name] = await ReadCountAsync(command, table.Name);
+        }
+
+        return counts;
+    }
+
+    /// <summary>
+    /// Counts the rows one budget-owned table holds for one budget, for the tests that name a table
+    /// rather than sweep the whole list.
+    /// </summary>
+    private static async Task<long> CountBudgetRowsAsync(
+        NpgsqlConnection connection,
+        string table,
+        Guid budgetId)
+    {
+        // The table name is a compile-time constant from the call site, not anything a caller
+        // supplies at run time; the owner id is bound as a parameter like everywhere else.
+        await using NpgsqlCommand command = new(
+            $"select count(*) from {table} where budget_id = @owner",
+            connection);
+        command.Parameters.AddWithValue("owner", budgetId);
+        return await ReadCountAsync(command, table);
+    }
+
+    /// <summary>
+    /// How many factor rows and how many hash rows one account's recovery-code set holds, each counted
+    /// under the set's own credential.
+    /// </summary>
+    private static async Task<(long Factors, long Hashes)> CountSetRowsAsync(NpgsqlConnection connection, Guid userId)
+    {
+        await using NpgsqlCommand factors = new(
+            """
+            select count(*) from wrapped_account_keys
+            join credentials on credentials.id = wrapped_account_keys.credential_id
+            where credentials.user_id = @owner and credentials.type = 'recovery_codes'
+            """,
+            connection);
+        factors.Parameters.AddWithValue("owner", userId);
+
+        await using NpgsqlCommand hashes = new(
+            """
+            select count(*) from recovery_code_hashes
+            join credentials on credentials.id = recovery_code_hashes.credential_id
+            where credentials.user_id = @owner and credentials.type = 'recovery_codes'
+            """,
+            connection);
+        hashes.Parameters.AddWithValue("owner", userId);
+
+        return (
+            await ReadCountAsync(factors, "set factor rows"),
+            await ReadCountAsync(hashes, "set hash rows"));
+    }
+
+    private static async Task<long> ScalarAsync(NpgsqlConnection connection, string sql)
+    {
+        await using NpgsqlCommand command = new(sql, connection);
+        return await ReadCountAsync(command, sql);
+    }
+
+    /// <summary>
+    /// Reads a count, refusing anything else. Pattern-matched rather than cast-and-null-forgive: a
+    /// null or unexpected scalar means the query changed shape, and that should fail loudly here
+    /// instead of at the assertion.
+    /// </summary>
+    private static async Task<long> ReadCountAsync(NpgsqlCommand command, string source) =>
+        await command.ExecuteScalarAsync() switch
+        {
+            long count => count,
+            var unexpected => throw new InvalidOperationException(
+                $"Expected a count from '{source}', got '{unexpected ?? "null"}'."),
+        };
+
+    /// <summary>
+    /// Posts <paramref name="body" /> and returns the id of the row it created, failing loudly on
+    /// any status other than success — a furnishing step that quietly did nothing would make the
+    /// whole file vacuous.
+    /// </summary>
+    private static async Task<Guid> CreateAsync(HttpClient client, string path, object body)
+    {
+        HttpResponseMessage response = await client.PostAsJsonAsync(path, body);
+        response.EnsureSuccessStatusCode();
+        JsonNode json = (await JsonNode.ParseAsync(await response.Content.ReadAsStreamAsync()))!;
+        return json["id"]!.GetValue<Guid>();
+    }
+
+    /// <summary>
+    /// Fixed UTC instant for the out-of-band rows. PostgreSQL <c>timestamptz</c> rejects a non-UTC
+    /// <see cref="DateTime" />, so <see cref="DateTimeKind.Utc" /> is load-bearing.
+    /// </summary>
+    private static readonly DateTime SeedInstant = new(2026, 6, 12, 13, 14, 15, DateTimeKind.Utc);
+
+    /// <summary>
+    /// A 32-byte authenticator handle, derived from the owner so two seeded accounts never share one.
+    /// </summary>
+    /// <remarks>
+    /// Both halves are load-bearing. The length satisfies
+    /// <c>CK_passkey_public_keys_webauthn_credential_id_length</c>, which admits 16 to 1023 bytes; the
+    /// derivation satisfies <c>IX_passkey_public_keys_webauthn_credential_id</c>, which is
+    /// <b>unique</b> — a constant handle makes the second account in
+    /// <see cref="Erase_LeavesAnotherAccountUntouched" /> unseedable, and a seeding failure there
+    /// would read as a bug in the erasure rather than in the fixture.
+    /// </remarks>
+    private static byte[] WebAuthnCredentialIdFor(Guid userId) =>
+        [.. userId.ToByteArray(), .. userId.ToByteArray()];
+
+    /// <summary>
+    /// Four bytes of stand-in key material. Nothing here verifies a signature, and the only rule the
+    /// column holds is that the key is between one byte and <see cref="PasskeyPublicKey.MaxCoseKeyLength" />.
+    /// </summary>
+    private static readonly byte[] CoseKey = [0xA5, 0x01, 0x02, 0x03];
+
+    /// <summary>
+    /// A well-formed wrapped-key envelope: the one version byte the contract defines, then filler.
+    /// </summary>
+    /// <remarks>
+    /// The filler is neither a nonce nor a ciphertext, and nothing here opens either — no unlock path
+    /// exists and this server holds no value that could. What the row has to satisfy is the width and
+    /// the version, which <see cref="WrappedAccountKeys.For" /> and two check constraints per column
+    /// both refuse to bend. The two callers pass different fillers so the columns can be told apart by
+    /// eye in a failure message.
+    /// </remarks>
+    private static byte[] WrappedPrivateKeyPayload(byte filler) =>
+        Payload(
+            WrappedAccountKeys.WrappedPrivateKeyLength,
+            WrappedAccountKeys.WrappedPrivateKeyVersion,
+            filler);
+
+    /// <inheritdoc cref="WrappedPrivateKeyPayload" />
+    private static byte[] EncapsulatedAccountKeysPayload(byte filler) =>
+        Payload(
+            WrappedAccountKeys.EncapsulatedAccountKeysLength,
+            WrappedAccountKeys.EncapsulatedAccountKeysVersion,
+            filler);
+
+    /// <summary>
+    /// The shared body of the two above. The width and the version are parameters rather than read
+    /// inside, because the one mistake this helper could make is pairing one suite's width with the
+    /// other's version — the cross-wiring the two pairs of constants exist to keep apart.
+    /// </summary>
+    private static byte[] Payload(int length, byte version, byte filler)
+    {
+        byte[] payload = new byte[length];
+        Array.Fill(payload, filler);
+        payload[0] = version;
+
+        return payload;
+    }
+
+    private static async Task<PostgresTestHost> StartHostAsync()
+    {
+        PostgresTestHost host = new();
+        await host.StartAsync();
+        return host;
+    }
+
+    /// <summary>
+    /// A host whose factory leaves the application's own authentication standing, because almost every
+    /// request above authenticates from a session cookie rather than from a provider bearer.
+    /// </summary>
+    /// <remarks>
+    /// Kept beside <see cref="StartHostAsync" /> rather than replacing it, for the one test that
+    /// authenticates as nobody at all: <see cref="Erase_WithoutAuthentication_IsRefused" />, which makes
+    /// its request through <c>CreateClient</c> and so is decided by the fallback policy either way.
+    /// <see cref="Erase_CalledASecondTime_IsRefusedAndCreatesNoAccount" /> used the plain host too while
+    /// its stale credential was a provider token; it is a session cookie now, and it moved here.
+    /// </remarks>
+    private static async Task<PostgresTestHost> StartSignedInHostAsync()
+    {
+        PostgresTestHost host = new(usesApplicationAuthentication: true);
+        await host.StartAsync();
+        return host;
+    }
+}

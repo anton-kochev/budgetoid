@@ -1,0 +1,2270 @@
+using System.Reflection;
+using Api.Endpoints;
+using Application.Abstractions;
+using Domain.Accounts;
+using Infrastructure.Persistence.Provisioning;
+using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
+using Npgsql;
+using TestSupport;
+
+namespace IntegrationTests;
+
+/// <summary>
+/// The four censuses that carry FR-063 and FR-064: nothing the client sends can hold an unwrapped
+/// key, a key-encryption key, a PRF output or a recovery code, and nothing the server stores is a
+/// value by which a wrapped key could be unwrapped.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <b>Both requirements are verified by Inspection in the specification, and these tests are a
+/// deliberate strengthening of that rather than a restatement of it.</b> An Inspection is a person
+/// reading the request surface and the schema and stating that neither carries key material. What an
+/// executable census buys is the half a person cannot repeat on every commit — a request member or a
+/// binary column arriving between one reading and the next. What it does not buy is the half that
+/// matters most, which is what a value <i>is</i> rather than what it is called. <b>A green run here
+/// is not the requirement being met</b>; it is the requirement not having been broken in the two
+/// ways a machine can see. The Inspection stands, and
+/// <c>docs/business-logic/account-keys.md</c> is what it is performed against.
+/// </para>
+/// <para>
+/// The four divide the work by what they read, and none of them subsumes another.
+/// <see cref="RequestSurface_CarriesNoMemberThatCouldHoldUnwrappedKeyMaterial" /> reads names on the
+/// way <i>in</i> and is the whole of AC 5.
+/// <see cref="Schema_HoldsNoColumnNamedForUnwrappedKeyMaterial" /> reads names at <i>rest</i>. Both
+/// are name checks, and <see cref="UnwrappedKeyMaterialVocabulary" /> says plainly that a
+/// <c>bytea</c> column called <c>payload</c> walks past every rule it owns.
+/// <see cref="Schema_ClassifiesEveryBinaryColumn" /> closes that gap from the other side, by refusing
+/// to let a binary column exist without a written argument for why holding it unwraps nothing — so a
+/// badly named column cannot slip past it.
+/// <see cref="RequestSurface_ArguesForEveryMemberThatCanCarryText" /> is that same argument on the way
+/// <i>in</i>, and it is the newest: for a long time the schema had a fail-closed leg and the request
+/// surface had only a deny-list, so <c>string? Code</c> and <c>string? Passphrase</c> could be added
+/// to a request record and refused by nothing while <c>string? RecoveryCode</c> was caught. The two
+/// name censuses stay because a name that trips a rule should be reported as <em>that</em> rule, with
+/// the argument a reviewer has to answer, rather than as an unargued member.
+/// </para>
+/// <para>
+/// Every one of the three ships a permanent negative control that grows the offence on a throwaway
+/// database and demands the scan name it. A census whose query stopped reaching the catalog, or
+/// whose reflection predicate stopped matching types, reports an empty offender set — which is
+/// indistinguishable from the rule holding. The controls are what make the difference visible.
+/// </para>
+/// </remarks>
+public sealed class KeyMaterialSecrecyTests
+{
+    [Test]
+    public async Task RequestSurface_CarriesNoMemberThatCouldHoldUnwrappedKeyMaterial()
+    {
+        // Arrange — the request surface is DERIVED rather than listed, and that is the whole point of
+        // the test. A written-down set of DTOs stays green on the day a new endpoint adds a
+        // key-accepting member to a type the list never heard of, which is precisely the commit this
+        // census exists to catch.
+        IReadOnlyList<SurfaceMember> surface = await RequestSurfaceAsync();
+
+        // Act — every member of every reached type, through the shared vocabulary.
+        string[] offenders =
+        [
+            .. surface
+                .Select(member => (member, rule: UnwrappedKeyMaterialVocabulary.Classify(member.Member)))
+                .Where(candidate => candidate.rule is not null)
+                .Select(candidate =>
+                    $"{candidate.member.Owner}.{candidate.member.Member} "
+                    + $"— {candidate.rule!.Category}: {candidate.rule.Reason}")
+                .Order(StringComparer.Ordinal),
+        ];
+
+        // Assert — joined rather than counted, so a failure hands the reviewer the member, the secret
+        // it names and the argument for refusing it in one sentence instead of a number.
+        await Assert.That(string.Join(Environment.NewLine, offenders)).IsEqualTo(string.Empty);
+
+        // Non-vacuity, three ways, because a reflection predicate that silently matches nothing is how
+        // this kind of test dies: it goes green over an empty set and reads exactly like the rule
+        // holding. Nothing below is a claim about key material — each one asks whether the scan above
+        // examined anything at all.
+        string[] reached = [.. surface.Select(member => member.Owner).Distinct().Order(StringComparer.Ordinal)];
+        Console.WriteLine(
+            $"Request surface: {reached.Length} types, {surface.Count} members. "
+            + string.Join(", ", reached));
+
+        await Assert.That(surface.Count).IsGreaterThan(50);
+        await Assert.That(reached.Length).IsGreaterThan(15);
+
+        // Named by hand, and by string because every one of them is a private nested record this
+        // project cannot name in a typeof. Four request bodies that would each be a place to put a
+        // key, one command bound straight from the body rather than through a nested record — which
+        // the nested-type sweep alone would never have seen — and the two-deep PRF pair below.
+        await Assert.That(reached).Contains("PasskeyEndpoints.RegistrationRequest");
+        await Assert.That(reached).Contains("RecoveryCodeEndpoints.RecoveryCodeGenerationRequest");
+        await Assert.That(reached).Contains("AccountErasureEndpoints.ErasureRequest");
+        await Assert.That(reached).Contains("CredentialEndpoints.RevocationRequest");
+        await Assert.That(reached).Contains("CreateTransactionCommand");
+
+        // The recursion's own control. PasskeyPrfResults is two hops down — RegistrationRequest holds
+        // a PasskeyClientExtensionResults, which holds it — and it is the single most interesting
+        // shape on this surface: `prf.enabled` is a legal member and `prf.results` would not be, so
+        // the difference between them can only be judged by a census that REACHES the nested type. A
+        // walk that stopped at the top level would report green having never looked.
+        await Assert.That(reached).Contains("PasskeyClientExtensionResults");
+        await Assert.That(reached).Contains("PasskeyPrfResults");
+    }
+
+    /// <summary>
+    /// Every member of the request surface that can carry text is argued for by name, and every argument
+    /// names a member that is still there.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The mirror of <see cref="Schema_ClassifiesEveryBinaryColumn" />, and the leg the request surface
+    /// did not have.</b> The name census next door is a <b>deny-list</b>: it refuses the tokens
+    /// <see cref="UnwrappedKeyMaterialVocabulary" /> recognises and lets everything else through, and that
+    /// vocabulary's own remarks say plainly that a member called <c>payload</c> walks past every rule it
+    /// owns. It is true on this side of the wire too — <c>string? Code</c> and <c>string? Passphrase</c>
+    /// added to a registration request are refused by nothing, while <c>string? RecoveryCode</c> is
+    /// caught, and the difference is a word rather than a capability.
+    /// </para>
+    /// <para>
+    /// <b>So this leg fails closed: a text member with no written argument is a red.</b> It is more
+    /// expensive than a deny-list, one line per member and a sentence to write when a route grows one,
+    /// and it is the only shape whose verdict does not depend on what somebody chose to call a field.
+    /// </para>
+    /// <para>
+    /// <b>Both directions, and each fails for its own reason.</b> A member nobody argued for is a place
+    /// key material could arrive under a name no vocabulary can judge. An argument for a member that is
+    /// gone is the same defect running backwards: the list rots into a claim about a surface that has
+    /// moved, and every surviving entry still passes, so the file goes on reading like a complete account
+    /// of something it has stopped describing.
+    /// </para>
+    /// <para>
+    /// <b>Text, not <see cref="string" /> exactly.</b> A member typed <c>string[]</c>,
+    /// <c>IReadOnlyList&lt;string&gt;</c> or <c>Optional&lt;string&gt;</c> holds text just as well as a
+    /// bare one, and a census that matched the bare type only would be one generic away from silence.
+    /// </para>
+    /// <para>
+    /// Responses are in here with requests, because the surface walk deliberately does not tell them
+    /// apart — see <see cref="RequestSurfaceAsync" /> for why a suffix filter is the wrong instrument.
+    /// Arguing for a response member costs a line and buys the same fail-closed property.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task RequestSurface_ArguesForEveryMemberThatCanCarryText()
+    {
+        // Arrange — the same derived surface the deny-list census reads, so the two legs cannot disagree
+        // about what the request surface is.
+        IReadOnlyList<SurfaceMember> surface = await RequestSurfaceAsync();
+
+        // Act
+        (string[] unargued, string[] stale) = CompareToTextArguments(surface);
+
+        // Assert — the fail-closed direction first: this is the one the leg exists for.
+        await Assert.That(string.Join(Environment.NewLine, unargued)).IsEqualTo(string.Empty);
+        await Assert.That(string.Join(Environment.NewLine, stale)).IsEqualTo(string.Empty);
+
+        // Non-vacuity. Both assertions above are satisfied by a walk that reached nothing and by an
+        // argument list nobody wrote, which are the two ways this kind of census dies quietly.
+        await Assert.That(TextMemberArguments).IsNotEmpty();
+        await Assert.That(surface.Count(member => CarriesText(member.MemberType))).IsGreaterThan(30);
+
+        // And the members closest to the line are reached BY THE WALK rather than named in a literal
+        // handed to the comparison: the two envelopes a client really does send, and the verifier that
+        // is a sibling branch of the key which must never be sent.
+        string[] text =
+        [
+            .. surface
+                .Where(member => CarriesText(member.MemberType))
+                .Select(member => member.Qualified)
+                .Distinct(StringComparer.Ordinal),
+        ];
+        await Assert.That(text).Contains("RegistrationEndpoints.RegistrationRequest.WrappedPrivateKey");
+        await Assert.That(text).Contains("RecoveryCodeSubmission.Verifier");
+    }
+
+    /// <summary>
+    /// The fail-closed control: a text member nobody argued for is reported, beside real ones that are.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The probe is walked together with the live surface rather than on its own</b>, and that is what
+    /// makes one run answer both halves. A comparison that reported everything satisfies the first
+    /// assertion perfectly; a comparison that reported nothing satisfies none of them. Naming the probe's
+    /// three members and then insisting a real, argued member is <em>absent</em> from the same array is
+    /// the pair of verdicts this control exists to produce.
+    /// </para>
+    /// <para>
+    /// The stale direction gets the same treatment from the opposite end: over the probe alone, every
+    /// argument in the list is an argument for a member that is not there, and one of them is named.
+    /// </para>
+    /// <para>
+    /// <see cref="ProbeRequest.WrappedPrivateKey" /> is deliberately among the reported three. It is the
+    /// legal spelling the deny-list census lets through, which is exactly the point: this leg does not
+    /// judge names at all, so a member being innocently named buys it nothing here.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task RequestSurface_ArguesForEveryMemberThatCanCarryText_ReportsOneNobodyArguedFor()
+    {
+        // Arrange
+        IReadOnlyList<SurfaceMember> probe = MembersOf(typeof(ProbeRequest), NameOf(typeof(ProbeRequest)));
+        IReadOnlyList<SurfaceMember> surface = await RequestSurfaceAsync();
+
+        // Act — the same comparison the census makes, over the surface with the probe alongside it, and
+        // then over the probe alone.
+        (string[] unargued, _) = CompareToTextArguments([.. probe, .. surface]);
+        (_, string[] stale) = CompareToTextArguments(probe);
+
+        // Assert — the three text members of the probe are named, whatever they are called.
+        await Assert.That(unargued).Contains("KeyMaterialSecrecyTests.ProbeRequest.ContentKey");
+        await Assert.That(unargued).Contains("KeyMaterialSecrecyTests.ProbeRequest.WrappedPrivateKey");
+        await Assert.That(unargued).Contains("KeyMaterialSecrecyTests.ProbeNestedResults.PrfOutput");
+
+        // And a real member that IS argued for is not, in the same call, so this cannot pass by a
+        // comparison that reports every member it sees.
+        await Assert.That(unargued)
+            .DoesNotContain("RegistrationEndpoints.RegistrationRequest.WrappedPrivateKey");
+
+        // The other direction, proven rather than assumed: over a surface holding only the probe, an
+        // argument for a member of the real surface is an argument for a member that is gone.
+        await Assert.That(stale).Contains("RegistrationEndpoints.RegistrationRequest.WrappedPrivateKey");
+    }
+
+    [Test]
+    public async Task RequestSurface_ReportsAMemberThatCouldHoldUnwrappedKeyMaterial()
+    {
+        // Arrange — the control for the census above, and it is a probe rather than a mutation of a
+        // real endpoint for the reason the schema probes are throwaway tables: a permanent control
+        // fails on the day the mechanism breaks, whereas a mutation somebody ran once proves only
+        // that it worked once. The probe is walked by the same recursion, one hop down, so it
+        // exercises the nesting as well as the classification.
+        IReadOnlyList<SurfaceMember> probe =
+            MembersOf(typeof(ProbeRequest), NameOf(typeof(ProbeRequest)));
+
+        // Act — the same call the census makes, over the same shape.
+        string[] offenders =
+        [
+            .. probe
+                .Where(member => UnwrappedKeyMaterialVocabulary.Classify(member.Member) is not null)
+                .Select(member => $"{member.Owner}.{member.Member}")
+                .Order(StringComparer.Ordinal),
+        ];
+
+        // Assert — the nested member is named, which is the half that proves the recursion is load
+        // bearing rather than the classification alone. Both are qualified by this class because
+        // NameOf qualifies a nested type by its declaring one, and the strings are written out as the
+        // census would print them rather than assembled from nameof: a report nobody can grep for is
+        // the failure mode this file is trying to avoid everywhere else.
+        await Assert.That(offenders).Contains("KeyMaterialSecrecyTests.ProbeRequest.ContentKey");
+        await Assert.That(offenders)
+            .Contains("KeyMaterialSecrecyTests.ProbeNestedResults.PrfOutput");
+
+        // And the deliberately innocent members of the same two records are NOT reported, so the
+        // control cannot pass by a rule that fires on everything.
+        await Assert.That(offenders)
+            .DoesNotContain("KeyMaterialSecrecyTests.ProbeRequest.WrappedPrivateKey");
+        await Assert.That(offenders)
+            .DoesNotContain("KeyMaterialSecrecyTests.ProbeNestedResults.Enabled");
+    }
+
+    [Test]
+    public async Task Schema_ClassifiesEveryBinaryColumn()
+    {
+        // Arrange — the live catalog on the container superuser connection, so row-level security
+        // cannot decide what a catalog query is allowed to see. Deliberately not EF's model: the
+        // point is to hold the schema to account, and a model that quietly failed to map a new
+        // column would otherwise let this test agree with itself about a column that exists.
+        await using RepositoryTestHost host = await StartHostAsync();
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+
+        // Act
+        IReadOnlyList<string> binaryColumns = await ReadBinaryColumnsAsync(admin);
+        (string[] unclassified, string[] stale) = CompareToClassifications(binaryColumns);
+
+        // Assert — SET EQUALITY, BOTH DIRECTIONS, and the two directions fail for different reasons.
+        //
+        // A discovered column nobody classified is the red this test exists for, and it FAILS CLOSED:
+        // a new bytea column is exactly the shape key material arrives in, and it arrives under a name
+        // no vocabulary can judge. Requiring a written argument is the only check that survives the
+        // column being called `payload`.
+        await Assert.That(string.Join(", ", unclassified)).IsEqualTo(string.Empty);
+
+        // A classification naming a column that no longer exists is the same defect running the other
+        // way. Without this direction the list rots into a claim about a schema that has moved, and
+        // the rot is invisible — every remaining entry still passes, so the file keeps reading like a
+        // complete account of a schema it has stopped describing.
+        await Assert.That(string.Join(", ", stale)).IsEqualTo(string.Empty);
+
+        // Non-vacuity. Both assertions above are satisfied by a query that returned nothing, which is
+        // also what a broken join looks like. Naming the story's own two columns proves the scan
+        // reached the catalog and reached this table in particular.
+        Console.WriteLine($"Binary columns: {string.Join(", ", binaryColumns)}");
+        await Assert.That(binaryColumns).Contains("wrapped_account_keys.wrapped_private_key");
+        await Assert.That(binaryColumns).Contains("wrapped_account_keys.encapsulated_account_keys");
+    }
+
+    [Test]
+    public async Task Schema_ClassifiesEveryBinaryColumn_ReportsAColumnNobodyClassified()
+    {
+        // Arrange — a throwaway relation carrying one binary column under a deliberately INNOCENT
+        // name. `payload` trips no rule in the vocabulary and is exactly the gap that vocabulary
+        // names in its own remarks, so this probe is the shape the name censuses provably cannot
+        // catch. It is created on the admin connection and never dropped: every host owns a database
+        // of its own, cloned from the migrated template and dropped with the host, so the probe is
+        // invisible to every other test in the assembly. The prefix says what it is if the name ever
+        // leaks into a shared database anyway.
+        await using RepositoryTestHost host = await StartHostAsync();
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await ExecuteAsync(
+            admin,
+            $"create table {BinaryProbeTable} (id uuid primary key, payload bytea not null)");
+
+        // Act — the same reader and the same comparison the census runs, knowing nothing about the
+        // probe. A control that exercised a second, separately written query would prove that query
+        // can fail and say nothing about the one that ships.
+        IReadOnlyList<string> binaryColumns = await ReadBinaryColumnsAsync(admin);
+        (string[] unclassified, _) = CompareToClassifications(binaryColumns);
+
+        // Assert — fail-closed proven: an unargued binary column is reported by name.
+        await Assert.That(unclassified).Contains($"{BinaryProbeTable}.payload");
+
+        // And the probe's own `id` is not, so the control cannot be passing because the comparison
+        // reports every column it sees.
+        await Assert.That(unclassified).DoesNotContain($"{BinaryProbeTable}.id");
+    }
+
+    [Test]
+    public async Task Schema_ClassifiesEveryBinaryColumn_ReportsAClassificationOfAColumnThatIsGone()
+    {
+        // Arrange — the second direction, proven over the LIVE CATALOG rather than over a literal set
+        // handed to the comparison. A column this file classifies is dropped on this host's own
+        // database, which is the real event the direction exists to catch — a migration removing a
+        // column and leaving its argument behind, reading like a complete account of a schema that
+        // has moved. `cascade` because the width and version checks are defined on this column and go
+        // with it. The drop reaches nothing else: the database is cloned per host and dropped with it.
+        await using RepositoryTestHost host = await StartHostAsync();
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await ExecuteAsync(
+            admin,
+            "alter table wrapped_account_keys drop column encapsulated_account_keys cascade");
+
+        // Act
+        IReadOnlyList<string> binaryColumns = await ReadBinaryColumnsAsync(admin);
+        (_, string[] stale) = CompareToClassifications(binaryColumns);
+
+        // Assert — the orphaned classification is named.
+        await Assert.That(stale).Contains("wrapped_account_keys.encapsulated_account_keys");
+
+        // And its surviving sibling is not, so this cannot be passing because the comparison reports
+        // the whole classification list whenever anything moves.
+        await Assert.That(stale).DoesNotContain("wrapped_account_keys.wrapped_private_key");
+    }
+
+    /// <summary>
+    /// Every classification says what its column holds and why holding it unwraps nothing.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The set comparison above compares <see cref="BinaryColumnClassification.Qualified" /> and
+    /// nothing else</b>, so both prose members are read by no assertion at all: a new <c>bytea</c> column
+    /// entered as <c>new("t", "c", "", "")</c> satisfies it completely. That is the whole requirement
+    /// gone — the record's own remarks say <see cref="BinaryColumnClassification.UnwrapsNothingBecause" />
+    /// is the member carrying FR-064, because the requirement is not that these columns are binary but
+    /// that no value the server holds is one by which a wrapped key can be unwrapped, and only prose can
+    /// make that claim per column. A list nobody has to argue on is a list that agrees with whatever
+    /// arrives next.
+    /// </para>
+    /// <para>
+    /// A length floor rather than a judgement of the words, which is what
+    /// <c>UnwrappedKeyMaterialVocabularyTests.Vocabulary_StatesAReasonForEveryRule</c> does next door for
+    /// the same reason: no assertion can tell a real argument from a fluent one, and the cheapest way to
+    /// write nothing is to write nothing. The floors differ because the two members answer different
+    /// questions — <see cref="BinaryColumnClassification.Holds" /> is a fact in one clause, the reason is
+    /// an argument the next reader has to be able to disagree with, and "not a key" is four words that
+    /// restate the verdict.
+    /// </para>
+    /// <para>
+    /// No database, deliberately: the list is the requirement and the catalog is only what stops it
+    /// lying, so this half of it is checkable with nothing running.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Classifications_StateWhatEachColumnHoldsAndWhyItUnwrapsNothing()
+    {
+        // Arrange
+        IReadOnlyList<BinaryColumnClassification> classifications = Classifications;
+
+        // Act — reported by column rather than counted, so a failure names the entry to argue about.
+        string[] unstated =
+        [
+            .. classifications
+                .Where(entry => string.IsNullOrWhiteSpace(entry.Holds)
+                                || entry.Holds.Length < MinimumHoldsLength)
+                .Select(entry => $"{entry.Qualified} holds: <unstated>")
+                .Order(StringComparer.Ordinal),
+        ];
+
+        string[] unargued =
+        [
+            .. classifications
+                .Where(entry => string.IsNullOrWhiteSpace(entry.UnwrapsNothingBecause)
+                                || entry.UnwrapsNothingBecause.Length < MinimumReasonLength)
+                .Select(entry => $"{entry.Qualified} unwraps nothing because: <unargued>")
+                .Order(StringComparer.Ordinal),
+        ];
+
+        // Assert — the non-empty check first: an empty list has no unargued entry either, and would pass
+        // both assertions below with nothing in it. That is not hypothetical here, since the list is
+        // hand-written and its only other reader is a set comparison that an empty schema also satisfies.
+        await Assert.That(classifications).IsNotEmpty();
+        await Assert.That(string.Join(", ", unstated)).IsEqualTo(string.Empty);
+        await Assert.That(string.Join(", ", unargued)).IsEqualTo(string.Empty);
+    }
+
+    [Test]
+    public async Task Schema_HoldsNoColumnNamedForUnwrappedKeyMaterial()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartHostAsync();
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+
+        // Act — every row-bearing relation in `public` and every column it carries, both put through
+        // the same vocabulary the request-surface census reads. A relation name is classified by the
+        // same call as a column name because it is the same question: this refusal arrives at both
+        // grains, and `account_keys` would be a table where `content_key` would be a column.
+        SchemaIdentifiers identifiers = await ReadPublicIdentifiersAsync(admin);
+        IReadOnlyList<SchemaOffender> offenders = KeyMaterialOffenders(identifiers);
+
+        // Assert — the shipped schema stores wrapped keys and stores nothing that opens one.
+        await Assert.That(Describe(offenders)).IsEqualTo(string.Empty);
+
+        // The story's own two names, proven clean BY THE SCAN rather than by a literal handed to the
+        // classifier. This is the half that would otherwise be vacuous: an empty offender set is what
+        // a scan that never reached these columns also produces, and these two are the names in the
+        // schema closest to the line — `content_key` and `index_key` are refused outright, and it is
+        // one adjacent word that makes each of them legal. If the qualifier mechanism ever breaks,
+        // this test reds on the two columns the story just shipped rather than going quiet.
+        await Assert.That(identifiers.Columns).Contains("wrapped_account_keys.wrapped_private_key");
+        await Assert.That(identifiers.Columns).Contains("wrapped_account_keys.encapsulated_account_keys");
+
+        // The relation grain likewise: `wrapped_account_keys` reaches the `account_key` rule only in
+        // its plural form and is let go only by the qualifier's singular, so it is the one name that
+        // needs both halves of the vocabulary's pluralisation to be right.
+        await Assert.That(identifiers.Relations).Contains("wrapped_account_keys");
+        await Assert.That(identifiers.Relations).Contains("recovery_code_hashes");
+    }
+
+    [Test]
+    public async Task Schema_HoldsNoColumnNamedForUnwrappedKeyMaterial_ReportsATableThatGrowsSuchAColumn()
+    {
+        // Arrange — a throwaway relation whose own name is deliberately innocent, carrying the one
+        // column that is not. `content_key` is the sharpest available probe: it differs from the
+        // shipped, legal `wrapped_private_key` by exactly the qualifier, so a control that reports it
+        // proves the vocabulary distinguishes the two rather than waving the pair through together.
+        await using RepositoryTestHost host = await StartHostAsync();
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await ExecuteAsync(
+            admin,
+            $"create table {ColumnProbeTable} (id uuid primary key, content_key text not null)");
+
+        // Act — the same scan, unchanged and knowing nothing about the probe. The probe column is
+        // `text` rather than `bytea` on purpose: the offence has to be the NAME alone, or this
+        // control would also be passing for the schema census's reason.
+        SchemaIdentifiers identifiers = await ReadPublicIdentifiersAsync(admin);
+        string[] offenders = Identifiers(KeyMaterialOffenders(identifiers));
+
+        // Assert — reported as table.column, so the failure it produces in anger says which row grew
+        // the column. The probe's own name matches nothing, so the column is the only thing this can
+        // be seeing.
+        await Assert.That(offenders).Contains($"{ColumnProbeTable}.content_key");
+        await Assert.That(offenders).DoesNotContain(ColumnProbeTable);
+
+        // And the legal spelling in the shipped schema is still not reported, in the same scan that
+        // just refused the bare one. Two facts on one database is what makes this a statement about
+        // the qualifier rather than two statements about two vocabularies.
+        await Assert.That(offenders)
+            .DoesNotContain("wrapped_account_keys.wrapped_private_key");
+    }
+
+    [Test]
+    public async Task Schema_HoldsNoColumnNamedForUnwrappedKeyMaterial_ReportsATableWhoseOwnNameIsOne()
+    {
+        // Arrange — the relation half. Its columns are deliberately ordinary and its own name is not,
+        // so the relation path is the only thing its assertion can be seeing. Its own host, for the
+        // reason its sibling has one: a database carrying both probes would let each assertion pass
+        // on the other's offence.
+        await using RepositoryTestHost host = await StartHostAsync();
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await ExecuteAsync(
+            admin,
+            $"create table {RelationProbeTable} (id uuid primary key, user_id uuid not null)");
+
+        // Act
+        SchemaIdentifiers identifiers = await ReadPublicIdentifiersAsync(admin);
+        string[] offenders = Identifiers(KeyMaterialOffenders(identifiers));
+
+        // Assert — bare, with no dot: the offence is the relation itself rather than anything it
+        // carries, and reporting it as a column would name a column that does not exist.
+        await Assert.That(offenders).Contains(RelationProbeTable);
+        await Assert.That(offenders).DoesNotContain($"{RelationProbeTable}.user_id");
+    }
+
+    /// <summary>
+    /// What one <c>bytea</c> column holds, and the argument that a server holding it can unwrap
+    /// nothing.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <paramref name="UnwrapsNothingBecause" /> is the member that carries FR-064. The requirement is
+    /// not "these columns are binary" — it is that <b>no value the server holds is one by which a
+    /// wrapped key can be unwrapped</b>, and that is a claim about each value in turn which only prose
+    /// can make. A reason reading "not a key" restates the verdict; the reason has to say what stands
+    /// between the stored bytes and the key-encryption key, so that the next reader can disagree with
+    /// it.
+    /// </para>
+    /// <para>
+    /// <paramref name="Holds" /> is separate from the reason because the two answer different
+    /// questions and a single field would collapse them: what the bytes are is a fact, and whether
+    /// holding them is safe is an argument. A column whose <c>Holds</c> nobody can write in one clause
+    /// is already the defect.
+    /// </para>
+    /// </remarks>
+    /// <param name="Table">The relation, as PostgreSQL spells it.</param>
+    /// <param name="Column">The column, as PostgreSQL spells it.</param>
+    /// <param name="Holds">What the bytes are, in one clause.</param>
+    /// <param name="UnwrapsNothingBecause">
+    /// What stands between these bytes and a key that opens an envelope.
+    /// </param>
+    private sealed record BinaryColumnClassification(
+        string Table,
+        string Column,
+        string Holds,
+        string UnwrapsNothingBecause)
+    {
+        /// <summary>The key both directions of the set comparison are made on.</summary>
+        public string Qualified => $"{Table}.{Column}";
+    }
+
+    /// <summary>
+    /// Every <c>bytea</c> column the schema is allowed to carry, each with what it holds and why
+    /// holding it unwraps nothing.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This list is the requirement, and the query is only what stops it lying.</b> Written down
+    /// rather than derived, deliberately and in the opposite direction from the request surface above:
+    /// a derived list of binary columns would be a restatement of the catalog and could never
+    /// disagree with it. What has to be authored is the <i>argument</i>, one per column, and the set
+    /// comparison exists to make authoring one unavoidable — a column with no entry is a red, and an
+    /// entry with no column is a red.
+    /// </para>
+    /// <para>
+    /// The entries divide into five kinds, and the kinds are worth seeing. The first is the envelopes
+    /// themselves — the only key-shaped thing this design lets cross the wire, and safe because the
+    /// server holds nothing that opens them. Two are WebAuthn's own material, a handle that selects a
+    /// credential and a <i>public</i> key published by design. Three are one-way values, two hashes and
+    /// a nonce, from which nothing is derived. Those two kinds are closed, which is the only reason
+    /// they are counted here. The rest are <i>content</i> and <i>blind indexes</i>, and those two are
+    /// named rather than counted because they are the two that grow: every column a screen seals joins
+    /// the first, and every sealed name that has to stay unique joins the second, so a number written
+    /// against either is a pin no assertion in this file holds. A new column has to argue itself into
+    /// one of those kinds or invent another in writing — and the paragraph below records two columns
+    /// that looked as though they needed a kind of their own and do not.
+    /// </para>
+    /// <para>
+    /// <b>THE TWO MANIFESTS ARE SEALED, AND THEY TAKE THE CONTENT ARGUMENT RATHER THAN A KIND OF THEIR
+    /// OWN.</b> <c>factor_manifests.manifest</c> is the account's list of every recovery factor's public
+    /// key, written by the client and read back by it to learn which factors exist and what to
+    /// <i>encapsulate to</i> — and the client writes it as an AEAD envelope <i>sealed under</i> the
+    /// account's content key, so this server cannot read a byte of it.
+    /// <c>key_rotations.staged_manifest</c> is the same value for a rotation in flight, sealed under the
+    /// <i>next</i> generation's content key. That puts both on content's footing: safe because the key
+    /// that opens them reaches this server only <i>encapsulated to</i> a factor's public key, whose
+    /// private half is itself wrapped under a key-encryption key derived from a recovery factor the
+    /// operator never holds — a chain the operator cannot start. They are not a person's words, so they
+    /// are argued as content rather than counted with it. And <c>passkey_public_keys.public_key_cose</c>,
+    /// the other column here that carries a public key, must not be pointed at: that one this server
+    /// reads in the clear, and these it cannot.
+    /// </para>
+    /// <para>
+    /// <b>What each manifest entry owes is its concession, and it is not the narrative columns'
+    /// concession.</b> AES-GCM leaks the plaintext's length here as it does there, but here the length
+    /// is worth more: every entry in a manifest is the same width, so the length says how many recovery
+    /// factors the account holds. <c>factor_manifests</c> adds the plaintext <c>rotation_epoch</c> beside
+    /// it, and a staged copy says, by existing, that a rotation is in flight. None of that opens
+    /// anything — the public keys inside would open nothing even if read, because an ECDH public key is
+    /// what a value is encapsulated <i>to</i> — and the count is metadata about an account's recovery
+    /// arrangements rather than about the person's money.
+    /// </para>
+    /// <para>
+    /// <b>THE ENVELOPE KIND STOPPED BEING COUNTED, AND IT IS WORTH SAYING WHY RATHER THAN QUIETLY
+    /// WRITING "FOUR".</b> The paragraph above used to open "Two are the envelopes themselves" and
+    /// close by calling three kinds closed. That was true while <c>wrapped_account_keys</c> was the only
+    /// table holding a wrapped account key. <c>key_rotations</c> holds the <i>next generation</i> of the
+    /// identical pair while a content-key rotation is in flight, so the kind now has four members and,
+    /// more to the point, has demonstrated that it grows — any table that has to hold a second copy of
+    /// the account's two keys joins it. A number here would be a pin no assertion in this file holds,
+    /// which is exactly the reason content and blind indexes were never counted, so the envelope kind
+    /// moves to the same footing. What did <b>not</b> change is the kind's argument: every member is
+    /// sealed under a key-encryption key derived on somebody's device from a recovery factor, and the
+    /// server holds no value that opens any of them. A new member still owes that argument in its own
+    /// words — the two <c>key_rotations</c> entries below write it out rather than pointing at their
+    /// siblings, because a classification that says "see above" stops being a per-column argument.
+    /// </para>
+    /// <para>
+    /// <b>The fourth kind arrived exactly as this list said one would</b> — the paragraph above used to
+    /// end at three, and <c>budgets.name</c> was the eighth column that had to invent a kind in writing
+    /// rather than squeeze into an existing one. It is <i>content</i>: an AEAD envelope over a person's
+    /// own words, sealed under the account's content key. That inverts the envelope kind rather than
+    /// joining it. Those two columns are the key and are safe because nothing on this server opens them;
+    /// this one is safe <i>because one of them is the thing that opens it</i>, so the two arguments hold
+    /// each other up and neither can be pasted over the other. It was also the first entry whose
+    /// argument has to concede something — AES-GCM leaks the plaintext's length, and the column's own
+    /// length already does, so the concession costs nothing and is written down rather than left for a
+    /// reader to notice. <c>accounts.name</c> is the second member of this kind, <c>payees.name</c> the
+    /// third and <c>category_groups.name</c> the fourth, and each owes the same two sentences, which is
+    /// why every entry writes them out instead of pointing at its neighbour: a classification that says
+    /// "see above" stops being a per-column argument, which is the whole requirement.
+    /// </para>
+    /// <para>
+    /// <b><c>category_groups.description</c> is the fifth member of that kind and owes a concession its
+    /// neighbours on this table do not, which is precisely why it must not inherit the name's
+    /// paragraph.</b> <c>accounts.name</c>, <c>category_groups.name</c> and <c>payees.name</c> are
+    /// <c>NOT NULL</c>, so their presence says nothing about the person. This one is nullable, and NULL
+    /// is distinguishable from a twenty-nine-byte envelope by looking, so the column announces <i>which
+    /// groups somebody bothered to annotate</i> while announcing nothing about what they wrote. It
+    /// cannot be closed by sealing an empty string into every row: "cleared" and "never filled" are two
+    /// states this product keeps apart on purpose.
+    /// </para>
+    /// <para>
+    /// <b>NEITHER HALF OF THAT MAY BE WRITTEN AS A FIRST, AND <c>budgets.name</c> IS WHY.</b> This
+    /// paragraph twice said something the entry five hundred lines down contradicts, so both are
+    /// narrowed here rather than left to be found: it is <b>not</b> true that every name column is
+    /// <c>NOT NULL</c> — <c>budgets.name</c> is <c>nullable: true</c> in the emitted baseline, which is
+    /// what lets a provisioner write a nameless budget — and it is <b>not</b> the first narrative column
+    /// with no blind index, because that column has none either and never will. Each claim, written as a
+    /// first, would be a per-column argument leaning on a neighbour it had never checked, which is the
+    /// one thing this file exists to refuse.
+    /// </para>
+    /// <para>
+    /// <b>The two absent indexes are different absences and collapsing them is the mistake to avoid.</b>
+    /// On <c>budgets.name</c> the index is missing because a rule was <i>surrendered</i>: per-user name
+    /// uniqueness used to be enforced there and FR-077 gives the column no blind index, so it does not
+    /// come back — every seal draws a fresh nonce, and what survives is <c>NULLS NOT DISTINCT</c>, which
+    /// is a rule about nameless rows rather than about names. On <c>category_groups.description</c>
+    /// nothing was surrendered, because nothing was ever wanted: a note is not looked up, is not unique
+    /// and is not a name, so an index over one would publish a deterministic per-budget fingerprint of
+    /// free text with nothing on the other side asking for it. A lost capability and a mechanism nobody
+    /// asked for read the same in a schema diff and are opposite decisions.
+    /// </para>
+    /// <para>
+    /// <b>The fifth kind is <c>accounts.name_key</c>, and it is a kind rather than a member of the
+    /// one-way three because of what it concedes.</b> It is a keyed digest — HMAC-SHA-256 under an index
+    /// key that never reaches this server — so it looks like the hashes at first glance and its "nothing
+    /// is derived from it" half is genuinely the same. What separates it is that the one-way three are
+    /// each looked up by their own bytes, while this one is DESIGNED TO BE COMPARED: it exists so that
+    /// equality of names comes back as equality of digests, which is the only way a uniqueness rule can
+    /// survive its column being sealed. So it leaks something the other kinds do not — equality within
+    /// one budget — and the entry says so in those words rather than borrowing the envelope's
+    /// concession about length. <b>The bound on that leak is the MESSAGE.</b> The client hashes a
+    /// prefix, the table, the column, the BUDGET IDENTIFIER and the normalised name, so one word filed
+    /// in two budgets of one account is two unrelated digests and the equality stops at the edge of the
+    /// ledger that enforced it. That identifier is refused in any spelling but the one the API hands
+    /// out, never normalised into it, because a second spelling accepted at the writing end is a value
+    /// no key on this side can recompute. What the per-account key bounds is the OTHER direction and
+    /// only that one: it is drawn once per account, so the same name under two accounts is unrelated
+    /// however the budget identifiers fall, and no column of this kind supports cross-account
+    /// correlation or frequency analysis over the population. The two bounds are separate mechanisms
+    /// and must not be filed as one — a key drawn once per account is the same key in both of that
+    /// account's budgets, so it can scope accounts and can never scope budgets, and only the message
+    /// can. Any future blind index is a member of this kind and owes every part of that — what equality
+    /// it exposes, and what scopes the exposure in each direction. <c>payees.name_key</c> pays it in its
+    /// own words, because the equality it exposes is not the same equality: on accounts a duplicate name
+    /// is a nuisance, while on payees the index IS the deduplication of counterparties, so what the
+    /// column announces is a fact about how many distinct parties a person deals with rather than about
+    /// how they organised their money. <c>category_groups.name_key</c> announces the coarsest of them:
+    /// nothing in the product looks a group up by name, so the index exists only to refuse a second row,
+    /// and what is left inside one budget is a short list of pairwise-distinct labels — a filing habit
+    /// rather than a set of counterparties, and one that reaches no further than the ledger it was filed
+    /// in. <c>categories.name_key</c> sits between those two: the same refuse-a-second-row job as its
+    /// group's, over labels that are finer and far more numerous, and still nothing like a set of
+    /// counterparties. Each member states its own equality in its own words, and none of them may
+    /// borrow a neighbour's.
+    /// </para>
+    /// <para>
+    /// <c>session_tokens.token_hash</c> is the newest of the one-way three and the one whose argument is
+    /// least like its neighbour's, which is why the two are written out separately rather than pointed at
+    /// each other. <c>recovery_code_hashes.verifier_hash</c> has to argue that a <i>sibling branch of the
+    /// same secret</i> is safe to hold; this one has to argue only that its input stands in no relation to
+    /// the key hierarchy at all.
+    /// </para>
+    /// </remarks>
+    private static IReadOnlyList<BinaryColumnClassification> Classifications { get; } =
+    [
+        new(
+            "accounts",
+            "name",
+            "an account's name sealed as a narrative field — an AEAD envelope of version, nonce, "
+            + "ciphertext and tag, produced in the browser under the account's content key",
+            "the same argument budgets.name makes, and deliberately not a pointer at it: the content "
+            + "key that seals this is generated in the browser and reaches this server only "
+            + "ENCAPSULATED TO a factor's public key, in the encapsulated_account_keys envelopes, whose "
+            + "private half is itself wrapped under a key-encryption key derived from a recovery factor "
+            + "the operator never holds — a chain the operator cannot start, so the row and everything "
+            + "that could open it are separated by a step that happens on somebody's device. It is "
+            + "CONTENT rather than key material, which inverts the wrapped-key argument rather than joining it. The "
+            + "concession is the same one and is written out rather than glossed: AES-GCM without the "
+            + "key yields nothing but the plaintext's LENGTH, which the column's own length already "
+            + "gives away, so sealing buys nothing against a length oracle and never claimed to. The "
+            + "tag is the other half — associated data is rebuilt from where the ciphertext was found, "
+            + "so an operator who moved one account's name onto another row would produce a value that "
+            + "refuses to open rather than one that opens as somebody else's"),
+        new(
+            "accounts",
+            "name_key",
+            "the blind index over the same name — HMAC-SHA-256 under the account's index key, computed "
+            + "by the client over the normalised text, and what IX_accounts_budget_id_name_key "
+            + "enforces uniqueness over",
+            "IT IS NOT AN ENVELOPE AND THE ENVELOPE ARGUMENT ABOVE MUST NOT BE PASTED OVER IT. There "
+            + "is nothing here to open: a blind index is a keyed digest with no version, no nonce and "
+            + "no tag. Recovering the name from it means inverting HMAC-SHA-256 or guessing the "
+            + "plaintext AND holding the index key, which is generated in the browser beside the "
+            + "content key and reaches this server only as the encapsulated_account_keys envelopes — so the "
+            + "operator can neither invert it nor recompute a candidate to compare against. It "
+            + "unwraps nothing in the second sense too: it is an input to no KDF and no wrapping step, "
+            + "so even a recovered index key opens no envelope, it only lets somebody search this "
+            + "column. WHAT IT DOES LEAK, stated rather than glossed, is EQUALITY WITHIN ONE BUDGET. "
+            + "Two rows in one budget cannot carry the same value, which is the entire point of the "
+            + "column, so an operator reading the table learns that a budget's account names are "
+            + "pairwise distinct — which the unique index already announces — and learns it of that "
+            + "one ledger and no further. ACROSS BUDGETS IT LEAKS NOTHING EITHER, and that bound has "
+            + "its own mechanism rather than being the first one widened: the client's message is "
+            + "prefix, table, column, BUDGET IDENTIFIER and normalised name, so one word filed in two "
+            + "budgets of one account is two unrelated digests. The index key cannot carry that "
+            + "separation, being drawn once per account; the message does. ACROSS ACCOUNTS IT LEAKS "
+            + "NOTHING for a third reason, and the three must not be folded: the key IS per-account, "
+            + "so the same name under two accounts is unrelated however the budget identifiers fall, "
+            + "and this column supports no cross-account correlation and no frequency analysis over "
+            + "the population"),
+        new(
+            "budgets",
+            "name",
+            "a budget's name sealed as a narrative field — an AEAD envelope of version, nonce, "
+            + "ciphertext and tag, produced in the browser under the account's content key",
+            "the content key that seals it is generated in the browser and reaches this server only "
+            + "ENCAPSULATED TO a factor's public key, in the encapsulated_account_keys envelopes next "
+            + "door, whose private half is itself wrapped under a key-encryption key derived from a "
+            + "recovery factor the operator never holds — a chain the operator cannot start, so the "
+            + "row and everything "
+            + "that could open it are separated by a step that happens on somebody's device. This is "
+            + "the reverse of the wrapped-key argument rather than a copy of it: those columns are the "
+            + "key and are safe because nothing here opens them, this one is CONTENT and is safe "
+            + "because the thing that opens it is one of those. What AES-GCM leaks without the key is "
+            + "the plaintext's length, and the column's own length already gives that away, so sealing "
+            + "buys nothing against a length oracle and was never claimed to. The tag is the other "
+            + "half: the associated data is rebuilt from where the ciphertext was found, so an "
+            + "operator who moved one budget's name onto another row would produce a value that "
+            + "refuses to open rather than one that opens as somebody else's"),
+        new(
+            "categories",
+            "name",
+            "a category's name sealed as a narrative field \u2014 an AEAD envelope of version, nonce, "
+            + "ciphertext and tag, produced in the browser under the account's content key",
+            "the same content-key argument budgets.name, accounts.name, category_groups.name and "
+            + "payees.name make, written out again rather than pointed at, because a classification "
+            + "that says \"see above\" stops being a per-column argument: the content key is generated "
+            + "in the browser and reaches this server only ENCAPSULATED TO a factor's public key, in "
+            + "the encapsulated_account_keys envelopes, whose private half is itself wrapped under a "
+            + "key-encryption key derived from a recovery factor the operator never holds — a "
+            + "chain the operator cannot start. WHAT THIS COLUMN IN PARTICULAR STOPS BEING LEGIBLE sits one level FINER than its "
+            + "group's and is the more revealing of the two for exactly that reason: a group called "
+            + "Medical says somebody has medical costs, while the categories under it \u2014 Therapy, "
+            + "Fertility, a named condition \u2014 say which, and there are tens of them per budget "
+            + "rather than a handful. The same concession as its neighbours and no more: AES-GCM "
+            + "without the key yields the plaintext's LENGTH, which the column's own length already "
+            + "gives away. The tag is the other half \u2014 associated data is rebuilt from where the "
+            + "ciphertext was found, so an operator who moved one category's name onto another row "
+            + "would produce a value that refuses to open rather than one that opens as somebody "
+            + "else's"),
+        new(
+            "categories",
+            "description",
+            "the note filed against a category, sealed as a narrative field under the account's "
+            + "content key \u2014 the second sealed free-text column in the product after "
+            + "category_groups.description, and nullable like it",
+            "the content-key half is category_groups.description's and holds for the same reason, but "
+            + "THE ABSENCE CONCESSION IS NOT THE SAME SIZE AND MUST NOT BE PASTED ACROSS. That column "
+            + "announces which of a person's eleven groups they bothered to annotate; this one "
+            + "announces which of their eighty categories they did, which is a longer and more "
+            + "individuating pattern \u2014 an operator learns not that somebody keeps notes, but "
+            + "roughly WHERE in their ledger they keep them, and a cluster of annotated rows under one "
+            + "group is itself a signal about which part of their life needed explaining. It cannot be "
+            + "closed by writing an envelope over an empty string into every row, because \"cleared\" "
+            + "and \"never filled\" are two states the product deliberately keeps apart. The length "
+            + "concession is the ordinary one, under the wider NarrativeFieldLimits.DescriptionBytes "
+            + "band rather than a name's. There is NO description_key and there never will be, for "
+            + "category_groups.description's reason and not budgets.name's: a note is not looked up, is "
+            + "not unique and is not a name, so no mechanism was ever wanted here, whereas on "
+            + "budgets.name a uniqueness rule was surrendered. The tag is the last half \u2014 "
+            + "associated data is rebuilt from where the ciphertext was found, so a note moved onto "
+            + "another row refuses to open rather than opening as somebody else's"),
+        new(
+            "categories",
+            "name_key",
+            "the blind index over the same name \u2014 HMAC-SHA-256 under the account's index key, "
+            + "computed by the client over the normalised text, and what "
+            + "IX_categories_budget_id_name_key enforces uniqueness over",
+            "IT IS NOT AN ENVELOPE AND NO ENVELOPE ARGUMENT MAY BE PASTED OVER IT, least of all the one "
+            + "two entries up on this same table. There is nothing here to open: a blind index is a "
+            + "keyed digest with no version, no nonce and no tag. Recovering the name means inverting "
+            + "HMAC-SHA-256, or guessing the plaintext AND holding the index key, which is generated in "
+            + "the browser beside the content key and reaches this server only as the encapsulated_account_keys "
+            + "envelopes. It unwraps nothing in the second sense either: it is an input to no KDF and "
+            + "no wrapping step, so even a recovered index key opens no envelope, it only lets somebody "
+            + "search this column. WHAT IT LEAKS IS EQUALITY WITHIN ONE BUDGET, and the equality here "
+            + "sits between its two neighbours rather than repeating either. Nothing in the product "
+            + "looks a category up by name, so like category_groups.name_key this index's whole job is "
+            + "to refuse a second row \u2014 but the labels it is refusing duplicates of are FINER and "
+            + "there are far more of them, so the pairwise distinctness it announces inside one ledger "
+            + "is over a longer and more individuating list than the coarse group labels expose, while "
+            + "still being nothing like the set of counterparties payees.name_key gives up. ACROSS "
+            + "BUDGETS IT LEAKS NOTHING, and the mechanism there is the MESSAGE rather than the key: "
+            + "it carries the BUDGET IDENTIFIER as its fourth field, so one label under two "
+            + "budgets of one account is two unrelated digests and no filing habit is legible across a "
+            + "person's ledgers. ACROSS ACCOUNTS IT LEAKS NOTHING for a third reason, and the bounds "
+            + "must not be folded: the index key is per-account, so the same label in two accounts is "
+            + "unrelated however the budget identifiers fall, and this column supports no "
+            + "cross-account correlation and no frequency analysis over the population"),
+        new(
+            "transactions",
+            "description",
+            "the note a person wrote on a single movement of money, sealed as a narrative field under "
+            + "the account's content key \u2014 the third sealed free-text column, and the first on a "
+            + "table with NO NAME COLUMN AT ALL",
+            "the content-key half is the other narrative columns' and holds unchanged. WHAT IS "
+            + "PARTICULAR HERE IS THAT THIS IS THE HIGHEST-VOLUME AND MOST INTIMATE OF THE SEALED "
+            + "COLUMNS, and the entry would be dishonest if it read like a name's. A category name is a "
+            + "label somebody chose once; a transaction note is free text written in the moment beside "
+            + "an amount, a date, a counterparty and a category \u2014 every one of which this row "
+            + "still carries in the clear \u2014 so the note is the last unreadable field on a record "
+            + "that is otherwise fully legible to an operator. Sealing it removes the WORDS and removes "
+            + "nothing else; it does not make the transaction private, and claiming otherwise here "
+            + "would be the exact overstatement this file exists to prevent. THE ABSENCE CONCESSION IS "
+            + "THE WIDEST ON THE SURFACE for the same reason: the column is nullable and there are "
+            + "thousands of rows per budget, so which movements a person annotated is a dense, "
+            + "per-transaction pattern rather than a habit over tens of rows. There is NO "
+            + "description_key here and there could not be one even if somebody wanted it \u2014 this "
+            + "table has no name, no blind index and no unique rule for one to serve. The length "
+            + "concession is the ordinary one under DescriptionBytes. The tag is the last half \u2014 "
+            + "associated data is rebuilt from where the ciphertext was found, so a note moved onto "
+            + "another transaction refuses to open rather than opening as somebody else's"),
+        new(
+            "category_groups",
+            "name",
+            "a category group's name sealed as a narrative field \u2014 an AEAD envelope of version, nonce, "
+            + "ciphertext and tag, produced in the browser under the account's content key",
+            "the same content-key argument budgets.name, accounts.name and payees.name make, written "
+            + "out again rather than pointed at, because a classification that says \"see above\" stops "
+            + "being a per-column argument: the content key is generated in the browser and reaches "
+            + "this server only ENCAPSULATED TO a factor's public key, in the encapsulated_account_keys "
+            + "envelopes, whose private half is itself wrapped under a key-encryption key derived from "
+            + "a recovery factor the operator never holds — a chain the operator cannot start, so "
+            + "the row "
+            + "and everything that could open it are separated by a step that happens on somebody's "
+            + "device. WHAT THIS COLUMN IN PARTICULAR STOPS BEING LEGIBLE is the COARSEST label in a "
+            + "person's ledger and therefore the shortest read: a handful of rows saying Medical, "
+            + "Legal, Debt, Childcare describes a life without a single amount beside them, and there "
+            + "are few enough of them per budget that an operator would not have to look twice. The "
+            + "same concession as its neighbours and no more: AES-GCM without the key yields the "
+            + "plaintext's LENGTH, which the column's own length already gives away. The tag is the "
+            + "other half \u2014 associated data is rebuilt from where the ciphertext was found, so an "
+            + "operator who moved one group's name onto another row would produce a value that refuses "
+            + "to open rather than one that opens as somebody else's"),
+        new(
+            "category_groups",
+            "description",
+            "the note filed against a category group, sealed as a narrative field under the account's "
+            + "content key \u2014 the first sealed FREE-TEXT column in the product, and the second "
+            + "narrative column that is nullable after budgets.name",
+            "the content-key half is its neighbour's and is restated rather than pointed at for the "
+            + "same reason: the key is generated in the browser and reaches this server only "
+            + "ENCAPSULATED TO a factor's public key, in the encapsulated_account_keys envelopes, whose "
+            + "private half is itself wrapped under a key-encryption key derived from a recovery factor "
+            + "the operator never holds — a chain the operator cannot start. IT OWES A CONCESSION NO OTHER ENTRY ON THIS "
+            + "TABLE MAKES, and pasting the name's paragraph over this one is exactly how it would be "
+            + "lost. accounts.name, category_groups.name and payees.name are NOT NULL, so their "
+            + "presence says nothing; this column is nullable, and NULL is distinguishable from "
+            + "twenty-nine bytes at a glance, so the table ANNOUNCES WHICH GROUPS A PERSON BOTHERED TO "
+            + "ANNOTATE without announcing what they wrote. That is small and it is real: an operator "
+            + "learns that this person keeps notes on two of their eleven groups. It cannot be closed "
+            + "by writing an envelope over an empty string into every row, because \"cleared\" and "
+            + "\"never filled\" are two states the product deliberately keeps apart. NOT WRITTEN AS A "
+            + "FIRST, and the correction is the entry's own: budgets.name is nullable too \u2014 the "
+            + "baseline emits it as nullable so a provisioner can write a nameless budget \u2014 so what is "
+            + "particular here is WHAT the absence discloses, an annotation habit per group, and not "
+            + "that a narrative column is nullable at all. The length concession is the ordinary one \u2014 "
+            + "AES-GCM without the key yields the plaintext's length, which the column's own length "
+            + "already gives away, and here it is a wider band than a name's because the cap is "
+            + "NarrativeFieldLimits.DescriptionBytes. There is NO description_key and there never will "
+            + "be: a note is not looked up, is not unique and is not a name, so an index over one would "
+            + "publish a deterministic per-budget fingerprint of somebody's free text with nothing on "
+            + "the other side asking for it \u2014 WHICH IS NOT budgets.name's REASON FOR HAVING NONE, and "
+            + "the two must not be filed together: there a uniqueness rule was surrendered and FR-077 "
+            + "does not restore it, here no mechanism was ever wanted. The tag is the last half \u2014 "
+            + "associated data is rebuilt from where the ciphertext was found, so a note moved onto "
+            + "another row refuses to open rather than opening as somebody else's"),
+        new(
+            "category_groups",
+            "name_key",
+            "the blind index over the same name \u2014 HMAC-SHA-256 under the account's index key, "
+            + "computed by the client over the normalised text, and what "
+            + "IX_category_groups_budget_id_name_key enforces uniqueness over",
+            "IT IS NOT AN ENVELOPE AND NO ENVELOPE ARGUMENT MAY BE PASTED OVER IT, least of all the one "
+            + "two entries up on this same table. There is nothing here to open: a blind index is a "
+            + "keyed digest with no version, no nonce and no tag. Recovering the name means inverting "
+            + "HMAC-SHA-256, or guessing the plaintext AND holding the index key \u2014 which is generated "
+            + "in the browser beside the content key and reaches this server only as the "
+            + "encapsulated_account_keys envelopes, so the operator can neither invert it nor recompute a "
+            + "candidate to compare against. It unwraps nothing in the second sense either: it is an "
+            + "input to no KDF and no wrapping step, so even a recovered index key opens no envelope, "
+            + "it only lets somebody search this column. WHAT IT LEAKS IS EQUALITY WITHIN ONE BUDGET, "
+            + "and the equality here is the WEAKEST of them rather than the same fact one table "
+            + "further on. Nothing in the product looks a group up by name, so this index's whole job "
+            + "is to refuse a second row: what an operator learns is that a budget's group names are "
+            + "pairwise distinct, which the unique index already announces, and nothing beyond that "
+            + "one ledger. ACROSS BUDGETS IT LEAKS NOTHING, and this is the table where that bound "
+            + "does the most work \u2014 coarse labels are exactly the values a person repeats from "
+            + "one ledger to the next \u2014 with the separating done by the MESSAGE rather than the "
+            + "key: the message carries the BUDGET IDENTIFIER as its fourth field, so one label under "
+            + "two budgets of one account is two unrelated digests. What is left is a short, coarse "
+            + "list of distinct labels inside one budget, which is nothing like the set of "
+            + "counterparties payees.name_key exposes, and saying so is what stops the payees wording "
+            + "being pasted here. ACROSS ACCOUNTS IT LEAKS NOTHING for a third reason: the index key "
+            + "is per-account, so the same label in two accounts is unrelated however the budget "
+            + "identifiers fall, and this column supports no cross-account correlation and no "
+            + "frequency analysis over the population"),
+        new(
+            "payees",
+            "name",
+            "a payee's name sealed as a narrative field — an AEAD envelope of version, nonce, "
+            + "ciphertext and tag, produced in the browser under the account's content key",
+            "the same content-key argument accounts.name and budgets.name make, written out again "
+            + "rather than pointed at, because a classification that says \"see above\" stops being a "
+            + "per-column argument: the content key is generated in the browser and reaches this "
+            + "server only ENCAPSULATED TO a factor's public key, in the encapsulated_account_keys "
+            + "envelopes, whose private half is itself wrapped under a key-encryption key derived from "
+            + "a recovery factor the operator never holds — a chain the operator cannot start, so the "
+            + "row and everything "
+            + "that could open it are separated by a step that happens on somebody's device. WHAT THIS "
+            + "COLUMN IN PARTICULAR STOPS BEING LEGIBLE IS WORTH NAMING, because it is the strongest "
+            + "case of any sealed name in the product: a payee list is the set of counterparties one "
+            + "person deals with — a landlord, a pharmacy, a clinic, an employer — and it reads as a "
+            + "life without a single amount beside it. It is also the narrative column with the fewest "
+            + "distinct values per budget, which is what would have made it the easiest of them to "
+            + "read at a glance. The same concession as its neighbours and no more: AES-GCM without "
+            + "the key yields the plaintext's LENGTH, which the column's own length already gives "
+            + "away. The tag is the other half — associated data is rebuilt from where the ciphertext "
+            + "was found, so an operator who moved one payee's name onto another row would produce a "
+            + "value that refuses to open rather than one that opens as somebody else's"),
+        new(
+            "payees",
+            "name_key",
+            "the blind index over the same name — HMAC-SHA-256 under the account's index key, computed "
+            + "by the client over the normalised text, and what IX_payees_budget_id_name_key enforces "
+            + "uniqueness over",
+            "IT IS NOT AN ENVELOPE AND NO ENVELOPE ARGUMENT MAY BE PASTED OVER IT. There is nothing "
+            + "here to open: a blind index is a keyed digest with no version, no nonce and no tag. "
+            + "Recovering the name means inverting HMAC-SHA-256, or guessing the plaintext AND holding "
+            + "the index key — which is generated in the browser beside the content key and reaches "
+            + "this server only as the encapsulated_account_keys envelopes, so the operator can neither invert "
+            + "it nor recompute a candidate to compare against. It unwraps nothing in the second sense "
+            + "either: it is an input to no KDF and no wrapping step, so even a recovered index key "
+            + "opens no envelope, it only lets somebody search this column. WHAT IT LEAKS IS EQUALITY "
+            + "WITHIN ONE BUDGET, and the equality is a different fact from the one accounts.name_key "
+            + "exposes rather than the same fact on another table. Two rows in one budget cannot carry "
+            + "the same value, so an operator reading the table learns that a budget's counterparty "
+            + "names are pairwise distinct — which the unique index already announces — and therefore "
+            + "learns HOW MANY DISTINCT PARTIES a person deals with inside that one ledger, without "
+            + "learning one name. That is a shape of a life rather than a filing habit, which is why "
+            + "this entry states it instead of borrowing the accounts wording. ACROSS BUDGETS IT LEAKS "
+            + "NOTHING, and this is the table where that bound is worth the most: a counterparty "
+            + "recurring in two of a person's ledgers would say something about both, and what keeps "
+            + "it unreadable is the MESSAGE rather than the key — the BUDGET IDENTIFIER is its fourth "
+            + "field, so one counterparty under two budgets of one account is two unrelated digests. "
+            + "ACROSS ACCOUNTS IT LEAKS NOTHING for a third reason, and the bounds must not be folded: "
+            + "the index key is per-account, so the same counterparty in two accounts is unrelated "
+            + "however the budget identifiers fall, and this column supports no cross-account "
+            + "correlation and no frequency analysis over the population"),
+        new(
+            "wrapped_account_keys",
+            "wrapped_private_key",
+            "the PRIVATE half of one recovery factor's ECDH P-256 key pair, WRAPPED UNDER the "
+            + "key-encryption key that factor derives — 167 bytes of CiphertextEnvelope: version, "
+            + "nonce, ciphertext over a PKCS#8 private key, tag",
+            "the key-encryption key it is wrapped under is derived in the browser from a recovery "
+            + "factor and imported non-extractable, so it exists nowhere this row can be read from. "
+            + "AES-GCM without that key yields nothing but the fact that a fixed-width plaintext was "
+            + "sealed, which the column's own length already says. IT IS THE MOST VALUABLE bytea ON "
+            + "THIS SCHEMA AND THE ENTRY SHOULD SAY SO RATHER THAN READ LIKE ITS NEIGHBOURS: this is "
+            + "the value that opens encapsulated_account_keys beside it, so an operator holding it in "
+            + "the clear would hold the account\'s content key and index key by two steps and not one. "
+            + "What keeps it shut is that unwrapping it is the FIRST of those two steps and needs the "
+            + "key-encryption key, which is the one value in this design that never crosses the wire "
+            + "in any form. It unwraps nothing in the second sense either while it is wrapped: the "
+            + "bytes here are an input to no KDF on this side, and this server runs no ECDH at all — "
+            + "nothing is typed for a private key and no route accepts one"),
+        new(
+            "wrapped_account_keys",
+            "encapsulated_account_keys",
+            "the account\'s content key and index key as ONE 64-byte plaintext, content key first, "
+            + "ENCAPSULATED TO the public half of that same factor\'s key pair — 158 bytes of "
+            + "EncapsulatedValueEnvelope: version, ephemeral public key, nonce, ciphertext, tag",
+            "opening it needs the private half, which is the column beside it and is wrapped under a "
+            + "key-encryption key this server has never held — so the two columns are a chain and not "
+            + "a pair, and holding both opens neither. THE VERB IS DIFFERENT FROM ITS NEIGHBOUR\'S AND "
+            + "THE DIFFERENCE IS THE POINT, not a wording preference: that value is WRAPPED UNDER a "
+            + "symmetric key, this one is ENCAPSULATED TO a public key, and the second is what lets a "
+            + "rotation re-key an account without the authenticator being present. It is also why no "
+            + "transposition argument can be inherited from the older shape of this table: the two "
+            + "columns now hold DIFFERENT SUITES AT DIFFERENT WIDTHS — 167 against 158 — so a value "
+            + "filed in the wrong column is refused by that column\'s own check constraints rather "
+            + "than discovered in a browser months later. What remains unguarded is INSIDE this value, "
+            + "one 64-byte plaintext holding two 32-byte keys whose ORDER no check on this side can "
+            + "see; that is a contract between clients and the entity carries the argument in full"),
+        new(
+            "key_rotations",
+            "staged_manifest",
+            "the factor manifest a rotation in flight committed to — the same kind of list of every "
+            + "recovery factor\'s PUBLIC key that factor_manifests.manifest holds, sealed as one AEAD "
+            + "envelope under the NEXT generation\'s content key, and staged beside the generation "
+            + "still in force so that a completion step can tell whether the live set has moved under it",
+            "it is sealed under the NEXT generation\'s content key, never the current one, and that key "
+            + "reaches this server only ENCAPSULATED TO a factor\'s public key, in the "
+            + "key_rotation_seals envelopes, whose private half is itself wrapped under a "
+            + "key-encryption key derived from a recovery factor the operator never holds — a chain the "
+            + "operator cannot start. Written out rather than pointed at factor_manifests.manifest, "
+            + "because a classification that says \"see the other table\" stops being a per-column "
+            + "argument. The public keys inside would open nothing even if read: encapsulating to a "
+            + "public key is one-way. THE CONCESSION IS WHAT AN OPERATOR LEARNS WITHOUT OPENING IT. Its "
+            + "LENGTH gives up how many recovery factors the run committed to, because every entry is "
+            + "the same width, and the row existing at all says a rotation is in flight. WHAT IS NEW "
+            + "HERE IS THE SIMULTANEITY RATHER THAN THE BYTES, and it is the one thing a reader should "
+            + "check rather than assume: while a run is in flight the server holds TWO manifests for "
+            + "one account, sealed under two unrelated content keys, and neither is a step toward the "
+            + "other, so two is worth exactly what one is. The tag is the other half, and it defends "
+            + "integrity as well as secrecy — an operator who added, removed or swapped an entry "
+            + "produces a manifest the client refuses rather than one it believes, which is the whole "
+            + "reason the staged copy is stored rather than re-read"),
+        new(
+            "key_rotation_seals",
+            "encapsulated_account_keys",
+            "one surviving factor\'s copy of the NEXT generation of the account\'s content key and index "
+            + "key, encapsulated to that factor\'s public key — the same 158-byte "
+            + "EncapsulatedValueEnvelope, at the same width, that a completion step copies into "
+            + "wrapped_account_keys.encapsulated_account_keys",
+            "opening it needs that factor\'s private half, which lives wrapped under a key-encryption "
+            + "key derived on somebody\'s device and never reaches this server — written out rather "
+            + "than pointed at its sibling, because a classification that says \"see above\" stops "
+            + "being a per-column argument. WHAT IS NEW HERE IS THE SIMULTANEITY, and it is the one "
+            + "thing a reader should check rather than assume: for as long as a run is in flight the "
+            + "server holds TWO generations of one account\'s keys at once, this row and the live one "
+            + "next door. That is a second encapsulation and not a second chance at the first — the two "
+            + "are independent encapsulations of independent 32-byte keys, not a key and a re-key of "
+            + "it, so there is no relation between the ciphertexts for an operator to exploit, and "
+            + "holding both opens neither. THE SEPARATION ARGUMENT IS THE ONE THIS COLUMN OWES IN ITS "
+            + "OWN WORDS. A staged value and a promoted one are two rows for one factor in two tables, "
+            + "and what stops a half-finished run from leaving an account sealed under a generation the "
+            + "completion step never staged is the composite foreign key to "
+            + "wrapped_account_keys(factor_id, user_id) beside the tag — the one makes a seal against "
+            + "another account\'s factor unstorable, the other makes a value moved between rows "
+            + "unopenable. PRODUCING THIS VALUE NEEDS ONLY A PUBLIC KEY, which is the capability the "
+            + "table exists for and is not a weakness: a run can stage a copy for an authenticator in a "
+            + "drawer, and an operator who forged one would produce bytes no client can open, not bytes "
+            + "that open as somebody else\'s"),
+        new(
+            "factor_manifests",
+            "manifest",
+            "the account's manifest of every recovery factor's PUBLIC key, sealed by the client as one "
+            + "AEAD envelope under the account's content key — the sole carrier of those keys, since "
+            + "no per-row public key column exists beside it",
+            "the content key it is sealed under is generated in the browser and reaches this server "
+            + "only ENCAPSULATED TO a factor's public key, in the encapsulated_account_keys envelopes, "
+            + "whose private half is itself wrapped under a key-encryption key derived from a recovery "
+            + "factor the operator never holds — a chain the operator cannot start, so this server "
+            + "cannot read a byte of it. It is sealed like CONTENT but is not a person's words, and it "
+            + "must not borrow passkey_public_keys.public_key_cose's argument: that public key the "
+            + "server reads in the clear, and these it cannot. The public keys inside would open "
+            + "nothing even if read — the account's content and index keys are ENCAPSULATED TO them, "
+            + "and encapsulating to a public key is one-way. THE CONCESSION IS WHAT AN OPERATOR LEARNS "
+            + "WITHOUT OPENING IT, and it is larger than the narrative columns' because of what the "
+            + "length means here. AES-GCM leaks the plaintext's LENGTH, and every entry in a manifest "
+            + "is the same width, so the length gives up HOW MANY recovery factors the account holds — "
+            + "metadata about somebody's recovery arrangements rather than about their money, and "
+            + "something the credentials and wrapped_account_keys row counts already give away. The "
+            + "rotation_epoch beside it is plaintext too, and says how many times the set has moved. "
+            + "It unwraps nothing in the second sense either: no value here is an input to a KDF or a "
+            + "wrapping step on this side. The tag is the other half — the set is sealed as a SET, so "
+            + "an operator who added, removed or swapped an entry produces a manifest the client "
+            + "refuses rather than one it believes"),
+        new(
+            "passkey_public_keys",
+            "public_key_cose",
+            "the COSE encoding of a passkey's public key",
+            "it is a PUBLIC key, published by design. It verifies an assertion signature and decrypts "
+            + "nothing, and it is not the counterpart of anything in this design's key hierarchy — "
+            + "the key-encryption key is symmetric and derived from the authenticator's PRF output, "
+            + "which no public key stands in any relation to"),
+        new(
+            "passkey_public_keys",
+            "webauthn_credential_id",
+            "the authenticator's opaque handle for one credential",
+            "it SELECTS a key and is not one. The authenticator uses it to find the private key it "
+            + "will sign with, and neither that private key nor the PRF output evaluated beside it "
+            + "is derivable from the handle — an authenticator that leaked either on presentation of "
+            + "a handle would have failed WebAuthn, not this design"),
+        new(
+            "recovery_code_hashes",
+            "verifier_hash",
+            "SHA-256 of a verifier the client derived from one recovery code",
+            "two one-way steps and a different HKDF `info` stand between it and the key-encryption "
+            + "key. The verifier and that key are sibling branches over the same code, so recovering "
+            + "the key from this column means inverting SHA-256 to reach the verifier and then "
+            + "inverting HKDF to reach the code. That is the whole reason a hash of a verifier is "
+            + "storable where a code is not"),
+        new(
+            "session_tokens",
+            "token_hash",
+            "SHA-256 of the 32-byte session token a cookie presents, and the identity of the row",
+            "it is one-way and it stands in no relation to the key hierarchy at all. The token it "
+            + "digests is a uniform value this server mints to name a session row; it is an input to "
+            + "no KDF, no PRF eval and no wrapping step, so inverting SHA-256 would yield a handle "
+            + "that opens a session and still not one byte a wrapped envelope could be unsealed with. "
+            + "That is a different argument from recovery_code_hashes' next door, which has to say "
+            + "why a sibling branch of the same secret is safe to store"),
+        new(
+            "webauthn_challenges",
+            "challenge",
+            "the 32-byte nonce the server minted for one ceremony",
+            "nothing is derived from it. The client signs over it and the server compares it and "
+            + "expires it; it is an input to no KDF on either side, and the PRF eval input the "
+            + "authenticator is asked for is a fixed domain string rather than this value"),
+    ];
+
+    /// <summary>
+    /// The shortest a clause saying what a column holds may be.
+    /// </summary>
+    /// <remarks>
+    /// Low, because the member is one clause of fact and a floor that forced padding would buy nothing.
+    /// It is above every one-word placeholder — <c>bytes</c>, <c>a key</c>, <c>opaque</c> — which is the
+    /// whole job: a column whose contents nobody can write in a clause is already the defect.
+    /// </remarks>
+    private const int MinimumHoldsLength = 24;
+
+    /// <summary>
+    /// The shortest an argument that a column unwraps nothing may be.
+    /// </summary>
+    /// <remarks>
+    /// Higher than <see cref="MinimumHoldsLength" /> and higher than the vocabulary's floor next door,
+    /// because this member carries FR-064 and the sentence it has to beat is a restatement of the
+    /// verdict: <c>not a key</c>, <c>it is a hash</c>, <c>safe to store</c> all fit in a clause. Saying
+    /// what stands between the stored bytes and a key-encryption key does not.
+    /// </remarks>
+    private const int MinimumReasonLength = 80;
+
+    /// <summary>
+    /// One member of the request surface that can carry text, and what a client puts in it.
+    /// </summary>
+    /// <param name="Owner">The declaring type, spelled the way the surface walk reports it.</param>
+    /// <param name="Member">The member name, in the casing the CLR reports it.</param>
+    /// <param name="Carries">
+    /// What the value <b>is</b>, and — where the answer is not obvious from that — what keeps it from
+    /// being something a wrapped key could be opened with. One member rather than the two
+    /// <see cref="BinaryColumnClassification" /> carries, because most of this surface is a person's own
+    /// typing and splitting a fact from an argument there would produce fifty restatements of "nobody's
+    /// key". The members where the argument is real are the ones that say it.
+    /// </param>
+    private sealed record TextMemberArgument(string Owner, string Member, string Carries)
+    {
+        /// <summary>The key both directions of the set comparison are made on.</summary>
+        public string Qualified => $"{Owner}.{Member}";
+    }
+
+    /// <summary>
+    /// Every member of the request surface that can carry text, and what each one holds.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Written down rather than derived, and in the opposite direction from the surface it is compared
+    /// against.</b> A derived list would restate the reflection walk and could never disagree with it.
+    /// What has to be authored is the sentence, one per member, and the set comparison is what makes
+    /// authoring one unavoidable.
+    /// </para>
+    /// <para>
+    /// The WebAuthn assertion's five members recur on five request records — erasure, revocation,
+    /// sign-in, issuing a card, and beginning a rotation — and each copy is entered separately rather
+    /// than pointed at a shared argument. That is deliberate in the same way the two hash columns above
+    /// are: the day one of those routes takes a sixth member, the entry beside it is where a reader
+    /// looks, and a shared argument would have to be widened in a place that answers for five routes at
+    /// once.
+    /// </para>
+    /// <para>
+    /// <b>Those copies are word for word identical, and that is a decision rather than five authors
+    /// being lazy.</b> The members themselves are byte-identical across the five records on purpose —
+    /// a caller comparing the gates must learn nothing from a difference between them — so five
+    /// separately worded arguments for one value would be four fabricated distinctions, and a reader
+    /// diffing two entries would find a difference that says nothing about either route. Nothing in
+    /// <see cref="CompareToTextArguments" /> asks these strings to differ: an entry is judged
+    /// non-blank and at least <see cref="MinimumCarriesLength" /> long and never against its
+    /// neighbours. Where a route's copy of a recurring member really does carry a different argument —
+    /// <c>Manifest</c> on each of the four routes that reseal one — the entry says what differs and
+    /// nothing else does.
+    /// </para>
+    /// </remarks>
+    private static IReadOnlyList<TextMemberArgument> TextMemberArguments { get; } =
+    [
+        new("AccountEndpoints.UpdateAccountRequest", "Name",
+            "base64url over the AEAD envelope holding the name a person gave one of their accounts. It "
+            + "is NOT the name as they typed it — it was sealed in the browser under a key derived from "
+            + "a recovery factor this server never sees, so what crosses here is ciphertext the operator "
+            + "cannot open and this server cannot measure characters in"),
+        new("AccountEndpoints.UpdateAccountRequest", "NameKey",
+            "base64url over the 32-byte blind index the client computed over the SAME name it sealed "
+            + "beside this: HMAC-SHA-256 under the account's index key, which lives in a browser. It is "
+            + "a keyed digest and not an envelope — nothing to open and no way back to the text — and it "
+            + "is what makes uniqueness of names survive a column the database cannot read. Not key "
+            + "material: it is an output taken UNDER a key, and the key itself only ever crosses this "
+            + "wire sealed, as AccountKeyEntry.EncapsulatedAccountKeys"),
+        new("AccountErasureEndpoints.ErasureRequest", "AuthenticatorData",
+            "base64url over the authenticator's signed bytes: a relying-party hash, flags and a counter"),
+        new("AccountErasureEndpoints.ErasureRequest", "ClientDataJson",
+            "base64url over the JSON the browser signed — type, challenge, origin — a public transcript"),
+        new("AccountErasureEndpoints.ErasureRequest", "CredentialId",
+            "base64url over the authenticator's opaque handle, which selects a key and is not one"),
+        new("AccountErasureEndpoints.ErasureRequest", "Signature",
+            "base64url over an assertion signature, verified with a published public key"),
+        new("AccountErasureEndpoints.ErasureRequest", "UserHandle",
+            "base64url over the sixteen bytes of the account id the authenticator kept"),
+        new("AccountKeyEndpoints.AccountKeyEntry", "WrappedPrivateKey",
+            "a response member: base64url over the 167-byte AEAD envelope holding the PRIVATE HALF of "
+            + "one factor's ECDH key pair, WRAPPED UNDER the key-encryption key that factor derives. It "
+            + "is key material leaving the server, and that is this route rather than a leak: the key "
+            + "that would unwrap it is derived in the browser from a recovery factor — an "
+            + "authenticator's prf output, or a recovery code — and neither of those ever reaches this "
+            + "server, so the operator handing these bytes back cannot unwrap them and never could. What "
+            + "the census refuses is an UNWRAPPED key crossing the wire; a wrapped one crossing is the "
+            + "design"),
+        new("AccountKeyEndpoints.AccountKeyEntry", "EncapsulatedAccountKeys",
+            "a response member: base64url over the 158-byte encapsulation holding BOTH account keys as "
+            + "one plaintext, content key first, ENCAPSULATED TO the public half of the same factor's "
+            + "key pair. Written out rather than pointed at its neighbour because it is a value of a "
+            + "DIFFERENT SUITE at a different width, and the verb is the difference: that one is wrapped "
+            + "under a symmetric key, this one is encapsulated to a public key, and the client runs them "
+            + "in that order or gets an authentication failure naming nothing. The two are a CHAIN and "
+            + "not a pair — opening this needs the private half the member beside it carries — so an "
+            + "operator holding both opens neither"),
+        new("AccountKeyEndpoints.AccountKeysResponse", "Manifest",
+            "a response member, and THE ONE MEMBER ON THIS SURFACE SEALED UNDER A DIFFERENT KEY FROM "
+            + "ITS NEIGHBOURS: base64url over the account's list of its recovery factors' PUBLIC keys, "
+            + "sealed by the client as one AEAD envelope under the account's CONTENT KEY — or null for "
+            + "an account holding no manifest row, which since registration writes the first one at "
+            + "epoch 1 means only an account created before that landed. The two members above it are "
+            + "key material, and what licenses them is that the key-encryption key at the root of "
+            + "their chain never reaches this server. This one is sealed under the content key itself, "
+            + "which reaches this server only ENCAPSULATED TO a factor's public key, whose private half "
+            + "is wrapped under a key-encryption key derived in a browser from a factor this server has "
+            + "never seen — a chain the operator cannot start, so the operator handing these bytes back "
+            + "cannot open them. And what is inside would open nothing even if read, because a public "
+            + "half is the thing a value is ENCAPSULATED TO. What it does disclose is stated rather than "
+            + "waved away, and is why DataInventory classifies the column EXCLUDED rather than harmless: "
+            + "its LENGTH says how many recovery factors the account holds, because every entry is the "
+            + "same width, and RotationEpoch beside it is plaintext. It is sealed as a SET — a per-row "
+            + "public key column would be unforgeable one row at a time and would leave a client no way to ask whether it was looking at all of "
+            + "them — which is also why this member sits on the response beside RotationEpoch and not "
+            + "inside AccountKeyEntry"),
+        new("CategoryEndpoints.UpdateCategoryRequest", "Description",
+            "base64url over the AEAD envelope holding a person's own note about one of their categories "
+            + "\u2014 or absent, which CLEARS the note, because this route is a PUT and a PUT is a full "
+            + "replacement. It is NOT the note as they typed it; nothing on this route is any more. It "
+            + "was sealed in the browser, bound to the row id in the PATH rather than to a member of "
+            + "this body, under a key derived from a recovery factor this server never sees"),
+        new("CategoryEndpoints.UpdateCategoryRequest", "Name",
+            "base64url over the AEAD envelope holding the name a person is giving one of their "
+            + "categories. IT IS NOT THE NAME AS THEY TYPED IT, which is what this argument said until "
+            + "this slice and is the sentence to check rather than the member list: a census that "
+            + "compares member NAMES cannot see an argument going false, so an entry left describing "
+            + "plaintext keeps passing forever. It was sealed in the browser, bound to the row id in the "
+            + "PATH, under a key derived from a recovery factor this server never sees"),
+        new("CategoryEndpoints.UpdateCategoryRequest", "NameKey",
+            "base64url over the 32-byte blind index the client computed over the SAME name it sealed "
+            + "beside this: HMAC-SHA-256 under the account's index key, which lives in a browser. A "
+            + "keyed digest and not an envelope, and not key material \u2014 the index key itself "
+            + "crosses this wire only sealed, as AccountKeyEntry.EncapsulatedAccountKeys. IT IS REQUIRED RATHER "
+            + "THAN OPTIONAL, and that is this member's own point: Category.Update writes both halves in "
+            + "one statement, so a body carrying a new envelope without a new index would leave the row "
+            + "holding ciphertext under the PREVIOUS name's index \u2014 invisible on this side "
+            + "forever, because recomputing a digest needs a key this server does not have"),
+        new("CategoryGroupEndpoints.UpdateCategoryGroupRequest", "Description",
+            "base64url over the AEAD envelope holding a person's own note about one of their category "
+            + "groups \u2014 or absent, which is a group filing no note and is NOT the same as an envelope "
+            + "over an empty string. It is NOT the note as they typed it; nothing on this route is. It "
+            + "was sealed in the browser, bound to the row id in the PATH rather than to a member of "
+            + "this body, under a key derived from a recovery factor this server never sees"),
+        new("CategoryGroupEndpoints.UpdateCategoryGroupRequest", "Name",
+            "base64url over the AEAD envelope holding the name a person is giving one of their category "
+            + "groups. It is NOT the name as they typed it \u2014 that is what this member used to be, and "
+            + "the change is the point of the slice. It was sealed in the browser, bound to the row id "
+            + "in the PATH, under a key derived from a recovery factor this server never sees"),
+        new("CategoryGroupEndpoints.UpdateCategoryGroupRequest", "NameKey",
+            "base64url over the 32-byte blind index the client computed over the SAME name it sealed "
+            + "beside this, under the account's index key. A keyed digest, not an envelope, and not key "
+            + "material \u2014 the index key itself crosses this wire only sealed, as "
+            + "AccountKeyEntry.EncapsulatedAccountKeys. It rides the update body because a rename must rewrite "
+            + "both halves in one statement: an envelope written without its index leaves the row "
+            + "indexed under the name it no longer holds, which nothing on this side can detect"),
+        new("CreateAccountCommand", "CurrencyCode",
+            "an ISO 4217 code chosen from the currencies this product seeds"),
+        new("CreateAccountCommand", "Id",
+            "the row identifier the CLIENT minted, as text rather than as a uuid — the one spelling this "
+            + "API accepts and the one it hands back. It carries no secret; it is here because it is the "
+            + "associated data the Name envelope beside it was sealed against, so a spelling this server "
+            + "cannot reproduce is a name that never opens again"),
+        new("CreateAccountCommand", "Name",
+            "base64url over the AEAD envelope holding the name a person is giving a new account. It is "
+            + "NOT the name as they typed it — it was sealed in the browser, bound to the Id above, "
+            + "under a key derived from a recovery factor this server never sees"),
+        new("CreateAccountCommand", "NameKey",
+            "base64url over the 32-byte blind index the client computed over the SAME name it sealed "
+            + "beside this, under the account's index key. A keyed digest, not an envelope, and not key "
+            + "material — the index key itself crosses this wire only sealed, as "
+            + "AccountKeyEntry.EncapsulatedAccountKeys"),
+        new("CreateCategoryCommand", "Description",
+            "base64url over the AEAD envelope holding a person's own note about a category they are "
+            + "creating \u2014 or absent, which is a category filing no note. THE TWO ARE DIFFERENT "
+            + "ROWS: an emptied note seals to a legal twenty-nine-byte envelope and an unwritten one is "
+            + "NULL, so this member is judged with `is null` and never with a spelling that folds the "
+            + "empty string into absence. It was sealed in the browser, bound to the Id below, under a "
+            + "key derived from a recovery factor this server never sees"),
+        new("CreateCategoryCommand", "Id",
+            "the row identifier the CLIENT minted, as text rather than as a uuid \u2014 the one spelling "
+            + "this API accepts and the one it hands back. It carries no secret; it is here because it "
+            + "is the associated data the two envelopes beside it were sealed against. Written out "
+            + "rather than pointed at CreatePayeeCommand.Id because what an unopenable row COSTS "
+            + "differs: this row seals TWO narrative members against this identifier, so a spelling "
+            + "this server cannot reproduce costs a name and a note together rather than one value"),
+        new("CreateCategoryCommand", "Name",
+            "base64url over the AEAD envelope holding the name a person is giving a new category. IT IS "
+            + "NOT THE NAME AS THEY TYPED IT, which is what this argument said until this slice. It was "
+            + "sealed in the browser, bound to the Id above, under a key derived from a recovery factor "
+            + "this server never sees, so this side can neither read it nor measure characters in it"),
+        new("CreateCategoryCommand", "NameKey",
+            "base64url over the 32-byte blind index the client computed over the SAME name it sealed "
+            + "beside this, under the account's index key. A keyed digest, not an envelope, and not key "
+            + "material. It is what IX_categories_budget_id_name_key enforces one-name-per-budget over, "
+            + "the case folding having moved into the client's normalisation before the HMAC \u2014 so "
+            + "this server no longer performs it and no constraint here can be written to it"),
+        new("CreateCategoryGroupCommand", "Description",
+            "base64url over the AEAD envelope holding a person's own note about a category group they "
+            + "are creating \u2014 or absent, which is a group filing no note. THE TWO ARE DIFFERENT ROWS "
+            + "and the distinction survives the whole way down: an emptied note seals to a legal "
+            + "twenty-nine-byte envelope and an unwritten one is NULL, so this member is judged with "
+            + "`is null` and never with a spelling that folds the empty string into absence. It was "
+            + "sealed in the browser, bound to the Id below, under a key derived from a recovery factor "
+            + "this server never sees"),
+        new("CreateCategoryGroupCommand", "Id",
+            "the row identifier the CLIENT minted, as text rather than as a uuid \u2014 the one spelling "
+            + "this API accepts and the one it hands back. It carries no secret; it is here because it "
+            + "is the associated data BOTH narrative members beside it were sealed against, which is "
+            + "what makes it differ from CreateAccountCommand.Id and CreatePayeeCommand.Id rather than "
+            + "restate them: a spelling this server cannot reproduce costs the group its name AND the "
+            + "note filed against it, in one row, with every constraint satisfied and nothing red"),
+        new("CreateCategoryGroupCommand", "Name",
+            "base64url over the AEAD envelope holding the name a person is giving a new category group. "
+            + "It is NOT the name as they typed it \u2014 it was sealed in the browser, bound to the Id "
+            + "above, under a key derived from a recovery factor this server never sees"),
+        new("CreateCategoryGroupCommand", "NameKey",
+            "base64url over the 32-byte blind index the client computed over the SAME name it sealed "
+            + "beside this, under the account's index key. A keyed digest, not an envelope, and not key "
+            + "material \u2014 the index key itself crosses this wire only sealed, as "
+            + "AccountKeyEntry.EncapsulatedAccountKeys. What it buys on THIS table is the narrowest of any "
+            + "blind index the product carries: nothing looks a group up by name, so it exists only to "
+            + "refuse a second group under a name this budget already holds"),
+        new("CreatePayeeCommand", "Id",
+            "the row identifier the CLIENT minted, as text rather than as a uuid — the one spelling this "
+            + "API accepts and the one it hands back. It carries no secret; it is here because it is the "
+            + "associated data the Name envelope beside it was sealed against, so a spelling this server "
+            + "cannot reproduce is a name that never opens again. Written out rather than pointed at "
+            + "CreateAccountCommand.Id because what an unopenable name COSTS differs: an account gets one "
+            + "unreadable row, while a payee the client cannot read is a payee it cannot match, so it "
+            + "mints a second one for the same counterparty and the deduplication this table exists for "
+            + "fails silently"),
+        new("CreatePayeeCommand", "Name",
+            "base64url over the AEAD envelope holding the name a person is giving a new payee. It is NOT "
+            + "who they say they paid as they typed it — that is what this member used to be, on a "
+            + "transaction body, and the change is the point of the slice. It was sealed in the browser, "
+            + "bound to the Id above, under a key derived from a recovery factor this server never sees, "
+            + "so this side can neither read it nor measure characters in it"),
+        new("CreatePayeeCommand", "NameKey",
+            "base64url over the 32-byte blind index the client computed over the SAME name it sealed "
+            + "beside this, under the account's index key. A keyed digest, not an envelope, and not key "
+            + "material — the index key itself crosses this wire only sealed, as "
+            + "AccountKeyEntry.EncapsulatedAccountKeys. On this table it is also what REPLACED a server-side "
+            + "lookup: the server used to fold a payee name's case and re-read the table, and it can do "
+            + "neither now, so uniqueness of counterparties rests entirely on this value"),
+        new("CreateTransactionCommand", "Id",
+            "the row identifier the CLIENT minted, as text rather than as a uuid \u2014 the one spelling "
+            + "this API accepts. It carries no secret; it is here because it is the associated data the "
+            + "Description envelope on this same body was sealed against. Written out rather than "
+            + "pointed at CreateCategoryCommand.Id because what an unopenable row COSTS differs again: "
+            + "this row seals ONE narrative member, so a spelling this server cannot reproduce costs the "
+            + "note and nothing else \u2014 and the note is the only member on a transaction that was "
+            + "ever unreadable, so the row degrades to exactly what it was before the sealing rather "
+            + "than becoming unusable. AccountId, PayeeId and CategoryId stay uuids on this same body "
+            + "and the asymmetry is not drift: none of them is associated data for anything, so the "
+            + "spellings folding together costs nothing"),
+        new("CreateTransactionCommand", "Description",
+            "base64url over the AEAD envelope holding a person's own note about one transaction \u2014 "
+            + "or absent, which is a transaction filing no note, and `\"\"` which is neither and "
+            + "answers 400. IT IS NOT THE NOTE AS THEY TYPED IT, which is what this argument said until "
+            + "this slice. Sealed in the browser, bound to the Id on this same body, under a key derived "
+            + "from a recovery factor this server never sees. This is the highest-volume narrative "
+            + "member on the surface and the last unreadable field on a record whose amount, date, "
+            + "account, payee and category all still cross in the clear"),
+        new("CredentialEndpoints.CredentialListEntry", "Type",
+            "a response member: one credential's type, as CredentialTypeSpelling writes it"),
+        new("CredentialEndpoints.RevocationRequest", "AuthenticatorData",
+            "base64url over the authenticator's signed bytes: a relying-party hash, flags and a counter"),
+        new("CredentialEndpoints.RevocationRequest", "ClientDataJson",
+            "base64url over the JSON the browser signed — type, challenge, origin — a public transcript"),
+        new("CredentialEndpoints.RevocationRequest", "CredentialId",
+            "base64url over the authenticator's opaque handle, which selects a key and is not one"),
+        new("CredentialEndpoints.RevocationRequest", "Manifest",
+            "base64url over an AEAD envelope of 29 to 4096 bytes SEALED UNDER the account's content key, "
+            + "listing every recovery factor and its PUBLIC half, resealed here because this request "
+            + "takes one OUT of the set. The same value and the same argument as "
+            + "PasskeyEndpoints.RegistrationRequest.Manifest — this server cannot open it, so what the "
+            + "list contains is held by the authentication tag and by the client that can verify it. What "
+            + "is different on this route is the direction, and it is worth naming because it decides "
+            + "what a stale one COSTS: the factor this removes takes its wrapped_account_keys row with "
+            + "it by the database's own cascade, so a manifest that still named it would have the next "
+            + "rotation encapsulate the account's keys to an authenticator the person has just taken "
+            + "away — very often one they took away because somebody else has it"),
+        new("CredentialEndpoints.RevocationRequest", "Signature",
+            "base64url over an assertion signature, verified with a published public key"),
+        new("CredentialEndpoints.RevocationRequest", "UserHandle",
+            "base64url over the sixteen bytes of the account id the authenticator kept"),
+        new("KeyRotationEndpoints.BeginRotationRequest", "AuthenticatorData",
+            "base64url over the authenticator's signed bytes: a relying-party hash, flags and a counter"),
+        new("KeyRotationEndpoints.BeginRotationRequest", "ClientDataJson",
+            "base64url over the JSON the browser signed — type, challenge, origin — a public transcript"),
+        new("KeyRotationEndpoints.BeginRotationRequest", "CredentialId",
+            "base64url over the authenticator's opaque handle, which selects a key and is not one"),
+        new("KeyRotationEndpoints.BeginRotationRequest", "Manifest",
+            "base64url over an AEAD envelope of 29 to 4096 bytes SEALED UNDER the NEXT generation's "
+            + "content key, never the one in force, listing every recovery factor and its PUBLIC half, "
+            + "staged here as the list the run this request opens will file when it completes. The same "
+            + "kind of value and the same argument as PasskeyEndpoints.RegistrationRequest.Manifest, "
+            + "one generation on: that next content key reaches this server only encapsulated, in the "
+            + "seals this same run stages, so this server cannot open it, and what the "
+            + "list contains is held by the authentication tag and by the client that can verify it, and "
+            + "a private key arriving in this member would be a secret the operator could reach with "
+            + "nothing able to notice. WHAT IS DIFFERENT ON THIS ROUTE IS WHERE THE FRAMING IS JUDGED, "
+            + "and it is why this entry is not a copy of its three siblings: the command this body "
+            + "becomes carries the manifest as BYTES where the revocation's, the card's and "
+            + "registration's all carry text, so the wire string has stopped existing by the time the "
+            + "Application ring sees it and the alphabet, the framing floor and the ceiling are applied "
+            + "at the endpoint instead — the one manifest-carrying route where that decode sits outside "
+            + "a handler. It moves the refusal and not the verdict: a decode one ring out is still a "
+            + "decode of FRAMING, which is the whole of what any ring on this side can judge about a "
+            + "value sealed under a key this server has never held"),
+        new("KeyRotationEndpoints.BeginRotationRequest", "Signature",
+            "base64url over an assertion signature, verified with a published public key"),
+        new("KeyRotationEndpoints.BeginRotationRequest", "UserHandle",
+            "base64url over the sixteen bytes of the account id the authenticator kept"),
+        new("KeyRotationEndpoints.ResealedAccountRequest", "Name",
+            "base64url over the AEAD envelope holding one account's name, re-sealed under the NEXT "
+            + "generation's content key. The same kind of value as "
+            + "AccountEndpoints.UpdateAccountRequest.Name and the same verdict, and what is this route's "
+            + "own is that BOTH generations of the key are ones this server has never held: the one the "
+            + "row is sealed under now, and the one the browser drew this envelope under. An operator "
+            + "watching a whole rotation go by sees every narrative value in the account cross the wire "
+            + "twice and can open neither copy. THERE IS NO ROW IDENTIFIER MEMBER TO ARGUE FOR BESIDE "
+            + "THIS ONE, which is the difference from the create bodies: a create carries Id as text "
+            + "because it is the associated data the envelope was sealed against, while a chunk names a "
+            + "row this server already rendered an identifier for, so the arm's id is a uuid and never "
+            + "reaches this census at all"),
+        new("KeyRotationEndpoints.ResealedAccountRequest", "NameKey",
+            "base64url over the 32-byte blind index recomputed over the SAME name re-sealed beside it, "
+            + "under the NEXT generation's index key. A keyed digest and not an envelope — nothing to "
+            + "open and no way back to the text — and NOT NARRATIVE: a blind index has a kind of its own "
+            + "in this product precisely so nobody reads it as a person's typing. Not key material "
+            + "either: it is an output taken UNDER a key, and the index key itself crosses this wire "
+            + "only sealed, as the second half of KeyRotationEndpoints.SealRequest's 64-byte plaintext. "
+            + "It rides this arm because a rotation replaces the index key as well as the content key, "
+            + "so a chunk carrying the envelope alone would leave the row indexed under a generation "
+            + "nothing can recompute — invisible on this side for ever, because recomputing a digest "
+            + "needs a key this server does not have"),
+        new("KeyRotationEndpoints.ResealedCategoryGroupRequest", "Description",
+            "base64url over the AEAD envelope holding a person's own note about one of their category "
+            + "groups, re-sealed under the NEXT generation's content key — or ABSENT, which on this "
+            + "route does NOT clear the note the way the PUT body next door does. It is the one member "
+            + "of this arm whose absence is judged rather than obeyed: NarrativeReseal refuses a reseal "
+            + "that changes whether the column holds a value in either direction, so leaving it out of "
+            + "an entry whose row holds a note is a 400 and not a way to skip the column. Contents "
+            + "remain unreadable here as everywhere — sealed in the browser under a key derived from a "
+            + "recovery factor this server never sees"),
+        new("KeyRotationEndpoints.ResealedCategoryGroupRequest", "Name",
+            "base64url over the AEAD envelope holding the name of one category group, re-sealed under "
+            + "the NEXT generation's content key. Ciphertext this server cannot open, on the arm where "
+            + "the row carries TWO narrative members against one identifier — so a chunk that named this "
+            + "group and got either half wrong costs the group its name AND the note filed against it, "
+            + "with every constraint satisfied and nothing red"),
+        new("KeyRotationEndpoints.ResealedCategoryGroupRequest", "NameKey",
+            "base64url over the 32-byte blind index recomputed over the SAME name re-sealed beside it, "
+            + "under the NEXT generation's index key. A keyed digest, not an envelope, and NOT "
+            + "NARRATIVE. What it buys on this table is the narrowest of any blind index the product "
+            + "carries — nothing looks a group up by name, so it exists only to refuse a second group "
+            + "under a name this budget already holds — which is exactly why a rotation that dropped it "
+            + "would be quiet: the account goes on working until somebody creates a group and the "
+            + "collision that should have fired does not"),
+        new("KeyRotationEndpoints.ResealedCategoryRequest", "Description",
+            "base64url over the AEAD envelope holding a person's own note about one of their "
+            + "categories, re-sealed under the NEXT generation's content key — or ABSENT, judged rather "
+            + "than obeyed for the reason its category-group sibling states: on this route an absent "
+            + "note means the row holds none, and supplying one for a row that does, or omitting one "
+            + "for a row that does not, is a refusal rather than an edit"),
+        new("KeyRotationEndpoints.ResealedCategoryRequest", "Name",
+            "base64url over the AEAD envelope holding the name of one category, re-sealed under the "
+            + "NEXT generation's content key. Ciphertext this server can neither read nor measure "
+            + "characters in, and a rotation does not change that in either direction — this route "
+            + "moves which key a value is sealed under and never what the value says"),
+        new("KeyRotationEndpoints.ResealedCategoryRequest", "NameKey",
+            "base64url over the 32-byte blind index recomputed over the SAME name re-sealed beside it, "
+            + "under the NEXT generation's index key. A keyed digest, not an envelope, and NOT "
+            + "NARRATIVE. It is what IX_categories_budget_id_name_key enforces one-name-per-budget "
+            + "over, the case folding having moved into the client's normalisation before the HMAC — so "
+            + "the index this member carries was folded, normalised and taken on the far side of the "
+            + "wire, and no constraint on this side can be written to any step of it"),
+        new("KeyRotationEndpoints.ResealedPayeeRequest", "Name",
+            "base64url over the AEAD envelope holding one payee's name, re-sealed under the NEXT "
+            + "generation's content key. It is not who they say they paid as they typed it; nothing on "
+            + "this route is. Sealed in the browser under a key derived from a recovery factor this "
+            + "server never sees, and re-sealed under a second such key the server has never seen "
+            + "either"),
+        new("KeyRotationEndpoints.ResealedPayeeRequest", "NameKey",
+            "base64url over the 32-byte blind index recomputed over the SAME name re-sealed beside it, "
+            + "under the NEXT generation's index key. A keyed digest, not an envelope, and NOT "
+            + "NARRATIVE. THIS IS THE ARM WHERE DROPPING IT BITES SOONEST: the server used to fold a "
+            + "payee name's case and re-read the table and can do neither now, so deduplication of "
+            + "counterparties rests entirely on this value — a rotation that carried the envelope and "
+            + "left the index behind leaves find-or-create finding nothing, and the next transaction "
+            + "against each existing counterparty mints a duplicate"),
+        new("KeyRotationEndpoints.ResealedTransactionRequest", "Description",
+            "base64url over the AEAD envelope holding a person's own note about one transaction, "
+            + "re-sealed under the NEXT generation's content key — and the WHOLE of that row's "
+            + "narrative, since transactions carry no name. Absence is judged rather than obeyed, as on "
+            + "the two arms above, which is why a note-less transaction — what most rows of a real "
+            + "account are — is a row a chunk never names at all rather than one it sends an empty "
+            + "entry for. Unreadable here as everywhere: the key was derived in a browser from a "
+            + "recovery factor this server has never seen"),
+        new("KeyRotationEndpoints.SealRequest", "EncapsulatedAccountKeys",
+            "base64url over a 158-byte encapsulation of BOTH of the NEXT generation's account keys as "
+            + "one plaintext, content key first, ENCAPSULATED TO one factor's PUBLIC half — the same "
+            + "suite and the same width as PasskeyEndpoints.RegistrationRequest.EncapsulatedAccountKeys, "
+            + "arriving one per factor the account holds rather than one per request. IT IS KEY MATERIAL "
+            + "AND THAT IS THIS ROUTE RATHER THAN A LEAK, on the argument "
+            + "AccountKeyEntry.EncapsulatedAccountKeys makes running the other way: producing one needs "
+            + "a public key and nothing else, and opening one needs the private half of that factor's "
+            + "pair, which crosses this wire only WRAPPED UNDER a key-encryption key a browser derives "
+            + "from a recovery factor — an authenticator's prf output, or a recovery code — that never "
+            + "reaches this server at all. So the operator holding every one of these, for every factor "
+            + "of every account, opens none of them. The two halves inside the plaintext are a contract "
+            + "with the client that nothing on this side can check: a reversed pair is the right width, "
+            + "the right version, stores and reads back"),
+        new("KeyRotationEndpoints.StagedRotationResponse", "StagedManifest",
+            "a response member: base64url over the account's NEXT generation of its list of every "
+            + "recovery factor's PUBLIC key, held in key_rotations.staged_manifest until a completion "
+            + "promotes it. THE ARGUMENT IS AccountKeysResponse.Manifest'S, ONE GENERATION ON, written "
+            + "out here rather than pointed at because an entry that says \"see above\" stops being a "
+            + "per-member argument: the bytes are an AEAD envelope sealed under the NEXT generation's "
+            + "content key, never the one in force, and that key reaches this server only ENCAPSULATED "
+            + "TO a factor's public key, in the staged seals, whose private half is wrapped under a "
+            + "key-encryption key derived in a browser — a chain the operator cannot start. The public "
+            + "halves inside would open nothing even if read. WHAT IS PARTICULAR TO THIS COPY is that "
+            + "it leaves the server as part of a RESUMPTION rather than as part of an ordinary read: a "
+            + "client that lost the content key to a reload is handed these bytes back so it can learn "
+            + "which factors the run it abandoned was staged against. This server enforces framing, "
+            + "width and epoch and never contents — a manifest naming nobody stores, promotes and is "
+            + "handed back here unchanged. What it discloses is what its live sibling discloses and is "
+            + "why DataInventory classifies the column EXCLUDED rather than harmless: its LENGTH says "
+            + "how many recovery factors the account is about to hold, because every entry is the same "
+            + "width, and its presence says a rotation is in flight"),
+        new("KeyRotationEndpoints.StagedSealResponse", "EncapsulatedAccountKeys",
+            "a response member: base64url over a 158-byte encapsulation of BOTH of the NEXT generation's "
+            + "account keys as one plaintext, content key first, ENCAPSULATED TO one factor's PUBLIC "
+            + "half — the same suite and the same width as SealRequest.EncapsulatedAccountKeys, which is "
+            + "the member that PUT it on file, coming back out. IT IS KEY MATERIAL AND THAT IS THIS "
+            + "ROUTE RATHER THAN A LEAK, and the licence is stronger here than on any sibling: these "
+            + "staged seals are THE ONLY COPIES of the generation an interrupted run was rewriting the "
+            + "account under, because wrapped_account_keys still holds the superseded pair until the "
+            + "promotion — so a server that refused to hand them back would make every interruption "
+            + "permanent data loss rather than a recoverable state. Opening one needs the private half "
+            + "of that factor's pair, which crosses this wire only WRAPPED UNDER a key-encryption key a "
+            + "browser derives from a recovery factor — an authenticator's prf output, or a recovery "
+            + "code — that never reaches this server, so the operator holding every one of these, for "
+            + "every factor of every account, opens none of them. The order of the two halves inside the "
+            + "plaintext is a client contract nothing on this side can check, and this member hands back "
+            + "exactly the bytes it was given: a reversed pair is the right width, the right version, "
+            + "stores, reads back and is served here unchanged"),
+        new("Optional`1", "Value",
+            "the payload of the wrapper a partial update uses; whatever the member holding it carries, "
+            + "argued at that member"),
+        new("PasskeyEndpoints.AssertionRequest", "AuthenticatorData",
+            "base64url over the authenticator's signed bytes: a relying-party hash, flags and a counter"),
+        new("PasskeyEndpoints.AssertionRequest", "ClientDataJson",
+            "base64url over the JSON the browser signed — type, challenge, origin — a public transcript"),
+        new("PasskeyEndpoints.AssertionRequest", "CredentialId",
+            "base64url over the authenticator's opaque handle, which selects a key and is not one"),
+        new("PasskeyEndpoints.AssertionRequest", "Signature",
+            "base64url over an assertion signature, verified with a published public key"),
+        new("PasskeyEndpoints.AssertionRequest", "UserHandle",
+            "base64url over the sixteen bytes of the account id the authenticator kept"),
+        new("PasskeyEndpoints.AssertionResponse", "Kind",
+            "a response member: the kind of session this sign-in established, as SessionKind spells it"),
+        new("PasskeyEndpoints.RegistrationRequest", "AttestationObject",
+            "base64url over the CBOR attestation: authenticator data and a public key, both publishable"),
+        new("PasskeyEndpoints.RegistrationRequest", "ClientDataJson",
+            "base64url over the JSON the browser signed — type, challenge, origin — a public transcript"),
+        new("PasskeyEndpoints.RegistrationRequest", "FactorId",
+            "the client-minted identifier the two payloads below are bound to as associated data. It is "
+            + "written back to every caller that asks, so it is a name rather than a secret"),
+        new("PasskeyEndpoints.RegistrationRequest", "WrappedPrivateKey",
+            "base64url over a 167-byte AEAD envelope over this factor's PRIVATE key. The key-encryption "
+            + "key it is wrapped under is derived in the browser from the authenticator's prf output and "
+            + "imported non-extractable, so it never reaches this member or any other"),
+        new("PasskeyEndpoints.RegistrationRequest", "EncapsulatedAccountKeys",
+            "base64url over a 158-byte encapsulation of BOTH account keys to this factor's PUBLIC half — "
+            + "a different suite at a different width, and one whose production needs no secret at all"),
+        new("PasskeyEndpoints.RegistrationRequest", "Manifest",
+            "base64url over an AEAD envelope of 29 to 4096 bytes SEALED UNDER the account's content key, "
+            + "listing every recovery factor and its PUBLIC half, resealed here because this request "
+            + "adds one to the set. RegistrationEndpoints.RegistrationRequest.Manifest is the same value "
+            + "on the route that writes the FIRST one, and the argument is the same: this server cannot "
+            + "open it and never will, so what the list contains is held by the authentication tag and "
+            + "by the client that can verify it. Nothing private is inside — the private half of every "
+            + "factor named here is wrapped under a key-encryption key derived in a browser, and a "
+            + "private key arriving in this member would be a secret the operator could reach with "
+            + "nothing able to notice"),
+        new("PayeeEndpoints.RenamePayeeRequest", "Name",
+            "base64url over the AEAD envelope holding the name a person gave one of their payees. It is "
+            + "NOT the name as they typed it — it was re-sealed in the browser against the row's "
+            + "existing identifier, under a key derived from a recovery factor this server never sees"),
+        new("PayeeEndpoints.RenamePayeeRequest", "NameKey",
+            "base64url over the 32-byte blind index the client computed over the SAME name it sealed "
+            + "beside this. It is required rather than optional, and the pair is why: a body carrying "
+            + "only Name would leave the row indexed under the name it no longer holds, which on this "
+            + "table produces a payee the client can neither find nor re-create. Not key material — the "
+            + "index key crosses this wire only encapsulated, inside "
+            + "AccountKeyEntry.EncapsulatedAccountKeys"),
+        new("RecoveryCodeEndpoints.RecoveryCodeGenerationRequest", "AuthenticatorData",
+            "base64url over the authenticator's signed bytes: a relying-party hash, flags and a counter"),
+        new("RecoveryCodeEndpoints.RecoveryCodeGenerationRequest", "ClientDataJson",
+            "base64url over the JSON the browser signed — type, challenge, origin — a public transcript"),
+        new("RecoveryCodeEndpoints.RecoveryCodeGenerationRequest", "CredentialId",
+            "base64url over the authenticator's opaque handle, which selects a key and is not one"),
+        new("RecoveryCodeEndpoints.RecoveryCodeGenerationRequest", "Manifest",
+            "base64url over an AEAD envelope of 29 to 4096 bytes SEALED UNDER the account's content key, "
+            + "listing every recovery factor and its PUBLIC half, resealed here because this request "
+            + "takes ten factors out of the set and puts ten in. The same value and the same argument as "
+            + "PasskeyEndpoints.RegistrationRequest.Manifest — this server cannot open it, so what the "
+            + "list contains is held by the authentication tag, and the private half of every factor it "
+            + "names is wrapped under a key-encryption key derived in a browser from a recovery code "
+            + "that never crosses this wire at all"),
+        new("RecoveryCodeEndpoints.RecoveryCodeGenerationRequest", "Signature",
+            "base64url over an assertion signature, verified with a published public key"),
+        new("RecoveryCodeEndpoints.RecoveryCodeGenerationRequest", "UserHandle",
+            "base64url over the sixteen bytes of the account id the authenticator kept"),
+        new("RecoveryCodeEndpoints.RedemptionRequest", "Verifier",
+            "base64url over one HKDF branch of a recovery code, and the code itself never crosses the "
+            + "wire. The key-encryption key is a sibling branch over the same code under a different "
+            + "`info`, so holding this one yields nothing about that one"),
+        new("RecoveryCodeEndpoints.RedemptionResponse", "Kind",
+            "a response member: the kind of session a redemption established, as SessionKind spells it"),
+        new("RecoveryCodeEndpoints.ReestablishedSessionResponse", "Kind",
+            "a response member: the kind of session an issue re-established, as SessionKind spells it"),
+        new("RecoveryCodeSubmission", "FactorId",
+            "the client-minted identifier one code's two payloads are bound to as associated data, and "
+            + "a name rather than a secret"),
+        new("RecoveryCodeSubmission", "Verifier",
+            "base64url over one HKDF branch of one recovery code, the same value a redemption presents "
+            + "and a sibling of the key branch that stays in the browser"),
+        new("RecoveryCodeSubmission", "WrappedPrivateKey",
+            "base64url over a 167-byte AEAD envelope over this code's own factor PRIVATE key, wrapped "
+            + "under the key that code derives, which is imported non-extractable and never leaves the "
+            + "browser. One code is one factor and one key pair: a set of ten sends ten of these"),
+        new("RecoveryCodeSubmission", "EncapsulatedAccountKeys",
+            "base64url over a 158-byte encapsulation of BOTH account keys to that factor's PUBLIC half — "
+            + "a different suite at a different width, and the value a rotation can replace without the "
+            + "card being in anybody's hand"),
+        new("RegistrationEndpoints.EstablishedSessionResponse", "Kind",
+            "a response member: the kind of session registration established, as SessionKind spells it"),
+        new("RegistrationEndpoints.RegistrationRequest", "AttestationObject",
+            "base64url over the CBOR attestation: authenticator data and a public key, both publishable"),
+        new("RegistrationEndpoints.RegistrationRequest", "ClientDataJson",
+            "base64url over the JSON the browser signed — type, challenge, origin — a public transcript"),
+        new("RegistrationEndpoints.RegistrationRequest", "FactorId",
+            "the client-minted identifier the passkey factor's two payloads are bound to as associated "
+            + "data, and a name rather than a secret"),
+        new("RegistrationEndpoints.RegistrationRequest", "WrappedPrivateKey",
+            "base64url over a 167-byte AEAD envelope over the passkey factor's PRIVATE key, wrapped "
+            + "under the key-encryption key derived from prf output in the browser and imported "
+            + "non-extractable"),
+        new("RegistrationEndpoints.RegistrationRequest", "EncapsulatedAccountKeys",
+            "base64url over a 158-byte encapsulation of BOTH account keys to that factor's PUBLIC half — "
+            + "a different suite at a different width, produced from a public key and nothing else"),
+        new("RegistrationEndpoints.RegistrationRequest", "Manifest",
+            "base64url over an AEAD envelope of 29 to 4096 bytes SEALED UNDER the account's content key, "
+            + "listing every recovery factor and its PUBLIC half — the third framing on this record and "
+            + "the only one whose width is a band rather than a number, because the list grows with the "
+            + "factor count. The server cannot open it and never will, so what it carries is held by the "
+            + "authentication tag; nothing private is inside it, and a private key arriving here would "
+            + "be a secret the operator could reach with no test able to notice"),
+        new("TransactionEndpoints.UpdateTransactionRequest", "Description",
+            "base64url over the AEAD envelope holding a person's own note about one transaction, wrapped "
+            + "in Optional<T> because this route is a PATCH and genuinely has THREE states: absent "
+            + "leaves the note alone, an explicit null CLEARS it, and a value replaces it \u2014 with "
+            + "`\"\"` a fourth thing that is not an envelope and answers 400. IT IS NOT THE NOTE AS "
+            + "THEY TYPED IT, which is what this argument said until this slice. Sealed in the browser, "
+            + "bound to the row id in the PATH rather than to a member of this body"),
+    ];
+
+    /// <summary>
+    /// The shortest a sentence saying what a text member carries may be.
+    /// </summary>
+    /// <remarks>
+    /// A floor rather than a judgement of the words, for the reason
+    /// <see cref="MinimumReasonLength" /> is one: no assertion can tell a real argument from a fluent
+    /// one, and the cheapest way to write nothing is to write nothing. Set above every one-word
+    /// placeholder a reader would reach for — <c>text</c>, <c>a name</c>, <c>opaque</c>, <c>not a
+    /// key</c> — and below the shortest honest entry in the list.
+    /// </remarks>
+    private const int MinimumCarriesLength = 40;
+
+    /// <summary>
+    /// The binary half of the fail-closed control: a relation carrying one <c>bytea</c> column under a
+    /// name that trips <b>no</b> rule in the vocabulary. The innocence is the point — it makes the
+    /// probe the exact shape the two name censuses cannot see, so a green from them and a red from
+    /// this one is the pair of verdicts the schema census exists to produce.
+    /// </summary>
+    private const string BinaryProbeTable = "key_material_probe_binary_holder";
+
+    /// <summary>
+    /// The column half of the name-census probe pair: a relation whose <b>own name is deliberately
+    /// innocent</b> — it tokenizes as <c>key / material / probe / holder</c>, and the bare token
+    /// <c>key</c> is legal by argument — so the forbidden column it carries is the only thing its
+    /// control's assertion can be seeing.
+    /// </summary>
+    private const string ColumnProbeTable = "key_material_probe_holder";
+
+    /// <summary>
+    /// The relation half of the pair: a name carrying the forbidden run <c>prf / output</c> over
+    /// <b>deliberately innocent columns</b>, so the relation path is the only thing its control's
+    /// assertion can be seeing. The two are created on separate hosts so neither appears in the
+    /// other's scan.
+    /// </summary>
+    private const string RelationProbeTable = "key_material_probe_prf_output";
+
+    /// <summary>One member of one type on the request surface.</summary>
+    /// <param name="Owner">
+    /// The declaring type, nested types qualified by the endpoint class that declares them — a
+    /// private nested record has no name this project can write in a <c>typeof</c>, so this string is
+    /// what the census's own guards name it by.
+    /// </param>
+    /// <param name="Member">The member name, in the casing the CLR reports it.</param>
+    /// <param name="MemberType">
+    /// The member's declared type, which the name censuses ignore and
+    /// <see cref="RequestSurface_ArguesForEveryMemberThatCanCarryText" /> is entirely about.
+    /// </param>
+    private sealed record SurfaceMember(string Owner, string Member, Type MemberType)
+    {
+        /// <summary>The key both directions of the text-member comparison are made on.</summary>
+        public string Qualified => $"{Owner}.{Member}";
+    }
+
+    /// <summary>Every relation name and every column name in <c>public</c>, read once.</summary>
+    /// <param name="Relations">Bare relation names.</param>
+    /// <param name="Columns">Columns as <c>table.column</c>.</param>
+    private sealed record SchemaIdentifiers(
+        IReadOnlyList<string> Relations,
+        IReadOnlyList<string> Columns);
+
+    /// <summary>One refused identifier and the rule that refused it.</summary>
+    /// <param name="Identifier">A bare relation name, or a column as <c>table.column</c>.</param>
+    /// <param name="Rule">The rule it trips, carrying the argument a reviewer has to answer.</param>
+    private sealed record SchemaOffender(string Identifier, UnwrappedKeyMaterialRule Rule);
+
+    /// <summary>
+    /// Every member of every type reachable from the API's request surface, with the type it sits on.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Two root sets, unioned, because either alone has a hole the other closes.</b> The nested
+    /// records of the <c>*Endpoints</c> classes are the obvious surface, and they miss every route
+    /// that binds an Application command straight from the body — <c>POST /api/transactions</c> takes
+    /// a <c>CreateTransactionCommand</c>, which is nested in nothing. The route table's own delegate
+    /// parameters catch those, and would miss nothing except that reading them depends on the route
+    /// table being buildable. Taking both means a hole has to open in two places at once.
+    /// </para>
+    /// <para>
+    /// The route-parameter root set is filtered to <b>records</b>, which is a structural property
+    /// rather than a naming convention: every one of the forty-one handlers is a plain class, so the
+    /// filter excludes each of them without a rule about suffixes that the forty-second could be
+    /// written to slip past. Below a root the recursion widens deliberately — see
+    /// <see cref="MembersOf" />.
+    /// </para>
+    /// <para>
+    /// Response records are swept in with the requests rather than filtered out, and the filter is
+    /// what is being avoided: telling a request from a response means matching a name suffix, and a
+    /// body record called <c>RegistrationBody</c> would walk straight past it. The extra verdicts cost
+    /// nothing, since no response in this API carries a key-shaped member and the legal spelling of
+    /// one would be legal in either direction.
+    /// </para>
+    /// </remarks>
+    private static async Task<IReadOnlyList<SurfaceMember>> RequestSurfaceAsync()
+    {
+        // A connection string that resolves to nothing, on the Production environment: the route
+        // table is built from the app model and no database is touched to read it, which is the same
+        // arrangement CompositionBoundaryTests makes for the same reason.
+        await using ApiFactory factory = new(
+            "Host=localhost;Port=5432;Database=unused;Username=postgres;Password=postgres",
+            environment: "Production");
+
+        EndpointDataSource dataSource = factory.Services.GetRequiredService<EndpointDataSource>();
+
+        IEnumerable<Type> nested = typeof(TransactionEndpoints).Assembly
+            .GetTypes()
+            .Where(type => type.Name.EndsWith("Endpoints", StringComparison.Ordinal))
+            .SelectMany(type =>
+                type.GetNestedTypes(BindingFlags.Public | BindingFlags.NonPublic));
+
+        IEnumerable<Type> bound = dataSource.Endpoints
+            .OfType<RouteEndpoint>()
+            .SelectMany(endpoint =>
+                endpoint.Metadata.GetMetadata<MethodInfo>()?.GetParameters() ?? [])
+            .Select(parameter => parameter.ParameterType)
+            .Where(IsRecord);
+
+        List<SurfaceMember> members = [];
+        HashSet<Type> visited = [];
+
+        foreach (Type root in nested.Concat(bound).Where(IsOwned))
+        {
+            members.AddRange(MembersOf(root, NameOf(root), visited));
+        }
+
+        return members;
+    }
+
+    /// <summary>
+    /// Every member of <paramref name="type" /> and of every owned type reachable through its members.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The recursion is the part a top-level census would get wrong.</b>
+    /// <c>PasskeyClientExtensionResults</c> carries a <c>PasskeyPrfResults</c>, and the member on that
+    /// second type — <c>Enabled</c>, legal — is one WebAuthn spelling away from the member that would
+    /// not be. A verdict about it can only be reached by walking into it.
+    /// </para>
+    /// <para>
+    /// <b>Member names are classified and type names deliberately are not.</b> The type is a container
+    /// and the member is what holds bytes, and the difference is not academic here:
+    /// <c>PasskeyPrfResults</c> tokenizes as <c>passkey / prf / results</c>, which contains the run
+    /// the <c>prf_result</c> rule refuses — so a census that classified type names would red on the
+    /// correctly designed record that carries a single boolean. A rule that fires on correct code is
+    /// the shape of red that teaches a reviewer to stop believing the check.
+    /// </para>
+    /// <para>
+    /// Below a root the recursion widens from records to <b>any owned non-enum type</b>, which is the
+    /// fail-closed direction: <c>Optional&lt;T&gt;</c> is a plain readonly struct and a future request
+    /// member could as easily hold a class. Nothing that is not a data shape is reachable from a data
+    /// shape, so the widening costs no false ground. Enums are skipped because their members are
+    /// values rather than places bytes can sit, and the member that names one is classified anyway.
+    /// </para>
+    /// <para>
+    /// The visited set makes the walk terminate on a self-referential shape and also means each type
+    /// is reported once however many members point at it.
+    /// </para>
+    /// </remarks>
+    private static IReadOnlyList<SurfaceMember> MembersOf(
+        Type type,
+        string name,
+        HashSet<Type>? visited = null)
+    {
+        visited ??= [];
+
+        if (!visited.Add(type))
+        {
+            return [];
+        }
+
+        List<SurfaceMember> members = [];
+
+        foreach (PropertyInfo property in
+                 type.GetProperties(BindingFlags.Public | BindingFlags.Instance))
+        {
+            members.Add(new SurfaceMember(name, property.Name, property.PropertyType));
+
+            foreach (Type payload in PayloadTypes(property.PropertyType))
+            {
+                if (IsOwned(payload) && !payload.IsEnum && !payload.IsGenericTypeDefinition)
+                {
+                    members.AddRange(MembersOf(payload, NameOf(payload), visited));
+                }
+            }
+        }
+
+        return members;
+    }
+
+    /// <summary>
+    /// The types a member of <paramref name="type" /> could carry a value of: the type itself, what a
+    /// nullable wraps, what a sequence yields, and any generic argument.
+    /// </summary>
+    /// <remarks>
+    /// Broad on purpose — a key-shaped member reached through a list, a dictionary value or a wrapper
+    /// struct is the same member. <see cref="string" /> returns nothing rather than
+    /// <see cref="char" />, which is the one case where following the sequence would walk into the
+    /// framework for no verdict.
+    /// </remarks>
+    private static IEnumerable<Type> PayloadTypes(Type type)
+    {
+        if (Nullable.GetUnderlyingType(type) is { } underlying)
+        {
+            yield return underlying;
+            yield break;
+        }
+
+        if (type == typeof(string))
+        {
+            yield break;
+        }
+
+        yield return type;
+
+        if (type.IsArray && type.GetElementType() is { } element)
+        {
+            yield return element;
+        }
+
+        if (!type.IsGenericType)
+        {
+            yield break;
+        }
+
+        foreach (Type argument in type.GetGenericArguments())
+        {
+            yield return argument;
+        }
+    }
+
+    /// <summary>
+    /// Whether the type was declared by this solution, as opposed to the framework.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Derived from anchor types rather than from assembly name strings, so a rename cannot silently
+    /// empty the set — an anchor that stopped resolving is a compile error rather than a census that
+    /// walks nothing. Infrastructure is absent because <c>CompositionBoundaryTests</c> already forbids
+    /// a route delegate from taking a persistence port, so nothing from it is reachable from the
+    /// request surface.
+    /// </para>
+    /// <para>
+    /// <b>This assembly is the fourth anchor, and it buys the control rather than the census.</b>
+    /// <see cref="ProbeRequest" /> is declared here, so without it the recursion would stop at the
+    /// probe's top level and the control would silently prove half of what it claims. It widens the
+    /// census by nothing: every root comes from the Api assembly, and no type the Api declares can
+    /// reference one declared in a test project.
+    /// </para>
+    /// </remarks>
+    private static bool IsOwned(Type type) =>
+        type.Assembly == typeof(TransactionEndpoints).Assembly
+        || type.Assembly == typeof(Optional<>).Assembly
+        || type.Assembly == typeof(IAccountRepository).Assembly
+        || type.Assembly == typeof(KeyMaterialSecrecyTests).Assembly;
+
+    /// <summary>
+    /// Whether the type is a <c>record</c>, by the compiler-generated clone member every record class
+    /// carries.
+    /// </summary>
+    private static bool IsRecord(Type type) =>
+        type.GetMethod(
+            "<Clone>$",
+            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance) is not null;
+
+    /// <summary>
+    /// A type's name for reporting, a nested one qualified by the endpoint class that declares it.
+    /// </summary>
+    private static string NameOf(Type type) =>
+        type.DeclaringType is { } declaring ? $"{declaring.Name}.{type.Name}" : type.Name;
+
+    /// <summary>
+    /// Every relation in <c>public</c> and every column it carries, in one read.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The schema and the relation kinds come from
+    /// <see cref="RowLevelSecurityCoverage.RowBearingRelationInPublicPredicate" /> rather than being
+    /// spelled here, for the reason <c>DataMinimizationSchemaTests</c> gives: a copy that misses a
+    /// widening reports green over exactly the relation kinds the widening was for.
+    /// </para>
+    /// <para>
+    /// <c>attnum &gt; 0</c> drops the system columns, which belong to PostgreSQL rather than to
+    /// anyone's argument about a table; <c>not attisdropped</c> drops the tombstones a dropped column
+    /// leaves behind under a mangled name.
+    /// </para>
+    /// </remarks>
+    private static async Task<SchemaIdentifiers> ReadPublicIdentifiersAsync(
+        NpgsqlConnection connection)
+    {
+        const string sql =
+            $"""
+            select c.relname::text, a.attname::text
+            from pg_attribute a
+            join pg_class c on c.oid = a.attrelid
+            join pg_namespace n on n.oid = c.relnamespace
+            where {RowLevelSecurityCoverage.RowBearingRelationInPublicPredicate}
+              and a.attnum > 0
+              and not a.attisdropped
+            order by c.relname, a.attname
+            """;
+
+        await using NpgsqlCommand command = new(sql, connection);
+        await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
+        List<string> relations = [];
+        List<string> columns = [];
+        HashSet<string> seenRelations = new(StringComparer.Ordinal);
+
+        while (await reader.ReadAsync())
+        {
+            string table = reader.GetString(0);
+            string column = reader.GetString(1);
+
+            if (seenRelations.Add(table))
+            {
+                relations.Add(table);
+            }
+
+            columns.Add($"{table}.{column}");
+        }
+
+        return new SchemaIdentifiers(relations, columns);
+    }
+
+    /// <summary>
+    /// Every relation and column name the vocabulary refuses — a relation as a bare name, a column as
+    /// <c>table.column</c>.
+    /// </summary>
+    /// <remarks>
+    /// A pure function over what was read, so the census and both of its controls run byte-identical
+    /// classification over databases that differ only in what was created on them. A control that
+    /// exercised a separately written classification would prove that one can fail.
+    /// </remarks>
+    private static IReadOnlyList<SchemaOffender> KeyMaterialOffenders(SchemaIdentifiers identifiers) =>
+    [
+        .. identifiers.Relations
+            .Concat(identifiers.Columns)
+            .Select(identifier =>
+                (identifier, rule: UnwrappedKeyMaterialVocabulary.Classify(identifier.Split('.')[^1])))
+            .Where(candidate => candidate.rule is not null)
+            .Select(candidate => new SchemaOffender(candidate.identifier, candidate.rule!))
+            .OrderBy(offender => offender.Identifier, StringComparer.Ordinal),
+    ];
+
+    /// <summary>
+    /// The identifiers of <paramref name="offenders" />, without the argument for refusing them.
+    /// </summary>
+    /// <remarks>
+    /// The controls assert over this rather than over the sentences <see cref="Describe" /> builds,
+    /// and the split is not cosmetic: a <c>DoesNotContain</c> against a formatted sentence passes
+    /// whenever the formatting changes, so a control written that way would agree with everything
+    /// forever. The census asserts over the sentences because a failure there has a reviewer to
+    /// convince.
+    /// </remarks>
+    private static string[] Identifiers(IReadOnlyList<SchemaOffender> offenders) =>
+        [.. offenders.Select(offender => offender.Identifier)];
+
+    /// <summary>
+    /// The offenders as sentences naming what each is and why it is refused.
+    /// </summary>
+    private static string Describe(IReadOnlyList<SchemaOffender> offenders) =>
+        string.Join(
+            Environment.NewLine,
+            offenders.Select(offender =>
+                $"{offender.Identifier} — {offender.Rule.Category}: {offender.Rule.Reason}"));
+
+    /// <summary>
+    /// Every <c>bytea</c> column in <c>public</c>, as <c>table.column</c>.
+    /// </summary>
+    /// <remarks>
+    /// <c>_bytea</c> is PostgreSQL's internal name for an array of <c>bytea</c> and is discovered
+    /// beside it, because an array of envelopes is exactly as capable of holding a key as one
+    /// envelope is and no argument for the scalar covers it. The relation predicate is the shared one
+    /// again, so a materialized view holding binary rows is discovered rather than skipped for being
+    /// the wrong <c>relkind</c>.
+    /// </remarks>
+    private static async Task<IReadOnlyList<string>> ReadBinaryColumnsAsync(
+        NpgsqlConnection connection)
+    {
+        const string sql =
+            $"""
+            select c.relname::text, a.attname::text
+            from pg_attribute a
+            join pg_class c on c.oid = a.attrelid
+            join pg_namespace n on n.oid = c.relnamespace
+            join pg_type t on t.oid = a.atttypid
+            where {RowLevelSecurityCoverage.RowBearingRelationInPublicPredicate}
+              and a.attnum > 0
+              and not a.attisdropped
+              and t.typname in ('bytea', '_bytea')
+            order by c.relname, a.attname
+            """;
+
+        await using NpgsqlCommand command = new(sql, connection);
+        await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
+        List<string> columns = [];
+
+        while (await reader.ReadAsync())
+        {
+            columns.Add($"{reader.GetString(0)}.{reader.GetString(1)}");
+        }
+
+        return columns;
+    }
+
+    /// <summary>
+    /// Both directions of the comparison between what the catalog holds and what this file argues
+    /// for: binary columns nobody classified, and classifications of columns that are gone.
+    /// </summary>
+    private static (string[] Unclassified, string[] Stale) CompareToClassifications(
+        IReadOnlyList<string> binaryColumns)
+    {
+        HashSet<string> classified =
+            new(Classifications.Select(entry => entry.Qualified), StringComparer.Ordinal);
+        HashSet<string> discovered = new(binaryColumns, StringComparer.Ordinal);
+
+        return
+        (
+            [.. discovered.Except(classified, StringComparer.Ordinal).Order(StringComparer.Ordinal)],
+            [.. classified.Except(discovered, StringComparer.Ordinal).Order(StringComparer.Ordinal)]
+        );
+    }
+
+    /// <summary>
+    /// Whether a member of this declared type can hold text at all.
+    /// </summary>
+    /// <remarks>
+    /// <b>Broad on purpose, and in the same direction <see cref="PayloadTypes" /> is broad.</b> A member
+    /// typed <c>string[]</c>, <c>IReadOnlyList&lt;string&gt;</c>, <c>Optional&lt;string&gt;</c> or
+    /// <c>Dictionary&lt;string, string&gt;</c> is a place a key-shaped value can be put exactly as a bare
+    /// one is, so a predicate matching <see cref="string" /> alone would be one generic away from
+    /// reporting nothing. The recursion terminates because every step strips a layer of type.
+    /// </remarks>
+    private static bool CarriesText(Type type)
+    {
+        if (type == typeof(string))
+        {
+            return true;
+        }
+
+        if (Nullable.GetUnderlyingType(type) is { } underlying)
+        {
+            return CarriesText(underlying);
+        }
+
+        if (type.IsArray && type.GetElementType() is { } element && CarriesText(element))
+        {
+            return true;
+        }
+
+        return type.IsGenericType && type.GetGenericArguments().Any(CarriesText);
+    }
+
+    /// <summary>
+    /// Both directions of the comparison between the text members a surface carries and the arguments
+    /// this file makes for them.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A pure function over what was walked, so the census and both halves of its control run
+    /// byte-identical classification over surfaces that differ only in what was handed in. A control
+    /// exercising a separately written comparison would prove that one can fail.
+    /// </para>
+    /// <para>
+    /// <b>An entry saying too little is reported beside a member with no entry at all</b>, rather than
+    /// through a test of its own. The two are the same defect — nobody argued for this member — and a
+    /// list whose entries nobody has to write is a list that agrees with whatever arrives next.
+    /// </para>
+    /// </remarks>
+    private static (string[] Unargued, string[] Stale) CompareToTextArguments(
+        IReadOnlyList<SurfaceMember> surface)
+    {
+        HashSet<string> argued = new(
+            TextMemberArguments
+                .Where(entry => !string.IsNullOrWhiteSpace(entry.Carries)
+                                && entry.Carries.Length >= MinimumCarriesLength)
+                .Select(entry => entry.Qualified),
+            StringComparer.Ordinal);
+        HashSet<string> carried = new(
+            surface.Where(member => CarriesText(member.MemberType)).Select(member => member.Qualified),
+            StringComparer.Ordinal);
+
+        return
+        (
+            [.. carried.Except(argued, StringComparer.Ordinal).Order(StringComparer.Ordinal)],
+            [.. argued.Except(carried, StringComparer.Ordinal).Order(StringComparer.Ordinal)]
+        );
+    }
+
+    /// <summary>Runs one DDL statement on the admin connection.</summary>
+    private static async Task ExecuteAsync(NpgsqlConnection connection, string sql)
+    {
+        await using NpgsqlCommand command = new(sql, connection);
+        await command.ExecuteNonQueryAsync();
+    }
+
+    private static async Task<RepositoryTestHost> StartHostAsync()
+    {
+        RepositoryTestHost host = new();
+        await host.StartAsync();
+
+        return host;
+    }
+
+    /// <summary>
+    /// The request-surface control's offending shape: two members that must be refused and two beside
+    /// them that must not.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A type declared in the test rather than a mutation of a real endpoint, so the control is
+    /// permanent. It is nested one level deep on purpose — the offending member on
+    /// <see cref="ProbeNestedResults" /> can only be reported by a walk that recurses, so this one
+    /// probe proves the classification and the recursion at once.
+    /// </para>
+    /// <para>
+    /// <see cref="WrappedPrivateKey" /> and <see cref="ProbeNestedResults.Enabled" /> are the
+    /// innocent halves, and they are what stop the control passing for the wrong reason: a rule that
+    /// fired on everything, or a vocabulary whose qualifier mechanism had collapsed, would report all
+    /// four.
+    /// </para>
+    /// </remarks>
+    private sealed record ProbeRequest(
+        string ContentKey,
+        string WrappedPrivateKey,
+        ProbeNestedResults? Extensions);
+
+    /// <summary>The nested half of the probe. See <see cref="ProbeRequest" />.</summary>
+    private sealed record ProbeNestedResults(string PrfOutput, bool? Enabled);
+}

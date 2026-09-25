@@ -15,10 +15,13 @@ public sealed class InMemoryBudgetRepositoryTests
         // Arrange
         var userId = Guid.CreateVersion7();
         var repository = new InMemoryBudgetRepository();
-        bool firstAdded = await repository.TryAddAsync(Budget.CreateDefault(userId, UtcAt(hour: 10)));
+        bool firstAdded = await repository.TryAddAsync(
+            Budget.CreateDefault(Guid.CreateVersion7(), userId, UtcAt(hour: 10)));
 
-        // Act
-        bool secondAdded = await repository.TryAddAsync(Budget.CreateDefault(userId, UtcAt(hour: 11)));
+        // Act — a second id, because the collision under test is the one on (user_id, name) and a
+        // repeated id would model the primary key instead.
+        bool secondAdded = await repository.TryAddAsync(
+            Budget.CreateDefault(Guid.CreateVersion7(), userId, UtcAt(hour: 11)));
 
         // Assert — asserted here rather than left to fall out of the fake's name comparison, because
         // it is the whole provisioning race guarantee in miniature: with no name to collide on, the

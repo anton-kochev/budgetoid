@@ -46,56 +46,316 @@ are configured. Use `// Arrange // Act // Assert` comments.
 
 ## Backend Architecture
 
-Clean Architecture with CQRS. Commands/queries live under `Application/Transactions/*` and
-are injected as plain handlers (`ICommandHandler`/`IQueryHandler`); no MediatR dispatcher
-until decorators are needed. The API is ASP.NET Core minimal API on Azure Container Apps.
-Auth is live Google OAuth.
+Clean Architecture with CQRS. Commands/queries live under `Application/Transactions/*` and are
+injected as plain handlers (`ICommandHandler`/`IQueryHandler`); no MediatR dispatcher until
+decorators are needed. The API is ASP.NET Core minimal API on Azure Container Apps. Auth is live
+Google OAuth.
 
-**The budget is the unit of tenancy.** `UserProvisioningMiddleware` resolves the Google
-`sub` (via `EnsureUserHandler`) into a user id and default budget id on the scoped
-`CurrentUser`; `IBudgetContext` exposes the ambient budget. Read
+**The budget is the unit of tenancy**, and **exactly one path creates an account** —
+`POST /api/registration`, which writes 31 rows in one `SaveChanges` and creates nothing without a
+passkey and a card of recovery codes. Nothing in the compiler holds that: a second creating path is
+one line that would redden nothing. Read [registration.md](docs/business-logic/registration.md) and
 [data isolation](docs/engineering/data-isolation.md) before touching budget-scoped queries.
-Load-bearing rules, each explained there or in the linked decision:
 
-- Budget-owned rows are isolated twice: PostgreSQL `budget_isolation` RLS policies enforce,
-  EF `BudgetIsolation` query filters turn a foreign row into the API's 404/400. Neither is
-  duplication — do not delete either. See [ADR 0005](docs/decisions/0005-isolate-budget-owned-rows-with-row-level-security.md).
-- EF escape hatches (`IgnoreQueryFilters`, `FromSql*`, `ExecuteSql*`, `Find`/`FindAsync`,
-  `ExecuteUpdate`/`ExecuteDelete`) are compile errors via `BudgetoidApp/BannedSymbols.txt`.
-- A new budget-owned table needs a grant **and** a policy. Grants fail closed (`42501`),
-  RLS fails open — `RlsCoverageTests` exists to catch the silent case.
-- `BudgetSessionInterceptor` must stay a **connection-opened** interceptor, and
+Load-bearing rules. Each links the doc that argues it — **read that doc before changing the rule**,
+because every one of these is something a reader will otherwise simplify away.
+
+- **Budget-owned rows are isolated twice** — PostgreSQL `budget_isolation` RLS policies enforce, EF
+  `BudgetIsolation` query filters turn a foreign row into the API's 404/400. Not duplication; delete
+  neither. [ADR 0005](docs/decisions/0005-isolate-budget-owned-rows-with-row-level-security.md)
+- **`users`, `budgets`, `sessions`, `passkey_signature_counters`, `wrapped_account_keys`,
+  `key_rotations` and `factor_manifests` are policed on the user**, not a
+  budget. Six tables are exempt because each is read *before* the request has an identity — so the
+  credential lookup must never join `users`. **An exempt table scopes nothing**: only the discovery
+  lookup may omit an owner filter. Each exemption is held by its **pinned column set** — a new column
+  there means *move the column*, never widen the pin.
+  [ADR 0011](docs/decisions/0011-police-the-user-owned-tables.md),
+  [ADR 0012](docs/decisions/0012-split-a-passkeys-material-by-whether-it-is-read-before-identity.md),
+  [ADR 0014](docs/decisions/0014-scope-the-credential-delete-in-the-application.md)
+- **The passkey assertion path publishes the identity only after the signature verifies, and opens
+  its transaction only after that** — earlier, every policed statement inside it fails with `22P02`.
+- **A request authenticates from `__Host-budgetoid-session` in three steps whose order is the
+  security property**, all owned by `AuthenticateSessionHandler`, and **no transaction may wrap any
+  of it**. Reversed, every request in the product answers `22P02`. Four rules beside it — the
+  `X-Budgetoid-Client` 403, the single ended-session route, the explicitly-named default scheme, and
+  the session-and-token pair — are argued in
+  [sessions.md](docs/business-logic/sessions.md) and
+  [ADR 0019](docs/decisions/0019-authenticate-a-request-from-a-first-party-session-cookie.md).
+- **A session opened by a federated credential reaches one route, and the gate is opt-out.**
+  `FullSessionRequirement` rides the fallback policy; a route escapes with
+  `AllowsLockedSessionAttribute`, and the opted-out set is exactly `POST /api/me/session/revocation`.
+  Polarity follows from which mistake is audible. [sessions.md](docs/business-logic/sessions.md)
+- **Registration is one act and one transaction, and the account id is derived rather than chosen.**
+  Two routes authenticated by the provider scheme and nothing else — **the only reason `JwtBearer` is
+  still registered**. No `ITransactionalExecutor` may wrap the finish leg. The ladder's order is the
+  rule. [registration.md](docs/business-logic/registration.md),
+  [ADR 0021](docs/decisions/0021-make-registration-one-consented-act-and-derive-the-account-id-from-its-own-challenge.md)
+- **EF escape hatches are compile errors** via `BudgetoidApp/BannedSymbols.txt` —
+  `IgnoreQueryFilters`, `FromSql*`, `ExecuteSql*`, `Find`/`FindAsync`, `ExecuteUpdate`/`ExecuteDelete`.
+- **A credential type has exactly one spelling, written out, never derived from the member name.**
+  `Domain/Users/CredentialTypeSpelling.cs` owns it. Do not answer that with a global
+  `JsonNamingPolicy`. [users-and-ownership.md](docs/business-logic/users-and-ownership.md)
+- **The dependency direction is pinned, not described.** `ProjectReferenceGraphTests` pins every
+  csproj edge as a row, including the solution's one `InternalsVisibleTo`;
+  `CompositionBoundaryTests` and `OwnershipKeyImmutabilityTests` hold what the graph cannot express.
+  Read [dependency direction](docs/engineering/dependency-direction.md) before adding a project or a
+  reference of any kind.
+- **Every column carries exactly one classification** — *narrative*, *arithmetic* or *excluded* —
+  and the words are about what the product owes the person, not what the column holds. `DataInventory`
+  names all 110; a unit-tier gate fails on one nobody classified. **Narrative is derived** from the
+  `NarrativeField` properties, so a column cannot be re-classified to green a coverage test. The
+  schema is enumerated in exactly one place (`MappedSchema`). It replaces none of the ten censuses
+  beside it. [data inventory](docs/engineering/data-inventory.md),
+  [ADR 0024](docs/decisions/0024-key-the-data-inventory-on-the-model-and-reconcile-it-against-the-catalog.md)
+- **A new tenant-owned table needs a grant *and* a policy** — `budget_isolation` for `budget_id`,
+  `user_isolation` for `user_id`. Grants fail closed (`42501`), RLS fails open. A table carrying
+  neither column fails both.
+- **A recovery code never reaches the server.** The client mints it and sends only a verifier;
+  `recovery_code_hashes` stores `SHA-256(verifier)`. The server therefore **cannot** check the
+  128-bit entropy rule, and a code is consumed by **deleting** its row, never by stamping it.
+  [recovery-codes.md](docs/business-logic/recovery-codes.md),
+  ADRs [0015](docs/decisions/0015-mint-recovery-codes-on-the-client-and-store-only-a-hash-of-a-verifier.md),
+  [0016](docs/decisions/0016-give-recovery-code-hashes-their-own-exempt-table.md),
+  [0017](docs/decisions/0017-consume-a-recovery-code-by-deleting-its-row.md)
+- **An account owns one content key and one index key, and every recovery factor holds an ECDH
+  P-256 keypair rather than its own copy of both.** The factor's private key is *wrapped under* the
+  key-encryption key it already derives (`wrapped_private_key`, exactly 167 bytes); the two account
+  keys are *encapsulated to* its public key as one 64-byte plaintext, **content key first**
+  (`encapsulated_account_keys`, exactly 158). A rotation therefore needs the old content key and a
+  set of public keys — **not every authenticator at once**, which is the whole point.
+  `wrapped_account_keys` is policed, keyed on **`factor_id`** — a factor is
+  not a credential, so a set of recovery codes is ten. Every path creating a factor requires
+  `factorId` and both values in the credential's own `SaveChanges`; **"every factor has a row" is
+  not a schema fact**, so a path that skipped them would redden nothing. **Every factor's public key
+  lives only in `factor_manifests`**, one authenticated blob per account — there is deliberately no
+  per-row public key column, because what must be unforgeable is the *set*. **Four paths move a
+  factor set and all four carry a manifest** — registration inserts the first at epoch 1; adding a
+  passkey, regenerating the code card and revoking a passkey each *promote* it, in the unit of work
+  that path already had. Erasure owes none: there is nobody left for one to describe.
+  A manifest is *sealed under* the content key, so the server enforces **presence, framing and
+  epoch, never contents**: a manifest naming nobody stores and reads back. **The band's two ends
+  belong to two layers** — `FactorManifestEnvelope` refuses below the AEAD framing's 29-byte floor
+  and above 4096 at the edge, while the stored rule is `length(manifest) between 1 and 4096`, so
+  the ceiling agrees to the byte and the floor is only the column saying a `bytea` is not empty.
+  **The client supplies the epoch**, because it is the manifest's associated data — the server
+  only refuses anything that is not stored + 1. That refusal is `FactorManifest.Promote`, an
+  **instance** method on a *loaded* entity: `For(...)` is detached, so `For(...) + Update()` emits
+  `WHERE rotation_epoch = <the new value>`, which matches nothing against the row it came from and
+  **matches** a row a racing promotion already moved. `rotation_epoch` is a concurrency token with
+  **no relational artifact** (measured), and it holds only atomicity — `N + 17` satisfies it as
+  `N + 1` does. **Two refusals that must not collapse**: `Promote` throwing is a 400 (the epoch was
+  never stored + 1); the token firing is a 409 `factor_set_moved` (it was, at read time). A missing
+  manifest row is a **500 on purpose** — no account can exist without one.
+  **A rotation begins by staging one seal per factor**, never by touching one: the begin carries an
+  encapsulated value per factor into `key_rotation_seals` in the same save as the staging row, and
+  refuses three ways — no seals at all, a repeated factor id, and a seal set that is not *exactly*
+  the account's live factor set in both directions. The three are not one check: the empty refusal
+  is the only one that survives a listing which lost its owner predicate (two empty sets compare
+  equal), and the duplicate refusal is separate because a `HashSet` absorbs a repeat, so twelve
+  seals naming eleven factors satisfy set equality. That listing answers **every** factor, not only
+  passkeys — a run that sealed the passkey and skipped a card's ten is the silent orphaning the
+  keypair exists to prevent. **The gate is over the seals and never over the manifest**, whose named
+  set is authenticated by a key this server does not hold, so a client may stage a manifest
+  disagreeing with its own seals and nothing here refuses it; the client holds that half.
+  `key_rotation_seals` takes `SELECT`, `INSERT` and `UPDATE (encapsulated_account_keys)` and **no
+  `DELETE`** — a second begin *updates* the staging row in place, so
+  `FK_key_rotation_seals_key_rotations` never fires on that path, which is why the insert and update
+  arms exist at all; `FK_key_rotation_seals_wrapped_account_keys` is what clears a superseded seal,
+  when the factor's own row goes.
+  `GET /api/me/account-keys` is keyed on the **account**, never on a credential — narrowing it was
+  tried and was wrong. [account-keys.md](docs/business-logic/account-keys.md),
+  [key-rotation.md](docs/business-logic/key-rotation.md),
+  [ADR 0018](docs/decisions/0018-give-the-wrapped-account-keys-a-policed-table-and-their-own-factor-identifier.md)
+- **One AEAD envelope serves both consumers, and its associated data is never carried inside it.**
+  `version(1) ‖ nonce(12) ‖ ciphertext ‖ tag(16)`, unpadded base64url; 29 bytes is a **floor**.
+  **All eight narrative columns are typed for an envelope, four carry a blind index, and the set is
+  closed.** `NarrativeField` has no constructor taking a `string` — **that absent member, not a
+  test, is what holds "no narrative value is ever server-readable"**. The blind index normalizes
+  trim → NFKC → **full case fold** → UTF-8 against a table this repository ships; do not relax any
+  step to make a later screen easier. Sealing took a *capability* away on `payees.name` and
+  surrendered uniqueness on `budgets.name`; both are decisions, not gaps.
+  [ciphertext-envelope.md](docs/business-logic/ciphertext-envelope.md),
+  [ADR 0022](docs/decisions/0022-mint-narrative-row-identifiers-on-the-client.md)
+- **A second framing is stored in two columns.** `EncapsulatedValueEnvelope` —
+  `version(1) ‖ ephemeral public key(65) ‖ nonce(12) ‖ ciphertext ‖ tag(16)`, floor 94 — carried by
+  `wrapped_account_keys.encapsulated_account_keys` and `key_rotation_seals.encapsulated_account_keys`,
+  both exactly 158. Both
+  framings lead with `0x01` on **different suites** and nothing in the bytes says which, so the
+  column is the only discriminator — and **neither version constant may alias the other**, because
+  reflection cannot tell a `const` literal from a `const` alias and only a source-text census holds
+  it. **Three verbs, and they are not interchangeable**: *sealed under* a key over data, *wrapped
+  under* a key over another key, *encapsulated to* a public key. **The two halves inside the 64-byte
+  plaintext — content key first — are held by no server-side check and never can be**: a reversed
+  pair is the right width, the right version, stores, reads back and opens.
+  [ciphertext-envelope.md](docs/business-logic/ciphertext-envelope.md)
+- **The schema carries no remnant of an erasure and the route table offers no way back.** Three
+  gates each hold a different half. Read [erasure.md](docs/business-logic/erasure.md) before
+  widening any.
+- **The export refuses rather than truncates** — it throws unless the owned set is *exactly* the
+  ambient budget, **set equality in both directions**. Do not simplify to `Count > 1`.
+  [export.md](docs/business-logic/export.md)
+- **Seven list reads are delivered whole** — no page, no cursor, no filter, no search term.
+  **Their reasons differ and must not be flattened into one**: payees and accounts have no
+  server-side name order to fall back on, categories and their groups are a tree whose positions
+  are relative to the whole set, currencies are a bounded reference set, and the credential and
+  passkey-handle reads are account control — truncate the latter and an authenticator enrols a
+  duplicate. **The transaction list is outside the gate by decision**, because it orders by date
+  and pagination for it is planned. Read the chapter for what the gate does *not* reach, which is
+  most of what matters. [whole list reads](docs/engineering/whole-list-reads.md)
+- `SessionContextInterceptor` must stay a **connection-opened** interceptor, and
   `No Reset On Close=true` / `Multiplexing=true` are forbidden in any connection string.
-  See [ADR 0008](docs/decisions/0008-read-the-ambient-budget-inside-the-policy.md).
-- The app connects as `budgetoid_app` on `ConnectionStrings:budgetoid`; the elevated
-  `budgetoid-admin` is read only by the Development startup block. Migrations never run on
-  the app role. See [ADR 0004](docs/decisions/0004-connect-as-a-least-privilege-role.md).
-- Immutable columns are enforced by **omission from a `GRANT UPDATE` column list** — never
-  by `REVOKE`, and never widen a list to table-wide. Grants and policies live together in
+  [ADR 0008](docs/decisions/0008-read-the-ambient-budget-inside-the-policy.md)
+- The app connects as `budgetoid_app`; the elevated `budgetoid-admin` is read only by the
+  Development startup block. Migrations never run on the app role.
+  [ADR 0004](docs/decisions/0004-connect-as-a-least-privilege-role.md)
+- **Immutable columns are enforced by omission from a `GRANT UPDATE` column list** — never by
+  `REVOKE`, never widened to table-wide. Grants and policies live in
   `Infrastructure/Persistence/Provisioning/app-role-grants.sql`, never in a migration.
-- **In production the app role has no password** — the missing `Password=` is what makes
-  Aspire fetch an Entra token for the API's managed identity. Do not "complete" it.
-  See [ADR 0007](docs/decisions/0007-authenticate-to-postgres-with-managed-identity.md).
+- **In production the app role has no password** — the missing `Password=` is what makes Aspire
+  fetch an Entra token for the API's managed identity. Do not "complete" it.
+  [ADR 0007](docs/decisions/0007-authenticate-to-postgres-with-managed-identity.md)
+- **The four security headers are written from `Response.OnStarting`, never before `await next(…)`**
+  — the exception handler's `Response.Clear()` discards a direct write, so a 500 would ship bare.
+  [security headers](docs/engineering/security-headers.md)
 
 ## Frontend Architecture
 
-- Angular 21 standalone components (no NgModules)
-- Slice-1 transaction state uses an Angular signal-based service; NgRx remains for existing
-  auth/profile scaffolding only
-- `+core/` — API services, guards, interceptors, app-wide providers
-- `+shared/` — shared components and utilities
-- `+state/` — NgRx actions, effects, selectors, reducers
-- Path aliases: `@app-core/*`, `@app-shared/*`, `@app-state/*` (baseUrl is `./src`)
-- Auth: Google OAuth via `angular-oauth2-oidc`
-- UI: Angular Material + Angular CDK, styled with SCSS
-- **Nothing loads from another origin** — no CDN script, stylesheet, typeface, icon, or
-  image, and no identity-provider profile picture. Typefaces live in `public/fonts/`.
-  `src/no-external-origins.spec.ts` reads the production bundle, so `npm test` needs a
-  `npm run build` first. See [no third-party origins](docs/engineering/no-third-party-origins.md).
-- **The production build registers no state-inspection provider.** `provideStoreDevtools` lives
-  in `src/app/devtools.providers.ts`, which the production `fileReplacements` in `angular.json`
-  swaps for an empty module — a runtime `isDevMode()` branch leaves the code in the bundle.
-  `src/no-devtools.spec.ts` reads the bundle and fails if it comes back.
+- Angular 21 standalone components (no NgModules); `inject()` over constructor DI; OnPush.
+- `+core/` — API services, guards, interceptors, app-wide providers. `+shared/` — shared components
+  and utilities. Path aliases `@app-core/*`, `@app-shared/*`, `@app-state/*` (baseUrl is `./src`).
+- Auth: Google OAuth via `angular-oauth2-oidc`. UI: Angular Material + Angular CDK, SCSS.
+- Slice-1 transaction state uses an Angular signal-based service. **NgRx is registered and empty**:
+  `provideStore()`/`provideEffects()` take no arguments and `@app-state/*` resolves to nothing. It is
+  kept as the store the next slice reaches for, and because removing it would take
+  `devtools.providers.ts`, the `angular.json` `fileReplacements` entry and `no-devtools.spec.ts`.
+
+Load-bearing rules. Each links the doc that argues it — **read that doc before changing the rule**.
+
+- **Two interceptors, one predicate.** `apiCredentialsInterceptor` answers "is this going to our
+  API?" once and attaches `withCredentials`, `X-Budgetoid-Client`, and — **on the two registration
+  routes only** — the provider's bearer. `sessionExpiryInterceptor` imports that same predicate,
+  never restates it. It compares **origins**, not `startsWith`, and the bearer is narrowed by origin
+  first and path second. Neither interceptor's own spec can see whether it is registered, so
+  `app.config.spec.ts` carries one pin per interceptor.
+  [sessions.md](docs/business-logic/sessions.md)
+- **The client learns who it is by asking, once, before the first route activates.**
+  `SessionService.probe()` runs in the `APP_INITIALIZER` after `config.load()` and is **awaited**,
+  which is what keeps every guard synchronous. `status` is **four-valued**: a network failure, a 500
+  or a timeout is `unreachable`, and **both guards admit `unreachable` and `unknown`** — only
+  `anonymous` may bounce anybody. `sessionExpiryInterceptor` is the single owner of "the session
+  ended", acts on **401 only**, and skips requests carrying `EXPECTS_UNAUTHENTICATED`.
+  [sessions.md](docs/business-logic/sessions.md)
+- **Nothing loads from another origin** — no CDN script, stylesheet, typeface, icon, image, or
+  identity-provider picture. `src/no-external-origins.spec.ts` reads the production bundle, so
+  `npm test` needs a `npm run build` first.
+  [no third-party origins](docs/engineering/no-third-party-origins.md)
+- **The production build registers no state-inspection provider.** `provideStoreDevtools` lives in
+  `src/app/devtools.providers.ts`, which production `fileReplacements` swaps for an empty module — a
+  runtime `isDevMode()` branch would leave the code in the bundle. `src/no-devtools.spec.ts` holds it.
+- **The browser is told what the app may load, and `script-src 'self'` is literal.** The four headers
+  ship in `globalHeaders` of `public/staticwebapp.config.json`, **never on a route rule**, which
+  Azure skips for every deep link. Critical-CSS inlining is **off**, which is why the theme pre-paint
+  lives in `public/theme-prepaint.js`. [security headers](docs/engineering/security-headers.md),
+  [ADR 0020](docs/decisions/0020-trade-inlined-critical-css-for-a-literal-script-src-self.md)
+- **No button shows a focus ring unless `src/styles.scss` puts one there** — Material sets
+  `outline: none` on `.mdc-button`, so one global `:focus-visible` block with element selectors,
+  never `:where()`, has to out-specify it. [accessibility.md](docs/design/accessibility.md)
+- **The test runner's time zone is pinned** to `Pacific/Kiritimati`, and **`npm test` needs a prior
+  `npm run build`**. [frontend testing](docs/engineering/frontend-testing.md)
+- **`/app/settings` is reached from the shell navigation**, a layout on the `app` route — so
+  **which routes carry a bar is a fact about the route table**. **Three different reasons hold the
+  inert controls off across four sites, a fourth holds Export off while this tab cannot read what
+  the file is written from, and the screen says all four**; do not paste one sentence over another.
+  Home and Add are specified and not built — do not "complete" the screen.
+  [export.md](docs/business-logic/export.md), [erasure.md](docs/business-logic/erasure.md),
+  [recovery-codes.md](docs/business-logic/recovery-codes.md),
+  [components.md](docs/design/components.md)
+- **The browser runs both halves of the front door.** `webauthn-encoding.ts` is pure translation over
+  a **strict** decoder — a lenient one must never appear beside it. `webauthn-ceremony.service.ts`
+  runs **three** ceremonies and sends two; the third mints its own challenge and spends neither nonce
+  pool. **The PRF output never crosses the module boundary**, the registration payload **projects**
+  `getClientExtensionResults()` rather than forwarding it, `create()` returning no PRF output is not
+  a refusal but `enabled: false` is, and `isArrayBuffer` is a **brand check, never `instanceof`**.
+  [passkeys.md](docs/business-logic/passkeys.md),
+  [account-keys.md](docs/business-logic/account-keys.md)
+- **The account's keys are held per tab by one root-provided service.**
+  `AccountKeyCustodyService` tries **every** entry under its own `factorId`, never `entries[0]`, and
+  keeps what opened on `#` fields with **no accessor, and there never may be one** — which is what
+  forced the three codecs onto this class. **Nothing is persisted and nothing is shared across tabs**:
+  a non-extractable `CryptoKey` is structured-cloneable, so IndexedDB and `BroadcastChannel` both
+  *work* and both are refused. A page reload therefore locks the **account**, and the way back is
+  Unlock on `/app/settings`. `'unopened'`, `'unreachable'`, `'unauthenticated'`, `'unrecognised'` and
+  `'inconsistent'` are five different next steps for a person — collapsing any two sends somebody
+  down a road that cannot help them. **Every word reports what was observed and none names a cause**:
+  `'unrecognised'` is a body this client could not read, where a reload is the only act that can
+  change the answer and `'unreachable'`'s "try again in a minute" never succeeds — it is not
+  `'outdated'`, because the same refusal covers a *newer* bundle reading the retired body shape.
+  **A manifest this client cannot *read* is `'unrecognised'` too** — a wire string the strict decoder
+  refuses, or a sealed value outside this client's width window — because both refusals precede the
+  cipher and observe no key material; everything from the tag onward stays `'inconsistent'`, and the
+  line is `FactorManifestWireError`, never a message.
+  `'inconsistent'` is the account's material failing to agree with itself, and it is the one failure
+  **no factor can clear**: every factor encapsulates the same two keys, so `'unopened'`'s "try
+  another passkey" would send somebody through a whole recovery card. **The gate that raises it is a
+  control over the server, and it is four ordered refusals answering that one word** — a response
+  carrying no manifest, a manifest that does not open under the content key a factor handed over, an
+  epoch below the highest this device has recorded for the account, and a served factor set that is
+  not the manifest's own set in **both** directions. **`manifest: null` is refused**, so nothing able
+  to shape the response switches the gate off. **The order is the property**: an epoch is worth
+  comparing only once the manifest has authenticated it as its own associated data, and the record
+  rises only after all four have passed — advancing it from an unjudged body is an oracle, not an
+  observation. That record is `rotation-epoch-record.ts`, `localStorage`, one key per `budgetId`,
+  rising only; learning the `budgetId` is why an unlock reads `GET /api/me` beside the keys, since
+  custody may not inject `SessionService` — that class injects custody, and the edge would be a cycle.
+  Clearing has **one owner**, `SessionService.ended()`, never an `effect()`.
+  [account-keys.md](docs/business-logic/account-keys.md),
+  [sessions.md](docs/business-logic/sessions.md)
+- **A screenful of sealed columns is opened once per distinct ciphertext, and the driver owns the
+  iteration.** `openNarrativeBatch` de-duplicates on `(table, column, rowId, wire)`, hands the frame
+  back between chunks, and **returns an opener rather than a map** — it answers from the batch and
+  falls through to a real open on a miss, so a field the collector forgot costs one open and can
+  never cost a rendered value. **A yield placed inside a single field's open under `Promise.all`
+  chunks nothing**, because every open starts in the same synchronous burst. `scheduler.yield()` is
+  **refused** — it costs nothing because it resumes ahead of the browser's rendering and draws no
+  frame. Nothing here keeps an opened value past its own read, no spec asserts a wall clock, and none
+  of this may become a CI gate. **Every timing figure in that chapter is machine-local**: a
+  calibrated CPU-throttling profile does not transport, and the error flatters the slower rig.
+  [frontend performance](docs/engineering/frontend-performance.md),
+  [account-keys.md](docs/business-logic/account-keys.md)
+- **The export is opened, never piped.** The server sends envelopes; `decodeExportDocument` parses
+  the text once and **refuses every member it does not declare** — that refusal is what keeps a
+  blind index or a new column out of the saved file. So a member the server adds, renames or drops
+  ships in **two releases, client first** — a client that accepts it present or absent, then the
+  server — because the two deploy jobs run in parallel and an open tab keeps its old bundle; one
+  commit is still an outage. Plain `JSON.parse` is exact for `numeric(14,4)` (measured); the width
+  is held by the two `…UsesNumeric14Scale4` catalog pins, which go red in CI and gate nothing, and
+  the client's scale tripwire is an early canary that misses some 7- and 8-decimal values. The file
+  is **whole or absent** — `locked` wins over `unreadable`, and nothing is saved on either. Export
+  is pressable only while custody is `unlocked` and no rotation run this tab knows of is in flight,
+  one `pressable` read by both the attribute and the handler; and the save is refused unless
+  `custody.holding()` is still the token captured at the press — for an account with nothing to
+  open, that comparison is the only thing between a signed-out account and a saved file. The opened
+  document never lands in a signal or a field.
+  [export.md](docs/business-logic/export.md), [components.md](docs/design/components.md)
+- **The recovery-code hand-off is the one screen that shows a secret, and it still mints and posts
+  nothing.** The codes never enter a live region; what is saved or copied is the grouped codes and
+  nothing else; **the acknowledgement gate is in the click handler, not only in the attribute**; and
+  the consequence is its own block, never the checkbox's label.
+  [components.md](docs/design/components.md), "A secret shown once" in
+  [voice.md](docs/design/voice.md),
+  [recovery-codes.md](docs/business-logic/recovery-codes.md)
+- **Registration is one screen, one route and one *creating* request.** `/register` declares no
+  `children` and provides `RegisterService` **on the component** — custody, not lifetime. The one
+  thing that outlives it is a **created** account's key pair, handed over by `adopt` on the 201.
+  A 409 has two readings told apart by what the previous request *ended as*, never by whether a
+  button was pressed. Both requests carry `EXPECTS_UNAUTHENTICATED`.
+  [registration.md](docs/business-logic/registration.md),
+  [components.md](docs/design/components.md)
+- **Welcome carries two actions and exactly one of them is Primary**, and there is **no `/sign-in`
+  route** — one control, no fields, because the authenticator is the form. **The screen says one
+  thing however a sign-in was refused**, or a varying sentence would rebuild the
+  credential-enumeration oracle the server refuses to be. `refused` is not `unknown`.
+  [passkeys.md](docs/business-logic/passkeys.md), [components.md](docs/design/components.md)
 
 ## Documentation
 
@@ -108,10 +368,18 @@ Load-bearing rules, each explained there or in the linked decision:
 - **Business logic** — start at `docs/business-logic/_overview.md`. Read the relevant file
   before modifying business rules; if none exists for the domain area, create one following
   the structure of the others.
-- **Engineering invariants** — [data isolation](docs/engineering/data-isolation.md),
-  [migrations](docs/engineering/migrations.md), and
-  [no third-party origins](docs/engineering/no-third-party-origins.md). Each names the tests
-  that lock it: removing a `HasQueryFilter` line, a policy, or a self-hosted font must fail one.
+- **Engineering invariants** —
+  [adversarial properties](docs/engineering/adversarial-properties.md),
+  [data isolation](docs/engineering/data-isolation.md),
+  [data inventory](docs/engineering/data-inventory.md),
+  [migrations](docs/engineering/migrations.md),
+  [no third-party origins](docs/engineering/no-third-party-origins.md),
+  [security headers](docs/engineering/security-headers.md), and
+  [whole list reads](docs/engineering/whole-list-reads.md). Each names the tests that lock it:
+  removing a `HasQueryFilter` line, a policy, a self-hosted font, or a directive from the
+  shipped `Content-Security-Policy` must fail one. The adversarial-properties chapter is the
+  exception: its four properties are held by argument rather than by a test, so a wrong sentence
+  there is a defect.
 - A change to a design rule, business rule, or invariant updates the owning doc **in the
   same commit**.
 - **`docs/` documents only what is true today.** Agreed-but-unbuilt design lives in the
@@ -119,6 +387,13 @@ Load-bearing rules, each explained there or in the linked decision:
   rationale) and moves into `docs/` the day it ships. Never state an unbuilt capability in
   the present tense. The hardening backlog lives there too — a public list of unclosed
   weaknesses is a map.
+- **`docs/design/**` is the one carve-out: it is a specification, not a report.** The book
+  states what a surface *shall* look like — `components.md` says so itself ("if a component
+  isn't specified here, specify it here before building it") — so a chapter describing an
+  unbuilt control is doing its job, not going stale. What it may never do is describe the
+  built thing wrongly: where what ships departs from the book, the chapter says so in the
+  same commit and names the gap as work. Do not "clean up" the target out of the book to
+  make it match the code; correct the code, or record the departure.
 
 ## Rule Enforcement
 
@@ -149,8 +424,14 @@ lowest capable layer, the doc describing it says why. See
   without it `azd provision` fails on an empty ARM resource name.
 - **The database has no standing firewall rule.** `az postgres flexible-server
   firewall-rule list` must come back empty outside a deploy.
-- **`budgetoid.app` is registered but not yet wired up.** The generated Azure hostnames are
-  still the live ones; treat any doc claiming otherwise as wrong.
+- **There is no production environment right now, and `budgetoid.app` is the name the next one
+  answers on.** `rg-budgetoid-prod` does not exist; only `rg-budgetoid-msi` and its pipeline
+  identity survive a teardown, by design. The repository already names the target — `budgetoid.app`
+  for the frontend, `api.budgetoid.app` for the API — and **`passkey-relying-party-id` is frozen at
+  `budgetoid.app`**, never a generated `*.azurestaticapps.net` hostname. That value is hashed into
+  every passkey an authenticator stores, so a later change invalidates all of them with no
+  migration; it is decided here rather than at cutover precisely so no account can be created under
+  a throwaway name. Binding the DNS is part of bringing the environment up, not a follow-up.
 - **The baseline migration is frozen, but its rebaseline window is open.** Schema changes are
   additive migrations and the `migrations-guard` CI job fails any edit to an existing migration
   file — except while `REBASELINE_WINDOW` in that job is `open`, which it is, because the

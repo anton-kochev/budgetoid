@@ -1,0 +1,20 @@
+@let rendered = render();
+
+@switch (rendered.kind) {
+  @case ('text') {
+    <span class="nv-text">{{ rendered.text }}</span>
+  }
+  <!-- One element for both dashes. `role="img"` is not decoration: an
+       `aria-label` on a plain span sits on a generic element, where it is not a
+       name anything is required to expose, and the marker reaches a screen
+       reader as a bare dash. With the role, the label is the name and the glyph
+       inside is not announced. -->
+  @case ('marker') {
+    <span class="nv-marker" role="img" [attr.aria-label]="rendered.name"
+      >&mdash;</span
+    >
+  }
+}
+<!-- `nothing` has no arm on purpose: an absent column draws nothing at all, and
+     a dash here would be the app claiming it failed to show a value that was
+     never there. -->

@@ -1,0 +1,912 @@
+# Passkeys
+
+## Table of Contents
+
+- [Purpose](#purpose)
+- [Key Entities](#key-entities)
+- [Constraints](#constraints)
+- [Business Rules & Invariants](#business-rules--invariants)
+- [Workflows & State Transitions](#workflows--state-transitions)
+- [Decision Trees](#decision-trees)
+- [Integration Points](#integration-points)
+- [Edge Cases & Known Gotchas](#edge-cases--known-gotchas)
+
+## Purpose
+
+This area covers **the four WebAuthn ceremonies**: creating an account with the passkey that will
+reach it, registering a further passkey to an account that already exists, signing in with one, and
+re-proving possession of one before an action too destructive to take on a live session alone. Each
+has an endpoint, a challenge pool and rules on both sides of the wire. **A ceremony the browser
+runs entirely by itself has none of those** — the local assertion an unlock spends is named in the
+gotchas below so that "four" is not read as "every ceremony a person can be asked for", and it is
+argued in [account-keys.md](account-keys.md), which owns what it produces.
+
+Two of the four paths that open a session run a ceremony here — an assertion, and the account
+registration whose own rules live in [registration.md](registration.md); the other two are in
+[recovery-codes.md](recovery-codes.md). A passkey is one of the two credential types whose session
+reaches budget content, the other being a set of codes; `federated` is the only type that never can.
+Identity lives in [users-and-ownership.md](users-and-ownership.md); what happens after a credential
+has answered lives in [sessions.md](sessions.md); this file covers the answering itself. What of it
+is built today is the first gotcha below.
+
+## Key Entities
+
+- **Passkey `Credential`** — a `Credential` of type `Passkey`, minted by `Credential.CreatePasskey`.
+  It carries no `Provider` and no `Subject`: a passkey is held by the authenticator and granted by
+  nobody.
+- **`PasskeyPublicKey`** — the material an assertion is checked against: the authenticator's
+  credential id, the COSE key exactly as the authenticator returned it, and the COSE algorithm.
+  Keyed one-to-one on the credential, with no navigation properties.
+- **`PasskeySignatureCounter`** — the `signCount` last accepted from this authenticator. Its own
+  row, on its own table, for the reason the whole design turns on: it is compared *after* the
+  signature verifies, so unlike the public key it is reached with a trusted identity on the
+  connection.
+- **`CoseAlgorithm`** — `Es256 = -7` or `Rs256 = -257`, persisted as its **numeric** value, unlike
+  every other enum here. These are IANA-assigned wire values that appear as numbers in the ceremony
+  options and inside the COSE key itself; a second textual spelling would be one more thing to keep
+  in step with the protocol.
+- **`WebAuthnChallengeRow`** — a 32-byte nonce, the ceremony it was issued for, and its lifetime. A
+  persistence-layer type rather than a domain entity: a protocol nonce is not a domain concept. Its
+  `ceremony` vocabulary is `registration`, `authentication`, `reauthentication` and
+  `account_registration`, bounded by `CK_webauthn_challenges_ceremony`. The row carries **no owner
+  column** and must not gain one. The fourth value is snake case for the reason `credentials.type`
+  spells `recovery_codes`. Adding a pool is therefore a **schema** change, which is the point — the
+  vocabulary is enumerated so that a spelling nobody chose is unstorable rather than merely
+  undefined.
+
+Deliberately **absent**: AAGUID, transports, a last-used instant, backup-eligibility flags, and the
+attestation statement. Nothing reads any of them — no `allowCredentials` is ever sent, so transports
+are unused, and under `attestation: "none"` the AAGUID arrives zeroed anyway. An authenticator model
+identifier is a device fingerprint by another name.
+
+```mermaid
+erDiagram
+    USER ||--o{ CREDENTIAL : "signs in with"
+    CREDENTIAL ||--o| PASSKEY_PUBLIC_KEY : "is verified by"
+    CREDENTIAL ||--o| PASSKEY_SIGNATURE_COUNTER : "is counted by"
+    CREDENTIAL ||--o{ SESSION : establishes
+    PASSKEY_PUBLIC_KEY {
+        guid CredentialId
+        guid UserId
+        string CredentialType
+        bytes WebAuthnCredentialId
+        bytes CoseKey
+        int Algorithm
+    }
+    PASSKEY_SIGNATURE_COUNTER {
+        guid CredentialId
+        guid UserId
+        string CredentialType
+        long Value
+    }
+```
+
+## Constraints
+
+### MUST
+
+- **A passkey's material is split by whether it is read before or after the ceremony has produced a
+  trusted identity.** `passkey_public_keys` is exempt from row-level security;
+  `passkey_signature_counters` carries `user_id` and is policed by `user_isolation`.
+  - **Why**: an assertion arrives with a credential id and a signature and nothing else, so the
+    server must find a key and check a signature *before* it knows whose account this is. Every
+    statement until then runs with `app.current_user_id` empty, and a policed table would fail with
+    `22P02` — the exemption is not removable. Everything after that answer has a real tenant.
+  - **Enforced in**: the two `Exemptions` entries and the `user_isolation` policy in
+    `app-role-grants.sql`; `RowLevelSecurityCoverage` reaches the counter's verdict from its own
+    columns with no rule added. `RlsIsolationTests` proves both directions, including the positive
+    control — `Database_ReadsAPasskeyPublicKeyWithNoUserOnTheSession` — without which a policy
+    accidentally added to the exempt table would surface only as a mysterious 401. See
+    [ADR 0012](../decisions/0012-split-a-passkeys-material-by-whether-it-is-read-before-identity.md).
+
+- **The pinned column set is what holds the exemption to its reason — not the absent `UPDATE`
+  grant.** A new column on an exempt table means **move the column** to a table carrying `user_id`,
+  never widen the pin.
+  - **Why**: the role holds no `UPDATE` of any shape and no `DELETE` on `passkey_public_keys`, and
+    that is a genuine narrowing, but not the one that matters. The hazard is that the exemption is
+    granted to a *query* and applied to a whole *table*, so every column is readable by every
+    session whoever it names. **A recovery-code hash is written once and never updated** — it satisfies
+    any append-only rule perfectly while being exactly what must not land here. A wrapped key was
+    named beside it until content-key rotation took `UPDATE` on its two envelope columns; it now
+    fails an append-only screen while being no safer here, which is the sharpest evidence that such
+    a screen was never what decided this. Both hypotheticals have since become real and both went elsewhere: `recovery_code_hashes`
+    with its own exemption and pin
+    ([ADR 0016](../decisions/0016-give-recovery-code-hashes-their-own-exempt-table.md)), and
+    `wrapped_account_keys` onto a *policed* table, because it is read only after the request has an
+    identity
+    ([ADR 0018](../decisions/0018-give-the-wrapped-account-keys-a-policed-table-and-their-own-factor-identifier.md)).
+    Two hypotheticals raised here, two tables elsewhere, no column widened.
+  - **Enforced in**: the exact column sets pinned by the `Exemptions` entries in
+    `RowLevelSecurityCoverage` — a column added to an exempt table goes red there.
+
+- **A passkey's key and counter belong to the same person as the credential, and to a credential of
+  type `passkey`.**
+  - **Why**: one person's key attached to another person's credential, or a key attached to a
+    federated credential, must be *unstorable* rather than merely unlikely — the discovery read is
+    unpoliced, so the rows themselves have to be incapable of disagreeing about whose they are.
+  - **Enforced in**: a composite foreign key on each,
+    `(credential_id, user_id, credential_type) → credentials (id, user_id, type)` against
+    `AK_credentials_id_user_id_type`, plus a check pinning `credential_type = 'passkey'`.
+
+- **One authenticator credential resolves to at most one account.**
+  - **Why**: the discovery lookup resolves the account from the credential id alone — an
+    authenticator credential registered to two accounts would leave sign-in with no answer to whose
+    session to establish.
+  - **Enforced in**: the unique index `IX_passkey_public_keys_webauthn_credential_id`, which is also
+    the discovery lookup's index, and `PasskeyRepository.TryAddAsync`, which turns its `23505` into
+    a 409 by filtering on the **constraint name** rather than the SQLSTATE alone.
+
+- **A registration MUST NOT complete unless it carries a factor identifier and the factor's share of
+  the account keys.** The finish leg takes `factorId`, `wrappedPrivateKey` and
+  `encapsulatedAccountKeys` beside the ceremony response.
+  - **Why**: a passkey that cannot open the account's keys is not a way back in, however well it
+    proves identity. Every passkey has exactly one wrapped-key row by construction, which is what a
+    later completion gate can be keyed on. **Not the table's own row count**: a set of recovery
+    codes writes ten rows under one credential, so a gate counting the table reads twelve where an
+    account holds two passkeys and a set. What it wants is the rows filed against `passkey`
+    credentials.
+  - **Enforced in**: `CompleteRegistrationHandler` for the shape, and
+    `PasskeyRepository.TryAddAsync` writing every row in **one** save. `RegisterAccountHandler`
+    demands the same three members on the account-registration leg. Read what each half holds: the
+    two envelope columns are `NOT NULL` on a table keyed on `factor_id`, so "a row carries both keys
+    or neither" is a schema fact — but **"a passkey has a row" is not one**, because one-to-optional
+    needs a trigger and ADR 0002 forbids pushing that down. What holds it is a property of the write
+    surface: **every** path that creates a factor demands the members and writes them in the
+    credential's own save, so a path cannot half-comply. Three do today. See
+    [account-keys.md](account-keys.md).
+    - **The identifier has one spelling**, held by `CanonicalFactorId.TryParse` — one definition
+      every write path calls. The rule is normative in [account-keys.md](account-keys.md) rather
+      than here, because it is a cross-client contract. What this route adds: the identifier is the
+      table's primary key, so a second registration reusing one is a 409 whose sentence is
+      deliberately different from the "this authenticator is already registered" 409 beside it.
+
+- **A registration MUST NOT complete unless it also carries the account's new factor manifest and
+  the epoch that manifest was sealed under**, and both MUST land in the same save as the credential.
+  The finish leg takes `manifest` and `rotationEpoch` beside the three members above.
+  - **Why**: this request adds a factor, so the account's factor set is a different set the moment
+    it commits — and the manifest is the only authenticated statement of what that set is. Landed a
+    statement later, or on a second request, the read beneath it hands a client one true snapshot of
+    a database in which the new passkey exists and the list naming the factors does not, which a
+    client comparing the two reports as **tampering** while somebody was merely enrolling a device.
+    The epoch is supplied by the client rather than computed here because it is bound into the
+    manifest's own associated data: a number this server chose for itself would, the first time the
+    two diverged, store a blob the account can never open again.
+  - **Enforced in**: `CompleteRegistrationHandler`, which loads the account's tracked
+    `FactorManifest` and calls `Promote` on it, and `PasskeyRepository.TryAddAsync`, which flushes
+    that promotion in the **same `SaveChanges`** as the credential, the public key, the signature
+    counter and the wrapped keys — with no transaction on the path, exactly as registration has
+    none. An epoch that is not one greater than the stored one is a `400`; an epoch that *was* one
+    greater when this request read it and has since moved is a `409 factor_set_moved`, refused by
+    the concurrency token on `rotation_epoch`. A missing manifest row is a `500` and never a
+    first-manifest repair. The `UPDATE (manifest, rotation_epoch)` grant this statement needs is in
+    `app-role-grants.sql`, named column by column with `user_id` left off, and
+    [account-keys.md](account-keys.md) owns every one of those rules — including why `Promote` is an
+    instance method on a tracked row rather than a fresh `For` beside an `Update`.
+
+- **A revocation MUST NOT complete unless it also carries the account's new factor manifest and the
+  epoch that manifest was sealed under**, and the promotion MUST ride the **same `SaveChanges` as
+  the credential's delete**. `POST /api/me/credentials/{credentialId}/revocation` takes `manifest`
+  and `rotationEpoch` beside the re-authentication response.
+  - **Why**: this request takes a factor away, so the account's factor set is a different set the
+    moment it commits, and the argument the rule above makes runs here in the other direction — a
+    stored list still naming a revoked passkey hands a client one true snapshot it reports as
+    **tampering** at somebody who was merely retiring a device. With this route carrying one, **all
+    four paths that move an account's factor set write a manifest**: registration files the first,
+    and adding a passkey, replacing a card of recovery codes and this revocation each promote one.
+    Erasure owes none, because it leaves nobody for a list to describe.
+  - **Enforced in**: `RevokePasskeyHandler`. The envelope decode sits **after** the
+    re-authentication gate and **outside** the transactional delegate — it judges the payload and
+    reads nothing, and inside the delegate it would repeat on every retry. The manifest is loaded
+    **inside** the delegate and **after the second `ChangeTracker.Clear()`**, because an entity
+    loaded ahead of a clear is detached and its promotion is then silently never emitted; it is
+    promoted there and handed to `PasskeyRepository.DeletePasskeyAsync`. **This path has two
+    `SaveChanges` inside one transaction** — the session sweep's and the delete's — and the
+    promotion must ride the delete's. Both commit together, but commit atomicity and statement order
+    are two different facts, and a reader holding only the first will move the promotion to the
+    sweep's save, where the epoch advances in a statement that does not know whether the credential
+    is going. The answers are the registration rule's: an epoch that is not one greater than the
+    stored one is a `400`; one that *was* one greater when this request read it and has since moved
+    is a `409 factor_set_moved`, raised as the **existing** `ConflictKind.FactorSetMoved` and never
+    a kind of its own; a missing manifest row is a `500` and never a first-manifest repair. **The
+    grant needs no widening for it** — this promotion is `UPDATE (manifest, rotation_epoch)`,
+    exactly the two columns `app-role-grants.sql` already names. [account-keys.md](account-keys.md) owns every one
+    of those rules.
+
+- **A registration MUST NOT complete unless the client reports a `prf` extension result of true.**
+  Both registering legs carry it, at the same position in their own ladders. → the PRF rule below.
+
+- **A challenge is single-use, and consuming one is deleting it.**
+  - **Why**: these rows are nonces, and a row nobody can delete is a row swept by a path that does
+    not exist. Contrast `sessions`, where revocation writes a column precisely so the row stays
+    accountable.
+    - **The company the grant keeps.** `webauthn_challenges` is one of the four identity tables
+      holding `DELETE`. The others are `users`, the root every owned row cascades from;
+      `credentials`, which holds it for **revocation** rather than erasure
+      ([ADR 0014](../decisions/0014-scope-the-credential-delete-in-the-application.md)); and
+      `recovery_code_hashes`, whose grant rests on **this** table's sentence word for word
+      ([ADR 0017](../decisions/0017-consume-a-recovery-code-by-deleting-its-row.md)). Two of the
+      four — `credentials` and `recovery_code_hashes` — have their delete scoped by the application
+      alone. Being exempt from row-level security is only half of why: `webauthn_challenges` is
+      exempt too and is not among them, because it carries no owner column at all, so its delete has
+      nothing to be scoped *by*. What singles those two out is holding an owner column **and** no
+      policy to check it against.
+  - **Enforced in**: the `DELETE` grant on `webauthn_challenges` in `app-role-grants.sql`, with the
+    paragraph beside it carrying this argument, and `ConsumeAsync` deleting the matched row.
+
+### MUST NOT
+
+- **MUST NOT send `allowCredentials`.**
+  - **Why**: it requires the client to name an account before authenticating, which turns the
+    sign-in endpoint into an account-enumeration oracle. This is also why only discoverable
+    credentials are accepted, and why `transports` is not stored.
+    - **The enumeration argument is about content, and there is a residual timing channel it does
+      not cover.** A credential id that resolves goes on to a full ECDSA or RSA verification and a
+      counter read; one that resolves to nothing returns as soon as the lookup misses. The responses
+      are byte-identical — that is what the two "every reachable refusal" tests pin — but they do
+      not take the same time. The gap is accepted rather than closed: a credential id is 32 random
+      bytes, so it cannot be walked towards a real one, and every probe costs an options call and
+      burns a nonce. Closing it would mean verifying against a decoy key, which spends real
+      cryptography on every miss. **Do not reorder a ceremony's ladder to flatten this** — the
+      owner-scoped lookup has to precede the user-handle check, or the legal absent-handle case
+      loses its account binding entirely.
+  - **Enforced in**: the options legs, which never emit an `allowCredentials` member.
+
+- **MUST NOT accept an attestation format other than `none`.**
+  - **Why**: verifying `packed` or `tpm` means X.509 chain building against a metadata service and a
+    trust policy — and attestation answers *which model of authenticator is this*, a question this
+    product has no use for. Refusing is one branch and is stricter than ignoring the field: an
+    unverified attestation statement that is stored or trusted is worse than no attestation at all.
+  - **Enforced in**: the registration finish leg's validation ladder.
+
+- **MUST NOT publish the identity before the signature verifies, and MUST NOT open the transaction
+  before the identity is published.** → the first rule below, which owns it.
+
+- **MUST NOT let an assertion failure be distinguishable.**
+  - **Why**: a distinguishing message is a credential-enumeration oracle.
+  - **Enforced in**: every refusal — unknown credential, bad signature, wrong origin, consumed or
+    expired challenge, counter regression, user-handle mismatch — produces a byte-identical 401,
+    pinned by the two "every reachable refusal" tests.
+
+## Business Rules & Invariants
+
+- **Rule**: The account is published to the request **only after** the signature verifies, and the
+  transaction opens **only after** that publication.
+- **Why**: publishing earlier would mean trusting a credential id an unauthenticated caller
+  supplied. Opening the transaction earlier is subtler and worse: the connection is opened — and
+  `SessionContextInterceptor`'s `set_config` run — while `app.current_user_id` is still empty, so
+  every policed statement inside it fails with `22P02`.
+  [ADR 0011](../decisions/0011-police-the-user-owned-tables.md) states that precondition in the
+  abstract; the assertion path and the recovery-code redemption are the two code paths that can
+  violate it, and each carries the ordering with a comment at every step.
+- **Enforced in**: the ordering in `CompleteAssertionHandler`, and by
+  `PasskeyCeremonyTests.Registration_ThenAssertion_EstablishesOneFullSessionForThatAccount`, which
+  runs the whole ceremony over the real least-privilege connection.
+- **Counterexample**: wrapping the handler in `ITransactionalExecutor` for tidiness. Every policed
+  read inside it then fails, loudly but for a reason nobody would guess from the symptom.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: The challenge is consumed **before** verification, so a failed attempt burns it.
+- **Why**: otherwise one issued nonce is an unlimited grinding target — a caller could try
+  signatures against it until one worked.
+- **Enforced in**: the consume step preceding the discovery read in `CompleteAssertionHandler`;
+  `PasskeyCeremonyTests.Assertion_WhenVerificationFails_StillConsumesTheChallenge` drives a failing
+  attempt and then a *valid* one reusing the same challenge, and asserts the second is refused too.
+  - **Note what the comparison is not**: the verifier's fixed-time challenge equality is
+    tautological on this path, because the challenge is looked up **by** the bytes decoded from
+    `clientDataJSON`. It is `ConsumeAsync` that makes the nonce mean anything — that the row existed
+    proves the server issued it and that it was still live, and deleting it proves nobody else may
+    use it.
+- **Example**: an assertion fails on a bad signature, and the same client retries a *valid*
+  assertion over the same challenge bytes. The retry is refused too.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: The signature is verified with the **stored** COSE key and the **stored** algorithm,
+  never one read out of the request.
+- **Why**: an algorithm supplied by the caller is an algorithm the caller chooses, the classic
+  confusion attack.
+- **Enforced in**: `PasskeySignatureVerifier` refusing when the stored column and the algorithm
+  inside the stored key disagree, pinned by
+  `Assertion_WhenTheStoredAlgorithmDisagreesWithTheStoredKey_IsRefused` — a test whose absence let
+  that check be deleted with the whole suite green.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: Only ES256 (-7) and RS256 (-257) are accepted, and an RS256 key must have an exponent of
+  exactly 65537 and an **effective** modulus length of 2048–4096 bits.
+- **Why**: ES256 is what every platform authenticator produces and RS256 what older TPM-backed
+  credentials produce; Ed25519 is excluded because .NET ships no in-box verifier. The RSA floor
+  exists because `RSA.Create(RSAParameters)` has no validation contract of its own — acceptance is
+  whatever the platform decides, and macOS and the production container decide differently about
+  degenerate exponents and short moduli.
+  - **Effective length, not array length, and this is the load-bearing part.** COSE omits leading
+    zero octets but a DER-copying encoder emits one, so a byte-length rule must accept 257 bytes —
+    and then a 512-bit modulus left-padded with 224 zero bytes passes it.
+  - **Above its lowest capable layer, and why.** The algorithm allow-list *is* a database rule —
+    `cose_algorithm` is a column, so `CK_passkey_public_keys_cose_algorithm` bounds it. The
+    key-strength rule cannot be: the modulus and exponent live inside the CBOR blob, PostgreSQL
+    cannot read CBOR, and ADR 0002 forbids pushing procedural logic down. Decomposing the key into
+    columns would add data nothing reads and a second representation free to disagree. No
+    blob-length bound helps either — an ES256 key is about 77 bytes and a 512-bit RS256 key about
+    90.
+- **Enforced in**: `CK_passkey_public_keys_cose_algorithm` for the allow-list; the registration
+  path's key-strength checks for the RSA bounds, with
+  `Registration_WhenTheRs256ModulusIsZeroPaddedToReachTheFloor_IsRefused` as the only test
+  separating the effective-length rule from a byte-length one.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: A counter of `0` reported against a stored `0` is **accepted**.
+- **Why**: this is the first thing a reader will take for a bug. Authenticators backing synced
+  passkeys — most of them — always report `0`, and refusing that would refuse the majority of real
+  passkeys. A counter that did not advance when at least one side is non-zero is the signature of a
+  cloned authenticator, and that is refused. **Also above its lowest layer**: monotonicity is a
+  comparison between the old and new values of a row, which PostgreSQL can express only as a
+  trigger.
+- **Enforced in**: `PasskeySignatureCounter.Accept`, which returns whether the stored value changed
+  so the caller writes only when something did — keeping the single-column `UPDATE` grant exercised
+  for a reason rather than on every sign-in.
+- **Example**: a synced platform passkey reports `0` on every sign-in against a stored `0` — each is
+  accepted, and nothing is written. A stored `5` answered by a reported `5` is refused.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: The `prf` extension is requested on registration, and registration **completes only when
+  the client reports a `prf` result that is present and true**. The reported value is **stored
+  nowhere**. Reporting nothing and reporting `enabled: false` are both refused, with one sentence
+  that names the authenticator as the reason and says what to use instead.
+- **Why**: an authenticator that cannot derive a PRF secret cannot hold the account's keys, and a
+  person who learns that months later learns it by losing their records — a loss no operator can
+  reverse. Telling them at the one moment they can still choose a different device is the whole
+  value of the rule.
+  - **What this refusal is not**: `prf.enabled` is asserted by the *client*, is covered by no
+    signature, and the server can neither verify it nor ever see the PRF output. So this is a
+    **product gate, not a security control** — an upper layer restating a rule for error quality,
+    never for enforcement. There is no adversary for it: whoever forges the claim registers a
+    passkey whose keys they will not be able to derive. Anything that later needs to *rely* on PRF
+    must key on a value derived through PRF that the server can check. **The wrapped account keys
+    are not that value**, though a reader will see them arrive on the same request and conclude the
+    gate has been made real: the server cannot tell a key-encryption key derived from an
+    authenticator's PRF output from one derived out of a constant a client chose. What they buy is
+    smaller — a factor that holds no share of the account keys is **unstorable**, so the failure
+    this gate guesses at is no longer reachable by a client that simply omitted them. The gate
+    stays, and stays a guess.
+  - **`enabled: true` means the client obtained a PRF output for this credential**, not that the
+    authenticator advertised the extension. A client can only make that claim by having the bytes in
+    hand — which closes nothing on the server, but does mean this repository's client cannot report
+    `true` about a device it could not derive from.
+    - **So the payload asserts what the client *established*, not what `create()` reported**, and
+      the two differ for a large share of real devices. `toRegistrationPayload` takes the claim as a
+      parameter and the ceremony passes it, because the ceremony is the only code that knows which
+      of the two routes below produced the output. Built from the creation results alone, the
+      payload reports nothing for exactly the authenticators the second route exists for, and the
+      server answers 400 — by which point the account's keys are sealed into twenty-two envelopes
+      and ten recovery codes are on screen, on every attempt, because an authenticator's answer at
+      enrolment never changes. The default stays "as reported": a caller holding no output must not
+      be able to claim one by leaving an argument off.
+  - **A conforming client may need two ceremonies to satisfy it, and one of them goes nowhere.**
+    Many platform authenticators return no PRF output at creation and do at the first assertion, so
+    `webauthn-ceremony.service.ts` calls `create()` with the evaluation input, and — only if nothing
+    came back — runs **one local `navigator.credentials.get()`** against the credential it just
+    made, derives from that, and **discards the assertion; it is never sent anywhere.** Refusing
+    after `create()` alone would turn away capable devices at the one moment the person can still
+    choose a different one.
+    - **An authenticator that answers `enabled: false` is refused immediately, with no second
+      prompt.** Absent is not `false`: a credential reporting no `prf` member has said nothing, and
+      a great many of those derive on the first assertion, while `false` is the credential stating
+      it does not evaluate the extension at all.
+    - That local assertion carries `allowCredentials` naming the new credential, because WebAuthn
+      throws `NotSupportedError` when `evalByCredential` is present and the list is empty. It does
+      **not** contradict the sign-in rule that no `allowCredentials` is ever sent: that rule is
+      about the *server-issued* discoverable assertion. This list names a credential the client made
+      a moment ago and never leaves the browser.
+  - **The PRF output itself is never sent, and the payload projection is what stops it.**
+    `getClientExtensionResults()` carries `prf.results.first` — the output — so the client builds a
+    fresh `{ prf: { enabled } }` rather than forwarding, filtering or spreading the results object;
+    [account-keys.md](account-keys.md) owns why. An established claim is a fresh literal too:
+    copying the results object and overwriting one member would start from the value the projection
+    exists to be rid of.
+- **Enforced in**: `CompleteRegistrationHandler`, deliberately as the **last check on the ceremony
+  response**, after `PasskeyRegistrationVerifier.Verify`. Checked earlier, a malformed, replayed or
+  wrong-origin response would be told its authenticator cannot hold the keys, which is a lie about
+  the device. The factor identifier and the two envelopes are judged *after* it, the same argument
+  pointing the other way: a client that cannot do PRF cannot have produced a wrapped key either.
+  `Registration_WhoseOriginIsWrongAndReportsNoPrfResult_IsRefusedForTheOriginRatherThanTheAuthenticator`
+  owns that ordering rather than leaving it to the payload shape other tests happen to send.
+  - **The refusal spends the challenge**, like every refusal past the decode. So a client that hits
+    it must return to the options leg for a fresh nonce rather than retrying the same response.
+  - **Every shape of silence refuses, and each is pinned.** A client can say nothing in four
+    distinct ways and none may pass: `clientExtensionResults` as JSON null or `prf.enabled: false` —
+    one test, **two cases**, because a predicate written against either half alone passes the other
+    — the `prf` object present and empty, `prf.enabled` explicitly null, and the object present with
+    no `prf` member at all, which is what a real browser sends. `Enabled` is `bool?` precisely so
+    all four reach this refusal's sentence instead of the framework's generic 400, and
+    `Registration_WhoseAuthenticatorReportsAPrfResult_FilesTheCredentialAndItsKeyAndCounter` is the
+    control on the other side that a handler refusing *everything* would fail.
+- **Source**: `[SOURCE: user-story]`
+
+---
+
+- **Rule**: A nonce issued for one ceremony is **never** spendable in another, and the four pools
+  are kept apart by the `ceremony` value the finish leg is required to see — not merely by the nonce
+  being live.
+- **Why**: the pools are minted under different conditions, so accepting the wrong one hands an
+  adversary a ceremony they could obtain cheaply in place of one they could not. An `authentication`
+  nonce is minted from the **anonymous** options leg, so anything that can walk a person through a
+  WebAuthn prompt for this relying party can obtain a signed one — which must not authorize erasing
+  an account. A `registration` nonce is minted for an already-signed-in person, which is exactly the
+  stolen-session adversary re-authentication exists to stop.
+  - **`account_registration` is the fourth pool.** It is deliberately **not** `registration`: that
+    pool is minted for somebody already signed in who is adding a device to an account that exists,
+    this one for a caller who has an identity from a provider and nothing else. Sharing them would
+    matter more here than anywhere, because **the new account's identifier is derived from these
+    bytes** — an add-a-device nonce could then name a brand-new account, the exact replay across a
+    boundary the pools exist to refuse.
+  - **The ceremony is never a request member.** Each options leg hard-codes its own value, and no
+    command carries one. A `ceremony` parameter on the anonymous assertion leg would let anybody
+    mint a re-authentication nonce and would dissolve the separation in a single field.
+- **Enforced in**: `WebAuthnCeremony`, the `ConsumeAsync` check in each finish leg written as
+  `is not <the expected member>` rather than as a null check, and `CK_webauthn_challenges_ceremony`
+  bounding the vocabulary. The nine-cell matrix is pinned by
+  `PasskeyCeremonyTests.Assertion_BuiltOnARegistrationChallenge_…`,
+  `…Assertion_BuiltOnAReauthenticationChallenge_…`, `…Registration_BuiltOnAnAssertionChallenge_…`,
+  `…Registration_BuiltOnAReauthenticationChallenge_…`, and
+  `ErasureReauthenticationTests.Erasure_OnAnAssertionChallenge_…` /
+  `…Erasure_OnARegistrationChallenge_…`. Those six cells are the **three older** finish legs against
+  the three older pools; the registration finish leg carries the same
+  `is not WebAuthnCeremony.AccountRegistration` check and answers **one undifferentiated refusal**
+  covering six cases. Read the matrix as the shape rather than as a count.
+- **Counterexample**: testing `ConsumeAsync` for non-null. Every happy path passes, every ordinary
+  refusal passes, and the one thing that breaks is the separation the pools exist for.
+- **Source**: `[SOURCE: user-story]`
+
+---
+
+- **Rule**: On the **re-authentication** ceremony the account comes from the **request**; on sign-in
+  it comes from the **credential**. The gate never publishes an identity.
+- **Why**: sign-in has no identity yet — the presented handle is the only thing naming an account.
+  Re-authentication already has one, and publishing the credential's account over it would be
+  actively destructive rather than merely redundant: `SessionContextInterceptor` writes
+  `app.current_user_id` and `app.current_budget_id` together at connection open, so a user id
+  re-published mid-request does **not** move the budget. Alice's session with Bob's passkey would
+  empty **Alice's** budget while deleting **Bob's** user row — two accounts destroyed, neither as
+  asked. **This is the single thing a future reader is most likely to get backwards**, because the
+  sign-in handler's rule is the more memorable one.
+- **Enforced in**: `PasskeyReauthentication`, which takes `IUserContext` and never
+  `IUserContextWriter`, and looks the key up through the **owner-scoped**
+  `FindByWebAuthnCredentialIdForUserAsync` rather than the discovery lookup — so another account's
+  handle answers nothing, refused by construction instead of by a comparison a refactor can delete.
+  `ErasureReauthenticationTests.Erasure_WithAnotherAccountsPasskey_IsRefusedAndErasesNeitherAccount`
+  asserts **both** accounts survive; the "Neither" is the point, because the wrong design damages
+  one of each.
+- **Source**: `[SOURCE: user-story]`
+
+---
+
+- **Rule**: On the **account-registration** options leg the `user.id` handed to the authenticator is
+  the account identifier the finish leg will write, **derived from that leg's own challenge**.
+- **Why**: an authenticator stores the handle it was given and presents it on every later assertion,
+  and the sign-in path compares that handle **byte-for-byte** against the account id with nothing to
+  look up first. So a `users.id` differing from the handle answers no assertion that device will
+  ever produce — **silently and permanently**, with no error naming the cause, on an account that
+  otherwise looks perfect. The two are therefore made equal by construction rather than by carrying
+  a value between two requests: both legs call `RegistrationAccountId.For` over the same 32
+  server-minted bytes.
+  - **The other three ceremonies are unaffected.** `registration` attaches a passkey to an account
+    that already exists, so its options leg hands over the account id it read off the request.
+  - **Where the derivation may run is the whole of the rule** — see
+    [registration.md](registration.md), which owns it.
+- **Enforced in**: `BeginAccountRegistrationHandler`, which derives from the bytes the store
+  returned a line above, and `RegisterAccountHandler`, which derives from the bytes the store has
+  just confirmed it spent. `PasskeyEncoding.ToUserHandle` is the one translation between the two
+  shapes.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: The **account-registration** options leg sends an **empty** `excludeCredentials`, and it
+  stays empty.
+- **Why**: three reasons, and no one of them alone would settle it. **There is nothing to exclude**
+  — the account does not exist. **The read that would produce a list has no acceptable shape**:
+  scoped to the derived account id it is always empty, and unscoped it is an enumeration of every
+  handle in the table, which is precisely what the `passkey_public_keys` exemption was argued as
+  **not** permitting. And **a non-empty list would refuse a legitimate act**: a WebAuthn credential
+  is keyed on (rpId, user handle) and every registration mints a fresh handle, so somebody opening a
+  second account from the same laptop would be turned away **at the authenticator**, by an error the
+  server never sees and cannot explain.
+- **Enforced in**: `BeginAccountRegistrationHandler` setting `ExcludeCredentials = []`, with the
+  three reasons written beside it. Note the contrast with the **add-a-device** registration leg,
+  which does send a list and whose owner-scoped read is watched by
+  `RegistrationOptions_ForOneAccount_ExcludeNoOtherAccountsCredential`.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: The assertion response carries the session's **kind and expiry, and no identifier**.
+- **Why**: the body has to say something the behaviour can be observed through, and the kind is
+  exactly the fact that matters. Returning the row's id would hand the client a stable handle to a
+  session, and the most likely way this design gets broken later is somebody deciding that handle is
+  close enough to a token to start accepting it.
+- **Enforced in**: the shape of the assertion finish leg's response.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: The client has **one** base64url decoder, it is **strict**, and a second lenient one may
+  never appear beside it. `+core/security/base64url.ts` owns both directions;
+  `webauthn-encoding.ts` calls it and lets its refusals **propagate** rather than catching and
+  softening them into a default.
+- **Why**: the obvious lenient reading of base64url — strip padding it was not supposed to get,
+  accept `+` and `/` because they are "the same bits", skip a character it does not recognise — is
+  wrong here for one reason. These bytes are key material and an AEAD envelope, and the peer that
+  reads them is a different decoder in a different language, written to reject exactly what a lenient
+  reading would wave through. So a lenient decoder accepts a wrapped key the server's own decoder
+  refuses, and the symptom does not arrive on the malformed input: it arrives months later, on
+  somebody else's request, as a key that will not unwrap. Skipping an unrecognised character is the
+  worst of them, because it shortens the output **silently** — an envelope keeps its shape and loses
+  a byte.
+  - **The quietest lenience is `atob`'s own, and the decoder closes it rather than documenting it.**
+    A final group of two or three characters carries four or two bits more than the bytes it stands
+    for, and `atob` discards them instead of refusing: `AA` and `AB` both decode to a single zero
+    byte, and only one of them is an encoding of it. Acceptance is therefore defined as *is what this
+    module's encoder would have emitted* — re-encode and compare — which needs no table of
+    trailing-bit masks and cannot be wrong about one.
+  - **The alphabet is refused by omission**, by an anchored pattern over `A–Z a–z 0–9 - _`, so `+`,
+    `/`, `=` and a character no base64 dialect contains at all are all refused by the same test and
+    there is no branch a new dialect could slip past. The empty string is admitted deliberately: zero
+    bytes is a legitimate value.
+  - **Nothing here is caught by a ceremony either.** `toCreationOptions` decodes the challenge, the
+    user handle and every excluded credential id and repairs none of them — a challenge quietly
+    padded out is a ceremony bound to bytes nobody chose, a repaired user handle is 15 bytes where
+    the account's id is 16, and a repaired credential id excludes a credential that does not exist.
+    `WebauthnCeremonyService` keeps the translation **inside** its `try` so the refusal becomes that
+    method's `failed` result rather than escaping past every caller's check on the result.
+- **Enforced in**: `decodeBase64Url`, whose accepted set is exactly `encodeBase64Url` applied to the
+  bytes it returns, and by `webauthn-encoding.ts` importing it and declaring no decoder of its own.
+  The **encoder** carries a second constraint from elsewhere: it is byte-for-byte what a recovery
+  code's verifier crosses the wire as, so a change to it invalidates codes people have written down
+  — see [recovery-codes.md](recovery-codes.md).
+- **Counterexample**: a private `decode` written in a hurry beside a new caller, because "the browser
+  wants bytes". It passes every test written against it, and what it costs is an envelope the server
+  refuses on somebody else's request.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: `isArrayBuffer` is a **brand check** — `Object.prototype.toString.call(value)` against
+  `'[object ArrayBuffer]'` — and never `instanceof`. It has **one definition**, exported from
+  `webauthn-encoding.ts`, and `webauthn-ceremony.service.ts` imports it rather than keeping a copy.
+- **Why**: `instanceof` walks the prototype chain looking for *this realm's* `ArrayBuffer.prototype`,
+  so a buffer built in another realm answers `false` while nothing about it looks wrong — it renders
+  as `[object ArrayBuffer]` and its constructor is named `ArrayBuffer`. Realms are crossed in
+  ordinary places: an iframe, a worker, and this test runner between two modules it loaded
+  separately. The tag every realm's prototype carries answers the same whichever realm built the
+  buffer, and it still excludes a `SharedArrayBuffer`, which renders as `[object SharedArrayBuffer]`
+  and is not something an authenticator response can hold. `ArrayBuffer.isView` beside it needs none
+  of this care and is deliberately left alone — it is defined on the view's own internal slot.
+  - **The two callers fail differently, and the second is why one definition matters.** In `bytesOf`
+    a wrong `false` on genuine bytes reaches a refusal that says "the response carried a member that
+    is not bytes" — a sentence naming the wrong thing about a perfectly good registration, but a
+    sentence. In `prfOutputOf` the same `false` sends the PRF output down the **view** branch, where
+    `.buffer`, `.byteOffset` and `.byteLength` are all `undefined` on an `ArrayBuffer`: the result is
+    an **empty** array and nothing throws. The account's key-encryption key is then derived from zero
+    bytes, identically on every device, and the `fill(0)` meant to clear the secret clears the empty
+    view while the platform's buffer keeps the PRF output. Both halves of the custody rule fail at
+    once, silently.
+  - **A copy would be decoration guarding the most expensive failure in the product.** Revert *this*
+    definition to `instanceof` and twelve specs redden; revert a copy living in the ceremony service
+    and nothing does, because that spec and that module share a realm under this runner. One
+    definition is one thing tests can hold, which is the whole reason it is exported.
+- **Enforced in**: `isArrayBuffer` in `webauthn-encoding.ts`, imported by
+  `webauthn-ceremony.service.ts`, with the argument written at both ends.
+- **Counterexample**: narrowing with `instanceof AuthenticatorAttestationResponse` for the same job
+  one line up. That one is worse still under the runner, which implements no WebAuthn at all, so the
+  class is not a value there and the check is a `ReferenceError` rather than a failed check — which
+  is why the response shapes are narrowed by the members they carry.
+- **Source**: `[SOURCE: discussion]`
+
+## Workflows & State Transitions
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> ChallengeIssued : options leg, a nonce is written
+    ChallengeIssued --> Consumed : finish leg, the nonce is deleted before anything is checked
+    Consumed --> Verified : format, origin, relying party, flags, signature
+    Verified --> Registered : registration — credential, key, counter, wrapped keys and the promoted manifest in one save
+    Verified --> AccountRegistered : account registration — the whole account in one save
+    Verified --> SignedIn : assertion — counter accepted, then a Full session
+    Verified --> Proved : re-authentication — counter accepted, nothing returned
+    Consumed --> Refused : any check fails
+    ChallengeIssued --> Expired : five minutes pass
+    Refused --> [*]
+    Expired --> [*]
+```
+
+| Transition | Triggered by | Validations |
+|---|---|---|
+| → ChallengeIssued | `POST /api/passkeys/{registration,assertion,reauthentication}/options`, and `POST /api/registration/options` | registration and re-authentication require a live full session, through the fallback policy; assertion is anonymous; account registration requires a provider bearer on the **named** provider scheme and is the only leg reachable by a caller with no account |
+| ChallengeIssued → Consumed | any finish leg | the nonce must exist, be unexpired, and name the right ceremony |
+| Consumed → Verified | the verifier | client-data type; origin by **equality**; not cross-origin; `SHA-256(rpId)`; user present **and** verified; the signature |
+| Verified → Registered | `TryAddAsync` | attestation `none`; algorithm offered and supported; key strength; credential id 16–1023 bytes; the authenticator credential not already registered; the `manifest` framed and the `rotationEpoch` exactly one greater than the stored one — promoted in the same save |
+| Verified → AccountRegistered | `IRegistrationRepository.RegisterAsync` | the same verification, then the `prf` gate, the factor identifier, both envelopes and the ten submissions — and then roughly thirty rows in one save. See [registration.md](registration.md) |
+| Verified → SignedIn | `Session.Establish` | the counter must advance, or both sides be zero |
+| Verified → Proved | `PasskeyReauthentication.VerifyAsync` returning | the key must be registered to the account the **request** is authenticated as; the counter must advance, or both sides be zero |
+
+A proved re-authentication is **not a state anything stores**. The gate returns, its caller acts,
+and the only durable trace is the deleted nonce — see the rule in [erasure.md](erasure.md) on why
+the freshness window is the challenge's own lifetime rather than a recorded instant.
+
+The session's lifetime is **14 days**, read from `SessionPolicy.Lifetime`, which all four
+establishing paths share; [sessions.md](sessions.md) owns that rule. What they share is the interval
+alone: where this handler establishes its session, after the signature verifies and after the
+identity is published, is this file's own rule above.
+
+## Decision Trees
+
+How the sign-in finish leg treats a presented response — every refusing arm answers the same
+byte-identical 401:
+
+```
+IF the presented nonce matches no live challenge row       ← nothing is spent
+  THEN 401
+ELSE consume the row — from here every outcome has burnt the nonce
+  IF the row's ceremony is not `authentication`
+    THEN 401
+  ELSE IF any verification step fails                      ← type, origin, rpId, flags, signature
+    THEN 401
+  ELSE IF the counter did not advance and a side is non-zero
+    THEN 401
+  ELSE
+    THEN publish the identity, open the transaction, establish the Full session — 200
+```
+
+The registration, account-registration and re-authentication finish legs walk the same ladder with
+their own pools and their own final arms; the PRF gate is the extra check both registering legs
+carry, after everything else about the response has passed. Both registering legs then judge the
+key-custody payload and the manifest, in that order, and the manifest last of all — it is one
+statement about the whole factor set the rungs above have just established, so refusing it while a
+factor above it is still known to be wrong would key the refusal on the wrong member. Only the
+account-registration leg goes further, and what it adds is a set of recovery codes, an eleventh
+factor, and an account identifier derived from the challenge it just spent —
+[registration.md](registration.md) owns all three.
+
+## Integration Points
+
+- **[Sessions](sessions.md)** — a verified assertion establishes one and the two recovery-code paths
+  establish two more; all are `Full` and all last 14 days. The ordering rule above — identity
+  published only after the proof, the transaction opened only after that — is held by two handlers
+  rather than one: this file's assertion path and the redemption.
+- **[Recovery Codes](recovery-codes.md)** — the third spender of the `reauthentication` pool, and
+  the second full-session credential type. A passkey is what a person proves possession of in order
+  to be issued a set, which is why the last-passkey floor cannot be lifted by holding one.
+- **[Users & Ownership](users-and-ownership.md)** — the credential row and the account it belongs
+  to.
+- **[Data isolation](../engineering/data-isolation.md)** — this area's two exempt tables and its
+  policed one.
+- **The browser's half is two modules and one seam.** `webauthn-encoding.ts` is pure translation
+  between the API's base64url JSON and the browser's `BufferSource` shapes, and is neither a service
+  nor injected — no state, no configuration, no dependency, so a function is the whole of it.
+  `webauthn-ceremony.service.ts` is the one module that touches `navigator.credentials`, and it is
+  **injectable for the reason `FileDownloadService` is**: the platform behind it does not exist under
+  the test runner, so confining it to a class lets every screen above stub the *service* instead of
+  the platform. Everything below the seam stays real — the translation is the encoder's and the
+  derivation is `account-keys.ts`'s, and neither is re-implemented there.
+  - **It takes no `HttpClient` and no other dependency, and that is structural rather than tidy.** A
+    ceremony holding no way to reach the network cannot post the discarded local assertion by
+    accident, today or after somebody adds a convenience method next year.
+- **The authentication pipeline** — nothing runs between authentication and authorization, so the
+  two anonymous legs run with no identity **whatever token accompanies them**, which is exactly the
+  state the discovery read needs. `AllowAnonymous` is read off the route rather than matched by
+  path, so no exclusion list exists — one would be a second place the anonymous surface is defined.
+  - **The authenticated passkey routes — both registration legs and the re-authentication options
+    leg — inherit the fallback policy**, which names the session cookie scheme, so they are
+    reachable only by a request presenting a live full session. A caller with no account cannot
+    present one.
+  - **The account-registration routes escape by declaring a policy of their own.**
+    `/api/registration` is the only group in this application whose authorization policy **names** a
+    scheme, and it names the identity provider's — which is what admits a caller with no account and
+    what stops a browser already holding a session from creating an account nobody's provider
+    vouched for.
+
+## Edge Cases & Known Gotchas
+
+- **What is built today and what is not.** All four ceremonies exist as endpoints; **two have a
+  screen and two do not.** The `/register` flow runs the **account-registration** ceremony from a
+  page — `createPasskey` on `+core/security/webauthn-ceremony.service.ts` is called there.
+  `/welcome` runs the **assertion**: `SignInService` calls `assertPasskey`, posts what the
+  authenticator signed, and the cookie that comes back is what carries the person into the app — the
+  identity provider is not part of that exchange at all. **That leg's PRF output is spent rather
+  than discarded**: the key-encryption key it derives is handed straight to
+  `AccountKeyCustodyService`, which reads every factor the **account** holds — never only the
+  credential that just authenticated — tries each in turn until one opens, and then puts what came
+  out through a gate of **four ordered refusals** over the account's manifest before reporting the
+  account unlocked. Confirming the content key against that manifest is the second of the four, and
+  on its own it was a check the served body could switch off; the four together are what a response
+  somebody shaped has to get past. [account-keys.md](account-keys.md) owns them, and the order they
+  run in is the security property. What still has no screen is the
+  **re-authentication** the erasure, revocation and recovery-code-generation gates need, and the
+  registration of a **further** passkey. Those two routes are reached today only by the integration
+  suite. **Account creation is gated on a passkey, on the only path there is**, so **no account has
+  ever existed without one**. A signed-in person can **list** every credential the account holds;
+  that list renders. **Revoking** one is a route and not yet a capability: it is gated by a fresh
+  re-authentication exactly as erasure is, that ceremony has no screen, and the Revoke control is
+  specified as present and disabled — so nobody but the integration suite reaches the route.
+  Nothing **replaces** a passkey, and nothing removes or replaces the **federated** credential —
+  that is the email change, and it is not built.
+  - **The browser runs one more ceremony than the server has pools for, and it spends none of
+    them.** `deriveKeyFromLocalAssertion` on the same service is what the Account keys section of
+    `/app/settings` runs to obtain a key-encryption key for an unlock: it mints its own 32-byte
+    challenge, asserts, throws the signed response away and returns only the key it derived. **That
+    ceremony calls no route and writes no challenge row.** The unlock around it makes two reads of
+    its own — the account's key material, and which account this is — and neither carries anything
+    the authenticator signed. Both candidate pools were rejected rather than chosen
+    between: `authentication` is minted anonymously and would put an anonymous route under a screen
+    deep inside the app, and `reauthentication` is the pool **three** sensitive acts spend — the
+    gotcha below counts them — so every press of Unlock would leave behind a live nonce good for
+    any of the three, erasure included, on behalf of an act that destroys nothing. The breadth is
+    the argument: a nonce spendable three ways is a worse thing to mint for a convenience than one
+    spendable a single way. What makes the local ceremony sound is that nothing is being authorized:
+    the account's wrapped envelopes are the proof, and a factor that is not this account's opens
+    none of them — see [account-keys.md](account-keys.md). The day a server has to check a factor
+    from that screen — replacing a set of recovery codes is the case — it is a **different**
+    ceremony over a server's challenge, and this one may not grow into it.
+- **The exempt table scopes nothing, so the application is the only thing scoping access to it.**
+  The discovery lookup is the one query allowed to read `passkey_public_keys` without naming an
+  owner. Every other read must carry its own `where user_id = …`. Two call sites carry that filter:
+  the `excludeCredentials` read, watched by
+  `RegistrationOptions_ForOneAccount_ExcludeNoOtherAccountsCredential`, and
+  `FindByWebAuthnCredentialIdForUserAsync` on the re-authentication gate, watched by
+  `ErasureReauthenticationTests.Erasure_WithAnotherAccountsPasskey_IsRefusedAndErasesNeitherAccount`.
+  Those tests are the only thing that would notice either losing its filter.
+  - **`credentials` is the sharper case, because one of its accesses is a `DELETE`.** Revocation
+    loads the target through `FindPasskeyCredentialAsync(credentialId, userId)` and hands the
+    **loaded entity** to the delete, never an id. That signature is the defence, but read its
+    strength precisely: `Credential.CreateFederated` and `Credential.CreatePasskey` are both public,
+    so the lookup is not the only source of an instance. What holds is that both factories mint
+    their own id, so a fabricated `Credential` cannot name an existing row — and that adding a
+    source which *can* means adding a query to `PasskeyRepository`.
+- **The re-authentication pool is one ceremony, not one per sensitive action.** Three things spend
+  it: erasure, passkey revocation, and generating a set of recovery codes. None can tell which one a
+  given nonce was requested for, and that is the design rather than a gap — all three are
+  destructive, all three are reachable only by the account holder. If two sensitive actions ever
+  need telling apart, the split is a new **ceremony value** — never a column on
+  `webauthn_challenges`, which the pinned column set forbids. The third spender has most riding on
+  the gate: a set of recovery codes is a full-session credential, and issuing *replaces*.
+  - **Their request records are no longer alike, and must not be made alike again.**
+    `RevocationRequest` was byte-identical to `ErasureRequest` and to the assertion half of
+    `RecoveryCodeGenerationRequest`; it now carries a `manifest` and a `rotationEpoch` beside them.
+    **The five assertion members are still identical across all three** — that is the gate's shape
+    and it is shared on purpose — which is exactly what makes folding the three onto one record or
+    one base type look like tidying. Erasure takes no manifest because it leaves nobody for a list
+    to describe, so a shared record would hand it a member it must never carry, and would be where
+    the wrong member arrives the day a fourth gated act needs one of its own.
+- **The assertion options leg is the first unauthenticated write path in the system.** Anyone can
+  make the role insert a challenge row. Growth is bounded by a five-minute lifetime and an
+  opportunistic capped sweep on each options call, **not** by rate limiting, which does not exist
+  here. An accepted gap rather than a solved problem.
+- **`ConsumeAsync` deletes a matching row before its pool is checked, so every finish leg burns a
+  nonce from any of the four.** A `reauthentication` nonce presented to the sign-in leg is spent and
+  then refused. This is not reachable without already holding the 32 bytes, and the alternative is
+  worse: checking the pool first would turn a wrong-pool attempt into a *free retry* on a nonce that
+  survived.
+- **What an anonymous caller can make the server *spend* is bounded, and deliberately so.** Every
+  caller-supplied member of a ceremony request carries a length ceiling checked **before** it is
+  base64url-validated or decoded, so a request cannot make the server allocate megabytes ahead of
+  the lookup that would have refused it in microseconds; a global `MaxRequestBodySize` sits above
+  that, because a per-endpoint filter runs after model binding. The ceilings are set from what the
+  protocol and this product's own algorithms actually produce, and each is pinned from **both**
+  directions — one payload over it and one at it — because a ceiling set too low would refuse real
+  authenticators, and a "too big" test alone passes just as well against a limit of zero. Two of the
+  six carry no headroom and say so where they are declared: the signature bound is exactly the
+  largest RSA modulus this product accepts, and the credential id is the protocol's own cap. **An
+  at-ceiling test must not size its payload from the constant it is testing** — it would shrink with
+  the limit and could never fail.
+- **The sign-in unit of work must stay idempotent under retry.** `ITransactionalExecutor` runs its
+  delegate under a retrying execution strategy, and a transient failure rolls back the transaction
+  but **not** the change tracker. Without discarding tracked entities at the top of the delegate, a
+  retry replays an already-advanced counter — so a person with a valid passkey gets a 401 because
+  the database blinked — and re-inserts a `Session` left in `Added` state, writing two rows for one
+  sign-in. The discard must be **inside** the delegate; hoisted above the executor it would not
+  survive the rollback, and a unit test pins the placement rather than only the call.
+- **A credential of any other kind may accompany an anonymous assertion, and nothing reads it.** The
+  rule the handler enforces is unchanged — **the account comes from the verified passkey, never from
+  the request** — but it now outlives its original reason: it was written because a provisioning
+  middleware had already put a *different* account on the request, and today nothing can. Keep it.
+  Somebody signing into their own account with somebody else's passkey is the failure, and the
+  handler is the layer that refuses it whatever runs above.
+  `Assertion_PresentedWithAnotherUsersBearerToken_EstablishesTheSessionForThePasskeysOwner` pins the
+  rule with both accounts seeded directly.
+- **A ceremony prompt can outlive its nonce.** The timeout sent to the client is
+  `min(configured, challenge remaining)`, so the configured value can shorten the prompt and never
+  extend the window. Two independent numbers would produce a ceremony a person completes and the
+  server then refuses.
+- **An expired challenge is not deleted on consumption.** `ConsumeAsync` leaves it for the sweep
+  rather than doing work on behalf of a caller presenting bytes that are already worthless.
+- **Revoking a passkey removes its row; nothing marks it revoked.** The role holds `DELETE` on
+  `credentials`, and the database's own cascade — running as the table owner, not as this role —
+  takes the public key, the signature counter and the sessions with it. There is deliberately no
+  `revoked_at_utc` on `credentials` and there must not be one: the table's pinned exemption column
+  set refuses a new column, and a revoked-but-present credential is a row a bug can bring back.
+  **The statement is scoped by the application alone**, because `credentials` keeps its exemption —
+  see [ADR 0014](../decisions/0014-scope-the-credential-delete-in-the-application.md).
+  - **The same statement takes the factor's share of the account keys with it.** The
+    `wrapped_account_keys` row leaves by `FK_wrapped_account_keys_credentials`, cascading from the
+    `credentials` delete and running as the table owner rather than as this role. The role holds no
+    `DELETE` on that table at all and deliberately never will, so a handler that materialised those
+    rows would die with `42501` rather than quietly take them.
+  - **And the list naming the set moves in the same save.** A revocation carries the account's new
+    manifest and the epoch it was sealed under, and `Promote` rides the delete's own `SaveChanges`
+    — the MUST above owns that ordering and the three answers. Every path that moves a factor set
+    writes the list that names it, so there is no account whose stored list names a set that has
+    moved. See [account-keys.md](account-keys.md).
+- **An account's last passkey cannot be revoked, and that rule cannot live in the database.** It is
+  a cross-row claim, and the two mechanisms that could reach it are a trigger, which ADR 0002
+  refuses, and a materialized counter column on `users`, which has to be kept in step with the table
+  it counts. So the rule sits in the application deliberately, and this paragraph is the
+  justification ADR 0002 requires. The **federated** credential does not count toward it: it opens
+  no session that reads budget content.
+  - **A set of recovery codes does not count toward it either, and that is not the obvious answer.**
+    A recovery-codes credential *does* derive a full session, so it looks like exactly the thing
+    that should let the floor drop to zero passkeys. It cannot, and the reason is circular by
+    construction: **generating a set requires a fresh passkey assertion**, so an account holding
+    codes and no passkey can never regenerate them, and once those codes are spent there is nothing
+    left to re-authenticate with. The floor stays "the last passkey" until some path can issue a
+    recovery factor without already holding one.
+- **The last-passkey refusal has a concurrency window, and it is open.** Under `READ COMMITTED`, two
+  revocations of an account's last two passkeys running at once can each read a count of two and
+  each delete, leaving zero — an account that can never re-authenticate and therefore can never even
+  erase itself. Closing it needs a row lock held on `users` across the count and the delete, for
+  which EF Core offers no first-class API and whose raw-SQL spelling is a compile error under
+  `BannedSymbols.txt`. Reaching it takes two concurrent, separately-proven re-authentications.
+  Accepted and recorded.
+  - **The manifest promotion narrows what that window ends in and does not close it, and the
+    difference is the one a reader will collapse.** The count and the delete are still not
+    serialized against each other, so the winning request is unchanged and the floor is still read
+    from a snapshot it does not hold. What changed is the **loser**: both requests read the same
+    generation and promote from it, so the second one's `WHERE rotation_epoch = N` matches nothing
+    and it answers `409 factor_set_moved` instead of deleting in silence. On this pair of requests
+    the outcome is therefore one revocation and one refusal rather than an account with no passkey
+    left. That is a consequence of the concurrency token and not a serialization of the floor: a
+    promotion takes no lock, nothing orders it against the count, and it holds only while every path
+    that moves a factor set promotes the epoch. Do not read it as the race being fixed.
+- **Two revocations racing on the same passkey: the loser answers 404, not 500.** Both requests
+  resolve the credential, both clear the floor, and both reach the delete; the losing request's
+  delete `SaveChanges` matches zero rows and EF Core raises `DbUpdateConcurrencyException`. A person double-tapping the
+  button on a slow connection is enough. `PasskeyRepository.DeletePasskeyAsync` catches it and
+  throws the *same* `NotFoundException`, with the *same* message, that the lookup's own miss
+  produces — so the two orderings of one pair of requests are indistinguishable to the caller, which
+  is what makes a client's retry safe. Deliberately not a 409, which invites a retry at work already
+  done, and not an internal retry, which would re-run the lookup and reach this same 404 a round
+  trip later. Not a 200 either: the response carries `sessionsEnded`, and this request's sweep
+  matched rows the winner had already stamped. Translated in Infrastructure and not in the handler,
+  like the same catch in `UserRepository.DeleteAsync`: naming EF's exception in
+  `RevokePasskeyHandler` would put the EF assembly on `Application.csproj`, against a dependency
+  direction that runs Infrastructure → Application. Driven from `PasskeyRepositoryTests`, which
+  deletes the row out of band on a second connection rather than interleaving two transactions at a
+  chosen statement — a timing-dependent test for a branch whose entire input is that state is worse
+  than none.
+  - **EF Core over Npgsql reports the *first* failing command in a batch and nothing after it, and
+    that is what decides this answer.** It does not aggregate, which is the natural assumption and
+    the wrong one. Measured by arranging a real double tap and reading the loser's exception: **one**
+    entry, `Credential/Deleted`. The loser's `DELETE` and its manifest `UPDATE` both match zero rows,
+    and the caller is handed the `DELETE`'s verdict alone — the documented 404.
+  - **Which of the two answers a double tap receives is therefore decided by EF's statement order
+    inside that batch, and nothing pins that order.** `credentials` and `factor_manifests` share no
+    foreign key, so there is no dependency for EF to sort them by and no declaration anywhere that
+    says which goes first. Reversed, the identical request would answer `409 factor_set_moved` —
+    telling somebody to re-read the manifest and **re-seal** it before retrying a revocation that
+    can only ever 404, because the row it names is already gone. Recorded as an accepted gap rather
+    than a closed one: a test asserting the answer on a real double tap would catch the day the
+    order moves.
+- **The captured assertion in the golden vectors has user verification clear**, so it is checked
+  against the parsing and signature layers rather than the full ladder, with a companion test
+  asserting the ladder refuses it for exactly that. A reader finding a golden vector deliberately
+  not run end to end should read that as the carve-out it is. See
+  [ADR 0013](../decisions/0013-verify-webauthn-ceremonies-without-a-fido-library.md).

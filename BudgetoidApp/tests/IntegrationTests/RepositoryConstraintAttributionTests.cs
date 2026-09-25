@@ -4,11 +4,13 @@ using Domain.Categories;
 using Domain.CategoryGroups;
 using Domain.Common;
 using Domain.Payees;
+using Domain.Transactions;
 using Domain.Users;
 using Infrastructure.Persistence;
 using Infrastructure.Repositories;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
+using TestSupport;
 
 namespace IntegrationTests;
 
@@ -28,24 +30,66 @@ namespace IntegrationTests;
 /// </para>
 /// <para>
 /// The expected behaviour is that an unmatched violation <b>propagates</b> as a
-/// <see cref="DbUpdateException" />. A 500 naming the constraint beats a 400 that lies, which is the
-/// reasoning already written into <c>UserRepository.TryAddAsync</c> — the one repository that
-/// filters on <see cref="PostgresException.ConstraintName" />.
+/// <see cref="DbUpdateException" />. A 500 naming the constraint beats a 400 that lies, and that is
+/// no longer one repository's local reasoning but the rule this folder holds every translating
+/// repository to: <b>nine of the ten</b> filter on <see cref="PostgresException.ConstraintName" />.
+/// <c>SessionRepository</c> is the tenth and translates nothing — its only <c>catch</c> is a bounded
+/// concurrency retry. Note that the filter is not always visible at the <c>catch</c>:
+/// <c>CategoryRepository</c>, <c>CategoryGroupRepository</c> and <c>UserRepository</c> spell it
+/// inside an <c>IsUniqueViolationOf</c> / <c>IsForeignKeyViolationOf</c> helper while the rest write
+/// a property pattern in the <c>when</c> clause. "Does this repository narrow" is a question about
+/// the predicate, never about the syntax it is spelled in.
 /// </para>
 /// <para>
-/// Every repository is also covered from the other side: it must still translate <i>its own</i>
-/// constraint into its own message. Without that half, narrowing a <c>catch</c> could be "fixed" by
-/// deleting it.
+/// Each repository this file covers is covered from the other side too: it must still translate
+/// <i>its own</i> constraint into its own message. Without that half, narrowing a <c>catch</c> could
+/// be "fixed" by deleting it.
 /// </para>
 /// <para>
-/// None of this is reachable through today's handlers — <c>UserProvisioningMiddleware</c> runs
-/// before routing, and <c>CreateTransactionHandler</c> commits the payee before the transaction
-/// insert — which is exactly why the mechanism is built explicitly here. It is a trap for the next
-/// handler that performs two writes on one context.
+/// <b>What this file covers is the five repositories that create and rename rows of a budget</b> —
+/// accounts, budgets, categories, category groups and payees — <b>and the one save that re-seals
+/// them</b>: <c>NarrativeResealRepository.SaveAsync</c> narrows a <c>23505</c> on the four name-index
+/// constants those tables share, and both halves of that filter are held here, beside the create and
+/// rename filters on the same indexes that answer differently. It is listed in the census's
+/// <c>PinnedElsewhere</c> rather than its covered-here set because the answer a client sees — the
+/// 409 over HTTP and the whole chunk rolling back — is pinned in
+/// <c>KeyRotationUnderChangeEndpointTests</c>. The identity-side repositories pin their own
+/// narrowing beside the method, in their own files: <c>UserRepositoryTests</c>,
+/// <c>PasskeyRepositoryTests</c> with <c>PasskeyCeremonyTests</c>,
+/// <c>RecoveryCodeRepositoryTests</c>, <c>SessionRepositoryTests</c> and
+/// <c>TransactionRepositoryTests</c>. That split is a placement decision, not a coverage claim, and
+/// the sentence that used to be here — "every repository is also covered from the other side" — was
+/// a completeness claim nothing executed, which is why it went stale twice unnoticed.
+/// <c>RepositoryAttributionCensusTests</c> in <c>UnitTests</c> now executes it: it reflects over the
+/// live <c>Infrastructure.Repositories</c> namespace and fails unless every repository in it appears
+/// in exactly one of those two sets. Read its <c>PinnedElsewhere</c> entries rather than this
+/// paragraph for which halves each of those files actually holds. Three of them used to pin the
+/// translation and carry no mis-attribution control; each now carries one, written to the mechanism
+/// this file's first paragraph describes and placed beside its method rather than moved in here.
 /// </para>
 /// <para>
-/// <c>TransactionRepository</c> is absent on purpose: it has no <c>catch</c> at all, so it has
-/// nothing to attribute and nothing to get wrong.
+/// None of this is reachable through today's handlers, and the reason changed with the payee slice
+/// rather than going away. It used to be that <c>CreateTransactionHandler</c> committed the payee
+/// before the transaction insert; that handler writes no payee at all now — the client creates one
+/// through <c>POST /api/payees</c> and names it by identifier — so no handler leaves two writes
+/// pending on one context. That is exactly why the mechanism is built explicitly here. It is a trap
+/// for the next handler that performs two writes on one context.
+/// </para>
+/// <para>
+/// <c>TransactionRepository</c> is absent on purpose, and the reason is placement rather than
+/// innocence. It does catch constraint violations — <c>UpdateAsync</c> has two, on the account and
+/// category foreign keys, each filtered by name for exactly the reason this file argues — so it is
+/// not the case that it has nothing to attribute. What earns the absence is that its narrowing is
+/// pinned beside the method in <c>TransactionRepositoryTests</c>, as
+/// <c>UserRepository.DeleteAsync</c>'s is in <c>UserRepositoryTests</c>. Its second narrowing is of a
+/// different kind and could not be written here anyway:
+/// <c>DeleteAllForAmbientBudgetAsync</c> answers a concurrency conflict, which carries no constraint
+/// name and no SQLSTATE for a filter to mis-read, so the <i>entries</i> are what narrow it.
+/// <b>The gap this paragraph used to record is closed</b>:
+/// <c>UpdateAsync_WhenATrackedRowBreaksAnotherForeignKey_LetsTheViolationEscape</c> is its
+/// mis-attribution control, staging the same payee-against-a-missing-budget <c>23503</c> that
+/// <see cref="AddCategory_WhenATrackedRowBreaksAnotherForeignKey_LetsTheViolationEscape" /> stages
+/// here — the same mechanism, in the file that owns the method.
 /// </para>
 /// </remarks>
 public sealed class RepositoryConstraintAttributionTests
@@ -56,33 +100,112 @@ public sealed class RepositoryConstraintAttributionTests
     /// </summary>
     private const int UsdMinorUnit = 2;
 
-    private const string AccountNameIndex = "IX_accounts_budget_id_name";
-    private const string PayeeNameIndex = "IX_payees_budget_id_name";
+    /// <summary>
+    /// The unique index a duplicate account name trips, spelled out here rather than read off
+    /// <c>AccountConfiguration.NameIndexName</c>.
+    /// </summary>
+    /// <remarks>
+    /// <b>A literal on purpose, unlike the constant the repository matches against.</b> Every case in
+    /// this file is about a repository's <c>catch … when</c> attributing a violation to the wrong
+    /// constraint, and the whole mechanism is a string comparison against a name PostgreSQL reports. A
+    /// test that read the same constant the production filter reads would agree with the filter by
+    /// construction and could never catch the two spellings drifting apart — which is the failure this
+    /// file exists to make loud. The value moved once already, when the index moved from <c>name</c> to
+    /// <c>name_key</c>; that move is a schema change a person edits here, having read why.
+    /// </remarks>
+    private const string AccountNameIndex = "IX_accounts_budget_id_name_key";
+
+    /// <summary>
+    /// The unique index a duplicate payee name trips, spelled out here for the reason
+    /// <see cref="AccountNameIndex" /> is.
+    /// </summary>
+    /// <remarks>
+    /// It moved from <c>name</c> to <c>name_key</c> when the column became an AEAD envelope: a name is
+    /// ciphertext drawn under a fresh nonce, so equal names are unequal bytes and the old index could
+    /// no longer see a duplicate at all. What a duplicate is now is an equal <b>blind index</b>, which
+    /// is why every seeder below collides two payees by handing them the same
+    /// <see cref="SealedNarrative.Indexed" /> label rather than the same word.
+    /// </remarks>
+    private const string PayeeNameIndex = "IX_payees_budget_id_name_key";
     private const string UserEmailIndex = "IX_users_email";
+    private const string BudgetUserNameIndex = "IX_budgets_user_id_name";
     private const string PayeeBudgetForeignKey = "FK_payees_budgets_budget_id";
+
+    /// <summary>
+    /// The primary key a duplicate account identifier trips, spelled out here for the reason
+    /// <see cref="AccountNameIndex" /> is.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>A second unique rule on one table, which is what makes the pair below different from every
+    /// other pair in this file.</b> Elsewhere a repository translates one constraint and everything
+    /// else escapes; <c>accounts</c> and <c>payees</c> each translate two, so a filter written on
+    /// SQLSTATE alone no longer merely mis-attributes a stranger's violation — it cannot tell the
+    /// table's own two apart either, and hands whichever answer was written first to both.
+    /// </para>
+    /// <para>
+    /// <b>Which of the two PostgreSQL names when a row breaks both is a measurement, not a guess.</b>
+    /// Measured on postgres:17.10 over this table's shape: indexes are checked in OID order — creation
+    /// order — and the primary key is created with the table while the name index is created after it,
+    /// so the key is reported. Inverting the creation order inverts the answer, which is what rules out
+    /// "the primary key first" as the rule. It is also a different rule from the alphabetical ordering
+    /// that decides which of a column's <c>CHECK</c> constraints fires first, and neither covers the
+    /// other. The probe is written out on <c>PayeeConfiguration.PrimaryKeyName</c>.
+    /// </para>
+    /// </remarks>
+    private const string AccountPrimaryKey = "PK_accounts";
+
+    /// <summary>
+    /// The primary key a duplicate payee identifier trips, spelled out here for the reason
+    /// <see cref="AccountPrimaryKey" /> is, and holding the same measurement: <c>payees</c> carries the
+    /// same three constraints created in the same order.
+    /// </summary>
+    private const string PayeePrimaryKey = "PK_payees";
+
+    /// <summary>
+    /// The primary key a duplicate category identifier trips, spelled out for the reason
+    /// <see cref="AccountPrimaryKey" /> is.
+    /// </summary>
+    private const string CategoryPrimaryKey = "PK_categories";
+
+    /// <summary>
+    /// The primary key a duplicate transaction identifier trips.
+    /// </summary>
+    /// <remarks>
+    /// <b>This one holds a measurement its three siblings do not need.</b> Where they name a key that
+    /// PostgreSQL had to choose between a key and a name index — reported in index OID order, which is
+    /// creation order, which puts the key first because EF declares it with the table — <c>transactions</c>
+    /// has no second unique index at all. There is nothing to choose between, so this constant names the
+    /// only unique rule the table carries and the ordering argument is inapplicable rather than relied on.
+    /// </remarks>
+    private const string TransactionPrimaryKey = "PK_transactions";
 
     [Test]
     public async Task AddAccount_WhenATrackedRowBreaksAnotherUniqueIndex_LetsTheViolationEscape()
     {
-        // Arrange — the intruder is a duplicate payee name, which breaks IX_payees_budget_id_name
-        // with the same 23505 the account name index would raise. The account itself is flawless:
-        // "Checking" is the only account in this budget.
+        // Arrange — the intruder is a duplicate payee blind index, which breaks
+        // IX_payees_budget_id_name_key with the same 23505 the account name index would raise. The
+        // account itself is flawless: "Checking" is the only account in this budget.
         await using RepositoryTestHost host = await StartHostAsync();
         Guid budgetId = await host.SeedBudgetAsync("google-1", "person@example.com");
         DbContextOptions<BudgetoidDbContext> options = CreateOptions(host);
         await using (BudgetoidDbContext seed = new(options, new TestBudgetContext(budgetId)))
         {
-            seed.Payees.Add(Payee.Create(budgetId, "Corner Shop", UtcNow()));
+            seed.Payees.Add(Payee.Create(
+                Guid.CreateVersion7(), budgetId, SealedNarrative.Indexed("Corner Shop"), UtcNow()));
             await seed.SaveChangesAsync();
         }
 
         await using BudgetoidDbContext db = new(options, new TestBudgetContext(budgetId));
-        db.Payees.Add(Payee.Create(budgetId, "Corner Shop", UtcNow()));
+        db.Payees.Add(Payee.Create(
+            Guid.CreateVersion7(), budgetId, SealedNarrative.Indexed("Corner Shop"), UtcNow()));
         var repository = new AccountRepository(db);
 
         // Act
         Exception? escaped = await CaptureAsync(() => repository.AddAsync(Account.Create(
-            budgetId, "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow())));
+            Guid.CreateVersion7(),
+            budgetId,
+            SealedNarrative.Indexed("Checking"), AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow())));
 
         // Assert — a payee collision must not come back as "Account name must be unique.". Nothing
         // about the account is wrong, so this repository has no message to offer and the violation
@@ -102,7 +225,9 @@ public sealed class RepositoryConstraintAttributionTests
         await using (BudgetoidDbContext seed = new(options, new TestBudgetContext(budgetId)))
         {
             seed.Accounts.Add(Account.Create(
-                budgetId, "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow()));
+                Guid.CreateVersion7(),
+                budgetId,
+                SealedNarrative.Indexed("Checking"), AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow()));
             await seed.SaveChangesAsync();
         }
 
@@ -111,7 +236,9 @@ public sealed class RepositoryConstraintAttributionTests
 
         // Act
         Exception? escaped = await CaptureAsync(() => repository.AddAsync(Account.Create(
-            budgetId, "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow())));
+            Guid.CreateVersion7(),
+            budgetId,
+            SealedNarrative.Indexed("Checking"), AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow())));
 
         // Assert — narrowing the catch must not silence it. This is the half that keeps a fix from
         // passing by removing the translation altogether.
@@ -119,6 +246,115 @@ public sealed class RepositoryConstraintAttributionTests
         await Assert.That(escaped).IsTypeOf<ValidationException>();
         await Assert.That(((ValidationException)escaped!).Errors.ContainsKey(nameof(Account.Name)))
             .IsTrue();
+    }
+
+    /// <summary>
+    /// The mis-attribution control for <c>AccountRepository.AddAsync</c>'s <b>second</b> arm, staged
+    /// against a stranger's <i>primary key</i> rather than a stranger's name index.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>What this holds that <see cref="AddAccount_WhenATrackedRowBreaksAnotherUniqueIndex_LetsTheViolationEscape" />
+    /// does not.</b> That case controls widening either arm to the bare SQLSTATE, because the intruder
+    /// it stages is a 23505 under a name index. It says nothing about a filter narrowed by <i>shape</i>
+    /// rather than by name — <c>ConstraintName</c> tested for a <c>"PK_"</c> prefix, or read as a
+    /// table name, both of which look like tidying and both of which swallow the violation below. The
+    /// identifier arm is where such a filter is tempting, because every primary key in the schema is
+    /// spelled the same way.
+    /// </para>
+    /// <para>
+    /// The harm is the file's usual one, one turn sharper: the caller would be told to read back or
+    /// re-mint an account identifier that is not in dispute, and the identifier that <i>is</i> in
+    /// dispute belongs to a payee it never mentioned.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task AddAccount_WhenATrackedRowBreaksAnotherPrimaryKey_LetsTheViolationEscape()
+    {
+        // Arrange — the intruder is a payee reusing an identifier a payee already holds, which breaks
+        // PK_payees with the same 23505 PK_accounts would raise. The account being added holds an
+        // identifier and a name that nothing in this budget holds.
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid budgetId = await host.SeedBudgetAsync("google-1", "person@example.com");
+        DbContextOptions<BudgetoidDbContext> options = CreateOptions(host);
+        var takenPayeeId = Guid.CreateVersion7();
+        await using (BudgetoidDbContext seed = new(options, new TestBudgetContext(budgetId)))
+        {
+            seed.Payees.Add(Payee.Create(
+                takenPayeeId, budgetId, SealedNarrative.Indexed("Corner Shop"), UtcNow()));
+            await seed.SaveChangesAsync();
+        }
+
+        await using BudgetoidDbContext db = new(options, new TestBudgetContext(budgetId));
+        // A different label, so the payee's own name index is untouched and the identifier is the only
+        // rule this row breaks. Without that, the escaping name would be the index rather than the key
+        // and the case would be a copy of its neighbour.
+        db.Payees.Add(Payee.Create(
+            takenPayeeId, budgetId, SealedNarrative.Indexed("Bakery"), UtcNow()));
+        var repository = new AccountRepository(db);
+
+        // Act
+        Exception? escaped = await CaptureAsync(() => repository.AddAsync(Account.Create(
+            Guid.CreateVersion7(),
+            budgetId,
+            SealedNarrative.Indexed("Checking"), AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow())));
+
+        // Assert — a payee's identifier collision must not come back as an account conflict telling a
+        // client to re-read an account it just minted a fresh identifier for.
+        await Assert.That(escaped).IsNotNull();
+        await Assert.That(escaped).IsTypeOf<DbUpdateException>();
+        await Assert.That(ConstraintNameOf(escaped)).IsEqualTo(PayeePrimaryKey);
+    }
+
+    /// <summary>
+    /// The other half: <c>AccountRepository.AddAsync</c> must still translate <b>its own</b> primary
+    /// key, or narrowing the arm could be "fixed" by deleting it.
+    /// </summary>
+    /// <remarks>
+    /// <b>The message is asserted and the type alone would not do.</b> On this table the two arms
+    /// answer with different exception types — a duplicate name is a <c>ValidationException</c> keyed
+    /// on <c>Name</c>, a duplicate identifier a <c>ConflictException</c> — so a type assertion happens
+    /// to discriminate here and does not on <c>payees</c>, where both are conflicts. Writing both
+    /// halves the same way keeps the pair readable as one rule rather than as two accidents, and the
+    /// sentence is the whole of what a caller is ever told: <c>ConflictExceptionHandler</c> renders it
+    /// as <c>ProblemDetails.Detail</c> beside a title fixed for every conflict in the product.
+    /// </remarks>
+    [Test]
+    public async Task AddAccount_WithADuplicateIdentifier_TranslatesItsOwnPrimaryKey()
+    {
+        // Arrange — the collision this repository now models: one identifier, two accounts. The name
+        // differs, so PK_accounts is the only rule broken and the answer cannot be borrowed from the
+        // name index.
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid budgetId = await host.SeedBudgetAsync("google-1", "person@example.com");
+        DbContextOptions<BudgetoidDbContext> options = CreateOptions(host);
+        var takenId = Guid.CreateVersion7();
+        await using (BudgetoidDbContext seed = new(options, new TestBudgetContext(budgetId)))
+        {
+            seed.Accounts.Add(Account.Create(
+                takenId,
+                budgetId,
+                SealedNarrative.Indexed("Checking"), AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow()));
+            await seed.SaveChangesAsync();
+        }
+
+        await using BudgetoidDbContext db = new(options, new TestBudgetContext(budgetId));
+        var repository = new AccountRepository(db);
+
+        // Act
+        Exception? escaped = await CaptureAsync(() => repository.AddAsync(Account.Create(
+            takenId,
+            budgetId,
+            SealedNarrative.Indexed("Savings"), AccountType.Savings, 0m, "USD", UsdMinorUnit, UtcNow())));
+
+        // Assert — a conflict and not a field-keyed 400: the identifier is not a member of the request
+        // anybody can correct by typing, and the remedy is to read the account back or mint a new one.
+        await Assert.That(escaped).IsNotNull();
+        await Assert.That(escaped).IsTypeOf<ConflictException>();
+        await Assert.That(escaped!.Message).IsEqualTo(
+            "An account already exists with this identifier. If this request is a retry, read that "
+            + "account back by its identifier instead of posting it again; otherwise mint a fresh "
+            + "identifier and post again.");
     }
 
     [Test]
@@ -133,12 +369,15 @@ public sealed class RepositoryConstraintAttributionTests
         // No IBudgetContext: neither Budget nor User carries a BudgetIsolation query filter, so this
         // context never needs an ambient budget.
         await using BudgetoidDbContext db = new(CreateOptions(host));
-        db.Users.Add(User.Create("google-2", "person@example.com", displayName: null, UtcNow()));
+        // No credential for this one: a user row without one is legal at the schema level, and the
+        // subject here is the email index, not identity resolution.
+        db.Users.Add(User.CreateWithId(Guid.CreateVersion7(), "person@example.com", UtcNow()));
         var repository = new BudgetRepository(db);
 
         // Act
-        Exception? escaped = await CaptureAsync(() =>
-            repository.TryAddAsync(Budget.Create(userId, "Household", UtcNow())));
+        Exception? escaped = await CaptureAsync(() => repository.TryAddAsync(
+            Budget.Create(
+                Guid.CreateVersion7(), userId, SealedNarrative.Name("Household"), UtcNow())));
 
         // Assert — this one does not even lie out loud: TryAddAsync returns false, and provisioning
         // reads that as "someone else won the race, re-read the budget". There is no budget to
@@ -149,17 +388,25 @@ public sealed class RepositoryConstraintAttributionTests
     }
 
     [Test]
-    public async Task AddBudget_WithADuplicateBudgetName_ReportsItsOwnUniqueIndexAsALostRace()
+    public async Task AddBudget_WithASecondNamelessBudget_ReportsItsOwnUniqueIndexAsALostRace()
     {
-        // Arrange — the collision this repository does model: same owner, same name.
+        // Arrange — the collision this repository does model: same owner, no name, which is the half
+        // of IX_budgets_user_id_name that survived the column becoming ciphertext. It used to be
+        // arranged as the same name twice, and that arrangement no longer collides with anything:
+        // every seal draws a fresh nonce, so two rows a client sealed from one word hold different
+        // bytes, and the case_insensitive collation that made "Household" meet "household" went with
+        // the text type. NULLS NOT DISTINCT is untouched, and it is the same index and the same 23505
+        // this test was always about.
         await using RepositoryTestHost host = await StartHostAsync();
         Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
         await using BudgetoidDbContext db = new(CreateOptions(host));
         var repository = new BudgetRepository(db);
-        bool firstAdded = await repository.TryAddAsync(Budget.Create(userId, "Household", UtcNow()));
+        bool firstAdded = await repository.TryAddAsync(
+            Budget.CreateDefault(Guid.CreateVersion7(), userId, UtcNow()));
 
         // Act
-        bool secondAdded = await repository.TryAddAsync(Budget.Create(userId, "household", UtcNow()));
+        bool secondAdded = await repository.TryAddAsync(
+            Budget.CreateDefault(Guid.CreateVersion7(), userId, UtcNow()));
 
         // Assert
         await Assert.That(firstAdded).IsTrue();
@@ -169,25 +416,33 @@ public sealed class RepositoryConstraintAttributionTests
     [Test]
     public async Task AddCategoryGroup_WhenATrackedRowBreaksAnotherUniqueIndex_LetsTheViolationEscape()
     {
-        // Arrange — the intruder is a duplicate payee name again, breaking
-        // IX_payees_budget_id_name with the 23505 that IX_category_groups_budget_id_name would also
-        // raise. The group being added is the first one in this budget.
+        // Arrange — the intruder is a duplicate payee blind index again, breaking
+        // IX_payees_budget_id_name_key with the 23505 that IX_category_groups_budget_id_name would
+        // also raise. The group being added is the first one in this budget.
         await using RepositoryTestHost host = await StartHostAsync();
         Guid budgetId = await host.SeedBudgetAsync("google-1", "person@example.com");
         DbContextOptions<BudgetoidDbContext> options = CreateOptions(host);
         await using (BudgetoidDbContext seed = new(options, new TestBudgetContext(budgetId)))
         {
-            seed.Payees.Add(Payee.Create(budgetId, "Corner Shop", UtcNow()));
+            seed.Payees.Add(Payee.Create(
+                Guid.CreateVersion7(), budgetId, SealedNarrative.Indexed("Corner Shop"), UtcNow()));
             await seed.SaveChangesAsync();
         }
 
         await using BudgetoidDbContext db = new(options, new TestBudgetContext(budgetId));
-        db.Payees.Add(Payee.Create(budgetId, "Corner Shop", UtcNow()));
+        db.Payees.Add(Payee.Create(
+            Guid.CreateVersion7(), budgetId, SealedNarrative.Indexed("Corner Shop"), UtcNow()));
         var repository = new CategoryGroupRepository(db);
 
         // Act
         Exception? escaped = await CaptureAsync(() => repository.AddAsync(
-            CategoryGroup.Create(budgetId, "Essentials", null, 0, UtcNow())));
+            CategoryGroup.Create(
+                Guid.CreateVersion7(),
+                budgetId,
+                SealedNarrative.Indexed("Essentials"),
+                null,
+                0,
+                UtcNow())));
 
         // Assert — "Category group name must be unique." would be a lie about a name nobody else
         // holds, and the client would render it against the name field the user just typed.
@@ -199,24 +454,126 @@ public sealed class RepositoryConstraintAttributionTests
     [Test]
     public async Task AddCategoryGroup_WithADuplicateGroupName_TranslatesItsOwnUniqueIndex()
     {
-        // Arrange — the collision this repository does model.
+        // Arrange — the collision this repository does model, and it is a DIFFERENT collision from the
+        // one this case used to seed. It inserted "Essentials" and then "essentials", relying on the
+        // case-insensitive collation the column carried; that collation left with the plaintext —
+        // bytea is not collatable — and folding is now the client's, before it computes the index. So
+        // the two rows collide the only way this table can still see: the SAME blind index. Two
+        // SealedNarrative.Indexed calls over one label produce it, which is exactly what a client that
+        // folded two spellings to one text would send.
         await using RepositoryTestHost host = await StartHostAsync();
         Guid budgetId = await host.SeedBudgetAsync("google-1", "person@example.com");
         DbContextOptions<BudgetoidDbContext> options = CreateOptions(host);
         await using (BudgetoidDbContext seed = new(options, new TestBudgetContext(budgetId)))
         {
-            seed.CategoryGroups.Add(CategoryGroup.Create(budgetId, "Essentials", null, 0, UtcNow()));
+            seed.CategoryGroups.Add(CategoryGroup.Create(
+                Guid.CreateVersion7(),
+                budgetId,
+                SealedNarrative.Indexed("Essentials"),
+                null,
+                0,
+                UtcNow()));
             await seed.SaveChangesAsync();
         }
 
         await using BudgetoidDbContext db = new(options, new TestBudgetContext(budgetId));
         var repository = new CategoryGroupRepository(db);
 
-        // Act
+        // Act — a fresh identifier, so the row breaks IX_category_groups_budget_id_name_key and not
+        // PK_category_groups. The two answer different statuses and the repository translates them
+        // separately.
         Exception? escaped = await CaptureAsync(() => repository.AddAsync(
-            CategoryGroup.Create(budgetId, "essentials", null, 1, UtcNow())));
+            CategoryGroup.Create(
+                Guid.CreateVersion7(),
+                budgetId,
+                SealedNarrative.Indexed("Essentials"),
+                null,
+                1,
+                UtcNow())));
 
         // Assert
+        await Assert.That(escaped).IsNotNull();
+        await Assert.That(escaped).IsTypeOf<ValidationException>();
+        await Assert.That(((ValidationException)escaped!).Errors.ContainsKey(nameof(CategoryGroup.Name)))
+            .IsTrue();
+    }
+
+    /// <summary>
+    /// A RENAME onto a name the budget already holds is translated by
+    /// <c>CategoryGroupRepository.UpdateAsync</c>'s own arm into the same 400 keyed on
+    /// <c>Name</c> that the create leg answers.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>What <see cref="AddCategoryGroup_WithADuplicateGroupName_TranslatesItsOwnUniqueIndex" />
+    /// does not cover is this method.</b> That case exercises <c>AddAsync</c>, whose catch arms are
+    /// its own: it stages an <c>INSERT</c>, it carries a second arm for
+    /// <c>PK_category_groups</c> that this method deliberately has none of, and it says nothing
+    /// about whether <c>UpdateAsync</c> translates anything at all. Measured on this tree: delete
+    /// the <c>NameIndexName</c> arm from <c>UpdateAsync</c> and the whole suite stayed green while
+    /// a rename onto a taken name went from a 400 the caller can act on to a
+    /// <see cref="DbUpdateException" /> — a 500 carrying a constraint name. The slice's own
+    /// description claims the answer is "400 keyed on Name on <i>both</i> verbs", and until this
+    /// case existed that was half a claim.
+    /// </para>
+    /// <para>
+    /// <b>The collision is on the blind index and it is staged through the entity, not through
+    /// SQL.</b> Two seeded groups carry two labels; the second is loaded and handed the FIRST
+    /// label's <see cref="SealedNarrative.Indexed" /> value, which is exactly what a client that
+    /// re-typed an existing name would send — the envelope beside it differs, since every seal
+    /// draws a fresh nonce, and only the index can see the duplicate.
+    /// </para>
+    /// <para>
+    /// <b>No identifier arm is reachable here and that is why none is asserted.</b> A rename does
+    /// not move a row's primary key, so <c>PK_category_groups</c> cannot fire on this statement;
+    /// the create leg's 409 has no counterpart on this verb. The mis-attribution half of this
+    /// repository's coverage stays where it is, on
+    /// <see cref="AddCategoryGroup_WhenATrackedRowBreaksAnotherUniqueIndex_LetsTheViolationEscape" />
+    /// — the narrowing it measures is <c>IsUniqueViolationOf</c>, one helper shared by both
+    /// methods, so a second staging here would re-measure the same predicate.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task UpdateCategoryGroup_RenamedOntoATakenName_TranslatesItsOwnUniqueIndex()
+    {
+        // Arrange — two groups under two labels, so the budget genuinely holds the name the rename
+        // below collides with. One group renamed onto its own label would collide with nothing.
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid budgetId = await host.SeedBudgetAsync("google-1", "person@example.com");
+        DbContextOptions<BudgetoidDbContext> options = CreateOptions(host);
+        var renamedId = Guid.CreateVersion7();
+        await using (BudgetoidDbContext seed = new(options, new TestBudgetContext(budgetId)))
+        {
+            seed.CategoryGroups.Add(CategoryGroup.Create(
+                Guid.CreateVersion7(),
+                budgetId,
+                SealedNarrative.Indexed("Essentials"),
+                null,
+                0,
+                UtcNow()));
+            seed.CategoryGroups.Add(CategoryGroup.Create(
+                renamedId,
+                budgetId,
+                SealedNarrative.Indexed("Lifestyle"),
+                null,
+                1,
+                UtcNow()));
+            await seed.SaveChangesAsync();
+        }
+
+        await using BudgetoidDbContext db = new(options, new TestBudgetContext(budgetId));
+        CategoryGroup renamed = await db.CategoryGroups.SingleAsync(group => group.Id == renamedId);
+        var repository = new CategoryGroupRepository(db);
+
+        // Act — the entity is mutated the way UpdateCategoryGroupHandler mutates it, so the
+        // statement the repository flushes is the UPDATE that route emits and not an insert wearing
+        // a different name.
+        renamed.Update(SealedNarrative.Indexed("Essentials"), null);
+        Exception? escaped = await CaptureAsync(() => repository.UpdateAsync(renamed));
+
+        // Assert — the type AND the key. A DbUpdateException here is the 500 this arm exists to
+        // prevent; a ValidationException keyed on anything else would be a 400 the client renders
+        // against a field the person never touched.
         await Assert.That(escaped).IsNotNull();
         await Assert.That(escaped).IsTypeOf<ValidationException>();
         await Assert.That(((ValidationException)escaped!).Errors.ContainsKey(nameof(CategoryGroup.Name)))
@@ -237,19 +594,39 @@ public sealed class RepositoryConstraintAttributionTests
         Guid categoryGroupId;
         await using (BudgetoidDbContext seed = new(options, new TestBudgetContext(budgetId)))
         {
-            CategoryGroup categoryGroup = CategoryGroup.Create(budgetId, "Essentials", null, 0, UtcNow());
+            CategoryGroup categoryGroup = CategoryGroup.Create(
+                Guid.CreateVersion7(),
+                budgetId,
+                SealedNarrative.Indexed("Essentials"),
+                null,
+                0,
+                UtcNow());
             seed.CategoryGroups.Add(categoryGroup);
             await seed.SaveChangesAsync();
             categoryGroupId = categoryGroup.Id;
         }
 
         await using BudgetoidDbContext db = new(options, new TestBudgetContext(budgetId));
-        db.Payees.Add(Payee.Create(Guid.CreateVersion7(), "Corner Shop", UtcNow()));
+        // Named rather than inlined: the payee takes two identifiers now and only the second is the
+        // broken rule — the row's own id is fine and its budget names nothing.
+        Guid budgetThatWasNeverCreated = Guid.CreateVersion7();
+        db.Payees.Add(Payee.Create(
+            Guid.CreateVersion7(),
+            budgetThatWasNeverCreated,
+            SealedNarrative.Indexed("Corner Shop"),
+            UtcNow()));
         var repository = new CategoryRepository(db);
 
         // Act
         Exception? escaped = await CaptureAsync(() => repository.AddAsync(
-            Category.Create(budgetId, categoryGroupId, "Groceries", null, 0, UtcNow())));
+            Category.Create(
+                Guid.CreateVersion7(),
+                budgetId,
+                categoryGroupId,
+                SealedNarrative.Indexed("Groceries"),
+                null,
+                0,
+                UtcNow())));
 
         // Assert — reporting "Category group was not found." here would be a confident, specific,
         // false 400 about a group the test just created and can still read.
@@ -270,7 +647,13 @@ public sealed class RepositoryConstraintAttributionTests
 
         // Act
         Exception? escaped = await CaptureAsync(() => repository.AddAsync(Category.Create(
-            budgetId, Guid.CreateVersion7(), "Groceries", null, 0, UtcNow())));
+            Guid.CreateVersion7(),
+            budgetId,
+            Guid.CreateVersion7(),
+            SealedNarrative.Indexed("Groceries"),
+            null,
+            0,
+            UtcNow())));
 
         // Assert
         await Assert.That(escaped).IsNotNull();
@@ -279,61 +662,988 @@ public sealed class RepositoryConstraintAttributionTests
             .IsTrue();
     }
 
+    /// <summary>
+    /// A duplicate blind index on the CREATE leg is translated by <c>CategoryRepository.AddAsync</c>'s
+    /// second arm into a <b>400 keyed on <c>Name</c></b>, not into the identifier conflict its first arm
+    /// answers.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This arm was covered by nothing, and it is the instance that started a class search.</b>
+    /// Measured by the code owner: under a mutation that made the arm unreachable, a duplicate category
+    /// name began answering the identifier's <b>409</b> instead of a 400 on the field, and NO CASE
+    /// REDDENED. What that costs a person is not an abstraction — instead of "choose another name" beside
+    /// the box they typed in, they are told to re-read their list and go looking for a row that is not
+    /// there, because the name they picked belongs to a category that does exist and the identifier they
+    /// sent is not in dispute at all.
+    /// </para>
+    /// <para>
+    /// <b>Its two sibling tables had this case and categories did not</b> — see
+    /// <see cref="AddPayee_WithADuplicateBlindIndex_TranslatesItsOwnUniqueIndex" /> and
+    /// <see cref="AddCategoryGroup_WithADuplicateGroupName_TranslatesItsOwnUniqueIndex" />. Searching for
+    /// the SHAPE rather than for this file found three more holes of the same kind, all on the rename
+    /// verb; they are the three cases below.
+    /// </para>
+    /// <para>
+    /// <b>The second category carries a DIFFERENT identifier, and that is the negative control.</b> Given
+    /// the same id, the row would break <c>PK_categories</c> as well, PostgreSQL would report the key —
+    /// it checks a relation's indexes in OID order and the key is created with the table — and the
+    /// identifier arm would answer. The case would then pass while measuring the arm it is not about.
+    /// </para>
+    /// </remarks>
     [Test]
-    public async Task GetOrCreatePayee_WhenATrackedRowBreaksAnotherUniqueIndex_LetsTheViolationEscape()
+    public async Task AddCategory_WithADuplicateCategoryName_TranslatesItsOwnUniqueIndex()
     {
-        // Arrange — the intruder is a duplicate account name, breaking IX_accounts_budget_id_name
-        // with the same 23505 the payee name index would raise. No payee named "Corner Shop" exists,
-        // so the repository's own insert is sound.
+        // Arrange — one category seeded, and a second added through the repository under a DIFFERENT
+        // identifier and the SAME label, so the blind index is the only rule broken.
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid budgetId = await host.SeedBudgetAsync("google-1", "person@example.com");
+        DbContextOptions<BudgetoidDbContext> options = CreateOptions(host);
+        Guid groupId;
+        await using (BudgetoidDbContext seed = new(options, new TestBudgetContext(budgetId)))
+        {
+            CategoryGroup group = CategoryGroup.Create(
+                Guid.CreateVersion7(), budgetId, SealedNarrative.Indexed("Essentials"), null, 0, UtcNow());
+            seed.CategoryGroups.Add(group);
+            seed.Categories.Add(Category.Create(
+                Guid.CreateVersion7(),
+                budgetId,
+                group.Id,
+                SealedNarrative.Indexed("Groceries"),
+                null,
+                0,
+                UtcNow()));
+            await seed.SaveChangesAsync();
+            groupId = group.Id;
+        }
+
+        await using BudgetoidDbContext db = new(options, new TestBudgetContext(budgetId));
+        var repository = new CategoryRepository(db);
+
+        // Act — a fresh identifier and the taken label. The envelope beside the index differs, because
+        // every seal draws a fresh nonce; only the blind index can see the duplicate.
+        Exception? escaped = await CaptureAsync(() => repository.AddAsync(Category.Create(
+            Guid.CreateVersion7(),
+            budgetId,
+            groupId,
+            SealedNarrative.Indexed("Groceries"),
+            null,
+            1,
+            UtcNow())));
+
+        // Assert — the type AND the key. A ConflictException here is the mis-attribution this case
+        // exists for: the right refusal keyed to the wrong thing, which reads to a caller as a problem
+        // with an identifier they minted correctly.
+        await Assert.That(escaped).IsNotNull();
+        await Assert.That(escaped).IsTypeOf<ValidationException>();
+        await Assert.That(((ValidationException)escaped!).Errors.ContainsKey(nameof(Category.Name)))
+            .IsTrue();
+    }
+
+    /// <summary>
+    /// A RENAME onto a taken name is translated by <c>CategoryRepository.UpdateAsync</c>'s own arm into
+    /// the same 400 keyed on <c>Name</c> the create leg answers.
+    /// </summary>
+    /// <remarks>
+    /// <b><c>UpdateAsync</c> is a separate path and nothing above reaches it.</b> The create case has its
+    /// own arms — it stages an <c>INSERT</c> and carries a second arm for <c>PK_categories</c> that this
+    /// method deliberately has none of — so it says nothing about whether this verb translates anything.
+    /// The reasoning is <see cref="UpdateCategoryGroup_RenamedOntoATakenName_TranslatesItsOwnUniqueIndex" />'s
+    /// and is not restated; what is new is only that categories had neither half until this round, where
+    /// category groups had both.
+    /// </remarks>
+    [Test]
+    public async Task UpdateCategory_RenamedOntoATakenName_TranslatesItsOwnUniqueIndex()
+    {
+        // Arrange — two categories under two labels, so the budget genuinely holds the name the rename
+        // collides with. One category renamed onto its own label would collide with nothing.
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid budgetId = await host.SeedBudgetAsync("google-1", "person@example.com");
+        DbContextOptions<BudgetoidDbContext> options = CreateOptions(host);
+        var renamedId = Guid.CreateVersion7();
+        await using (BudgetoidDbContext seed = new(options, new TestBudgetContext(budgetId)))
+        {
+            CategoryGroup group = CategoryGroup.Create(
+                Guid.CreateVersion7(), budgetId, SealedNarrative.Indexed("Essentials"), null, 0, UtcNow());
+            seed.CategoryGroups.Add(group);
+            seed.Categories.Add(Category.Create(
+                Guid.CreateVersion7(),
+                budgetId,
+                group.Id,
+                SealedNarrative.Indexed("Groceries"),
+                null,
+                0,
+                UtcNow()));
+            seed.Categories.Add(Category.Create(
+                renamedId, budgetId, group.Id, SealedNarrative.Indexed("Utilities"), null, 1, UtcNow()));
+            await seed.SaveChangesAsync();
+        }
+
+        await using BudgetoidDbContext db = new(options, new TestBudgetContext(budgetId));
+        Category renamed = await db.Categories.SingleAsync(category => category.Id == renamedId);
+        var repository = new CategoryRepository(db);
+
+        // Act — mutated the way UpdateCategoryHandler mutates it, so the statement flushed is the UPDATE
+        // that route emits and not an insert wearing a different name.
+        renamed.Update(SealedNarrative.Indexed("Groceries"), null);
+        Exception? escaped = await CaptureAsync(() => repository.UpdateAsync(renamed));
+
+        // Assert
+        await Assert.That(escaped).IsNotNull();
+        await Assert.That(escaped).IsTypeOf<ValidationException>();
+        await Assert.That(((ValidationException)escaped!).Errors.ContainsKey(nameof(Category.Name)))
+            .IsTrue();
+    }
+
+    /// <summary>
+    /// The same hole on <c>AccountRepository.UpdateAsync</c>, found by searching for the SHAPE rather
+    /// than for the file the first instance turned up in.
+    /// </summary>
+    /// <remarks>
+    /// <b>Accounts had the create half and not the rename half.</b>
+    /// <see cref="AddAccount_WithADuplicateAccountName_TranslatesItsOwnUniqueIndex" /> covers
+    /// <c>AddAsync</c>; nothing covered this verb, on a table nobody was looking at — which is the
+    /// argument for grepping by defect shape. <c>Account.Update</c> takes the type, the opening balance
+    /// and the minor unit beside the name, so the call below restates all three: a rename that also
+    /// changed the balance would be a second edit riding along, and the statement would name columns this
+    /// case has no opinion about.
+    /// </remarks>
+    [Test]
+    public async Task UpdateAccount_RenamedOntoATakenName_TranslatesItsOwnUniqueIndex()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid budgetId = await host.SeedBudgetAsync("google-1", "person@example.com");
+        DbContextOptions<BudgetoidDbContext> options = CreateOptions(host);
+        var renamedId = Guid.CreateVersion7();
+        await using (BudgetoidDbContext seed = new(options, new TestBudgetContext(budgetId)))
+        {
+            seed.Accounts.Add(Account.Create(
+                Guid.CreateVersion7(),
+                budgetId,
+                SealedNarrative.Indexed("Checking"), AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow()));
+            seed.Accounts.Add(Account.Create(
+                renamedId,
+                budgetId,
+                SealedNarrative.Indexed("Savings"), AccountType.Savings, 0m, "USD", UsdMinorUnit, UtcNow()));
+            await seed.SaveChangesAsync();
+        }
+
+        await using BudgetoidDbContext db = new(options, new TestBudgetContext(budgetId));
+        Account renamed = await db.Accounts.SingleAsync(account => account.Id == renamedId);
+        var repository = new AccountRepository(db);
+
+        // Act — every other member restated, so the blind index is the only rule the UPDATE breaks.
+        renamed.Update(SealedNarrative.Indexed("Checking"), AccountType.Savings, 0m, UsdMinorUnit);
+        Exception? escaped = await CaptureAsync(() => repository.UpdateAsync(renamed));
+
+        // Assert
+        await Assert.That(escaped).IsNotNull();
+        await Assert.That(escaped).IsTypeOf<ValidationException>();
+        await Assert.That(((ValidationException)escaped!).Errors.ContainsKey(nameof(Account.Name)))
+            .IsTrue();
+    }
+
+    /// <summary>
+    /// The fourth instance, on <c>PayeeRepository.UpdateAsync</c> — and the one where the two verbs
+    /// answer with <b>different statuses on one index</b>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This case pins an asymmetry, not just an arm.</b> On payees a duplicate blind index is a
+    /// <b>409</b> from <c>AddAsync</c> — see
+    /// <see cref="AddPayee_WithADuplicateBlindIndex_TranslatesItsOwnUniqueIndex" /> — and a <b>400 keyed
+    /// on <c>Name</c></b> from this method. That is deliberate and is the product rule: a create's remedy
+    /// is "adopt the payee that already exists", which is not a field anybody can correct, while a
+    /// rename's is "choose another name", which is. One index, two statuses, decided by the verb.
+    /// </para>
+    /// <para>
+    /// <b>Which makes an untested arm here worse than on the other three tables.</b> Everywhere else a
+    /// lost arm turns a 400 into a 500. Here the neighbouring verb already answers a DIFFERENT legitimate
+    /// status over the same index, so the tempting "fix" is to make the two agree — and a reviewer
+    /// reaching for consistency would take the rename's field-keyed 400 away and call it tidying. This
+    /// case is what makes that edit red.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task UpdatePayee_RenamedOntoATakenName_TranslatesItsOwnUniqueIndex()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid budgetId = await host.SeedBudgetAsync("google-1", "person@example.com");
+        DbContextOptions<BudgetoidDbContext> options = CreateOptions(host);
+        var renamedId = Guid.CreateVersion7();
+        await using (BudgetoidDbContext seed = new(options, new TestBudgetContext(budgetId)))
+        {
+            seed.Payees.Add(Payee.Create(
+                Guid.CreateVersion7(), budgetId, SealedNarrative.Indexed("Corner Shop"), UtcNow()));
+            seed.Payees.Add(Payee.Create(
+                renamedId, budgetId, SealedNarrative.Indexed("Bakery"), UtcNow()));
+            await seed.SaveChangesAsync();
+        }
+
+        await using BudgetoidDbContext db = new(options, new TestBudgetContext(budgetId));
+        Payee renamed = await db.Payees.SingleAsync(payee => payee.Id == renamedId);
+        var repository = new PayeeRepository(db);
+
+        // Act
+        renamed.Rename(SealedNarrative.Indexed("Corner Shop"));
+        Exception? escaped = await CaptureAsync(() => repository.UpdateAsync(renamed));
+
+        // Assert — a ValidationException and NOT the ConflictException the create leg raises on this very
+        // index. Asserting the type is the whole point here: both are legitimate answers to a duplicate
+        // blind index on this table, and only the verb decides which is owed.
+        await Assert.That(escaped).IsNotNull();
+        await Assert.That(escaped).IsTypeOf<ValidationException>();
+        await Assert.That(((ValidationException)escaped!).Errors.ContainsKey(nameof(Payee.Name)))
+            .IsTrue();
+    }
+
+    /// <summary>
+    /// <c>CategoryRepository.AddAsync</c> must translate <b>its own</b> primary key, or the arm could be
+    /// "fixed" by deleting it.
+    /// </summary>
+    /// <remarks>
+    /// <b>The message is asserted and the type alone would not do — for the <c>payees</c> reason and not
+    /// the <c>accounts</c> one.</b> On accounts the two arms answer with different exception TYPES, so a
+    /// type assertion happens to discriminate there. Here both of this repository's 23505 arms throw:
+    /// the name index answers a <c>ValidationException</c> keyed on <c>Name</c> and the key answers a
+    /// <c>ConflictException</c> — different types, so a type assertion would discriminate — but the
+    /// message is asserted anyway, because the two arms catch the SAME SQLSTATE from the SAME statement
+    /// and the only thing separating them is the constraint name in the <c>when</c> clause. An
+    /// implementation whose key arm matched the name index would still throw a <c>ConflictException</c>
+    /// here and would still be wrong; only the sentence says which rule the caller broke.
+    /// </remarks>
+    [Test]
+    public async Task AddCategory_WithADuplicateIdentifier_TranslatesItsOwnPrimaryKey()
+    {
+        // Arrange — one identifier, two categories, and two DIFFERENT blind indexes, so PK_categories is
+        // the only rule broken. A shared label would break the name index too and PostgreSQL would report
+        // whichever it checks first, which is the key — so the case would pass while measuring nothing
+        // about which arm ran.
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid budgetId = await host.SeedBudgetAsync("google-1", "person@example.com");
+        DbContextOptions<BudgetoidDbContext> options = CreateOptions(host);
+        var takenId = Guid.CreateVersion7();
+        Guid groupId;
+        await using (BudgetoidDbContext seed = new(options, new TestBudgetContext(budgetId)))
+        {
+            CategoryGroup group = CategoryGroup.Create(
+                Guid.CreateVersion7(), budgetId, SealedNarrative.Indexed("Essentials"), null, 0, UtcNow());
+            seed.CategoryGroups.Add(group);
+            seed.Categories.Add(Category.Create(
+                takenId, budgetId, group.Id, SealedNarrative.Indexed("Groceries"), null, 0, UtcNow()));
+            await seed.SaveChangesAsync();
+            groupId = group.Id;
+        }
+
+        await using BudgetoidDbContext db = new(options, new TestBudgetContext(budgetId));
+        var repository = new CategoryRepository(db);
+
+        // Act
+        Exception? escaped = await CaptureAsync(() => repository.AddAsync(Category.Create(
+            takenId, budgetId, groupId, SealedNarrative.Indexed("Utilities"), null, 1, UtcNow())));
+
+        // Assert
+        await Assert.That(escaped).IsNotNull();
+        await Assert.That(escaped).IsTypeOf<ConflictException>();
+        await Assert.That(escaped!.Message).IsEqualTo(
+            "A category already exists with this identifier. If this request is a retry, read that "
+            + "category back by its identifier instead of posting it again; otherwise mint a fresh "
+            + "identifier and post again.");
+    }
+
+    /// <summary>
+    /// The stranger's-violation control for the case above: a 23505 belonging to some other tracked row
+    /// must escape rather than be reported as this caller's category identifier.
+    /// </summary>
+    /// <remarks>
+    /// Without it, an arm matching <c>DbUpdateException</c> on the SQLSTATE alone — no constraint name in
+    /// the <c>when</c> clause — passes every assertion the case above makes, and tells a client to
+    /// re-mint a category identifier that is not in dispute over a collision belonging to a payee it
+    /// never mentioned.
+    /// </remarks>
+    [Test]
+    public async Task AddCategory_WhenATrackedRowBreaksAnotherPrimaryKey_LetsTheViolationEscape()
+    {
+        // Arrange — the intruder is a payee reusing an identifier a payee already holds, which breaks
+        // PK_payees with the same 23505 PK_categories would raise. The category being added holds an
+        // identifier and a blind index nothing in this budget holds.
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid budgetId = await host.SeedBudgetAsync("google-1", "person@example.com");
+        DbContextOptions<BudgetoidDbContext> options = CreateOptions(host);
+        var takenPayeeId = Guid.CreateVersion7();
+        Guid groupId;
+        await using (BudgetoidDbContext seed = new(options, new TestBudgetContext(budgetId)))
+        {
+            CategoryGroup group = CategoryGroup.Create(
+                Guid.CreateVersion7(), budgetId, SealedNarrative.Indexed("Essentials"), null, 0, UtcNow());
+            seed.CategoryGroups.Add(group);
+            seed.Payees.Add(Payee.Create(
+                takenPayeeId, budgetId, SealedNarrative.Indexed("Corner Shop"), UtcNow()));
+            await seed.SaveChangesAsync();
+            groupId = group.Id;
+        }
+
+        await using BudgetoidDbContext db = new(options, new TestBudgetContext(budgetId));
+        // A different label, so the payee's own name index is untouched and the identifier is the only
+        // rule this row breaks.
+        db.Payees.Add(Payee.Create(
+            takenPayeeId, budgetId, SealedNarrative.Indexed("Bakery"), UtcNow()));
+        var repository = new CategoryRepository(db);
+
+        // Act
+        Exception? escaped = await CaptureAsync(() => repository.AddAsync(Category.Create(
+            Guid.CreateVersion7(), budgetId, groupId, SealedNarrative.Indexed("Groceries"), null, 0, UtcNow())));
+
+        // Assert
+        await Assert.That(escaped).IsNotNull();
+        await Assert.That(escaped).IsTypeOf<DbUpdateException>();
+        await Assert.That(ConstraintNameOf(escaped)).IsEqualTo(PayeePrimaryKey);
+    }
+
+    /// <summary>
+    /// <c>TransactionRepository.AddAsync</c> must translate <b>its own</b> primary key.
+    /// </summary>
+    /// <remarks>
+    /// <b>This repository has ONE catch arm where its four siblings have two, and the reason is written
+    /// out at the method — it is not restated here beyond what this case needs.</b>
+    /// <c>transactions</c> carries no name and no unique index but the key, so there is no second 23505
+    /// for a constraint name to tell apart. The consequence for THIS case is that the type assertion
+    /// below discriminates nothing at all: there is only one exception this method can produce, so a
+    /// case asserting the type alone would be satisfied by an arm matching any 23505 whatsoever. The
+    /// message and the control below are the whole of the discrimination.
+    /// </remarks>
+    [Test]
+    public async Task AddTransaction_WithADuplicateIdentifier_TranslatesItsOwnPrimaryKey()
+    {
+        // Arrange — one identifier, two transactions on the same account. Nothing else can collide:
+        // there is no second unique rule on this table for the row to trip.
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid budgetId = await host.SeedBudgetAsync("google-1", "person@example.com");
+        DbContextOptions<BudgetoidDbContext> options = CreateOptions(host);
+        var takenId = Guid.CreateVersion7();
+        Guid accountId;
+        await using (BudgetoidDbContext seed = new(options, new TestBudgetContext(budgetId)))
+        {
+            Account account = Account.Create(
+                Guid.CreateVersion7(),
+                budgetId,
+                SealedNarrative.Indexed("Checking"), AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow());
+            seed.Accounts.Add(account);
+            await seed.SaveChangesAsync();
+            seed.Transactions.Add(Transaction.Create(
+                takenId,
+                budgetId,
+                account.Id,
+                -10m,
+                UsdMinorUnit,
+                new DateOnly(2026, 6, 12),
+                SealedNarrative.Description("Corner shop"),
+                UtcNow()));
+            await seed.SaveChangesAsync();
+            accountId = account.Id;
+        }
+
+        await using BudgetoidDbContext db = new(options, new TestBudgetContext(budgetId));
+        var repository = new TransactionRepository(db);
+
+        // Act
+        Exception? escaped = await CaptureAsync(() => repository.AddAsync(Transaction.Create(
+            takenId,
+            budgetId,
+            accountId,
+            -20m,
+            UsdMinorUnit,
+            new DateOnly(2026, 6, 13),
+            SealedNarrative.Description("Coffee run"),
+            UtcNow())));
+
+        // Assert
+        await Assert.That(escaped).IsNotNull();
+        await Assert.That(escaped).IsTypeOf<ConflictException>();
+        await Assert.That(escaped!.Message).IsEqualTo(
+            "A transaction already exists with this identifier. If this request is a retry, read that "
+            + "transaction back by its identifier instead of posting it again; otherwise mint a fresh "
+            + "identifier and post again.");
+    }
+
+    /// <summary>
+    /// The stranger's-violation control for the case above, and the one this repository needs MOST.
+    /// </summary>
+    /// <remarks>
+    /// The single arm makes an over-broad <c>when</c> clause cheaper to write here than anywhere else in
+    /// the folder: with no sibling arm to conflict with, dropping the constraint-name test compiles,
+    /// reads as a simplification, and passes the case above. This control is the only thing that
+    /// notices.
+    /// </remarks>
+    [Test]
+    public async Task AddTransaction_WhenATrackedRowBreaksAnotherPrimaryKey_LetsTheViolationEscape()
+    {
+        // Arrange — the intruder is a payee reusing an identifier a payee already holds, raising the
+        // same 23505 PK_transactions would. The transaction being added holds a fresh identifier.
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid budgetId = await host.SeedBudgetAsync("google-1", "person@example.com");
+        DbContextOptions<BudgetoidDbContext> options = CreateOptions(host);
+        var takenPayeeId = Guid.CreateVersion7();
+        Guid accountId;
+        await using (BudgetoidDbContext seed = new(options, new TestBudgetContext(budgetId)))
+        {
+            Account account = Account.Create(
+                Guid.CreateVersion7(),
+                budgetId,
+                SealedNarrative.Indexed("Checking"), AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow());
+            seed.Accounts.Add(account);
+            seed.Payees.Add(Payee.Create(
+                takenPayeeId, budgetId, SealedNarrative.Indexed("Corner Shop"), UtcNow()));
+            await seed.SaveChangesAsync();
+            accountId = account.Id;
+        }
+
+        await using BudgetoidDbContext db = new(options, new TestBudgetContext(budgetId));
+        db.Payees.Add(Payee.Create(
+            takenPayeeId, budgetId, SealedNarrative.Indexed("Bakery"), UtcNow()));
+        var repository = new TransactionRepository(db);
+
+        // Act
+        Exception? escaped = await CaptureAsync(() => repository.AddAsync(Transaction.Create(
+            Guid.CreateVersion7(),
+            budgetId,
+            accountId,
+            -10m,
+            UsdMinorUnit,
+            new DateOnly(2026, 6, 12),
+            SealedNarrative.Description("Corner shop"),
+            UtcNow())));
+
+        // Assert
+        await Assert.That(escaped).IsNotNull();
+        await Assert.That(escaped).IsTypeOf<DbUpdateException>();
+        await Assert.That(ConstraintNameOf(escaped)).IsEqualTo(PayeePrimaryKey);
+    }
+
+    /// <summary>
+    /// <c>PayeeRepository.AddAsync</c> replaced <c>GetOrCreateAsync</c>, and this pair replaced the two
+    /// cases that covered it — the same two halves, against the member that exists.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The old pair could only be rewritten, not repointed: <c>GetOrCreateAsync</c> took a name, and a
+    /// lookup by name is no longer a question this side can answer. Its recovery path — swallow the
+    /// 23505, re-read the name, hand back whoever won the race — went with it, so the half that used to
+    /// end in an <c>InvalidOperationException</c> now ends in a <c>ConflictException</c> the client is
+    /// asked to resolve by re-reading its own list.
+    /// </para>
+    /// <para>
+    /// <b>Both halves have to survive together or the census in <c>UnitTests</c> becomes a lie.</b>
+    /// <c>RepositoryAttributionCensusTests</c> lists <c>PayeeRepository</c> in
+    /// <c>CoveredByAttributionTests</c>, whose definition is "both halves, here" — drop either one and
+    /// that entry goes on passing while claiming coverage this file no longer holds.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task AddPayee_WhenATrackedRowBreaksAnotherUniqueIndex_LetsTheViolationEscape()
+    {
+        // Arrange — the intruder is a duplicate account name, breaking
+        // IX_accounts_budget_id_name_key with the same 23505 the payee name index would raise. The
+        // payee being added is the only one in this budget, so its own insert is sound.
         await using RepositoryTestHost host = await StartHostAsync();
         Guid budgetId = await host.SeedBudgetAsync("google-1", "person@example.com");
         DbContextOptions<BudgetoidDbContext> options = CreateOptions(host);
         await using (BudgetoidDbContext seed = new(options, new TestBudgetContext(budgetId)))
         {
             seed.Accounts.Add(Account.Create(
-                budgetId, "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow()));
+                Guid.CreateVersion7(),
+                budgetId,
+                SealedNarrative.Indexed("Checking"), AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow()));
             await seed.SaveChangesAsync();
         }
 
         await using BudgetoidDbContext db = new(options, new TestBudgetContext(budgetId));
         db.Accounts.Add(Account.Create(
-            budgetId, "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow()));
-        var repository = new PayeeRepository(db, new TestBudgetContext(budgetId), TimeProvider.System);
+            Guid.CreateVersion7(),
+            budgetId,
+            SealedNarrative.Indexed("Checking"), AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow()));
+        var repository = new PayeeRepository(db);
 
         // Act
-        Exception? escaped = await CaptureAsync(() => repository.GetOrCreateAsync("Corner Shop"));
+        Exception? escaped = await CaptureAsync(() => repository.AddAsync(Payee.Create(
+            Guid.CreateVersion7(), budgetId, SealedNarrative.Indexed("Corner Shop"), UtcNow())));
 
-        // Assert — this catch does not throw a message, it swallows and re-reads, which is worse:
-        // the re-read finds nothing (the transaction rolled back) and the account collision comes
-        // out as "Payee unique violation occurred but no matching payee was found." — an
-        // InvalidOperationException blaming payees for a row nobody asked this repository about.
+        // Assert — an account collision must not come back as the payee conflict, which tells a client
+        // its payee list is stale and asks it to re-read: a confident instruction about a list that has
+        // nothing to do with the row PostgreSQL refused.
         await Assert.That(escaped).IsNotNull();
         await Assert.That(escaped).IsTypeOf<DbUpdateException>();
         await Assert.That(ConstraintNameOf(escaped)).IsEqualTo(AccountNameIndex);
     }
 
     [Test]
-    public async Task GetOrCreatePayee_WhenItsOwnInsertCollides_StillTakesItsOwnRecoveryPath()
+    public async Task AddPayee_WithADuplicateBlindIndex_TranslatesItsOwnUniqueIndex()
     {
-        // Arrange — the collision this repository does model, staged single-threaded. A duplicate
-        // payee is tracked but not yet written, so the repository's lookup (which reads the
-        // database, not the change tracker) misses it exactly as the losing side of the real race
-        // does, and its own insert then collides on IX_payees_budget_id_name.
+        // Arrange — the collision this repository does model: two payees, one budget, one blind index.
+        // Equal labels are what make the two indexes equal; the envelopes beside them differ anyway,
+        // because every seal draws a fresh nonce.
         await using RepositoryTestHost host = await StartHostAsync();
         Guid budgetId = await host.SeedBudgetAsync("google-1", "person@example.com");
-        await using BudgetoidDbContext db = new(CreateOptions(host), new TestBudgetContext(budgetId));
-        db.Payees.Add(Payee.Create(budgetId, "Corner Shop", UtcNow()));
-        var repository = new PayeeRepository(db, new TestBudgetContext(budgetId), TimeProvider.System);
+        DbContextOptions<BudgetoidDbContext> options = CreateOptions(host);
+        await using (BudgetoidDbContext seed = new(options, new TestBudgetContext(budgetId)))
+        {
+            seed.Payees.Add(Payee.Create(
+                Guid.CreateVersion7(), budgetId, SealedNarrative.Indexed("Corner Shop"), UtcNow()));
+            await seed.SaveChangesAsync();
+        }
+
+        await using BudgetoidDbContext db = new(options, new TestBudgetContext(budgetId));
+        var repository = new PayeeRepository(db);
 
         // Act
-        Exception? escaped = await CaptureAsync(() => repository.GetOrCreateAsync("Corner Shop"));
+        Exception? escaped = await CaptureAsync(() => repository.AddAsync(Payee.Create(
+            Guid.CreateVersion7(), budgetId, SealedNarrative.Indexed("Corner Shop"), UtcNow())));
 
-        // Assert — the recovery path runs: the 23505 is swallowed and the name re-read. Nothing was
-        // committed, so it ends in the repository's own InvalidOperationException rather than a
-        // returned payee. What this pins is that the catch still fires for the payee index, so a
-        // narrower filter cannot be satisfied by deleting the catch.
+        // Assert — narrowing the catch must not silence it. A create's remedy is to adopt the row that
+        // already exists, which is not a correction to any field, so this half is a ConflictException
+        // and not the ValidationException UpdateAsync raises on the very same index.
         await Assert.That(escaped).IsNotNull();
-        await Assert.That(escaped).IsTypeOf<InvalidOperationException>();
+        await Assert.That(escaped).IsTypeOf<ConflictException>();
+    }
+
+    /// <summary>
+    /// The mis-attribution control for <c>PayeeRepository.AddAsync</c>'s <b>second</b> arm, staged
+    /// against a stranger's <i>primary key</i>.
+    /// </summary>
+    /// <remarks>
+    /// The twin of
+    /// <see cref="AddAccount_WhenATrackedRowBreaksAnotherPrimaryKey_LetsTheViolationEscape" />, and it
+    /// holds what
+    /// <see cref="AddPayee_WhenATrackedRowBreaksAnotherUniqueIndex_LetsTheViolationEscape" /> cannot:
+    /// a filter narrowed by the <i>shape</i> of a constraint name rather than by the name itself — a
+    /// <c>"PK_"</c> prefix test, or a read of the table name — looks like tidying, passes that case,
+    /// and swallows this one.
+    /// </remarks>
+    [Test]
+    public async Task AddPayee_WhenATrackedRowBreaksAnotherPrimaryKey_LetsTheViolationEscape()
+    {
+        // Arrange — the intruder is an account reusing an identifier an account already holds, which
+        // breaks PK_accounts with the same 23505 PK_payees would raise. The payee being added holds an
+        // identifier and a blind index nothing in this budget holds.
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid budgetId = await host.SeedBudgetAsync("google-1", "person@example.com");
+        DbContextOptions<BudgetoidDbContext> options = CreateOptions(host);
+        var takenAccountId = Guid.CreateVersion7();
+        await using (BudgetoidDbContext seed = new(options, new TestBudgetContext(budgetId)))
+        {
+            seed.Accounts.Add(Account.Create(
+                takenAccountId,
+                budgetId,
+                SealedNarrative.Indexed("Checking"), AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow()));
+            await seed.SaveChangesAsync();
+        }
+
+        await using BudgetoidDbContext db = new(options, new TestBudgetContext(budgetId));
+        // A different label, so the account's name index is untouched and the identifier is the only
+        // rule this row breaks.
+        db.Accounts.Add(Account.Create(
+            takenAccountId,
+            budgetId,
+            SealedNarrative.Indexed("Savings"), AccountType.Savings, 0m, "USD", UsdMinorUnit, UtcNow()));
+        var repository = new PayeeRepository(db);
+
+        // Act
+        Exception? escaped = await CaptureAsync(() => repository.AddAsync(Payee.Create(
+            Guid.CreateVersion7(), budgetId, SealedNarrative.Indexed("Corner Shop"), UtcNow())));
+
+        // Assert — an account's identifier collision must not come back as the payee identifier
+        // conflict, which would tell a client to re-read or re-mint a payee identifier nothing disputes.
+        await Assert.That(escaped).IsNotNull();
+        await Assert.That(escaped).IsTypeOf<DbUpdateException>();
+        await Assert.That(ConstraintNameOf(escaped)).IsEqualTo(AccountPrimaryKey);
+    }
+
+    /// <summary>
+    /// The other half: <c>PayeeRepository.AddAsync</c> must still translate <b>its own</b> primary key,
+    /// and into a sentence that is not the one its name index earns.
+    /// </summary>
+    /// <remarks>
+    /// <b>The type is not enough on this table and that is the point.</b> Both of this repository's arms
+    /// throw <c>ConflictException</c>, so an implementation with a dead identifier arm — or with one
+    /// arm answering both collisions — satisfies every type assertion that could be written here. Only
+    /// the message tells them apart, which is the same reason the route-level cases assert
+    /// <c>ProblemDetails.Detail</c> rather than the 409.
+    /// </remarks>
+    [Test]
+    public async Task AddPayee_WithADuplicateIdentifier_TranslatesItsOwnPrimaryKey()
+    {
+        // Arrange — one identifier, two payees, and two different blind indexes, so PK_payees is the
+        // only rule broken.
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid budgetId = await host.SeedBudgetAsync("google-1", "person@example.com");
+        DbContextOptions<BudgetoidDbContext> options = CreateOptions(host);
+        var takenId = Guid.CreateVersion7();
+        await using (BudgetoidDbContext seed = new(options, new TestBudgetContext(budgetId)))
+        {
+            seed.Payees.Add(Payee.Create(
+                takenId, budgetId, SealedNarrative.Indexed("Corner Shop"), UtcNow()));
+            await seed.SaveChangesAsync();
+        }
+
+        await using BudgetoidDbContext db = new(options, new TestBudgetContext(budgetId));
+        var repository = new PayeeRepository(db);
+
+        // Act
+        Exception? escaped = await CaptureAsync(() => repository.AddAsync(Payee.Create(
+            takenId, budgetId, SealedNarrative.Indexed("Bakery"), UtcNow())));
+
+        // Assert
+        await Assert.That(escaped).IsNotNull();
+        await Assert.That(escaped).IsTypeOf<ConflictException>();
+        await Assert.That(escaped!.Message).IsEqualTo(
+            "A payee already exists with this identifier. If this request is a retry, read that payee "
+            + "back by its identifier instead of posting it again; otherwise mint a fresh identifier "
+            + "and post again.");
+    }
+
+    /// <summary>
+    /// <c>NarrativeResealRepository.SaveAsync</c> translates a re-sealed name landing on an index value
+    /// another row of the budget already holds — on <b>each</b> of the four name indexes a chunk can
+    /// break — into the rotation's own conflict.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The pair is the one a rotation under change produces</b>: one row already re-sealed under the
+    /// incoming index key (<c>new:Foo</c>) and one a stale tab wrote under the outgoing key
+    /// (<c>old:Foo</c>). The act re-seals the second onto the first's value, which is the
+    /// <c>UPDATE</c> that breaks the index — the same 23505 the create and rename arms of each table's
+    /// own repository catch, each into a different answer from this one.
+    /// </para>
+    /// <para>
+    /// <b>The spelling is asserted rather than the enum member</b>, because the wire token is what the
+    /// contract is about. <b>The message is asserted to name
+    /// neither row</b>, because <c>ConflictExceptionHandler</c> copies it verbatim into the response.
+    /// </para>
+    /// </remarks>
+    [Test]
+    [Arguments("payees")]
+    [Arguments("accounts")]
+    [Arguments("category_groups")]
+    [Arguments("categories")]
+    public async Task SaveAsync_WithAResealedNameAlreadyHeld_TranslatesItsOwnUniqueIndex(string table)
+    {
+        // Arrange — the held row under new:Foo, the stale row under old:Foo, and the stale row loaded
+        // through the repository and re-sealed onto the held row's value.
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid budgetId = await host.SeedBudgetAsync("google-1", "person@example.com");
+        DbContextOptions<BudgetoidDbContext> options = CreateOptions(host);
+        (Guid heldId, Guid staleId) = await SeedResealCollisionAsync(options, budgetId, table);
+
+        await using BudgetoidDbContext db = new(options, new TestBudgetContext(budgetId));
+        var repository = new NarrativeResealRepository(db);
+        await ResealOntoAsync(repository, table, staleId, "new:Foo", Guid.CreateVersion7());
+
+        // Act
+        Exception? escaped = await CaptureAsync(() => repository.SaveAsync());
+
+        // Assert — the rotation's conflict, and not the DbUpdateException PostgreSQL raised.
+        await Assert.That(escaped).IsNotNull();
+        await Assert.That(escaped).IsTypeOf<ConflictException>();
+        await Assert.That(((ConflictException)escaped!).Spelling).IsEqualTo("rotation_name_collision");
+        await Assert.That(escaped.Message).DoesNotContain(heldId.ToString());
+        await Assert.That(escaped.Message).DoesNotContain(staleId.ToString());
+    }
+
+    /// <summary>
+    /// The mis-attribution control for that translation: a tracked row breaking a <b>different</b>
+    /// unique rule in the same save escapes as the <see cref="DbUpdateException" /> PostgreSQL raised.
+    /// </summary>
+    /// <remarks>
+    /// <b><c>IX_users_email</c> is the intruder, chosen for two properties.</b> It raises the same 23505
+    /// the four name indexes raise, so a filter on SQLSTATE alone swallows it; and its name begins
+    /// <c>IX_</c> like theirs, so a filter narrowed by that prefix rather than by the names themselves
+    /// swallows it too. It says nothing about a filter keyed on the <i>tail</i> of a name —
+    /// <c>Contains("_name")</c>, say — because <c>IX_users_email</c> carries no such tail; that is
+    /// <see cref="SaveAsync_WhenATrackedRowBreaksAnotherNameIndex_LetsTheViolationEscape" />'s job. The
+    /// re-seal beside it is sound — its new index collides with nothing — so the one violation in the
+    /// save is the stranger's.
+    /// </remarks>
+    [Test]
+    public async Task SaveAsync_WhenATrackedRowBreaksAnotherUniqueIndex_LetsTheViolationEscape()
+    {
+        // Arrange — a payee re-sealed onto a free value, and a second user reusing a taken address.
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid budgetId = await host.SeedBudgetAsync("google-1", "person@example.com");
+        DbContextOptions<BudgetoidDbContext> options = CreateOptions(host);
+        var payeeId = Guid.CreateVersion7();
+        await using (BudgetoidDbContext seed = new(options, new TestBudgetContext(budgetId)))
+        {
+            seed.Payees.Add(Payee.Create(payeeId, budgetId, SealedNarrative.Indexed("old:Foo"), UtcNow()));
+            await seed.SaveChangesAsync();
+        }
+
+        await using BudgetoidDbContext db = new(options, new TestBudgetContext(budgetId));
+        db.Users.Add(User.CreateWithId(Guid.CreateVersion7(), "person@example.com", UtcNow()));
+        var repository = new NarrativeResealRepository(db);
+        await ResealOntoAsync(repository, "payees", payeeId, "new:Foo", Guid.CreateVersion7());
+
+        // Act
+        Exception? escaped = await CaptureAsync(() => repository.SaveAsync());
+
+        // Assert — a stranger's email collision must not come back as a rotation name collision, which
+        // would send a client to rename a payee that broke nothing.
+        await Assert.That(escaped).IsNotNull();
+        await Assert.That(escaped).IsTypeOf<DbUpdateException>();
+        await Assert.That(ConstraintNameOf(escaped)).IsEqualTo(UserEmailIndex);
+    }
+
+    /// <summary>
+    /// The second mis-attribution control for that translation: a tracked row breaking a <b>name</b>
+    /// index that is not one of the four escapes as the <see cref="DbUpdateException" /> PostgreSQL
+    /// raised.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b><c>IX_budgets_user_id_name</c> is the intruder</b>, the one real unique index outside the four
+    /// whose name carries <c>_name</c>. A filter keyed on that fragment rather than on the four constants
+    /// — <c>Contains("_name")</c>, <c>Contains("name")</c>, <c>EndsWith("_name")</c> — swallows it, and so
+    /// does the <c>IX_</c> prefix the email control already covers. It is reached the way
+    /// <c>AddBudget_WithASecondNamelessBudget_ReportsItsOwnUniqueIndexAsALostRace</c> reaches it: a second
+    /// nameless budget for the same owner, which the index's <c>NULLS NOT DISTINCT</c> refuses.
+    /// </para>
+    /// <para>
+    /// <b>What neither control reaches is <c>EndsWith("_name_key")</c></b>: the four this filter names are
+    /// the only indexes in the schema whose names end that way, so there is no real intruder to stage and
+    /// that spelling of the filter is held by nothing here.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task SaveAsync_WhenATrackedRowBreaksAnotherNameIndex_LetsTheViolationEscape()
+    {
+        // Arrange — a payee re-sealed onto a free value, and a second nameless budget for the same owner.
+        await using RepositoryTestHost host = await StartHostAsync();
+        RepositoryTestHost.SeededOwner owner = await host.SeedOwnerAsync("google-1", "person@example.com");
+        DbContextOptions<BudgetoidDbContext> options = CreateOptions(host);
+        var payeeId = Guid.CreateVersion7();
+        await using (BudgetoidDbContext seed = new(options, new TestBudgetContext(owner.BudgetId)))
+        {
+            seed.Payees.Add(
+                Payee.Create(payeeId, owner.BudgetId, SealedNarrative.Indexed("old:Foo"), UtcNow()));
+            await seed.SaveChangesAsync();
+        }
+
+        await using BudgetoidDbContext db = new(options, new TestBudgetContext(owner.BudgetId));
+        db.Budgets.Add(Budget.CreateDefault(Guid.CreateVersion7(), owner.UserId, UtcNow()));
+        var repository = new NarrativeResealRepository(db);
+        await ResealOntoAsync(repository, "payees", payeeId, "new:Foo", Guid.CreateVersion7());
+
+        // Act
+        Exception? escaped = await CaptureAsync(() => repository.SaveAsync());
+
+        // Assert — a second default budget must not come back as a rotation name collision either.
+        await Assert.That(escaped).IsNotNull();
+        await Assert.That(escaped).IsTypeOf<DbUpdateException>();
+        await Assert.That(ConstraintNameOf(escaped)).IsEqualTo(BudgetUserNameIndex);
+    }
+
+    /// <summary>
+    /// A chunk <c>SaveAsync</c> refused leaves nothing of itself tracked, so a later save on the same
+    /// context writes only what that later save was about — neither the colliding reseal nor the sound
+    /// one refused beside it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This is the detach, and nothing else in the suite holds it.</b> The refusal's rollback is the
+    /// caller's transaction; what outlives it is the change tracker, because the context is
+    /// request-scoped. Without the detach, both reseals stay <c>Modified</c> and ride the next
+    /// <c>SaveChanges</c> anything in the request makes — new ciphertext under a rotation stamp for a
+    /// chunk the client was told was refused and wrote nothing, and the stamp is the one signal the
+    /// completion step trusts.
+    /// </para>
+    /// <para>
+    /// <b>The held row is renamed on ANOTHER context between the two saves, and that is what makes the
+    /// failure a wrong write rather than an exception.</b> Left in place, a leaked colliding reseal would
+    /// meet the same 23505 again and the later save would throw — red too, but for a reason that reads
+    /// as a second collision. Freeing <c>new:Foo</c> first lets a leaked reseal land, so the assertion
+    /// that fails is the one about what is on disk. The sound reseal of the bystander is there so a
+    /// detach narrowed to the one entry the violation named is red as well: that entry broke nothing,
+    /// and it was refused all the same because the chunk is the unit.
+    /// </para>
+    /// <para>
+    /// <b>The chunk carries one sound reseal in each of the other four sets as well</b> — an account, a
+    /// category group, a category and a transaction — because the detach's reach is a type filter, and
+    /// a filter narrowed to the table that collided (<c>entry.Entity is Payee</c>) is green on every
+    /// payee assertion here. Each of the four leaks into the later save under that narrowing and lands
+    /// with the rotation's stamp, so each has its own on-disk stamp assertion. The transaction carries a
+    /// note, because its reseal refuses to give one to a row that had none.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task SaveAsync_AfterARefusedChunk_ALaterSaveOnTheSameContextWritesNoneOfIt()
+    {
+        // Arrange — held under new:Foo, stale under old:Foo, a bystander under old:Bar; the stale row
+        // re-sealed onto new:Foo and the bystander onto the free new:Bar, in one chunk that also carries
+        // a sound reseal of an account, a category group, a category and a noted transaction.
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid budgetId = await host.SeedBudgetAsync("google-1", "person@example.com");
+        DbContextOptions<BudgetoidDbContext> options = CreateOptions(host);
+        (Guid heldId, Guid staleId) = await SeedResealCollisionAsync(options, budgetId, "payees");
+        var bystanderId = Guid.CreateVersion7();
+        var accountId = Guid.CreateVersion7();
+        var groupId = Guid.CreateVersion7();
+        var categoryId = Guid.CreateVersion7();
+        var transactionId = Guid.CreateVersion7();
+        await using (BudgetoidDbContext seed = new(options, new TestBudgetContext(budgetId)))
+        {
+            seed.Payees.Add(
+                Payee.Create(bystanderId, budgetId, SealedNarrative.Indexed("old:Bar"), UtcNow()));
+            seed.Accounts.Add(Account.Create(
+                accountId, budgetId, SealedNarrative.Indexed("old:Checking"),
+                AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow()));
+            seed.CategoryGroups.Add(CategoryGroup.Create(
+                groupId, budgetId, SealedNarrative.Indexed("old:Bills"), null, 0, UtcNow()));
+            await seed.SaveChangesAsync();
+
+            seed.Categories.Add(Category.Create(
+                categoryId, budgetId, groupId, SealedNarrative.Indexed("old:Rent"), null, 0, UtcNow()));
+            seed.Transactions.Add(Transaction.Create(
+                transactionId, budgetId, accountId, -1m, UsdMinorUnit, new DateOnly(2026, 7, 1),
+                SealedNarrative.Description("old:Note"), UtcNow()));
+            await seed.SaveChangesAsync();
+        }
+
+        await using BudgetoidDbContext db = new(options, new TestBudgetContext(budgetId));
+        var repository = new NarrativeResealRepository(db);
+        var rotationId = Guid.CreateVersion7();
+        await ResealOntoAsync(repository, "payees", staleId, "new:Foo", rotationId);
+        await ResealOntoAsync(repository, "payees", bystanderId, "new:Bar", rotationId);
+        await ResealOntoAsync(repository, "accounts", accountId, "new:Checking", rotationId);
+        await ResealOntoAsync(repository, "category_groups", groupId, "new:Bills", rotationId);
+        await ResealOntoAsync(repository, "categories", categoryId, "new:Rent", rotationId);
+        (await repository.ListTransactionsAsync([transactionId]))[transactionId]
+            .ResealDescription(SealedNarrative.Description("new:Note"), rotationId);
+
+        Exception? refused = await CaptureAsync(() => repository.SaveAsync());
+
+        // The remedy, taken elsewhere: the held row renamed away, so new:Foo is free again.
+        await using (BudgetoidDbContext elsewhere = new(options, new TestBudgetContext(budgetId)))
+        {
+            Payee held = await elsewhere.Payees.SingleAsync(payee => payee.Id == heldId);
+            held.Rename(SealedNarrative.Indexed("new:Renamed"));
+            await elsewhere.SaveChangesAsync();
+        }
+
+        var laterId = Guid.CreateVersion7();
+        db.Payees.Add(Payee.Create(laterId, budgetId, SealedNarrative.Indexed("new:Later"), UtcNow()));
+
+        // Act
+        Exception? later = await CaptureAsync(() => repository.SaveAsync());
+
+        // Assert — the refusal happened, the later save went through, and it carried only its own row.
+        await Assert.That(refused).IsTypeOf<ConflictException>();
+        await Assert.That(later).IsNull();
+
+        await using BudgetoidDbContext check = new(options, new TestBudgetContext(budgetId));
+        List<Payee> onDisk = await check.Payees.AsNoTracking()
+            .Where(payee => payee.Id == staleId || payee.Id == bystanderId || payee.Id == laterId)
+            .ToListAsync();
+
+        await Assert.That(onDisk.Select(payee => payee.Id)).Contains(laterId);
+        await Assert.That(onDisk.Single(payee => payee.Id == staleId).RotationId).IsNull();
+        await Assert.That(onDisk.Single(payee => payee.Id == bystanderId).RotationId).IsNull();
+
+        // The four other sets the chunk carried, each read on the fresh context: none of them stamped.
+        await Assert.That((await check.Accounts.AsNoTracking()
+            .SingleAsync(account => account.Id == accountId)).RotationId).IsNull();
+        await Assert.That((await check.CategoryGroups.AsNoTracking()
+            .SingleAsync(group => group.Id == groupId)).RotationId).IsNull();
+        await Assert.That((await check.Categories.AsNoTracking()
+            .SingleAsync(category => category.Id == categoryId)).RotationId).IsNull();
+        await Assert.That((await check.Transactions.AsNoTracking()
+            .SingleAsync(transaction => transaction.Id == transactionId)).RotationId).IsNull();
+    }
+
+    /// <summary>
+    /// Seeds two rows of <paramref name="table" /> in one budget: one holding <c>new:Foo</c> and one
+    /// holding <c>old:Foo</c>. Categories get a group of their own to be filed under.
+    /// </summary>
+    private static async Task<(Guid HeldId, Guid StaleId)> SeedResealCollisionAsync(
+        DbContextOptions<BudgetoidDbContext> options,
+        Guid budgetId,
+        string table)
+    {
+        var heldId = Guid.CreateVersion7();
+        var staleId = Guid.CreateVersion7();
+        await using BudgetoidDbContext seed = new(options, new TestBudgetContext(budgetId));
+
+        switch (table)
+        {
+            case "payees":
+                seed.Payees.Add(Payee.Create(heldId, budgetId, SealedNarrative.Indexed("new:Foo"), UtcNow()));
+                seed.Payees.Add(Payee.Create(staleId, budgetId, SealedNarrative.Indexed("old:Foo"), UtcNow()));
+                break;
+            case "accounts":
+                seed.Accounts.Add(Account.Create(
+                    heldId, budgetId, SealedNarrative.Indexed("new:Foo"),
+                    AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow()));
+                seed.Accounts.Add(Account.Create(
+                    staleId, budgetId, SealedNarrative.Indexed("old:Foo"),
+                    AccountType.Checking, 0m, "USD", UsdMinorUnit, UtcNow()));
+                break;
+            case "category_groups":
+                seed.CategoryGroups.Add(CategoryGroup.Create(
+                    heldId, budgetId, SealedNarrative.Indexed("new:Foo"), null, 0, UtcNow()));
+                seed.CategoryGroups.Add(CategoryGroup.Create(
+                    staleId, budgetId, SealedNarrative.Indexed("old:Foo"), null, 1, UtcNow()));
+                break;
+            case "categories":
+                var groupId = Guid.CreateVersion7();
+                seed.CategoryGroups.Add(CategoryGroup.Create(
+                    groupId, budgetId, SealedNarrative.Indexed("Group"), null, 0, UtcNow()));
+                await seed.SaveChangesAsync();
+                seed.Categories.Add(Category.Create(
+                    heldId, budgetId, groupId, SealedNarrative.Indexed("new:Foo"), null, 0, UtcNow()));
+                seed.Categories.Add(Category.Create(
+                    staleId, budgetId, groupId, SealedNarrative.Indexed("old:Foo"), null, 1, UtcNow()));
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(table), table, "No name index on that table.");
+        }
+
+        await seed.SaveChangesAsync();
+
+        return (heldId, staleId);
+    }
+
+    /// <summary>
+    /// Loads <paramref name="rowId" /> through the repository's own read and re-seals it onto
+    /// <paramref name="label" />, leaving the change tracked for <c>SaveAsync</c>.
+    /// </summary>
+    private static async Task ResealOntoAsync(
+        NarrativeResealRepository repository,
+        string table,
+        Guid rowId,
+        string label,
+        Guid rotationId)
+    {
+        switch (table)
+        {
+            case "payees":
+                (await repository.ListPayeesAsync([rowId]))[rowId]
+                    .Reseal(SealedNarrative.Indexed(label), rotationId);
+                break;
+            case "accounts":
+                (await repository.ListAccountsAsync([rowId]))[rowId]
+                    .Reseal(SealedNarrative.Indexed(label), rotationId);
+                break;
+            case "category_groups":
+                (await repository.ListCategoryGroupsAsync([rowId]))[rowId]
+                    .Reseal(SealedNarrative.Indexed(label), null, rotationId);
+                break;
+            case "categories":
+                (await repository.ListCategoriesAsync([rowId]))[rowId]
+                    .Reseal(SealedNarrative.Indexed(label), null, rotationId);
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(table), table, "No name index on that table.");
+        }
     }
 
     /// <summary>

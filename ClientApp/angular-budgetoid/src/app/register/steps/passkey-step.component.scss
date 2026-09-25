@@ -1,0 +1,73 @@
+// The step owns its own inset: the flow shell adds no padding.
+:host {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--bud-space-6);
+  align-content: start;
+  box-sizing: border-box;
+  padding: var(--bud-space-6) var(--bud-gutter) var(--bud-space-9);
+  background: var(--mat-sys-background);
+  color: var(--bud-text);
+  font-family: var(--bud-font-ui);
+}
+
+// The caption and the title are one block, so the step's own rhythm does not
+// open 24px between a line and the title it belongs to.
+.r-heading {
+  display: grid;
+  gap: var(--bud-space-2);
+}
+
+// `caption`, muted. It orients and never announces, so it is the smallest type
+// on the screen and sits above the thing it is about.
+.r-step {
+  margin: 0;
+  color: var(--bud-text-muted);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+// `title` role. Every size and line height in this file is a literal for the
+// reason `codes-step.component.scss` gives at its own: the book names no
+// type-scale token, so there is nothing to reference yet.
+.r-title {
+  margin: 0;
+  font-family: var(--bud-font-display);
+  font-weight: 500;
+  font-size: 1.5rem;
+  line-height: 1.2;
+}
+
+// `body`, capped at the reading measure.
+.r-prose,
+.r-lead {
+  margin: 0;
+  max-width: 65ch;
+  font-size: 0.875rem;
+  line-height: 1.55;
+}
+
+// Colour is never the message: the line reads as a sentence with the colour
+// removed.
+.r-error {
+  margin: 0;
+  max-width: 65ch;
+  color: var(--bud-over);
+  font-size: 0.875rem;
+  line-height: 1.55;
+}
+
+// Holds its box while empty, so the screen does not shift under the reader when
+// the outcome of a press arrives — and it is empty for the whole of the first
+// paint, which is the state this step spends most of its life in.
+.r-outcome {
+  display: grid;
+  gap: var(--bud-space-2);
+  justify-items: start;
+  min-height: 1lh;
+}
+
+// Material's M3 button is shorter than the system's touch minimum.
+.r-button {
+  min-height: var(--bud-touch-target);
+}

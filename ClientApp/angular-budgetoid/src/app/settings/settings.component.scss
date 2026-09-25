@@ -1,0 +1,167 @@
+// The app shell adds no padding, so the route owns its own inset.
+:host {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--bud-space-7);
+  align-content: start;
+  box-sizing: border-box;
+  padding: var(--bud-space-6) var(--bud-gutter) var(--bud-space-9);
+  background: var(--mat-sys-background);
+  color: var(--bud-text);
+  font-family: var(--bud-font-ui);
+}
+
+// `title` role.
+.s-title {
+  margin: 0;
+  font-family: var(--bud-font-display);
+  font-weight: 500;
+  font-size: 1.5rem;
+  line-height: 1.2;
+}
+
+.s-section {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--bud-space-4);
+  justify-items: start;
+}
+
+// `eyebrow` role: the uppercase is a type style, so the copy stays sentence
+// case and a screen reader still hears a sentence rather than an initialism.
+.s-eyebrow {
+  margin: 0;
+  color: var(--bud-text-muted);
+  font-family: var(--bud-font-display);
+  font-weight: 600;
+  font-size: 0.75rem;
+  line-height: 1.2;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+// `body`, capped at the reading measure.
+.s-prose {
+  margin: 0;
+  max-width: 65ch;
+  font-size: 0.875rem;
+  line-height: 1.55;
+}
+
+// Colour is never the message here: each failure line reads as a sentence with
+// the colour removed.
+.s-error {
+  margin: 0;
+  max-width: 65ch;
+  color: var(--bud-over);
+  font-size: 0.875rem;
+  line-height: 1.55;
+}
+
+// A `body` line that holds its box while the number is still in flight, so the
+// page does not shift under the reader when it arrives — the label/value rule
+// applied to a value whose label is the section heading. Blank is a state here,
+// not an absence: it says the answer has not arrived, which is a different fact
+// from having no codes left.
+.s-count {
+  min-height: 1lh;
+}
+
+// The Account keys region's last child. Same rule as `.s-count` above and the
+// same one line box: nothing below it moves when an answer arrives. Its own
+// class rather than a second use of `.s-count`, because that one's argument is
+// written about a number that is blank until it loads, and this one is a
+// sentence that is absent until the keys are held.
+.s-held {
+  min-height: 1lh;
+}
+
+.s-facts {
+  display: grid;
+  gap: var(--bud-space-1);
+  margin: 0;
+}
+
+.s-facts dt {
+  color: var(--bud-text-muted);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+.s-facts dd {
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.55;
+  // Holds the row open while the address is still in flight, so the page does
+  // not shift under the reader when it arrives.
+  min-height: 1lh;
+}
+
+.s-outcome {
+  display: grid;
+  gap: var(--bud-space-2);
+  justify-items: start;
+}
+
+// The list has no card and no border box around it: the section already groups
+// the rows, and a card never wraps a single list. It takes the full column so
+// the row's two-column form below has something to spread across — the section
+// sets `justify-items: start`, which would otherwise shrink it to its content.
+.s-credentials {
+  display: grid;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+// Mobile-first: one column, facts then action beneath it. The action sits at
+// the start of the row rather than stretched, because a full-width button at
+// phone width reads as the section's own action rather than as one row's.
+.s-credential {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--bud-space-3);
+  justify-items: start;
+  padding-block: var(--bud-space-3);
+}
+
+// Every row after the first, so the list is separated without being boxed.
+.s-credential + .s-credential {
+  border-top: 1px solid var(--bud-hairline);
+}
+
+@media (min-width: 600px) {
+  .s-credential {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+  }
+}
+
+.s-credential-facts {
+  display: grid;
+  gap: var(--bud-space-1);
+}
+
+// `body`. The size and line height are literals for the same reason
+// `.s-prose` and `.s-facts dt` carry theirs: the book names no type-scale
+// token, so there is nothing to reference here yet.
+.s-credential-type {
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.55;
+}
+
+// `caption`, muted: the date is what tells two entries of one type apart, not
+// the headline of the row.
+.s-credential-date {
+  margin: 0;
+  color: var(--bud-text-muted);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+// Material's M3 height is below the system's touch minimum.
+.s-button {
+  min-height: var(--bud-touch-target);
+}

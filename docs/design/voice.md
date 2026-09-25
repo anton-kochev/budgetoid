@@ -23,7 +23,10 @@ string is a fact or a next step, in words a person uses at a kitchen table.
 - Money is always numerals, never words, formatted per [patterns](patterns.md).
 - Dates in the user's locale; relative words ("Today", "Yesterday") only in lists,
   absolute dates everywhere else.
-- Contractions are welcome ("It's ready."); apostrophes are typographic (').
+- Contractions are welcome ("It’s ready."); apostrophes are typographic (’). **A quoted
+  string that ships is transcribed and not typeset**, which is why the quotations below do
+  not all spell the apostrophe the same way: the convention, and the reason it runs one
+  direction only, is stated once in the [components](components.md) preamble.
 - The product name is lowercase **budgetoid** only in the lockup; in prose it is
   Budgetoid.
 
@@ -71,9 +74,128 @@ figures, not to copy that could just say the number).
   first."
 - **Errors**: what happened + what to do: "Couldn't save — you're offline. It will
   retry." Never blame the person; the subject of an error sentence is the system.
+- **Not built yet**: name the missing piece and what it waits on, in the same breath as
+  the control it disables: "Erasing has to be confirmed with a passkey Budgetoid checks
+  itself, and this screen doesn’t ask for one yet. The button stays off until it does."
+  A disabled control
+  with no sentence beside it reads as a bug, and the person cannot tell a limitation from
+  a failure.
+- **Name the piece that is actually missing, and re-check it every time a capability
+  lands.** The sentence above once said Budgetoid couldn't register passkeys, and it went
+  on saying it after the browser started registering them — a screen telling a person it
+  cannot do what it did on the way in. It then said this screen asks for no passkey, which
+  the Settings screen's own Unlock control made false in turn; the qualifier *Budgetoid
+  checks itself* is what survives, because the assertion an unlock runs is minted in the
+  browser and thrown away, and the one erasure waits on is verified by the server. Each
+  correction is narrower than the one before, which is the shape this rule produces when it
+  is applied rather than admired.
+- **Controls blocked by different things get different sentences** — on that screen today,
+  **four reasons, said in six sentences**. Three stand behind four inert controls, in four
+  sentences: registering a passkey waits on one thing, generating a set of codes on that thing
+  and a second, revoking and erasing on the second alone. The fourth is on a control that is
+  not inert: Export is off only while this tab cannot open what the file is written from, and
+  says so in one of two sentences — a key rotation in flight, or a locked account — or in none.
+  The two inert controls sharing a reason still differ in wording, one naming a row's buttons
+  and the other the screen's, so **the count of sentences is never the count of reasons** — say
+  which of the two a number is counting, or the next reader checks it against the other one and
+  finds it false. One sentence pasted across several replaces an old falsehood with a new one,
+  and reads as an apology nobody wrote for this control.
+
+## A sentence the API sends
+
+Copy is governed by where it lands, not by where it was typed. A string the API sends for a
+person to read is UI copy and answers to this chapter — including the ones authored in C#,
+in a project nobody opens this book to work in.
+
+The case that makes it concrete is a refused write. A message keyed to a field renders **the
+server's sentence, verbatim**, beneath the control it names, per
+[components](components.md): the `errors` map is the server's and the form is the client's,
+so client-authored copy would need a lookup total over every key the server can send, and its
+answer for a key nobody anticipated is a generic sentence standing at the one place a person
+is trying to make a correction. Rendering what arrived is total by construction. What follows
+from that is a sentence somebody reads under a field having been written in a
+`ValidationException`.
+
+- **The shape owed is the shape above.** *What happened plus what to do*, with the system as
+  the subject. "Payee name must be unique." and "Category group name must be unique." carry
+  the first half only: each states a rule and leaves the reader to work out that the way
+  forward is to choose another name.
+- **A sentence missing its second half is fixed where the sentence is.** Writing the better
+  one in the browser is how a second definition of one rule is born — the API narrows the
+  rule or adds one, the response is a 400 either way, and the client goes on rendering copy
+  for the rule that did not fire, telling somebody to do something that will not work with
+  nothing red on either side. The edit belongs in the API.
+- **The rest of this chapter applies unchanged.** Sentence case, no exclamation marks, plain
+  words, the nouns in the terminology table and the banned words with them: a server sentence
+  naming a *merchant* or a *balance remaining* is as wrong as a template doing it.
+- **It reaches the sentence and stops at the wire.** A conflict's `Detail` is copy — it is
+  the whole of what a person is told, and this book revises it for readability. That is the
+  reason nothing branches on it: a client reads the `conflictKind` member beside it and never
+  the prose, so an edit made for a reader cannot reissue a contract. See
+  [payees.md](../business-logic/payees.md). Where the client writes its own sentence for an
+  outcome instead — the conflict copy in [components](components.md) — that sentence is this
+  book's in the ordinary way.
+
+## A secret shown once
+
+The recovery-code hand-off is the only screen that shows a secret, and it has to do three
+things no other screen does: say where the value came from, say that it will not be shown
+again, and state a loss nobody can reverse — without any of it reading as alarm.
+
+- **Say who made it and who never sees it, in that order.** "Your browser made these ten
+  codes. Budgetoid never receives one, and this is the only time they’re shown." The
+  provenance is the reassurance; the finality is the instruction.
+- **State the loss as a fact about the system, not a threat to the reader.** "Budgetoid
+  keeps no copy of either, so if you lose the passkey and every code, everything you
+  record here stays locked — to you, and to us." The clause *to you, and to us* is doing
+  the work: it says the operator is in the same position, which is the whole design and
+  the only thing that makes the sentence honest rather than a disclaimer.
+- **No label above it.** Not "Warning", not "Important", not an icon standing in for one.
+  The sentence carries its own weight and a label tells the reader to brace instead of to
+  read.
+- **Name what a convenience costs, beside the convenience.** "Copying puts them on your
+  clipboard, where other apps on this device can read them." Not a hidden footnote and
+  not a confirmation dialog — a plain sentence next to the button, so the person chooses
+  with the cost in view.
+- **The acknowledgement is what the person did, not what they promise.** "I’ve saved
+  these codes somewhere I can get to them." — past tense, about an act. "I understand the
+  risk" asks for a feeling, which is not checkable and not what is wanted.
+- **Say what is not yet true, on every step.** "Nothing is saved until the last step."
+  removes the reason to be afraid of leaving, so no dialog has to ask.
+
+## A long act that cannot be undone
+
+A key rotation is the first thing the product does that is destructive, slow, and interruptible all
+at once, and each of those three pulls the copy in a different direction. The chapter specifying it
+is [components](components.md); what belongs here is the four rules its sentences answer to, because
+the next act of this shape will reach for them.
+
+- **Say what the act does, never how long it takes.** "This may take a few minutes." is the
+  sentence to refuse: nothing measures it, a figure taken off one machine does not transport, and a
+  person told minutes and given ten has been lied to by their own interface. A determinate bar is
+  the honest version of that sentence, and a phase word beside it says more than a percentage does.
+- **State the consequence as a fact, in its own block.** "This rewrites every record in the account,
+  and nothing can put the old keys back." No label above it, no icon standing in for one — the
+  secret-shown-once rule, for the same reason: a label tells the reader to brace instead of to read.
+- **Say what an interruption costs, before it can happen.** "If this tab closes part-way through,
+  the rotation stops where it is and this section offers to finish it — a rotation picked up again
+  starts over from the first record." A progress bar that restarts looks broken to anybody who was
+  not told, and this is the sentence that makes it read as honest instead.
+- **An acknowledgement may name a future act when there is no past one to name.** "I’ll leave this
+  tab open until it finishes." departs from the rule above it knowingly: nothing precedes a rotation
+  the way saving the codes precedes leaving the hand-off, so the label names the one act that is the
+  person’s to perform while it runs, and what it asserts is true at the moment it is ticked. "I
+  understand this can’t be undone" is still refused — it asks for a feeling.
+- **Every standing sentence stays true while the act is running and after it has finished.** Copy
+  written as what the act *does*, rather than as what is about to happen, survives all three states;
+  copy written for the resting state has to be swapped out mid-run, and the swap is what nobody
+  maintains.
 
 ## Marketing voice (Welcome and public surfaces)
 
 Currency-free, no feature lists, no trust-claim lists, no gimmick lines. The shipped
-Welcome copy is the reference: "Always watching. Never judging." — statements, then
-one action. Anything that reads as a sales trick gets cut.
+Welcome copy is the reference: "Always watching. Never judging." — statements, then the
+acts. Two of those are offered and exactly one of them is Primary, per
+[components](components.md); the voice rule is that the screen sells one thing and the
+second control is there to be found rather than to persuade. Anything that reads as a
+sales trick gets cut.

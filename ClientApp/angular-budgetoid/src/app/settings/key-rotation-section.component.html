@@ -1,0 +1,440 @@
+<!-- Between Account keys and What we can read, which is a narrower claim than
+     the placement rule alone makes. The rule — Export and Erase are a pair, so
+     nothing goes between them and everything else arrives above them — permits
+     anywhere above that pair.
+
+     **A rotation is not one of the transparency statement's remedies, and
+     placing it under that statement would say it is.** Nothing in those three
+     paragraphs reads differently after a rotation: the operator sees the same
+     columns, the same lengths and the same short codes beside the same names. A
+     control offered directly under a statement, beside two that answer it, is
+     offered as a third answer to it. Above the statement, beside Unlock, it
+     reads as what it is: the second thing this screen does with the account's
+     keys. -->
+<section class="k-section" aria-labelledby="key-rotation-heading">
+  <h2 class="k-eyebrow" id="key-rotation-heading">Key rotation</h2>
+
+  <!-- **Standing prose, so it has to be true at rest, while a run is in flight,
+       and after one has finished** — the Account keys section's rule, applied to
+       a longer act. Written as what rotating *does* rather than as what is about
+       to happen, every sentence survives all three.
+
+       Five sentences a writer reaches for, and each is refused. *Nothing is
+       saved until you press Rotate* is the registration flow's line and is
+       false: a run writes from its first accepted chunk, and the staging row is
+       written before that. *This may take a few minutes* is a wall-clock promise
+       nothing measures — the bar is the honest version of it. *You will need to
+       unlock again afterwards* is false: finishing a rotation unlocks the
+       account in this tab. *Your records are safe while this runs* is a
+       reassurance with nothing checkable in it. *Rotate your keys if you think
+       one has leaked* is advice the product cannot support, because it has
+       nothing to tell anybody about whether one has.
+
+       Neither block says a rotation waits on an unlock, because it does not: the
+       run does its own ceremony and holds its own copy of both generations, and
+       Rotate is offered on a locked account at full strength. -->
+  <p class="k-prose">
+    Rotating gives your account new keys and re-encrypts every name and note
+    under them. Every passkey and recovery code you have keeps working &mdash;
+    the old keys stop opening anything.
+  </p>
+
+  <!-- **The consequence is its own block above the checkbox, and never the
+       checkbox's label** — the recovery-code hand-off's rule. A label is read
+       every time focus lands on the control and re-read by every announcement of
+       its state, so a label carrying this would put four sentences between a
+       keyboard user and knowing whether the box is ticked; and a label carrying
+       the consequence is read by the person who has already decided to tick it.
+
+       Content, not a live region. A consequence announced once is read to
+       whoever happened to be listening and is furniture to everybody else; this
+       one has to be there to be re-read by somebody who came back unsure.
+
+       Its last clause is the sentence this section exists to get right: a bar
+       restarting at zero looks broken unless the person was told, before they
+       pressed anything, that a rotation picked up again starts over from the
+       first record. The server publishes no per-row progress and the resume read
+       deliberately carries none. -->
+  <p class="k-consequence">
+    This rewrites every record in the account, and nothing can put the old keys
+    back. If this tab closes part-way through, the rotation stops where it is
+    and this section offers to finish it &mdash; a rotation picked up again
+    starts over from the first record.
+  </p>
+
+  <!-- Read once into locals: every branch below has to be looking at the *same*
+       answers, and the whole composition rule is about which of two objects each
+       answer comes from. -->
+  @let staged = rotations.staged();
+  @let phase = rotations.phase();
+  @let progress = rotations.progress();
+  @let run = rotations.failure();
+  @let collision = rotations.collision();
+  @let refusal = rotations.renameRefusal();
+  @let ceremony = flow.failure();
+  <!-- "A run is in flight", read from the service and never assembled here.
+       The control's `disabled`, its `aria-busy` and
+       `RotationFlowService.rotate()`'s guard bind this one signal, so the
+       attribute and the guard are the same width by construction: whichever way
+       the reading moves, both sides move with it. A template computing its own
+       answer out of `phase` would be two definitions of one fact in two files,
+       and the drift is silent in both directions — a template that narrows draws
+       a live control over a run already going, and a handler that narrows
+       accepts the press behind it. -->
+  @let working = flow.working();
+
+  <!-- **Renaming one of two records with one name.** Drawn while the driver
+       publishes a pair, which is while `same-name` stands *and* through the
+       press that answers it: the driver clears its word as a press starts but
+       keeps the pair until the press ends, so the block stays drawn with its
+       field read-only rather than vanishing under the finger.
+
+       Between the consequence and the checkbox, because a name is typed before
+       the gate is ticked, so the gate is still what sits immediately above the
+       press.
+
+       The lead line is plain text and the field's accessible description, by a
+       static `aria-describedby` Material keeps beside the ids it adds for the
+       refusals. Nothing here mentions unlocking: the names and the keys come
+       from the run's own ceremony. -->
+  @if (collision !== null) {
+    <div class="k-rename">
+      <p class="k-prose" id="key-rotation-rename-lead">{{ lead() }}</p>
+
+      <!-- `readonly` and never `disabled` while a press is working: one press
+           carries one name, and a disabled field drops focus to <body>.
+
+           The refusals are `mat-error`s *inside* the form field, never a
+           paragraph after it: the field is what ties each one to the input by
+           `aria-describedby` and marks it `aria-invalid`, and a sentence
+           outside it is beneath the field only visually. They never go in the
+           region either — the region holds the refusal, the names are content.
+           `taken` is the chapter's own sentence; `invalid` is the server's,
+           rendered verbatim, per "Whose sentence goes beneath the field". -->
+      <mat-form-field class="k-name" appearance="outline">
+        <mat-label>New name</mat-label>
+        <input
+          #nameField
+          matInput
+          autocomplete="off"
+          aria-describedby="key-rotation-rename-lead"
+          [formControl]="nameControl"
+          [attr.maxlength]="nameCharacters"
+          [readonly]="working"
+          [errorStateMatcher]="refusalMatcher"
+        />
+        @if (refusal !== null) {
+          @switch (refusal.reason) {
+            @case ('taken') {
+              <mat-error>{{ takenSentence() }}</mat-error>
+            }
+            @case ('invalid') {
+              @for (message of refusal.messages; track $index) {
+                <mat-error>{{ message }}</mat-error>
+              }
+            }
+          }
+        }
+      </mat-form-field>
+    </div>
+  }
+
+  <!-- Short, first person, and immediately before the control it releases, so a
+       reader moving forward meets the condition before the thing it conditions
+       and is one tab stop away from it when they do. No `aria-labelledby`
+       pointing at the block above: that is the long-label defect written a
+       different way and moves no text on the screen.
+
+       **This is the book's second acknowledgement and the first whose act has
+       not happened yet**, which departs from `voice.md` knowingly. That rule —
+       an acknowledgement is what the person did, not what they promise — exists
+       because a promise is not checkable, and the hand-off had a real prior act
+       to name. Nothing precedes a rotation the way saving the codes precedes
+       leaving the hand-off. So the label names the one act that is the person's
+       to perform *during* the run, in their own words, and the thing it asserts
+       is true at the moment it is ticked: the tab is open. Refused, for voice's
+       own reasons: *I understand this can't be undone*, which asks for a
+       feeling; and *I've saved my recovery codes*, which is true of a different
+       screen and would send somebody away before an act that keeps those codes
+       working.
+
+       Material renders its own 48px target element, so nothing here sizes it. -->
+  <mat-checkbox
+    class="k-acknowledgement"
+    [checked]="acknowledged()"
+    (change)="acknowledged.set($event.checked)"
+  >
+    I&rsquo;ll leave this tab open until it finishes.
+  </mat-checkbox>
+
+  <!-- **One control, not three.** The section draws exactly one: **Rotate
+       keys**, **Finish rotating** with the date the run started in the line
+       above it, or **Rename and finish** while a pair stands — the last wins
+       over the other two, because that run cannot finish until a name changes.
+       Two controls would ask a person to choose between starting over and
+       continuing, which is a choice with a wrong answer.
+
+       **Destructive** (`--bud-over` fill, `#FFFFFF` label), and the first
+       control in the book to take that fill without deleting anything. The fill
+       is two promises — a confirmation follows, and there is no way back — and a
+       rotation keeps the second as squarely as an erasure does: every narrative
+       column in the account is overwritten in place, no copy of the previous
+       ciphertext is kept anywhere, and making the previous keys stop opening
+       things is the act's *purpose* rather than a side effect of it.
+
+       Not Primary: Export is this screen's one main action and a screen with two
+       is a screen with none. Not Outline: that is Unlock's treatment and
+       Unlock's reason is that nothing is lost either way, where something is
+       lost here deliberately. Not Outline-disabled: that treatment is for a
+       destructive act whose confirmation UI does not exist, and here it does —
+       it is the checkbox immediately above.
+
+       No composed accessible name: it is the only Rotate on the screen.
+
+       `disabledInteractive` rather than a plain `disabled`, for two reasons at
+       once. While a run is in flight it is the Unlock control's reason: a button
+       that goes truly disabled under the finger drops focus to <body>, and
+       somebody who pressed from the keyboard loses their place in the document
+       at the moment the outcome is announced. While it waits on the checkbox it
+       is the Buttons chapter's third case — a control waiting on the person
+       rather than on work — where a control that left the tab order would hide
+       the gate from the only person who can open it. It needs no sentence beside
+       it either: the thing it waits on is the visible control immediately above.
+
+       `aria-busy` binds the in-flight reading alone and resolves to null at
+       rest, so the attribute is absent instead of asserting that no work is
+       happening — and so that a control merely waiting on a tick is not reported
+       as busy.
+
+       `disabled` binds `held()`, the same computed the handler refuses on: in
+       flight, unticked, or a rename whose field holds no name a press may
+       carry. -->
+  @if (collision === null && staged !== null) {
+    <p class="k-started">{{ startedOn() }}</p>
+  }
+
+  <button
+    #control
+    class="k-button"
+    mat-flat-button
+    type="button"
+    [disabled]="held()"
+    [disabledInteractive]="true"
+    [attr.aria-busy]="working ? 'true' : null"
+    (click)="press()"
+  >
+    @if (collision !== null) {
+      Rename and finish
+    } @else if (staged === null) {
+      Rotate keys
+    } @else {
+      Finish rotating
+    }
+  </button>
+
+  <!-- One region, in the DOM from first paint and empty at rest, carrying the
+       phase sentence and every refusal. A live region inserted together with its
+       text is announced by nothing — argued in the sections above and not argued
+       again here. `status` and never `alert`: the person asked for this, and
+       assertive is reserved for a failure to land after attention has moved on.
+
+       **The flow's failure wins, and the run's renders only when the flow
+       reports none.** Both are readable at once and the state is ordinary rather
+       than contrived: a run stops on `unreachable`, then the retry is cancelled
+       at the system sheet — which never reaches the driver, so its word from the
+       previous press is still standing. Rendered together the section gives two
+       answers to one question and marks neither as the older. This `@else if` is
+       what makes "at most one sentence" true by structure rather than by
+       whichever branch happens to be written first.
+
+       Twelve words, and their sentences come from three sources: the Account
+       keys section's table, read verbatim for four of the ceremony's words and
+       for `inconsistent`; custody's lines reshaped, for `unknown` and
+       `unrecognised`; and this section's own, for the other five. No sentence
+       is shared with a section that means something else by it. The five below
+       are the ceremony's and four of them are rendered verbatim from that table,
+       which is honest because of a constraint on the flow rather than a
+       judgement about the words: the ceremony is the first thing either press
+       does and nothing is posted until it answers, so *Nothing has changed.* is
+       true on a begin and on a resume alike. The fifth, `unknown`, renames the
+       act and only the act, because it is the only one of the five that names
+       one: the other four say what a *device* or a *browser* did, where
+       custody's *couldn't finish unlocking* would hand somebody who pressed
+       Rotate keys a sentence about a control one section up. The seven after
+       them are the driver's, and each says what became of the *run*.
+
+       Colour is never the message: every line here reads the same with
+       `--bud-over` removed. -->
+  <div class="k-outcome" role="status">
+    @if (ceremony !== null) {
+      @switch (ceremony) {
+        @case ('unsupported') {
+          <p class="k-error">
+            This browser can&rsquo;t check a passkey. Open Budgetoid in a
+            different browser, or on a phone or laptop that can.
+          </p>
+        }
+        @case ('cancelled') {
+          <p class="k-error">
+            The passkey check was cancelled. Nothing has changed &mdash; try
+            again whenever you&rsquo;re ready.
+          </p>
+        }
+        @case ('no-prf') {
+          <p class="k-error">
+            This device can&rsquo;t open your account&rsquo;s keys. Try the
+            device that holds the passkey you made this account with.
+          </p>
+        }
+        @case ('ceremony-failed') {
+          <p class="k-error">
+            Your device didn&rsquo;t finish the passkey check. Nothing has
+            changed.
+          </p>
+        }
+        @case ('unknown') {
+          <p class="k-error">
+            Budgetoid couldn&rsquo;t finish rotating your keys. Nothing has
+            changed &mdash; try again.
+          </p>
+        }
+      }
+    } @else if (run !== null) {
+      @switch (run) {
+        @case ('unreachable') {
+          <p class="k-error">
+            Budgetoid couldn&rsquo;t reach the server. The rotation stopped
+            where it is &mdash; try again in a minute and it picks up from
+            there.
+          </p>
+        }
+        @case ('unauthenticated') {
+          <p class="k-error">
+            Budgetoid stopped accepting this rotation from this browser. Sign
+            out and sign in again, then finish it from here.
+          </p>
+        }
+        <!-- It keeps custody's remedy and loses custody's first clause, because
+             this section raises the word from two sources where the server's
+             answer was perfectly readable: a published inventory naming a
+             budget, and an arm coming back with fewer rows than that inventory
+             counted. In both the body parsed, every member bound, and this
+             bundle could not act on it — so *couldn't read* is false and the
+             sentence says *couldn't work with*. -->
+        @case ('unrecognised') {
+          <p class="k-error">
+            Budgetoid couldn&rsquo;t work with what the server sent back. Reload
+            the page &mdash; that&rsquo;s the one thing here that can change the
+            answer.
+          </p>
+        }
+        <!-- Custody's sentence unchanged, and it survives verbatim because it is
+             the one line in either table that says out loud that nothing the
+             person does changes the answer. A run standing in front of it
+             changes nothing about that: every factor encapsulates the same two
+             keys, so "try another passkey" here would send somebody through a
+             whole recovery card. -->
+        @case ('inconsistent') {
+          <p class="k-error">
+            Something about this account&rsquo;s keys doesn&rsquo;t line up
+            &mdash; no passkey or recovery code will change it.
+          </p>
+        }
+        <!-- Bounded, and this sentence is what the person sees after the bound
+             is spent: rows created after a collection make the completion answer
+             that the run is incomplete, and the remedy is to collect and send
+             again — three passes, then this word. Other tabs and other devices
+             are named because the content forms in this tab cannot be the
+             source: a tab that learned of the run disables its own, so what
+             keeps changing the account is a browser that loaded before the
+             begin, on this device or another. The one write this tab makes
+             during a run, the rename above, is not a source either: it lands
+             between two collections of the same pass, and the second one sees
+             it. -->
+        @case ('unfinished') {
+          <p class="k-error">
+            This account kept changing while it was being re-encrypted, so the
+            rotation stopped where it is. Close Budgetoid in other tabs and on
+            other devices, then finish it here &mdash; the records already
+            re-encrypted stay that way.
+          </p>
+        }
+        <!-- The one refusal whose remedy is typed, and the block above the
+             checkbox is that remedy. It names no tab, no screen and neither
+             record: the names are content in the block, never an
+             announcement. -->
+        @case ('same-name') {
+          <p class="k-error">
+            Two records in one list have the same name, so the rotation stopped
+            where it is. Give one of them a new name to finish it &mdash; the
+            records already re-encrypted stay that way.
+          </p>
+        }
+        <!-- The one whose remedy has a rule behind it, and the rule is not
+             visible in the sentence: starting again must re-stage the generation
+             the interrupted run already held, never a freshly minted one. The
+             driver publishes that there is nothing staged when it raises this
+             word, so the control above becomes **Rotate keys** — which reaches
+             `begin()`, which finds the run still on file and carries its
+             generation to the factor set the account holds now. That is what
+             makes this sentence's last clause true. -->
+        @case ('factors-moved') {
+          <p class="k-error">
+            The passkeys and recovery codes on this account changed while the
+            rotation was running. Start it again from here &mdash; the records
+            already re-encrypted stay that way.
+          </p>
+        }
+      }
+    } @else {
+      <!-- Three phases, and the word carries more than the percentage does. A
+           person watching it change three times learns more about where a run is
+           than a percentage tells them. `idle` and `finished` say nothing here:
+           a phase says what is happening now, and in neither of them is
+           anything. -->
+      @switch (phase) {
+        @case ('collecting') {
+          <p class="k-prose">Reading your records.</p>
+        }
+        @case ('resealing') {
+          <p class="k-prose">Re-encrypting your records.</p>
+        }
+        @case ('finishing') {
+          <p class="k-prose">Finishing.</p>
+        }
+      }
+    }
+  </div>
+
+  <!-- **The bar is not inside the region, and that is the one accessibility
+       decision this section makes that the sections above did not have to.** A
+       determinate bar whose value moves once per accepted chunk, inside a live
+       region, narrates a number several hundred times over one run. The region
+       above holds the phase sentence, which changes three times; this sits
+       beside it in reading order carrying its own `aria-valuenow`,
+       `aria-valuemax` and label, and announces nothing. It is the rule
+       `accessibility.md` already states about the recovery codes — content is
+       not an announcement — reached from the other end.
+
+       **No bar during collecting**, because a determinate bar sitting at zero
+       while five list reads run says that nothing is happening.
+
+       **One denominator and a numerator that counts only what the server
+       accepted.** The numerator is rows carried by a chunk the server answered
+       204 — never rows collected, never rows sealed, never rows queued. A chunk
+       is all-or-nothing in one save, so 204 is the only increment that is honest
+       at the moment it is drawn. -->
+  @if (phase === 'resealing' || phase === 'finishing') {
+    <div class="k-progress">
+      <mat-progress-bar
+        class="k-bar"
+        mode="determinate"
+        aria-label="Records re-encrypted"
+        [value]="percentage()"
+      />
+      <p class="k-count">
+        {{ progress.resealed }} of {{ progress.records }} records
+      </p>
+    </div>
+  }
+</section>

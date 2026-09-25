@@ -38,6 +38,14 @@
     #e88433
   ); // graphic hue is 4.0:1 on paper
   --bud-over: light-dark(#b23a2e, #e06a55); // over-budget, "in the red"
+  // The over hue as a container-and-on-colour pair, which is the shape
+  // Material's error roles are and the one shape `--bud-*` had none of. The
+  // tint is the hue 86% toward white on paper and 72% toward black on ink; the
+  // on-colour is the hue 18% the other way, so a hover deepens the red on paper
+  // and lightens it on ink rather than jumping to another colour. Contrast
+  // ratios and the derivation live in docs/design/color.md.
+  --bud-over-container: light-dark(#f4e3e2, #3f1e18);
+  --bud-over-on-container: light-dark(#923026, #e68574);
 
   // Interactive
   --bud-accent-text: light-dark(#0f7a57, #4fdcae); // mint is too light for text

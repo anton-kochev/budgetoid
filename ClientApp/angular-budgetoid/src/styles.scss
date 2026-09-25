@@ -37,6 +37,77 @@ html {
       on-surface-variant: light-dark(#68706a, #909a92),
     )
   );
+
+  // The book's error colour, put where Material looks for one.
+  // `docs/design/components.md` gives a refused field "the border and the
+  // message in --bud-over", which is a rule about every form in the product.
+  // Three screens render a refusal today; that number is what has shipped, not
+  // what the rule covers.
+  //
+  // **Here rather than in a component's `:host`, and that is the whole point of
+  // the line.** One mapping written once: copies of it drift silently — nothing
+  // compares two screens' idea of the error colour — and a screen that arrives
+  // later has to remember a declaration whose absence nothing would notice. A
+  // `:host` copy also stops at that component's own subtree, so a
+  // `mat-select`'s panel, rendered into a CDK overlay on `<body>`, sits outside
+  // it. Declared on the theme, neither is possible.
+  //
+  // **One alias rather than a list, measured in @angular/material 21.2's own
+  // form-field stylesheet**: eighteen error tokens, and nothing in this
+  // application sets any of them. Thirteen fall back to `var(--mat-sys-error)`
+  // — the message, the caret, the active indicator, the outline, the label and
+  // their focus states — so this one declaration reaches all thirteen, where
+  // naming them would be thirteen guesses about an appearance no screen here
+  // pins. `--mat-select-invalid-arrow-color` is a fourteenth outside the
+  // form-field sheet; `--mat-badge-background-color` and the two stepper error
+  // tokens are three more, on components this application does not use.
+  //
+  // **The other five are the hover states, and they need the second alias
+  // below rather than this one.** `--mat-form-field-{,filled-,outlined-}
+  // error-hover-*` fall back to `var(--mat-sys-on-error-container)`, not to
+  // `var(--mat-sys-error)`, so this declaration cannot reach them however it is
+  // written. Said here because an absence cannot be found by grep.
+  //
+  // `src/material-error-colour.spec.ts` renders a `mat-error` under Material's
+  // real stylesheet and walks the token chain this declaration sits in, so
+  // removing the line reddens rather than quietly restoring Material's red.
+  @include mat.theme-overrides(
+    (
+      error: var(--bud-over),
+    )
+  );
+
+  // The hover half of the same rule. Material's error roles are a
+  // background-and-on-colour pair where `--bud-*`'s semantic families are
+  // single hues, so closing this needed a pair minted in the book — see
+  // `docs/design/color.md` for the derivation and the measured contrast — and
+  // then this alias, which is the only thing that carries it into Material.
+  //
+  // **Both keys, and the container half reaches nothing today.** Measured in
+  // 21.2.14: `--bud-over-on-container` is the half the five hover tokens read
+  // and would close the field on its own, while the only thing in the library
+  // reading `--mat-sys-error-container` is the optional `.mat-bg-error-container`
+  // utility class, which this application does not emit. It is aliased anyway
+  // because the two are one semantic pair — an on-colour is the colour that
+  // goes *on* something, and a container left at Material's pink would pair the
+  // book's deepened red against a tint from another palette the first time a
+  // component here wanted one.
+  //
+  // **A misspelled key here is silent.** `mat.theme-overrides` emits a
+  // declaration only for a name it finds in M3's system map and drops the rest
+  // with no warning, so `on-error-container-color` — or `errorContainer`, or a
+  // role Material retires in a later version — would compile, ship and do
+  // nothing. That is what the second and third cases in
+  // `src/material-error-colour.spec.ts` are for: one walks the chain from the
+  // hover declarations Material's own stylesheet carries, the other reads the
+  // two roles at the root, and neither can pass on a declaration that was
+  // never emitted.
+  @include mat.theme-overrides(
+    (
+      error-container: var(--bud-over-container),
+      on-error-container: var(--bud-over-on-container),
+    )
+  );
 }
 
 html,
@@ -49,6 +120,31 @@ body {
   font-optical-sizing: auto;
   background: var(--mat-sys-background);
   color: var(--mat-sys-on-surface);
+}
+
+// The book's focus ring, put back for every interactive element. Material sets
+// `outline: none` on `.mdc-button`, and `mat.strong-focus-indicators()` is not
+// included — it draws an inset border on a pseudo-element and has no offset
+// option, so it cannot express the `outline-offset: 2px` the book specifies.
+// Until this landed no button in the application showed a ring at all, and only
+// the hand-rolled Google button had one of its own.
+//
+// Element selectors rather than `:where()`: this has to out-specify
+// `.mdc-button { outline: none }` (0,1,0), and `:where()` scores zero. Written
+// here rather than in a component so it reaches Material's buttons, the
+// hand-rolled ones, and anything a later screen adds.
+//
+// Fields are absent on purpose. `accessibility.md` gives them their 2px primary
+// border instead of an outer ring, and calls that the only exception — so the
+// list below stops at controls that have no focus treatment of their own.
+// See docs/design/accessibility.md, "Focus".
+button:focus-visible,
+a[href]:focus-visible,
+summary:focus-visible,
+[role='button']:focus-visible,
+[role='link']:focus-visible {
+  outline: 2px solid var(--bud-focus-ring);
+  outline-offset: 2px;
 }
 
 // Neutral full-height canvas. The shell adds no padding — every route owns its

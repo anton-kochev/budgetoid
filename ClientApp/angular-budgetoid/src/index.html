@@ -5,16 +5,9 @@
     <title>Budgetoid</title>
     <base href="/" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <!-- Apply a saved theme before first paint to avoid a flash of the wrong mode.
-         ThemeService remains the runtime authority; this only pre-paints. -->
-    <script>
-      try {
-        const m = localStorage.getItem('budgetoid-theme');
-        if (m === 'light' || m === 'dark') {
-          document.documentElement.style.colorScheme = m;
-        }
-      } catch (e) {}
-    </script>
+    <!-- Applies a saved theme before first paint; the argument for why it is a file
+         rather than an inline script is in public/theme-prepaint.js. -->
+    <script src="/theme-prepaint.js"></script>
     <link rel="icon" type="image/svg+xml" href="favicon.svg" />
     <link rel="apple-touch-icon" href="apple-touch-icon.png" />
     <!-- Typefaces are served from this origin (public/fonts). The @font-face rules live

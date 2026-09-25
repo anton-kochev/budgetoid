@@ -1,0 +1,52 @@
+<!-- **One `<nav>`, one list, both layouts.** The bottom bar and the rail are the
+     same element under different grid rules, and that is the accessibility rule
+     rather than a saving: two elements would put two copies of the destination
+     list in the accessibility tree, and at whichever width rendered both a
+     screen reader would read every destination twice. The mark is the only part
+     that belongs to one layout, and it leaves the tree with `display: none`
+     rather than being drawn twice.
+
+     The nav comes before the content in the DOM although the bar sits below it
+     on a phone. A landmark nav preceding the content is what a screen reader
+     user expects, and from 960px the DOM order is also the visual one; the bar's
+     position at the foot of a phone is a thumb-reach decision, not a claim about
+     reading order. -->
+<nav class="sh-nav" aria-label="Primary">
+  <!-- Rail only, from 960px. The mark rather than the lockup: an 88px column has
+       no room for the wordmark, and the book asks for the mark here by name. -->
+  <app-brand-lockup class="sh-mark" variant="mark" />
+
+  <!-- `role="list"` is not redundant here, however much it reads like it:
+       `list-style: none` makes VoiceOver in Safari drop the list semantics
+       entirely, and with them the "4 items" a screen reader user gets before
+       stepping into the bar. The role puts them back. -->
+  <ul class="sh-items" role="list">
+    @for (destination of destinations; track destination.link) {
+      <li class="sh-slot">
+        <!-- `aria-current="page"` is set by the router, from the same directive
+             that adds the class the colour, the fill and the bead hang off, so
+             the accessible state cannot drift from the visible one. Colour and a
+             bead are not a state anything but an eye can read. -->
+        <a
+          class="sh-item"
+          [routerLink]="destination.link"
+          routerLinkActive="sh-item--active"
+          ariaCurrentWhenActive="page"
+        >
+          <!-- Hidden, and it has to be: the glyph is a private use codepoint, so
+               a screen reader either says nothing or spells out a replacement
+               character. The label beside it is the accessible name. -->
+          <span class="sh-icon" aria-hidden="true">{{ destination.icon }}</span>
+          <span class="sh-label">{{ destination.label }}</span>
+          <!-- Always in the DOM, faded rather than added: a bead that appears
+               would reflow the item every time you moved between screens. -->
+          <span class="sh-bead" aria-hidden="true"></span>
+        </a>
+      </li>
+    }
+  </ul>
+</nav>
+
+<main class="sh-content">
+  <router-outlet />
+</main>

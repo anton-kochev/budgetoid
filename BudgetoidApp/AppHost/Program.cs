@@ -302,13 +302,39 @@ if (builder.ExecutionContext.IsPublishMode)
 
     // Deploy-time azd parameters (non-secret) baked into the generated Bicep; azd provision prompts
     // for them. ASP.NET binds the double-underscore/index env-var names to configuration keys, so
-    // these back the Google client id and the CORS allowed-origins list the API requires at boot.
+    // these back the Google client id, the CORS allowed-origins list and the passkey ceremony
+    // settings the API requires at boot.
+    //
+    // "Requires at boot" is literal for all four: the API refuses to start without them rather than
+    // defaulting. A deployment that comes up healthy and only fails when somebody attempts a sign-in
+    // is a deployment whose defect surfaces to a user instead of to the pipeline, and boot is the
+    // last moment the pipeline is still watching. There is no Api/appsettings.json to fall back on,
+    // deliberately: a default here would be a value nobody chose for this deployment.
     IResourceBuilder<ParameterResource> googleClientId = builder.AddParameter("google-client-id");
     IResourceBuilder<ParameterResource> frontendOrigin = builder.AddParameter("frontend-origin");
 
+    // The relying party id gets a parameter of its own because it is the *registrable domain* of the
+    // frontend origin, not the origin — "budgetoid.app" where the origin is
+    // "https://budgetoid.app" — and deriving one from the other inside the app model would be string
+    // surgery on a value whose correctness cannot be checked here.
+    //
+    // It is also the one deploy parameter that cannot be corrected later. An authenticator hashes the
+    // relying party id into every credential it stores, so changing it does not re-point existing
+    // passkeys: it invalidates all of them, permanently, and no migration repairs them. Set it once,
+    // to the domain the application is expected to live at for good, and treat any later edit as
+    // locking every registered user out.
+    IResourceBuilder<ParameterResource> passkeyRelyingPartyId = builder.AddParameter("passkey-relying-party-id");
+
     api
         .WithEnvironment("Authentication__Google__ClientId", googleClientId)
-        .WithEnvironment("Cors__AllowedOrigins__0", frontendOrigin);
+        .WithEnvironment("Cors__AllowedOrigins__0", frontendOrigin)
+        .WithEnvironment("Authentication__Passkey__RelyingPartyId", passkeyRelyingPartyId)
+        // The same frontend-origin parameter, not a second one. A ceremony is performed at the
+        // browser origin the frontend is served from, which is exactly the origin CORS admits, so two
+        // parameters would only offer a way for them to drift into a deployment that passes CORS and
+        // then refuses every assertion — a failure that reads as a working site with broken sign-in.
+        // One value cannot disagree with itself.
+        .WithEnvironment("Authentication__Passkey__AllowedOrigins__0", frontendOrigin);
 
     // Scale to zero at rest, two replicas at most. This used to be an `az containerapp update` step
     // in the deploy workflow, because the generated container app defaults to a warm replica and the

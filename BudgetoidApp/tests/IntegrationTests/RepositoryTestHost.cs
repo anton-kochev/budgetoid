@@ -1,28 +1,26 @@
+using System.Security.Cryptography;
 using Domain.Budgets;
+using Domain.Sessions;
 using Domain.Users;
 using Infrastructure.Persistence;
 using Infrastructure.Persistence.Provisioning;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
-using Testcontainers.PostgreSql;
+using TestSupport;
 
 namespace IntegrationTests;
 
 public sealed class RepositoryTestHost : IAsyncDisposable
 {
-    private readonly PostgreSqlContainer _container = new PostgreSqlBuilder("postgres:17")
-        .WithDatabase("budgetoid")
-        .WithUsername("postgres")
-        .WithPassword("postgres")
-        .Build();
-
     /// <summary>
-    /// Password the grants script assigns to the application role inside this test container. A
-    /// constant is fine: the container lives for one test and is unreachable from outside it.
+    /// Superuser connection string for this host's own database inside the shared cluster, or
+    /// <see langword="null" /> until <see cref="StartAsync" /> has produced one.
     /// </summary>
-    private const string AppRolePassword = "app-test-password";
+    private string? _connectionString;
 
-    public string ConnectionString => _container.GetConnectionString();
+    public string ConnectionString => _connectionString
+        ?? throw new InvalidOperationException(
+            $"{nameof(RepositoryTestHost)} has no database until {nameof(StartAsync)} has run.");
 
     /// <summary>
     /// Connects as the least-privilege application role instead of the container account. This
@@ -35,44 +33,98 @@ public sealed class RepositoryTestHost : IAsyncDisposable
     public string AppConnectionString => new NpgsqlConnectionStringBuilder(ConnectionString)
     {
         Username = DatabaseProvisioning.AppRoleName,
-        Password = AppRolePassword,
+        Password = SharedPostgresCluster.AppRolePassword,
     }.ConnectionString;
 
     /// <summary>
-    /// Opens a connection as the least-privilege application role <b>with the ambient budget
-    /// already on the session</b>, so that "an app-role connection" and "an app-role connection
-    /// carrying its ambient budget" are the same thing rather than two states a caller can get
-    /// wrong. Callers own the returned connection and dispose it.
+    /// Opens a connection as the least-privilege application role <b>with the signed-in user and
+    /// the ambient budget already on the session</b>, so that "an app-role connection" and "an
+    /// app-role connection carrying the session state production puts on it" are the same thing
+    /// rather than two states a caller can get wrong. Callers own the returned connection and
+    /// dispose it.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Row-level security on the budget-owned tables keys its policies to
-    /// <c>app.current_budget_id</c>. A raw connection that sets nothing sees none of those rows, and
-    /// the damage is silent rather than loud: an UPDATE that should affect one row affects zero and
+    /// Row-level security polices these tables on two axes: <c>budget_isolation</c> on the
+    /// budget-owned tables keys its policies to <c>app.current_budget_id</c>, and
+    /// <c>user_isolation</c> on <c>users</c> and <c>budgets</c> keys its policies to
+    /// <c>app.current_user_id</c>. That is why this overload takes two arguments and not one. The
+    /// two axes fail in opposite ways, and which is which is worth knowing before reading a red run.
+    /// A wrong or missing budget is silent: an UPDATE that should affect one row affects zero and
     /// reports success, so an assertion on the affected count fails while an assertion on a refusal
-    /// passes for entirely the wrong reason. <paramref name="budgetId" /> must therefore be the
-    /// budget the statements on this connection target rows in, not just any real budget.
+    /// passes for entirely the wrong reason. A wrong user is loud — the row is simply invisible, and
+    /// an unset <c>app.current_user_id</c> reaches the policy as <c>''::uuid</c> and raises
+    /// <c>22P02</c>. <paramref name="budgetId" /> must therefore be the budget the statements on
+    /// this connection target rows in, not just any real budget — and <paramref name="userId" />
+    /// must be the user that owns it.
+    /// </para>
+    /// <para>
+    /// Both settings, always, which is why this takes two arguments rather than keeping a
+    /// one-argument overload beside them. The production interceptor writes both on every connection
+    /// it opens, so a session naming only a budget is a state production cannot produce and a test
+    /// running in it measures a database no request ever reaches. An overload would also be quietly
+    /// dangerous in the other direction: an existing one-argument call site would keep compiling and
+    /// silently rebind its budget id to <paramref name="userId" />, which in a security test is the
+    /// difference between a green run and a green run that proves nothing.
+    /// <see cref="OpenAppConnectionForUserAsync" /> is the deliberate exception, for the tables that
+    /// have no ambient budget at all.
     /// </para>
     /// <para>
     /// <c>set_config(..., false)</c> — not <c>SET LOCAL</c>. These tests send statements in
-    /// autocommit, and <c>SET LOCAL</c> outside a transaction sets nothing and warns. The value is
+    /// autocommit, and <c>SET LOCAL</c> outside a transaction sets nothing and warns. Both calls
+    /// travel in one statement, so the session is never observable half-configured. The value is
     /// passed as text because <c>set_config</c> takes text: bind the <see cref="Guid" /> itself and
     /// Npgsql infers <c>uuid</c>, which no <c>set_config</c> overload accepts. Setting a custom GUC
-    /// — one with a dotted namespace — needs no privilege and no policy, so this is inert until the
-    /// policies exist.
+    /// — one with a dotted namespace — needs no privilege, so the statement succeeds whatever value
+    /// it names; the policies that read those settings are what decide the cost of naming the wrong
+    /// one, and both policies exist.
     /// </para>
     /// </remarks>
-    public async Task<NpgsqlConnection> OpenAppConnectionAsync(Guid budgetId)
+    public Task<NpgsqlConnection> OpenAppConnectionAsync(Guid userId, Guid budgetId) =>
+        OpenConfiguredAppConnectionAsync(
+            "select set_config('app.current_user_id', @user, false), "
+                + "set_config('app.current_budget_id', @budget, false)",
+            [("user", userId), ("budget", budgetId)]);
+
+    /// <summary>
+    /// Opens an app-role connection carrying <b>only</b> the signed-in user, which is what every
+    /// app-role statement against <c>users</c> and <c>budgets</c> has to go through. Both tables are
+    /// policed on <c>app.current_user_id</c>, so this is a requirement and not a convenience: a bare
+    /// app-role connection does not quietly read the wrong rows there, it fails outright with
+    /// <c>22P02</c>, because an unset setting reaches the policy as <c>''::uuid</c>. Neither table is
+    /// budget-owned — a user owns budgets rather than belonging to one, and a budget is the tenant
+    /// rather than a tenant's row — so there is no ambient budget for such a session to carry, and
+    /// naming one would only suggest there was. Callers own the returned connection and dispose it.
+    /// </summary>
+    /// <remarks>
+    /// Everything <see cref="OpenAppConnectionAsync" /> says about <c>set_config(..., false)</c> and
+    /// about passing the value as text holds here unchanged; the only difference is which settings
+    /// the session declares.
+    /// </remarks>
+    public Task<NpgsqlConnection> OpenAppConnectionForUserAsync(Guid userId) =>
+        OpenConfiguredAppConnectionAsync(
+            "select set_config('app.current_user_id', @user, false)",
+            [("user", userId)]);
+
+    /// <summary>
+    /// Opens an app-role connection and applies one <c>set_config</c> statement to it. Shared so the
+    /// two openers above cannot drift on the half that is not about which settings they declare.
+    /// </summary>
+    private async Task<NpgsqlConnection> OpenConfiguredAppConnectionAsync(
+        string setConfigSql,
+        (string Name, Guid Value)[] settings)
     {
         NpgsqlConnection connection = new(AppConnectionString);
 
         try
         {
             await connection.OpenAsync();
-            await using NpgsqlCommand command = new(
-                "select set_config('app.current_budget_id', @budget, false)",
-                connection);
-            command.Parameters.AddWithValue("budget", budgetId.ToString());
+            await using NpgsqlCommand command = new(setConfigSql, connection);
+            foreach ((string name, Guid value) in settings)
+            {
+                command.Parameters.AddWithValue(name, value.ToString());
+            }
+
             await command.ExecuteNonQueryAsync();
         }
         catch
@@ -85,66 +137,721 @@ public sealed class RepositoryTestHost : IAsyncDisposable
         return connection;
     }
 
-    public async Task StartAsync()
-    {
-        await _container.StartAsync();
-        await using var db = new BudgetoidDbContext(
-            new DbContextOptionsBuilder<BudgetoidDbContext>()
-                .UseNpgsql(ConnectionString)
-                .Options);
-        await db.Database.MigrateAsync();
-
-        // Two calls, because provisioning no longer decides how the role authenticates. ApplyGrantsAsync
-        // creates the role credential-free and gives it its write surface and its isolation policies;
-        // attaching a credential is a separate step, and production attaches an Entra identity instead.
-        // Password auth is the local and test path, so the tests take the other branch here — which is
-        // also why the branch has to be a separate call rather than a parameter.
-        await DatabaseProvisioning.ApplyGrantsAsync(ConnectionString);
-        await DatabaseProvisioning.AttachAppRolePasswordAsync(ConnectionString, AppRolePassword);
-    }
+    /// <summary>
+    /// Takes a database out of the shared cluster, already migrated and already provisioned.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The migration and the grants script used to run here, once per test, against a container of
+    /// this host's own. They now run once for the whole assembly, into the template every database
+    /// here is cloned from — and the clone inherits the result rather than reproducing it. That is
+    /// sound because the two halves of provisioning live in different places: the schema, the grant
+    /// matrix and the isolation policies are all per-<b>database</b> catalogs (<c>pg_class.relacl</c>,
+    /// <c>pg_policy</c>) and are copied by <c>CREATE DATABASE ... TEMPLATE</c>, while the role itself
+    /// is cluster-level and is therefore already in place. A test that revokes a grant or drops a
+    /// policy still affects nothing but its own database.
+    /// </para>
+    /// <para>
+    /// The failure path drops the database here rather than leaving it to the caller, and that is the
+    /// whole reason for the try/catch. Every call site has the shape
+    /// <c>await using RepositoryTestHost host = await StartHostAsync();</c>, so the variable is bound
+    /// only <b>after</b> this method returns: when the start throws, nothing is ever disposed, and a
+    /// database that was created and then abandoned keeps its files and its catalog entry for the
+    /// rest of the run. Owning the cleanup here also means a call site added later cannot forget it.
+    /// </para>
+    /// </remarks>
+    public async Task StartAsync() =>
+        _connectionString = await SharedPostgresCluster.CreateDatabaseAsync();
 
     /// <summary>
-    /// Persists a user together with its default budget and returns the <b>budget</b> id, so tests
-    /// can satisfy the budgets foreign key on every owned entity with a real tenant row.
+    /// The user and the default budget one call to <see cref="SeedOwnerAsync" /> created, paired
+    /// because the two ids are only meaningful together: an app-role session names both, and a test
+    /// that holds one without the other cannot open one.
+    /// </summary>
+    /// <remarks>
+    /// A <see langword="readonly" /> <see langword="record" /> <see langword="struct" /> rather than
+    /// a class: this is a pair of ids with no identity of its own, it is destructured at nearly
+    /// every call site, and it is never stored, mutated or compared by reference.
+    /// </remarks>
+    public readonly record struct SeededOwner(Guid UserId, Guid BudgetId);
+
+    /// <summary>
+    /// Persists a user together with its default budget and returns <b>both</b> ids, so a test can
+    /// open an app-role connection — which names a user and a budget — from one seeding call.
     /// </summary>
     /// <remarks>
     /// The seeding context is built without an <c>IBudgetContext</c>, which is only safe because
     /// <c>Budget</c> deliberately carries no global query filter — its owner scoping is explicit at
     /// every call site instead.
     /// </remarks>
-    public async Task<Guid> SeedBudgetAsync(string googleSubject, string email)
+    public Task<SeededOwner> SeedOwnerAsync(
+        string googleSubject,
+        string email,
+        bool withFactorManifest = true) =>
+        SeedOwnerOnAsync(
+            ConnectionString, googleSubject, email, withFactorManifest: withFactorManifest);
+
+    /// <summary>
+    /// The seeding itself, over a connection string rather than over a host.
+    /// </summary>
+    /// <remarks>
+    /// Every seeder here splits this way, and the split has one caller in mind: <see cref="ApiFactory" />
+    /// holds an admin connection string and no <see cref="RepositoryTestHost" />, so a member that could
+    /// only be reached through an instance would leave it with a copy of the seeding rather than a call
+    /// to it. Three copies of session seeding is the state this replaced, and a fourth was the
+    /// alternative.
+    /// </remarks>
+    internal static async Task<SeededOwner> SeedOwnerOnAsync(
+        string connectionString,
+        string googleSubject,
+        string email,
+        CancellationToken cancellationToken = default,
+        bool withFactorManifest = true)
     {
-        Guid userId = await SeedUserAsync(googleSubject, email);
-        await using var db = CreateSeedingDbContext();
-        Budget budget = Budget.CreateDefault(userId, SeedInstant);
+        Guid userId = await SeedUserOnAsync(
+            connectionString, googleSubject, email, cancellationToken, withFactorManifest);
+        await using BudgetoidDbContext db = CreateSeedingDbContext(connectionString);
+        Budget budget = Budget.CreateDefault(Guid.CreateVersion7(), userId, SeedInstant);
         db.Budgets.Add(budget);
-        await db.SaveChangesAsync();
-        return budget.Id;
+        await db.SaveChangesAsync(cancellationToken);
+        return new SeededOwner(userId, budget.Id);
     }
 
     /// <summary>
-    /// Persists a user and returns its generated id, for the few tests whose subject is the
-    /// user-to-budget link itself. Tests of budget-owned entities want <see cref="SeedBudgetAsync"/>.
+    /// Establishes one session on an existing credential, files the handle it is presented by, and
+    /// returns the token itself — which exists nowhere but here and the cookie.
     /// </summary>
-    public async Task<Guid> SeedUserAsync(string googleSubject, string email)
+    /// <remarks>
+    /// <para>
+    /// The session and its handle go in one <c>SaveChangesAsync</c>, which is the shape the establishing
+    /// path writes them in: a handle committed without its session names nothing.
+    /// <see cref="SessionToken.For" /> reads both ids off the session, so nothing here can file a handle
+    /// against the wrong sign-in.
+    /// </para>
+    /// <para>
+    /// <paramref name="expectedKind" /> is required and is checked against what the domain derived, not
+    /// asserted by the caller afterwards. <c>Session.Establish</c> takes the kind off the credential's
+    /// type, so a seeding call that named the wrong credential would quietly produce the opposite of the
+    /// session the test asked for and every assertion above it would go on passing.
+    /// </para>
+    /// <para>
+    /// <paramref name="fill" /> stays explicit rather than defaulted or randomised here: the digest is
+    /// the primary key of <c>session_tokens</c>, so two identical tokens would be one row and a test
+    /// holding two handles would have nothing to choose wrongly between. The callers that seed two
+    /// sessions on one host name two fills and read the difference.
+    /// </para>
+    /// </remarks>
+    public async Task<byte[]> SeedSessionAsync(
+        Guid credentialId,
+        byte fill,
+        SessionKind expectedKind,
+        DateTime createdAtUtc,
+        DateTime expiresAtUtc,
+        DateTime? revokedAtUtc = null,
+        CancellationToken cancellationToken = default)
     {
-        await using var db = CreateSeedingDbContext();
-        User user = User.Create(googleSubject, email, displayName: null, SeedInstant);
+        byte[] token = SessionTokenBytes(fill);
+        await SeedSessionOnAsync(
+            ConnectionString,
+            credentialId,
+            token,
+            expectedKind,
+            createdAtUtc,
+            expiresAtUtc,
+            revokedAtUtc,
+            cancellationToken);
+
+        return token;
+    }
+
+    /// <inheritdoc cref="SeedOwnerOnAsync" />
+    internal static async Task SeedSessionOnAsync(
+        string connectionString,
+        Guid credentialId,
+        byte[] token,
+        SessionKind expectedKind,
+        DateTime createdAtUtc,
+        DateTime expiresAtUtc,
+        DateTime? revokedAtUtc = null,
+        CancellationToken cancellationToken = default)
+    {
+        await using BudgetoidDbContext db = CreateSeedingDbContext(connectionString);
+        Credential credential = await db.Credentials
+            .SingleAsync(stored => stored.Id == credentialId, cancellationToken);
+        Session session = Session.Establish(credential, createdAtUtc, expiresAtUtc);
+        if (session.Kind != expectedKind)
+        {
+            throw new InvalidOperationException(
+                $"Seeding asked for a {expectedKind} session and the domain derived {session.Kind}.");
+        }
+
+        if (revokedAtUtc is not null)
+        {
+            session.Revoke(revokedAtUtc.Value);
+        }
+
+        db.Sessions.Add(session);
+        db.SessionTokens.Add(SessionToken.For(session, token));
+        await db.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// A token of <see cref="SessionToken.TokenLength" /> bytes, every one of them
+    /// <paramref name="fill" />.
+    /// </summary>
+    public static byte[] SessionTokenBytes(byte fill) =>
+        [.. Enumerable.Repeat(fill, SessionToken.TokenLength)];
+
+    /// <summary>
+    /// One whole sign-in: the account, its default budget, the credential the asked-for kind requires,
+    /// the session that credential opened, and the handle a cookie presents it by.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The credential is derived from the kind unless the caller names one</b>, because for most
+    /// callers the two are the same decision: <c>Session.Establish</c> derives
+    /// <see cref="SessionKind.Full" /> from a passkey and <see cref="SessionKind.Locked" /> from the
+    /// federated credential. What breaks the one-to-one is <c>Session.KindFor</c>'s third arm —
+    /// <see cref="CredentialType.RecoveryCodes" /> also derives <see cref="SessionKind.Full" /> — so a
+    /// full session has <b>two</b> credentials that can open it and only the caller knows which one its
+    /// test can afford. <see cref="SeedSessionOnAsync" /> still checks what the domain derived against
+    /// <paramref name="kind" />, so a caller pairing them wrongly fails at the seeding rather than
+    /// somewhere above it: the pairing is held by the domain, not by the switch below.
+    /// </para>
+    /// <para>
+    /// <b>Why anybody asks for the recovery-codes arm.</b> The passkey arm writes three rows a test may
+    /// be counting — the <c>credentials</c> row, its <c>passkey_public_keys</c> row and its
+    /// <c>passkey_signature_counters</c> row — so an account seeded that way holds one more passkey than
+    /// the test arranged. Every assertion of the form "this account holds exactly one passkey", "no
+    /// passkey was filed anywhere" or "one credential was excluded" reads the seeding instead of the
+    /// act. The recovery-codes arm opens the same <see cref="SessionKind.Full" /> session while writing
+    /// a single <c>credentials</c> row and touching neither passkey table, which is what lets those
+    /// assertions stay exactly as they were written.
+    /// </para>
+    /// <para>
+    /// <b>The token bytes are random here, and the WebAuthn credential id with them.</b> Both columns are
+    /// unique — the token's digest is the primary key of <c>session_tokens</c>, and
+    /// <c>passkey_public_keys</c> refuses a repeated credential id — so a fixed filler would make the
+    /// second signed-in account anywhere in one database a <c>23505</c>. Callers that need to <em>name</em>
+    /// their bytes have <see cref="SeedSessionAsync" /> and its fill.
+    /// </para>
+    /// </remarks>
+    /// <param name="opensWith">
+    /// Which credential type opens the session. Omitted, the kind chooses: a passkey for
+    /// <see cref="SessionKind.Full" /> and the account's federated credential for
+    /// <see cref="SessionKind.Locked" />. Declared last, and optional, so every existing call site keeps
+    /// compiling and keeps seeding exactly what it seeds today.
+    /// </param>
+    /// <param name="issuedAtUtc">
+    /// The instant the session is stamped as opened at; it expires an hour later. Omitted, it is the wall
+    /// clock, which is what every caller wants and what every caller had.
+    /// <para>
+    /// <b>It exists for the tests that replace the application's <c>TimeProvider</c>.</b>
+    /// <c>AuthenticateSessionHandler</c> judges a session against <c>timeProvider.GetUtcNow()</c>, so a
+    /// host serving requests at a fixed instant months from now answers 401 to a session seeded against
+    /// the wall clock — and the test reads that as the feature under it being broken. Naming the same
+    /// instant the fake clock reports puts the window back around the request.
+    /// </para>
+    /// </param>
+    public Task<SignedInOwner> SeedSignedInOwnerAsync(
+        string googleSubject,
+        string email,
+        SessionKind kind = SessionKind.Full,
+        CancellationToken cancellationToken = default,
+        CredentialType? opensWith = null,
+        DateTime? issuedAtUtc = null) =>
+        SeedSignedInOwnerOnAsync(
+            ConnectionString, googleSubject, email, kind, cancellationToken, opensWith, issuedAtUtc);
+
+    /// <inheritdoc cref="SeedOwnerOnAsync" />
+    internal static async Task<SignedInOwner> SeedSignedInOwnerOnAsync(
+        string connectionString,
+        string googleSubject,
+        string email,
+        SessionKind kind = SessionKind.Full,
+        CancellationToken cancellationToken = default,
+        CredentialType? opensWith = null,
+        DateTime? issuedAtUtc = null,
+        bool withFactorManifest = true)
+    {
+        SeededOwner owner = await SeedOwnerOnAsync(
+            connectionString, googleSubject, email, cancellationToken, withFactorManifest);
+
+        CredentialType credentialType = opensWith ?? kind switch
+        {
+            SessionKind.Full => CredentialType.Passkey,
+            SessionKind.Locked => CredentialType.Federated,
+            _ => throw new ArgumentOutOfRangeException(
+                nameof(kind), kind, "No credential type opens a session of that kind."),
+        };
+
+        Guid credentialId = credentialType switch
+        {
+            CredentialType.Passkey => await SeedPasskeyOnAsync(
+                connectionString,
+                owner.UserId,
+                RandomNumberGenerator.GetBytes(WebAuthnCredentialIdLength),
+                cancellationToken: cancellationToken),
+            CredentialType.Federated =>
+                await FederatedCredentialIdOnAsync(connectionString, owner.UserId, cancellationToken),
+            CredentialType.RecoveryCodes =>
+                await SeedRecoveryCodesSetOnAsync(connectionString, owner.UserId, cancellationToken),
+            _ => throw new ArgumentOutOfRangeException(
+                nameof(opensWith), credentialType, "No credential of that type can be seeded here."),
+        };
+
+        byte[] token = RandomNumberGenerator.GetBytes(SessionToken.TokenLength);
+        DateTime now = issuedAtUtc ?? DateTime.UtcNow;
+        await SeedSessionOnAsync(
+            connectionString,
+            credentialId,
+            token,
+            kind,
+            now.AddMinutes(-1),
+            now.AddHours(1),
+            cancellationToken: cancellationToken);
+
+        return new SignedInOwner(owner.UserId, owner.BudgetId, token);
+    }
+
+    /// <summary>
+    /// The account, its default budget, and the handle one seeded sign-in is presented by.
+    /// </summary>
+    /// <remarks>
+    /// A <see langword="readonly" /> <see langword="record" /> <see langword="struct" /> for
+    /// <see cref="SeededOwner" />'s reason. The token is carried rather than the session id because the
+    /// id names nothing a request may present — a cookie carries the bytes, and the row stores only
+    /// their digest, so these bytes exist here and in the cookie and nowhere else.
+    /// </remarks>
+    public readonly record struct SignedInOwner(Guid UserId, Guid BudgetId, byte[] SessionToken);
+
+    /// <summary>
+    /// The <c>credentials.id</c> of the one federated credential an account holds.
+    /// </summary>
+    /// <remarks>
+    /// Read back rather than created, because an account holds exactly one and a second would be a state
+    /// provisioning cannot produce.
+    /// </remarks>
+    public Task<Guid> FederatedCredentialIdAsync(
+        Guid userId,
+        CancellationToken cancellationToken = default) =>
+        FederatedCredentialIdOnAsync(ConnectionString, userId, cancellationToken);
+
+    /// <inheritdoc cref="SeedOwnerOnAsync" />
+    private static async Task<Guid> FederatedCredentialIdOnAsync(
+        string connectionString,
+        Guid userId,
+        CancellationToken cancellationToken = default)
+    {
+        await using BudgetoidDbContext db = CreateSeedingDbContext(connectionString);
+
+        return (await db.Credentials.SingleAsync(
+            stored => stored.UserId == userId && stored.Type == CredentialType.Federated,
+            cancellationToken)).Id;
+    }
+
+    /// <summary>
+    /// Files the <c>credentials</c> row that stands for an account's set of recovery codes and returns
+    /// its id, so a session can be opened over a credential that writes nothing on either passkey table.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The row stands alone: no <c>recovery_code_hashes</c>, and no <c>wrapped_account_keys</c>.</b>
+    /// Neither is required by anything beneath the application — <c>CK_credentials_type_shape</c> reads
+    /// the same predicate for <c>recovery_codes</c> as for <c>passkey</c>, and "every set holds ten
+    /// codes" is a property of the write surface rather than a schema fact, exactly as
+    /// "every factor has a wrapped-key row" is — so a bare set is a legal row and the seeding does not
+    /// have to invent secrets nobody redeems. It is also the shape that keeps the seeding invisible:
+    /// the tests reaching for this arm count passkeys, wrapped keys and hashes, and a seeder writing ten
+    /// hash rows would move the third of those the way the passkey arm moves the first.
+    /// <see cref="SeedPasskeyOnAsync" /> makes the same trade in the other direction — it files a
+    /// passkey with no wrapped keys, which is equally a shape no ceremony produces.
+    /// </para>
+    /// <para>
+    /// One set per account is enforced by <c>IX_credentials_user_id_recovery_codes</c>, so an account
+    /// seeded this way cannot go on to issue its first set through the route. That is a property of the
+    /// arrangement rather than a limitation of the seeder: a test that issues a set wants the passkey
+    /// arm, which is the default.
+    /// </para>
+    /// </remarks>
+    private static async Task<Guid> SeedRecoveryCodesSetOnAsync(
+        string connectionString,
+        Guid userId,
+        CancellationToken cancellationToken = default)
+    {
+        await using BudgetoidDbContext db = CreateSeedingDbContext(connectionString);
+        Credential credential = Credential.CreateRecoveryCodes(userId, SeedInstant);
+        db.Credentials.Add(credential);
+        await db.SaveChangesAsync(cancellationToken);
+
+        return credential.Id;
+    }
+
+    /// <summary>
+    /// How many bytes a WebAuthn credential id carries here. Only the width and the distinctness matter:
+    /// nothing verifies a signature against a seeded passkey.
+    /// </summary>
+    private const int WebAuthnCredentialIdLength = 16;
+
+    /// <summary>
+    /// Persists a user together with its default budget and returns the <b>budget</b> id, so tests
+    /// can satisfy the budgets foreign key on every owned entity with a real tenant row. Tests that
+    /// also need the owner want <see cref="SeedOwnerAsync" />, which this delegates to.
+    /// </summary>
+    public async Task<Guid> SeedBudgetAsync(string googleSubject, string email) =>
+        (await SeedOwnerAsync(googleSubject, email)).BudgetId;
+
+    /// <summary>
+    /// Persists a user together with the federated Google credential that resolves to it, and
+    /// returns the <b>user</b> id. Tests of budget-owned entities want
+    /// <see cref="SeedBudgetAsync"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Both rows go in one <c>SaveChangesAsync</c>, mirroring the shape <c>UserRepository</c>
+    /// inserts them in: a seeded user without its credential would be a state production can never
+    /// produce, so tests written against it would be testing a schema nobody ships.
+    /// <paramref name="googleSubject"/> is still the caller's handle on the identity, which is why
+    /// this signature outlived the column it used to write.
+    /// </para>
+    /// <para>
+    /// <b>A third row goes with them, in a save of its own: the account's <c>factor_manifests</c>
+    /// row.</b> Registration writes one for every account it creates, so an account without one is a
+    /// state the product stopped producing — and the two routes that change a factor set now treat its
+    /// absence as an integrity violation and answer 500 rather than branching on it. Seeding it is
+    /// therefore not a convenience: without it every suite that seeds an account and then registers a
+    /// passkey or issues a card measures a 500 instead of whatever its own name claims.
+    /// </para>
+    /// <para>
+    /// <b>In a second save rather than beside the other two, and that is forced.</b>
+    /// <see cref="FactorManifest.For" /> takes the loaded <see cref="User" />, which exists here — but
+    /// <see cref="SeedFactorManifestOnAsync" /> is the one place that knows how the row is built, and
+    /// routing through it keeps a single shape rather than a second inline one that could drift. The
+    /// account is not observable to anything between the two saves, so the split costs nothing a test
+    /// can see.
+    /// </para>
+    /// <para>
+    /// <b><paramref name="withFactorManifest" /> exists for exactly one arrangement and must not be
+    /// used for any other.</b> "This account has no manifest" is a state the product cannot reach and
+    /// deliberately answers 500 on — so the test that pins that answer needs an account in it, and
+    /// removing the possibility would make the refusal untestable. Every other caller wants the
+    /// default: an account seeded without a manifest is an account whose passkey registration and
+    /// recovery-code issue both fail with a fault, for a reason no other test is about.
+    /// </para>
+    /// </remarks>
+    public Task<Guid> SeedUserAsync(string googleSubject, string email, bool withFactorManifest = true) =>
+        SeedUserOnAsync(
+            ConnectionString, googleSubject, email, withFactorManifest: withFactorManifest);
+
+    /// <inheritdoc cref="SeedOwnerOnAsync" />
+    internal static async Task<Guid> SeedUserOnAsync(
+        string connectionString,
+        string googleSubject,
+        string email,
+        CancellationToken cancellationToken = default,
+        bool withFactorManifest = true)
+    {
+        await using BudgetoidDbContext db = CreateSeedingDbContext(connectionString);
+        User user = User.CreateWithId(Guid.CreateVersion7(), email, SeedInstant);
         db.Users.Add(user);
-        await db.SaveChangesAsync();
+        db.Credentials.Add(Credential.CreateFederated(
+            user.Id, Credential.GoogleProvider, googleSubject, SeedInstant));
+        await db.SaveChangesAsync(cancellationToken);
+
+        if (withFactorManifest)
+        {
+            // At the floor, which is where registration files an account's first one, and carrying
+            // bytes minted per call rather than a shared constant: two accounts seeded in one test hold
+            // two different manifests, so a read-back that answered with the wrong account's row cannot
+            // pass on bytes nobody wrote for it.
+            await SeedFactorManifestOnAsync(
+                connectionString,
+                user.Id,
+                ManifestFixture.Mint().Manifest,
+                FactorManifest.MinimumRotationEpoch,
+                cancellationToken);
+        }
+
         return user.Id;
+    }
+
+    /// <summary>
+    /// Persists a whole passkey onto an existing account — the <c>credentials</c> row an
+    /// authenticator's key hangs off, the public key that verifies its signatures, and the signature
+    /// counter a clone gives itself away against — and returns the <b>credential</b> id, which is the
+    /// primary key of both dependent rows and therefore the handle every probe needs.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// All three rows in one <c>SaveChangesAsync</c>, mirroring the shape a registration writes them
+    /// in. A credential without its key, or a key without its counter, is a state no ceremony can
+    /// produce: the assertion path reads the key to verify the signature and the counter immediately
+    /// after, so a test written against a half-seeded passkey would be measuring a schema nobody
+    /// ships. Tests that deliberately want a bare passkey credential — a probe row aimed at the empty
+    /// primary key — build one with raw SQL instead, which is the honest way to say that the gap is
+    /// the point.
+    /// </para>
+    /// <para>
+    /// Through the domain factories rather than raw SQL, unlike the passkey credentials the schema
+    /// tests seed by hand. These three now have factories, and going through them means a seeded row
+    /// is one the application could really have written — so a probe that lands beside it is measured
+    /// against production's own shape rather than against whatever column list a test typed out.
+    /// </para>
+    /// </remarks>
+    public Task<Guid> SeedPasskeyAsync(
+        Guid userId,
+        byte[] webAuthnCredentialId,
+        byte[]? coseKey = null,
+        CoseAlgorithm algorithm = CoseAlgorithm.Es256,
+        uint signatureCounter = 0) =>
+        SeedPasskeyOnAsync(
+            ConnectionString, userId, webAuthnCredentialId, coseKey, algorithm, signatureCounter);
+
+    /// <inheritdoc cref="SeedOwnerOnAsync" />
+    internal static async Task<Guid> SeedPasskeyOnAsync(
+        string connectionString,
+        Guid userId,
+        byte[] webAuthnCredentialId,
+        byte[]? coseKey = null,
+        CoseAlgorithm algorithm = CoseAlgorithm.Es256,
+        uint signatureCounter = 0,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(webAuthnCredentialId);
+
+        await using BudgetoidDbContext db = CreateSeedingDbContext(connectionString);
+        Credential credential = Credential.CreatePasskey(userId, SeedInstant);
+        db.Credentials.Add(credential);
+        db.PasskeyPublicKeys.Add(PasskeyPublicKey.Register(
+            credential, webAuthnCredentialId, coseKey ?? DefaultCoseKey, algorithm));
+        db.PasskeySignatureCounters.Add(PasskeySignatureCounter.Start(credential, signatureCounter));
+        await db.SaveChangesAsync(cancellationToken);
+        return credential.Id;
+    }
+
+    /// <summary>
+    /// The COSE key seeded passkeys carry when a caller does not name one. Four bytes: nothing here
+    /// verifies a signature, and the only rule the column holds is that the key is between one byte
+    /// and <see cref="PasskeyPublicKey.MaxCoseKeyLength" />. A caller testing that bound passes its
+    /// own.
+    /// </summary>
+    private static readonly byte[] DefaultCoseKey = [0xA5, 0x01, 0x02, 0x03];
+
+    /// <summary>
+    /// Files the account's two wrapped keys against an existing credential — one row in
+    /// <c>wrapped_account_keys</c> — and returns the <b>factor</b> identifier it carries, which is the
+    /// only column of that row a caller cannot already name.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Through <see cref="WrappedAccountKeys.For" /> rather than raw SQL, for the reason
+    /// <see cref="SeedPasskeyAsync" /> gives: a seeded row is then one the application could really
+    /// have written, so a probe landing beside it is measured against production's own shape. The
+    /// factory takes the loaded <see cref="Credential" />, so this reads it back rather than accepting
+    /// three loose ids — which is the whole argument that factory makes.
+    /// </para>
+    /// <para>
+    /// <paramref name="factorId" /> is the caller's to choose and is required. It is minted by the
+    /// client in production, <c>factor_id</c> is the table's primary key —
+    /// <c>PK_wrapped_account_keys</c> — unique across the whole table rather than per account, and a
+    /// default would therefore turn two seeded rows anywhere in one
+    /// database into a <c>23505</c> — which is exactly the refusal one test here is reading and no
+    /// other test wants to meet by accident.
+    /// </para>
+    /// <para>
+    /// <b>The two payloads are the caller's to choose as well, and the default pair is only
+    /// distinguishable <em>by column</em>.</b> <see cref="SeededPrivateKeyFiller" /> and
+    /// <see cref="SeededAccountKeysFiller" /> differ from each other, so a read that returns a row's
+    /// encapsulated account keys where its wrapped private key belongs is visible — and the two widths
+    /// differ besides — but they are the same two values on
+    /// every row this seeder writes, so a read that returns <em>row A's</em> payload for <em>row B</em>
+    /// is not. That is invisible for exactly as long as every account holds one factor, and a set of
+    /// recovery codes holds ten. A caller seeding more than one row against one credential therefore
+    /// has to name envelopes of its own — <c>WrappedKeyFixture</c> mints a pair whose bytes are random
+    /// per call and whose second byte says which of the two an envelope is, which is both halves at
+    /// once. Declared last, and optional, so every existing call site keeps compiling and keeps seeding
+    /// exactly what it seeds today.
+    /// </para>
+    /// </remarks>
+    public Task<Guid> SeedWrappedAccountKeysAsync(
+        Guid credentialId,
+        Guid factorId,
+        byte[]? wrappedPrivateKey = null,
+        byte[]? encapsulatedAccountKeys = null) =>
+        SeedWrappedAccountKeysOnAsync(
+            ConnectionString,
+            credentialId,
+            factorId,
+            wrappedPrivateKey: wrappedPrivateKey,
+            encapsulatedAccountKeys: encapsulatedAccountKeys);
+
+    /// <inheritdoc cref="SeedOwnerOnAsync" />
+    internal static async Task<Guid> SeedWrappedAccountKeysOnAsync(
+        string connectionString,
+        Guid credentialId,
+        Guid factorId,
+        CancellationToken cancellationToken = default,
+        byte[]? wrappedPrivateKey = null,
+        byte[]? encapsulatedAccountKeys = null)
+    {
+        await using BudgetoidDbContext db = CreateSeedingDbContext(connectionString);
+        Credential credential = await db.Credentials
+            .SingleAsync(candidate => candidate.Id == credentialId, cancellationToken);
+        db.WrappedAccountKeys.Add(WrappedAccountKeys.For(
+            credential,
+            factorId,
+            wrappedPrivateKey ?? WrappedPrivateKeyPayload(SeededPrivateKeyFiller),
+            encapsulatedAccountKeys ?? EncapsulatedAccountKeysPayload(SeededAccountKeysFiller),
+            SeedInstant));
+        await db.SaveChangesAsync(cancellationToken);
+
+        return factorId;
+    }
+
+    /// <summary>
+    /// Files the one <c>factor_manifests</c> row an account may hold — the authenticated bytes naming
+    /// every recovery factor's public key, and the generation that list belongs to.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The product writes exactly one shape of this row, and that is why a seeder still exists.</b>
+    /// <c>RegisterAccountHandler</c> files an account's first manifest at
+    /// <see cref="FactorManifest.MinimumRotationEpoch" />, in the account's own save, and that is the
+    /// whole of the write side: no route promotes a generation, no repository updates one, and an account
+    /// created before that line has no row at all. So every arrangement this suite needs that is not "a
+    /// brand-new account at generation one" — a later generation, a width at either bound, a manifest
+    /// beside a factor set the registration route could not have produced — can only be reached by
+    /// seeding.
+    /// </para>
+    /// <para>
+    /// <b>On the elevated connection, and the role's grants are why.</b> The application role holds
+    /// <c>SELECT</c> and <c>INSERT</c> here and no <c>UPDATE</c> or <c>DELETE</c> of any shape, and its
+    /// <c>INSERT</c> is policed by <c>user_isolation</c> against <c>app.current_user_id</c> — a value no
+    /// seeder publishes. A caller that handed this the app connection string would meet a refusal on the
+    /// insert rather than a silent no-op, which is the loud half of the grant asymmetry
+    /// <c>account-keys.md</c> argues.
+    /// </para>
+    /// <para>
+    /// Through <see cref="FactorManifest.For" /> rather than raw SQL, for the reason
+    /// <see cref="SeedPasskeyAsync" /> gives: the factory refuses an empty manifest, one wider than
+    /// <see cref="FactorManifest.MaximumBytes" /> and an epoch below
+    /// <see cref="FactorManifest.MinimumRotationEpoch" />, so a seeded row is one the application could
+    /// really have written and a test reading it is measured against production's own shape rather than
+    /// against whatever an <c>insert</c> statement happened to type out. The factory takes the loaded
+    /// <see cref="User" />, so this reads the account back rather than accepting a loose id.
+    /// </para>
+    /// <para>
+    /// <paramref name="rotationEpoch" /> is required and has no default. Every value in its legal range
+    /// is a different claim about which generation is in force, and the two a defaulted seeder would
+    /// reach for — 1, the floor, and 0, which is the absence of a row and which the factory refuses —
+    /// are exactly the two a wrong implementation is most likely to hard-wire.
+    /// </para>
+    /// </remarks>
+    internal static async Task SeedFactorManifestOnAsync(
+        string connectionString,
+        Guid userId,
+        byte[] manifest,
+        int rotationEpoch,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(manifest);
+
+        await using BudgetoidDbContext db = CreateSeedingDbContext(connectionString);
+        User user = await db.Users
+            .SingleAsync(candidate => candidate.Id == userId, cancellationToken);
+        db.FactorManifests.Add(FactorManifest.For(user, manifest, rotationEpoch));
+        await db.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// The fillers the two seeded payloads carry when a caller names neither. Different from each other
+    /// so a read-back naming the wrong <b>column</b> is visible by eye, and neither is the filler a probe
+    /// writes. They are the same on every row, so telling one <b>row</b> from another needs payloads the
+    /// caller supplies — see <see cref="SeedWrappedAccountKeysAsync" />.
+    /// </summary>
+    public const byte SeededPrivateKeyFiller = 0xC0;
+
+    public const byte SeededAccountKeysFiller = 0x1D;
+
+    /// <summary>
+    /// Builds a well-formed <c>wrapped_private_key</c>: the AEAD framing's version byte, then
+    /// <paramref name="filler" /> to that column's exact width.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The filler is neither a nonce nor a ciphertext, and nothing in these tests opens either — no
+    /// unlock path exists and this server holds no value that could. What a row has to satisfy is the
+    /// width and the version, which <see cref="WrappedAccountKeys.For" /> and two check constraints
+    /// per column both refuse to bend; a payload of any other shape would be refused by one of those
+    /// instead of by the grant or the policy a test is reading.
+    /// </para>
+    /// <para>
+    /// <b>Two builders rather than one taking a width, and that is the point of the pair.</b> The two
+    /// columns hold values of two different cryptographic suites at two different widths, and each
+    /// builder reads the constants belonging to its own. One builder parameterised on a width would
+    /// let a caller pair this suite's length with the other's version — bytes that store, read back,
+    /// and are uninterpretable to the client that needs them.
+    /// </para>
+    /// </remarks>
+    public static byte[] WrappedPrivateKeyPayload(byte filler) =>
+        Payload(
+            WrappedAccountKeys.WrappedPrivateKeyLength,
+            WrappedAccountKeys.WrappedPrivateKeyVersion,
+            filler);
+
+    /// <summary>
+    /// Builds a well-formed <c>encapsulated_account_keys</c>: the encapsulation framing's version byte,
+    /// then <paramref name="filler" /> to that column's exact width.
+    /// </summary>
+    /// <inheritdoc cref="WrappedPrivateKeyPayload" path="/remarks" />
+    public static byte[] EncapsulatedAccountKeysPayload(byte filler) =>
+        Payload(
+            WrappedAccountKeys.EncapsulatedAccountKeysLength,
+            WrappedAccountKeys.EncapsulatedAccountKeysVersion,
+            filler);
+
+    private static byte[] Payload(int length, byte version, byte filler)
+    {
+        byte[] payload = new byte[length];
+        Array.Fill(payload, filler);
+        payload[0] = version;
+
+        return payload;
     }
 
     /// <summary>
     /// Adds another budget to an existing owner and returns its id, so a test can exercise two
     /// tenants without inventing a second user.
     /// </summary>
-    public async Task<Guid> SeedAdditionalBudgetAsync(Guid userId, string name)
+    /// <param name="userId">The owner the budget is filed under.</param>
+    /// <param name="label">
+    /// What tells this row from the next one. <b>It is not a budget name and never reaches the
+    /// column</b> — the column holds an envelope now, and nothing on this side can seal a string. It
+    /// is the label <see cref="SealedNarrative.Name" /> derives its filler from, so two seeded
+    /// budgets differ in bytes and a failure message says which one. That models the real thing more
+    /// closely than a shared buffer would: two people who both type "Household" store different
+    /// envelopes anyway, because every seal draws a fresh nonce.
+    /// </param>
+    public Task<Guid> SeedAdditionalBudgetAsync(Guid userId, string label) =>
+        SeedAdditionalBudgetOnAsync(ConnectionString, userId, label);
+
+    /// <inheritdoc cref="SeedOwnerOnAsync" />
+    internal static async Task<Guid> SeedAdditionalBudgetOnAsync(
+        string connectionString,
+        Guid userId,
+        string label,
+        CancellationToken cancellationToken = default)
     {
-        await using var db = CreateSeedingDbContext();
-        Budget budget = Budget.Create(userId, name, SeedInstant);
+        await using BudgetoidDbContext db = CreateSeedingDbContext(connectionString);
+
+        // The id is minted here and threaded into the factory, which is where every budget id comes
+        // from now: it is the associated data a client seals the name against, so nothing downstream
+        // may invent one. Nothing seeded here is ever opened, but a seeder that minted its own id
+        // would be modelling a write path that no longer exists.
+        Budget budget = Budget.Create(
+            Guid.CreateVersion7(), userId, SealedNarrative.Name(label), SeedInstant);
         db.Budgets.Add(budget);
-        await db.SaveChangesAsync();
+        await db.SaveChangesAsync(cancellationToken);
         return budget.Id;
     }
 
@@ -154,13 +861,24 @@ public sealed class RepositoryTestHost : IAsyncDisposable
     /// </summary>
     private static readonly DateTime SeedInstant = new(2026, 6, 12, 13, 14, 15, DateTimeKind.Utc);
 
-    private BudgetoidDbContext CreateSeedingDbContext() => new(
+    /// <summary>
+    /// A context on the container superuser connection, with no ambient budget. Safe for everything
+    /// seeded through it — none of these entities carries a budget query filter, and <c>Budget</c>
+    /// deliberately carries none either — and superuser because these rows are arranged, not measured.
+    /// </summary>
+    private static BudgetoidDbContext CreateSeedingDbContext(string connectionString) => new(
         new DbContextOptionsBuilder<BudgetoidDbContext>()
-            .UseNpgsql(ConnectionString)
+            .UseNpgsql(connectionString)
             .Options);
 
+    /// <summary>
+    /// Drops this host's database, and is safe on a host that never started.
+    /// </summary>
     public async ValueTask DisposeAsync()
     {
-        await _container.DisposeAsync();
+        if (_connectionString is not null)
+        {
+            await SharedPostgresCluster.DropDatabaseAsync(_connectionString);
+        }
     }
 }

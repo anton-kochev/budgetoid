@@ -34,8 +34,8 @@ created once with one command.
 | Container App | `api`, in a Container Apps environment the AppHost owns and places on the virtual network below |
 | Database networking | The API reaches PostgreSQL over a **private endpoint**; the server carries **no standing firewall rule**. Public access stays enabled purely so this pipeline can open a two-minute window for one address. A private DNS zone makes the server's ordinary public hostname resolve to its private address inside the network, so no connection string mentions any of this. |
 | API database identity | `budgetoid_app`, the least-privilege role, bound by object id to the API's user-assigned managed identity; the password-free connection string is injected into the Container App as `ConnectionStrings__budgetoid` |
-| API URL | `https://api.gentlebay-c068f20b.northeurope.azurecontainerapps.io` — a Container Apps environment mints a new hostname every time it is recreated, so treat this as a lookup, not a constant: `az containerapp show -n api -g rg-budgetoid-prod --query properties.configuration.ingress.fqdn -o tsv` |
-| Frontend URL | `https://blue-island-06a7efa03.7.azurestaticapps.net` |
+| API URL | `https://api.budgetoid.app`. Underneath it a Container Apps environment mints a fresh generated hostname every time it is recreated, so that one is a lookup and never a constant: `az containerapp show -n api -g rg-budgetoid-prod --query properties.configuration.ingress.fqdn -o tsv`. The custom domain is the layer of indirection that keeps a regenerated hostname from being a four-place edit ([ADR 0010](docs/decisions/0010-serve-the-app-from-a-custom-domain.md)). |
+| Frontend URL | `https://budgetoid.app`, over a Static Web App whose generated `*.azurestaticapps.net` hostname is likewise private: `az staticwebapp show -n <name> -g rg-budgetoid-prod --query defaultHostname -o tsv` |
 
 ---
 
@@ -74,15 +74,14 @@ azd up              # provisions ACA + the Postgres Flexible Server, builds/push
                     # (azd regenerates the Bicep from the AppHost each run; ./infra is gitignored)
 ```
 
-`azd up` prompts for subscription + region, then for three app parameters (wired in the AppHost, so
+`azd up` prompts for subscription + region, then for the app parameters (wired in the AppHost, so
 they land in the committed Bicep — no manual container-app edits):
 
 | Prompt | Value |
 |---|---|
-| Prompt | Value |
-|---|---|
 | `google-client-id` | your Google OAuth client id |
-| `frontend-origin` | the Static Web App URL from Step 1 |
+| `frontend-origin` | `https://budgetoid.app`. It is injected twice — as the CORS allowed origin and as the passkey ceremony's allowed origin — because those are the same origin by definition. Not the generated Static Web App URL from Step 1: that hostname is private, and an origin the ceremony accepts is an origin passkeys get registered against. |
+| `passkey-relying-party-id` | `budgetoid.app`, the registrable domain of that origin. **Frozen, and deliberately not a choice made here.** Every passkey an authenticator stores hashes this value into the credential, so changing it later does not re-point existing passkeys — it invalidates every one of them, and no migration repairs them. The generated `*.azurestaticapps.net` hostname is **never** an acceptable value, not even temporarily: an account created under it is an account whose passkeys die at cutover. Step 6 therefore binds the domain as part of bringing the environment up rather than after it. |
 | `pipeline-principal-id` | the **object id** of the service principal that will deploy. `azd pipeline config` in Step 5 creates it; on a first bootstrap use your own principal's object id and re-run `azd up` after Step 5. It is registered as a Microsoft Entra administrator of the Postgres server, which is the only identity that can migrate the schema. |
 | `pipeline-principal-name` | that principal's display name. Postgres needs a role name to log in as even though the token is what proves which principal it is. |
 
@@ -92,7 +91,14 @@ Microsoft Entra only, and nothing in this deployment holds a database password
 handed `Host=…;Username=budgetoid_app;Database=budgetoid` and fetches an access token from its own
 managed identity to authenticate — the **absence** of a password in that string is what turns the
 token provider on, so do not "complete" it. Note the API's public URL from the output. To change a
-parameter later: `azd env set <name> <value>` then `azd up`.
+parameter later: `azd env set <name> <value>` then `azd up` — except `passkey-relying-party-id`,
+which is permanent once passkeys exist (see the table above).
+
+The API **refuses to boot** without the Google client id, the CORS origin and both passkey settings;
+there is no `Api/appsettings.json` supplying defaults. That is deliberate: a container that starts
+healthy and only fails when somebody attempts a sign-in reports its defect to a user instead of to
+this pipeline. A missing parameter shows up as a crash-looping revision on the very deploy that
+introduced it.
 
 > **Note.** Earlier deploys needed a post-deploy step to repair a bare connection-string secret azd
 > wrote. That is **root-fixed** — `AppHost/Program.cs` injects the connection string directly, so
@@ -196,10 +202,22 @@ the old one, so the pipeline finds nothing applied and runs the new baseline aga
 already exists — the deploy dies on the first `CREATE TABLE`. The fix is to hand the database back
 its empty state so the new baseline is true: **drop the schema, then migrate from scratch.**
 
+The baseline is **`20260914230000_InitialCreate`** today. That is the id a reset has to leave the
+history agreeing with, and it is the literal `Migrations_KeepTheBaselineFrozen` pins — so a
+regeneration edits that test in the same commit.
+
 This is destructive and unconditional. It is available only because the production database holds no
 data, and it belongs in the same deploy that ships the regenerated baseline — never as a follow-up.
 Whether the rebaseline is permitted at all is recorded in the `migrations-guard` CI job
 (`REBASELINE_WINDOW`); [migrations](docs/engineering/migrations.md) explains when that window closes.
+
+**The most recent regeneration dropped columns, and that is worth stating plainly rather than
+filing under "a rebaseline happened".** Earlier ones collapsed a chain of additions, which an
+additive migration could in principle have expressed; this one removed `wrapped_account_keys`' two
+wrapped account-key columns and `key_rotations`' factor and both staged envelopes. Against a
+database holding rows that is data loss with no repair, so it is genuinely not expressible as an
+additive migration — it is exactly the case the open window exists for, and exactly the case that
+stops being available the day this database holds anything anybody wants back.
 
 Set up `$HOST` and `$TOKEN` exactly as in the break-glass recipe above, including the firewall rule,
 then, as an Entra administrator of the server:
@@ -243,10 +261,15 @@ it is far longer than `psql` accepts interactively.
 `name: budgetoid_app=w/…` under **Column privileges** (UPDATE on that column alone). `budget_id`
 must not appear anywhere in that row — its absence from the column list is what makes it immutable,
 since PostgreSQL column privileges are additive and a `REVOKE` could not express it. The
-`pg_policies` query should return five rows, one `budget_isolation` policy each on `accounts`,
-`categories`, `category_groups`, `payees` and `transactions`. Fewer means the role can read every
+`pg_policies` query should return **thirteen** rows: one `budget_isolation` policy each on
+`accounts`, `categories`, `category_groups`, `payees` and `transactions`, and one `user_isolation`
+policy each on `users`, `budgets`, `sessions`, `passkey_signature_counters`, `wrapped_account_keys`,
+`key_rotations`, `key_rotation_seals` and `factor_manifests`. Fewer means the role can read every
 tenant's rows in whichever table is missing one — and it means the tool's verification would have
-failed, so seeing this by hand should be impossible after a green deploy.
+failed, so seeing this by hand should be impossible after a green deploy. **Read the count as a
+consequence of the two lists rather than as the thing to check**: what decides whether a table owes
+a policy is `RowLevelSecurityCoverage`, which classifies from the live catalog, so a number here is
+only ever a restatement of what it already refuses.
 
 ### Troubleshooting
 
@@ -308,6 +331,7 @@ It needs these GitHub secrets/vars:
 | secret | `AZURE_STATIC_WEB_APPS_API_TOKEN` | SWA deployment token (Step 1) |
 | var | `AZURE_CLIENT_ID` / `AZURE_TENANT_ID` / `AZURE_SUBSCRIPTION_ID` | from `azd pipeline config` |
 | var | `AZURE_ENV_NAME` / `AZURE_LOCATION` | your azd env name + region |
+| var | `AZURE_FRONTEND_ORIGIN` / `AZURE_GOOGLE_CLIENT_ID` / `AZURE_PASSKEY_RELYING_PARTY_ID` | the Step 2 app parameters. The CI config store is empty, so azd reads them from here; the API refuses to boot without any of them |
 | var | `AZURE_PIPELINE_PRINCIPAL_ID` / `AZURE_PIPELINE_PRINCIPAL_NAME` | the deploy principal's object id and display name — they register it as an Entra administrator of the Postgres server |
 
 There is no database secret in that table, and that is the point: the pipeline authenticates to
@@ -347,9 +371,16 @@ API's managed identity, and deploys — in that order. You can still trigger a m
 
 ## Step 6 — Custom domain (`budgetoid.app`)
 
-**Not done yet.** The deployment still answers on its generated Azure hostnames. The domain is
-registered at Cloudflare Registrar and the target layout is decided
-([ADR 0010](docs/decisions/0010-serve-the-app-from-a-custom-domain.md)); what follows is the cutover.
+**Not a cutover — part of the first provision.** There is no production environment today:
+`rg-budgetoid-prod` does not exist, and the generated hostnames earlier revisions of this document
+quoted answer nothing. The domain is registered at Cloudflare Registrar, its nameservers are live,
+and the target layout is decided ([ADR 0010](docs/decisions/0010-serve-the-app-from-a-custom-domain.md)),
+but the zone holds no records yet.
+
+That ordering is the point. `passkey-relying-party-id` is frozen at `budgetoid.app` before Step 2 is
+ever answered, so this step runs while the environment is still empty of accounts. Standing an
+environment up on its generated hostnames and moving the domain afterwards would register passkeys
+against a name that is about to stop existing, and no migration repairs those.
 
 | Name | Serves | Record |
 |---|---|---|
@@ -391,22 +422,31 @@ az staticwebapp hostname set -n budgetoid-web -g rg-budgetoid-prod \
 #   CNAME  @    <name>.azurestaticapps.net      (Cloudflare flattens this at the apex)
 ```
 
-Once both certificates are issued, update the four places that name a hostname. Missing any one of
-them leaves a deployment that looks healthy and is not:
+Once both certificates are issued, four places name a hostname and each has to agree. Missing any one
+of them leaves a deployment that looks healthy and is not:
 
-1. `ClientApp/angular-budgetoid/public/assets/app-config.json` — `apiBaseUrl` →
-   `https://api.budgetoid.app`, `auth.google.redirectUri` → `https://budgetoid.app`. Commit it.
+1. `ClientApp/angular-budgetoid/public/assets/app-config.json` — **already committed** with
+   `apiBaseUrl` → `https://api.budgetoid.app` and `auth.google.redirectUri` → `https://budgetoid.app`.
+   Nothing to do here unless somebody has pointed it back at a generated hostname.
 2. **The azd environment**, not just the repo: `azd env set AZURE_FRONTEND_ORIGIN
-   https://budgetoid.app`. This is what the next `azd provision` bakes into the container app as
-   `Cors__AllowedOrigins__0`. Forget it and the browser reports a network failure that is really a
-   CORS rejection.
+   https://budgetoid.app` and `azd env set AZURE_PASSKEY_RELYING_PARTY_ID budgetoid.app`. The first
+   is what the next `azd provision` bakes into the container app as `Cors__AllowedOrigins__0`
+   **and** as `Authentication__Passkey__AllowedOrigins__0`; forget it and the browser reports a
+   network failure that is really a CORS rejection. The second is set once and never again — a
+   passkey registered under one relying party id cannot be re-pointed at another, so the value is
+   frozen before the environment exists rather than reconsidered here.
 3. **Google Cloud console** → the OAuth 2.0 client → add `https://budgetoid.app` to **Authorized
    JavaScript origins** and **Authorized redirect URIs**. Nothing in this repository can verify this
    step; it is the one that breaks login while everything else reports success.
 4. `www.budgetoid.app` → a Cloudflare redirect rule to the apex. Without a record it is `NXDOMAIN`.
 
-Keep the old Azure hostnames in the OAuth client and in `Cors__AllowedOrigins` until the new domain
-is confirmed working, then remove them in a follow-up — that is the rollback.
+**There is no dual-origin rollback, and that is deliberate.** Keeping the generated hostnames
+alongside the new domain "until it is confirmed working" is the obvious safety net and it is a trap:
+`frontend-origin` is injected into `Cors__AllowedOrigins__0` **and**
+`Authentication__Passkey__AllowedOrigins__0` from one parameter, so an origin kept for rollback is an
+origin the passkey ceremony accepts — and a passkey registered there is bound to a relying party id
+that is about to stop existing. The rollback is to fix the DNS, not to widen the origin list. A
+second Google redirect URI is harmless and may stay; a second allowed origin may not.
 
 Auto-renew on the domain must stay **on**. An expired `.app` is a total outage with no partial
 failure to notice first.
@@ -438,3 +478,63 @@ failure to notice first.
    the traffic went private: the public path would have refused it.
 4. Frontend: open the SWA URL, sign in with Google (redirect accepted), create/list/edit/delete a
    transaction — no CORS errors in the browser console.
+5. Security headers, on both origins and on a **deep link** as well as the root. Use whichever
+   hostnames this environment actually answers on — the generated ones before Step 6 has bound the
+   domain, the custom ones after:
+
+   ```sh
+   FRONTEND=https://<swa-url>     # the SWA URL from Step 1, or https://budgetoid.app after Step 6
+   API=https://<api-url>          # the API URL from Step 2, or https://api.budgetoid.app after Step 6
+
+   for url in "$FRONTEND/" "$FRONTEND/app/settings" "$API/health"; do
+     echo "== $url"
+     curl -sI "$url" | grep -iE \
+       '^(content-security-policy|strict-transport-security|referrer-policy|x-content-type-options):'
+   done
+   ```
+
+   **Substitute the hostnames before running this.** A literal `budgetoid.app` against an environment
+   whose domain is not bound yet answers `NXDOMAIN`, and `grep` then prints nothing — indistinguishable
+   from "the headers did not ship", which is the failure this step exists to catch.
+
+   All three URLs must answer with **four** headers each; both origins carry the same set. **The deep
+   link is the one that matters:** Azure applies no route rule to a request `navigationFallback`
+   rewrote, so headers moved out of `globalHeaders` onto a `/*` route are present on the root and
+   absent on every URL a person lands on. Nothing in this repository can check any of this —
+   `src/security-headers.spec.ts` and `SecurityHeaderTests` prove the configuration and the middleware
+   ship with these values, not that Azure emits them
+   ([security headers](docs/engineering/security-headers.md)).
+
+   Then record the **cache policy on the unhashed pre-paint script**, which is the number
+   [ADR 0020](docs/decisions/0020-trade-inlined-critical-css-for-a-literal-script-src-self.md) and
+   [security headers](docs/engineering/security-headers.md) both leave open:
+
+   ```sh
+   curl -sI "$FRONTEND/theme-prepaint.js" | grep -iE '^(cache-control|etag):'
+   ```
+
+   `public/theme-prepaint.js` is copied verbatim into the build output, so its name carries **no build
+   hash** and it cannot carry `immutable` the way `/fonts/*` does; it is also parser-blocking by
+   design. Whatever comes back decides how often a repeat visit waits on a conditional request before
+   first paint, and nothing in this repository knows it. The CLI's `must-revalidate, max-age=30` is
+   **not** the answer — the emulator serves that for content-hashed assets too, and stamps a literal
+   `ETag: "SWA-CLI-ETAG"`. Record what the managed runtime actually sends and update both documents
+   with it.
+
+   Then check a **missing static file**, which is the one response nobody has ever seen Azure answer:
+
+   ```sh
+   curl -sI "$FRONTEND/does-not-exist.js" | grep -iE \
+     '^(HTTP/|content-security-policy|strict-transport-security|referrer-policy|x-content-type-options)'
+   ```
+
+   The Static Web Apps CLI answers that with a 404 carrying **none** of the four, because
+   `globalHeaders` reaches what the host serves from the content and not what it synthesizes. Whether
+   the managed runtime does the same is **unmeasured, and this is the deploy that measures it** —
+   record what comes back either way, and update
+   [security headers](docs/engineering/security-headers.md) with what it was. If the four are missing
+   there too, that is a finding to record and then research; no mechanism is named here, because
+   nobody has yet seen the managed runtime attach a header to a response it synthesized.
+
+   One known gap is **not** a defect to chase: the frontend may carry extra headers this repository
+   never set. It is recorded in that document.

@@ -3,6 +3,7 @@ using Domain.Currencies;
 using Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
+using TestSupport;
 
 namespace IntegrationTests;
 
@@ -102,7 +103,9 @@ public sealed class CurrencySchemaTests
         await using (BudgetoidDbContext db = CreateDb(host, budgetId))
         {
             db.Accounts.Add(Account.Create(
-                budgetId, "Checking", AccountType.Checking, 0m, "USD", UsdMinorUnit, SeedInstant));
+                Guid.CreateVersion7(),
+                budgetId,
+                SealedNarrative.Indexed("Checking"), AccountType.Checking, 0m, "USD", UsdMinorUnit, SeedInstant));
             await db.SaveChangesAsync();
         }
 

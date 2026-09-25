@@ -125,16 +125,24 @@ public sealed class NonSuperuserDeploymentProvisioningTests
     /// Starts an empty PostgreSQL container. Same builder as the test hosts, so this runs against the
     /// same server version as the rest of the suite; what is missing is everything they do afterwards.
     /// </summary>
-    private static async Task<PostgreSqlContainer> StartBareContainerAsync()
-    {
-        PostgreSqlContainer container = new PostgreSqlBuilder("postgres:17")
-            .WithDatabase("budgetoid")
-            .WithUsername("postgres")
-            .WithPassword("postgres")
-            .Build();
-        await container.StartAsync();
-        return container;
-    }
+    /// <remarks>
+    /// The start goes through <see cref="StartGuard" />, which is a leak guard: the call site binds its
+    /// <c>await using</c> variable only after this method returns, so a throw here would leave a
+    /// container Docker has already started with nothing left to dispose it, and each such leak makes
+    /// the next start likelier to time out. The reasoning lives on <see cref="StartGuard" /> rather
+    /// than being restated here — this class and <see cref="DeploymentProvisioningTests" /> are the two
+    /// that deliberately keep containers of their own, and the guard used to be written out in both,
+    /// which is a guard that can be corrected once. Guarded by shape-match to a documented failure
+    /// mode, not because a failure was captured here.
+    /// </remarks>
+    private static Task<PostgreSqlContainer> StartBareContainerAsync() =>
+        StartGuard.StartAsync(
+            new PostgreSqlBuilder("postgres:17")
+                .WithDatabase("budgetoid")
+                .WithUsername("postgres")
+                .WithPassword("postgres")
+                .Build(),
+            container => container.StartAsync());
 
     /// <summary>
     /// Opens a connection as the container account, which is a superuser. Used only to build the
