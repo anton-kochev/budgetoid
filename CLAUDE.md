@@ -107,6 +107,11 @@ because every one of these is something a reader will otherwise simplify away.
   schema is enumerated in exactly one place (`MappedSchema`). It replaces none of the ten censuses
   beside it. [data inventory](docs/engineering/data-inventory.md),
   [ADR 0024](docs/decisions/0024-key-the-data-inventory-on-the-model-and-reconcile-it-against-the-catalog.md)
+- **No API log record carries a narrative value, an email, a provider subject or a WebAuthn
+  credential id** — `NeverLoggedColumns` is a second axis beside the classification (`users.email`
+  is exported *and* never logged), and its narrative half is drawn from the inventory, never typed.
+  `LogRedactionTests` searches every record of real traffic that reaches every declared route; there is **no
+  runtime redactor**, by decision. [log redaction](docs/engineering/log-redaction.md)
 - **A new tenant-owned table needs a grant *and* a policy** — `budget_isolation` for `budget_id`,
   `user_isolation` for `user_id`. Grants fail closed (`42501`), RLS fails open. A table carrying
   neither column fails both.

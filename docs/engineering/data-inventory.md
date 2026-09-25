@@ -27,7 +27,10 @@ Two worked examples, because the wrong reading survives review:
   exported ones. A credential is not content a person owns, and the instant one was created is a
   fact about sign-in history. **The data type does not decide the word.**
 - **`users.email` is arithmetic and is exported**, even though a separate requirement forbids it
-  from a log record. That prohibition rides its own named list. A reader looking for the email in
+  from a log record. That prohibition rides its own named list, `NeverLoggedColumns`, which draws
+  every narrative column from here and names the identifying ones itself — a second axis beside the
+  three words rather than a fourth word
+  ([log redaction](log-redaction.md#one-list-reached-two-ways)). A reader looking for the email in
   the narrative set and failing to find it has found the inventory working, not a gap in it.
 
 ## Narrative is derived; arithmetic and excluded are authored
@@ -365,6 +368,15 @@ them reads it at all. `NarrativeEncryptionCoverage` asks one thing of the column
 narrative and nothing whatever of the other hundred — a column nobody classified is the
 neighbouring gate's verdict, not this one's. `EnvelopeBudgetingIsolationTests` reads neither the
 inventory nor the schema; its subject is IL.
+
+**The log census is a reader too, of the narrative half only.** `LogRedactionTests` searches the
+API's log records for every value of every column in `NeverLoggedColumns.All`, whose narrative half
+is `Of(Narrative)` drawn at type initialisation, and it holds its needles equal to that half plus
+the list's own identifying entries in both directions. So a ninth narrative column is searched the
+day it is classified. What the inventory cannot give it is a value to search for: the traffic fills
+an empty narrative column only on a table it already writes rows into, and a column on any other
+table fails the census's "every column holds a value" floor until the traffic reaches it. See
+[log redaction](log-redaction.md#what-holds-the-line-a-census-over-real-traffic).
 
 **One gap, stated rather than closed:** the client's `NARRATIVE_FIELDS` is a second executed list, in
 another language, and nothing reconciles it with the inventory at build time. Two more lists sit

@@ -94,7 +94,9 @@ public static class DataInventory
     /// credential is not content a person owns and its creation instant is sign-in history: the type
     /// of a column decides nothing. <c>users.email</c> is arithmetic and <i>is</i> exported, even
     /// though a separate requirement forbids it from a log record — that prohibition rides its own
-    /// named list, and "not in a log" and "not in the export" are different obligations.
+    /// named list, <see cref="NeverLoggedColumns" />, which draws every narrative column from here and
+    /// names the three identifying ones itself, because "not in a log" and "not in the export" are
+    /// different obligations.
     /// </para>
     /// <para>
     /// <b>One entry per column, and never a reason written at table grain for its columns to
