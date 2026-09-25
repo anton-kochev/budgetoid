@@ -140,9 +140,39 @@ public sealed class ApiFactory(
     /// leaves that class racing, and a gate on both the host and here deadlocks — the semaphore is
     /// not reentrant.
     /// </para>
+    /// <para>
+    /// <b>Configuration reload is switched off here, and the suite hangs without it.</b> Left on,
+    /// <c>WebApplication.CreateBuilder</c> watches <c>appsettings*.json</c> through a
+    /// <c>FileSystemWatcher</c>, and disposing the host does not stop that watcher: a dump taken
+    /// mid-run held 511 watchers enabled and undisposed while every factory that had built a host was
+    /// disposed. On macOS each one is an FSEvents stream, and a process gets 512 — measured, the 513th
+    /// raises "Failed to start the EventStream". That error cancels the file's change token, the
+    /// reload callback re-registers on a token that is already cancelled, and so <c>Program.Main</c>
+    /// recurses inside <c>CreateBuilder</c> 250 ms at a time and never reaches <c>Build()</c>. This
+    /// method is then holding the role gate for five minutes waiting for it, so every later boot
+    /// queues behind it and times out in turn. Nothing in this suite changes a settings file while a
+    /// host runs, so no test loses anything by the watcher never starting.
+    /// </para>
+    /// <para>
+    /// It has to go in as host configuration, not through <see cref="ConfigureWebHost" />: the deferred
+    /// builder hands host configuration to the entry point as command-line arguments, which
+    /// <c>CreateBuilder</c> reads before it adds the JSON files, while <c>ConfigureWebHost</c> runs only
+    /// after the builder already exists.
+    /// </para>
     /// </remarks>
-    protected override IHost CreateHost(IHostBuilder builder) =>
-        SharedPostgresCluster.UnderRoleGate(() => base.CreateHost(builder));
+    protected override IHost CreateHost(IHostBuilder builder)
+    {
+        builder.ConfigureHostConfiguration(configuration => configuration.AddInMemoryCollection(
+            [new KeyValuePair<string, string?>(ReloadConfigOnChangeKey, "false")]));
+
+        return SharedPostgresCluster.UnderRoleGate(() => base.CreateHost(builder));
+    }
+
+    /// <summary>
+    /// The host setting <c>WebApplication.CreateBuilder</c> reads to decide whether the JSON settings
+    /// files are watched. See <see cref="CreateHost" />.
+    /// </summary>
+    public const string ReloadConfigOnChangeKey = "hostBuilder:reloadConfigOnChange";
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
