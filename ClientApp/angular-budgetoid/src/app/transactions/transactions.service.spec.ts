@@ -58,6 +58,10 @@ import type {
 import { ConfigurationService } from '@app-core/services/configuration.service';
 import { SessionService } from '@app-core/session/session.service';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  expectOneErrorLine,
+  spyOnEveryConsoleMethod,
+} from '../../testing/console-spies';
 import type { TransactionView } from './transaction-view';
 import { TransactionsService } from './transactions.service';
 
@@ -701,6 +705,37 @@ describe('TransactionsService', () => {
       // Assert
       expect(service.loading()).toBe(false);
       expect(service.transactions()).toBeNull();
+    });
+
+    describe('the line a failed load leaves in the console', () => {
+      afterEach(() => {
+        vi.restoreAllMocks();
+      });
+
+      it('is a fixed reason and the status, and nothing the response carried', async () => {
+        // Arrange — a body carrying an address, a credential subject and a
+        // narrative value, which is what printing the response prints.
+        const spies = spyOnEveryConsoleMethod();
+        service.load();
+
+        // Act
+        http.expectOne(TRANSACTIONS_URL).flush(
+          {
+            detail: 'Rent for Alice',
+            email: 'alice@example.test',
+            sub: '109876543210987654321',
+          },
+          { status: 503, statusText: 'Service Unavailable' },
+        );
+        await settle();
+
+        // Assert
+        expectOneErrorLine(
+          spies,
+          'Transactions: the transactions could not be read',
+          { kind: 'http', status: 503 },
+        );
+      });
     });
 
     it('publishes a failed read as a word, and clears it on the next one', async () => {

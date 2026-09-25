@@ -60,6 +60,10 @@ import type {
 import { ConfigurationService } from '@app-core/services/configuration.service';
 import { SessionService } from '@app-core/session/session.service';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  expectOneErrorLine,
+  spyOnEveryConsoleMethod,
+} from '../../testing/console-spies';
 import { AccountsService } from './accounts.service';
 
 const API_ORIGIN = 'https://api.test';
@@ -736,6 +740,36 @@ describe('AccountsService', () => {
     // invented; the section has nothing to say and says so.
     expect(service.loading()).toBe(false);
     expect(service.accounts()).toBeNull();
+  });
+
+  describe('the line a failed load leaves in the console', () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('is a fixed reason and the status, and nothing the response carried', async () => {
+      // Arrange — a body carrying an address, a credential subject and a
+      // narrative value, which is what printing the response prints.
+      const spies = spyOnEveryConsoleMethod();
+      service.load();
+
+      // Act
+      http.expectOne(ACCOUNTS_URL).flush(
+        {
+          detail: 'Rent for Alice',
+          email: 'alice@example.test',
+          sub: '109876543210987654321',
+        },
+        { status: 500, statusText: 'Server Error' },
+      );
+      await settle();
+
+      // Assert
+      expectOneErrorLine(spies, 'Accounts API request failed', {
+        kind: 'http',
+        status: 500,
+      });
+    });
   });
 
   it('drops the opened names when the account locks', async () => {

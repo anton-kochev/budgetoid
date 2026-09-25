@@ -192,8 +192,9 @@ import { highestRotationEpochSeen } from './rotation-epoch-record';
  * question, and deliberately not that union: the three words it leaves out are
  * about a read that failed, and nothing here reads anything.
  *
- * Which refusal fired is in the message, for a console. What a screen acts on
- * is the word.
+ * Which refusal fired is in the message, for a debugger or a spec; the console
+ * never sees it, since `logFailure` prints this class's name and not its
+ * message. What a screen acts on is the word.
  */
 export type KeyRotationMaterialReason = 'unopened' | 'inconsistent';
 

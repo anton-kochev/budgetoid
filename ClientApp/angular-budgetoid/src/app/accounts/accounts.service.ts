@@ -194,6 +194,7 @@ import {
   type AccountType,
 } from '@app-core/api/account-api.service';
 import { writeOutcomeOf, type WriteOutcome } from '@app-core/api/write-outcome';
+import { logFailure } from '@app-core/logging/log-failure';
 import {
   AccountKeyCustodyService,
   type AccountKeyStatus,
@@ -320,7 +321,7 @@ export class AccountsService {
             ),
             map((views): LoadOutcome => ({ state: 'loaded', views })),
             catchError((error: unknown): Observable<LoadOutcome> => {
-              console.error('Accounts API request failed', error);
+              logFailure('Accounts API request failed', error);
 
               return of({ state: 'failed' });
             }),

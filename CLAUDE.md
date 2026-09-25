@@ -249,6 +249,12 @@ Load-bearing rules. Each links the doc that argues it — **read that doc before
   identity-provider picture. `src/no-external-origins.spec.ts` reads the production bundle, so
   `npm test` needs a `npm run build` first.
   [no third-party origins](docs/engineering/no-third-party-origins.md)
+- **Nothing prints except through `logFailure`**, which writes a literal reason and a closed
+  projection of the cause — never its message, URL or body. Angular's `ErrorHandler`, the OAuth
+  library's logger, the window's error events and zone.js are each funnelled into it by
+  `provideFailureLogging()`, registered **after** `provideOAuthClient()`. Lint is the early
+  warning; `no-console-outside-funnel.spec.ts` is the guard, because an inline disable escapes lint.
+  [log redaction](docs/engineering/log-redaction.md)
 - **The production build registers no state-inspection provider.** `provideStoreDevtools` lives in
   `src/app/devtools.providers.ts`, which production `fileReplacements` swaps for an empty module — a
   runtime `isDevMode()` branch would leave the code in the bundle. `src/no-devtools.spec.ts` holds it.
@@ -372,6 +378,7 @@ Load-bearing rules. Each links the doc that argues it — **read that doc before
   [adversarial properties](docs/engineering/adversarial-properties.md),
   [data isolation](docs/engineering/data-isolation.md),
   [data inventory](docs/engineering/data-inventory.md),
+  [log redaction](docs/engineering/log-redaction.md),
   [migrations](docs/engineering/migrations.md),
   [no third-party origins](docs/engineering/no-third-party-origins.md),
   [security headers](docs/engineering/security-headers.md), and

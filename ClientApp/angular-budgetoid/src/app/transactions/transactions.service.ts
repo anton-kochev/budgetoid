@@ -212,6 +212,7 @@ import {
   type TransactionDto,
 } from '@app-core/api/transactions-api.service';
 import { writeOutcomeOf, type WriteOutcome } from '@app-core/api/write-outcome';
+import { logFailure } from '@app-core/logging/log-failure';
 import {
   AccountKeyCustodyService,
   type AccountKeyStatus,
@@ -313,6 +314,22 @@ interface DraftPayee {
   readonly id: string;
   readonly nameKey: string;
 }
+
+// Every sentence `#report` may print, closed. A console line is printed text,
+// so it is only ever the author's own words: a reason assembled from a value
+// could carry the value.
+type FailureReason =
+  | 'the transactions could not be read'
+  | 'the categories could not be read'
+  | 'the budget this entry belongs to is not known'
+  | 'the note could not be sealed'
+  | 'the transaction could not be recorded'
+  | 'the counterparty could not be keyed'
+  | 'the counterparty’s name could not be sealed'
+  | 'the account’s keys changed while the counterparty was being sealed'
+  | 'the counterparty could not be created'
+  | 'a counterparty of that name exists and this browser cannot read it'
+  | 'the counterparties could not be read';
 
 // The one narrative word the counterparty list is ordered by, named once so
 // that the two call sites below state the same one.
@@ -1019,16 +1036,17 @@ export class TransactionsService {
   // region, and never in a snackbar, which is what the TODO that stood here
   // proposed. What survives is a console line per abandoned write, because a
   // write that wrote nothing and said nothing in the log cannot be told from
-  // one that landed while somebody is debugging it. `cause` is absent on the
-  // refusals that never reached a request: there is no error object behind a
-  // locked key, and passing `undefined` would print one.
-  #report(reason: string, cause?: unknown): void {
-    if (cause === undefined) {
-      console.error(`Transactions: ${reason}`);
-
-      return;
-    }
-
-    console.error(`Transactions: ${reason}`, cause);
+  // one that landed while somebody is debugging it.
+  //
+  // The line is `logFailure`'s, so the cause is printed only as its projection,
+  // never as the object. `reason` is a {@link FailureReason}, never a `string`:
+  // the prefixed sentence is a literal type, which is what `logFailure` demands.
+  // `cause` is left out, not passed as `undefined`, on the refusals that never
+  // reached a request: there is no error object behind a locked key.
+  #report(reason: FailureReason, ...cause: [] | [unknown]): void {
+    logFailure<`Transactions: ${FailureReason}`>(
+      `Transactions: ${reason}`,
+      ...cause,
+    );
   }
 }

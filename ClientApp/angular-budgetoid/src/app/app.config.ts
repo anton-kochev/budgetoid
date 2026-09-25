@@ -9,6 +9,7 @@ import { provideRouter } from '@angular/router';
 import { provideAppCore } from '@app-core/core.providers';
 import { apiCredentialsInterceptor } from '@app-core/interceptors/api-credentials.interceptor';
 import { sessionExpiryInterceptor } from '@app-core/interceptors/session-expiry.interceptor';
+import { provideFailureLogging } from '@app-core/logging/provide-failure-logging';
 import { provideEffects } from '@ngrx/effects';
 import { provideStore } from '@ngrx/store';
 import { provideOAuthClient } from 'angular-oauth2-oidc';
@@ -36,6 +37,11 @@ export const appConfig: ApplicationConfig = {
     ),
     provideRouter(routes),
     provideOAuthClient(),
+    // After `provideOAuthClient()`, never before: that call registers its own
+    // `OAuthLogger`, which writes to `console`, and the last provider for a
+    // token wins. Above it, the library's logger would take the tokens it
+    // parses straight to the console.
+    provideFailureLogging(),
     // **Registered holding nothing, on purpose.** The last thing that used
     // NgRx was the provider sign-in button's action chain, and it left with
     // the button — no reducer, no effect and no selector is left in the

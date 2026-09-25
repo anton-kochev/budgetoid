@@ -455,10 +455,14 @@ export class SettingsService {
   // before `export`'s `catchError` runs. The three other words come from the
   // body, and `write` names them.
   //
-  // The error itself is still not logged, departing from the neighbouring
-  // `accounts.service.ts`, which writes the error object to the console before
-  // swallowing it. This route answers with the user's own data, and in
-  // Development its error body carries a stack trace; copying either into the
-  // console puts it somewhere with a different audience than the response.
+  // The error is not logged, and `export`'s `catchError` does not even bind it.
+  // This route answers with the user's own data, and in Development its error
+  // body carries a stack trace, so nothing of the error is copied anywhere with
+  // a different audience than the response. That argument no longer rules out
+  // a console line: `logFailure` prints a literal reason and a closed
+  // projection of the cause — a refused request's status, a thrown error's
+  // allow-listed name — never the object, its body or its URL.
+  // `accounts.service.ts` next door now reports its failures that way. There is
+  // no such line here because none was added, not because one would leak.
   // Setting the signal is the handling.
 }

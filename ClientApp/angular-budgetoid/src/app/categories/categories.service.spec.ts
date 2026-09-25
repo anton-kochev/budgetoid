@@ -56,6 +56,10 @@ import type {
 import { ConfigurationService } from '@app-core/services/configuration.service';
 import { SessionService } from '@app-core/session/session.service';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  expectOneErrorLine,
+  spyOnEveryConsoleMethod,
+} from '../../testing/console-spies';
 import { CategoriesService } from './categories.service';
 
 const API_ORIGIN = 'https://api.test';
@@ -497,6 +501,38 @@ describe('CategoriesService', () => {
       expect(service.loading()).toBe(false);
       expect(service.groups()).toBeNull();
       expect(service.categories()).toBeNull();
+    });
+
+    describe('the line a failed load leaves in the console', () => {
+      afterEach(() => {
+        vi.restoreAllMocks();
+      });
+
+      it('is a fixed reason and the status, and nothing the response carried', async () => {
+        // Arrange — a body carrying an address, a credential subject and a
+        // narrative value, which is what printing the response prints.
+        const spies = spyOnEveryConsoleMethod();
+        service.load();
+
+        // Act — the good half first, for the `forkJoin` reason the case above
+        // gives.
+        http.expectOne(CATEGORIES_URL).flush({ items: [] });
+        http.expectOne(GROUPS_URL).flush(
+          {
+            detail: 'Rent for Alice',
+            email: 'alice@example.test',
+            sub: '109876543210987654321',
+          },
+          { status: 404, statusText: 'Not Found' },
+        );
+        await settle();
+
+        // Assert
+        expectOneErrorLine(spies, 'Categories API request failed', {
+          kind: 'http',
+          status: 404,
+        });
+      });
     });
 
     it('lets a misuse rejection during a load reach the failure branch', async () => {

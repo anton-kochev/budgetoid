@@ -145,6 +145,7 @@ import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { CategoriesApiService } from '@app-core/api/categories-api.service';
 import { CategoryGroupsApiService } from '@app-core/api/category-groups-api.service';
 import { writeOutcomeOf, type WriteOutcome } from '@app-core/api/write-outcome';
+import { logFailure } from '@app-core/logging/log-failure';
 import {
   AccountKeyCustodyService,
   type AccountKeyStatus,
@@ -1032,6 +1033,6 @@ export class CategoriesService {
   }
 
   #report(error: unknown): void {
-    console.error('Categories API request failed', error);
+    logFailure('Categories API request failed', error);
   }
 }

@@ -3,7 +3,7 @@ import {
   HttpTestingController,
   provideHttpClientTesting,
 } from '@angular/common/http/testing';
-import { ApplicationInitStatus } from '@angular/core';
+import { ApplicationInitStatus, ErrorHandler } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { Router } from '@angular/router';
 import {
@@ -11,12 +11,19 @@ import {
   type KeyRotationStateDto,
 } from '@app-core/api/key-rotation-api.service';
 import { MeApiService } from '@app-core/api/me-api.service';
+import { FailureErrorHandler } from '@app-core/logging/failure-error-handler';
+import { FailureOAuthLogger } from '@app-core/logging/failure-oauth-logger';
 import { AuthService } from '@app-core/services/auth-service';
 import { ConfigurationService } from '@app-core/services/configuration.service';
 import { SessionService } from '@app-core/session/session.service';
-import { OAuthService } from 'angular-oauth2-oidc';
+import { OAuthLogger, OAuthService } from 'angular-oauth2-oidc';
 import { of } from 'rxjs';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  expectOneErrorLine,
+  spyOnEveryConsoleMethod,
+  type ConsoleSpies,
+} from '../testing/console-spies';
 import { appConfig } from './app.config';
 
 const API_BASE_URL = 'https://api.budgetoid.app';
@@ -206,5 +213,174 @@ describe('appConfig', () => {
 
     // Assert — once, for a visitor the probe found authenticated.
     expect(rotationStateReads).toBe(1);
+  });
+});
+
+// The logging funnel's registrations, held here for the reason the three pins
+// above are: `failure-error-handler.spec.ts` and `failure-oauth-logger.spec.ts`
+// construct their classes directly and can never see whether the application
+// provides them. Removing `provideFailureLogging()` from `app.config.ts`, or
+// placing it before `provideOAuthClient()` so the library's console logger
+// wins, is what these go red on.
+//
+// Its own `describe` because it needs one thing the block above does not:
+// `rethrowApplicationErrors: false`. TestBed's default wraps the application's
+// error handler in one that calls it and then **rethrows** — inside the
+// window's `error` listener that throw lands before `preventDefault()`, so the
+// event would never end prevented however correct the registration. `false`
+// hands errors to the registered `ErrorHandler` and returns, which is what a
+// browser running the application does. The stubs are the block above's,
+// restated rather than shared so that block's `beforeEach` stays as it is.
+// zone.js reads it as `Zone[__symbol__('ignoreConsoleErrorUncaughtError')]`:
+// a property of the `Zone` constructor, never of `window`.
+const ZONE_UNCAUGHT_FLAG = '__zone_symbol__ignoreConsoleErrorUncaughtError';
+
+// The `Zone` constructor, or a thrown precondition: a runner without zone.js
+// would leave the flag pin passing or failing for a reason that is not the
+// subject.
+function zoneGlobal(): object {
+  const zone: unknown = Reflect.get(globalThis, 'Zone');
+  if (typeof zone !== 'function') {
+    throw new Error('zone.js is not loaded under this runner.');
+  }
+
+  return zone;
+}
+
+describe('appConfig failure logging', () => {
+  const EMAIL = 'alice@example.test';
+  let spies: ConsoleSpies;
+  let httpMock: HttpTestingController;
+
+  beforeEach(() => {
+    spies = spyOnEveryConsoleMethod();
+    // Before the module is finalized below, which is when the initializers
+    // run: an earlier case, or an earlier file sharing this worker, may have
+    // left the flag set, and the pin has to watch this module set it.
+    Reflect.deleteProperty(zoneGlobal(), ZONE_UNCAUGHT_FLAG);
+
+    const configuration: Pick<ConfigurationService, 'getConfig' | 'load'> = {
+      getConfig: () => ({ apiBaseUrl: API_BASE_URL, auth: {} }),
+      load: () => Promise.resolve(true),
+    };
+    const auth: Pick<AuthService, 'initialize' | 'isProviderReturn'> = {
+      initialize: () => Promise.resolve(),
+      isProviderReturn: () => false,
+    };
+    const me: Pick<MeApiService, 'getSessionOwner'> = {
+      getSessionOwner: () =>
+        of({
+          budgetId: '3f5b0a91-7c24-4a1e-9d3b-6e8f0c2a5471',
+          email: 'visitor@budgetoid.app',
+        }),
+    };
+    const rotationApi: Pick<KeyRotationApiService, 'getRotationState'> = {
+      getRotationState: () => of<KeyRotationStateDto>({ rotation: null }),
+    };
+    const oAuth: Pick<OAuthService, 'getIdToken'> = {
+      getIdToken: () => '',
+    };
+    const router: Pick<Router, 'navigate' | 'navigateByUrl'> = {
+      navigate: () => Promise.resolve(true),
+      navigateByUrl: () => Promise.resolve(true),
+    };
+
+    TestBed.configureTestingModule({
+      providers: [
+        ...appConfig.providers,
+        provideHttpClientTesting(),
+        { provide: ConfigurationService, useValue: configuration },
+        { provide: AuthService, useValue: auth },
+        { provide: MeApiService, useValue: me },
+        { provide: KeyRotationApiService, useValue: rotationApi },
+        { provide: OAuthService, useValue: oAuth },
+        { provide: Router, useValue: router },
+      ],
+      rethrowApplicationErrors: false,
+    });
+
+    httpMock = TestBed.inject(HttpTestingController);
+  });
+
+  afterEach(() => {
+    httpMock.verify();
+    // Destroys the environment injector, which is what removes the window
+    // listeners — left installed they would answer the next file's events.
+    TestBed.resetTestingModule();
+    vi.restoreAllMocks();
+    Reflect.deleteProperty(zoneGlobal(), ZONE_UNCAUGHT_FLAG);
+  });
+
+  it('tells zone.js not to print an uncaught error itself', async () => {
+    // Arrange — zone.js prints an error escaping a zone task with
+    // `console.error('Unhandled Promise rejection:', message, …, error)`
+    // unless this flag is set on the `Zone` constructor, and that print
+    // bypasses every handler registered here.
+
+    // Act
+    await TestBed.inject(ApplicationInitStatus).donePromise;
+
+    // Assert
+    expect(Reflect.get(zoneGlobal(), ZONE_UNCAUGHT_FLAG)).toBe(true);
+  });
+
+  it('routes an unhandled rejection through the funnel and claims it', async () => {
+    // Arrange — the rejection half of `provideBrowserGlobalErrorListeners()`,
+    // which listens for `unhandledrejection` and hands `event.reason` on. A
+    // funnel that registered only an `error` listener leaves this one
+    // unclaimed, and the browser prints the reason, message and all.
+    await TestBed.inject(ApplicationInitStatus).donePromise;
+    spies.error.mockClear();
+    const event = new PromiseRejectionEvent('unhandledrejection', {
+      cancelable: true,
+      // Never settles: a rejected promise here would be a real unhandled
+      // rejection in the runner rather than the synthetic one under test.
+      promise: new Promise<never>(() => undefined),
+      reason: new Error(EMAIL),
+    });
+
+    // Act
+    window.dispatchEvent(event);
+
+    // Assert
+    expect(event.defaultPrevented).toBe(true);
+    expectOneErrorLine(spies, 'Unhandled error', { kind: 'error' });
+  });
+
+  it('resolves the ErrorHandler to the failure funnel', () => {
+    // Act
+    const handler = TestBed.inject(ErrorHandler);
+
+    // Assert
+    expect(handler).toBeInstanceOf(FailureErrorHandler);
+  });
+
+  it('resolves the OAuth library’s logger to the failure funnel', () => {
+    // Act
+    const logger = TestBed.inject(OAuthLogger);
+
+    // Assert
+    expect(logger).toBeInstanceOf(FailureOAuthLogger);
+  });
+
+  it('routes an uncaught window error through the funnel and claims it', async () => {
+    // Arrange — what the browser raises for an exception nobody caught. Left
+    // unclaimed it is printed by the browser itself, message and all, and no
+    // handler of ours ever sees it.
+    await TestBed.inject(ApplicationInitStatus).donePromise;
+    spies.error.mockClear();
+    const event = new ErrorEvent('error', {
+      cancelable: true,
+      error: new Error(EMAIL),
+      message: EMAIL,
+    });
+
+    // Act
+    window.dispatchEvent(event);
+
+    // Assert — claimed, so the browser prints nothing of its own, and the one
+    // line is the projection.
+    expect(event.defaultPrevented).toBe(true);
+    expectOneErrorLine(spies, 'Unhandled error', { kind: 'error' });
   });
 });

@@ -179,8 +179,10 @@ export const FACTOR_MANIFEST_MAX_BYTES = 4096;
  *
  * **What refused the value is kept as the `cause`.** The decoder next door says
  * which of its rules a string broke, in words this module could not improve on
- * and has no business restating; discarding it would leave a reader of a console
- * with a sentence about base64url and no idea which character offended.
+ * and has no business restating; discarding it would leave whoever inspects the
+ * error with a sentence about base64url and no idea which character offended.
+ * That reader is a debugger or a spec, never the console: `logFailure` prints
+ * this class's name and neither its message nor its `cause`.
  */
 export class FactorManifestWireError extends Error {
   public override readonly name = 'FactorManifestWireError';
@@ -777,8 +779,9 @@ function requireManifestWidth(
 // this wrapper knows less than what it is wrapping: the decoder says whether the
 // string carried padding, a character outside the alphabet, or a final group no
 // encoder emits, and re-stating one of those here would be a second, vaguer
-// opinion about a rule it does not own. `cause` is what a console prints beneath
-// the message, and it costs nothing to carry.
+// opinion about a rule it does not own. `cause` is there for whoever inspects
+// the error in a debugger or a spec — the console never prints it, since
+// `logFailure` prints only this class's name — and it costs nothing to carry.
 function decodeManifestWire(wire: string): Uint8Array {
   try {
     return decodeBase64Url(wire);
