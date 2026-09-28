@@ -76,6 +76,12 @@ internal static class LogCensusTraffic
     /// <summary>The name of the bearer step whose token's signature is forged.</summary>
     public const string ForgedTokenStep = "provider token, forged signature";
 
+    /// <summary>
+    /// The name of the step that adds a passkey whose handle is already registered, for a census floor
+    /// to find it by.
+    /// </summary>
+    public const string DuplicateHandleStep = "add passkey, handle already registered";
+
     /// <summary>The name of the step that erases the primary account.</summary>
     public const string ErasureStep = "erasure";
 
@@ -310,6 +316,16 @@ internal static class LogCensusTraffic
         SyntheticAuthenticator second = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         sent.Add(SentValue.OfBytes("passkey_public_keys", "webauthn_credential_id", second.CredentialId));
         await StepAsync(steps, recorder, "add passkey", async statuses =>
+            statuses.AddRange(await AddPasskeyAsync(client, second)));
+
+        // The same authenticator enrolled a second time. Nothing refuses it before the save — the options
+        // leg only lists it under excludeCredentials, which a client is free to ignore — so the insert
+        // reaches passkey_public_keys and fails on IX_passkey_public_keys_webauthn_credential_id, which
+        // PasskeyRepository.TryAddAsync catches after the save. That table is exempt from row-level
+        // security, so the unique violation is the one place a stored handle can come back from the
+        // server inside an exception; the census has to see that exception reach a record. The handle is
+        // already on the sent list from the step above.
+        await StepAsync(steps, recorder, DuplicateHandleStep, async statuses =>
             statuses.AddRange(await AddPasskeyAsync(client, second)));
 
         await StepAsync(steps, recorder, "recovery-code regeneration", async statuses =>

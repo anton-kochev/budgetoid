@@ -372,11 +372,21 @@ the option defaults to `true` in Development only. Under that Development defaul
 produced no record at all (measured), so a census running on the default would have asserted
 cleanliness over a path that wrote nothing.
 
-**`Include Error Detail=true` is not guarded, and that is stated rather than hidden.** Set on the
-application connection, it leaked nothing on the duplicate-key paths (measured): the `23505` came
-back without the `Key (…)=(…)` detail. [Guessing] PostgreSQL withholds that detail because the tables
-carry row-level security. The census connects without the flag, so turning it on in any environment
-is a change the census never sees.
+**`Include Error Detail=true` is refused at boot.** The option makes Npgsql copy PostgreSQL's
+`DETAIL` line into every error, and PostgreSQL withholds the `Key (…)=(…)` part of that line only
+where the reader could not otherwise see the row. Measured on this schema: on the policed `users`
+and `payees` tables the detail came back without the key, and came back with it once row-level
+security was switched off; on the exempt `credentials` and `passkey_public_keys`, which the app role
+reads directly, it quoted `(provider, subject)` and the colliding `webauthn_credential_id`. Run
+through the census with the flag on, the passkey-handle collision step went red: EF's save-failure
+record carried the handle as hex. `Program.cs` therefore parses both the application and the
+Development admin connection strings with Npgsql's own builder — so an alias or a recased key is
+the same option — and throws before anything touches the database, in every environment.
+It throws rather than rewriting the value, because a rule held by coercion is not held (ADR 0002)
+and a silent overwrite would hide from whoever set the option that it never took effect.
+`ConnectionStringOptionTests` holds it: both environments and both spellings refuse, the refused
+Development host never creates the migrations table, the admin string is refused by name, the
+message never quotes the connection string, and a string carrying unrelated options still boots.
 
 ### What the API half does not reach
 
@@ -390,7 +400,6 @@ is a change the census never sees.
   or keyed with an HMAC, base64 of a hash, a slice of a binary value shorter than 16 bytes, part of a
   text value, or wrapped inside another encoding — a provider token's payload is base64url of JSON,
   so the address inside a logged token is not the address's own bytes.
-- **The `Include Error Detail` flag**, as above.
 - **The stricter rules beside this one.** Erasure logs no identifier of an erased account, the
   export logs no identifier, and a recovery code's verifier, hash and set credential id reach no log
   line. Each of those forbids values this census permits or does not search — `users.id` among them —

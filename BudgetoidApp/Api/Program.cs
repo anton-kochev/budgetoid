@@ -248,6 +248,13 @@ foreach (string allowedOrigin in allowedOrigins)
     RequireCeremonyOrigin(allowedOrigin, relyingPartyId);
 }
 
+// The connection's forbidden options are refused here, post-Build like the checks above and ahead of
+// the Development block that migrates over the database, for the reason argued above
+// BuildConnectionString. ConnectionStrings:budgetoid is the only source of the request-serving
+// connection: on .NET 10 the Azure enrichment reads no connection string of its own, it only
+// configures the data source EF builds from the string handed to UseNpgsql.
+RefuseForbiddenConnectionOptions("ConnectionStrings:budgetoid", app.Configuration.GetConnectionString("budgetoid"));
+
 // Outermost, above the exception handler, so the headers reach every response including the ones no
 // route delegate wrote. SecurityHeadersMiddleware holds the argument.
 app.UseMiddleware<SecurityHeadersMiddleware>();
@@ -293,6 +300,7 @@ if (app.Environment.IsDevelopment())
                                        "ConnectionStrings:budgetoid-admin is required in Development: startup migrates the "
                                        + "schema and provisions the application role, and neither can run on the "
                                        + "least-privilege connection the application serves requests with.");
+    RefuseForbiddenConnectionOptions("ConnectionStrings:budgetoid-admin", adminConnectionString);
 
     // The application role's password is read out of the application connection string rather than
     // from a configuration key of its own: startup sets the role's password to whatever the
@@ -432,6 +440,17 @@ static void RequireCeremonyOrigin(string allowedOrigin, string relyingPartyId)
 // `Multiplexing=true` interleaves logical sessions over one physical connection, which no
 // session-setting design can survive at all. Two settings now ride on this, so flipping either
 // option leaks tenancy and identity rather than tenancy alone.
+//
+// `Include Error Detail=true` is refused at boot, in every environment, by
+// RefuseForbiddenConnectionOptions rather than here — this function runs lazily inside the DbContext
+// options lambda, on the first resolved context rather than at boot, and returns early in
+// Development, so a check here would do neither.
+// The option makes Npgsql copy PostgreSQL's DETAIL line into every error, and row-level security
+// withholds that line only on a policed table: on the exempt passkey_public_keys and credentials
+// tables a unique violation quotes the colliding webauthn_credential_id or (provider, subject), and
+// EF's save-failure record writes it to the log. The host refuses rather than rewriting the value
+// to false, because enforcement means rejecting (ADR 0002) and a silent overwrite would hide from
+// whoever set the option that it never took effect.
 static string? BuildConnectionString(string? connectionString, bool isDevelopment)
 {
     if (connectionString is null || isDevelopment)
@@ -442,4 +461,37 @@ static string? BuildConnectionString(string? connectionString, bool isDevelopmen
     NpgsqlConnectionStringBuilder connectionStringBuilder = new(connectionString) { SslMode = SslMode.Require };
 
     return connectionStringBuilder.ConnectionString;
+}
+
+// Refuse a connection string that switches on an Npgsql option this application cannot run under.
+// Parsed with Npgsql's own builder, never searched as text: the builder resolves aliases
+// (IncludeErrorDetail) and any key casing to the one property, and reads `=false` as off. One row
+// per option, so forbidding another is one line. The message names the configuration key and the
+// option's canonical keyword, never the connection string, which may carry a password.
+static void RefuseForbiddenConnectionOptions(string configurationKey, string? connectionString)
+{
+    if (connectionString is null)
+    {
+        return;
+    }
+
+    NpgsqlConnectionStringBuilder parsed = new(connectionString);
+
+    (string Keyword, bool IsSet, string Reason)[] forbidden =
+    [
+        ("Include Error Detail", parsed.IncludeErrorDetail,
+            "it copies PostgreSQL's DETAIL line into every error, and on a table exempt from row-level "
+            + "security that line quotes the colliding key — a passkey handle, a provider subject — "
+            + "straight into the log"),
+    ];
+
+    foreach ((string keyword, bool isSet, string reason) in forbidden)
+    {
+        if (isSet)
+        {
+            throw new InvalidOperationException(
+                $"{configurationKey} sets '{keyword}', which this application refuses: {reason}. "
+                + $"Remove '{keyword}' from the connection string or set it to false.");
+        }
+    }
 }

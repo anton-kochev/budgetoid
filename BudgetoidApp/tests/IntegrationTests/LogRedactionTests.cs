@@ -184,6 +184,11 @@ public sealed class LogRedactionTests
         await Assert.That(UndrivenRoutes.Keys.Where(route => !declared.Contains(route)).ToArray()).IsEmpty();
         await Assert.That(declared.Count).IsGreaterThanOrEqualTo(DeclaredRouteFloor);
 
+        // The duplicate handle was refused by the repository's catch, after the save, and by nothing
+        // earlier: any other status means the unique violation on the exempt table never happened, and
+        // the exception the census most needs to see was never raised.
+        await Assert.That(string.Join(",", StatusesOf(run, LogCensusTraffic.DuplicateHandleStep))).IsEqualTo("409");
+
         // The erasure took the account every other step wrote into, so its values survive only in the
         // snapshots — and the snapshots are what kept the columns above non-empty.
         await Assert.That(string.Join(",", StatusesOf(run, LogCensusTraffic.ErasureStep))).IsEqualTo("204");
