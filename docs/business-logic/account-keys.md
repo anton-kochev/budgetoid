@@ -1347,12 +1347,13 @@ cost of root-providing is
 that ending custody has to be a method rather than a lifetime, because an injector nobody destroys
 cannot forget anything on its own.
 
-**Ending custody has one owner, and it is `SessionService.ended()`.** Two paths end a session today
-— `sessionExpiryInterceptor` on a `401`, and the Settings screen's sign-out — and a third will be
-added by somebody thinking about sign-out rather than about key material. Placed in that one method,
-the third path clears the keys for free; placed in the two callers, it does not, and the symptom is
-an ended session whose content key is still readable from the root injector for the life of the tab,
-with nothing red either way. **Not an `effect()` over the session status**, which is the tidier shape
+**Ending custody has one owner, and it is `SessionService.ended()`.** Its callers are
+`sessionExpiryInterceptor` on a `401`, the Settings screen's sign-out, and `ErasureFlowService` on
+the erasing request's `204` — and the last is the case this placement was for: it was added by
+somebody thinking about erasure rather than about key material, and it clears the keys with no line
+of its own. Placed in the callers instead, the next path would not, and the symptom is an ended
+session whose content key is still readable from the root injector for the life of the tab, with
+nothing red either way. **Not an `effect()` over the session status**, which is the tidier shape
 and is wrong twice: it fires on construction, so whether it wipes a set already adopted is decided
 by injection order, and the only honest predicate it could carry is "lock on `anonymous`" — locking
 on `unreachable` destroys both keys over one blinked request and demands a full WebAuthn ceremony to
@@ -2348,14 +2349,14 @@ about the same value, and the reason a second screen holding a key-encryption ke
 `authentication` is minted by the **anonymous** sign-in options leg, so spending it here would make
 an anonymous route load-bearing for a screen deep inside the authenticated app — and every press
 would leave a live challenge in the pool that no request ever redeems. `reauthentication` is worse
-for the opposite reason: **one pool authorizes three sensitive acts** — erasure, passkey revocation
-and replacing a set of recovery codes, one handler each — and nothing on a nonce records which of
-them it was asked for, so every press of Unlock would leave behind a live one spendable on any of
-the three, the irreversible act included, on behalf of an act that destroys nothing. **Three makes
-that worse than one would, not safer**: the whole value of a re-authentication nonce is the distance
-between what it was minted for and what it can be spent on, and reading the pool as erasure's alone
-is what makes borrowing it look harmless here. See
-[passkeys.md](passkeys.md), which owns the pools and counts what spends them.
+for the opposite reason: **one pool authorizes every assertion-gated act** — erasure, passkey
+revocation, replacing a set of recovery codes and beginning a key rotation, one handler each — and
+nothing on a nonce records which of them it was asked for, so every press of Unlock would leave
+behind a live one spendable on any of them, the irreversible act included, on behalf of an act that
+destroys nothing. **Several makes that worse than one would, not safer**: the whole value of a
+re-authentication nonce is the distance between what it was minted for and what it can be spent on,
+and reading the pool as erasure's alone is what makes borrowing it look harmless here. See
+[passkeys.md](passkeys.md), which owns the pools and names what spends them.
 
 **The day something on the server does have to check a factor from this screen, that is a different
 ceremony with a server's challenge behind it.** Replacing a set of recovery codes is the case, and

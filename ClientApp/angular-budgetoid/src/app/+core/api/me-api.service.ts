@@ -2,6 +2,7 @@ import { HttpContext } from '@angular/common/http';
 import { Injectable } from '@angular/core';
 import { EXPECTS_UNAUTHENTICATED } from '@app-core/interceptors/expects-unauthenticated.token';
 import type { FactorKeypairEnvelopes } from '@app-core/security/factor-keypair';
+import type { PasskeyAssertionPayload } from '@app-core/security/webauthn-encoding';
 import { map, Observable } from 'rxjs';
 import { BaseApiService } from './base-api.service';
 
@@ -326,34 +327,30 @@ export class MeApiService extends BaseApiService {
   // collapsing them is the one defect this whole path is shaped to prevent.
   //
   // There is deliberately **no** counterpart that generates a set, and the
-  // reason has moved twice. `POST /api/me/recovery-codes` takes eight members:
-  // the five of a fresh WebAuthn assertion, which this client *can* now
-  // produce — `webauthn-ceremony.service.ts` runs one — ten whole code
+  // reason has moved three times. `POST /api/me/recovery-codes` takes eight
+  // members: the five of a fresh WebAuthn assertion, ten whole code
   // submissions, each carrying a factor id, that code's wrapped private key and
   // the account's two keys encapsulated to its public half, and — because ten
   // factors leave and ten arrive — the account's factor manifest beside the
-  // rotation epoch it is written under. The submissions are no longer blocked
-  // on the *server*: `getAccountKeys` below reads the envelopes, and
-  // `account-key-custody.service.ts` opens them on every passkey sign-in. They
-  // are blocked on what custody keeps — two non-extractable `CryptoKey` objects
-  // behind no accessor — while an encapsulation takes the account's keys as
-  // bytes. Getting those bytes means opening a factor again under a
-  // key-encryption key derived from one somebody presents there and then, which
-  // is a ceremony — but not the one this route wants.
+  // rotation epoch it is written under.
   //
-  // **That distinction is what is left, and it is narrower than "the settings
-  // screen runs no ceremony".** It runs one: the **Unlock** control asserts a
-  // passkey. That assertion is minted in the browser, over a challenge the
-  // browser chose, and is discarded unsent — nothing verifies it and nothing
-  // needs to, because the account's own envelopes are what judge the factor.
-  // The five assertion members here are the other kind: a challenge the
-  // *server* issued and a signature it checks. To the person holding the device
-  // the two are one system prompt, and what they authorize is not comparable —
-  // one opens envelopes this browser is already entitled to, the other replaces
-  // the account's whole recovery card. So the ceremony this route needs is
-  // still one nothing on that screen runs, and a method for it would be API
-  // surface no test could execute — a signature that compiles, is called by
-  // nothing, and is wrong in a way nothing on the screen would show.
+  // **Neither half of that is out of this client's reach any more.** A fresh
+  // assertion over a challenge the *server* issued, and a signature it checks,
+  // is what the Key rotation section and the erasure dialog both take on the
+  // settings screen today — `reauthentication-api.service.ts` mints it and
+  // {@link eraseAccount} carries one. And a rotation already opens a factor
+  // under a key-encryption key presented there and then and encapsulates a
+  // generation of the account's keys to public halves — the same kind of work
+  // the ten submissions need (`key-rotation-material.ts`). So this is no longer
+  // a missing ceremony or a missing capability.
+  //
+  // What is missing is the two surfaces a person would meet: a confirmation,
+  // because replacing a set invalidates every code printed from the old one and
+  // cannot be undone, and a place that shows the ten new codes once. The screen
+  // says exactly that beside its disabled Generate control. A method here ahead
+  // of those would be API surface no test could execute — a signature that
+  // compiles, is called by nothing, and is wrong in a way nothing on the screen
+  // would show.
   public getRecoveryCodes(): Observable<number> {
     return this.get<unknown>('api/me/recovery-codes').pipe(
       map((body) => {
@@ -524,13 +521,73 @@ export class MeApiService extends BaseApiService {
   //
   // **No `EXPECTS_UNAUTHENTICATED`, and that is a decision rather than an
   // omission.** The token marks a request whose 401 is the *route's own
-  // verdict* — a passkey that did not verify, a recovery code that matched
-  // nothing — made by a browser holding no session to lose. This request is the
-  // opposite: it is made by an authenticated person, so a 401 means the session
-  // it carried had already ended, which is exactly the fact
+  // verdict* on that request — a passkey that did not verify, a recovery code
+  // that matched nothing, an erasure gate declining its assertion. This route
+  // gives no such verdict: it judges nothing but the session it was sent with,
+  // so a 401 means that session had already ended, which is exactly the fact
   // `sessionExpiryInterceptor` owns. Suppressing it would claim a verdict this
   // route never gives, and would suppress the one reading that is true.
   public endSession(): Observable<void> {
     return this.post<void>('api/me/session/revocation', null);
+  }
+
+  // Erases the account the session belongs to, authorized by a fresh passkey
+  // assertion signed over a re-authentication challenge. See
+  // docs/design/components.md, "Erasure dialog", and
+  // docs/business-logic/erasure.md.
+  //
+  // `POST /api/me/erasure`, and never `DELETE /api/me`: the server removed that
+  // route so the token-only path is closed, and content on a DELETE has no
+  // generally defined semantics (RFC 9110 §9.3.5) — some implementations may
+  // reject a request that carries it, and the proof has to travel as content.
+  // The body names no account — the account erased is whichever one the
+  // session is.
+  //
+  // **The body is the five assertion members, projected one by one here**, and
+  // never the object handed in, spread or forwarded. What crosses the wire is
+  // decided at the boundary that builds it: the ceremony's result carries the
+  // key-encryption key beside the payload, and a `PasskeyAssertionPayload` is a
+  // structural type, so an object with more members than it declares still
+  // satisfies it. Named here, a sixth member cannot ride along — and
+  // `userHandle` is written through as `null` when absent, because
+  // `JSON.stringify` drops an `undefined` member and the server would then bind
+  // a missing one to null by accident rather than by contract.
+  //
+  // **It carries `EXPECTS_UNAUTHENTICATED`, on a request made by a signed-in
+  // browser.** A 401 here is one of two things. Usually it is the route's
+  // verdict on this request — the gate declining the assertion before the
+  // transaction opens. But the route sits behind the fallback authorization
+  // policy, so a session that had already ended — expired, revoked, or erased
+  // from another tab — is also answered 401, before the gate runs. Either way
+  // this request erased nothing, and the dialog says that as `refused`,
+  // *nothing was erased*. Unmarked, `sessionExpiryInterceptor` reads the
+  // verdict as a session ending and takes the tab to `/welcome` over a sentence
+  // the dialog never got to say. A session that really had ended is not lost
+  // by the mark: the next press starts with the unmarked re-authentication
+  // challenge, whose 401 the interceptor acts on. The token rides on the method
+  // rather than on a parameter, for `getAccountKeys`'s reason: one caller, one
+  // question, one meaning of a 401 to this caller. The challenge minted just
+  // before this is the opposite case and stays unmarked — see
+  // `reauthentication-api.service.ts`.
+  //
+  // `Observable<void>`: the answer is `204`. A body would have to be assembled
+  // from an account that no longer exists. Refusals are handed to the caller
+  // untouched, because the caller reads the status to tell `refused` from
+  // `unrecognised` from `undetermined` — and there is **no retry** here or
+  // anywhere this request passes: a second erasing request after a lost `204`
+  // is answered `401`, which would read as *nothing was erased* over an account
+  // that is gone.
+  public eraseAccount(assertion: PasskeyAssertionPayload): Observable<void> {
+    return this.post<void>(
+      'api/me/erasure',
+      {
+        credentialId: assertion.credentialId,
+        clientDataJson: assertion.clientDataJson,
+        authenticatorData: assertion.authenticatorData,
+        signature: assertion.signature,
+        userHandle: assertion.userHandle ?? null,
+      } satisfies PasskeyAssertionPayload,
+      new HttpContext().set(EXPECTS_UNAUTHENTICATED, true),
+    );
   }
 }

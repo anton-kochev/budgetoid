@@ -683,8 +683,8 @@ factor, and an account identifier derived from the challenge it just spent —
   establish two more; all are `Full` and all last 14 days. The ordering rule above — identity
   published only after the proof, the transaction opened only after that — is held by two handlers
   rather than one: this file's assertion path and the redemption.
-- **[Recovery Codes](recovery-codes.md)** — the third spender of the `reauthentication` pool, and
-  the second full-session credential type. A passkey is what a person proves possession of in order
+- **[Recovery Codes](recovery-codes.md)** — a spender of the `reauthentication` pool, and the
+  second full-session credential type. A passkey is what a person proves possession of in order
   to be issued a set, which is why the last-passkey floor cannot be lifted by holding one.
 - **[Users & Ownership](users-and-ownership.md)** — the credential row and the account it belongs
   to.
@@ -717,9 +717,10 @@ factor, and an account identifier derived from the challenge it just spent —
 
 ## Edge Cases & Known Gotchas
 
-- **What is built today and what is not.** All four ceremonies exist as endpoints; **two have a
-  screen and two do not.** The `/register` flow runs the **account-registration** ceremony from a
-  page — `createPasskey` on `+core/security/webauthn-ceremony.service.ts` is called there.
+- **What is built today and what is not.** All four ceremonies exist as endpoints, and **every one
+  but the registration of a further passkey has a screen.** The `/register` flow runs the
+  **account-registration** ceremony from a page — `createPasskey` on
+  `+core/security/webauthn-ceremony.service.ts` is called there.
   `/welcome` runs the **assertion**: `SignInService` calls `assertPasskey`, posts what the
   authenticator signed, and the cookie that comes back is what carries the person into the app — the
   identity provider is not part of that exchange at all. **That leg's PRF output is spent rather
@@ -730,15 +731,20 @@ factor, and an account identifier derived from the challenge it just spent —
   account unlocked. Confirming the content key against that manifest is the second of the four, and
   on its own it was a check the served body could switch off; the four together are what a response
   somebody shaped has to get past. [account-keys.md](account-keys.md) owns them, and the order they
-  run in is the security property. What still has no screen is the
-  **re-authentication** the erasure, revocation and recovery-code-generation gates need, and the
-  registration of a **further** passkey. Those two routes are reached today only by the integration
-  suite. **Account creation is gated on a passkey, on the only path there is**, so **no account has
-  ever existed without one**. A signed-in person can **list** every credential the account holds;
-  that list renders. **Revoking** one is a route and not yet a capability: it is gated by a fresh
-  re-authentication exactly as erasure is, that ceremony has no screen, and the Revoke control is
-  specified as present and disabled — so nobody but the integration suite reaches the route.
-  Nothing **replaces** a passkey, and nothing removes or replaces the **federated** credential —
+  run in is the security property. **The re-authentication ceremony runs on `/app/settings`**:
+  `RotationFlowService`, behind the Key rotation section, and `ErasureFlowService`, behind the
+  erasure dialog, each mint a challenge through `ReauthenticationApiService` and have the
+  authenticator sign it with `assertPasskey`; the assertion goes to the rotation begin through
+  `KeyRotationService`, and to `POST /api/me/erasure` through `MeApiService.eraseAccount`. The
+  revocation and recovery-code-generation gates take the same assertion, and nothing in the browser
+  calls either route yet; they, and the registration of a **further** passkey, are reached today
+  only by the integration suite. **Account creation is gated on a passkey, on the only path there
+  is**, so **no account has ever existed without one**. A signed-in person can **list** every
+  credential the account holds; that list renders. **Revoking** one is a route and not yet a
+  capability: it is gated by a fresh re-authentication exactly as erasure is, and this client
+  already runs that ceremony — what holds the Revoke control off is the confirmation step it is
+  specified to have and nothing has built, which the screen says above the list. See
+  [components.md](../design/components.md). Nothing **replaces** a passkey, and nothing removes or replaces the **federated** credential —
   that is the email change, and it is not built.
   - **The browser runs one more ceremony than the server has pools for, and it spends none of
     them.** `deriveKeyFromLocalAssertion` on the same service is what the Account keys section of
@@ -748,15 +754,16 @@ factor, and an account identifier derived from the challenge it just spent —
     its own — the account's key material, and which account this is — and neither carries anything
     the authenticator signed. Both candidate pools were rejected rather than chosen
     between: `authentication` is minted anonymously and would put an anonymous route under a screen
-    deep inside the app, and `reauthentication` is the pool **three** sensitive acts spend — the
-    gotcha below counts them — so every press of Unlock would leave behind a live nonce good for
-    any of the three, erasure included, on behalf of an act that destroys nothing. The breadth is
-    the argument: a nonce spendable three ways is a worse thing to mint for a convenience than one
+    deep inside the app, and `reauthentication` is the pool every assertion-gated act spends — the
+    gotcha below names them — so every press of Unlock would leave behind a live nonce good for
+    any of them, erasure included, on behalf of an act that destroys nothing. The breadth is the
+    argument: a nonce spendable several ways is a worse thing to mint for a convenience than one
     spendable a single way. What makes the local ceremony sound is that nothing is being authorized:
     the account's wrapped envelopes are the proof, and a factor that is not this account's opens
-    none of them — see [account-keys.md](account-keys.md). The day a server has to check a factor
-    from that screen — replacing a set of recovery codes is the case — it is a **different**
-    ceremony over a server's challenge, and this one may not grow into it.
+    none of them — see [account-keys.md](account-keys.md). Where a server has to check a factor
+    from that screen — beginning a key rotation and erasing the account both do — it is a
+    **different** ceremony, `assertPasskey` over a server's challenge, and this one may not grow
+    into it.
 - **The exempt table scopes nothing, so the application is the only thing scoping access to it.**
   The discovery lookup is the one query allowed to read `passkey_public_keys` without naming an
   owner. Every other read must carry its own `where user_id = …`. Two call sites carry that filter:
@@ -772,13 +779,14 @@ factor, and an account identifier derived from the challenge it just spent —
     so the lookup is not the only source of an instance. What holds is that both factories mint
     their own id, so a fabricated `Credential` cannot name an existing row — and that adding a
     source which *can* means adding a query to `PasskeyRepository`.
-- **The re-authentication pool is one ceremony, not one per sensitive action.** Three things spend
-  it: erasure, passkey revocation, and generating a set of recovery codes. None can tell which one a
-  given nonce was requested for, and that is the design rather than a gap — all three are
-  destructive, all three are reachable only by the account holder. If two sensitive actions ever
-  need telling apart, the split is a new **ceremony value** — never a column on
-  `webauthn_challenges`, which the pinned column set forbids. The third spender has most riding on
-  the gate: a set of recovery codes is a full-session credential, and issuing *replaces*.
+- **The re-authentication pool is one ceremony, not one per sensitive action.** Every act gated on
+  a fresh assertion spends it — erasure, passkey revocation, generating a set of recovery codes and
+  beginning a key rotation — and none can tell which act a given nonce was requested for. That is
+  the design rather than a gap: each is an act a stolen session must not be able to take, and each
+  is reachable only by the account holder. If two sensitive actions ever need telling apart, the
+  split is a new **ceremony value** — never a column on `webauthn_challenges`, which the pinned
+  column set forbids. Generating a set has most riding on the gate: a set of recovery codes is a
+  full-session credential, and issuing *replaces*.
   - **Their request records are no longer alike, and must not be made alike again.**
     `RevocationRequest` was byte-identical to `ErasureRequest` and to the assertion half of
     `RecoveryCodeGenerationRequest`; it now carries a `manifest` and a `rotationEpoch` beside them.
@@ -786,7 +794,8 @@ factor, and an account identifier derived from the challenge it just spent —
     and it is shared on purpose — which is exactly what makes folding the three onto one record or
     one base type look like tidying. Erasure takes no manifest because it leaves nobody for a list
     to describe, so a shared record would hand it a member it must never carry, and would be where
-    the wrong member arrives the day a fourth gated act needs one of its own.
+    the wrong member arrives the day another gated act needs one of its own — the rotation begin
+    already carries a staged manifest, an epoch and a seal per factor beside the same five.
 - **The assertion options leg is the first unauthenticated write path in the system.** Anyone can
   make the role insert a challenge row. Growth is bounded by a five-minute lifetime and an
   opportunistic capped sweep on each options call, **not** by rate limiting, which does not exist

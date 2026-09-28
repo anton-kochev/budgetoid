@@ -46,9 +46,13 @@ export abstract class BaseApiService {
   // A token that rides on the request is the only thing that can tell two calls
   // to one method apart, so it belongs on the call rather than on the service.
   //
-  // Only `get` takes one, and `post` deliberately still does not: both anonymous
-  // POST surfaces build their own requests instead of extending this class, for
-  // the reason `registration-api.service.ts` argues at its own class.
+  // `get` and `post` take one, and the other verbs do not. `post` gained it for
+  // a different shape of the same distinction: `POST /api/me/erasure` is made
+  // by a signed-in browser, and its 401 is still the route's verdict on that
+  // request — the gate declining the assertion it carries — rather than a
+  // session ending. See `MeApiService.eraseAccount`. The two anonymous POST
+  // surfaces still build their own requests instead of extending this class,
+  // for the reason `registration-api.service.ts` argues at its own class.
   protected get<T>(path: string, context?: HttpContext): Observable<T> {
     // `context: undefined` is what a caller that passes nothing produces, and
     // `HttpRequest` replaces it with a fresh `HttpContext` — so the request an
@@ -74,8 +78,14 @@ export abstract class BaseApiService {
     return this.http.patch<T>(`${this.baseUrl}/${path}`, patch, opts);
   }
 
-  protected post<T = unknown>(path: string, body: unknown): Observable<T> {
-    const opts = { headers: BaseApiService.headers() };
+  protected post<T = unknown>(
+    path: string,
+    body: unknown,
+    context?: HttpContext,
+  ): Observable<T> {
+    // `context: undefined` for every existing caller, which `HttpRequest`
+    // replaces with a fresh `HttpContext` — `get`'s argument, above.
+    const opts = { context, headers: BaseApiService.headers() };
 
     return this.http.post<T>(`${this.baseUrl}/${path}`, body, opts);
   }

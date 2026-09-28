@@ -122,14 +122,14 @@ lists, edits and deletes Transactions; lists Payees, creates one through a reque
 one by id and renames it; and reads global Currencies. The budget itself is not manageable — it
 arrives with the account, never configured. The same owner can download a complete copy of
 everything the server holds about them, can see the address the account is registered under, and can
-ask how many recovery codes are left; none of it is behind a support request. Two more the role is
-permitted are routes the API offers that no screen reaches: issuing themselves a replacement set of
-recovery codes, and destroying the account outright. Both are gated on a WebAuthn re-authentication
-made moments earlier, and that ceremony is the one with no screen, so both are reached today only by
-the integration suite — see [passkeys.md](passkeys.md). A visitor with no session reaches the welcome
-screen — which both starts an account and signs a returning person in with their passkey, contacting
-no third party to do it — and the registration flow, the one surface that turns a provider sign-in
-into an account. Nothing else.
+ask how many recovery codes are left; none of it is behind a support request. They can also destroy
+the account outright, from the settings screen, behind a typed confirmation and a WebAuthn
+re-authentication made moments earlier — see [erasure.md](erasure.md). Issuing themselves a
+replacement set of recovery codes is gated on the same ceremony and is a route no screen reaches
+yet, so today only the integration suite calls it — see [passkeys.md](passkeys.md). A visitor with
+no session reaches the welcome screen — which both starts an account and signs a returning person in
+with their passkey, contacting no third party to do it — and the registration flow, the one surface
+that turns a provider sign-in into an account. Nothing else.
 
 ## Domain area map
 

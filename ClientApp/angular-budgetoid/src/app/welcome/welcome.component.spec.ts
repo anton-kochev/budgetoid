@@ -34,6 +34,7 @@ import type {
   PasskeyRequestOptionsJson,
 } from '@app-core/security/webauthn-encoding';
 import { ConfigurationService } from '@app-core/services/configuration.service';
+import { ErasureNotice } from '@app-core/session/erasure-notice';
 import {
   SessionService,
   type SessionStatus,
@@ -87,6 +88,13 @@ const PROVIDER_ROLE =
 // would reasonably write as an entity (`&mdash;`, `&rsquo;`), so a phrase is
 // matched against what the browser renders rather than against what the file
 // happens to contain.
+// The erasure's one word, per `voice.md`'s confirmation pattern, and the two
+// sign-in lines it gives way to. The latter two are the component's own copy.
+const ERASED = 'Erased.';
+const WAITING = 'Waiting for your device.';
+const SIGN_IN_CANCELLED =
+  'Signing in didn’t finish. Nothing has changed — try again whenever you’re ready.';
+
 const PROVIDER_ROLE_PHRASES = [
   'Creating an account starts with Google once',
   'to check your email address',
@@ -726,6 +734,234 @@ describe('WelcomeComponent, as the way into an account', () => {
 
   async function settle(): Promise<void> {
     await current().whenStable();
+    current().detectChanges();
+  }
+});
+
+// The one outcome this screen's region carries that the person did not make
+// here: an erasure, handed over in memory by the erasure dialog on its way out.
+// See docs/design/components.md, "The welcome screen" and "Erasure dialog", *How
+// the overlay ends*.
+//
+// `ErasureNotice` is the real root holder, read from `TestBed` — the same
+// instance the component resolves — so a component that provided its own copy
+// would read a notice nobody marked and fail every case below.
+describe('WelcomeComponent, after an erasure', () => {
+  const store = { dispatch: vi.fn() };
+  const originalMatchMedia = window.matchMedia;
+
+  let http: HttpTestingController;
+  let notice: ErasureNotice;
+  let fixture: ComponentFixture<WelcomeComponent> | null = null;
+  let ceremonyOutcome: PasskeyCeremonyResult<PasskeyAssertionCeremony>;
+
+  beforeEach(async () => {
+    const keyEncryptionKey = await importKeyEncryptionKey();
+
+    store.dispatch.mockClear();
+    ceremonyOutcome = {
+      ok: true,
+      value: { payload: ASSERTION_PAYLOAD, keyEncryptionKey },
+    };
+
+    const ceremony: Pick<
+      WebauthnCeremonyService,
+      'available' | 'assertPasskey'
+    > = {
+      available: () => true,
+      assertPasskey: (): Promise<
+        PasskeyCeremonyResult<PasskeyAssertionCeremony>
+      > => Promise.resolve(ceremonyOutcome),
+    };
+
+    await TestBed.configureTestingModule({
+      imports: [WelcomeComponent],
+      providers: [
+        provideNoopAnimations(),
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        { provide: Store, useValue: store },
+        CONFIGURATION_STUB,
+        { provide: WebauthnCeremonyService, useValue: ceremony },
+      ],
+    }).compileComponents();
+
+    http = TestBed.inject(HttpTestingController);
+    notice = TestBed.inject(ErasureNotice);
+
+    const router = TestBed.inject(Router);
+
+    vi.spyOn(router, 'navigateByUrl').mockImplementation(
+      (): Promise<boolean> => Promise.resolve(true),
+    );
+  });
+
+  afterEach(() => {
+    fixture?.destroy();
+    fixture = null;
+    window.matchMedia = originalMatchMedia;
+  });
+
+  it('says Erased. in the region it already had, when the erasure lands after first paint', () => {
+    // Arrange
+    render();
+    const region = liveRegion(host());
+    expect(collapse(region?.textContent ?? '')).toBe('');
+
+    // Act
+    notice.mark();
+    current().detectChanges();
+
+    // Assert
+    // The **same node**, not a region created with its text: one inserted
+    // together with its content is announced by nothing, which is the whole
+    // reason the region is in the DOM from first paint. And read reactively —
+    // a component that took the notice once at construction would show nothing
+    // here.
+    expect(liveRegion(host())).toBe(region);
+    expect(collapse(region?.textContent ?? '')).toBe(ERASED);
+    // `body --bud-text`: a confirmation is not a refusal, and a reader who
+    // has just erased everything should not meet it in the failure colour.
+    expect(region?.querySelector('.w-error')).toBeNull();
+  });
+
+  it('says Erased. on arrival when the dialog marked it on the way out', () => {
+    // Arrange
+    // The order the dialog keeps: the notice is marked, the session ended,
+    // and only then is the router asked for Welcome.
+    notice.mark();
+
+    // Act
+    render();
+
+    // Assert
+    expect(collapse(liveRegion(host())?.textContent ?? '')).toBe(ERASED);
+  });
+
+  it('says nothing about an erasure nobody marked', () => {
+    // Act
+    render();
+
+    // Assert
+    // No other device says it — a tab that did not watch the erasure lands
+    // here silent — and neither does a reload, which drops the notice.
+    expect(collapse(liveRegion(host())?.textContent ?? '')).toBe('');
+    expect(collapse(host().textContent ?? '')).not.toContain(ERASED);
+  });
+
+  it('lets a sign-in in flight speak over Erased.', () => {
+    // Arrange
+    render();
+    press(SIGN_IN_BUTTON);
+
+    // Act
+    // Marked while a sign-in is running — a state the product reaches only
+    // if the two acts overlap, and the one where the order of the region's
+    // lines is observable at all.
+    notice.mark();
+    current().detectChanges();
+
+    // Assert
+    // One region, one line: the busy line first.
+    expect(collapse(liveRegion(host())?.textContent ?? '')).toBe(WAITING);
+  });
+
+  it('lets a sign-in refusal speak over Erased.', async () => {
+    // Arrange
+    ceremonyOutcome = { ok: false, failure: 'cancelled' };
+    render();
+    const service = current().debugElement.injector.get(SignInService);
+    press(SIGN_IN_BUTTON);
+    const options = await eventually(
+      () => http.match(OPTIONS_URL)[0] ?? null,
+      'the request for the assertion options',
+    );
+    options.flush(REQUEST_OPTIONS);
+    await eventually(() => service.failure(), 'the refusal to be published');
+
+    // Act
+    notice.mark();
+    current().detectChanges();
+
+    // Assert
+    expect(collapse(liveRegion(host())?.textContent ?? '')).toBe(
+      SIGN_IN_CANCELLED,
+    );
+  });
+
+  it('clears Erased. when a sign-in press starts', () => {
+    // Arrange
+    notice.mark();
+    render();
+
+    // Act
+    press(SIGN_IN_BUTTON);
+
+    // Assert
+    // A person who presses Sign in with a passkey has moved on to something
+    // the region should answer instead — and the fact must not come back when
+    // that answer does.
+    expect(notice.erased()).toBe(false);
+    expect(collapse(liveRegion(host())?.textContent ?? '')).toBe(WAITING);
+  });
+
+  it('keeps Erased. while nothing is pressed', () => {
+    // Arrange
+    notice.mark();
+    render();
+
+    // Act
+    current().detectChanges();
+
+    // Assert
+    // Control for the case above: a screen that cleared the notice the moment
+    // it read it would pass "clears when a press starts" without a press.
+    expect(notice.erased()).toBe(true);
+  });
+
+  it('clears Erased. when Welcome is left', () => {
+    // Arrange
+    notice.mark();
+    render();
+
+    // Act
+    current().destroy();
+    fixture = null;
+
+    // Assert
+    // It describes the moment the tab arrived. A person who signs in, uses
+    // the app and signs out again lands here with nothing having been erased.
+    expect(notice.erased()).toBe(false);
+  });
+
+  function current(): ComponentFixture<WelcomeComponent> {
+    if (fixture === null) {
+      throw new Error('No welcome screen has been rendered.');
+    }
+
+    return fixture;
+  }
+
+  function host(): HTMLElement {
+    return current().nativeElement as HTMLElement;
+  }
+
+  function render(): void {
+    fixture?.destroy();
+    stubMatchMedia(true);
+    fixture = TestBed.createComponent(WelcomeComponent);
+    current().detectChanges();
+  }
+
+  function press(name: string): void {
+    const control = controlNamed(host(), name);
+
+    if (control === null) {
+      throw new Error(`The welcome screen has no control named "${name}".`);
+    }
+
+    control.click();
     current().detectChanges();
   }
 });

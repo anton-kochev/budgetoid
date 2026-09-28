@@ -499,19 +499,23 @@ required members. A third writer is a decision rather than a refactor.
     had one, on every anonymous cold load. Nothing in it is awaited for the guards' sake; what the
     await buys is a screen that does not draw a list the answer would have replaced.
   - **The reading also moves twice mid-visit, and both moves are a *set* rather than a re-probe.**
-    `ended()` is called by `sessionExpiryInterceptor` on a `401` and by the Settings screen's sign
-    out; `established()` is called by the registration flow on the `201` and by the sign-in flow on
-    the assertion's answer. Each time the server has just said what it thinks, in the same breath as
+    `ended()` is called by `sessionExpiryInterceptor` on a `401`, by the Settings screen's sign out,
+    and by `ErasureFlowService` on the erasing request's `204`. The last two call it **before** they
+    navigate to `/welcome`, because `guestGuard` reads the status the moment the router asks, and a
+    navigation made first is judged against a stale `authenticated` and sent back into the app.
+    `established()` is called by the registration flow on the `201` and by the sign-in flow on the
+    assertion's answer. Each time the server has just said what it thinks, in the same breath as
     the cookie it set or the refusal it answered, so asking again would replace an answer with a
     guess over a network that may itself be the problem. On the establishing side a re-probe also
     costs a round trip at the happiest moment of the flow and can come back `unreachable` — a
     **third** reading of a fact already stated.
   - **`ended()` is the single owner of "the account's keys go too", and `established()` deliberately
     owns nothing.** A session ending is where `AccountKeyCustodyService.lock()` is called, in that
-    one method rather than at each of its callers: a third path added later by somebody thinking
-    about sign-out rather than about key material clears the keys for free, where two copies at the
-    call sites would leave that path holding an ended session whose content key is still readable
-    from the root injector for the life of the tab — with nothing red either way. It is **not** an
+    one method rather than at each of its callers: a path added later by somebody thinking about
+    something other than key material clears the keys for free — the erasure's `204` is one that
+    arrived that way, and it has no line of its own for the keys — where copies at the call sites
+    would leave such a path holding an ended session whose content key is still readable from the
+    root injector for the life of the tab, with nothing red either way. It is **not** an
     `effect()` over `status`: that fires on construction, so whether it wipes a set already adopted
     would be decided by injection order, and the only honest predicate available to it is "lock on
     `anonymous`" — locking on `unreachable` would destroy both keys over one blinked request and
@@ -556,8 +560,9 @@ required members. A third writer is a decision rather than a refactor.
   request made that call through this interceptor instead, over an edge no import graph shows, and
   raced a just-signed-in person off `/app` and onto a `/welcome` that had nothing to say. If the
   session genuinely has ended, the next unmarked read says so from a screen that can render it. See
-  [account-keys.md](account-keys.md). The
-  **re-throw** keeps this an observer rather than a handler; swallowed, the error reaches no
+  [account-keys.md](account-keys.md). The erasing request is signed in as well and carries the
+  token on the rule itself — its `401` is usually its gate's verdict — as the census below sets
+  out. The **re-throw** keeps this an observer rather than a handler; swallowed, the error reaches no
   caller's `catchError` and the screen that made the request sits on its loading line forever.
 - **Enforced in**: `sessionExpiryInterceptor`, registered after `apiCredentialsInterceptor` so the
   unwinding puts it nearest the backend. The exclusion is carried on the **request**, as an
@@ -570,21 +575,35 @@ required members. A third writer is a decision rather than a refactor.
     the two disagree — and it is the number that rots, because a member added to a service is added
     without the sentence two files away being opened. So the rule carries it: a member sets the
     token when the `401` it may collect is **that route's verdict on that request** rather than a
-    session ending. `RegistrationApiService` sets it on both legs,
-    `SignInApiService` on both assertion legs, and `MeApiService` on `getSessionOwner()` **and**
-    `getAccountKeys()`. `getMe()` is the counterexample — the same route as `getSessionOwner()`,
+    session ending. `RegistrationApiService` sets it on both legs, `SignInApiService` on both
+    assertion legs, and `MeApiService` on `getSessionOwner()`, `getAccountKeys()` and
+    `eraseAccount()`. `getMe()` is the counterexample — the same route as `getSessionOwner()`,
     asked as somebody already signed in — and carries none; nor does `endSession()`, whose `401`
     means the session it presented had already ended. **The rule is about the member and not about
     who calls it**, which is what keeps it true now that `getSessionOwner()` has a second caller.
-    Most of the members are the plain case: the browser holds no session to lose.
-    `getAccountKeys()` is the one that is not, and it carries the token on custody's own argument
-    rather than on that one: a key
-    that will not open is not a session that ended, so a refusal mid-unlock is custody's to publish
-    and not the interceptor's to navigate on, and the `GET /api/me` the same unlock makes rides the
-    same reasoning through `getSessionOwner()`. `RegistrationApiService` builds a **fresh**
-    `HttpContext` per call, because that
-    object is mutable and a shared one would be read and written by every registration request in
-    the visit. What the token buys there is concrete: without it, a `401` on the second leg
+    Most of the members are the plain case: the browser holds no session to lose. The members a
+    signed-in browser makes are not that case, and each carries its own reason.
+    `getAccountKeys()` carries the token on custody's own argument: a key that will not open is not
+    a session that ended, so a refusal mid-unlock is custody's to publish and not the interceptor's
+    to navigate on, and the `GET /api/me` the same unlock makes rides the same reasoning through
+    `getSessionOwner()`. `eraseAccount()` carries it on the rule's own terms: a `401` there is
+    usually the gate declining the assertion — that route's verdict on that request — and otherwise
+    a session that had already ended before the gate ran, and either way the request erased
+    nothing, which the erasure dialog says as `refused`. Unmarked, the interceptor would take the
+    tab to `/welcome` over a sentence the dialog never got to show. A session that really had
+    ended is not lost by the mark, because the next press opens with the re-authentication
+    challenge from `ReauthenticationApiService`, which is **unmarked** — so the mark is per request
+    rather than per act, and the two legs of one erasure answer the question opposite ways. See
+    [erasure.md](erasure.md).
+    - **The rotation begin is the difference worth reading beside it.**
+      `KeyRotationApiService.beginRotation` also carries a re-authentication assertion to a gate
+      that answers `401` when it declines, and it is unmarked, like the other three members of that
+      service. So a `401` from the rotation gate reaches the interceptor and ends the session, where
+      the same verdict from the erasure gate stays with the dialog. That service's header argues its
+      absence on the reading that a `401` from any of its routes is a session that ended.
+
+    `RegistrationApiService` builds a **fresh** `HttpContext` per call, because that object is
+    mutable and a shared one would be read and written by every registration request in the visit. What the token buys there is concrete: without it, a `401` on the second leg
     navigates the person to `/welcome` mid-flow, away from a screen showing ten recovery codes they
     may already have written down — reachable rather than theoretical, because a provider id token
     lives an hour and somebody can sit on the codes step for longer.
@@ -802,8 +821,9 @@ ELSE                                                    ← an unenumerated futu
     and discards, which calls no route, spends no challenge and changes no row in `sessions`. So an
     unlock is invisible to everything this file describes, and a sign-in is not the only way to
     reach an opened account. What a *factor* can open is the account keys' subject; **the session's
-    own lifetime is not custody's** — the keys end at a sign-out, at a `401` and at a page load, and
-    only the first two of those are anything this file records.
+    own lifetime is not custody's** — the keys end at a sign-out, at an erasure's `204`, at a `401`
+    and at a page load, and every one of those but the page load goes through
+    `SessionService.ended()`, which is the part this file records.
 - **`user_isolation`** — the policy on `sessions` is the policy every user-owned table carries, keyed
   on the same session setting: `users`, `budgets`, `sessions` itself,
   `passkey_signature_counters`, `wrapped_account_keys`, `key_rotations` and `factor_manifests`.

@@ -282,13 +282,21 @@ Load-bearing rules. Each links the doc that argues it — **read that doc before
 - **The test runner's time zone is pinned** to `Pacific/Kiritimati`, and **`npm test` needs a prior
   `npm run build`**. [frontend testing](docs/engineering/frontend-testing.md)
 - **`/app/settings` is reached from the shell navigation**, a layout on the `app` route — so
-  **which routes carry a bar is a fact about the route table**. **Three different reasons hold the
-  inert controls off across four sites, a fourth holds Export off while this tab cannot read what
-  the file is written from, and the screen says all four**; do not paste one sentence over another.
+  **which routes carry a bar is a fact about the route table**. **Every control the screen holds
+  off says why in a sentence of its own, and the reasons differ** — Export's, too, while this tab
+  cannot read what the file is written from; do not paste one sentence over another.
   Home and Add are specified and not built — do not "complete" the screen.
   [export.md](docs/business-logic/export.md), [erasure.md](docs/business-logic/erasure.md),
   [recovery-codes.md](docs/business-logic/recovery-codes.md),
   [components.md](docs/design/components.md)
+- **Erasure is the third caller of `SessionService.ended()`, and it never runs twice on one
+  answer.** `ErasureFlowService` lives on the settings component, fetches the challenge on the
+  commit press, and on the `204` marks `ErasureNotice`, calls `ended()`, then navigates to
+  `/welcome`, which says "Erased." The erasing POST carries `EXPECTS_UNAUTHENTICATED` and its
+  challenge does not. A lost or 5xx answer is `undetermined` and withdraws the commit for that
+  dialog; reopening resets the flow, which is safe only because the fresh attempt starts with the
+  unmarked challenge. The overlay dies with the screen that opened it.
+  [erasure.md](docs/business-logic/erasure.md), [components.md](docs/design/components.md)
 - **The browser runs both halves of the front door.** `webauthn-encoding.ts` is pure translation over
   a **strict** decoder — a lenient one must never appear beside it. `webauthn-ceremony.service.ts`
   runs **three** ceremonies and sends two; the third mints its own challenge and spends neither nonce

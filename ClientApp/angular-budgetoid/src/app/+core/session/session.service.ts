@@ -130,13 +130,15 @@ export class SessionService {
     this.budgetSignal.set(null);
 
     // **Custody ends where the session does, and it ends here rather than at
-    // each caller.** Two paths end a session today —
-    // `sessionExpiryInterceptor` on a 401 and `SettingsService.leave()` — and a
-    // third will be added by somebody thinking about sign-out rather than about
-    // key material. Put in this method, that third path clears the account's
-    // keys for free; put in the two callers, it does not, and the symptom is an
-    // ended session whose content key is still readable from the root injector
-    // for the life of the tab. Nothing goes red about it either way.
+    // each caller.** Three paths end a session today —
+    // `sessionExpiryInterceptor` on a 401, `SettingsService.leave()`, and
+    // `ErasureFlowService` on the erasing request's 204 — and the third is the
+    // case this placement was for: it was added by somebody thinking about
+    // erasure rather than about key material, and it clears the account's keys
+    // without a line of its own. Put in the callers instead, a fourth would not,
+    // and the symptom is an ended session whose content key is still readable
+    // from the root injector for the life of the tab. Nothing goes red about it
+    // either way.
     //
     // **Not an `effect()` over {@link status}, and the temptation is real** —
     // one reaction beside the signal reads tidier than a call inside a method.

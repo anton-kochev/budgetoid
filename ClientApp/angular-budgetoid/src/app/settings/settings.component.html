@@ -77,7 +77,7 @@
        clause has become the same defect one step removed, against a control the
        reader has just used.
 
-       What is left is the part no ceremony on this screen closes. `unlock` takes
+       What is left is the part unlocking does not close. `unlock` takes
        the key-encryption key as an **argument** and hands it to custody in one
        statement, and custody keeps what it opened as two non-extractable
        `CryptoKey` objects behind no accessor. There is no route from anything
@@ -86,20 +86,22 @@
        with*, and holding one that long is exactly what the unlock path refuses
        to do.
 
-       **Revoke** waits on an assertion the *server* checks, and on nothing else.
-       `POST /api/me/credentials/{id}/revocation` is live and the fresh assertion
-       that authorizes it is a ceremony this client runs; what the Account keys
-       section runs is not it — that one is minted in the browser and discarded.
-       Same position as the erasure section, so it is said in the erasure
-       section's words, plural for the per-row buttons.
+       **Revoke** waits on a confirmation step of its own, because revoking
+       cannot be undone. It no longer names a passkey Budgetoid checks itself as
+       the missing piece: the Key rotation section and the erasure dialog both
+       ask for exactly that passkey on this screen, so that clause became the
+       same defect a third time. `POST /api/me/credentials/{id}/revocation` is
+       live and the assertion it takes is one this client already runs; what a
+       person would meet — the step that says what revoking costs — is what is
+       not built. Plural for the per-row buttons.
 
-       **The registration sentence is no longer shared with the recovery-codes
-       section, and the split is the specification**: registering waits on the
-       bytes alone, generating waits on the bytes *and* on a checked assertion,
-       which is strictly more. Pasting any one of the screen's four sentences
-       over another puts a sentence on the screen that is true of a different
-       control — and collapsing these two in particular erases the answer to
-       "why can't I just add another way in".
+       **Every inert control carries a sentence of its own, and none is pasted
+       over another's**: registering waits on the account's keys as bytes,
+       generating on two surfaces a person would meet, revoking on a
+       confirmation. Pasting one over another puts a sentence on the screen that
+       is true of a different control — and collapsing the first two in
+       particular erases the answer to "why can't I just add another way in".
+       Erase everything carries none: its confirmation is built.
 
        Both above the list and both as visible prose rather than a title or an
        aria-describedby: the controls they explain are disabled, so they are out
@@ -115,9 +117,9 @@
     button stays off until that copy can be made.
   </p>
   <p class="s-prose">
-    Revoking has to be confirmed with a passkey Budgetoid checks itself, and
-    this screen doesn&rsquo;t ask for one yet. Those buttons stay off until it
-    does.
+    Revoking a passkey can&rsquo;t be undone, so it needs a confirmation step of
+    its own, and this screen doesn&rsquo;t have one yet. Those buttons stay off
+    until it does.
   </p>
 
   <!-- Both lines arrive after the first paint, so they land inside a region
@@ -316,35 +318,25 @@
        two were word for word while one fact held both controls off. It no longer
        does, and the split is the specification.
 
-       The first fact is common ground and is argued once beside the credential
-       list rather than twice: generating a set is *ten* factors at once — each
-       code derives its own key-encryption key — so it waits on the account's
-       content key and index key **as bytes** exactly as registering a passkey
-       does, and the Account keys section below does not supply them.
+       **It names what a person would meet, not a capability, because Key
+       rotation retired both capabilities the old sentence named.** That section
+       asks for a passkey the server checks and opens a factor to encapsulate
+       the account's keys — the two things this sentence used to say generating
+       waited on. A sentence still naming either would be false a few sections
+       down the page, against a control the reader may have just used.
 
-       The second belongs to this route alone: it is gated on a fresh assertion
-       the **server** verifies, and the unlock ceremony's assertion is minted in
-       the browser and thrown away, so a person can press Unlock all afternoon
-       without moving this control one step. One sentence covering both sites
-       would have to drop that clause, and the reader would be told two controls
-       wait on the same thing when one waits on strictly more.
-
-       The clause naming that second fact is also what keeps the sentence true in
-       front of the reader. It does not say the browser cannot run a passkey
-       check — `/register` creates a credential and `/welcome` asserts one — and,
-       with the Account keys section immediately below, it may no longer say this
-       screen asks for no passkey either. It asks for one, in plain sight, a few
-       lines further down the page. What it says instead is which *kind* is
-       missing, which is a fact about the route rather than about the device.
+       What is left is two surfaces: a confirmation, because replacing a set
+       invalidates every code printed from the old one and cannot be undone, and
+       a place that shows the ten new codes once. Neither is built, and the
+       sentence says both.
 
        Visible prose above the control, never a title, a tooltip or an
        aria-describedby: the button is disabled, so it is out of the tab order
        and anything hung on it is read to nobody. -->
   <p class="s-prose">
-    Ten new codes each need their own copy of your account&rsquo;s keys, and
-    replacing a set also has to be confirmed with a passkey Budgetoid checks
-    itself &mdash; not the one unlocking asks for, which never leaves this
-    device. The button stays off until this screen asks for both.
+    Generating replaces every code you have now, and there&rsquo;s no undo. This
+    screen doesn&rsquo;t yet have a step to confirm that, or a place to show the
+    new codes once, so the button stays off until it has both.
   </p>
 
   <!-- Outline rather than Destructive even though generating replaces an
@@ -858,35 +850,34 @@
     no other place.
   </p>
 
-  <!-- Nothing technical blocks this one, and the sentence says so. Both halves
-       exist: `POST /api/me/erasure` is live, and the fresh assertion that
-       authorizes it is a ceremony this client runs on `/welcome`. What is
-       missing is the confirmation flow the design book specifies and the wiring
-       behind this button — which is a smaller and less flattering reason than
-       the one this replaces, and the honest one.
+  <!-- The way into the erasure dialog, and live. Both paragraphs above are
+       standing prose about what erasing *does*, so they read the same before
+       the dialog opens, while it is open, and after one was cancelled — and the
+       retention figure is said here and only here, because a second copy in the
+       dialog is a second place for a number another project decides to drift.
 
-       **The qualifier is not decoration.** Without *Budgetoid checks itself* the
-       sentence says this screen asks for no passkey at all, which the Account
-       keys section above makes false: somebody who has just watched their
-       authenticator answer an **Unlock** would read, one section down, that this
-       screen cannot ask for what it asked for a moment ago. The credential list
-       carries the same qualifier and takes it in the same commit, or the two
-       come apart.
+       **No sentence beside it**, Sign out's position for Sign out's reason: it
+       refuses no press, so the "not built yet" pattern has nothing to say.
 
-       Deliberately **not** the sentence the factor-creating sections above use.
-       Erasing waits on nothing about the account's keys — deleting rows needs no
-       key unwrapped — and pasting one sentence at all four sites would swap one
-       falsehood for another.
+       **Outline, not Destructive.** The fill promises that a confirmation
+       follows and that there is no way back, and this press keeps neither: it
+       opens the confirmation and destroys nothing. The fill is spent once on
+       this path, on the dialog's commit — two red controls in one act teach a
+       reader that the first is the dangerous one, which is exactly wrong. Not
+       Primary either: Export is the screen's one main action.
 
-       Visible prose, immediately before the control, because the control is
-       disabled: it is out of the tab order and skipped by screen readers, so a
-       title or aria-describedby on it would be read to nobody. -->
-  <p class="s-prose">
-    Erasing has to be confirmed with a passkey Budgetoid checks itself, and this
-    screen doesn&rsquo;t ask for one yet. The button stays off until it does.
-  </p>
+       **Two interactions and no more** — this press and the dialog's commit.
+       Nothing is minted on this one: the challenge waits for the commit.
 
-  <button class="s-button" mat-stroked-button type="button" disabled>
+       `aria-haspopup="dialog"`, so a screen reader says what the press opens
+       before it is made. -->
+  <button
+    class="s-button"
+    mat-stroked-button
+    type="button"
+    aria-haspopup="dialog"
+    (click)="openErasure()"
+  >
     Erase everything
   </button>
 </section>

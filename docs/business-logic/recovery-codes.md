@@ -851,9 +851,10 @@ ELSE                                                               ← first iss
 
 ## Integration Points
 
-- **[Passkeys](passkeys.md)** — the `reauthentication` ceremony authorizes a generation. This is the
-  **third** spender of that nonce pool, beside erasure and passkey revocation, and it needs no new
-  ceremony value: all three are destructive acts reachable only by the account holder.
+- **[Passkeys](passkeys.md)** — the `reauthentication` ceremony authorizes a generation. This is one
+  spender of that nonce pool among the acts that owe a fresh assertion — that chapter names them —
+  and it needs no new ceremony value: each is an act reachable only by the account
+  holder that a stolen session must not be able to take.
 - **[Registration](registration.md)** — the **other** write path that accepts a set, and the one
   that issues an account's first. It replaces nothing, sweeps nothing and reports no
   `sessionsEnded`. What it adds beyond this file's validation is one rule: the passkey's factor
@@ -1014,10 +1015,11 @@ ELSE                                                               ← first iss
       under a bumped number without re-sealing would produce one nothing can open, at exactly the
       moment somebody is replacing the card they lost. See [account-keys.md](account-keys.md).
 
-    **Three different things hold the screen's inert controls off and it says all three in
-    different words** — the keys as bytes under registering a passkey, those bytes and a
-    server-checked assertion here, a server-checked assertion under revoking and erasing. Do not
-    paste one over another; the design book owns the wording, in
+    **The screen's inert controls are held off by different things and it says each in its own
+    words** — the account's keys as bytes under registering a passkey, a confirmation step and a
+    place to show the new codes once under generating them, a confirmation step under revoking.
+    **Erase everything** is not among them: its confirmation is built, and it carries no such
+    sentence. Do not paste one over another; the design book owns the wording, in
     [components.md](../design/components.md). `POST /api/recovery-codes/redemption` has no
     client route at all: nothing anywhere canonicalises a typed code or presents a verifier. The
     count is the one thing the settings screen reads.

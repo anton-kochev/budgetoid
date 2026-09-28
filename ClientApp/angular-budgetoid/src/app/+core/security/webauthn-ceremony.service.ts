@@ -35,14 +35,15 @@
 //
 // **Three ceremonies, and two of the three are sent.** `register.service.ts`
 // runs the creation ceremony on the passkey step of the registration flow, and
-// `sign-in.service.ts` runs the assertion from the welcome screen. The third,
+// the assertion is run from the welcome screen by `sign-in.service.ts` and, on
+// the settings screen, by `rotation-flow.service.ts` and
+// `erasure-flow.service.ts` — each of those two over a challenge from the
+// re-authentication pool, taking a fresh assertion to the server to authorise
+// an act the server verifies before it runs. The third,
 // `deriveKeyFromLocalAssertion`, is sent nowhere at all: it exists to make an
 // authenticator derive, so somebody whose page reloaded can unlock the account
 // without signing in again, and the account's own envelopes are what judge the
-// factor. What still has no caller is a fresh assertion taken to authorise
-// something *to the server* — generating a recovery-code set behind one is a
-// later story, and it is a different ceremony because the server has to verify
-// that one.
+// factor.
 //
 // The spec remains the only place the custody rules above can be observed at
 // all: a non-extractable key has no other witness, and "the bytes were cleared"

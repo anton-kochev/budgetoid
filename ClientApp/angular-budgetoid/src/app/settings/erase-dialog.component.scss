@@ -1,0 +1,95 @@
+// Top to bottom, in one grid column at every width, `--bud-space-4` between
+// children — the Anatomy of the erasure dialog. The host is the whole content
+// of whichever overlay it is in, so it owns the inset.
+:host {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--bud-space-4);
+  box-sizing: border-box;
+  padding: var(--bud-space-5);
+  color: var(--bud-text);
+  font-family: var(--bud-font-ui);
+}
+
+// Compact: the handle sits `--bud-space-2` from the sheet's top edge, and the
+// bottom clears the device's home indicator.
+:host(.e-sheet) {
+  padding-top: var(--bud-space-2);
+  padding-bottom: calc(var(--bud-space-5) + env(safe-area-inset-bottom));
+}
+
+// 32 × 4 hairline, centred. The two lengths are the Dialogs and sheets
+// chapter's own; there is no token for a handle.
+.e-handle {
+  justify-self: center;
+  width: 32px;
+  height: 4px;
+  border-radius: var(--bud-radius-full);
+  background: var(--bud-hairline);
+  pointer-events: none;
+}
+
+// Overlay titles are Inter 600 16 — `body-lg` at weight 600, and not Mohave.
+// The size and line height are literals for the reason `settings.component.scss`
+// gives at its own `.s-prose`: the book names no type-scale token.
+.e-title {
+  margin: 0;
+  font-family: var(--bud-font-ui);
+  font-weight: 600;
+  font-size: 1rem;
+  line-height: 1.4;
+}
+
+// `body` `--bud-text`, capped at the reading measure.
+.e-prose {
+  margin: 0;
+  max-width: 65ch;
+  font-size: 0.875rem;
+  line-height: 1.55;
+}
+
+// Colour is never the message: every line reads the same with it removed.
+.e-error {
+  margin: 0;
+  max-width: 65ch;
+  color: var(--bud-over);
+  font-size: 0.875rem;
+  line-height: 1.55;
+}
+
+.e-field {
+  width: 100%;
+}
+
+// Holds one line box while empty, so the actions do not jump when a line
+// arrives — the label/value rule applied to a value whose label is the title.
+.e-outcome {
+  display: grid;
+  min-height: 1lh;
+  font-size: 0.875rem;
+  line-height: 1.55;
+}
+
+// Right-aligned: Ghost dismiss, then the commit.
+.e-actions {
+  display: grid;
+  grid-auto-flow: column;
+  justify-content: end;
+  gap: var(--bud-space-2);
+}
+
+// Material's M3 height is below the system's touch minimum.
+.e-button {
+  min-height: var(--bud-touch-target);
+}
+
+// **Destructive**, which is `--bud-over` fill with a `#FFFFFF` label — the
+// declaration `key-rotation-section.component.scss` makes for the same variant,
+// and the one hard-coded hex here, because the Buttons chapter names it.
+// Written as Material's own tokens rather than `background` and `color`, so the
+// state layer, the ripple and the disabled appearance stay Material's.
+.e-commit {
+  --mat-button-filled-container-color: var(--bud-over);
+  --mat-button-filled-label-text-color: #ffffff;
+  --mat-button-filled-state-layer-color: #ffffff;
+}

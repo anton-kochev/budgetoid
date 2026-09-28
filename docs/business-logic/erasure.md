@@ -280,10 +280,14 @@ role holds no `DELETE` there of any shape.
   `404` would be an answer about a row, and the one thing it would communicate is uncertainty about
   whether their data is still there.
   - **Erasure is therefore not idempotent to the caller**, and the cost is real: a client retrying
-    after a lost `204` sees a failure over data that is already destroyed. The remedy is client-side
-    — do not re-run the ceremony on a presumed-lost response. It must **not** be answered by storing
-    a marker that an erasure happened, nor by answering `204` without a valid assertion, which would
-    put a path through this handler that reports success having verified nothing.
+    after a lost `204` sees a failure over data that is already destroyed. The remedy is client-side,
+    and it is built: `ErasureFlowService` reads a response that never arrived, a `5xx` or any status
+    it does not list as `undetermined`, withdraws the commit for the rest of that dialog and retries
+    nothing — `erasure-flow.service.spec.ts`, "cannot tell whether the account is gone when the
+    erasing request gets no answer", "cannot tell whether the account is gone on a %i" and "never
+    asks again once it cannot tell". It must **not** be answered by storing a marker that an erasure
+    happened, nor by answering `204` without a valid assertion, which would put a path through this
+    handler that reports success having verified nothing.
 - **Enforced in**: `UserRepository.DeleteAsync`, which removes whatever the id matched and saves; an
   absent row leaves an empty set and the save is a no-op rather than a branch.
   - **A second request from the same client is refused, and — this is the part that matters — it
@@ -307,9 +311,13 @@ role holds no `DELETE` there of any shape.
     `…_WhenAnotherRequestDeletedTheRowsFirst_LetsTheErasureFinish` stages the conflict on **two**
     rows, because one row passes under the broken shape as well.
     `…_WhenTheConflictNamesAnotherEntity_LetsItEscape` pins the narrowing on both.
-- **Example**: a person double-clicks the confirm control on a slow connection. The winner's request
-  erases and answers `204`; the loser finds the rows already gone and answers `204` too. A third
-  call on the still-valid token is `401` — and mints nothing.
+- **Example**: two erasing requests leave one browser at once on a slow connection. The winner's
+  request erases and answers `204`; the loser finds the rows already gone and answers `204` too. A
+  third call on the still-valid token is `401` — and mints nothing. **A double press in one dialog
+  no longer produces the pair**: the commit and `ErasureFlowService.erase` both read `pressable`,
+  which is false while `working()` is, so a second press while the first is in flight starts
+  nothing ("makes one challenge and one erasing request however often it is pressed"). The server's
+  answer is unchanged, and two tabs or a hand-built client still reach it.
 - **Source**: `[SOURCE: user-story]`
 
 ---
@@ -516,9 +524,21 @@ role holds no `DELETE` there of any shape.
   - **That scope is the claim and is narrower than it reads at a glance.** Every gate on this page
     answers for rows in this database: the schema vocabulary, the row count and the route table each
     read something the service owns. What a **browser** keeps of its own is outside all three — the
-    erasure path issues no instruction to a client, and no cascade reaches a device. So a sentence
-    promising that nothing survives an erasure *anywhere* would be a promise about somebody else's
-    storage, made by a handler that cannot see it.
+    route issues no instruction to a client, and no cascade reaches a device. After an erasure two
+    things are still there.
+    - **The rotation-epoch record.** `rotation-epoch-record.ts` keeps one `localStorage` key per
+      budget id, and the erased budget's entry stays, keyed on a budget that no longer exists. It is
+      not cleared, by decision: the record only ever rises, custody is its single writer, and the
+      module exports no way to lower or remove an entry. `SessionService.ended()`, which the erasing
+      tab calls on the `204`, locks custody and leaves the record alone.
+    - **The passkey.** It stays in the person's authenticator. Nothing on the server reaches a
+      device, and this client sends the authenticator nothing about the erasure:
+      `WebauthnCeremonyService`, the one module that touches `navigator.credentials`, only creates
+      and asserts. The passkey's credential id no longer names a row, so a sign-in with it is
+      refused as any unknown credential is.
+
+    So a sentence promising that nothing survives an erasure *anywhere* would be a promise about
+    somebody else's storage, made by a handler that cannot see it.
 - **Why**: erasure is irreversible *as an offered capability* and time-bounded *as a physical fact*,
   and both sentences are true at once. A point-in-time restore rebuilds the whole database as an
   operator action against the whole service — it cannot be aimed at one account, and it is reachable
@@ -612,6 +632,17 @@ ELSE
   `webauthn_challenges` row — all already granted, so `AppRoleGrantMatrixTests` and
   `RlsCoverageTests.Exemptions_PinTheColumnsTheirReasonCovers` staying green **untouched** is the
   proof this design added neither a privilege nor a column.
+- **The web client** — `ErasureFlowService`, provided on `SettingsComponent`, drives the dialog
+  [components.md](../design/components.md#erasure-dialog) specifies; the gotcha on the client flow
+  below states its order and its no-retry rule. It mints the challenge through
+  `ReauthenticationApiService` and posts through `MeApiService.eraseAccount`, which builds the body
+  from the five assertion members one by one, so nothing else the ceremony returned can ride along.
+  **The erasing request carries `EXPECTS_UNAUTHENTICATED` and the challenge does not.** A `401` on
+  the erasing request is the gate's verdict or a session that had already ended before the gate
+  ran, and either way this request erased nothing — so the dialog says `refused` rather than
+  `sessionExpiryInterceptor` taking the tab to `/welcome` over a sentence it never got to show. A
+  `401` on the challenge is a session that ended, which is the interceptor's to act on. See
+  [sessions.md](sessions.md) for the token's rule.
 
 ## Edge Cases & Known Gotchas
 
@@ -639,32 +670,45 @@ ELSE
   request it is running inside. It completes normally, and the reason is ordering rather than luck:
   both reads finish before the route delegate starts, and nothing downstream re-reads them. What the
   route does **not** do is clear the cookie. The browser is left holding a handle that names
-  nothing, every later request answers `401`, and the client's expiry interceptor takes it from
-  there — the correct outcome and not a gap, since a cleared cookie would be one more thing to get
-  right on a path whose whole point is that it leaves nothing behind.
+  nothing, and every later request presenting it answers `401`. The tab that erased does not wait
+  for one: on the `204`, `ErasureFlowService` calls `SessionService.ended()` and navigates to
+  `/welcome`. Every other tab and device holding a cookie for the account learns at its next
+  unmarked request, whose `401` `sessionExpiryInterceptor` turns into the same end. That is the
+  correct outcome and not a gap, since a cleared cookie would be one more thing to get right on a
+  path whose whole point is that it leaves nothing behind.
 - **`archived_at` is permitted by the schema scan and forbidden on `users` by a different test.**
   Two rules meet here and neither alone is the whole answer, so somebody reading only the vocabulary
   sees a gap and widens the pattern — which takes a plausible product feature down with it. The
   remnant rule above states the division; read it before touching either side.
-- **A client surface describes an erasure; none can start one, and nothing technical is in the
-  way.** The account settings screen carries an erasure section — what will be destroyed, that there
-  is no undo, and the backup window above — but its control is **disabled**. **Nothing technical
-  blocks it**: the route is live, and the assertion that authorizes it is a ceremony this client
-  already runs, creating a passkey on `/register` and asserting one on `/welcome`. What is missing
-  is narrower and less flattering: the confirmation flow [components.md](../design/components.md)
-  specifies, and the wiring between this button and that assertion. Do not write the copy as though
-  the browser were incapable — it is not. The screen says so in its own words, and the load-bearing
-  clause is the qualifier: what erasing waits on is a passkey **Budgetoid checks itself**. The
-  wording is the design book's — see the *Not built yet* pattern in
-  [voice.md](../design/voice.md) and the erasure and revocation sentences in
-  [components.md](../design/components.md) — and the qualifier is not decoration. The same screen
-  now carries an **Unlock** control that runs a passkey ceremony minted and discarded in the
-  browser, so a sentence saying this screen asks for no passkey would be false in front of somebody
-  who watched their authenticator answer one two sections up. What is missing is narrower: an
-  assertion a **server** verifies. That copy is deliberately **not** the sentence the credential
-  section uses, and only half of the recovery-code one: those wait on the account's keys **as
-  bytes** — which unlocking does not hand over, and which erasing an account needs nothing of — and
-  the recovery-code control waits on a server-checked assertion on top of that.
+- **The client runs the whole act from `/app/settings`, and a lost answer is never retried.**
+  **Erase everything** opens the dialog [components.md](../design/components.md#erasure-dialog)
+  specifies, and `ErasureFlowService` runs one press in one order: the typed word, whether this
+  browser can run a ceremony at all, the re-authentication challenge, a passkey assertion over it,
+  and then `POST /api/me/erasure` carrying the five assertion members and nothing else. Nothing is
+  posted before the ceremony answers, so every refusal raised ahead of the erasing request is a fact
+  about this client when it says nothing was erased. On the `204` it marks `ErasureNotice`, calls
+  `SessionService.ended()` and navigates to `/welcome`, which says *Erased.* The erasing request's
+  own refusals read three ways: a `401` is `refused` — the gate declined the assertion, or the
+  session had already ended before the gate ran, and neither erased anything through this request;
+  a `400` or `403` is `unrecognised`; and everything else, a response that never arrived included,
+  is `undetermined`, because the erasure may have committed.
+  - **`undetermined` withdraws the commit for the life of that dialog, and nothing retries it.**
+    That is the client's half of the not-idempotent-to-the-caller rule above: a second erasing
+    request after a lost `204` is answered `401` and would read *nothing was erased* over an account
+    that is gone.
+  - **Opening the dialog again starts a fresh attempt, and that is safe.** `SettingsComponent` calls
+    `ErasureFlowService.reset()` before each open, which clears the word and the withdrawal. The
+    fresh attempt's first request is the challenge, and it is unmarked: if the lost request did
+    erase the account, the session went with it, the challenge answers `401`,
+    `sessionExpiryInterceptor` ends the session and leaves for `/welcome`, and no ceremony runs and
+    no erasing request is sent. `reset()` does nothing while a press is in flight or after the
+    `204`: mid-press it would put a live commit beside a ceremony or a request still running, and
+    after the `204` it would reopen the commit over a deleted session.
+  - **Held in** `erasure-flow.service.spec.ts`: "leaves a 401 on the challenge to the session
+    interceptor", "marks the erasing request and leaves the challenge unmarked", and the `reset`
+    block — "clears undetermined, so a new dialog offers the commit again", "changes nothing while a
+    press is in flight", "changes nothing while the erasing request is out" and "changes nothing
+    once the account is erased".
 - **A failed erasure still spends the assertion, and still advances the signature counter.** Both
   are the gate's writes, both committed before the transaction opened, and neither returns with the
   rollback — so the person has to run the ceremony again. Correct rather than a defect, and it must

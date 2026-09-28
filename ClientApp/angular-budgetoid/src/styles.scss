@@ -108,6 +108,41 @@ html {
       on-error-container: var(--bud-over-on-container),
     )
   );
+
+  // The overlay level, per the Dialogs and sheets chapter: `--bud-overlay`
+  // surface, `--bud-radius-lg`, `--bud-shadow-overlay`. Here rather than in the
+  // erasure dialog's own styles because the container is Material's element and
+  // sits outside that component's subtree — and because the rule is the
+  // chapter's, for every overlay, not the first one's.
+  @include mat.dialog-overrides(
+    (
+      container-color: var(--bud-overlay),
+      container-shape: var(--bud-radius-lg),
+      container-elevation-shadow: var(--bud-shadow-overlay),
+    )
+  );
+  @include mat.bottom-sheet-overrides(
+    (
+      container-background-color: var(--bud-overlay),
+      container-shape: var(--bud-radius-lg),
+    )
+  );
+}
+
+// The scrim behind an overlay. The CDK paints a fixed black at 32%, which is no
+// value the book names; unlayered, this outranks it at equal specificity.
+.cdk-overlay-dark-backdrop {
+  background: var(--bud-scrim);
+}
+
+// A bottom sheet's own inset and elevation. Material pads its container
+// `8px 16px` and draws an M2 shadow, and neither is a book value; the content
+// owns the sheet's inset (`--bud-space-5`, and the handle `--bud-space-2` from
+// the top), so the container carries none. Two classes, because Material's
+// single-class rule is injected after this stylesheet and would win a tie.
+.cdk-overlay-pane .mat-bottom-sheet-container {
+  padding: 0;
+  box-shadow: var(--bud-shadow-overlay);
 }
 
 html,

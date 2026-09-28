@@ -1,10 +1,12 @@
-import { provideHttpClient } from '@angular/common/http';
+import { HttpErrorResponse, provideHttpClient } from '@angular/common/http';
 import {
   HttpTestingController,
   provideHttpClientTesting,
+  type TestRequest,
 } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
 import { EXPECTS_UNAUTHENTICATED } from '@app-core/interceptors/expects-unauthenticated.token';
+import type { PasskeyAssertionPayload } from '@app-core/security/webauthn-encoding';
 import { ConfigurationService } from '@app-core/services/configuration.service';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -1089,4 +1091,173 @@ describe('MeApiService', () => {
   // There is deliberately no test for a generate/POST method: the service has
   // no such method, because `POST /api/me/recovery-codes` takes five WebAuthn
   // assertion members this client cannot produce.
+
+  // The erasing request. See docs/design/components.md, "Erasure dialog".
+  describe('eraseAccount', () => {
+    const ERASURE_URL = 'https://api.test/api/me/erasure';
+
+    // A fresh assertion, member for member as `PasskeyAssertionPayload`
+    // declares it, with a user handle the authenticator did return.
+    const ASSERTION: PasskeyAssertionPayload = {
+      credentialId: 'AQIDBAUGBwgJCgsMDQ4PEA',
+      clientDataJson: 'eyJ0eXBlIjoid2ViYXV0aG4uZ2V0In0',
+      authenticatorData: 'gIGCg4SFhoeIiYqLjI2Oj5CRkpOUlZaXmJmam5ydnp8',
+      signature: 'MEUCIQD-YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXowMTIzNA',
+      userHandle: 'EBESExQVFhcYGRobHB0eHw',
+    };
+
+    it('posts to the erasure route', () => {
+      // Act
+      api.eraseAccount(ASSERTION).subscribe();
+      const request = http.expectOne(ERASURE_URL);
+
+      // Assert
+      // `POST /api/me/erasure`, and never `DELETE /api/me`: the server removed
+      // that route so the token-only erasure path is closed, and a request
+      // carrying a proof in a DELETE body is one intermediaries may strip.
+      expect(request.request.method).toBe('POST');
+
+      request.flush(null, { status: 204, statusText: 'No Content' });
+    });
+
+    it('sends the assertion and nothing else', () => {
+      // Arrange
+      // Handed an object carrying a sixth member, the way a caller that passed
+      // the whole ceremony value spread flat would. A `CryptoKey` serializes
+      // as `{}`, so the empty object here is what a leaked key-encryption key
+      // looks like on the wire. A service that forwarded its argument whole
+      // would put it there; one that projects the five members cannot.
+      const withExtra = {
+        ...ASSERTION,
+        keyEncryptionKey: {},
+      } as PasskeyAssertionPayload;
+
+      // Act
+      api.eraseAccount(withExtra).subscribe();
+      const request = http.expectOne(ERASURE_URL);
+
+      // Assert
+      // Read from the serialized body, which is what crosses the wire, rather
+      // than from the object handed to HttpClient. The body names no account —
+      // the account erased is whichever one the session is — so a member
+      // beyond these five is either an identifier the server must ignore or
+      // key material that must never leave the tab.
+      const sent = sentJson(request);
+
+      expect(Object.keys(sent).sort()).toEqual(
+        [
+          'authenticatorData',
+          'clientDataJson',
+          'credentialId',
+          'signature',
+          'userHandle',
+        ].sort(),
+      );
+      expect(sent).toEqual(ASSERTION);
+
+      request.flush(null, { status: 204, statusText: 'No Content' });
+    });
+
+    it('sends an absent user handle as null rather than leaving it out', () => {
+      // Arrange
+      const withoutHandle: PasskeyAssertionPayload = {
+        ...ASSERTION,
+        userHandle: null,
+      };
+
+      // Act
+      api.eraseAccount(withoutHandle).subscribe();
+      const request = http.expectOne(ERASURE_URL);
+
+      // Assert
+      // `JSON.stringify` drops a member whose value is `undefined`, so a
+      // service that wrote `userHandle ?? undefined` — or built the body from
+      // the truthy members — would send four members, and the server's record
+      // binds a missing member to null by accident rather than by contract.
+      const sent = sentJson(request);
+
+      expect(sent).toHaveProperty('userHandle', null);
+
+      request.flush(null, { status: 204, statusText: 'No Content' });
+    });
+
+    // **The erasing request expects a 401 and is marked so.** A 401 from it may
+    // be the gate declining the assertion — or a session that had already
+    // ended, turned away by the fallback authorization policy before the gate —
+    // and the dialog says either as `refused`, *nothing was erased*. Unmarked,
+    // `sessionExpiryInterceptor` reads every one as a session ending and takes
+    // the tab to `/welcome` over a sentence the dialog never got to say.
+    it('marks the erasing request as one whose refusal is not a session ending', () => {
+      // Act
+      api.eraseAccount(ASSERTION).subscribe({ error: () => undefined });
+      const request = http.expectOne(ERASURE_URL);
+
+      // Assert
+      expect(request.request.context.get(EXPECTS_UNAUTHENTICATED)).toBe(true);
+
+      request.flush(null, { status: 204, statusText: 'No Content' });
+    });
+
+    it('completes on a 204 with nothing to read', () => {
+      // Arrange
+      let completed = false;
+      let failed = false;
+
+      // Act
+      api.eraseAccount(ASSERTION).subscribe({
+        complete: () => (completed = true),
+        error: () => (failed = true),
+      });
+      http
+        .expectOne(ERASURE_URL)
+        .flush(null, { status: 204, statusText: 'No Content' });
+
+      // Assert
+      // A body would have to be assembled from an account that no longer
+      // exists; a caller that waited for one would never hear the erasure
+      // land.
+      expect(completed).toBe(true);
+      expect(failed).toBe(false);
+    });
+
+    it('hands a refusal to the caller rather than swallowing it', () => {
+      // Arrange
+      let status: number | null = null;
+
+      // Act
+      api.eraseAccount(ASSERTION).subscribe({
+        error: (error: unknown) => {
+          status = error instanceof HttpErrorResponse ? error.status : -1;
+        },
+      });
+      http
+        .expectOne(ERASURE_URL)
+        .flush(null, { status: 401, statusText: 'Unauthorized' });
+
+      // Assert
+      // The flow above this reads the status to choose between `refused`,
+      // `unrecognised` and `undetermined`; a service that caught it here and
+      // completed would turn every refusal into an apparent success.
+      expect(status).toBe(401);
+    });
+  });
 });
+
+// The body as it crosses the wire: HttpClient's own serialization of what the
+// service handed it, parsed back. Refuses anything that is not JSON text, so a
+// service that sent `FormData` or a `Blob` fails here by name.
+function sentJson(request: TestRequest): Record<string, unknown> {
+  const raw = request.request.serializeBody();
+
+  if (typeof raw !== 'string') {
+    throw new Error('The request body was not serialized as JSON text.');
+  }
+
+  const parsed: unknown = JSON.parse(raw);
+
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error('The request body is not a JSON object.');
+  }
+
+  return parsed as Record<string, unknown>;
+}

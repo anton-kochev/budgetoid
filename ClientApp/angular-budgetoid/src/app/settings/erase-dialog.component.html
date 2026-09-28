@@ -1,0 +1,110 @@
+<!-- Compact only: the Dialogs and sheets chapter's hairline handle. Decoration,
+     so it is hidden from assistive technology and takes no pointer events. -->
+@if (inSheet) {
+  <div class="e-handle" aria-hidden="true"></div>
+}
+
+<!-- The title, and the name the overlay is announced by. The section heading,
+     the trigger, this and the commit say the same two words, so the act has one
+     name wherever it is met. -->
+<h2 class="e-title" [id]="titleId">Erase everything</h2>
+
+<!-- The consequence, its own block and the overlay's description — never the
+     field's label and never the commit's, because a label is read every time
+     focus lands on its control and a consequence heard that way is noise a
+     reader learns to skip.
+
+     **The seven-day backup sentence is not here.** It is decided by a value in
+     another project, and a second copy is a second place for the number to
+     drift; the section above the trigger says it once. -->
+<p class="e-prose" [id]="consequenceId">
+  This erases your account and everything in it &mdash; every budget, account,
+  category, payee and transaction. There is no undo.
+</p>
+
+<!-- What happens next. A system sheet over a confirmation reads as a second,
+     unexplained dialog unless the first one said it was coming, and *before
+     erasing anything* is what makes a cancelled prompt safe to reason about. -->
+<p class="e-prose">
+  After you press Erase everything, your device asks for your passkey, and
+  Budgetoid checks it before erasing anything.
+</p>
+
+<!-- **A word that does not match is not an error.** No validator, no
+     `mat-error`, never red: the label already says what to type, and a refusal
+     under a field somebody is part-way through typing in is a scolding. So the
+     field is signal-bound and carries no forms directive at all.
+
+     The three attributes are the phone's: a keyboard that capitalises the first
+     letter or offers a correction is fighting the one word the field wants. -->
+<mat-form-field class="e-field" appearance="outline">
+  <mat-label [id]="labelId">Type erase to confirm</mat-label>
+  <input
+    #field
+    matInput
+    type="text"
+    autocomplete="off"
+    autocapitalize="off"
+    spellcheck="false"
+    [attr.maxlength]="fieldCap"
+    (input)="onInput()"
+  />
+</mat-form-field>
+
+<!-- One region, in the DOM and empty from the moment the overlay opens, so
+     what arrives is announced — a region created together with its first line
+     is announced by nothing. `status` and never `alert`: the person is looking
+     at the press that produced every line, `undetermined` included. -->
+<div class="e-outcome" role="status">
+  @if (line(); as current) {
+    <p [class]="current.refusal ? 'e-error' : 'e-prose'">{{ current.text }}</p>
+  }
+</div>
+
+@let working = flow.working();
+
+<div class="e-actions">
+  <!-- Ghost. **Cancel** promises that nothing happened, so after
+       `undetermined` — the one state that cannot say that — it reads **Close**.
+
+       `disabledInteractive` while the act runs, for the busy reason, and no
+       `aria-busy`: it is doing no work itself. Its handler checks too, because
+       the click still arrives on a `<button>`. -->
+  <button
+    #dismissButton
+    class="e-button"
+    mat-button
+    type="button"
+    [disabled]="working"
+    [disabledInteractive]="true"
+    (click)="dismiss()"
+  >
+    {{ withdrawn() ? 'Close' : 'Cancel' }}
+  </button>
+
+  <!-- Destructive: the fill is spent once on this path, on the press that
+       destroys something.
+
+       `disabledInteractive` until the word matches, so the gate keeps its tab
+       stop and is findable — and while inert it names the field's label with
+       `aria-describedby`, so somebody who tabs past the field hears what opens
+       it. While the act runs it stays in place, busy, with its label unchanged:
+       the region says what is happening.
+
+       **Out of the DOM on `undetermined`** rather than disabled: a control that
+       will never be enabled again makes a promise it cannot keep. -->
+  @if (!withdrawn()) {
+    <button
+      class="e-button e-commit"
+      mat-flat-button
+      type="button"
+      [disabled]="!pressable()"
+      [disabledInteractive]="true"
+      [attr.aria-busy]="working ? 'true' : null"
+      [attr.aria-describedby]="pressable() ? null : labelId"
+      (click)="commit()"
+    >
+      Erase everything
+    </button>
+  }
+</div>

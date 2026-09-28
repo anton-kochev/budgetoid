@@ -51,7 +51,7 @@
         type="button"
         [disabled]="flow.busy()"
         [disabledInteractive]="true"
-        (click)="flow.signIn()"
+        (click)="signIn()"
       >
         Sign in with a passkey
       </button>
@@ -69,7 +69,14 @@
 
          One region rather than two, so the waiting line and the sentence that
          follows it are in the same place and the second replaces the first
-         instead of stacking under it. -->
+         instead of stacking under it.
+
+         **Erased. lands here too**, in this same node, when this tab has just
+         erased its account — the one line the person did not make on this
+         screen. One line at a time and in this order: the busy line, then a
+         sign-in refusal, then Erased. — the later act speaks over the earlier
+         one. `body` `--bud-text`, never the failure colour: a confirmation is
+         not a refusal. -->
     <div class="w-outcome" role="status">
       @if (flow.busy()) {
         <p class="w-prose">Waiting for your device.</p>
@@ -77,6 +84,8 @@
         <!-- Colour is never the message: the line reads as a sentence with the
              colour removed. -->
         <p class="w-error">{{ sentence }}</p>
+      } @else if (notice.erased()) {
+        <p class="w-prose">Erased.</p>
       }
     </div>
 

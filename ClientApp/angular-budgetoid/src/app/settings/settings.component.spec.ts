@@ -4,12 +4,18 @@ import {
   provideHttpClientTesting,
 } from '@angular/common/http/testing';
 import {
+  NgZone,
   computed,
   signal,
   type EnvironmentProviders,
   type Provider,
 } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
+import {
+  MatBottomSheet,
+  MatBottomSheetRef,
+} from '@angular/material/bottom-sheet';
+import { MatDialog, MatDialogRef } from '@angular/material/dialog';
 import { provideNoopAnimations } from '@angular/platform-browser/animations';
 import { Router, provideRouter, type UrlTree } from '@angular/router';
 import {
@@ -32,7 +38,15 @@ import {
   type KeyRotationProgress,
   type StagedRotation,
 } from '@app-core/security/key-rotation.service';
-import { WebauthnCeremonyService } from '@app-core/security/webauthn-ceremony.service';
+import {
+  WebauthnCeremonyService,
+  type PasskeyAssertionCeremony,
+  type PasskeyCeremonyResult,
+} from '@app-core/security/webauthn-ceremony.service';
+import type {
+  PasskeyAssertionPayload,
+  PasskeyRequestOptionsJson,
+} from '@app-core/security/webauthn-encoding';
 import { ConfigurationService } from '@app-core/services/configuration.service';
 import { FileDownloadService } from '@app-core/services/file-download.service';
 import {
@@ -40,12 +54,25 @@ import {
   type SessionStatus,
 } from '@app-core/session/session.service';
 import { of, throwError, type Observable } from 'rxjs';
-import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+  type Mock,
+} from 'vitest';
 import {
   AccountUnlockService,
   type UnlockCeremonyFailure,
 } from './account-unlock.service';
 import { credentialRegistrationDate } from './credential-registration-date';
+import {
+  ErasureFlowService,
+  type ErasureFailure,
+  type ErasurePhase,
+} from './erasure-flow.service';
 import {
   RotationFlowService,
   type RotationCeremonyFailure,
@@ -78,13 +105,14 @@ const BACKUP_WINDOW =
 // and what it waits on, in the same breath as the control it disables. Declared
 // here so the component author has one place to copy from.
 //
-// **Four sites, and no two of them wait on the same thing.** The screen's
-// disabled controls used to say the browser cannot run a passkey ceremony. It
-// can: `/register` creates one and `/welcome` asserts one. Then they said the
-// copy takes a passkey *this screen* does not ask for — and the Account keys
-// section puts an **Unlock** on this very screen, so that clause has become the
-// same defect one step removed, against a control the reader has just used.
-// What is left is three different missing pieces:
+// **Every inert control carries a sentence of its own, and no sentence is pasted
+// over another's.** The screen's disabled controls used to say the browser
+// cannot run a passkey ceremony. It can: `/register` creates one and `/welcome`
+// asserts one. Then they said the copy takes a passkey *this screen* does not
+// ask for — which the Account keys section's **Unlock** made false. Then they
+// narrowed to a passkey *Budgetoid checks itself* — which Key rotation made
+// false in turn, by asking for exactly that passkey a few sections down. What
+// the sentences name now is what a person would meet if the control worked:
 //
 //   - **Register a passkey** waits on the account's keys **as bytes**, and on
 //     nothing else. A passkey is a factor, every factor carries the content key
@@ -93,31 +121,25 @@ const BACKUP_WINDOW =
 //     them. Unlocking does not supply them: `unlock` takes the key-encryption
 //     key as an argument and hands it to custody in one statement, and custody
 //     keeps what it opened as two non-extractable `CryptoKey` objects behind no
-//     accessor. Bytes would mean opening a factor's pair again under a
-//     key-encryption key *held long enough to encapsulate with*, which is
-//     exactly what the unlock path refuses to do.
-//   - **Generate recovery codes** waits on those bytes **and** on a passkey
-//     assertion the *server* checks. A set is ten factors at once, so the first
-//     half is common ground; the second belongs to that route alone, and the
-//     unlock ceremony's assertion is minted in the browser and discarded, so a
-//     person can press Unlock all afternoon without moving this control.
-//   - **Revoke** and **Erase everything** wait on that checked assertion alone.
-//     `POST /api/me/credentials/{id}/revocation` and `POST /api/me/erasure` are
-//     both live and nothing about deleting rows needs a key unwrapped.
+//     accessor.
+//   - **Generate recovery codes** waits on two surfaces a person would meet: a
+//     confirmation, because replacing a set cannot be undone, and a place to
+//     show the new codes once.
+//   - **Revoke** waits on a confirmation step of its own, because revoking
+//     cannot be undone either.
 //
-// Pasting any one of these over another puts a sentence on the screen that is
-// true of a different control, and the tests below are shaped to refuse it.
-// Revoke's and Erase's differ only in number — there is one Erase and one
-// Revoke per row — and they are still two strings, which is why the census
-// below runs over four and not three.
+// **Erase everything carries no sentence any more.** Its confirmation is built
+// — the erasure dialog — so the control is live, stays Outline, and refuses no
+// press; the "not built yet" pattern has nothing to say beside it. The book
+// deliberately states no tally of these sentences, because each control that
+// ships retires one, and this file follows it: the distinctness guard below
+// runs over whatever sentences remain rather than over a count.
 const REGISTRATION_EXPLANATION =
   'A new passkey needs its own copy of your account’s keys, and unlocking lets this browser use those keys without ever getting hold of them. The button stays off until that copy can be made.';
 const GENERATION_EXPLANATION =
-  'Ten new codes each need their own copy of your account’s keys, and replacing a set also has to be confirmed with a passkey Budgetoid checks itself — not the one unlocking asks for, which never leaves this device. The button stays off until this screen asks for both.';
+  'Generating replaces every code you have now, and there’s no undo. This screen doesn’t yet have a step to confirm that, or a place to show the new codes once, so the button stays off until it has both.';
 const REVOCATION_EXPLANATION =
-  'Revoking has to be confirmed with a passkey Budgetoid checks itself, and this screen doesn’t ask for one yet. Those buttons stay off until it does.';
-const ERASURE_EXPLANATION =
-  'Erasing has to be confirmed with a passkey Budgetoid checks itself, and this screen doesn’t ask for one yet. The button stays off until it does.';
+  'Revoking a passkey can’t be undone, so it needs a confirmation step of its own, and this screen doesn’t have one yet. Those buttons stay off until it does.';
 
 // The load-bearing halves of each, and not every word. The wording above is a
 // starting point somebody may improve; a version that drops any of these says
@@ -126,22 +148,16 @@ const ERASURE_EXPLANATION =
 // the same string here.
 //
 // **Two lists where there was one**, because the two sites no longer share a
-// sentence: the second phrase in each is precisely the clause that tells them
-// apart, and a single list could only hold the half they still agree on.
+// sentence, nor even a missing piece: registering waits on bytes, generating on
+// two surfaces a person would meet.
 const REGISTRATION_PHRASES = [
   'its own copy of your account’s keys',
   'unlocking lets this browser use those keys without ever getting hold of them',
 ] as const;
 const GENERATION_PHRASES = [
-  'their own copy of your account’s keys',
-  'confirmed with a passkey Budgetoid checks itself',
-] as const;
-const ERASURE_PHRASES = [
-  // The qualifier is the new half and is not decoration. Without it the
-  // sentence says this screen asks for no passkey at all, which the Account
-  // keys section makes false a few lines down the page.
-  'has to be confirmed with a passkey Budgetoid checks itself',
-  'this screen doesn’t ask for one yet',
+  'Generating replaces every code you have now',
+  'a step to confirm that',
+  'a place to show the new codes once',
 ] as const;
 
 // The claims those sentences replace, kept as fragments on purpose — the defect
@@ -158,6 +174,17 @@ const STALE_REGISTRATION_CLAIM = 'can’t register passkeys yet';
 // sentences that still end at *this screen doesn’t ask for one yet* are true
 // only because of the words in front of them.
 const STALE_UNASKED_PASSKEY_CLAIM = 'a passkey this screen doesn’t ask for';
+// The fourth, retired by Key rotation: that section asks for a passkey the
+// server checks, so no sentence may name one as the piece this screen lacks.
+// Revoke, Generate and Erase all said it; the first two were rewritten and the
+// third was built.
+const STALE_CHECKED_PASSKEY_CLAIM =
+  'confirmed with a passkey Budgetoid checks itself';
+// The sentence the erasure control carried while it was off, whole. Kept only
+// as a negative: its control is live now, and a live control with a sentence
+// saying it is off is the defect in reverse.
+const STALE_ERASURE_EXPLANATION =
+  'Erasing has to be confirmed with a passkey Budgetoid checks itself, and this screen doesn’t ask for one yet. The button stays off until it does.';
 
 // The one control on this screen that works, and the route behind it. A verb in
 // sentence case, per `voice.md`.
@@ -725,6 +752,23 @@ class RotationFlowStub implements RotationFlowSurface {
   public renameAndFinish = vi.fn();
 }
 
+// The erasure attempt, for the block that stubs every flow. Nothing in that
+// block opens the confirmation, so nothing reads this; it is here for the
+// reason `RotationFlowStub` is — the block's `overrideComponent` replaces the
+// component's providers, and a screen that injected its own flow would
+// otherwise die at construction with a `NullInjectorError` naming none of the
+// tests. The erasure block further down mounts the real one.
+type ErasureFlowSurface = Pick<ErasureFlowService, keyof ErasureFlowService>;
+
+class ErasureFlowStub implements ErasureFlowSurface {
+  public readonly phase = signal<ErasurePhase>('idle');
+  public readonly failure = signal<ErasureFailure | null>(null);
+  public readonly working = signal(false);
+  public pressable = vi.fn((): boolean => false);
+  public erase = vi.fn();
+  public reset = vi.fn();
+}
+
 // What the three blocks below need in order to mount the *shipped* component
 // rather than an overridden one.
 //
@@ -782,6 +826,7 @@ describe('SettingsComponent', () => {
         // the time anything is injected and the lookup walks up to here.
         { provide: KeyRotationService, useValue: rotations },
         { provide: RotationFlowService, useValue: rotationFlow },
+        { provide: ErasureFlowService, useValue: new ErasureFlowStub() },
       ],
     });
     // The stub is installed on the component, not on the module. A module-level
@@ -989,49 +1034,48 @@ describe('SettingsComponent', () => {
     expect(normalize(region ?? null)).toBe('');
   });
 
-  it('keeps the erasure control inert', () => {
+  it('offers the erasure control live, as the way into its confirmation', () => {
     // Act
     const eraseButton = buttonNamed(host, ERASE_BUTTON);
     const section = sectionFor(host, 'erase-heading');
 
     // Assert
-    expect(eraseButton?.disabled).toBe(true);
-    // The disabled attribute alone leaves a dead control with no account of
-    // itself; the sentence is what makes the state legible.
-    expect(normalize(section)).toContain(ERASURE_EXPLANATION);
-    // And it is legible about the *right* thing. The browser registers a
-    // passkey on `/register`, so the sentence this replaces was telling a
-    // person their browser cannot do something it just did — and the honest
-    // reason is narrower and less flattering: the route and the ceremony both
-    // exist, and this screen has not been wired to them.
+    // Live, and both readings of it: `disabledInteractive` never sets the DOM
+    // `disabled` property, so `.disabled === false` alone is green on a
+    // control nothing can press.
+    expect(eraseButton).not.toBeNull();
+    expect(eraseButton?.disabled).toBe(false);
+    expect(eraseButton?.getAttribute('aria-disabled')).not.toBe('true');
+    // A screen reader says what the press opens before it is made.
+    expect(eraseButton?.getAttribute('aria-haspopup')).toBe('dialog');
+    // **No sentence beside it** — Sign out's position, and Sign out's reason.
+    // It refuses no press, so the "not built yet" pattern has nothing to say,
+    // and the sentence it used to carry would now be describing a control
+    // that works.
+    expect(normalize(section)).not.toContain(STALE_ERASURE_EXPLANATION);
+    expect(normalize(section)).not.toContain(STALE_CHECKED_PASSKEY_CLAIM);
     expect(normalize(section)).not.toContain(STALE_REGISTRATION_CLAIM);
   });
 
-  it("says the two factor-creating controls wait on the account's keys as bytes", () => {
+  it('says what each factor-creating control is missing', () => {
     // Act
     const credentials = normalize(sectionFor(host, 'credentials-heading'));
     const recovery = normalize(sectionFor(host, 'recovery-heading'));
 
     // Assert
-    // These two both create a factor, every factor carries the account's
-    // content key and index key encapsulated to a public half of its own, and
-    // encapsulating takes those keys as **bytes**. That much is common ground
-    // and is why the pair is asserted in one test.
-    //
     // **What blocks them is narrower than "the browser cannot do it" and
     // narrower than "this screen asks for no passkey", and these pins are what
-    // keep the sentences on the narrow reason.** The envelopes come back from
-    // `GET /api/me/account-keys` and `AccountKeyCustodyService` opens both on
-    // every passkey sign-in; the Account keys section runs a ceremony on this
-    // very screen. What neither supplies is bytes: `unlock` takes the
-    // key-encryption key as an argument and hands it on in one statement, and
-    // custody keeps what it opened as non-extractable `CryptoKey` objects behind
-    // no accessor. Changing the copy therefore moves these phrase lists and the
-    // template together, in one commit; changing either alone reddens this test.
+    // keep the sentences on the narrow reason.** Registering a passkey waits
+    // on the account's keys **as bytes**: `unlock` takes the key-encryption key
+    // as an argument and hands it on in one statement, and custody keeps what
+    // it opened as non-extractable `CryptoKey` objects behind no accessor.
     //
-    // **Two lists, because the two sentences part company on the second
-    // clause.** Registering waits on the bytes alone; generating waits on the
-    // bytes *and* on an assertion the server checks, which is strictly more.
+    // **Generating no longer shares that reason.** Key rotation retired both
+    // facts its old sentence named — it asks for a passkey the server checks
+    // and opens a factor into bytes — so what is left is the two surfaces a
+    // person would meet: a confirmation, and a place to show the new codes
+    // once. Changing the copy moves these phrase lists and the template
+    // together, in one commit; changing either alone reddens this test.
     for (const phrase of REGISTRATION_PHRASES) {
       expect(
         credentials,
@@ -1087,21 +1131,20 @@ describe('SettingsComponent', () => {
     }
   });
 
-  it('says erasing waits on a checked assertion, not that the browser cannot do it', () => {
+  it('gives each inert control a sentence of its own', () => {
     // Arrange
-    // The guards that make the comparisons below able to fail. **Every pair, not
-    // the one pair this used to check.** Four sites now carry four sentences,
-    // and if a later edit collapsed any two of the constants into one value the
-    // assertions after them would pass on a screen saying the same thing twice —
-    // which is the exact implementation this test exists to refuse. The
-    // sentences are compared as substrings in both directions rather than merely
-    // for inequality: one sentence that *contains* another is the same defect
-    // with two extra words on the end.
+    // The guards that make the comparisons below able to fail. **Every pair of
+    // the sentences that remain**, and no count: each control that ships
+    // retires one, and the erasure sentence is the one retired here. If a later
+    // edit collapsed any two of these constants into one value the assertions
+    // after them would pass on a screen saying the same thing twice — the exact
+    // implementation this test exists to refuse. Compared as substrings in both
+    // directions: one sentence that *contains* another is the same defect with
+    // extra words on the end.
     const sentences = [
       ['registration', REGISTRATION_EXPLANATION],
       ['generation', GENERATION_EXPLANATION],
       ['revocation', REVOCATION_EXPLANATION],
-      ['erasure', ERASURE_EXPLANATION],
     ] as const;
 
     for (const [name, sentence] of sentences) {
@@ -1118,49 +1161,40 @@ describe('SettingsComponent', () => {
     }
 
     // Act
-    const erase = normalize(sectionFor(host, 'erase-heading'));
+    const credentials = normalize(sectionFor(host, 'credentials-heading'));
     const recovery = normalize(sectionFor(host, 'recovery-heading'));
+    const erase = normalize(sectionFor(host, 'erase-heading'));
+    const screen = normalize(host);
 
     // Assert
-    // Erasure waits on an assertion the **server** checks, not on the browser
-    // and no longer on "a passkey this screen doesn't ask for": this screen asks
-    // for one, in the Account keys section, and the qualifier is what keeps the
-    // sentence true in front of a reader who has just used it.
-    // `POST /api/me/erasure` exists and the ceremony that authorizes it is one
-    // this client can run; what is missing is the confirmation flow
-    // `components.md` specifies and the wiring behind this button.
-    for (const phrase of ERASURE_PHRASES) {
-      expect(erase, `the erasure section does not say "${phrase}".`).toContain(
-        phrase,
-      );
-    }
-    expect(erase).not.toContain(STALE_REGISTRATION_CLAIM);
-    expect(erase).not.toContain(STALE_CEREMONY_CLAIM);
-
     // The comparisons that are the test. The cheapest wrong implementation is
-    // one sentence pasted at every site, and it passes every `toContain` on this
-    // screen. The four do not wait on the same thing: registering waits on the
-    // account's keys as bytes, generating on those bytes *and* on a checked
-    // assertion, revoking and erasing on the checked assertion alone. Collapsing
-    // any of them puts a sentence on the screen that is true of a different
-    // control — and collapsing the first two in particular erases the answer to
-    // "why can't I just add another way in".
-    expect(
-      erase,
-      'the erasure section explains itself with the registration sentence.',
-    ).not.toContain(REGISTRATION_EXPLANATION);
-    expect(
-      erase,
-      'the erasure section explains itself with the recovery-codes sentence.',
-    ).not.toContain(GENERATION_EXPLANATION);
-    expect(
-      recovery,
-      'the recovery-codes section explains itself with the erasure sentence.',
-    ).not.toContain(ERASURE_EXPLANATION);
+    // one sentence pasted at every site, and it passes every `toContain` on
+    // this screen.
     expect(
       recovery,
       'the recovery-codes section explains itself with the registration sentence.',
     ).not.toContain(REGISTRATION_EXPLANATION);
+    expect(
+      recovery,
+      'the recovery-codes section explains itself with the revocation sentence.',
+    ).not.toContain(REVOCATION_EXPLANATION);
+    expect(
+      credentials,
+      'the credentials section explains itself with the recovery-codes sentence.',
+    ).not.toContain(GENERATION_EXPLANATION);
+
+    // The live erasure control borrows no inert control's sentence either —
+    // the pasted-sentence defect in the direction a tidy-up would take it.
+    for (const [name, sentence] of sentences) {
+      expect(
+        erase,
+        `the erasure section explains itself with the ${name} sentence.`,
+      ).not.toContain(sentence);
+    }
+
+    // **No sentence anywhere may name a passkey the server checks as the piece
+    // this screen lacks**, because Key rotation asks for exactly that one.
+    expect(screen).not.toContain(STALE_CHECKED_PASSKEY_CLAIM);
   });
 
   it('leaves the export control available before an export starts', () => {
@@ -2442,12 +2476,12 @@ describe('SettingsComponent', () => {
       expect(button.disabled).toBe(true);
     }
 
-    // And the section says why, in the erasure section's words with the number
-    // changed, because there is one Revoke per row. **The qualifier is the
-    // load-bearing part**: without *Budgetoid checks itself* the sentence says
-    // this screen asks for no passkey at all, and somebody who has just watched
-    // their authenticator answer an Unlock two sections down would be reading
-    // that the screen cannot ask for what it asked for a moment ago.
+    // And the section says why, plural for the per-row buttons. **What it
+    // names is a confirmation step, not a passkey.** The sentence it replaces
+    // named a passkey Budgetoid checks itself as the missing piece, and Key
+    // rotation made that false by asking for exactly that passkey on this very
+    // screen; what revoking still lacks is the step a person would meet,
+    // because revoking cannot be undone.
     expect(
       normalize(section),
       sentenceMismatch(normalize(section), REVOCATION_EXPLANATION),
@@ -2507,7 +2541,7 @@ describe('SettingsComponent', () => {
     }
   });
 
-  it('gives the credential, recovery and unlock controls the outline treatment', () => {
+  it('gives the credential, recovery, unlock and erase controls the outline treatment', () => {
     // Arrange
     // The same arrangement as the touch-target census, for the same two
     // reasons.
@@ -2536,6 +2570,14 @@ describe('SettingsComponent', () => {
       // right, and the two reasons above refuse an honest promise exactly as
       // they refuse any other.
       [UNLOCK_BUTTON, buttonNamed(host, UNLOCK_BUTTON)],
+      // **Outline, and live**, which is the half of the destructive-action rule
+      // this control is the built case of: the fill promises that a
+      // confirmation follows and that there is no way back, and this press
+      // keeps neither — it opens the confirmation and destroys nothing. The
+      // fill is spent once on this path, on the dialog's commit. Two red
+      // controls in one act teach a reader that the first is the dangerous
+      // one, which is exactly wrong.
+      [ERASE_BUTTON, buttonNamed(host, ERASE_BUTTON)],
       ...revokeButtons().map(
         (button, index) => [`${REVOKE_BUTTON} ${index + 1}`, button] as const,
       ),
@@ -2551,7 +2593,7 @@ describe('SettingsComponent', () => {
     // dead button read as the section's primary action. Export is deliberately
     // filled and is deliberately not in this list — it keeps the screen's one
     // Primary, which is the whole reason Unlock is in it.
-    expect(controls.length).toBe(5);
+    expect(controls.length).toBe(6);
     for (const [name, control] of controls) {
       expect(
         control,
@@ -3091,13 +3133,11 @@ describe('SettingsComponent', () => {
     // for the whole life of the screen.
     expect(generate).not.toBeNull();
     expect(generate?.disabled).toBe(true);
-    // Generating a set is ten factors at once — each code derives its own
-    // key-encryption key — so it waits on the account's keys as bytes exactly as
-    // registering a passkey does. **And on one thing more**, which is why this
-    // section stopped sharing the credential list's sentence: the route is gated
-    // on an assertion the server verifies, and the unlock ceremony's is minted
-    // in this browser and thrown away. A reader told the two controls wait on
-    // the same thing is being told one waits on strictly more than it does.
+    // What holds it off is the two surfaces a person would meet: a
+    // confirmation, because replacing a set invalidates every code printed
+    // from the old one, and a place to show ten new codes once. The sentence it
+    // replaces named the account's keys as bytes and a passkey the server
+    // checks, and Key rotation retired both.
     expect(
       normalize(section),
       sentenceMismatch(normalize(section), GENERATION_EXPLANATION),
@@ -4363,6 +4403,568 @@ describe('SettingsComponent signing out', () => {
     fixture.detectChanges();
   }
 });
+
+// The way into erasing the account: one live trigger, and the confirmation it
+// opens. See docs/design/components.md, "Erase everything section" and "Erasure
+// dialog".
+//
+// **The shipped component with the real `ErasureFlowService`**, which is
+// component-provided, over the testing backend — for the reason the sign-out
+// block above gives. Two of the rules here are about *which* flow the dialog
+// reaches and *when* the first request goes out, and a stubbed flow would stay
+// green on a dialog that had quietly been handed a second instance, or on a
+// trigger that minted a challenge the moment it was pressed.
+//
+// Run once per host. The split is the shell's 960px, and the width is simulated
+// by a `matchMedia` that evaluates `min-width` / `max-width` against a fake
+// viewport — so the cases hold whether the screen asks `BreakpointObserver` or
+// the window, and whichever way round it phrases the query.
+const ERASURE_WIDTHS = [
+  { width: 'compact', viewport: 390, container: 'mat-bottom-sheet-container' },
+  { width: 'expanded', viewport: 1280, container: 'mat-dialog-container' },
+] as const;
+
+describe.each(ERASURE_WIDTHS)('SettingsComponent erasing, $width', (row) => {
+  const { viewport, container } = row;
+  const OPTIONS_URL = `${API_ORIGIN}/api/passkeys/reauthentication/options`;
+  const CONSEQUENCE =
+    'This erases your account and everything in it — every budget, account, category, payee and transaction. There is no undo.';
+  const originalMatchMedia = window.matchMedia;
+
+  let http: HttpTestingController;
+  let fixture: ComponentFixture<SettingsComponent> | null;
+  let host: HTMLElement;
+  const ERASURE_URL = `${API_ORIGIN}/api/me/erasure`;
+  const CHALLENGE: PasskeyRequestOptionsJson = {
+    challenge: 'Y2hhbGxlbmdl',
+    rpId: 'budgetoid.app',
+    timeout: 60000,
+    userVerification: 'required',
+  };
+  const ASSERTION_PAYLOAD: PasskeyAssertionPayload = {
+    credentialId: 'Y3JlZGVudGlhbA',
+    clientDataJson: 'Y2xpZW50',
+    authenticatorData: 'YXV0aA',
+    signature: 'c2ln',
+    userHandle: 'dXNlcg',
+  };
+  const CANCELLED =
+    'The passkey check was cancelled or timed out. Try again whenever you’re ready — nothing was erased.';
+  const UNDETERMINED =
+    'Budgetoid can’t tell whether your account was erased. Reload the page to find out.';
+
+  let ceremony: {
+    readonly available: Mock<() => boolean>;
+    readonly assertPasskey: Mock<
+      () => Promise<PasskeyCeremonyResult<PasskeyAssertionCeremony>>
+    >;
+  };
+
+  beforeEach(async () => {
+    window.matchMedia = fakeMatchMedia(viewport);
+    // By default the device is asked and never answers: most cases here are
+    // not about what happens after the passkey, and a ceremony that resolved
+    // would send an erasing request they do not flush. The reopening cases
+    // give it an answer of their own.
+    ceremony = {
+      available: vi.fn(() => true),
+      assertPasskey: vi.fn(
+        () =>
+          new Promise<PasskeyCeremonyResult<PasskeyAssertionCeremony>>(
+            () => undefined,
+          ),
+      ),
+    };
+
+    await TestBed.configureTestingModule({
+      imports: [SettingsComponent],
+      providers: [
+        provideNoopAnimations(),
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        CONFIGURATION_STUB,
+        {
+          provide: KeyRotationService,
+          useFactory: () => new KeyRotationStub(),
+        },
+        { provide: WebauthnCeremonyService, useValue: ceremony },
+      ],
+    }).compileComponents();
+
+    http = TestBed.inject(HttpTestingController);
+    fixture = TestBed.createComponent(SettingsComponent);
+    host = fixture.nativeElement as HTMLElement;
+    fixture.detectChanges();
+
+    for (const request of http.match(`${API_ORIGIN}/api/me`)) {
+      request.flush(meDto(OWNER_EMAIL) satisfies MeDto);
+    }
+    for (const request of http.match(`${API_ORIGIN}/api/me/credentials`)) {
+      request.flush([PASSKEY]);
+    }
+    for (const request of http.match(`${API_ORIGIN}/api/me/recovery-codes`)) {
+      request.flush({ remaining: 3 });
+    }
+
+    fixture.detectChanges();
+  });
+
+  afterEach(() => {
+    fixture?.destroy();
+    fixture = null;
+    window.matchMedia = originalMatchMedia;
+  });
+
+  it('opens the confirmation with one press of the trigger', async () => {
+    // Act
+    trigger()?.click();
+    const pane = await openPane();
+
+    // Assert
+    // Two interactions and no more, which is NFR-021's count: the trigger is
+    // one and the dialog's commit is the other. So the commit is *in* what
+    // this one press opened — not behind a second disclosure.
+    expect(document.querySelectorAll('.cdk-overlay-pane')).toHaveLength(1);
+    expect(buttonNamed(pane, ERASE_BUTTON)).not.toBeNull();
+    expect(pane.querySelector('input')).not.toBeNull();
+  });
+
+  it('hosts it the way the width calls for', async () => {
+    // Act
+    trigger()?.click();
+    const pane = await openPane();
+
+    // Assert
+    // Compact: bottom sheet. Expanded: centred dialog. Chosen once, when the
+    // overlay opens.
+    expect(pane.querySelector(container)).not.toBeNull();
+  });
+
+  it('asks the server for nothing when the confirmation opens', async () => {
+    // Act
+    trigger()?.click();
+    await openPane();
+    await settle();
+
+    // Assert
+    // The challenge is minted on the commit and never on the trigger: a
+    // nonce spent by opening a dialog somebody then cancels is a live
+    // re-authentication challenge nobody asked for, spendable on every
+    // re-authenticated act in the product.
+    expect(http.match(OPTIONS_URL)).toHaveLength(0);
+    expect(ceremony.assertPasskey).not.toHaveBeenCalled();
+  });
+
+  it('hands the confirmation this screen’s own erasure flow', async () => {
+    // Arrange
+    trigger()?.click();
+    const pane = await openPane();
+    const field = pane.querySelector<HTMLInputElement>('input');
+
+    // Act
+    if (field !== null) {
+      field.value = 'erase';
+      field.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    settleSync();
+    buttonNamed(pane, ERASE_BUTTON)?.click();
+    settleSync();
+    await eventually(
+      () => http.match(OPTIONS_URL)[0] ?? null,
+      'the challenge request',
+    );
+
+    // Assert
+    // The press reached a flow, and that flow is the one this screen
+    // provides — opened with the screen's view container, so an abandoned
+    // attempt dies with the screen. A dialog handed a second instance would
+    // send the same request while the screen's flow read idle.
+    expect(http.match(OPTIONS_URL)).toHaveLength(0);
+    expect(
+      current().debugElement.injector.get(ErasureFlowService).working(),
+    ).toBe(true);
+  });
+
+  it('opens an empty field every time', async () => {
+    // Arrange
+    trigger()?.click();
+    let pane = await openPane();
+    const first = pane.querySelector<HTMLInputElement>('input');
+    if (first !== null) {
+      first.value = 'eras';
+      first.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    settleSync();
+    buttonNamed(pane, 'Cancel')?.click();
+    await closedPane();
+
+    // Act
+    trigger()?.click();
+    pane = await openPane();
+
+    // Assert
+    // A word half typed into a dialog somebody cancelled is not a word typed
+    // into this one.
+    expect(pane.querySelector<HTMLInputElement>('input')?.value).toBe('');
+  });
+
+  it('puts focus in the field when it opens and gives it back to the trigger when it closes', async () => {
+    // Arrange
+    const erase = trigger();
+    erase?.focus();
+
+    // Act
+    erase?.click();
+    const pane = await openPane();
+
+    // Assert
+    // A trap that opens on the commit puts a keyboard user one press from the
+    // ceremony; the word is the next thing asked for.
+    await eventually(
+      () =>
+        document.activeElement === pane.querySelector('input') ? true : null,
+      'focus to land in the field',
+    );
+
+    // Act
+    buttonNamed(pane, 'Cancel')?.click();
+    await closedPane();
+
+    // Assert
+    await eventually(
+      () => (document.activeElement === erase ? true : null),
+      'focus to return to the trigger',
+    );
+  });
+
+  it('names the overlay by its title and describes it by the consequence', async () => {
+    // Act
+    trigger()?.click();
+    const pane = await openPane();
+    const dialog = pane.querySelector('[role="dialog"]');
+
+    // Assert
+    // The cost is announced with the name on open, which is only true if the
+    // consequence is the overlay's *description* rather than a paragraph
+    // somebody tabs past.
+    expect(dialog).not.toBeNull();
+    expect(idText(dialog?.getAttribute('aria-labelledby') ?? null)).toBe(
+      ERASE_BUTTON,
+    );
+    expect(idText(dialog?.getAttribute('aria-describedby') ?? null)).toContain(
+      CONSEQUENCE,
+    );
+  });
+
+  it('takes the overlay with it when the screen goes', async () => {
+    // Arrange
+    trigger()?.click();
+    await openPane();
+
+    // Act
+    // Every way off the screen passes through its teardown — the tab going to
+    // Welcome after a 204, the interceptor sending an ended session there, and
+    // the browser's Back. A router navigation alone does not close a Material
+    // overlay.
+    current().destroy();
+    fixture = null;
+
+    // Assert
+    await eventually(
+      () =>
+        document.querySelectorAll('.cdk-overlay-pane, .cdk-overlay-backdrop')
+          .length === 0
+          ? true
+          : null,
+      'the overlay to leave the document',
+    );
+  });
+
+  it('closes the overlay itself when the screen goes, rather than leaving it to the CDK', async () => {
+    // Arrange
+    trigger()?.click();
+    await openPane();
+    // Passthrough spies on the two refs' own close methods. The CDK's
+    // detachment path — which today also clears the overlay when the screen's
+    // view container is destroyed — reaches neither of them: it finishes a
+    // `MatDialogRef` through `_finishDialogClose` and a `MatBottomSheetRef`
+    // through the CDK ref's `close`. So a call here is the screen's own
+    // teardown and nothing else, which is the half the case above cannot see.
+    const close = vi.spyOn(MatDialogRef.prototype, 'close');
+    const dismiss = vi.spyOn(MatBottomSheetRef.prototype, 'dismiss');
+
+    try {
+      // Act
+      current().destroy();
+      fixture = null;
+
+      // Assert
+      // Synchronously, inside the teardown: the design book gives the closing
+      // to this screen, and a rule held only by where the CDK happens to put
+      // its container stops holding the day the opener or the CDK changes.
+      const expected = container === 'mat-dialog-container' ? close : dismiss;
+      const other = expected === close ? dismiss : close;
+
+      expect(expected).toHaveBeenCalledTimes(1);
+      expect(other).not.toHaveBeenCalled();
+    } finally {
+      close.mockRestore();
+      dismiss.mockRestore();
+    }
+  });
+
+  it('opens one overlay however fast the trigger is pressed twice', async () => {
+    // Arrange
+    // Counted at the opener as well as in the document. `MatBottomSheet`
+    // dismisses a sheet already open when it opens the next one, so on the
+    // compact host a second open leaves one pane behind and the document alone
+    // cannot tell one open from two — the second has still torn down the
+    // first's field and region under the person's thumb.
+    const openDialog = vi.spyOn(MatDialog.prototype, 'open');
+    const openSheet = vi.spyOn(MatBottomSheet.prototype, 'open');
+
+    try {
+      // Act
+      trigger()?.click();
+      trigger()?.click();
+      await openPane();
+      await settle();
+
+      // Assert
+      // A second pane over the first is a second field, a second region and
+      // a second commit, and the flow they share answers both with one line.
+      expect(openDialog.mock.calls.length + openSheet.mock.calls.length).toBe(
+        1,
+      );
+      expect(document.querySelectorAll('.cdk-overlay-pane')).toHaveLength(1);
+      expect(
+        document.querySelectorAll('.cdk-overlay-container input'),
+      ).toHaveLength(1);
+    } finally {
+      openDialog.mockRestore();
+      openSheet.mockRestore();
+    }
+  });
+
+  // The two reopening cases below let a press run to its end, which the cases
+  // above never do — so the flow's word changes *after* the press, in a promise
+  // continuation, and the dialog's `disableClose` effect goes dirty from there.
+  // Ticked from outside the zone, as `settleSync` does, that effect re-enters
+  // the zone mid-render and the zone's own scheduler asks for a second tick
+  // inside the first (`NG0101`). So these tick inside the zone, where the
+  // application's own ticks run.
+  it('opens a fresh attempt after a refusal was cancelled away', async () => {
+    // Arrange
+    ceremony.assertPasskey.mockImplementation(() =>
+      Promise.resolve({ ok: false, failure: 'cancelled' }),
+    );
+    trigger()?.click();
+    let pane = await until(overlayPane, 'the confirmation to open');
+    press(pane);
+    (
+      await until(
+        () => http.match(OPTIONS_URL)[0] ?? null,
+        'the challenge request',
+      )
+    ).flush(CHALLENGE);
+    await until(
+      () => (normalize(statusOf(pane)) === CANCELLED ? true : null),
+      'the refusal',
+    );
+    buttonNamed(pane, 'Cancel')?.click();
+    await until(
+      () => (overlayPane() === null ? true : null),
+      'the confirmation to close',
+    );
+
+    // Act
+    trigger()?.click();
+    pane = await until(overlayPane, 'the confirmation to open again');
+
+    // Assert
+    // The book scopes a withdrawal to the dialog rather than the screen, and
+    // the region is empty from the moment the overlay opens. A sentence about
+    // a press made in a dialog somebody already dismissed, standing in a new
+    // one before anything was pressed, reports an event nobody caused here.
+    expect(statusOf(pane)).not.toBeNull();
+    expect(normalize(statusOf(pane))).toBe('');
+    expect(normalize(pane)).not.toContain(CANCELLED);
+    expect(normalize(pane)).not.toContain('nothing was erased');
+  });
+
+  it('offers the commit again in a new dialog after one that could not tell', async () => {
+    // Arrange
+    const keyEncryptionKey = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      false,
+      ['encrypt', 'decrypt'],
+    );
+    ceremony.assertPasskey.mockImplementation(() =>
+      Promise.resolve({
+        ok: true,
+        value: { payload: ASSERTION_PAYLOAD, keyEncryptionKey },
+      }),
+    );
+    trigger()?.click();
+    let pane = await until(overlayPane, 'the confirmation to open');
+    press(pane);
+    (
+      await until(
+        () => http.match(OPTIONS_URL)[0] ?? null,
+        'the challenge request',
+      )
+    ).flush(CHALLENGE);
+    (
+      await until(
+        () => http.match(ERASURE_URL)[0] ?? null,
+        'the erasing request',
+      )
+    ).error(new ProgressEvent('error'), {
+      status: 0,
+      statusText: 'Unknown Error',
+    });
+    const close = await until(
+      () => buttonNamed(pane, 'Close'),
+      'the Close control',
+    );
+    expect(normalize(statusOf(pane))).toBe(UNDETERMINED);
+    close.click();
+    await until(
+      () => (overlayPane() === null ? true : null),
+      'the confirmation to close',
+    );
+
+    // Act
+    trigger()?.click();
+    pane = await until(overlayPane, 'the confirmation to open again');
+
+    // Assert
+    // Opening is a fresh attempt, and that is safe here: the first request it
+    // makes is the challenge, which a session deleted with the account fails
+    // at before the erasing request is reachable. The new dialog is the
+    // ordinary one — commit present, dismiss saying *Cancel*, region empty.
+    expect(buttonNamed(pane, ERASE_BUTTON)).not.toBeNull();
+    expect(buttonNamed(pane, 'Cancel')).not.toBeNull();
+    expect(buttonNamed(pane, 'Close')).toBeNull();
+    expect(normalize(statusOf(pane))).toBe('');
+  });
+
+  // Types the word into the open confirmation and presses its commit.
+  function press(pane: HTMLElement): void {
+    const field = pane.querySelector<HTMLInputElement>('input');
+
+    if (field === null) {
+      throw new Error('The confirmation has no field to type into.');
+    }
+
+    field.value = 'erase';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    tickInZone();
+    buttonNamed(pane, ERASE_BUTTON)?.click();
+    tickInZone();
+  }
+
+  function statusOf(pane: HTMLElement): Element | null {
+    return pane.querySelector('[role="status"]');
+  }
+
+  function overlayPane(): HTMLElement | null {
+    return document.querySelector<HTMLElement>('.cdk-overlay-pane');
+  }
+
+  function tickInZone(): void {
+    TestBed.inject(NgZone).run(() => settleSync());
+  }
+
+  // `eventually`, ticking inside the zone between reads.
+  async function until<TValue>(
+    read: () => TValue | null | undefined,
+    what: string,
+  ): Promise<TValue> {
+    return eventually(() => {
+      tickInZone();
+
+      return read();
+    }, what);
+  }
+
+  function current(): ComponentFixture<SettingsComponent> {
+    if (fixture === null) {
+      throw new Error('The settings screen is not rendered.');
+    }
+
+    return fixture;
+  }
+
+  function trigger(): HTMLButtonElement | null {
+    return buttonNamed(host, ERASE_BUTTON);
+  }
+
+  function settleSync(): void {
+    TestBed.tick();
+    fixture?.detectChanges();
+  }
+
+  async function settle(): Promise<void> {
+    for (let turn = 0; turn < 5; turn += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    settleSync();
+  }
+
+  async function openPane(): Promise<HTMLElement> {
+    return eventually(() => {
+      settleSync();
+      return document.querySelector<HTMLElement>('.cdk-overlay-pane');
+    }, 'the confirmation to open');
+  }
+
+  async function closedPane(): Promise<void> {
+    await eventually(() => {
+      settleSync();
+      return document.querySelector('.cdk-overlay-pane') === null ? true : null;
+    }, 'the confirmation to close');
+  }
+});
+
+// A `matchMedia` for a viewport of one width: every `min-width` and `max-width`
+// feature in the query is checked against it, and a query naming neither — a
+// reduced-motion preference, say — does not match.
+function fakeMatchMedia(width: number): typeof window.matchMedia {
+  return (query: string): MediaQueryList => {
+    const features = Array.from(
+      query.matchAll(/\((min|max)-width:\s*(\d+(?:\.\d+)?)px\)/g),
+    );
+    const matches =
+      features.length > 0 &&
+      features.every(([, bound, value]) =>
+        bound === 'min' ? width >= Number(value) : width <= Number(value),
+      );
+
+    return {
+      matches,
+      media: query,
+      onchange: null,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+      addListener: () => undefined,
+      removeListener: () => undefined,
+      dispatchEvent: () => false,
+    };
+  };
+}
+
+// The text of every element an IDREF list names, joined — how
+// `aria-labelledby` and `aria-describedby` are read out.
+function idText(ids: string | null): string {
+  return (ids ?? '')
+    .split(/\s+/)
+    .filter((id) => id !== '')
+    .map((id) => normalize(document.getElementById(id)))
+    .join(' ')
+    .trim();
+}
 
 // A visit is not the same thing as a page load. The user exports, walks off to
 // the transactions screen, and comes back: nothing about that second arrival is

@@ -1,9 +1,22 @@
 import { HttpContextToken } from '@angular/common/http';
 
-// Set on the requests whose own verdict is a refusal: a passkey that did not
-// verify, a recovery code that matched nothing, a cold load asking a browser
-// that holds no cookie who it is. None of those is a session ending, because
-// there is no session yet.
+// Set on the requests whose 401 is the route's own verdict on that request
+// rather than a session ending. Most are anonymous by definition: a passkey that
+// did not verify, a recovery code that matched nothing, a cold load asking a
+// browser that holds no cookie who it is — there is no session yet to end.
+//
+// **One is made by a signed-in browser, and it belongs here all the same.**
+// `POST /api/me/erasure` is answered 401 when its gate declines the fresh
+// assertion it carries, before the transaction opens — and also, because the
+// route sits behind the fallback authorization policy, when the session had
+// already ended (expired, revoked, or erased from another tab) before the gate
+// ran. Both mean this request erased nothing, and the erasure dialog says so as
+// `refused`. Unmarked, `sessionExpiryInterceptor` reads the gate's verdict as a
+// session ending and takes the tab to `/welcome` over a sentence the dialog
+// never got to say. The mark is per request, not per route family: the
+// re-authentication challenge minted just before it stays unmarked, so a 401
+// there is the interceptor's fact — which is also where a session that had
+// already ended is caught, on the next press.
 //
 // Carried on the request rather than read off a list of anonymous URLs kept
 // inside the interceptor. A URL list would be a second definition of the

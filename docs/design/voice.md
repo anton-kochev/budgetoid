@@ -67,39 +67,35 @@ figures, not to copy that could just say the number).
 - **Confirmation**: past-tense fact, one word if possible: "Recorded." "Exported."
   "Erased."
 - **Destructive confirm**: consequence in plain words, then the action as the verb:
-  "This erases every account, transaction, and category. There is no undo." →
-  "Erase everything".
+  "This erases your account and everything in it — every budget, account, category,
+  payee and transaction. There is no undo." → "Erase everything".
 - **Blocked action**: the fact, then the way forward, and the way forward is the
   smallest act that clears the block: "This account has transactions. Delete them
   first."
 - **Errors**: what happened + what to do: "Couldn't save — you're offline. It will
   retry." Never blame the person; the subject of an error sentence is the system.
 - **Not built yet**: name the missing piece and what it waits on, in the same breath as
-  the control it disables: "Erasing has to be confirmed with a passkey Budgetoid checks
-  itself, and this screen doesn’t ask for one yet. The button stays off until it does."
-  A disabled control
-  with no sentence beside it reads as a bug, and the person cannot tell a limitation from
-  a failure.
+  the control it disables: "Revoking a passkey can’t be undone, so it needs a confirmation
+  step of its own, and this screen doesn’t have one yet. Those buttons stay off until it
+  does." A disabled control with no sentence beside it reads as a bug, and the person
+  cannot tell a limitation from a failure.
 - **Name the piece that is actually missing, and re-check it every time a capability
-  lands.** The sentence above once said Budgetoid couldn't register passkeys, and it went
-  on saying it after the browser started registering them — a screen telling a person it
-  cannot do what it did on the way in. It then said this screen asks for no passkey, which
-  the Settings screen's own Unlock control made false in turn; the qualifier *Budgetoid
-  checks itself* is what survives, because the assertion an unlock runs is minted in the
-  browser and thrown away, and the one erasure waits on is verified by the server. Each
-  correction is narrower than the one before, which is the shape this rule produces when it
-  is applied rather than admired.
-- **Controls blocked by different things get different sentences** — on that screen today,
-  **four reasons, said in six sentences**. Three stand behind four inert controls, in four
-  sentences: registering a passkey waits on one thing, generating a set of codes on that thing
-  and a second, revoking and erasing on the second alone. The fourth is on a control that is
-  not inert: Export is off only while this tab cannot open what the file is written from, and
-  says so in one of two sentences — a key rotation in flight, or a locked account — or in none.
-  The two inert controls sharing a reason still differ in wording, one naming a row's buttons
-  and the other the screen's, so **the count of sentences is never the count of reasons** — say
-  which of the two a number is counting, or the next reader checks it against the other one and
-  finds it false. One sentence pasted across several replaces an old falsehood with a new one,
-  and reads as an apology nobody wrote for this control.
+  lands.** The settings screen's sentences once said Budgetoid couldn't register passkeys,
+  and went on saying it after the browser started registering them — a screen telling a
+  person it cannot do what it did on the way in. They then said the screen asks for no
+  passkey, which its own Unlock control made false, and narrowed to a passkey *Budgetoid
+  checks itself* — which Key rotation made false in turn, by asking for exactly that
+  passkey two sections away. What those sentences name now is what a person would meet if
+  the control worked: a confirmation step, a place to show new codes. Each correction is
+  narrower than the one before, which is the shape this rule produces when it is applied
+  rather than admired.
+- **Controls blocked by different things get different sentences, and the rule carries no
+  count.** Each inert control says what holds *it* off, and a control that is off only for a
+  while — Export, while this tab cannot open what the file is written from — says so in its
+  own sentence, or in none while an unlock is running. A tally of sentences or reasons written
+  beside the rule is a claim the next shipped control makes false, so state the rule and let
+  the screen be the count. One sentence pasted across several replaces an old falsehood with a
+  new one, and reads as an apology nobody wrote for this control.
 
 ## A sentence the API sends
 

@@ -151,7 +151,10 @@ front of it, not as a list of two.
 
 A destructive action whose confirmation UI does not exist yet is specified as **Outline,
 disabled** — never Destructive. A control that cannot be activated should not promise that a
-confirmation follows. Disabled is not
+confirmation follows. **When the confirmation exists, the control that opens it stays Outline and
+goes live**, and the Destructive fill moves to the confirmation's own commit — the press that
+actually destroys something; the [Erase everything section](#erase-everything-section) is the built
+case. Disabled is not
 self-explanatory either: a `[disabled]` button leaves the tab order and screen readers skip
 it, so the sentence saying what it waits on is **visible prose beside the button**, never a
 `title`, a tooltip, or an `aria-describedby` on the disabled element. A control that is
@@ -820,22 +823,24 @@ list semantics — without it nobody hears "list, 2 items".
 included, and renders one it does not as **Sign-in method**, captioned **Added** and carrying no
 action. **Register a passkey** (below the list) and **Revoke** (on the revocable rows, which is the
 passkeys) are both Outline and **disabled**, and the section carries two sentences and not one,
-because the recovery-codes section below no longer shares this one's words. Across the screen's
-four inert controls there are **three reasons said in four sentences** — Revoke and Erase share a
-reason and word it differently, one naming a row's buttons and the other the screen's. **Export
-carries a fourth reason**, on a control that is not inert: it is off only while this tab cannot
-open what the file is written from, and says so in one of two sentences or in none, per the
-[Export section](#export-section). So the screen holds **four reasons in six sentences, never more
-than five of them on screen at once**, and the count of sentences is never the count of reasons
-here. The browser's ability to run a ceremony is
-not what any of them waits on: this client creates a passkey on `/register` and asserts one on
-`/welcome`.
+because the two controls are not held off by the same thing.
 
-**The four sentences and the Account keys section shipped together**, and that was a scheduling
-rule rather than a preference: two of them name unlocking, and a screen carrying this wording with
-no Unlock on it would be naming a capability the reader cannot find — the same defect as the wording
-it replaced, one step removed. The rule outlives the commit, because the next narrowing of any of
-the four will be earned by a capability in exactly the same way.
+**Every inert control on this screen carries a sentence of its own, and no sentence is pasted over
+another's.** Each names the piece its own control is missing, in words true of that control and of
+no other. **Export** is held to the same rule on a control that is not inert: it is off only while
+this tab cannot open what the file is written from, and says so in a sentence of its own or in none,
+per the [Export section](#export-section). The book deliberately states no tally of these sentences
+or of the reasons behind them. Every capability that lands retires one, and a count written down
+here is a sentence that goes false on the day the next control ships — which is what happened to
+the count that stood here when the erasure dialog did. The browser's ability to run a ceremony is
+not what any of them waits on: this client creates a passkey on `/register`, asserts one on
+`/welcome`, and asks for one **the server checks** in the Key rotation section on this very screen.
+
+**The sentences and the Account keys section shipped together**, and that was a scheduling rule
+rather than a preference: the registration sentence names unlocking, and a screen carrying that
+wording with no Unlock on it would be naming a capability the reader cannot find — the same defect
+as the wording it replaced, one step removed. The rule outlives the commit, because every later
+narrowing is earned by a capability in exactly the same way, and Key rotation has since earned one.
 
 - **Register a passkey** waits on the account's keys **as bytes**, and on nothing else. A passkey
   is a *factor*, every factor stores its own wrapped copy of the account's content key and index
@@ -862,42 +867,45 @@ the four will be earned by a capability in exactly the same way.
   give.
 
   **The sentence is no longer shared with the recovery-codes section, and the split is the
-  specification.** The two were word for word while one fact held both controls off. It no longer
-  does: registering a passkey waits on the bytes alone, while generating a set waits on the bytes
-  **and** on a passkey assertion the *server* checks — which the unlock ceremony deliberately is
-  not, its assertion being minted locally and discarded. Three missing pieces across four
-  sentences: the bytes here, the bytes and a checked assertion under Recovery codes, a checked
-  assertion under Revoke and again under Erase — those last two sharing the piece and not the
-  wording. Export's fourth reason is not a missing piece at all but a state of this tab, and its
-  two sentences are argued in its own chapter. Pasting any one over another puts a sentence on the
-  screen that
-  is true of a different control. The quotes and their phrase constants in
-  `settings.component.spec.ts` move with the template in one commit, and there are now two
-  constants where one served both sites.
+  specification.** The two were word for word while one fact held both controls off, and they have
+  not agreed since. Pasting any sentence on this screen over another puts one on the screen that is
+  true of a different control. The quotes and their phrase constants in
+  `settings.component.spec.ts` move with the template in one commit, one constant per site.
 
-- **Revoke** waits on an assertion the server checks. `POST /api/me/credentials/{id}/revocation` is
-  live and the fresh assertion that authorizes it is a ceremony this client runs; what this screen
-  runs is not it. **That is the erasure section's position, and the two share the reason without
-  sharing the wording** — this one names revoking and speaks of the rows' buttons in the plural,
-  the erasure one names erasing and speaks of a single button. Two strings for one reason, which is
-  how the inert controls' three reasons come to be said in four sentences:
+- **Revoke** waits on its own flow, and the piece of it that is missing is a confirmation.
+  `POST /api/me/credentials/{id}/revocation` is live, and what it takes is no longer out of this
+  client's reach: a fresh assertion the **server** checks, which the Key rotation section below
+  already asks for on this screen, and the account's factor manifest re-sealed over the set the
+  revocation leaves, at the stored epoch plus one — the number every rotation begin already seals a
+  manifest at. What does not exist is the flow joining those to this button, and its first step is the
+  one a person meets: revoking cannot be undone, and no confirmation is specified for it. So the
+  sentence names that, and speaks of the rows' buttons in the plural:
 
-  > Revoking has to be confirmed with a passkey Budgetoid checks itself, and this screen doesn’t
-  > ask for one yet. Those buttons stay off until it does.
+  > Revoking a passkey can’t be undone, so it needs a confirmation step of its own, and this screen
+  > doesn’t have one yet. Those buttons stay off until it does.
 
-  **The qualifier is new and it is not decoration.** Without it the sentence says this screen asks
-  for no passkey at all, which the Account keys section makes false — somebody who has just watched
-  their authenticator answer an **Unlock** would read, two sections down, that this screen cannot
-  ask for what it asked for a moment ago. The erasure section makes the same claim in its own words
-  and takes the same qualifier in the same commit, or the two come apart.
+  **The sentence it replaces named a passkey Budgetoid checks itself as the missing piece, and Key
+  rotation made that false.** The qualifier had once kept the sentence true beside **Unlock**, whose
+  assertion is minted in the browser and discarded; a rotation's is minted by the server and
+  verified there, two sections below the list. Left standing, the old wording told somebody who had
+  just rotated their keys that this screen cannot ask for what it asked for a moment earlier — the
+  defect [voice](voice.md)'s re-check rule exists to catch. It no longer shares a reason with the
+  erasure control either: that control is built, and its sentence is gone.
+
+  **The confirmation is specified here before it is built, like every other surface.** The
+  [erasure dialog](#erasure-dialog) is the shape a builder reaches for first, and it is not the
+  answer by default: revoking removes one way in and leaves the account standing, so what its
+  confirmation states — which passkey, which sessions end with it — is different, and whether it
+  earns a typed word is a decision still to be taken rather than one to be copied.
 
 Both sentences sit **above** the list rather than beside each button: per row, a screen reader would
 read the same explanation once per entry. The account-keys one is also **above the list** and not
 merely above the Register control it explains, because the first inert control a reader meets in this
 section is a row's Revoke — below the rows the sentence is an apology, above them an instruction.
 When each block clears, its own sentence goes and its own control becomes live; neither release
-carries the other. Revoke keeps its Outline until a confirmation exists for it, per the
-destructive-action rule above.
+carries the other. Revoke keeps its Outline when a confirmation exists for it too: the Destructive
+fill is spent on the confirmation's commit, never on the control that opens it — the
+[Erase everything section](#erase-everything-section) is the built case.
 
 ## Recovery codes section
 
@@ -1021,8 +1029,8 @@ policy in the API rather than a fact the client is told.
 
 ### The Generate control
 
-**Present and disabled**, with visible prose above it saying why — the shape the erasure control and
-the credential registration and revocation controls already use on this screen.
+**Present and disabled**, with visible prose above it saying why — the shape the credential
+registration and revocation controls use on this screen.
 
 - **Outline, disabled**, `min-height: var(--bud-touch-target)`. Outline rather than Destructive even
   though generating **replaces** an existing set and invalidates every code printed from it: the
@@ -1037,34 +1045,25 @@ the credential registration and revocation controls already use on this screen.
   `aria-describedby` on the disabled element, all of which are read to nobody once the control has
   left the tab order. It is **this section's own**, and no longer the credential list's:
 
-  > Ten new codes each need their own copy of your account’s keys, and replacing a set also has to
-  > be confirmed with a passkey Budgetoid checks itself — not the one unlocking asks for, which
-  > never leaves this device. The button stays off until this screen asks for both.
+  > Generating replaces every code you have now, and there’s no undo. This screen doesn’t yet have a
+  > step to confirm that, or a place to show the new codes once, so the button stays off until it
+  > has both.
 
-  **Two facts hold this control off and only one of them holds its neighbour off, which is why the
-  shared sentence had to end.** The first is common ground and is argued once in the credential-list
-  chapter above rather than twice: generating a set is ten factors at once — each code derives its
-  own key-encryption key — so it waits on the account's content key and index key **as bytes**
-  exactly as registering a passkey does, and the Account keys section below does not supply them.
-  The second belongs to this route alone: it is gated on a fresh assertion the **server** verifies,
-  and the unlock ceremony's assertion is minted in the browser and discarded, so a person can run
-  Unlock all afternoon without moving this control one step. One sentence covering both sites would
-  have to drop that clause, and the reader would be told two controls wait on the same thing when
-  one waits on strictly more.
+  **The two pieces it names are the two a person meets, and neither is cryptography.** Replacing a
+  set invalidates every code printed from the old one, so the act owes a confirmation before it runs
+  — none is specified. And ten new codes have to be shown once and only once, with the hand-off's
+  copy, on a surface this screen does not have; the one that exists is the last step of
+  registration, driven by that flow.
 
-  **A third fact holds it too and is deliberately not in the copy.** Replacing a set moves the
-  account's factor set on a generation, so the request carries a manifest re-sealed at the stored
-  epoch plus one — a *promotion*, which no path in this client has ever performed; registration
-  files the first manifest and sends no epoch. It stays out of the sentence because it names nothing
-  a person can do, recognise or wait for, and the copy rule here is that a disabled control explains
-  itself in terms of what the reader is owed rather than what the client has left to build.
-
-  **The clause naming the second fact is what keeps the sentence true in front of the reader.** It
-  does not say the browser cannot run a passkey check — `/register` creates a credential and
-  `/welcome` asserts one — and, with the Account keys section immediately below, it may no longer
-  say this screen asks for no passkey either. It asks for one, in plain sight, a few lines further
-  down the page. What it says instead is which *kind* is missing, which is a fact about the route
-  rather than about the device.
+  **The sentence it replaces waited on two facts, and Key rotation retired both.** It said ten codes
+  each need their own copy of the account's keys, and that replacing a set has to be confirmed with
+  a passkey Budgetoid checks itself. A rotation run on this screen now asks for exactly that kind of
+  passkey — a server-minted challenge, verified by the server — and opens a factor under the key it
+  derives, and that open yields the account's keys **as bytes** before anything imports them. That
+  is the ceremony and the bytes the old sentence said this screen lacked. A rotation also seals a
+  manifest at the stored epoch plus one, the *promotion* this route carries. What is left is the
+  flow joining those to this button and the two surfaces above, and the sentence names the two a
+  reader can recognise rather than the wiring behind them.
 
 **What replaces this when generation lands**, so that nobody "completes" the section early: the
 sentence above goes, the button becomes live, and two things arrive with it that are deliberately
@@ -1099,28 +1098,19 @@ generator that mints a code and derives its verifier from that code's canonical 
 registration flow is its one caller; nothing on **this** screen calls it, and the API service has no
 member that posts a set. **Neither the route, nor the client's ability to run a ceremony, nor any
 piece of the cryptography is the obstacle.** That route takes eight members — five of a fresh
-WebAuthn assertion, which this client plainly produces; ten whole code submissions, each carrying
-its own factor keypair; a manifest naming the factor set the request leaves behind; and the rotation
-epoch that manifest was sealed under. Seven of the eight have a live implementation and a live
-caller on the registration path. **The eighth is the epoch, and it is the one member registration
-cannot stand in for** — that path files a first manifest and sends no epoch at all, so no code in
-this client has ever computed the number this route wants, which is the stored generation plus one.
-It is the third wait below, named here as a member rather than left to be inferred from a count.
+WebAuthn assertion over a server-minted challenge, which the Key rotation section on this screen
+already obtains; ten whole code submissions, each carrying its own factor keypair, which the
+registration path already builds; a manifest naming the factor set the request leaves behind; and
+the epoch that manifest was sealed under, the stored generation plus one, which every rotation begin
+already computes and seals at.
 
-**What this section waits on is three things, and the Account keys section below closes none of
-them.** The first is the account's keys **as bytes**: `GET /api/me/account-keys` hands the envelopes
-back and the browser opens them, but what comes out is held as non-extractable key objects behind no
-accessor, and an encapsulation takes bytes. Reaching them means opening a factor again under a
-key-encryption key **held long enough to encapsulate with**, which is exactly what the unlock path
-refuses to do — it takes the key as an argument, hands what it opened to custody in one statement
-and keeps no name for either. The second
-is a passkey assertion the **server** verifies. Unlock's is minted locally and thrown away, so it
-is not that assertion and cannot become it; that is a different ceremony, with a server's challenge
-behind it, and this control waits on it exactly as Erase does. The third is a manifest
-**promotion** — this route moves a generation, so it carries the stored epoch plus one and a
-manifest re-sealed at that number, and nothing in this client has ever promoted one: registration
-files the first at epoch 1 and sends no epoch at all. Redeeming a code has no surface in
-the app at all.
+**What this section waits on is the flow and its two surfaces, and the Account keys section below
+closes none of them — Unlock is not the ceremony this route wants.** Its assertion is minted locally
+and thrown away, and it hands what it opened to custody as key objects nothing can read back as
+bytes. The flow this control needs runs its own server-checked ceremony and opens a factor under
+the key that yields, as a rotation does, and the account's keys come out of that open as bytes for
+exactly as long as ten encapsulations need them. The two surfaces are the ones the sentence names:
+a confirmation, and a show-once hand-off. Redeeming a code has no surface in the app at all.
 
 **The show-once surface exists and this section is not where it lives.** It is the last step of the
 registration flow below, and that flow drives it: somebody creating an account is shown ten codes
@@ -1237,9 +1227,9 @@ measured against exactly what the two keys open — no wider and no narrower.
 - **No composed accessible name.** It is the only Unlock on the screen, so there is nothing to tell
   it apart from — the credential list composes its Revoke names precisely because there is one per
   row.
-- **No sentence beside it saying what it waits on**, because it waits on nothing. Every other
-  control in this half of the screen is off and explains itself; this one is live, and the "not
-  built yet" pattern is for a control that refuses a press.
+- **No sentence beside it saying what it waits on**, because it waits on nothing. The inert
+  controls above it are off and explain themselves; this one is live, and the "not built yet"
+  pattern is for a control that refuses a press.
 - **While either half is running it takes `disabledInteractive` and `aria-busy="true"`** — the
   Export control's treatment and the Export control's reason: a button that goes truly `disabled`
   under the finger drops focus to `<body>`, and somebody who pressed Unlock from the keyboard loses
@@ -1548,21 +1538,20 @@ Two server routes were rejected, and both look tidier than minting a challenge:
   is **never spent** — one live challenge per press, sitting in a pool where nothing distinguishes
   it from the ones a real sign-in is about to redeem.
 - **`POST /api/passkeys/reauthentication/options`**, the authenticated leg. **That pool authorizes
-  three sensitive acts and not one** — erasing the account, revoking a passkey, and replacing the
-  set of recovery codes, one handler each — and nothing on a nonce records which of them it was
-  asked for, so every press of Unlock would leave behind a live one spendable on any of the three,
-  the act that cannot be undone included, on behalf of an act that destroys nothing. **The breadth
-  strengthens the refusal rather than weakening it**, and reading the pool as erasure's alone is
-  what invites the opposite thought: an unlock is not an erasure, so borrowing the pool looks
-  harmless. The whole value of a re-authentication nonce is the distance between what it was minted
-  for and what it can be spent on, and this would spend that distance for a convenience, three ways
-  at once.
+  every re-authenticated act and not one of them** — erasing the account, revoking a passkey,
+  replacing the set of recovery codes and beginning a key rotation, one handler each — and nothing
+  on a nonce records which of them it was asked for, so every press of Unlock would leave behind a
+  live one spendable on any of them, the act that cannot be undone included, on behalf of an act
+  that destroys nothing. **The breadth strengthens the refusal rather than weakening it**, and
+  reading the pool as erasure's alone is what invites the opposite thought: an unlock is not an
+  erasure, so borrowing the pool looks harmless. The whole value of a re-authentication nonce is the
+  distance between what it was minted for and what it can be spent on, and this would spend that
+  distance for a convenience, on every one of those acts at once.
 
-**The day something on the server does have to check a factor here, that is a different ceremony.**
-Replacing a set of recovery codes is the case, and it carries a server's challenge behind it. It
-does not inherit this one and this one may not grow into it — which is exactly what the
-recovery-codes section's own copy says to the reader, in the sentence holding its Generate control
-off.
+**Where something on the server does have to check a factor here, that is a different ceremony.**
+Key rotation and the erasure dialog are the built cases, and each carries a server's challenge
+behind it; replacing a set of recovery codes will be the next. None of them inherits this one, and
+this one may not grow into any of them.
 
 ### Accessibility
 
@@ -2365,8 +2354,9 @@ button and one `role="status"` region, for the reason the sections above it have
 one thing is a sentence, and every component that would wrap it exists to group things there is
 more than one of.
 
-It sits on `/app/settings` **directly above Erase everything**, and nothing goes between the two:
-Export is the alternative offered beside the destructive act, per [patterns](patterns.md), and the
+It sits on `/app/settings` **directly above [Erase everything](#erase-everything-section)**, and
+nothing goes between the two: Export is the alternative offered beside the destructive act, per
+[patterns](patterns.md), and the
 recovery-codes chapter argues the placement rule that follows from that.
 
 **The file is opened in this tab, and that is the difference this chapter exists to specify.** The
@@ -2438,7 +2428,7 @@ for, refused:
   press arrives whatever the attribute says. The drift two spellings produce, and the defect it
   caused once, are argued under the Unlock control and not again here.
 
-### Ready, and the fourth reason
+### Ready, and a reason of its own
 
 **Ready is one predicate, written positively: custody says `unlocked` and no key rotation is in
 flight.** `locked`, `unlocking`, a run, and any state added later all arrive **not ready**. It is the
@@ -2449,10 +2439,11 @@ loads, with a failed read reading as none. The run term is not caution for its o
 run has re-sealed part of the account under keys custody does not hold, so an export over it
 would end `unreadable` for a reason that has a remedy, and tell the person it has none.
 
-**Not ready is the fourth reason a control on this screen is off, and it gets its own sentence.** The
-other three — the account's keys as bytes, a passkey the server checks, and erasure's missing
-confirmation — are said above their own controls, and none of them may be pasted over this one or
-this one over them. Which sentence renders is decided on the notice's terms from the same chapter:
+**Not ready is a reason no other control on this screen is off for, and it gets its own sentence.**
+Every inert control carries its own sentence above it, per the credential list's *What ships
+today*, and none of them may be pasted over this one or this one over them: those name a piece the
+product has not built, and this one names a state of this tab that the next press of Unlock or the
+end of a run clears. Which sentence renders is decided on the notice's terms from the same chapter:
 the run's when a run is in flight, whatever custody says; the locked one on `locked` alone.
 
 | State | Copy | Where it renders |
@@ -2592,6 +2583,274 @@ decoder's refusals and why the money columns survive the parse.
 one export that opened it — no signal, no field and no module binding holds it, and
 `export-document.ts` keeps nothing between its three functions. A change that parked it anywhere
 longer-lived would redden nothing.
+
+## Erase everything section
+
+The account's way out with nothing kept. M3 base: **none** — two paragraphs of prose and one button,
+for the reason the sections above it have none: one act about one thing is a sentence, and every
+component that would wrap it exists to group things there is more than one of. The act itself is
+confirmed in the [erasure dialog](#erasure-dialog), which this section's one control opens.
+
+It sits on `/app/settings` **directly below Export**, and nothing goes between the two: Export is
+the alternative offered beside the destructive act, per [patterns](patterns.md).
+
+### The copy is the specification
+
+> Erasing removes your account and everything in it — every budget, account, category, payee and
+> transaction. There is no undo, and Budgetoid offers no way to bring an account back.
+>
+> Erased data stays in point-in-time database backups for up to 7 days, and in no other place.
+
+**The retention number is on this section and not in the dialog.** It is a figure a value in a
+different project decides, with nothing tying the two together —
+[erasure.md](../business-logic/erasure.md) states the pairing and the commit that has to carry both
+halves. A second copy of the sentence is a second place for the number to drift, so the dialog
+does not repeat it: somebody pressing the trigger has just read it, a few lines above the control.
+
+**Both paragraphs are standing prose and say what erasing *does*.** They read the same before the
+dialog is opened, while it is open, and on a screen reached again after a dialog was cancelled.
+
+### The trigger
+
+- **Outline** (`mat-stroked-button`), 48px target, visible label **Erase everything**, live.
+- **No sentence beside it.** It refuses no press, so the "not built yet" pattern has nothing to
+  say here — Sign out's position, and Sign out's reason.
+- **Not Destructive.** The fill promises that a confirmation follows and that there is no way back,
+  and this press keeps neither promise: it opens the confirmation and destroys nothing. The fill is
+  spent once on this path, on the dialog's commit — the press that does destroy something. Two red
+  controls in one act teach a reader that the first is the dangerous one, which is exactly wrong.
+- **Not Primary.** Export is the screen's one main action.
+- **Two interactions and no more, which is NFR-021's count.** The trigger is one and the dialog's
+  commit is the other. Typing the confirmation word and answering the passkey prompt are
+  confirmation steps inside the second and do not count as interactions — and nothing may be added
+  to the path to make them count: no second dialog, no *are you sure* after the word.
+- **`aria-haspopup="dialog"`**, so a screen reader says what the press opens before it is made.
+
+### Accessibility
+
+Heading level `h2` under the screen's one `h1`; no level skipped. No `role="status"` region: nothing
+here is read from the network, and every outcome of the act is said in the dialog's region or on
+Welcome. The trigger is a 48px target and its visible label is its whole accessible name. Nothing is
+communicated by colour.
+
+## Erasure dialog
+
+The confirmation for erasing an account, and **the first dialog or sheet the product builds** — the
+[Dialogs and sheets](#dialogs-and-sheets) chapter was written before anything used it, and this is
+the chapter that holds it to what it says. M3 base: `MatDialog` on expanded widths, `MatBottomSheet`
+on compact, per that chapter.
+
+**It is the one place the UI is deliberately slow**, per [patterns](patterns.md): it states plainly
+what will be destroyed, asks for a typed word, and then asks the device for a passkey the server
+checks before anything is erased. Each step answers a different question. The consequence block is
+what the act costs; the word is whether the person meant this control; the passkey is whether the
+person holding the session holds the account — the one of the three the server enforces.
+
+### Host
+
+- **Compact: bottom sheet. Expanded: centred dialog.** The split is the shell's (960px), chosen
+  once when the overlay opens. A resize while it is open does not swap hosts, because swapping
+  destroys the field, the region and a ceremony in flight, and a person rotating a tablet
+  mid-prompt is the ordinary way to reach it.
+- **Modal, focus trapped, scrim behind** — Material's behaviour, which
+  [accessibility](accessibility.md) forbids disabling. The title names the overlay
+  (`aria-labelledby`) and the consequence block describes it (`aria-describedby`), so the cost is
+  announced with the name on open.
+
+### Anatomy
+
+Top to bottom, in one grid column at every width, `--bud-space-4` between children:
+
+1. **Title** — **Erase everything**, in the overlay title style. The section heading, the trigger,
+   the title and the commit say the same two words, so the act has one name wherever it is met.
+2. **The consequence** — its own block, `body` `--bud-text`, never the field's label and never the
+   commit's: *This erases your account and everything in it — every budget, account, category,
+   payee and transaction. There is no undo.* A label is read every time focus lands on its control,
+   and a consequence heard that way is noise a reader learns to skip — the hand-off's rule.
+3. **What happens next** — `body` `--bud-text`: *After you press Erase everything, your device asks
+   for your passkey, and Budgetoid checks it before erasing anything.* A system sheet appearing over
+   a confirmation reads as a second, unexplained dialog unless the first one said it was coming;
+   this sentence is what says so, and *before erasing anything* is what makes a cancelled prompt
+   safe to reason about.
+4. **The field** — one outline text field, label **Type erase to confirm**, with
+   `autocomplete="off"`, `autocapitalize="off"` and `spellcheck="false"`. A phone that capitalises
+   the first letter or offers a correction is fighting the one word the field wants.
+5. **The status region** — below.
+6. **Actions**, right-aligned per Dialogs and sheets: Ghost **Cancel**, then Destructive **Erase
+   everything**.
+
+**The seven-day backup sentence is not here**, per the section above. The dialog states what the
+act does; what survives it physically is said once, on the screen.
+
+### The typed word
+
+- **The match is trimmed and case-insensitive against `erase`.** A trailing space from a phone
+  keyboard, or `Erase` from one that capitalised anyway, is the person having done what was asked.
+  Anything wider — a prefix, a near miss — is not a match.
+- **It is a check on intent, not a security control.** The server never sees the word and enforces
+  nothing about it; what it enforces is the passkey. So the word lives in the client as product
+  policy, per [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md), and no
+  sentence anywhere may describe it as protecting the account.
+- **A word that does not match is not an error.** The field never turns red and carries no message:
+  the label already says what to type, and a refusal sentence under a field somebody is part-way
+  through typing in is a scolding. The commit simply stays inert.
+- **It is the typed word [the recovery-code hand-off](#the-acknowledgement) reserves** for destroying
+  data that exists now. This is that case, and the first one built.
+
+### The commit
+
+- **Destructive**, 48px target, visible label **Erase everything**.
+- **`disabledInteractive` until the word matches** — the [Buttons](#buttons) chapter's third case, a
+  control waiting on the person, with the thing it waits on immediately above it. It keeps its tab
+  stop so the gate is findable, and **while inert it names the field's label with
+  `aria-describedby`**, so somebody who tabs past the field onto the commit hears what opens it.
+  That is the one addition to the third case, and it adds no visible sentence: the label is on
+  screen already.
+- **The gate is in the click handler as well as in the attribute**, and both read **one predicate
+  with one owner** — the word matches, nothing is running, and the commit has not been withdrawn.
+  Material's click-halt is applied to anchors only, so on a `<button>` the press arrives whatever
+  the attribute says; here an ungated press starts the ceremony that erases an account. A press
+  the word gate refuses moves focus to the field and does nothing else.
+- **While the act is running it stays in place**, `disabledInteractive` with `aria-busy="true"`,
+  and its label does not change — the region says what is happening.
+- **It is withdrawn on `undetermined`** — below — and never comes back in that dialog's life.
+
+### The dismiss
+
+- **Ghost**, label **Cancel**. It closes the overlay and posts nothing.
+- **While the act is running, Cancel, Escape and the backdrop do nothing.** Waiting for the passkey,
+  a closed overlay leaves a system sheet up with nothing on screen to receive its answer, and an
+  answer that arrives goes on to erase the account from a dialog nobody can see. Erasing, the
+  request is already out and nothing can recall it; closing would only hide the one sentence that
+  matters. The system sheet carries its own cancel, which is the way out of a prompt, and it lands
+  on `cancelled`. Cancel takes `disabledInteractive` for the busy reason, without `aria-busy`: it is
+  doing no work itself.
+- **After `undetermined` it reads Close.** *Cancel* promises that nothing happened, and that is the
+  one thing this state cannot say.
+
+### The status region, and what each line says
+
+**One `role="status"` region, in the DOM and empty from the moment the overlay opens**, so what
+arrives is announced — the rule [A value read from the network](#a-value-read-from-the-network)
+argues, applied to an overlay whose own first paint is the open. At most one line at a time; a press
+clears the previous line as it starts, and nothing else clears it.
+
+| State | Copy | Where it renders |
+| --- | --- | --- |
+| At rest | *nothing* | The region carries no sentence |
+| Waiting for the device | "Waiting for your passkey." | Inside the region, `body` `--bud-text` |
+| Erasing | "Erasing…" | Inside the region, `body` `--bud-text` |
+| `unsupported` | "This browser can’t check a passkey. Open Budgetoid in a different browser, or on a phone or laptop that can — nothing was erased." | Inside the region, `--bud-over` |
+| `cancelled` | "The passkey check was cancelled or timed out. Try again whenever you’re ready — nothing was erased." | Inside the region, `--bud-over` |
+| `no-prf`, `ceremony-failed` | "Your device couldn’t finish the passkey check. Try again, or choose another passkey — nothing was erased." | Inside the region, `--bud-over` |
+| `unstarted` | "Budgetoid couldn’t reach the server to start. Try again in a minute — nothing was erased." | Inside the region, `--bud-over` |
+| `refused` | "Budgetoid didn’t accept that passkey for this account. Try again with a passkey you made for it — nothing was erased." | Inside the region, `--bud-over` |
+| `unrecognised` | "Budgetoid couldn’t read this request. Reload the page and try again — nothing was erased." | Inside the region, `--bud-over` |
+| `undetermined` | "Budgetoid can’t tell whether your account was erased. Reload the page to find out." | Inside the region, `--bud-over`; the commit is withdrawn |
+
+The copy is the specification, not an example of it.
+
+**Every failure ends on whether anything was erased, and that clause is the reason each line
+exists.** Somebody who pressed the most destructive control in the product and then saw a red line
+has one question first. Every line but the last can answer it, because of an order the flow keeps:
+**nothing is posted until the passkey has answered.** The browser's ability is checked before any
+challenge is minted, for `SignInService`'s reason — a nonce the server persisted must not be spent
+by a browser that was never going to finish. Then the challenge, then the ceremony, then the one
+erasing request. Every word above `refused` is raised before that request exists, so *nothing was
+erased* is a fact about this client, not a guess about the server. A flow that ever posted before
+the ceremony would make five sentences false at once.
+
+**`refused` is a `401` from the erasure request itself**, which is the gate declining the assertion
+before the transaction opens — [erasure.md](../business-logic/erasure.md)'s decision tree. The
+gate's refusals are byte-identical by design: an expired challenge, a bad signature and another
+account's passkey are one answer, so the sentence names the likeliest act and no cause. A discoverable
+ceremony lets the authenticator offer any passkey it holds for Budgetoid, including one made for a
+different account, which is why *for this account* is in the sentence.
+
+**That request expects a `401` and is marked so.** Unmarked, `sessionExpiryInterceptor` reads the
+gate's verdict as a session ending and takes the tab to `/welcome` over a sentence this dialog
+never got to say. The challenge request before it is **not** marked: a `401` there is a session that
+really has ended, which is exactly what the interceptor owns — and the screen leaving takes the
+overlay with it, below.
+
+**`unrecognised` is an answer this client could not use**, a `400` the framework raises before the
+handler is entered — nothing about the account is judged, so nothing was erased. Reload, because a
+bundle out of step with its API is how a request comes to be malformed, and a reload is the one
+thing that fetches a different one.
+
+**`undetermined` is the one line that cannot say what happened, and it is written to say exactly
+that.** A lost response, a `5xx` and a network failure after the request left all mean the same: the
+erasure may have committed. So the sentence makes no claim either way and names the one act that
+finds out. A reload asks the server who this is: if the account is gone, the session went with it,
+the probe answers `anonymous` and the tab lands on Welcome; if not, the screen comes back as it was.
+
+**The commit is withdrawn on `undetermined` and the request is never sent again from this dialog.**
+Erasure is not idempotent to the caller: a second request after a lost `204` is answered `401`,
+because the session was deleted with the account, and this dialog would render that as `refused` —
+*nothing was erased*, over an account that no longer exists. So the commit leaves the DOM for the
+rest of the dialog's life rather than going disabled, since a control that will never be enabled
+makes a promise it cannot keep, and focus moves to the dismiss, which now reads **Close**. **No
+retry is automatic either** — not in the flow, and not in any interceptor the request passes
+through. **Reopening the dialog from the trigger is safe, and that is why the withdrawal is scoped
+to the dialog rather than the screen**: the first request a fresh dialog makes is the challenge,
+which needs a live session, so an account that is gone answers there, the interceptor takes the tab
+to Welcome, and the erasing request is never reached.
+
+**Colour is never the message** — every line above reads the same with `--bud-over` removed.
+
+### Focus
+
+- **On open, focus moves to the field.** The word is the next thing asked for, and a trap that
+  opens on the commit puts a keyboard user one press from the ceremony.
+- **On close, focus returns to the trigger** — Material's restore, not a reimplementation.
+- **On `undetermined`, focus moves to the dismiss**, because the control it stood on has left.
+- **A refusal moves nothing.** Focus stays on the commit, which is where the next attempt starts.
+
+### How the overlay ends
+
+**It lives no longer than the screen that opened it.** A router navigation alone does not close a
+Material dialog, so the Settings screen closes it in its own teardown — which every way off the
+screen passes through: the tab going to Welcome after a `204`, the interceptor sending an ended
+session there, and the browser's own Back.
+
+**After a `204`, the session ends on this device and the person lands on `/welcome`, which says
+"Erased."** — [voice](voice.md)'s confirmation word. The order is Sign out's, for Sign out's reason:
+`SessionService.ended()` first, which is the single owner of clearing the account's keys from this
+tab, then the navigation, because the guard on the way out reads the session the moment the router
+is asked. Nothing is kept for the moment in between: there is no account left to read.
+
+**The word travels to Welcome in memory, never in the address.** A `/welcome?erased` is a URL
+anybody can open or be sent, and navigation state comes back with the browser's Back button; either
+lets the screen announce an erasure that did not happen. So the flow hands a one-shot fact to a
+root-provided holder that Welcome reads and nothing else writes, and a reload drops it — correctly,
+since a reloaded Welcome has not watched anything happen.
+
+**Other devices find out at their next request.** The erasure deleted every session on the account,
+so each of them answers `401`, and `sessionExpiryInterceptor` takes that tab to Welcome, which says
+nothing: that device did not watch the erasure and has nothing to report it from. Nothing is pushed
+to them.
+
+### What a writer will get wrong
+
+- **Retrying the erasing request on a timeout.** It is the one request in the product whose retry
+  turns a success into a false refusal.
+- **Putting the backup sentence in the dialog**, because the dialog is where the consequence is.
+- **Making the trigger Destructive**, because the act is.
+- **Saying "Erased." in a snackbar.** The Snackbar chapter's surface offers Undo, and nothing here
+  can be undone.
+- **Validating the word with a validator that reddens the field.** A word half typed is not wrong.
+- **Letting Escape close the overlay mid-ceremony**, which is Material's default and has to be
+  switched off for exactly the running states.
+
+### Accessibility
+
+The overlay is a modal dialog whose name is the title and whose description is the consequence
+block; focus is trapped while it is open and restored on close. The title is the overlay's heading.
+The field has a programmatic label. The region is `role="status"`, polite, present and empty from
+open, and never `assertive` — `undetermined` reads closest to the carve-out and is not it, because
+the person is looking at the press that produced it. Every control is a 48px target, and the commit
+and the dismiss keep their tab stops through every state they are drawn in. Nothing is communicated
+by colour alone. Reduced motion takes the host's entry to a fade, per Dialogs and sheets.
 
 ## The locked account
 
@@ -2948,6 +3207,16 @@ and from the commit that gave it the second one, neither of them is the identity
   person. A refusal and an answer that never came are still different sentences: one says this
   passkey does not work here and points at another way in, the other says the server could not be
   reached and points at the same press a minute later.
+- **"Erased." lands in that same region, announced, when this tab has just erased its account** —
+  [voice](voice.md)'s confirmation word, `body` `--bud-text`, and the whole of what the screen says
+  about it. It is the one outcome this region carries that the person did not make *here*: the
+  [erasure dialog](#erasure-dialog) hands it over in memory on its way out, and the dialog chapter
+  argues why never in the address. **One region and one line at a time, in this order**: the busy
+  line while a sign-in runs, then a sign-in refusal, then **Erased.** — the later act speaks over
+  the earlier one. **It clears when a sign-in press starts and when Welcome is left**, and a reload
+  never brings it back: it describes the moment the tab arrived, and a person who then presses Sign
+  in with a passkey has moved on to something the region should answer instead. No other device
+  says it — a tab that did not watch the erasure lands here silent.
 - **The provider line says what Google is for, in three facts and in this order**: an account starts
   there, it happens once and only to check an address, and signing in afterwards never goes near it.
   The order is the reassurance. The sentence it replaced — that the Google account is what signs you
@@ -3636,6 +3905,11 @@ M3 base: `MatDialog` / `MatBottomSheet`. Overlay level: `--bud-overlay` surface,
 - Actions right-aligned: Ghost for dismiss, Primary (or Destructive) for commit.
 - Entry: slide up (large duration, deliberate ease) / fade in for dialogs. Reduced
   motion: fade only.
+
+**The [erasure dialog](#erasure-dialog) is the first overlay the product builds**, and the rules it
+adds belong to it until a second overlay needs them: the host is chosen once at open and not swapped
+on resize, the overlay lives no longer than the screen that opened it, and while an act it started
+is running, the dismiss, Escape and the backdrop do nothing.
 
 ## Snackbar
 
