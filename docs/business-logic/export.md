@@ -48,12 +48,17 @@ erDiagram
 The document carries a schema version, the user record, and an array of budgets each holding its
 five collections as nested arrays. Property names are camelCase. Every persisted column of every row
 it names ships, **including the parent ids the nesting already implies** — `budgets.userId` and each
-row's `budgetId` — with **four named exceptions, all blind indexes**: `accounts.name_key`,
-`payees.name_key`, `category_groups.name_key` and `categories.name_key` are deliberately absent,
-argued under [Business Rules](#business-rules--invariants). **That list is now closed rather than
-growing**: four columns in the schema carry a blind index and all four are omitted. None of the
-three description columns adds a fifth, because a description carries no index at all — which is a
-rule about the field class and not an accident of which tables have been sealed so far.
+row's `budgetId` — with **ten named exceptions of two kinds**. The four blind indexes,
+`accounts.name_key`, `payees.name_key`, `category_groups.name_key` and `categories.name_key`, are
+deliberately absent, argued under [Business Rules](#business-rules--invariants). None of the three
+description columns adds a fifth, because a description carries no index at all — which is a rule
+about the field class and not an accident of which tables have been sealed so far. The six
+`rotation_id` stamps, one on each of `budgets`, `accounts`, `category_groups`, `categories`, `payees`
+and `transactions`, are absent too: each points into a `key_rotations` row that exists only while a
+rotation runs, so it is bookkeeping about the server's work on the keys and not part of the record.
+**The set is the inventory's, not this paragraph's**: the document carries exactly the columns
+`DataInventory` classifies *narrative* or *arithmetic* and none it classifies *excluded*, which is
+what `DataExportInventoryTests` holds.
 
 Out of the document, and the reasons are three rather than one. `credentials`, `sessions`,
 `session_tokens`, `passkey_public_keys`, `passkey_signature_counters`, `webauthn_challenges` and
@@ -62,19 +67,23 @@ rule of its own below. `wrapped_account_keys`, `key_rotations` and `factor_manif
 custody and account control**: the envelopes open only under a factor the person holds and are
 served to a browser that presents one, and the manifest is the account's list of which factors
 exist — a map of the front door, in an artifact that outlives every session that could have vouched
-for whoever is holding it. `currencies` is global reference data belonging to no tenant. Every
-column of all eleven is classified *excluded* in `DataInventory`, one written argument each, which
-is where a table joining this list has to earn its place.
+for whoever is holding it. `key_rotation_seals` belongs with them: it stages one encapsulated value
+per factor while a rotation is in flight. `currencies` is global reference data belonging to no
+tenant. Every column of all twelve is classified *excluded* in `DataInventory`, one written argument
+each, which is where a table joining this list has to earn its place.
 
 ## Constraints
 
 ### MUST
 
-- **Carry every persisted column of every row it names**, less the four blind indexes named
-  below — a row present with a null name, a zeroed balance or a dropped parent id satisfies a set
-  comparison exactly, and a person restoring from that file would find the rows there and the data
-  gone.
-  `ExportDocument`, pinned by `DataExportCompletenessTests`. The sealed columns satisfy this by
+- **Carry exactly the columns the data inventory classifies *narrative* or *arithmetic*, with the
+  row's own value, and no column it classifies *excluded*** — a row present with a null name, a
+  zeroed balance or a dropped parent id satisfies a set comparison exactly, and a person restoring
+  from that file would find the rows there and the data gone.
+  `ExportDocument`, pinned member by member by `DataExportCompletenessTests` and against the
+  inventory by `DataExportInventoryTests`, which reads every classified column back from the
+  database and compares it with the document, so a column classified and never projected is a red
+  build rather than a quiet gap. The sealed columns satisfy this by
   shipping the **envelope**: the column's bytes, unaltered, which is the whole of what this side
   holds — and that is now true of every narrative column in the schema, names and descriptions
   alike.
@@ -215,8 +224,8 @@ is where a table joining this list has to earn its place.
   `categories.name` — and three descriptions — `category_groups.description`,
   `categories.description` and `transactions.description` — cross as the column's AEAD envelope in
   unpadded base64url, under the member names they always had; `accounts.name_key`, `payees.name_key`,
-  `category_groups.name_key` and `categories.name_key` are the only persisted columns the document
-  leaves out. **The server's response is entirely unreadable to the operator who assembled it**,
+  `category_groups.name_key` and `categories.name_key` are the only blind indexes in the schema and
+  the document leaves out all four. **The server's response is entirely unreadable to the operator who assembled it**,
   save for amounts, dates and identifiers — which is the property this whole design was for,
   arriving as a fact about the export route rather than as an aspiration in a requirement. **The
   file a person saves is not the response**: the web client opens every one of the eight in the
@@ -680,8 +689,10 @@ ELSE
 ## Edge Cases & Known Gotchas
 
 - **`currencyCode` is a dangling reference, on purpose.** `currencies` is global reference data
-  owned by no tenant, so `accounts.currencyCode` points at something the file does not contain. A
-  completeness check against a full column inventory must not read this as a hole.
+  owned by no tenant, so `accounts.currencyCode` points at something the file does not contain.
+  `DataExportInventoryTests` checks columns on the rows the document carries, never whether a
+  reference resolves inside the file, so it does not read this as a hole — and a check that did
+  would be wrong.
 - **The document is fully materialized, and nothing bounds its size.** `TypedResults.Ok` serializes
   through a `PipeWriter` in buffers rather than into one string, so the peak is nearer one copy than
   two — but one copy is still unbounded. Small enough for one person's budget today; the ceiling is

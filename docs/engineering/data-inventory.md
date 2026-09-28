@@ -430,6 +430,44 @@ by pasting in its rendered text with the cap already in it. So adding a column s
 inventory and nothing else, and the cap it was given is a line in a diff somebody approves rather
 than a rule anything checks.
 
+## The export is judged against the inventory in both directions
+
+The obligations table says *narrative* and *arithmetic* must be in the export and *excluded* must be
+absent. `DataExportInventoryTests` is where that stops being a sentence. It signs one account in,
+seeds a row of every exported table over the API, takes the export, and compares the document with
+the database the container superuser reads back.
+
+- **Rows are found by their `id` value, never by where they sit.** Each object in the document whose
+  `id` is the canonical text of a row's `uuid` is that row. So no table name, path or member count
+  appears in an assertion, and a column added to an exported table is checked the day it is
+  classified, with nothing in the test edited. A path map was the obvious alternative, and it is the
+  edit NFR-023 says adding a table must not need.
+- **Present is not enough; the value must be the row's.** Every classified column is compared with
+  its row in the one form the wire writes it — exact text for ids, dates, instants, strings and
+  envelopes, exact digits for integers — so a member left at its default, read from the wrong
+  column or written in a second form is red. Money is the one number compared as a number, because
+  `-25` and `-25.0000` are the same amount.
+- **Every classified column is compared on a value, and every nullable one on a null too.** No two
+  classified instant or money columns may share a compared value, because a shared value cannot say
+  which column the export read.
+- **Absence is about keys, not values.** A user id, a registration instant and a currency code
+  legitimately repeat in excluded columns, so the search for an excluded *value* would go red on
+  the export being right. What is refused is a member naming an excluded column, a member naming no
+  column, an object that is no row of any table, and a row of a table the inventory wholly excludes.
+
+**The seeding is the one authored half, the same shape as the narrative census above.** A new
+exported table, or a nullable column no route writes, needs a line in the test's fixture — and the
+non-vacuity guards go red until it has one, naming the column. Seeding cannot be derived: it goes
+through the API so the domain's validation runs.
+
+**What it does not reach.** Where a row sits and in what order; another tenant's rows, which
+`DataExportTenancyTests` owns; the `schemaVersion` value; the scale money is written at; an excluded
+value carried *inside* an owed member, which only the exact value comparison stands against; and any
+table the fixture leaves empty. The web client's decoder is a second, hand-written list of the same
+members and is not reconciled with the inventory. A column this gate forces into the document
+therefore ships in two releases, client first, as [export.md](../business-logic/export.md) argues —
+the gate goes red in one commit, and the fix is not one commit.
+
 ## Tests that lock it
 
 - `DataInventoryCoverageTests` — the FR-005 gate, the empty-inventory and stale-entry controls, the
@@ -452,6 +490,10 @@ than a rule anything checks.
   narrative, and a narrative entry the model no longer maps. One case asserts a **limit** rather than
   a rule — `Compare_AgainstColumnsCarryingTheOtherFieldClassesCap_AcceptsBoth` — so a red there is
   somebody's fix and the remedy is to delete the case.
+- `DataExportInventoryTests` — the FR-009 gate: every narrative and arithmetic column in the export
+  with its row's value, every excluded one absent, and a third case pinning the comparer's arms to
+  the one wire form of each column type on values written by hand, because the fixture reaches only
+  the types the schema has today.
 - `EnvelopeBudgetingIsolationTests` — the CON-005 gate over `Application.Budgeting.*` and
   `Domain.Budgeting.*`, the pin on its subject being empty, and eleven controls over synthetic
   subjects in the test assembly: the body read, the declaration, a clean computation, a

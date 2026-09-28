@@ -162,10 +162,11 @@ public sealed class ExportReadService(BudgetoidDbContext dbContext) : IExportRea
         // projection because none of their columns was sealed yet, and named categories as the next set
         // to move; both moved in the same slice, so the shape is uniform now.
         //
-        // name_key is deliberately not among the members. It is the one accounts column this document
-        // omits: the blind index is derivable from the name by anybody holding the account's index key —
-        // which is exactly who can read this file — and is a deterministic per-account fingerprint of a
-        // name to anybody who is not.
+        // name_key and rotation_id are deliberately not among the members. They are the two accounts
+        // columns this document omits: the blind index is derivable from the name by anybody holding the
+        // account's index key — which is exactly who can read this file — and is a deterministic
+        // per-account fingerprint of a name to anybody who is not; the rotation stamp is left out for the
+        // reason ExportedBudget gives about its own.
         var accountRows = await dbContext.Accounts
             .AsNoTracking()
             .OrderBy(account => account.CreatedAtUtc)
@@ -319,7 +320,8 @@ public sealed class ExportReadService(BudgetoidDbContext dbContext) : IExportRea
         // translates the property itself and the NarrativeField exists only once the row has
         // materialized.
         //
-        // This set omits no column at all — it has no blind index to leave out, because it has no name.
+        // This set omits one column, rotation_id, for the reason ExportedBudget gives about its own — and
+        // no blind index, because it has no name to index.
         var transactionRows = await dbContext.Transactions
             .AsNoTracking()
             .OrderBy(transaction => transaction.CreatedAtUtc)

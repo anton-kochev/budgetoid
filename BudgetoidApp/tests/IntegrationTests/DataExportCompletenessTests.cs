@@ -74,9 +74,9 @@ namespace IntegrationTests;
 /// <c>DataMinimizationSchemaTests</c> covers <c>users</c> alone. So each count below catches a
 /// property added to the document with no column behind it, and catches <b>nothing</b> in the other
 /// direction: a column added to <c>accounts</c> and never projected leaves every test in this file
-/// green while somebody's saved copy quietly stops being a copy. Closing that direction is Story
-/// 7.4's inventory check, which compares the document's shape against the schema itself rather than
-/// against a number written here.
+/// green while somebody's saved copy quietly stops being a copy. <c>DataExportInventoryTests</c> is
+/// what closes that direction: it reads <c>DataInventory</c>, compares each classified column with
+/// the live row by value, and refuses excluded keys, rather than trusting a number written here.
 /// </para>
 /// <para>
 /// <b>Completeness is not correctness, and

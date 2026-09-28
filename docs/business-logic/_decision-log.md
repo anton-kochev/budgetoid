@@ -8,6 +8,36 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-09-28 — The export's column set is judged against the data inventory, by value and in both directions
+
+**Context:** `DataExportCompletenessTests` pins every member of the document by hand, so it holds
+today's forty-one columns and cannot see a forty-second that nobody projected. FR-009 wants the
+build red when a classified column is missing from the export, and the inventory is the one list
+that knows every column.
+
+**Decision:** `DataExportInventoryTests` reads `DataInventory` and the live rows, locates each
+object in the document by its `id`, and requires every narrative and arithmetic column present with
+the row's value in its one wire form, and every excluded column absent as a key.
+[export.md](export.md) and [data inventory](../engineering/data-inventory.md) own the rule.
+
+**Alternatives considered:**
+- **A table-to-path map in the test**: rejected. A new table would edit the test, which is the edit
+  NFR-023 says adding a table must not need.
+- **Reflection over `ExportDocument`'s records**: rejected. It judges the declarations, not the
+  wire, and misses a projection, serializer option or null-omission defect.
+- **Key presence without the value**: rejected. A member left at null, zero or an empty id, or read
+  from the wrong column, is present.
+- **Searching the document for excluded values**: rejected. User ids, the registration instant and
+  currency codes legitimately repeat in excluded columns, so it would go red on a correct export.
+
+**Deliberately absent:** a unit-tier twin over the document's type, which could see nothing the wire
+test does not; and a reconciliation of the web client's decoder with the inventory, which would need
+an artifact generated across the two stacks — the two-release rule in export.md governs that list
+instead. The test's seeding is authored, so a new exported table still costs a fixture line; its
+non-vacuity guards name the column until it has one.
+
+---
+
 ## 2026-09-28 — The export reads one REPEATABLE READ snapshot, owned by its read service
 
 **Context:** the export ran seven autocommit statements at READ COMMITTED. A write committing

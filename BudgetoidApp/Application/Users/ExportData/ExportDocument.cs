@@ -17,11 +17,13 @@ namespace Application.Users.ExportData;
 /// </para>
 /// <para>
 /// The parent ids the nesting already implies — <c>userId</c> on a budget, <c>budgetId</c> on each of
-/// its rows — ship anyway, so that a completeness check over this document compares a table's columns
-/// against a record's members with only the five nested collections on
-/// <see cref="ExportedBudget" /> set aside, rather than against a list of agreed omissions. Those five
+/// its rows — ship anyway, because the inventory classifies them arithmetic and the completeness check
+/// over this document, <c>DataExportInventoryTests</c>, judges every column against
+/// <c>DataInventory</c> rather than against a list of omissions written beside these records: a
+/// narrative or arithmetic column must be present under its camelCase name with the row's value, and an
+/// excluded one must be absent as a key. The five nested collections on <see cref="ExportedBudget" />
 /// are the document's own nesting rather than anything the <c>budgets</c> row persists, and they are
-/// the only members such a check has to account for.
+/// the only members here that are not a column of some table.
 /// </para>
 /// </remarks>
 public sealed record ExportDocument(
@@ -63,6 +65,15 @@ public sealed record ExportedUser(Guid Id, string Email, DateTime CreatedAtUtc);
 /// stopped carrying the column rather than that the column had changed shape. A reader of a saved file
 /// needs the account's content key to get a name back out of it; the document declares
 /// <c>SchemaVersion</c> so that a reader can tell which shape it is holding.
+/// </para>
+/// <para>
+/// <b><c>rotation_id</c> is not here, and it is the one column this record deliberately omits.</b> It
+/// names the key rotation that last re-sealed the row, which makes it a key into a <c>key_rotations</c>
+/// row that lives only while that run is in flight — so a saved file quoting one would name something
+/// already gone by the time anybody opened it. Which generation of key sealed the name is the server's
+/// bookkeeping about work it did on the person's behalf, not part of what they own; the name itself
+/// ships, sealed, in <see cref="Name" />. Accounts, category groups, categories, payees and
+/// transactions carry the same stamp, and each of their records points here rather than restating it.
 /// </para>
 /// <para>
 /// <b>The value equality a record advertises does not reach those five.</b> The synthesized
@@ -114,11 +125,12 @@ public sealed record ExportedBudget(
 /// <param name="CurrencyCode">The account's ISO 4217 code.</param>
 /// <param name="CreatedAtUtc">The creation instant, in UTC.</param>
 /// <remarks>
-/// <b><c>name_key</c> is not here, and that is the one column this record deliberately omits.</b> The
-/// blind index is derivable from the name by anybody holding the account's index key — which is exactly
-/// who can read the file — and is meaningless to anybody who is not. Shipping it would put a
-/// deterministic per-account fingerprint of every account name into a document the requirement asks to
-/// be a copy of what a person owns, not of what the server needs to police it.
+/// <b><c>name_key</c> and <c>rotation_id</c> are not here, and they are the two columns this record
+/// deliberately omits.</b> The blind index is derivable from the name by anybody holding the account's
+/// index key — which is exactly who can read the file — and is meaningless to anybody who is not.
+/// Shipping it would put a deterministic per-account fingerprint of every account name into a document
+/// the requirement asks to be a copy of what a person owns, not of what the server needs to police it.
+/// The rotation stamp is left out for the reason <see cref="ExportedBudget"/> gives about its own.
 /// </remarks>
 public sealed record ExportedAccount(
     Guid Id,
@@ -129,7 +141,7 @@ public sealed record ExportedAccount(
     string CurrencyCode,
     DateTime CreatedAtUtc);
 
-/// <summary>One category group of a budget — the columns the <c>category_groups</c> row carries, less one.</summary>
+/// <summary>One category group of a budget — the columns the <c>category_groups</c> row carries, less two.</summary>
 /// <param name="Id">The group's identifier.</param>
 /// <param name="BudgetId">The budget that owns it.</param>
 /// <param name="Name">
@@ -146,9 +158,11 @@ public sealed record ExportedAccount(
 /// <param name="Position">Where the group sits in the person's own ordering.</param>
 /// <param name="CreatedAtUtc">The creation instant, in UTC.</param>
 /// <remarks>
-/// <b><c>name_key</c> is not here, and it is the one column this record deliberately omits</b> — the
-/// treatment <see cref="ExportedAccount"/> argues for its own and <see cref="ExportedPayee"/> repeats,
-/// pointed at rather than copied a third time. There is deliberately no <c>description_key</c> to omit:
+/// <b><c>name_key</c> and <c>rotation_id</c> are not here, and they are the two columns this record
+/// deliberately omits</b> — the blind index for the treatment <see cref="ExportedAccount"/> argues for
+/// its own and <see cref="ExportedPayee"/> repeats, the stamp for the reason
+/// <see cref="ExportedBudget"/> gives, both pointed at rather than copied a third time. There is
+/// deliberately no <c>description_key</c> to omit:
 /// a description carries no blind index at all, because it is never looked up.
 /// </remarks>
 public sealed record ExportedCategoryGroup(
@@ -159,7 +173,7 @@ public sealed record ExportedCategoryGroup(
     int Position,
     DateTime CreatedAtUtc);
 
-/// <summary>One category of a budget — the columns the <c>categories</c> row carries, less one.</summary>
+/// <summary>One category of a budget — the columns the <c>categories</c> row carries, less two.</summary>
 /// <param name="Id">The category's identifier.</param>
 /// <param name="BudgetId">The budget that owns it.</param>
 /// <param name="CategoryGroupId">The group it is filed under.</param>
@@ -178,10 +192,11 @@ public sealed record ExportedCategoryGroup(
 /// <param name="Position">Where the category sits in the person's own ordering within its group.</param>
 /// <param name="CreatedAtUtc">The creation instant, in UTC.</param>
 /// <remarks>
-/// <b><c>name_key</c> is not here, and it is the one column this record deliberately omits</b> — the
-/// treatment <see cref="ExportedAccount"/> argues for its own and <see cref="ExportedPayee"/> and
-/// <see cref="ExportedCategoryGroup"/> repeat, pointed at rather than copied a fourth time. There is
-/// deliberately no <c>description_key</c> to omit: a description carries no blind index at all, because
+/// <b><c>name_key</c> and <c>rotation_id</c> are not here, and they are the two columns this record
+/// deliberately omits</b> — the blind index for the treatment <see cref="ExportedAccount"/> argues for
+/// its own and <see cref="ExportedPayee"/> and <see cref="ExportedCategoryGroup"/> repeat, the stamp for
+/// the reason <see cref="ExportedBudget"/> gives, both pointed at rather than copied a fourth time.
+/// There is deliberately no <c>description_key</c> to omit: a description carries no blind index at all, because
 /// it is never looked up.
 /// </remarks>
 public sealed record ExportedCategory(
@@ -193,7 +208,7 @@ public sealed record ExportedCategory(
     int Position,
     DateTime CreatedAtUtc);
 
-/// <summary>One payee of a budget — the columns the <c>payees</c> row carries, less one.</summary>
+/// <summary>One payee of a budget — the columns the <c>payees</c> row carries, less two.</summary>
 /// <param name="Id">The payee's identifier.</param>
 /// <param name="BudgetId">The budget that owns it.</param>
 /// <param name="Name">
@@ -204,17 +219,19 @@ public sealed record ExportedCategory(
 /// </param>
 /// <param name="CreatedAtUtc">The creation instant, in UTC.</param>
 /// <remarks>
-/// <b><c>name_key</c> is not here, and it is the one column this record deliberately omits</b> — the
-/// treatment <see cref="ExportedAccount"/> already argues for its own. The blind index is derivable
-/// from the name by anybody holding the account's index key, which is exactly who can read this file,
-/// and is meaningless to anybody who is not. Shipping it would put a deterministic per-budget
-/// fingerprint of every counterparty name into a document the requirement asks to be a copy of what a
-/// person owns, not of what the server needs to police it — and on this table that fingerprint is the
-/// more telling of the two, because a payee list is the set of counterparties one person deals with.
+/// <b><c>name_key</c> and <c>rotation_id</c> are not here, and they are the two columns this record
+/// deliberately omits</b> — the blind index for the treatment <see cref="ExportedAccount"/> already
+/// argues for its own, the stamp for the reason <see cref="ExportedBudget"/> gives about its own. The
+/// blind index is derivable from the name by anybody holding the account's index key, which is exactly
+/// who can read this file, and is meaningless to anybody who is not. Shipping it would put a
+/// deterministic per-budget fingerprint of every counterparty name into a document the requirement asks
+/// to be a copy of what a person owns, not of what the server needs to police it — and on this table
+/// that fingerprint is more telling than the one on accounts, because a payee list is the set of
+/// counterparties one person deals with.
 /// </remarks>
 public sealed record ExportedPayee(Guid Id, Guid BudgetId, string Name, DateTime CreatedAtUtc);
 
-/// <summary>One transaction of a budget — every column the <c>transactions</c> row carries.</summary>
+/// <summary>One transaction of a budget — the columns the <c>transactions</c> row carries, less one.</summary>
 /// <param name="Id">The transaction's identifier.</param>
 /// <param name="BudgetId">The budget that owns it.</param>
 /// <param name="AccountId">The account it is filed under.</param>
@@ -229,14 +246,11 @@ public sealed record ExportedPayee(Guid Id, Guid BudgetId, string Name, DateTime
 /// <param name="CategoryId">The category, or <see langword="null"/> for none.</param>
 /// <param name="CreatedAtUtc">The creation instant, in UTC.</param>
 /// <remarks>
-/// <b>This record omits nothing, and among the five owned collections on
-/// <see cref="ExportedBudget" /> it is the only one that does not.</b> The other four — accounts,
-/// category groups, categories and payees — each leave out a <c>name_key</c>; <c>transactions</c> has
-/// no name column, so it has no blind index to leave out. <b>The set is named rather than counted,
-/// and the reason is next door</b>: <see cref="ExportedBudget" /> omits nothing either, for an
-/// unrelated reason — <c>budgets.name</c> was given no blind index at all — so a reader who took "the
-/// five" to mean the records in this file would find the claim false while the sentence about the
-/// collections stays true.
+/// <b><c>rotation_id</c> is not here, and it is the one column this record deliberately omits</b> — for
+/// the reason <see cref="ExportedBudget" /> gives about its own, pointed at rather than copied. Among the
+/// five owned collections on <see cref="ExportedBudget" /> this is the only record with no blind index
+/// to leave out: the other four — accounts, category groups, categories and payees — each omit a
+/// <c>name_key</c> beside the stamp, and <c>transactions</c> has no name column to index.
 /// </remarks>
 public sealed record ExportedTransaction(
     Guid Id,

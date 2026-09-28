@@ -84,8 +84,8 @@ public static class DataInventory
     /// check when one of these tables grows a column: a new owned-table column is either a
     /// forty-second member of the document or an eleventh written exclusion, and never neither. That
     /// correspondence is the whole
-    /// content of "the export is a copy of what the person owns", and it is what a later card asserts
-    /// — so a column moved between these two words and the export is a column the two files now
+    /// content of "the export is a copy of what the person owns", and it is what
+    /// <c>DataExportInventoryTests</c> asserts — so a column moved between these two words and the export is a column the two files now
     /// disagree about.
     /// </para>
     /// <para>
@@ -104,8 +104,8 @@ public static class DataInventory
     /// a reason argued about a table drifts the moment a column arrives that it was not about, which
     /// is exactly why <see cref="Provisioning.TableExemption" /> had to grow
     /// <see cref="Provisioning.TableExemption.ColumnsTheReasonCovers" />, and why the rule there is
-    /// <i>move the column, do not widen the pin</i>. The eleven wholly-excluded tables below are
-    /// eleven tables' worth of separate arguments, not eleven sentences and a rubber stamp — and the six
+    /// <i>move the column, do not widen the pin</i>. The twelve wholly-excluded tables below are
+    /// twelve tables' worth of separate arguments, not twelve sentences and a rubber stamp — and the six
     /// <c>rotation_id</c> stamps are six more, spread across six owned tables that each lose
     /// something different by publishing one.
     /// </para>
@@ -239,7 +239,7 @@ public static class DataInventory
             + "the indexes ship not at all"),
         ColumnClassificationEntry.Arithmetic("payees", "created_at_utc"),
 
-        // transactions — the leaf, and the one owned table that omits nothing.
+        // transactions — the leaf, and the one owned table with no blind index to omit.
         ColumnClassificationEntry.Arithmetic("transactions", "id"),
         ColumnClassificationEntry.Arithmetic("transactions", "budget_id"),
         ColumnClassificationEntry.Arithmetic("transactions", "account_id"),
