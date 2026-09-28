@@ -73,7 +73,10 @@ places a library or the platform writes to the console without asking, and
   redirect fragment, raw `id_token` and all — whose payload is the subject and the address. The
   library only calls `debug` when `showDebugInformation` is set, which `auth-service.ts` does not
   set; the silent `debug`, `info` and `log` are what keep that one flag from being a leak. `warn`
-  and `error` print a fixed reason and the projection of their first argument, never the rest.
+  and `error` print a fixed reason and the projection of the first argument that is not a string —
+  the library leads with its own sentence and passes the failed response after it, so projecting
+  the first argument would print `non-error` and drop the status. A call made only of sentences
+  prints the reason alone; no sentence the library wrote is printed.
 - **`provideBrowserGlobalErrorListeners()` claims the window's `error` and `unhandledrejection`
   events**, hands them to the handler above and calls `preventDefault()`, so the browser prints
   nothing of its own.

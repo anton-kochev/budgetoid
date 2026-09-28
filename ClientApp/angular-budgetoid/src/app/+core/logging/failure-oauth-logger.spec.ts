@@ -1,3 +1,5 @@
+import { HttpErrorResponse } from '@angular/common/http';
+import type { OAuthLogger } from 'angular-oauth2-oidc';
 import { afterEach, beforeEach, describe, it, vi } from 'vitest';
 import {
   expectOneErrorLine,
@@ -34,8 +36,9 @@ describe('FailureOAuthLogger', () => {
   it.each(['debug', 'info', 'log'] as const)(
     'prints nothing for %s',
     (level) => {
-      // Arrange
-      const logger = new FailureOAuthLogger();
+      // Arrange — typed as the library holds it: these levels take no
+      // parameters here, and the library still hands them the redirect.
+      const logger: OAuthLogger = new FailureOAuthLogger();
 
       // Act
       logger[level]('parsed url', PARSED_REDIRECT);
@@ -45,16 +48,18 @@ describe('FailureOAuthLogger', () => {
     },
   );
 
-  it('prints a fixed reason for a warning, and the text it was given as a non-error', () => {
-    // Arrange — the library's own wording puts the token's subject in the
-    // sentence, so the sentence is the one thing that cannot be printed.
+  it('prints a fixed reason alone for a warning that is only a sentence', () => {
+    // Arrange — the library's own wording puts a token's claim in the
+    // sentence (`'Wrong audience: ' + claims.aud`), so the sentence is the one
+    // thing that cannot be printed. The value here is only a stand-in for
+    // something that must not reach the console.
     const logger = new FailureOAuthLogger();
 
     // Act
     logger.warn(`Wrong audience: ${SUBJECT}`);
 
-    // Assert
-    expectOneErrorLine(spies, 'OAuth warning', { kind: 'non-error' });
+    // Assert — a sentence is not a cause, so there is nothing to project.
+    expectOneErrorLine(spies, 'OAuth warning');
   });
 
   it('prints a fixed reason for an error, and the error as its projection', () => {
@@ -67,5 +72,35 @@ describe('FailureOAuthLogger', () => {
     // Assert — a plain `Error`'s name is not on the allow-list, and the second
     // argument is not printed at all.
     expectOneErrorLine(spies, 'OAuth error', { kind: 'error' });
+  });
+
+  it('projects the HTTP status the library hands over after its sentence', () => {
+    // Arrange — the library's own call shape: a fixed sentence first, the
+    // failed response second (the discovery-document load, for one).
+    const logger = new FailureOAuthLogger();
+
+    // Act
+    logger.error(
+      'error loading discovery document',
+      new HttpErrorResponse({ status: 503, url: EMAIL }),
+    );
+
+    // Assert
+    expectOneErrorLine(spies, 'OAuth error', { kind: 'http', status: 503 });
+  });
+
+  it('projects the first argument that is not a sentence, not the last', () => {
+    // Arrange
+    const logger = new FailureOAuthLogger();
+
+    // Act
+    logger.error(
+      'error loading discovery document',
+      new HttpErrorResponse({ status: 503, url: EMAIL }),
+      new Error(EMAIL),
+    );
+
+    // Assert
+    expectOneErrorLine(spies, 'OAuth error', { kind: 'http', status: 503 });
   });
 });
