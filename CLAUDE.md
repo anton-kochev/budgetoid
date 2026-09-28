@@ -208,7 +208,9 @@ because every one of these is something a reader will otherwise simplify away.
   and pagination for it is planned. Read the chapter for what the gate does *not* reach, which is
   most of what matters. [whole list reads](docs/engineering/whole-list-reads.md)
 - `SessionContextInterceptor` must stay a **connection-opened** interceptor, and
-  `No Reset On Close=true` / `Multiplexing=true` are forbidden in any connection string.
+  `No Reset On Close=true` / `Multiplexing=true` are forbidden in any connection string — the host
+  refuses to boot on either, and on `Include Error Detail=true`, in `RefuseForbiddenConnectionOptions`,
+  held by `ConnectionStringOptionTests`.
   [ADR 0008](docs/decisions/0008-read-the-ambient-budget-inside-the-policy.md)
 - The app connects as `budgetoid_app`; the elevated `budgetoid-admin` is read only by the
   Development startup block. Migrations never run on the app role.

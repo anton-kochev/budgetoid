@@ -4,9 +4,18 @@ using Npgsql;
 namespace IntegrationTests;
 
 /// <summary>
-/// Pins the boot-time refusal of a connection string that asks Npgsql for the server's error detail.
+/// Pins the boot-time refusal of a connection string that switches on an Npgsql option this
+/// application cannot run under: <c>Include Error Detail</c>, <c>No Reset On Close</c> and
+/// <c>Multiplexing</c>.
 /// </summary>
 /// <remarks>
+/// <para>
+/// The last two break the session settings row-level security reads. <c>SessionContextInterceptor</c>
+/// writes <c>app.current_user_id</c> and <c>app.current_budget_id</c> when a connection opens. With
+/// <c>No Reset On Close</c> a pooled connection keeps them for its next borrower; with
+/// <c>Multiplexing</c> many requests share one physical connection. Either way the settings stop
+/// matching the request, which breaks tenant isolation (ADR 0008).
+/// </para>
 /// <para>
 /// With <c>Include Error Detail=true</c>, a unique violation carries PostgreSQL's <c>DETAIL</c> line,
 /// which quotes the key that collided. On a policed table row-level security withholds it; on the tables
@@ -28,21 +37,36 @@ namespace IntegrationTests;
 /// </remarks>
 public sealed class ConnectionStringOptionTests
 {
-    /// <summary>The option's canonical spelling, which every refusal is asserted to name.</summary>
+    /// <summary>The canonical spellings, as Npgsql's builder writes them back, which every refusal is asserted to name.</summary>
     private const string IncludeErrorDetailKeyword = "Include Error Detail";
+    private const string NoResetOnCloseKeyword = "No Reset On Close";
+    private const string MultiplexingKeyword = "Multiplexing";
+
+    /// <summary>The configuration key of the application connection string.</summary>
+    /// <remarks>A prefix of <see cref="AdminConnectionStringKey" />, so a refusal naming either contains it.</remarks>
+    private const string AppConnectionStringKey = "ConnectionStrings:budgetoid";
 
     /// <summary>The configuration key of the elevated connection string the Development block runs on.</summary>
     private const string AdminConnectionStringKey = "ConnectionStrings:budgetoid-admin";
 
     [Test]
-    [Arguments("Development")]
-    [Arguments("Production")]
-    public async Task AHostWhoseConnectionStringIncludesErrorDetail_RefusesToStart(string environment)
+    [Arguments(IncludeErrorDetailKeyword, "Development")]
+    [Arguments(IncludeErrorDetailKeyword, "Production")]
+    [Arguments(NoResetOnCloseKeyword, "Development")]
+    [Arguments(NoResetOnCloseKeyword, "Production")]
+    [Arguments(MultiplexingKeyword, "Development")]
+    [Arguments(MultiplexingKeyword, "Production")]
+    public async Task AHostWhoseConnectionStringSwitchesOnAForbiddenOption_RefusesToStart(
+        string keyword, string environment)
     {
-        // Arrange
+        // Arrange — Include Error Detail would log a colliding passkey handle or provider subject. The
+        // other two break SessionContextInterceptor, which sets app.current_user_id and
+        // app.current_budget_id when a connection opens: No Reset On Close hands the next borrower a
+        // pooled connection still carrying the last request's identity and budget, and Multiplexing
+        // runs many requests' commands over one physical connection, so no single identity is right.
         await using PostgresTestHost host = new();
         await host.StartAsync();
-        string connectionString = $"{host.AppConnectionString};Include Error Detail=true";
+        string connectionString = $"{host.AppConnectionString};{keyword}=true";
 
         // Act
         Exception? failure = await CaptureStartupFailureAsync(connectionString, host.ConnectionString, environment);
@@ -51,17 +75,22 @@ public sealed class ConnectionStringOptionTests
         // fell over for an unrelated reason would satisfy a bare "it threw" and say nothing about this
         // refusal.
         await Assert.That(failure).IsNotNull();
-        await Assert.That(NamesTheOption(failure)).IsTrue();
+        await Assert.That(NamesTheOption(failure, keyword)).IsTrue();
     }
 
     [Test]
-    [Arguments("IncludeErrorDetail=true")]
-    [Arguments("include error detail=True")]
-    public async Task AHostWhoseConnectionStringSpellsIncludeErrorDetailDifferently_RefusesToStart(string option)
+    [Arguments("IncludeErrorDetail=true", IncludeErrorDetailKeyword)]
+    [Arguments("include error detail=True", IncludeErrorDetailKeyword)]
+    [Arguments("NoResetOnClose=true", NoResetOnCloseKeyword)]
+    [Arguments("no reset on close=True", NoResetOnCloseKeyword)]
+    [Arguments("multiplexing=True", MultiplexingKeyword)]
+    public async Task AHostWhoseConnectionStringSpellsAForbiddenOptionDifferently_RefusesToStart(
+        string option, string keyword)
     {
-        // Arrange — two spellings Npgsql's own builder accepts and resolves to the same option (probed
-        // against the resolved Npgsql): the space-free alias, and the canonical key in another case. A
-        // refusal that searched the text for one literal spelling passes the case above and misses both.
+        // Arrange — spellings Npgsql's own builder accepts and resolves to the same option (probed
+        // against the resolved Npgsql 10.0.3): the space-free property name, and the canonical key in
+        // another case. Multiplexing has no space to drop, so only the case varies for it. A refusal
+        // that searched the text for one literal spelling passes the case above and misses these.
         await using PostgresTestHost host = new();
         await host.StartAsync();
         string connectionString = $"{host.AppConnectionString};{option}";
@@ -72,19 +101,24 @@ public sealed class ConnectionStringOptionTests
         // Assert — the canonical spelling, whatever the configuration wrote, so the operator reading the
         // refusal can search the documentation for it.
         await Assert.That(failure).IsNotNull();
-        await Assert.That(NamesTheOption(failure)).IsTrue();
+        await Assert.That(NamesTheOption(failure, keyword)).IsTrue();
     }
 
     [Test]
-    [Arguments("Development")]
-    [Arguments("Production")]
-    public async Task AHostWhoseConnectionStringSetsIncludeErrorDetailFalse_StartsNormally(string environment)
+    [Arguments(IncludeErrorDetailKeyword, "Development")]
+    [Arguments(IncludeErrorDetailKeyword, "Production")]
+    [Arguments(NoResetOnCloseKeyword, "Development")]
+    [Arguments(NoResetOnCloseKeyword, "Production")]
+    [Arguments(MultiplexingKeyword, "Development")]
+    [Arguments(MultiplexingKeyword, "Production")]
+    public async Task AHostWhoseConnectionStringSetsAForbiddenOptionFalse_StartsNormally(
+        string keyword, string environment)
     {
         // Arrange — the keyword present and switched off, which is the option's default spelled out. A
         // refusal that looked for the keyword rather than at the value would refuse this host.
         await using PostgresTestHost host = new();
         await host.StartAsync();
-        string connectionString = $"{host.AppConnectionString};Include Error Detail=false";
+        string connectionString = $"{host.AppConnectionString};{keyword}=false";
 
         // Act
         Exception? failure = await CaptureStartupFailureAsync(connectionString, host.ConnectionString, environment);
@@ -115,7 +149,7 @@ public sealed class ConnectionStringOptionTests
 
         // Assert — refused, and refused before the migration ran. A refusal placed after the
         // Development block still names the option; only the untouched catalog tells the two apart.
-        await Assert.That(NamesTheOption(failure)).IsTrue();
+        await Assert.That(NamesTheOption(failure, IncludeErrorDetailKeyword)).IsTrue();
         await Assert.That(await empty.HasMigrationsHistoryTableAsync()).IsFalse();
     }
 
@@ -135,7 +169,7 @@ public sealed class ConnectionStringOptionTests
 
         // Assert — every message in the chain, since the host builder is free to wrap the refusal and
         // a wrapper that copied the inner message would leak as surely as the refusal itself.
-        await Assert.That(NamesTheOption(failure)).IsTrue();
+        await Assert.That(NamesTheOption(failure, IncludeErrorDetailKeyword)).IsTrue();
         string messages = string.Join(Environment.NewLine, MessagesOf(failure));
         await Assert.That(messages).DoesNotContain(refused.Password!);
         await Assert.That(messages).DoesNotContain(refused.Host!);
@@ -161,7 +195,7 @@ public sealed class ConnectionStringOptionTests
             appConnectionString, adminConnectionString, "Development");
 
         // Assert
-        await Assert.That(NamesTheOption(failure)).IsTrue();
+        await Assert.That(NamesTheOption(failure, IncludeErrorDetailKeyword)).IsTrue();
         await Assert.That(MessagesOf(failure).Any(message =>
             message.Contains(AdminConnectionStringKey, StringComparison.Ordinal))).IsTrue();
         await Assert.That(await empty.HasMigrationsHistoryTableAsync()).IsFalse();
@@ -220,18 +254,23 @@ public sealed class ConnectionStringOptionTests
 
     /// <summary>
     /// Whether the failure, or anything it wraps, is an <see cref="InvalidOperationException" /> whose
-    /// message names the option by its canonical spelling.
+    /// message names both a connection-string configuration key and the option by its canonical
+    /// spelling.
     /// </summary>
     /// <remarks>
     /// The chain is walked because the host builder is free to wrap what a startup guard threw. A host
-    /// that came up at all is <see langword="null" /> here and answers <see langword="false" />.
+    /// that came up at all is <see langword="null" /> here and answers <see langword="false" />. The
+    /// configuration key is required too: Npgsql throws <see cref="InvalidOperationException" /> for
+    /// its own reasons, and a message of its own that happened to mention multiplexing would otherwise
+    /// pass as this refusal.
     /// </remarks>
-    private static bool NamesTheOption(Exception? failure)
+    private static bool NamesTheOption(Exception? failure, string keyword)
     {
         for (Exception? current = failure; current is not null; current = current.InnerException)
         {
             if (current is InvalidOperationException
-                && current.Message.Contains(IncludeErrorDetailKeyword, StringComparison.Ordinal))
+                && current.Message.Contains(AppConnectionStringKey, StringComparison.Ordinal)
+                && current.Message.Contains(keyword, StringComparison.Ordinal))
             {
                 return true;
             }

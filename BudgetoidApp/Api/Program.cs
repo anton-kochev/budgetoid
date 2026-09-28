@@ -432,25 +432,24 @@ static void RequireCeremonyOrigin(string allowedOrigin, string relyingPartyId)
 // from this host is configured." A null connection string is returned unchanged so the null case
 // preserves the existing fail-later behavior.
 //
-// Two Npgsql options are now forbidden in any connection string this reaches, because both budget
-// isolation and user isolation are enforced by session settings (see SessionContextInterceptor).
-// `No Reset On Close=true` would keep a returned connection's app.current_budget_id and
-// app.current_user_id, making the pool reset — now a security control, not a hygiene one — stop
-// clearing one tenant's budget and one person's identity before the next borrower.
-// `Multiplexing=true` interleaves logical sessions over one physical connection, which no
-// session-setting design can survive at all. Two settings now ride on this, so flipping either
-// option leaks tenancy and identity rather than tenancy alone.
+// Three Npgsql options are refused at boot, in every environment, by RefuseForbiddenConnectionOptions
+// rather than here — this function runs lazily inside the DbContext options lambda, on the first
+// resolved context rather than at boot, and returns early in Development, so a check here would do
+// neither.
 //
-// `Include Error Detail=true` is refused at boot, in every environment, by
-// RefuseForbiddenConnectionOptions rather than here — this function runs lazily inside the DbContext
-// options lambda, on the first resolved context rather than at boot, and returns early in
-// Development, so a check here would do neither.
-// The option makes Npgsql copy PostgreSQL's DETAIL line into every error, and row-level security
-// withholds that line only on a policed table: on the exempt passkey_public_keys and credentials
-// tables a unique violation quotes the colliding webauthn_credential_id or (provider, subject), and
-// EF's save-failure record writes it to the log. The host refuses rather than rewriting the value
-// to false, because enforcement means rejecting (ADR 0002) and a silent overwrite would hide from
-// whoever set the option that it never took effect.
+// Two of them break budget isolation and user isolation, which both ride on session settings that
+// SessionContextInterceptor writes when a connection opens. `No Reset On Close=true` skips the pool
+// reset — a security control here, not hygiene — so a returned connection hands its
+// app.current_budget_id and app.current_user_id to the next borrower. `Multiplexing=true` interleaves
+// commands from different requests over one physical connection, which no session-setting design can
+// survive at all. Either way row-level security reads another request's tenant and identity.
+//
+// `Include Error Detail=true` makes Npgsql copy PostgreSQL's DETAIL line into every error, and
+// row-level security withholds that line only on a policed table: on the exempt passkey_public_keys
+// and credentials tables a unique violation quotes the colliding webauthn_credential_id or
+// (provider, subject), and EF's save-failure record writes it to the log. The host refuses all three
+// rather than rewriting the value to false, because enforcement means rejecting (ADR 0002) and a
+// silent overwrite would hide from whoever set the option that it never took effect.
 static string? BuildConnectionString(string? connectionString, bool isDevelopment)
 {
     if (connectionString is null || isDevelopment)
@@ -483,6 +482,15 @@ static void RefuseForbiddenConnectionOptions(string configurationKey, string? co
             "it copies PostgreSQL's DETAIL line into every error, and on a table exempt from row-level "
             + "security that line quotes the colliding key — a passkey handle, a provider subject — "
             + "straight into the log"),
+        ("No Reset On Close", parsed.NoResetOnClose,
+            "row-level security reads app.current_user_id and app.current_budget_id, which "
+            + "SessionContextInterceptor writes only when a connection opens, and without the pool reset "
+            + "a returned connection carries one request's identity and budget into the next borrower"),
+        ("Multiplexing", parsed.Multiplexing,
+            "row-level security reads app.current_user_id and app.current_budget_id, which "
+            + "SessionContextInterceptor writes only when a connection opens, and multiplexing runs "
+            + "commands from different requests over one physical connection, so those settings belong "
+            + "to no single request"),
     ];
 
     foreach ((string keyword, bool isSet, string reason) in forbidden)
