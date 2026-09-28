@@ -23,17 +23,29 @@ const PRINTABLE_ERROR_NAMES: ReadonlySet<string> = new Set([
   'AbortError',
   // The platform's DOMException name for an operation that ran out of time.
   'TimeoutError',
-  // Our class, `narrative-cipher.ts`: a codec refusal about the call itself.
+  // Our class, `narrative-cipher.ts`: a codec refusal about the call itself, a
+  // defect in this client. The accounts and categories reads report it here
+  // on purpose.
   'NarrativeFieldMisuseError',
   // Our class, `factor-manifest.ts`: a manifest wire value the decoder refused.
+  // Custody and the rotation driver catch it; it arrives here only if a bug
+  // lets one escape them.
   'FactorManifestWireError',
   // Our class, `key-rotation-material.ts`: rotation material that disagreed.
+  // The rotation driver catches it (`#wordFor`); it arrives here only if a
+  // bug lets one escape the driver.
   'KeyRotationMaterialError',
   // Our class, `export-document.ts`: a wire string that cannot be an envelope.
+  // `decodeExportDocument` catches it; it arrives here only if a bug lets one
+  // escape that function.
   'NotAnEnvelopeError',
-  // Our class, `key-rotation.service.ts`: a rotation the server refused.
+  // Our class, `key-rotation.service.ts`: a refusal the rotation driver made.
+  // The driver catches it (`#wordFor`); it arrives here only if a bug lets
+  // one escape the driver.
   'KeyRotationRefusal',
   // Our class, `key-rotation.service.ts`: a rotation stopped by a name clash.
+  // The rotation driver catches it (`#wordFor`); it arrives here only if a
+  // bug lets one escape the driver.
   'NameCollisionStop',
 ]);
 

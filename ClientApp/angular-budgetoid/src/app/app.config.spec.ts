@@ -227,21 +227,6 @@ describe('appConfig', () => {
   });
 });
 
-// The logging funnel's registrations, held here for the reason the three pins
-// above are: `failure-error-handler.spec.ts` and `failure-oauth-logger.spec.ts`
-// construct their classes directly and can never see whether the application
-// provides them. Removing `provideFailureLogging()` from `app.config.ts`, or
-// placing it before `provideOAuthClient()` so the library's console logger
-// wins, is what these go red on.
-//
-// Its own `describe` because it needs one thing the block above does not:
-// `rethrowApplicationErrors: false`. TestBed's default wraps the application's
-// error handler in one that calls it and then **rethrows** — inside the
-// window's `error` listener that throw lands before `preventDefault()`, so the
-// event would never end prevented however correct the registration. `false`
-// hands errors to the registered `ErrorHandler` and returns, which is what a
-// browser running the application does. The stubs are the block above's,
-// restated rather than shared so that block's `beforeEach` stays as it is.
 // zone.js reads it as `Zone[__symbol__('ignoreConsoleErrorUncaughtError')]`:
 // a property of the `Zone` constructor, never of `window`.
 const ZONE_UNCAUGHT_FLAG = '__zone_symbol__ignoreConsoleErrorUncaughtError';
@@ -261,6 +246,21 @@ function zoneGlobal(): object {
   return zone;
 }
 
+// The logging funnel's registrations, held here for the reason the three pins
+// above are: `failure-error-handler.spec.ts` and `failure-oauth-logger.spec.ts`
+// construct their classes directly and can never see whether the application
+// provides them. Removing `provideFailureLogging()` from `app.config.ts`, or
+// placing it before `provideOAuthClient()` so the library's console logger
+// wins, is what these go red on.
+//
+// Its own `describe` because it needs one thing the block above does not:
+// `rethrowApplicationErrors: false`. TestBed's default wraps the application's
+// error handler in one that calls it and then **rethrows** — inside the
+// window's `error` listener that throw lands before `preventDefault()`, so the
+// event would never end prevented however correct the registration. `false`
+// hands errors to the registered `ErrorHandler` and returns, which is what a
+// browser running the application does. The stubs are the block above's,
+// restated rather than shared so that block's `beforeEach` stays as it is.
 describe('appConfig failure logging', () => {
   const EMAIL = 'alice@example.test';
   let spies: ConsoleSpies;

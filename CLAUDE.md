@@ -110,8 +110,10 @@ because every one of these is something a reader will otherwise simplify away.
 - **No API log record carries a narrative value, an email, a provider subject or a WebAuthn
   credential id** — `NeverLoggedColumns` is a second axis beside the classification (`users.email`
   is exported *and* never logged), and its narrative half is drawn from the inventory, never typed.
-  `LogRedactionTests` searches every record of real traffic that reaches every declared route; there is **no
-  runtime redactor**, by decision. [log redaction](docs/engineering/log-redaction.md)
+  `LogRedactionTests` searches every record of real traffic that reaches every declared route; the
+  SQL fill is pinned to `budgets.name`, so a new narrative column with a write route costs one
+  traffic edit. There is **no runtime redactor**, by decision.
+  [log redaction](docs/engineering/log-redaction.md)
 - **A new tenant-owned table needs a grant *and* a policy** — `budget_isolation` for `budget_id`,
   `user_isolation` for `user_id`. Grants fail closed (`42501`), RLS fails open. A table carrying
   neither column fails both.
@@ -256,11 +258,13 @@ Load-bearing rules. Each links the doc that argues it — **read that doc before
   identity-provider picture. `src/no-external-origins.spec.ts` reads the production bundle, so
   `npm test` needs a `npm run build` first.
   [no third-party origins](docs/engineering/no-third-party-origins.md)
-- **Nothing prints except through `logFailure`**, which writes a literal reason and a closed
+- **The application prints only through `logFailure`**, which writes a literal reason and a closed
   projection of the cause — never its message, URL or body. Angular's `ErrorHandler`, the OAuth
-  library's logger, the window's error events and zone.js are each funnelled into it by
-  `provideFailureLogging()`, registered **after** `provideOAuthClient()`. Lint is the early
-  warning; `no-console-outside-funnel.spec.ts` is the guard, because an inline disable escapes lint.
+  library's logger, the window's error events and zone.js's unhandled rejections are each funnelled
+  into it by `provideFailureLogging()`, registered **after** `provideOAuthClient()`; zone's own
+  print is silenced. Lint is the early warning; `no-console-outside-funnel.spec.ts` is the guard,
+  because an inline disable escapes lint. The libraries' own console calls are pinned, each with
+  its reason, by `no-console-in-bundle.spec.ts`.
   [log redaction](docs/engineering/log-redaction.md)
 - **The production build registers no state-inspection provider.** `provideStoreDevtools` lives in
   `src/app/devtools.providers.ts`, which production `fileReplacements` swaps for an empty module — a

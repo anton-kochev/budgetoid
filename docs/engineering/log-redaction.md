@@ -19,7 +19,11 @@ error whole puts there whatever the error happened to hold.
 
 ### One funnel, and what it prints
 
-`src/app/+core/logging/log-failure.ts` is the only shipped module that names `console`. Its export,
+The rule is about the production bundle: a development build also prints Angular's `ngDevMode`
+warnings, which the funnel does not touch and a deployment never ships.
+
+`src/app/+core/logging/log-failure.ts` is the only module under `src/` that names `console`; what
+the libraries in the bundle print is below, under what holds the line. Its export,
 `logFailure(reason, ...cause)`, writes exactly one `console.error` line: the reason alone, or the
 reason followed by a **projection** of the cause. The projection is a closed union,
 `FailureProjection`, and nothing outside it is ever printed:
@@ -62,8 +66,10 @@ template over that union, which is still a union of literals.
 ### What the framework would print on its own
 
 Routing the application's own calls through the funnel is half the job. The other half is the four
-places a library or the platform writes to the console without asking, and
-`src/app/+core/logging/provide-failure-logging.ts` claims all four in `provideFailureLogging()`:
+places where a library or the platform would print a caught value whole, and
+`src/app/+core/logging/provide-failure-logging.ts` claims all four in `provideFailureLogging()`.
+They are not every console call the libraries make — the bundle census below pins the rest, each
+with the reason it carries none of the three values:
 
 - **`FailureErrorHandler` replaces Angular's `ErrorHandler`.** The default prints `'ERROR'` and the
   error itself — response body and URL included. The replacement calls `logFailure` and has no
@@ -159,16 +165,21 @@ console through a property or a computed name.
 
 ### What the browser half does not reach
 
-- **A computed spelling.** `globalThis['con' + 'sole']` passes both lint and the census. Review
-  holds it.
+- **An aliased global.** The census refuses a computed key or `Reflect` access on `globalThis`,
+  `window` or `self` outside `provide-failure-logging.ts`, but `const g = globalThis` followed by
+  `g['con' + 'sole']` passes it. Review holds that; `eval` and `Function` are refused at runtime,
+  because `script-src 'self'` carries no `unsafe-eval`.
 - **A literal that is itself personal data.** The type admits any literal, an address included.
   Review holds that too.
-- **Library code outside `src/`.** The census reads this repository's sources only. The OAuth
-  library's code-flow token exchange writes to `console` directly, bypassing the logger: the token
-  endpoint's raw error, and a rejection from `processIdToken` that can name both the old and the
-  new subject. The client runs the implicit flow — `auth-service.ts` sets no `responseType` — so that
-  path is one configuration line away, not live. **A switch to the code flow must re-open this
-  chapter.**
+- **What an existing library call prints.** The bundle census pins every console call's shape,
+  not what its argument holds, so a library that starts passing a different value to a call it
+  already makes keeps the same key. Three pinned calls in the OAuth library's code flow can carry
+  more than today's calls do — the token endpoint's raw error, and a rejection from
+  `processIdToken` naming the old and the new subject, which the library builds only with
+  `sessionChecksEnabled` on and after a `silentRefresh()`. The client runs the implicit flow and
+  sets neither; the source census refuses a `responseType` in the OAuth configuration and every
+  refresh call, so reaching those calls is a change that census names. **A switch to the code flow
+  must re-open this chapter.**
 - **The browser's own network-error lines**, which show the request URL. The client's request URLs
   carry only GUID path parameters and no query string, so none of the three values appears in one.
 - **Console methods the runner's console lacks**, such as `profile` and `timeStamp`, which the spy

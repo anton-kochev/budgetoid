@@ -13,9 +13,9 @@ import { listFiles } from './production-bundle';
 //
 // Lint is not enough on its own. `no-console` is switched off by one inline
 // `eslint-disable-next-line`, and nothing in the lint run reports that the
-// escape was used. A census over the source text has no escape. It is also what
-// holds `main.ts` and the transactions write paths: both used to print the
-// cause itself, and the lint rules only arrived with the funnel.
+// escape was used. A census over the source text has no inline escape. It is
+// also what holds `main.ts` and the transactions write paths: both used to
+// print the cause itself, and the lint rules only arrived with the funnel.
 //
 // The needle runs over the source with its comments removed, so prose that
 // names the console does not count. Strings are kept, so
@@ -132,16 +132,20 @@ describe('the console', () => {
   ])('is not reached through the OAuth refresh path: $call', ({ needle }) => {
     // Arrange — the refresh path can reach the console without passing
     // through `OAuthLogger`, so replacing the logger does not cover it.
-    // `silentRefresh()` records the current id token's `sub` claim. When the
-    // token that comes back names another subject, `processIdToken` rejects
-    // with a sentence carrying both subjects. Under `responseType: 'code'`
-    // that rejection lands in `fetchAndProcessToken`'s `catch`, which writes
-    // it with `console.error(reason)`, and the same method's error callback
-    // writes the token endpoint's raw failure with
+    // `silentRefresh()` records the current id token's `sub` claim as
+    // `silentRefreshSubject`. When the token that comes back names another
+    // subject, `processIdToken` rejects with a sentence carrying both
+    // subjects, but it builds that sentence only when `sessionChecksEnabled`
+    // and `silentRefreshSubject` are both set. `sessionChecksEnabled` is off
+    // by default and this application never sets it. Under
+    // `responseType: 'code'` that rejection lands in `fetchAndProcessToken`'s
+    // `catch`, which writes it with `console.error(reason)`, and the same
+    // method's error callback writes the token endpoint's raw failure with
     // `console.error('Error getting token', err)`. Under the implicit flow
-    // configured today the rejection goes through the logger instead, so the
-    // leak is one config line away, not live. `setupAutomaticSilentRefresh()`
-    // schedules the refresh, and `refreshToken()` is its other arm. The
+    // configured today the rejection goes through the logger instead. So the
+    // subject-bearing leak needs the code flow, `sessionChecksEnabled` and a
+    // `silentRefresh()` call, not one config line.
+    // `setupAutomaticSilentRefresh()` schedules the refresh, and `refreshToken()` is its other arm. The
     // application refreshes nothing (see `auth-service.ts`), so all three stay
     // out whichever flow is configured.
 
