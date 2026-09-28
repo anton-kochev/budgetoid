@@ -2,7 +2,8 @@ namespace Domain.Users;
 
 /// <summary>
 /// The staging side of a content-key rotation: which factors an account holds, and the one staged
-/// generation — a row and its per-factor seals — that account has in flight.
+/// generation — a row and its per-factor seals — that account's latest run left, whether still in
+/// flight or already promoted.
 /// </summary>
 /// <remarks>
 /// <para>

@@ -566,12 +566,15 @@ GRANT UPDATE (encapsulated_account_keys) ON wrapped_account_keys TO budgetoid_ap
 -- UPDATE ON key_rotations would let a staged rotation be reassigned to another account in one
 -- statement, on a table whose whole purpose is to hold the next generation of somebody's keys.
 --
--- NO DELETE, AND THE ABSENCE IS LOAD-BEARING RATHER THAN PENDING. Completion is what ends a rotation
--- and completion is unbuilt; when it lands it will need DELETE and will bring its own argument. Until
--- then the missing privilege is what stops a half-written promotion path from clearing the staging
--- before it has promoted anything — the one destruction on this whole path that has no repair, since
--- the staged envelopes are the only copies of the new generation until the live row is overwritten.
--- It fails loud: 42501 on the first reach, which is a test failing rather than a rule going quiet.
+-- NO DELETE, AND THE ABSENCE IS LOAD-BEARING. Completion does not end a rotation by deleting it:
+-- CompleteKeyRotationHandler promotes the staged generation and leaves this row and its seals
+-- standing, and what tells a finished run from a live one is the staged epoch against the manifest's.
+-- A second begin rewrites the row in place, so no path in the application removes one; only the
+-- cascade from users does, on erasure. The missing privilege also stops a promotion path from
+-- clearing the staging before it has promoted anything — the one destruction on this path with no
+-- repair, since the staged seals are the only copies of the new generation until the live rows are
+-- overwritten. It fails loud: 42501 on the first reach, which is a test failing rather than a rule
+-- going quiet.
 --
 -- The table is POLICED rather than exempt: it carries user_id, so user_isolation appends the owner
 -- to every statement against it. See the policy at the foot of this file.
@@ -1163,9 +1166,9 @@ CREATE POLICY user_isolation ON wrapped_account_keys FOR ALL TO budgetoid_app
     USING      (user_id = COALESCE(current_setting('app.current_user_id', true), '')::uuid)
     WITH CHECK (user_id = COALESCE(current_setting('app.current_user_id', true), '')::uuid);
 
--- key_rotations is the staging row of an unfinished content-key rotation: the next generation of the
--- account's factor manifest and the epoch it will be filed at, held beside the generation still in
--- force until one completion step promotes it. It sits on the same side of the same boundary as
+-- key_rotations is the staging row of the account's latest content-key rotation: the next generation
+-- of the account's factor manifest and the epoch it will be filed at, held beside the generation
+-- still in force until one completion step promotes it, and left standing once it has. It sits on the same side of the same boundary as
 -- wrapped_account_keys directly above,
 -- for the same reason — a rotation is begun under a passkey assertion that has already verified, so
 -- an identity is on the connection before this policy is ever evaluated.
@@ -1176,8 +1179,8 @@ CREATE POLICY user_isolation ON wrapped_account_keys FOR ALL TO budgetoid_app
 -- NarrativeSecrecyTests meets 42501 and reports the table UNSCANNABLE, so two secrecy gates would pass
 -- while covering one table fewer than the schema holds. INSERT and UPDATE followed together with
 -- BeginKeyRotationHandler, because staging is an upsert rather than an append and the two cannot be
--- separated. DELETE is still waiting for the completion step. Its own block above carries each of
--- those arguments in full.
+-- separated. DELETE is not owed: completion leaves the row standing, and its own block above says
+-- why. That block carries each of these arguments in full.
 --
 -- The policy did not wait either, and for a different reason again — the two halves fail in opposite
 -- directions, as the header says at length. A table nobody grants is invisible to the role and the

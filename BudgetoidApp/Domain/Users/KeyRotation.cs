@@ -21,13 +21,16 @@ namespace Domain.Users;
 /// "At most one rotation in flight per account" is the invariant the chunking depends on: two
 /// concurrent runs would each re-encrypt a subset of the same rows under a <em>different</em> new content
 /// key, and the account would end holding columns sealed under two keys with nothing recording which
-/// got which. Keyed on the user, a second <see cref="Begin"/> for an account that already has one
-/// collides on the primary key and is refused by the database — the lowest layer that can hold the
-/// rule <em>declaratively</em>, which is what
+/// got which. Keyed on the user, an account holds at most one staged row: a second
+/// <see cref="Begin"/> is written over the existing row in place rather than beside it, and two racing
+/// inserts collide on the primary key and are refused by the database — the lowest layer that can hold
+/// the rule <em>declaratively</em>, which is what
 /// <see href="../../../docs/decisions/0002-enforce-rules-at-the-lowest-capable-layer.md">ADR 0002</see>
 /// asks for. A "check, then insert" in a handler is two statements with a window between them, and the
-/// window is exactly wide enough for the second browser tab. The cost is that an abandoned run has to
-/// be deleted rather than marked, because a status column cannot buy back the key.
+/// window is exactly wide enough for the second browser tab. The cost is that a run cannot be one row
+/// per attempt with a status column: an abandoned run is overwritten by the next begin rather than
+/// marked, and a completed one is left standing, so the row records the account's latest run rather
+/// than a live one.
 /// </para>
 /// <para>
 /// <b>The staged row names no factor, and that absence is the shape of the change rather than a column

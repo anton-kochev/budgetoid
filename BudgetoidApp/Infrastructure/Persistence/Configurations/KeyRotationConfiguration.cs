@@ -101,8 +101,10 @@ public sealed class KeyRotationConfiguration : IEntityTypeConfiguration<KeyRotat
         // literally: the lowest layer that can hold the rule declaratively holds it.
         //
         // The cost is deliberate and a reader should meet it here rather than discover it: a rotation
-        // cannot be modelled as one row per attempt with a status column, so an abandoned run has to be
-        // DELETED rather than marked, or the account can never begin another. A surrogate id added
+        // cannot be modelled as one row per attempt with a status column, so an abandoned run is
+        // OVERWRITTEN rather than marked — KeyRotationRepository.StageAsync rewrites the row in place
+        // on the next begin — and a completed run's row is left standing, so the row records the
+        // account's latest run rather than a live one. A surrogate id added
         // beside user_id would demote this to an ordinary index and make the duplicate storable — the
         // shape every other table in this schema has, and therefore the shape somebody tidying reaches
         // for first.
