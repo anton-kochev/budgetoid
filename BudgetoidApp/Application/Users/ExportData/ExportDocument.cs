@@ -22,8 +22,9 @@ namespace Application.Users.ExportData;
 /// <c>DataInventory</c> rather than against a list of omissions written beside these records: a
 /// narrative or arithmetic column must be present under its camelCase name with the row's value, and an
 /// excluded one must be absent as a key. The five nested collections on <see cref="ExportedBudget" />
-/// are the document's own nesting rather than anything the <c>budgets</c> row persists, and they are
-/// the only members here that are not a column of some table.
+/// are the document's own nesting rather than anything the <c>budgets</c> row persists, and they are,
+/// with <c>SchemaVersion</c>, <c>User</c> and <c>Budgets</c>, the only members of the document that
+/// are not a column of some table.
 /// </para>
 /// </remarks>
 public sealed record ExportDocument(
@@ -68,9 +69,10 @@ public sealed record ExportedUser(Guid Id, string Email, DateTime CreatedAtUtc);
 /// </para>
 /// <para>
 /// <b><c>rotation_id</c> is not here, and it is the one column this record deliberately omits.</b> It
-/// names the key rotation that last re-sealed the row, which makes it a key into a <c>key_rotations</c>
-/// row that lives only while that run is in flight — so a saved file quoting one would name something
-/// already gone by the time anybody opened it. Which generation of key sealed the name is the server's
+/// quotes the identifier of the key rotation that last re-sealed the row — a quotation, not a
+/// reference: no foreign key backs it, and the one <c>key_rotations</c> row an account holds has its
+/// identifier overwritten by the next begin, so a saved file quoting one quotes a value nothing keeps
+/// resolving. Which generation of key sealed the name is the server's
 /// bookkeeping about work it did on the person's behalf, not part of what they own; the name itself
 /// ships, sealed, in <see cref="Name" />. Accounts, category groups, categories, payees and
 /// transactions carry the same stamp, and each of their records points here rather than restating it.
@@ -111,7 +113,7 @@ public sealed record ExportedBudget(
     public IReadOnlyList<ExportedTransaction> Transactions { get; init; } = [];
 }
 
-/// <summary>One account of a budget — the columns the <c>accounts</c> row carries and no more.</summary>
+/// <summary>One account of a budget — the columns the <c>accounts</c> row carries, less two.</summary>
 /// <param name="Id">The account's identifier.</param>
 /// <param name="BudgetId">The budget that owns it.</param>
 /// <param name="Name">
@@ -196,8 +198,8 @@ public sealed record ExportedCategoryGroup(
 /// deliberately omits</b> — the blind index for the treatment <see cref="ExportedAccount"/> argues for
 /// its own and <see cref="ExportedPayee"/> and <see cref="ExportedCategoryGroup"/> repeat, the stamp for
 /// the reason <see cref="ExportedBudget"/> gives, both pointed at rather than copied a fourth time.
-/// There is deliberately no <c>description_key</c> to omit: a description carries no blind index at all, because
-/// it is never looked up.
+/// There is deliberately no <c>description_key</c> to omit: a description carries no blind index at
+/// all, because it is never looked up.
 /// </remarks>
 public sealed record ExportedCategory(
     Guid Id,

@@ -45,10 +45,11 @@ public static class DataExportEndpoints
                 DispositionFor(timeProvider.GetUtcNow());
 
             // TypedResults.Ok rather than a file result or hand-serialized JSON: those write through
-            // whatever JsonSerializerOptions the call site passes, bypassing ConfigureHttpJsonOptions
-            // — so camelCase and the string enum converter would come from somewhere other than the
-            // rest of the API, and the exported document would name its columns differently from every
-            // response the same client already parses.
+            // whatever JsonSerializerOptions the call site passes, bypassing the HTTP JsonOptions —
+            // whose web defaults give camelCase, and to which ConfigureHttpJsonOptions adds the
+            // string enum converter. Both would come from somewhere other than the rest of the API,
+            // and the exported document would name its columns differently from every response the
+            // same client already parses.
             return TypedResults.Ok(document);
         });
 

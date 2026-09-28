@@ -4,6 +4,8 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Infrastructure.Persistence.Inventory;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata;
 using Npgsql;
 using TestSupport;
 
@@ -16,20 +18,26 @@ namespace IntegrationTests;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Rows are located by their <c>id</c> value, never by where they sit in the document.</b> Every
-/// inventory table whose <c>id</c> column is a <c>uuid</c> is read whole on the container superuser, and
-/// each object in the document whose <c>id</c> is the canonical text of one of those rows' ids is that
-/// table's row. So no table name, JSON path or member count appears in an assertion: a column added to
-/// the inventory is checked without an edit here, and a collection moved to a different place in the
-/// document is still found. A table with no <c>id</c>, or one that is not a <c>uuid</c>, cannot be
-/// located; that is a defect only when the table carries a classified column.
+/// <b>Rows are located by their primary key, never by where they sit in the document.</b> Every
+/// inventory table is read whole on the container superuser, and each table's key comes from the EF
+/// model (<see cref="ShapesOf" />). An object is a row of a table when one of its rows agrees with the
+/// object on every key column, each judged by <see cref="Disagreement" />, so an uppercase or braced
+/// uuid matches nothing. When several tables match, the ones with a column for every key the object
+/// carries are kept; when several still remain, the one whose owed columns are exactly the object's
+/// keys. What none of that settles is reported as unlocated or ambiguous (<see cref="Settle" />). A
+/// budget matches <c>budgets</c> by its id and <c>factor_manifests</c> by its <c>userId</c>, and only
+/// <c>budgets</c> has a column for every key. So the two tests over the live export carry no table
+/// name, row path or member count in an assertion; the one literal is the root's
+/// <c>schemaVersion</c>. A column added to the inventory is checked without an edit here, and a
+/// collection moved to a different place in the document is still found.
 /// </para>
 /// <para>
-/// <b>A column's member is its name in camelCase</b> — <see cref="WireName" /> — because that is what
-/// <c>ConfigureHttpJsonOptions</c> in <c>Api</c> produces from the record members, and the records are
-/// named after the columns. A member counts as nesting, rather than as a column, only when it is a
-/// located row or a non-empty array of nothing but located rows; anything else is a key and is judged
-/// against the columns.
+/// <b>A column's member is its name in camelCase</b> — <see cref="WireName" />. The camelCase comes
+/// from the <c>JsonSerializerDefaults.Web</c> defaults of the HTTP JSON options;
+/// <c>ConfigureHttpJsonOptions</c> in <c>Api</c> only adds converters. The records are named after the
+/// columns. A member counts as nesting, rather than as a column, only when it is an object some
+/// table's key matches or a non-empty array of nothing but such objects; anything else is a key and
+/// is judged against the columns.
 /// </para>
 /// <para>
 /// <b>A value is compared in the one form the wire writes it in</b>, wherever that form is unique:
@@ -40,21 +48,25 @@ namespace IntegrationTests;
 /// written here, because the fixture reaches only the column types the schema has today.
 /// </para>
 /// <para>
-/// The seeder is duplicated from <c>DataExportCompletenessTests.FurnishTwoOfEachAsync</c> rather than
+/// The seeder is adapted from <c>DataExportCompletenessTests.FurnishTwoOfEachAsync</c> rather than
 /// shared, which is the local convention stated in the remarks on
 /// <c>ErasureAtomicityTests.FurnishAccountAsync</c>. It returns
 /// nothing here, because nothing here keys on the ids it wrote. Everything is read as
 /// <see cref="JsonNode" /> and never as a typed record, for the reason that file gives.
 /// </para>
 /// <para>
-/// No two classified instant or money columns may share a compared value, because a shared value
-/// cannot show which column the export read. Ids and strings are left out: foreign keys and currency
-/// codes repeat by design. Every classified column must be compared on a value, and every nullable one
-/// also on a null.
+/// <b>No located row may leave two classified columns indistinguishable</b> — see
+/// <see cref="Indistinguishable" />. In one table, two columns equal on every row are flagged, any
+/// type. Across tables, a value on a table's only row is flagged when the other column holds it
+/// anywhere, never for a uuid, since a foreign key holds its parent's id by design. Two tables of
+/// several rows each are not compared: the export reads each table by itself. <b>A known gap:</b> a
+/// projection hard-coding a literal that equals a fixture value still passes — writing
+/// <c>BaseCurrencyCode = "GBP"</c> agrees with the fill. Every classified column must also be compared
+/// on a value, and every nullable one on a null.
 /// </para>
 /// <para>
 /// What these tests do not reach, on purpose: where a row sits and in what order, since rows are found
-/// by id; rows of another tenant, which other test classes own; the value of <c>schemaVersion</c>; an
+/// by key; rows of another tenant, which other test classes own; the value of <c>schemaVersion</c>; an
 /// excluded value carried inside an owed member, which is left to the first test's exact value
 /// compare; the scale money is written at, and a projection through <see cref="double" /> that
 /// round-trips every fixture amount; and any table this fixture leaves empty. The export taken before
@@ -74,9 +86,6 @@ public sealed class DataExportInventoryTests
     /// </summary>
     private const string MixedCaseEmail = "Export.Inventory@Example.COM";
 
-    /// <summary>The column every located row is found by.</summary>
-    private const string IdColumn = "id";
-
     [Test]
     public async Task Export_CarriesEveryColumnTheInventoryClassifiesNarrativeOrArithmetic()
     {
@@ -95,25 +104,13 @@ public sealed class DataExportInventoryTests
 
         // Assert
         List<string> defects = [];
-        Comparison unfilled = CompareToDatabase("before the fill", unfilledDocument, unfilledDatabase, userId, defects);
-        Comparison filled = CompareToDatabase("after the fill", document, database, userId, defects);
+        IReadOnlyDictionary<string, TableShape> shapes = ShapesOf(MappedSchema.DesignTimeModel());
+        Comparison unfilled = CompareToDatabase("before the fill", unfilledDocument, unfilledDatabase, shapes, userId, defects);
+        Comparison filled = CompareToDatabase("after the fill", document, database, shapes, userId, defects);
 
         // Distinguishability: a value two columns share cannot tell which one the export read it from,
         // so a projection that wired one column to the other would still agree on every row.
-        string[] distinguished = [.. filled.Values.Keys.Order(StringComparer.Ordinal)];
-        for (int first = 0; first < distinguished.Length; first++)
-        {
-            for (int second = first + 1; second < distinguished.Length; second++)
-            {
-                foreach (object shared in filled.Values[distinguished[first]]
-                             .Intersect(filled.Values[distinguished[second]]))
-                {
-                    defects.Add(
-                        $"indistinguishable: {distinguished[first]} and {distinguished[second]} "
-                        + $"both hold {RenderDistinguishable(shared)}");
-                }
-            }
-        }
+        defects.AddRange(Indistinguishable(filled.LocatedRows, Classified().ToLookup(entry => entry.Table, StringComparer.Ordinal)));
 
         // Non-vacuity: a column only ever compared on a null agrees with a projection that dropped it,
         // so every classified column must have met a value on at least one row.
@@ -152,20 +149,21 @@ public sealed class DataExportInventoryTests
         // Assert
         List<string> defects = [];
         ILookup<string, ColumnClassificationEntry> inventory = DataInventory.Entries.ToLookup(entry => entry.Table);
-        IReadOnlyList<LocatedObject> located = Locate(document, database);
+        IReadOnlyDictionary<string, TableShape> shapes = ShapesOf(MappedSchema.DesignTimeModel());
+        IReadOnlyList<LocatedObject> located = Locate(document, shapes, database);
 
         foreach (LocatedObject found in located)
         {
             // An empty collection is nesting nothing can locate, so it cannot be judged either way; it
             // is named for what it is rather than as a column nobody declared.
             string[] keys = [];
-            foreach ((string key, JsonNode? value) in found.Node)
+            foreach (string key in found.Keys)
             {
-                if (value is JsonArray { Count: 0 })
+                if (found.Node[key] is JsonArray { Count: 0 })
                 {
                     defects.Add($"empty collection: {found.Path}.{key} — seed a row so it can be located");
                 }
-                else if (!IsNesting(value, database))
+                else
                 {
                     keys = [.. keys, key];
                 }
@@ -185,22 +183,16 @@ public sealed class DataExportInventoryTests
                 continue;
             }
 
-            if (found.Rows.Count != 1)
+            if (found.Row is null)
             {
-                defects.Add(found.Rows.Count == 0
-                    ? $"unlocated: {found.Path} is no row of any inventory table"
-                    : $"ambiguous: {found.Path} is a row of {string.Join(" and ", found.Rows.Select(row => row.Table))}");
+                defects.Add(found.Candidates.Count == 0
+                    ? $"unlocated: {found.Path} agrees with no inventory row on a whole primary key"
+                    : $"{Describe(found, shapes)}: {found.Path}");
                 continue;
             }
 
-            string table = found.Rows[0].Table;
-            HashSet<string> owed =
-            [
-                .. inventory[table]
-                    .Where(entry => entry.Classification is not ColumnClassification.Excluded)
-                    .Select(entry => WireName(entry.Column)),
-            ];
-            foreach (string key in keys.Where(key => !owed.Contains(key)))
+            string table = found.Row.Table;
+            foreach (string key in keys.Where(key => !shapes[table].Owed.Contains(key)))
             {
                 defects.Add($"{found.Path}.{key}: {WhyNotOwed(inventory[table], table, key)}");
             }
@@ -208,10 +200,7 @@ public sealed class DataExportInventoryTests
 
         // Non-vacuity, first half: an exclusion was in reach. At least one excluded column sits on a
         // table the document carries rows of, so the key check above had something to refuse.
-        HashSet<string> exportedTables =
-        [
-            .. located.Where(found => found.Rows.Count == 1).Select(found => found.Rows[0].Table),
-        ];
+        HashSet<string> exportedTables = [.. located.Where(found => found.Row is not null).Select(found => found.Row!.Table)];
         if (!DataInventory.Of(ColumnClassification.Excluded).Any(entry => exportedTables.Contains(entry.Table)))
         {
             defects.Add("non-vacuity: no excluded column sits on a table the document carries rows of");
@@ -220,23 +209,20 @@ public sealed class DataExportInventoryTests
         // Second half: a table the export owes nothing of holds rows this account owns, and none of
         // them reached the document. Without a row there, leaving the table out is not a decision
         // anybody could see.
-        string[] whollyExcluded =
-        [
-            .. inventory
-                .Where(table => table.All(entry => entry.Classification is ColumnClassification.Excluded))
-                .Select(table => table.Key)
-                .Where(table => database.Tables[table].HasId),
-        ];
+        string[] whollyExcluded = [.. shapes.Values.Where(shape => shape.WhollyExcluded).Select(shape => shape.Name)];
         if (whollyExcluded.Sum(table => database.Tables[table].Rows.Count) == 0)
         {
             defects.Add(
-                $"non-vacuity: no row exists in any wholly excluded table with a uuid id "
-                + $"[{string.Join(", ", whollyExcluded)}]");
+                $"non-vacuity: no row exists in any wholly excluded table [{string.Join(", ", whollyExcluded)}]");
         }
 
-        foreach (LocatedObject found in located.Where(found => found.Rows.Any(row => whollyExcluded.Contains(row.Table))))
+        // Located to a wholly excluded table, or settled among nothing but such tables: either way the
+        // export carried a row it owes nothing of.
+        foreach (LocatedObject found in located.Where(found => IsLeak(found, shapes)))
         {
-            defects.Add($"exported: {found.Path} is a row of a table the inventory wholly excludes");
+            defects.Add(
+                $"exported: {found.Path} ({string.Join(", ", found.Candidates)}) "
+                + "is a row of a table the inventory wholly excludes");
         }
 
         await Assert.That(defects).IsEmpty();
@@ -309,51 +295,252 @@ public sealed class DataExportInventoryTests
         await Assert.That(defects).IsEmpty();
     }
 
+    [Test]
+    public async Task Locate_FindsEachObjectByItsWholePrimaryKeyAndOneTable()
+    {
+        // Arrange
+        Guid owner = Guid.Parse("0199b2c4-0000-7000-8000-000000000001");
+        Guid otherOwner = Guid.Parse("0199b2c4-0000-7000-8000-000000000002");
+        Guid firstLedger = Guid.Parse("0199b2c4-0000-7000-8000-000000000011");
+        Guid secondLedger = Guid.Parse("0199b2c4-0000-7000-8000-000000000012");
+        Guid entry = Guid.Parse("0199b2c4-0000-7000-8000-000000000021");
+        Guid factor = Guid.Parse("0199b2c4-0000-7000-8000-000000000031");
+        Guid otherFactor = Guid.Parse("0199b2c4-0000-7000-8000-000000000032");
+        byte[] manifest = [0x01, 0xfb, 0xff];
+
+        DatabaseRow ownerRow = HandBuiltRow("owners", ("id", owner));
+        DatabaseRow firstLedgerRow = HandBuiltRow("ledgers", ("id", firstLedger), ("owner_id", owner));
+        DatabaseRow secondLedgerRow = HandBuiltRow("ledgers", ("id", secondLedger), ("owner_id", owner));
+        DatabaseRow entryRow = HandBuiltRow("entries", ("id", entry), ("ledger_id", firstLedger));
+        DatabaseRow settingsRow = HandBuiltRow("ledger_settings", ("ledger_id", firstLedger), ("week_start", 1));
+        DatabaseRow manifestRow = HandBuiltRow("owner_manifests", ("owner_id", owner), ("manifest", manifest));
+        DatabaseRow rotationRow = HandBuiltRow("owner_rotations", ("owner_id", owner), ("epoch", 3));
+        DatabaseRow sealRow = HandBuiltRow("pair_seals", ("owner_id", otherOwner), ("factor_id", factor));
+        DatabaseRow twinARow = HandBuiltRow("twin_a", ("ledger_id", secondLedger), ("x", 5));
+        DatabaseRow twinBRow = HandBuiltRow("twin_b", ("ledger_id", secondLedger), ("x", 5), ("y", 6));
+        DatabaseSnapshot database = HandBuiltSnapshot(
+            ownerRow, firstLedgerRow, secondLedgerRow, entryRow, settingsRow,
+            manifestRow, rotationRow, sealRow, twinARow, twinBRow);
+
+        // The tables a wrong answer would pick come first, so a locator that settles on the first
+        // match settles on a wrong one.
+        IReadOnlyDictionary<string, TableShape> shapes = new[]
+        {
+            HandBuiltShape("owner_manifests", ["owner_id"], ["owner_id", "manifest"], owed: []),
+            HandBuiltShape("owner_rotations", ["owner_id"], ["owner_id", "epoch"], owed: []),
+            HandBuiltShape("pair_seals", ["owner_id", "factor_id"], ["owner_id", "factor_id"], owed: []),
+            HandBuiltShape("ledger_settings", ["ledger_id"], ["ledger_id", "week_start"], ["ledger_id", "week_start"]),
+            HandBuiltShape("twin_a", ["ledger_id"], ["ledger_id", "x"], ["ledger_id", "x"]),
+            HandBuiltShape("twin_b", ["ledger_id"], ["ledger_id", "x", "y"], ["ledger_id", "x", "y"]),
+            HandBuiltShape("owners", ["id"], ["id"], ["id"]),
+            HandBuiltShape("ledgers", ["id"], ["id", "owner_id"], ["id", "owner_id"]),
+            HandBuiltShape("entries", ["id"], ["id", "ledger_id"], ["id", "ledger_id"]),
+        }.ToDictionary(shape => shape.Name, StringComparer.Ordinal);
+
+        (string Label, Func<JsonObject> Item, string Outcome, DatabaseRow? Row, bool Leak)[] cases =
+        [
+            ("ledger carrying ownerId",
+                () => new JsonObject { ["id"] = Wire(firstLedger), ["ownerId"] = Wire(owner) },
+                "ledgers", firstLedgerRow, false),
+            ("entry carrying ledgerId",
+                () => new JsonObject { ["id"] = Wire(entry), ["ledgerId"] = Wire(firstLedger) },
+                "entries", entryRow, false),
+            ("settings keyed on their ledger",
+                () => new JsonObject { ["ledgerId"] = Wire(firstLedger), ["weekStart"] = 1 },
+                "ledger_settings", settingsRow, false),
+            ("twin carrying x",
+                () => new JsonObject { ["ledgerId"] = Wire(secondLedger), ["x"] = 5 },
+                "twin_a", twinARow, false),
+            ("twin carrying x and y",
+                () => new JsonObject { ["ledgerId"] = Wire(secondLedger), ["x"] = 5, ["y"] = 6 },
+                "twin_b", twinBRow, false),
+            ("twin key alone",
+                () => new JsonObject { ["ledgerId"] = Wire(secondLedger) },
+                "ambiguous between twin_a, twin_b; outside every one: []", null, false),
+            ("manifest carrying its bytes",
+                () => new JsonObject { ["ownerId"] = Wire(owner), ["manifest"] = Base64UrlText.Encode(manifest) },
+                "owner_manifests", manifestRow, true),
+            ("owner key alone",
+                () => new JsonObject { ["ownerId"] = Wire(owner) },
+                "ambiguous between owner_manifests, owner_rotations; outside every one: []", null, true),
+            ("composite key with a wrong second half",
+                () => new JsonObject { ["ownerId"] = Wire(otherOwner), ["factorId"] = Wire(otherFactor) },
+                "unlocated", null, false),
+            ("uppercase id",
+                () => new JsonObject { ["id"] = Wire(owner).ToUpperInvariant() },
+                "unlocated", null, false),
+            ("ledger with a stray key",
+                () => new JsonObject { ["id"] = Wire(firstLedger), ["ownerId"] = Wire(owner), ["stray"] = 1 },
+                "ambiguous between ledgers, owner_manifests, owner_rotations; outside every one: [stray]",
+                null, false),
+            ("ledger nesting its entries",
+                () => new JsonObject
+                {
+                    ["id"] = Wire(firstLedger),
+                    ["ownerId"] = Wire(owner),
+                    ["entries"] = new JsonArray(new JsonObject { ["id"] = Wire(entry), ["ledgerId"] = Wire(firstLedger) }),
+                },
+                "ledgers", firstLedgerRow, false),
+        ];
+
+        // Act
+        List<string> defects = [];
+        foreach ((string label, Func<JsonObject> item, string outcome, DatabaseRow? row, bool leak) in cases)
+        {
+            JsonObject document = new() { ["item"] = item() };
+            LocatedObject found = Locate(document, shapes, database).Single(candidate => candidate.Path == "$.item");
+
+            string actual = Describe(found, shapes);
+            if (actual != outcome)
+            {
+                defects.Add($"{label}: expected {outcome}, located {actual}");
+            }
+
+            if (!ReferenceEquals(found.Row, row))
+            {
+                defects.Add($"{label}: located row {(found.Row is null ? "none" : RenderKey(found.Row, shapes))}");
+            }
+
+            if (IsLeak(found, shapes) != leak)
+            {
+                defects.Add($"{label}: {(leak ? "not reported" : "reported")} as a wholly excluded row");
+            }
+        }
+
+        // Assert
+        await Assert.That(defects).IsEmpty();
+    }
+
+    [Test]
+    public async Task Indistinguishable_FlagsAPairOnlyWhenNoRowCanTellThemApart()
+    {
+        // Arrange
+        Guid owner = Guid.Parse("0199b2c4-0000-7000-8000-000000000001");
+        Guid firstLedger = Guid.Parse("0199b2c4-0000-7000-8000-000000000011");
+        Guid secondLedger = Guid.Parse("0199b2c4-0000-7000-8000-000000000012");
+        DateTime first = new(2026, 6, 26, 10, 15, 30, DateTimeKind.Utc);
+        DateTime second = first.AddDays(1);
+        DateTime third = first.AddDays(2);
+        (string Label, Dictionary<string, IReadOnlyList<IReadOnlyDictionary<string, DatabaseCell>>> Rows, string[] Flagged)[] cases =
+        [
+            ("equal on every row",
+                LocatedRows(("t", ["a", "b"], [[1, 1], [2, 2]])),
+                ["t.a", "t.b"]),
+            ("equal on some rows",
+                LocatedRows(("t", ["a", "b"], [[1, 1], [2, 3]])),
+                []),
+            ("money 0 against opening balances holding one 0, both on several rows",
+                LocatedRows(
+                    ("accounts", ["opening_balance"], [[0m], [125.50m]]),
+                    ("transactions", ["amount"], [[0m], [-10.25m]])),
+                []),
+            ("an instant shared between two tables of several rows",
+                LocatedRows(
+                    ("a", ["created_at_utc"], [[first], [second]]),
+                    ("b", ["created_at_utc"], [[first], [third]])),
+                []),
+            ("a one-row string found in another table",
+                LocatedRows(
+                    ("budgets", ["base_currency_code"], [["USD"]]),
+                    ("accounts", ["currency_code"], [["USD"], ["EUR"]])),
+                ["budgets.base_currency_code", "accounts.currency_code"]),
+            ("a one-row uuid carried as a foreign key",
+                LocatedRows(
+                    ("owners", ["id"], [[owner]]),
+                    ("ledgers", ["id", "owner_id"], [[firstLedger, owner], [secondLedger, owner]])),
+                []),
+            ("null on both sides of a row is equal",
+                LocatedRows(("t", ["a", "b"], [[null, null], ["x", "x"]])),
+                ["t.a", "t.b"]),
+            ("1.0 and 1 are one amount",
+                LocatedRows(("t", ["a", "b"], [[1.0m, 1m], [2.50m, 2.5m]])),
+                ["t.a", "t.b"]),
+        ];
+
+        // Act
+        List<string> defects = [];
+        foreach ((string label, Dictionary<string, IReadOnlyList<IReadOnlyDictionary<string, DatabaseCell>>> rows, string[] flagged) in cases)
+        {
+            ILookup<string, ColumnClassificationEntry> classified = rows
+                .SelectMany(table => table.Value.SelectMany(row => row.Keys).Distinct()
+                    .Select(column => ColumnClassificationEntry.Arithmetic(table.Key, column)))
+                .ToLookup(entry => entry.Table, StringComparer.Ordinal);
+
+            IReadOnlyList<string> found = Indistinguishable(rows, classified);
+
+            bool expected = flagged.Length > 0
+                ? found.Count == 1 && flagged.All(column => found[0].Contains(column, StringComparison.Ordinal))
+                : found.Count == 0;
+            if (!expected)
+            {
+                defects.Add($"{label}: expected [{string.Join(" and ", flagged)}], flagged [{string.Join(" | ", found)}]");
+            }
+        }
+
+        // Assert
+        await Assert.That(defects).IsEmpty();
+    }
+
     /// <summary>The keys the envelope carries beside its nesting, and the only ones it may.</summary>
     private static readonly string[] RootKeys = ["schemaVersion"];
 
     /// <summary>
     /// What one pass of <see cref="CompareToDatabase" /> met: the columns it compared on a value, the
-    /// ones it compared on a null, and the distinguishable values each column held.
+    /// ones it compared on a null, and the cells of every row it located, by table.
     /// </summary>
     private sealed record Comparison(
         IReadOnlySet<string> ComparedOnAValue,
         IReadOnlySet<string> ComparedOnANull,
-        IReadOnlyDictionary<string, HashSet<object>> Values);
+        IReadOnlyDictionary<string, IReadOnlyList<IReadOnlyDictionary<string, DatabaseCell>>> LocatedRows);
 
     /// <summary>
     /// Compares every classified column of every located row against its member, and each classified
-    /// table's id set against the rows the document carries, adding what disagrees to
+    /// table's rows against the rows the document carries, adding what disagrees to
     /// <paramref name="defects" /> under <paramref name="pass" />.
     /// </summary>
     private static Comparison CompareToDatabase(
         string pass,
         JsonNode document,
         DatabaseSnapshot database,
+        IReadOnlyDictionary<string, TableShape> shapes,
         Guid userId,
         List<string> defects)
     {
-        // One account in the database, so a table's whole id set is exactly what this account owns.
-        // The table is the one holding the signed-in account's id rather than a name written here.
-        if (!database.ById.TryGetValue(userId, out IReadOnlyList<DatabaseRow>? owners) || owners.Count != 1)
+        // One account in the database, so a table's whole row set is exactly what this account owns.
+        // The tables checked are every one holding a row whose whole key is the signed-in account's id,
+        // rather than names written here.
+        string[] accountTables =
+        [
+            .. shapes.Values
+                .Where(shape => shape.PrimaryKey.Count == 1
+                                && database.Tables.TryGetValue(shape.Name, out DatabaseTable? rows)
+                                && rows.Rows.Any(row => row.Cells.TryGetValue(shape.PrimaryKey[0], out DatabaseCell? key)
+                                                        && key.Value is Guid id
+                                                        && id == userId))
+                .Select(shape => shape.Name),
+        ];
+        if (accountTables.Length == 0)
         {
-            defects.Add($"{pass}: precondition: the account id {userId} is not exactly one row in the database");
+            defects.Add($"{pass}: precondition: the account id {userId} is no row's whole primary key");
         }
-        else if (database.Tables[owners[0].Table].Rows.Count != 1)
+
+        foreach (string table in accountTables.Where(table => database.Tables[table].Rows.Count != 1))
         {
             defects.Add(
-                $"{pass}: precondition: {owners[0].Table} holds {database.Tables[owners[0].Table].Rows.Count} rows, "
+                $"{pass}: precondition: {table} holds {database.Tables[table].Rows.Count} rows, "
                 + "not the one account this test signed in");
         }
 
         ILookup<string, ColumnClassificationEntry> classified = Classified().ToLookup(entry => entry.Table);
-        IReadOnlyList<LocatedObject> located = Locate(document, database);
+        IReadOnlyList<LocatedObject> located = Locate(document, shapes, database);
 
         foreach (IGrouping<string, ColumnClassificationEntry> table in classified)
         {
-            if (!database.Tables.TryGetValue(table.Key, out DatabaseTable? rows) || !rows.HasId)
+            if (!shapes.TryGetValue(table.Key, out TableShape? shape)
+                || shape.PrimaryKey.Count == 0
+                || !database.Tables.TryGetValue(table.Key, out DatabaseTable? rows))
             {
-                defects.Add($"{pass}: no uuid id: {table.Key} carries classified columns and cannot be located");
+                defects.Add($"{pass}: no primary key: {table.Key} carries classified columns and cannot be located");
                 continue;
             }
 
@@ -362,32 +549,28 @@ public sealed class DataExportInventoryTests
                 defects.Add($"{pass}: no column: {entry.Qualified} is in the inventory and not in the table");
             }
 
-            // The ids the document carries for this table, against the ids the table holds. A located id
-            // is a database id by construction, so what this can find is a row missing or repeated; an
-            // object the document invented is unlocated, and that is the excluded-column test's to name.
-            List<Guid> exported =
-            [
-                .. located.SelectMany(found => found.Rows)
-                    .Where(row => row.Table == table.Key)
-                    .Select(row => row.Id),
-            ];
-            foreach (Guid id in rows.Ids.Except(exported))
+            // The rows the document carries for this table, against the rows the table holds. A located
+            // row is a database row by construction, so what this can find is a row missing or repeated;
+            // an object the document invented is unlocated, and that is the excluded-column test's to name.
+            List<DatabaseRow> exported = [.. located.Where(found => found.Row?.Table == table.Key).Select(found => found.Row!)];
+            foreach (DatabaseRow row in rows.Rows.Where(row => !exported.Contains(row, ReferenceEqualityComparer.Instance)))
             {
-                defects.Add($"{pass}: row not exported: {table.Key} {id}");
+                defects.Add($"{pass}: row not exported: {RenderKey(row, shapes)}");
             }
 
-            foreach (IGrouping<Guid, Guid> repeated in exported.GroupBy(id => id).Where(group => group.Count() > 1))
+            foreach (IGrouping<DatabaseRow, DatabaseRow> repeated in exported
+                         .GroupBy<DatabaseRow, DatabaseRow>(row => row, ReferenceEqualityComparer.Instance)
+                         .Where(group => group.Count() > 1))
             {
-                defects.Add($"{pass}: row exported {repeated.Count()} times: {table.Key} {repeated.Key}");
+                defects.Add($"{pass}: row exported {repeated.Count()} times: {RenderKey(repeated.Key, shapes)}");
             }
         }
 
         HashSet<string> comparedOnAValue = new(StringComparer.Ordinal);
         HashSet<string> comparedOnANull = new(StringComparer.Ordinal);
-        Dictionary<string, HashSet<object>> comparedValues = new(StringComparer.Ordinal);
         foreach (LocatedObject found in located)
         {
-            foreach (DatabaseRow row in found.Rows)
+            if (found.Row is { } row)
             {
                 foreach (ColumnClassificationEntry entry in classified[row.Table])
                 {
@@ -411,21 +594,22 @@ public sealed class DataExportInventoryTests
                     }
 
                     (cell.Value is null ? comparedOnANull : comparedOnAValue).Add(entry.Qualified);
-
-                    if (DistinguishableValue(cell) is { } value)
-                    {
-                        if (!comparedValues.TryGetValue(entry.Qualified, out HashSet<object>? values))
-                        {
-                            comparedValues[entry.Qualified] = values = [];
-                        }
-
-                        values.Add(value);
-                    }
                 }
             }
         }
 
-        return new Comparison(comparedOnAValue, comparedOnANull, comparedValues);
+        Dictionary<string, IReadOnlyList<IReadOnlyDictionary<string, DatabaseCell>>> locatedRows = located
+            .Where(found => found.Row is not null)
+            .Select(found => found.Row!)
+            .Distinct(ReferenceEqualityComparer.Instance)
+            .Cast<DatabaseRow>()
+            .GroupBy(row => row.Table, StringComparer.Ordinal)
+            .ToDictionary(
+                table => table.Key,
+                IReadOnlyList<IReadOnlyDictionary<string, DatabaseCell>> (table) => [.. table.Select(row => row.Cells)],
+                StringComparer.Ordinal);
+
+        return new Comparison(comparedOnAValue, comparedOnANull, locatedRows);
     }
 
     /// <summary>Why a key on a row of <paramref name="table" /> is not one the export owes.</summary>
@@ -553,27 +737,11 @@ public sealed class DataExportInventoryTests
         instant.ToString("yyyy'-'MM'-'dd'T'HH':'mm':'ss.FFFFFFF'Z'", CultureInfo.InvariantCulture);
 
     /// <summary>
-    /// The value a cell contributes to the distinguishability check, or <see langword="null" /> when its
-    /// type is not one the check covers.
+    /// A value for the distinguishability message: an instant to the tick, so two instants a message
+    /// calls equal print as equal; anything else as <see cref="Render" /> writes it.
     /// </summary>
-    /// <remarks>
-    /// Instants and money only. A <see cref="Guid" /> or a <see cref="string" /> is left out because
-    /// foreign keys and currency codes repeat another column's value by design. Boxed
-    /// <see cref="DateTime" /> equality is tick equality and boxed <see cref="decimal" /> equality ignores
-    /// scale, which is the same agreement <see cref="Disagreement" /> applies.
-    /// </remarks>
-    private static object? DistinguishableValue(DatabaseCell cell) =>
-        cell.Value switch
-        {
-            DateTime instant when cell.DataType == "timestamp with time zone" => instant,
-            decimal amount => amount,
-            _ => null,
-        };
-
-    private static string RenderDistinguishable(object value) =>
-        value is DateTime instant
-            ? instant.ToString("O", CultureInfo.InvariantCulture)
-            : Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty;
+    private static string RenderValue(object value) =>
+        value is DateTime instant ? instant.ToString("O", CultureInfo.InvariantCulture) : Render(value);
 
     /// <summary>A database value for a defect message; never used to decide agreement.</summary>
     private static string Render(object value) =>
@@ -613,8 +781,11 @@ public sealed class DataExportInventoryTests
     /// <summary>One cell as the superuser read it, with the type the server named for its column.</summary>
     private sealed record DatabaseCell(object? Value, string DataType);
 
-    /// <summary>One row of one table, keyed by its <c>id</c>.</summary>
-    private sealed record DatabaseRow(string Table, Guid Id, IReadOnlyDictionary<string, DatabaseCell> Cells);
+    /// <summary>
+    /// One row of one table. Its identity is the instance: a located object points at it, and two
+    /// objects pointing at one instance are one row exported twice.
+    /// </summary>
+    private sealed record DatabaseRow(string Table, IReadOnlyDictionary<string, DatabaseCell> Cells);
 
     /// <summary>
     /// Every row of one inventory table, and the columns <c>select *</c> returned for it with the type
@@ -623,31 +794,401 @@ public sealed class DataExportInventoryTests
     private sealed record DatabaseTable(
         string Name,
         IReadOnlyDictionary<string, string> ColumnTypes,
-        IReadOnlyList<IReadOnlyDictionary<string, DatabaseCell>> Rows)
-    {
-        /// <summary>
-        /// Whether the table's rows can be located: it has an <c>id</c> and that <c>id</c> is a
-        /// <c>uuid</c>. Any other <c>id</c> is treated as none.
-        /// </summary>
-        public bool HasId => ColumnTypes.TryGetValue(IdColumn, out string? type) && type == "uuid";
+        IReadOnlyList<DatabaseRow> Rows);
 
-        public IEnumerable<Guid> Ids => HasId ? Rows.Select(row => (Guid)row[IdColumn].Value!) : [];
+    /// <summary>
+    /// What locating an object needs to know about one table: its primary key as column names, and the
+    /// wire names of every column the inventory lists for it and of the ones the export owes.
+    /// </summary>
+    /// <remarks>Plain data, so a test can build one by hand.</remarks>
+    private sealed record TableShape(
+        string Name,
+        IReadOnlyList<string> PrimaryKey,
+        IReadOnlySet<string> Columns,
+        IReadOnlySet<string> Owed)
+    {
+        /// <summary>Whether the export owes nothing of this table.</summary>
+        public bool WhollyExcluded => Owed.Count == 0;
     }
 
     /// <summary>
-    /// Every inventory table, every locatable row indexed by its id, and every nullable column of the
-    /// schema as <c>table.column</c>.
+    /// One object of the document and what locating it found.
+    /// </summary>
+    /// <param name="Path">Where the object sits, for defect text only.</param>
+    /// <param name="Node">The object itself.</param>
+    /// <param name="Keys">Its members that are not nesting, which are the ones judged as columns.</param>
+    /// <param name="PrimaryKeyMatches">Every table one of whose rows agrees with it on the whole key.</param>
+    /// <param name="Candidates">
+    /// The tables left once the tie-breaks have run: one when the object is located, none when nothing
+    /// matched, several when nothing could settle it.
+    /// </param>
+    /// <param name="Row">The row it is, when exactly one table is left.</param>
+    private sealed record LocatedObject(
+        string Path,
+        JsonObject Node,
+        IReadOnlyList<string> Keys,
+        IReadOnlyList<string> PrimaryKeyMatches,
+        IReadOnlyList<string> Candidates,
+        DatabaseRow? Row);
+
+    /// <summary>
+    /// Each mapped table's primary key, read from the model, beside the columns the inventory lists for
+    /// it.
+    /// </summary>
+    /// <remarks>
+    /// The key's column names come through the table's <see cref="StoreObjectIdentifier" />, the same
+    /// idiom <see cref="MappedSchema.ColumnsOf" /> uses, so a key column is named as the table holds it.
+    /// </remarks>
+    private static IReadOnlyDictionary<string, TableShape> ShapesOf(IModel model)
+    {
+        ILookup<string, ColumnClassificationEntry> inventory =
+            DataInventory.Entries.ToLookup(entry => entry.Table, StringComparer.Ordinal);
+        Dictionary<string, TableShape> shapes = new(StringComparer.Ordinal);
+
+        foreach (IEntityType entity in model.GetEntityTypes())
+        {
+            StoreObjectIdentifier? table = StoreObjectIdentifier.Create(entity, StoreObjectType.Table);
+            string? name = entity.GetTableName();
+            if (table is null || name is null || shapes.ContainsKey(name))
+            {
+                continue;
+            }
+
+            string[] primaryKey =
+            [
+                .. (entity.FindPrimaryKey()?.Properties ?? [])
+                    .Select(property => property.GetColumnName(table.Value))
+                    .OfType<string>(),
+            ];
+            shapes[name] = new TableShape(
+                name,
+                primaryKey,
+                inventory[name].Select(entry => WireName(entry.Column)).ToHashSet(StringComparer.Ordinal),
+                inventory[name]
+                    .Where(entry => entry.Classification is not ColumnClassification.Excluded)
+                    .Select(entry => WireName(entry.Column))
+                    .ToHashSet(StringComparer.Ordinal));
+        }
+
+        return shapes;
+    }
+
+    /// <summary>Every object in the document, each with what locating it found; the root is never located.</summary>
+    /// <remarks>
+    /// Children are visited before their parent, because whether a member is nesting is decided from
+    /// its children: an object some table's key matches, or a non-empty array of nothing but such
+    /// objects. Anything else — an empty array, an array holding one object nothing matches — is a key,
+    /// and is judged against the columns like any other.
+    /// </remarks>
+    private static IReadOnlyList<LocatedObject> Locate(
+        JsonNode document,
+        IReadOnlyDictionary<string, TableShape> shapes,
+        DatabaseSnapshot database)
+    {
+        List<LocatedObject> found = [];
+
+        bool Matched(JsonNode? node, string path)
+        {
+            switch (node)
+            {
+                case JsonObject item:
+                    List<string> keys = [];
+                    foreach ((string key, JsonNode? value) in item)
+                    {
+                        if (!IsNesting(value, $"{path}.{key}"))
+                        {
+                            keys.Add(key);
+                        }
+                    }
+
+                    LocatedObject located = ReferenceEquals(item, document)
+                        ? new LocatedObject(path, item, keys, [], [], null)
+                        : Settle(path, item, keys, shapes, database);
+                    found.Add(located);
+                    return located.PrimaryKeyMatches.Count > 0;
+                case JsonArray items:
+                    for (int index = 0; index < items.Count; index++)
+                    {
+                        Matched(items[index], $"{path}[{index}]");
+                    }
+
+                    return false;
+                default:
+                    return false;
+            }
+        }
+
+        bool IsNesting(JsonNode? member, string path)
+        {
+            switch (member)
+            {
+                case JsonObject:
+                    return Matched(member, path);
+                case JsonArray items:
+                    // Every element is visited, so one that is not a row cannot hide the rest from the walk.
+                    bool[] matched = [.. items.Select((element, index) => element is JsonObject && Matched(element, $"{path}[{index}]"))];
+                    return matched.Length > 0 && matched.All(match => match);
+                default:
+                    return false;
+            }
+        }
+
+        Matched(document, "$");
+        return found;
+    }
+
+    /// <summary>Which table an object is a row of, by the rule the class remarks state.</summary>
+    private static LocatedObject Settle(
+        string path,
+        JsonObject item,
+        IReadOnlyList<string> keys,
+        IReadOnlyDictionary<string, TableShape> shapes,
+        DatabaseSnapshot database)
+    {
+        List<(TableShape Shape, DatabaseRow Row)> matches = [];
+        foreach (TableShape shape in shapes.Values)
+        {
+            if (shape.PrimaryKey.Count == 0 || !database.Tables.TryGetValue(shape.Name, out DatabaseTable? table))
+            {
+                continue;
+            }
+
+            if (table.Rows.FirstOrDefault(row => AgreesOnPrimaryKey(row, shape.PrimaryKey, item)) is { } row)
+            {
+                matches.Add((shape, row));
+            }
+        }
+
+        // Several tables match: keep the ones that have a column for every key the object carries.
+        List<(TableShape Shape, DatabaseRow Row)> candidates = matches;
+        if (candidates.Count > 1)
+        {
+            List<(TableShape Shape, DatabaseRow Row)> containing =
+                [.. candidates.Where(match => keys.All(match.Shape.Columns.Contains))];
+            if (containing.Count > 0)
+            {
+                candidates = containing;
+            }
+        }
+
+        // Still several: keep the one whose owed columns are exactly the object's keys.
+        if (candidates.Count > 1)
+        {
+            List<(TableShape Shape, DatabaseRow Row)> owedExactly =
+                [.. candidates.Where(match => match.Shape.Owed.SetEquals(keys))];
+            if (owedExactly.Count == 1)
+            {
+                candidates = owedExactly;
+            }
+        }
+
+        return new LocatedObject(
+            path,
+            item,
+            keys,
+            [.. matches.Select(match => match.Shape.Name)],
+            [.. candidates.Select(match => match.Shape.Name)],
+            candidates.Count == 1 ? candidates[0].Row : null);
+    }
+
+    /// <summary>
+    /// Whether the object carries every key column of the row, each in its one wire form.
+    /// </summary>
+    /// <remarks>
+    /// Judged by <see cref="Disagreement" />, so an uppercase or braced uuid matches nothing and a
+    /// <c>bytea</c> key goes through the base64url arm.
+    /// </remarks>
+    private static bool AgreesOnPrimaryKey(DatabaseRow row, IReadOnlyList<string> primaryKey, JsonObject item) =>
+        primaryKey.All(column =>
+            item.TryGetPropertyValue(WireName(column), out JsonNode? member)
+            && row.Cells.TryGetValue(column, out DatabaseCell? cell)
+            && cell.Value is not null
+            && Disagreement(cell, member) is null);
+
+    /// <summary>
+    /// The table an object is a row of, or why it is none: <c>unlocated</c>, or <c>ambiguous</c> with the
+    /// tables left and the keys no one of them has a column for.
+    /// </summary>
+    private static string Describe(LocatedObject found, IReadOnlyDictionary<string, TableShape> shapes)
+    {
+        if (found.Row is not null)
+        {
+            return found.Row.Table;
+        }
+
+        if (found.Candidates.Count == 0)
+        {
+            return "unlocated";
+        }
+
+        string[] outside = [.. found.Keys.Where(key => !found.Candidates.Any(table => shapes[table].Columns.Contains(key)))];
+        return $"ambiguous between {string.Join(", ", found.Candidates.Order(StringComparer.Ordinal))}; "
+               + $"outside every one: [{string.Join(", ", outside)}]";
+    }
+
+    /// <summary>
+    /// Whether the object is a row the export owes nothing of: located to a wholly excluded table, or
+    /// left among nothing but such tables.
+    /// </summary>
+    private static bool IsLeak(LocatedObject found, IReadOnlyDictionary<string, TableShape> shapes) =>
+        found.Candidates.Count > 0 && found.Candidates.All(table => shapes[table].WhollyExcluded);
+
+    /// <summary>A row for defect text: its table and its primary key tuple.</summary>
+    private static string RenderKey(DatabaseRow row, IReadOnlyDictionary<string, TableShape> shapes) =>
+        $"{row.Table} ({string.Join(", ", shapes[row.Table].PrimaryKey.Select(column =>
+            $"{column}={(row.Cells[column].Value is { } value ? Render(value) : "null")}"))})";
+
+    /// <summary>
+    /// Every pair of classified columns no located row can tell apart, as a defect saying what to fix.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A projection that wired one column to the other agrees with every row such a pair meets, so the
+    /// value compare cannot see it. Two shapes are caught:
+    /// </para>
+    /// <para>
+    /// <b>Same table, any type:</b> the two columns are equal on every located row, nulls included.
+    /// Equal on some rows is not enough, because one row that differs is a row the wrong projection
+    /// fails on.
+    /// </para>
+    /// <para>
+    /// <b>Across tables, only from a table with one located row:</b> that row's non-null value appears
+    /// anywhere in the other column. A one-row table is where a hard-wired read of another table's
+    /// value would pass. A uuid is never compared across tables, because a foreign key holds its
+    /// parent's id by design. Two tables of several rows each are not guarded: the export reads each
+    /// table by itself, with no join that could put one table's value on another's row.
+    /// </para>
+    /// <para>
+    /// Equality is the comparer's: bytes byte by byte, <see cref="decimal" /> blind to scale, and
+    /// <see cref="DateTime" /> by ticks.
+    /// </para>
+    /// </remarks>
+    private static IReadOnlyList<string> Indistinguishable(
+        IReadOnlyDictionary<string, IReadOnlyList<IReadOnlyDictionary<string, DatabaseCell>>> locatedRowsByTable,
+        ILookup<string, ColumnClassificationEntry> classified)
+    {
+        ColumnClassificationEntry[] columns =
+        [
+            .. classified.SelectMany(table => table)
+                .Where(entry => locatedRowsByTable.TryGetValue(entry.Table, out IReadOnlyList<IReadOnlyDictionary<string, DatabaseCell>>? rows)
+                                && rows.Count > 0),
+        ];
+
+        List<string> flagged = [];
+        for (int left = 0; left < columns.Length; left++)
+        {
+            for (int right = left + 1; right < columns.Length; right++)
+            {
+                ColumnClassificationEntry first = columns[left];
+                ColumnClassificationEntry second = columns[right];
+
+                if (first.Table == second.Table)
+                {
+                    if (locatedRowsByTable[first.Table].All(row => SameCell(row, first.Column, row, second.Column)))
+                    {
+                        flagged.Add(
+                            $"indistinguishable: {first.Qualified} and {second.Qualified} are equal on every row "
+                            + $"of {first.Table} — make one row differ");
+                    }
+
+                    continue;
+                }
+
+                foreach ((ColumnClassificationEntry source, ColumnClassificationEntry target) in new[] { (first, second), (second, first) })
+                {
+                    IReadOnlyList<IReadOnlyDictionary<string, DatabaseCell>> sourceRows = locatedRowsByTable[source.Table];
+                    if (sourceRows is [var only]
+                        && only.TryGetValue(source.Column, out DatabaseCell? cell)
+                        && cell.Value is { } value and not Guid
+                        && locatedRowsByTable[target.Table].Any(row => SameCell(only, source.Column, row, target.Column)))
+                    {
+                        flagged.Add(
+                            $"indistinguishable: {source.Qualified} holds {RenderValue(value)} on the one row of "
+                            + $"{source.Table}, and {target.Qualified} holds it too — give one of them another value");
+                        break;
+                    }
+                }
+            }
+        }
+
+        return flagged;
+    }
+
+    /// <summary>Whether two cells hold one value by the comparer's rules; a missing column holds none.</summary>
+    private static bool SameCell(
+        IReadOnlyDictionary<string, DatabaseCell> firstRow,
+        string firstColumn,
+        IReadOnlyDictionary<string, DatabaseCell> secondRow,
+        string secondColumn) =>
+        firstRow.TryGetValue(firstColumn, out DatabaseCell? first)
+        && secondRow.TryGetValue(secondColumn, out DatabaseCell? second)
+        && (first.Value, second.Value) switch
+        {
+            (null, null) => true,
+            (null, _) or (_, null) => false,
+            (byte[] left, byte[] right) => left.AsSpan().SequenceEqual(right),
+            (decimal left, decimal right) => left == right,
+            (DateTime left, DateTime right) => left.Ticks == right.Ticks,
+            var (left, right) => left.Equals(right),
+        };
+
+    private static string Wire(Guid id) => id.ToString("D");
+
+    /// <summary>Hand-built located rows for <see cref="Indistinguishable" />, one table per tuple.</summary>
+    private static Dictionary<string, IReadOnlyList<IReadOnlyDictionary<string, DatabaseCell>>> LocatedRows(
+        params (string Table, string[] Columns, object?[][] Values)[] tables) =>
+        tables.ToDictionary(
+            table => table.Table,
+            IReadOnlyList<IReadOnlyDictionary<string, DatabaseCell>> (table) =>
+            [
+                .. table.Values.Select(IReadOnlyDictionary<string, DatabaseCell> (values) =>
+                    HandBuiltRow(table.Table, [.. table.Columns.Zip(values)]).Cells),
+            ],
+            StringComparer.Ordinal);
+
+    private static DatabaseRow HandBuiltRow(string table, params (string Column, object? Value)[] cells) =>
+        new(table, cells.ToDictionary(
+            cell => cell.Column,
+            cell => new DatabaseCell(cell.Value, cell.Value switch
+            {
+                Guid => "uuid",
+                string => "text",
+                int => "integer",
+                decimal => "numeric",
+                byte[] => "bytea",
+                DateTime => "timestamp with time zone",
+                _ => "unknown",
+            }),
+            StringComparer.Ordinal));
+
+    private static DatabaseSnapshot HandBuiltSnapshot(params DatabaseRow[] rows) =>
+        new(
+            rows.GroupBy(row => row.Table, StringComparer.Ordinal).ToDictionary(
+                table => table.Key,
+                table => new DatabaseTable(
+                    table.Key,
+                    table.First().Cells.ToDictionary(cell => cell.Key, cell => cell.Value.DataType, StringComparer.Ordinal),
+                    [.. table]),
+                StringComparer.Ordinal),
+            new HashSet<string>(StringComparer.Ordinal));
+
+    private static TableShape HandBuiltShape(
+        string name,
+        string[] primaryKey,
+        string[] columns,
+        string[] owed) =>
+        new(
+            name,
+            primaryKey,
+            columns.Select(WireName).ToHashSet(StringComparer.Ordinal),
+            owed.Select(WireName).ToHashSet(StringComparer.Ordinal));
+
+    /// <summary>
+    /// Every inventory table, and every nullable column of the schema as <c>table.column</c>.
     /// </summary>
     private sealed record DatabaseSnapshot(
         IReadOnlyDictionary<string, DatabaseTable> Tables,
-        IReadOnlyDictionary<Guid, IReadOnlyList<DatabaseRow>> ById,
         IReadOnlySet<string> Nullable);
-
-    /// <summary>
-    /// One object of the document, where it sits, and every row whose id it carries — none for the root
-    /// and for an object nothing locates, more than one only if two tables share an id value.
-    /// </summary>
-    private sealed record LocatedObject(string Path, JsonObject Node, IReadOnlyList<DatabaseRow> Rows);
 
     /// <summary>
     /// Reads every table the inventory names with <c>select *</c> on the container superuser, and the
@@ -665,7 +1206,6 @@ public sealed class DataExportInventoryTests
         await connection.OpenAsync();
 
         Dictionary<string, DatabaseTable> tables = [];
-        Dictionary<Guid, List<DatabaseRow>> byId = [];
 
         foreach (string table in DataInventory.Entries.Select(entry => entry.Table).Distinct(StringComparer.Ordinal))
         {
@@ -679,8 +1219,7 @@ public sealed class DataExportInventoryTests
                 columnTypes[reader.GetName(ordinal)] = reader.GetDataTypeName(ordinal);
             }
 
-            bool locatable = columnTypes.TryGetValue(IdColumn, out string? idType) && idType == "uuid";
-            List<IReadOnlyDictionary<string, DatabaseCell>> rows = [];
+            List<DatabaseRow> rows = [];
             while (await reader.ReadAsync())
             {
                 Dictionary<string, DatabaseCell> cells = new(StringComparer.Ordinal);
@@ -692,18 +1231,7 @@ public sealed class DataExportInventoryTests
                         reader.GetDataTypeName(ordinal));
                 }
 
-                rows.Add(cells);
-
-                if (locatable)
-                {
-                    Guid key = (Guid)cells[IdColumn].Value!;
-                    if (!byId.TryGetValue(key, out List<DatabaseRow>? sharing))
-                    {
-                        byId[key] = sharing = [];
-                    }
-
-                    sharing.Add(new DatabaseRow(table, key, cells));
-                }
+                rows.Add(new DatabaseRow(table, cells));
             }
 
             tables[table] = new DatabaseTable(table, columnTypes, rows);
@@ -722,79 +1250,8 @@ public sealed class DataExportInventoryTests
             }
         }
 
-        return new DatabaseSnapshot(
-            tables,
-            byId.ToDictionary(pair => pair.Key, IReadOnlyList<DatabaseRow> (pair) => pair.Value),
-            nullable);
+        return new DatabaseSnapshot(tables, nullable);
     }
-
-    /// <summary>Every object in the document, the root first, each with the rows its id names.</summary>
-    private static IReadOnlyList<LocatedObject> Locate(JsonNode document, DatabaseSnapshot database)
-    {
-        List<LocatedObject> found = [];
-
-        void Visit(JsonNode? node, string path)
-        {
-            switch (node)
-            {
-                case JsonObject item:
-                    found.Add(new LocatedObject(path, item, RowsNamedBy(item, database)));
-                    foreach ((string key, JsonNode? value) in item)
-                    {
-                        Visit(value, $"{path}.{key}");
-                    }
-
-                    break;
-                case JsonArray items:
-                    for (int index = 0; index < items.Count; index++)
-                    {
-                        Visit(items[index], $"{path}[{index}]");
-                    }
-
-                    break;
-            }
-        }
-
-        Visit(document, "$");
-        return found;
-    }
-
-    /// <summary>
-    /// The rows whose id this object's <c>id</c> member carries in its one wire form — lowercase
-    /// <c>D</c> — or none.
-    /// </summary>
-    /// <remarks>
-    /// The text must be the canonical rendering of the id it parses to, so an id written in upper case
-    /// or braces locates nothing and surfaces as an unlocated object and an unexported row.
-    /// </remarks>
-    private static IReadOnlyList<DatabaseRow> RowsNamedBy(JsonObject item, DatabaseSnapshot database) =>
-        item.TryGetPropertyValue(WireName(IdColumn), out JsonNode? id)
-        && id is JsonValue value
-        && value.GetValueKind() == JsonValueKind.String
-        && value.GetValue<string>() is { } text
-        && Guid.TryParseExact(text, "D", out Guid key)
-        && string.Equals(text, key.ToString("D"), StringComparison.Ordinal)
-        && database.ById.TryGetValue(key, out IReadOnlyList<DatabaseRow>? rows)
-            ? rows
-            : [];
-
-    /// <summary>
-    /// Whether a member is nesting rather than a column: a located row, or a non-empty array of nothing
-    /// but located rows.
-    /// </summary>
-    /// <remarks>
-    /// The single-object arm exists because the root carries the account as one object rather than as an
-    /// array of one. Anything short of this — an empty array, an array holding one unlocated object — is
-    /// a key, and is judged against the columns like any other.
-    /// </remarks>
-    private static bool IsNesting(JsonNode? member, DatabaseSnapshot database) =>
-        member switch
-        {
-            JsonObject item => RowsNamedBy(item, database).Count > 0,
-            JsonArray { Count: > 0 } items => items.All(element =>
-                element is JsonObject item && RowsNamedBy(item, database).Count > 0),
-            _ => false,
-        };
 
     /// <summary>
     /// Asks for the export and hands back the parsed body, refusing anything but a success.
@@ -1002,8 +1459,9 @@ public sealed class DataExportInventoryTests
     /// </para>
     /// <para>
     /// <c>budgets.base_currency_code</c> has no write route at all — provisioning leaves it null and
-    /// nothing sets it — so it is written on the superuser. <c>USD</c> because the column is a foreign
-    /// key into <c>currencies</c> and the seeded checking account already proves that row exists.
+    /// nothing sets it — so it is written on the superuser. <c>GBP</c> because the column is a foreign
+    /// key into <c>currencies</c>, which seeds it, and no account carries it: a code an account also
+    /// held would leave the budget's one row indistinguishable from that account's column.
     /// </para>
     /// </remarks>
     private static async Task FillColumnsNoRouteWritesAsync(PostgresTestHost host, Guid userId, Guid budgetId)
@@ -1014,7 +1472,7 @@ public sealed class DataExportInventoryTests
         await using NpgsqlConnection connection = new(host.ConnectionString);
         await connection.OpenAsync();
         await using NpgsqlCommand command = new(
-            "update budgets set base_currency_code = 'USD' where id = @budget", connection);
+            "update budgets set base_currency_code = 'GBP' where id = @budget", connection);
         command.Parameters.AddWithValue("budget", budgetId);
         await Assert.That(await command.ExecuteNonQueryAsync()).IsEqualTo(1);
 

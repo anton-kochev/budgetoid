@@ -83,10 +83,9 @@ public static class DataInventory
     /// out. The stamps joined that set without moving the number above it, which is the property to
     /// check when one of these tables grows a column: a new owned-table column is either a
     /// forty-second member of the document or an eleventh written exclusion, and never neither. That
-    /// correspondence is the whole
-    /// content of "the export is a copy of what the person owns", and it is what
-    /// <c>DataExportInventoryTests</c> asserts — so a column moved between these two words and the export is a column the two files now
-    /// disagree about.
+    /// correspondence is the whole content of "the export is a copy of what the person owns", and it
+    /// is what <c>DataExportInventoryTests</c> asserts — so a column moved between these two words and
+    /// the export is a column the two files now disagree about.
     /// </para>
     /// <para>
     /// <b>Two readings a reader will get wrong, both argued at the entry rather than here.</b>
@@ -134,12 +133,12 @@ public static class DataInventory
             "rotation_id",
             "names the content-key rotation that last re-sealed this row, and it is the first of six "
             + "identical stamps — argued separately on each table, because the six say different "
-            + "things about what a reader would lose. Here it would be a foreign key into "
-            + "key_rotations, a table whose row is deleted the moment the run it describes finishes, "
-            + "so a durable file naming one names something that no longer exists by the time "
-            + "anybody opens the file. The person is owed the budget's name, which ships sealed one "
-            + "column over; which generation of key sealed it is the server's bookkeeping about work "
-            + "it did on their behalf"),
+            + "things about what a reader would lose. It is a quotation of a run's client-minted "
+            + "identifier, not a reference: no foreign key backs it, and the one key_rotations row an "
+            + "account holds has its rotation_id overwritten in place by the next begin, so a durable "
+            + "file quoting one quotes a value nothing keeps resolving. The person is owed the "
+            + "budget's name, which ships sealed one column over; which generation of key sealed it "
+            + "is the server's bookkeeping about work it did on their behalf"),
         ColumnClassificationEntry.Arithmetic("budgets", "created_at_utc"),
 
         // accounts
@@ -610,16 +609,19 @@ public static class DataInventory
             + "codes was enrolled. That is key-custody history rather than content, and it would tell "
             + "a reader of the file how long the account has had each way in"),
 
-        // key_rotations — the staging row of an unfinished re-seal, which exists only while one is
-        // running. Every column is excluded, and the arguments differ because the columns do.
+        // key_rotations — the staging row of the account's latest re-seal: one row per account,
+        // written by the first begin, rewritten in place by every later one, left standing by
+        // completion, and removed only by the cascade from users on erasure. Every column is
+        // excluded, and the arguments differ because the columns do.
         ColumnClassificationEntry.Excluded(
             "key_rotations",
             "user_id",
-            "repeats the account already named by the exported user, here on the row that says a "
-            + "re-seal of the account's own content is part-way through. An export taken while one "
-            + "is running would carry a claim about work in progress into a file that outlives the "
-            + "work, and the row it names is deleted the moment the run ends — so the copy would be "
-            + "stale before anybody read it"),
+            "repeats the account already named by the exported user, here on the row recording the "
+            + "account's latest re-seal — part-way through or already promoted, which only its "
+            + "staged epoch beside the manifest's can tell. The next begin rewrites it in place, so "
+            + "a file carrying it would pin a claim about key maintenance that the next rotation "
+            + "silently replaces, and it describes the locks on the door rather than anything the "
+            + "person recorded"),
         ColumnClassificationEntry.Excluded(
             "key_rotations",
             "rotation_id",
@@ -638,14 +640,16 @@ public static class DataInventory
             + "into the account there will be, because every entry is the same width. What is "
             + "different is that this copy is "
             + "provisional: it names the factor set a run intends to end with, so a file carrying it "
-            + "would state a person's future security setup as though it were their current one, and "
-            + "the row is rewritten or destroyed the moment the run is replaced or finishes"),
+            + "would state a person's future security setup as though it were their current one — "
+            + "and once the run completes it stays behind as a copy of the manifest the run "
+            + "promoted, which the next change to the factor set leaves stale and the next begin "
+            + "overwrites"),
         ColumnClassificationEntry.Excluded(
             "key_rotations",
             "staged_rotation_epoch",
-            "the generation number the staged manifest will be filed at when the run completes. It "
-            + "is a bare integer that means nothing away from the live factor_manifests row it will "
-            + "replace — it only ever answers 'is this the generation I read' — and a downloadable "
+            "the generation number the staged manifest will be filed at when the run completes, or "
+            + "was filed at once it has. It is a bare integer that means nothing away from the live "
+            + "factor_manifests row it will replace — it only ever answers 'is this the generation I read' — and a downloadable "
             + "file has no read to compare it with. What a published one would say is how many times "
             + "the person has re-minted their way back into their own account, which is "
             + "security-maintenance history rather than anything they recorded"),
@@ -653,22 +657,24 @@ public static class DataInventory
             "key_rotations",
             "started_at_utc",
             "when a re-seal was begun, which dates a security operation rather than anything the "
-            + "person recorded. Read beside a file that also carried the stamps it would say how "
-            + "long a run has been sitting unfinished — how long the account has been half-way "
-            + "between two keys — which is the one fact here an attacker would rather have than the "
-            + "person would"),
+            + "person recorded. Read beside a file that also carried the stamps it would say "
+            + "whether the latest run was left half-done and for how long — how long the account "
+            + "has been half-way between two keys — which is the one fact here an attacker would "
+            + "rather have than the person would"),
 
-        // key_rotation_seals — one row per surviving factor per run, holding the next generation of
-        // the account's two keys encapsulated to that factor's public key. Every column is excluded,
-        // and the three arguments differ because the columns do.
+        // key_rotation_seals — one row per factor the account's latest run staged a value for,
+        // holding the next generation of the account's two keys encapsulated to that factor's public
+        // key. Completion leaves them standing, a later begin rewrites them, and a factor's removal
+        // cascades its own away. Every column is excluded, and the three arguments differ because the
+        // columns do.
         ColumnClassificationEntry.Excluded(
             "key_rotation_seals",
             "user_id",
-            "repeats the account already named by the exported user, here on a row that exists only "
-            + "while a re-seal of that account's own content is part-way through. The repetition is "
-            + "not the objection — the row is: its presence says a rotation is in flight and how many "
-            + "factors it is staging for, and the row is deleted the moment the run is replaced or "
-            + "completed, so a copy would be stale before anybody opened the file"),
+            "repeats the account already named by the exported user, here on a row a begin writes "
+            + "for each factor and that outlives the run: completion leaves it standing and a later "
+            + "begin rewrites it in place. The repetition is not the objection — the row is: a set "
+            + "of these says how many factors the account's latest rotation staged for, which is the "
+            + "shape of its security setup rather than anything the person recorded"),
         ColumnClassificationEntry.Excluded(
             "key_rotation_seals",
             "factor_id",
@@ -676,8 +682,8 @@ public static class DataInventory
             + "pointer into key custody rather than content: it opens nothing, it is meaningless "
             + "without the row it points at, and that row's columns are excluded too — so it would "
             + "arrive in the file as a bare identifier for something the file deliberately does not "
-            + "carry. Read beside the staged manifest it would also say which of the account's "
-            + "factors a run has reached and which it has not"),
+            + "carry. Read beside the staged manifest it would also say which factors the account "
+            + "held when its latest rotation began"),
         ColumnClassificationEntry.Excluded(
             "key_rotation_seals",
             "encapsulated_account_keys",

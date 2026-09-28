@@ -16,13 +16,16 @@ build red when a classified column is missing from the export, and the inventory
 that knows every column.
 
 **Decision:** `DataExportInventoryTests` reads `DataInventory` and the live rows, locates each
-object in the document by its `id`, and requires every narrative and arithmetic column present with
-the row's value in its one wire form, and every excluded column absent as a key.
+object in the document by its table's primary key, and requires every narrative and arithmetic
+column present with the row's value in its one wire form, and every excluded column absent as a
+key.
 [export.md](export.md) and [data inventory](../engineering/data-inventory.md) own the rule.
 
 **Alternatives considered:**
 - **A table-to-path map in the test**: rejected. A new table would edit the test, which is the edit
   NFR-023 says adding a table must not need.
+- **Locating by a uuid `id` column alone**: rejected. The schema's own one-per-account tables key on
+  `user_id` or a composite, so a table built on that precedent could never be located.
 - **Reflection over `ExportDocument`'s records**: rejected. It judges the declarations, not the
   wire, and misses a projection, serializer option or null-omission defect.
 - **Key presence without the value**: rejected. A member left at null, zero or an empty id, or read
@@ -33,8 +36,14 @@ the row's value in its one wire form, and every excluded column absent as a key.
 **Deliberately absent:** a unit-tier twin over the document's type, which could see nothing the wire
 test does not; and a reconciliation of the web client's decoder with the inventory, which would need
 an artifact generated across the two stacks — the two-release rule in export.md governs that list
-instead. The test's seeding is authored, so a new exported table still costs a fixture line; its
-non-vacuity guards name the column until it has one.
+instead.
+
+**What a new column still costs.** Detecting one costs nothing but its classification. Shipping it
+costs the projection, the client decoder's member in an earlier release, and a pin in
+`DataExportCompletenessTests`. Greening the gate can cost a fixture edit, and the red names which: a
+create route that now requires the column, a nullable column no route writes, a column equal to a
+sibling on every row, or a column type the comparer has no arm for. A new exported table also costs
+its seeding.
 
 ---
 

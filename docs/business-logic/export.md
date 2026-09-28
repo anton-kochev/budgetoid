@@ -54,8 +54,9 @@ deliberately absent, argued under [Business Rules](#business-rules--invariants).
 description columns adds a fifth, because a description carries no index at all — which is a rule
 about the field class and not an accident of which tables have been sealed so far. The six
 `rotation_id` stamps, one on each of `budgets`, `accounts`, `category_groups`, `categories`, `payees`
-and `transactions`, are absent too: each points into a `key_rotations` row that exists only while a
-rotation runs, so it is bookkeeping about the server's work on the keys and not part of the record.
+and `transactions`, are absent too: each quotes the identifier of the rotation that last re-sealed
+its row — the server's bookkeeping about its work on the keys, not part of the record, and a value
+the account's one `key_rotations` row overwrites at the next begin.
 **The set is the inventory's, not this paragraph's**: the document carries exactly the columns
 `DataInventory` classifies *narrative* or *arithmetic* and none it classifies *excluded*, which is
 what `DataExportInventoryTests` holds.
@@ -67,10 +68,11 @@ rule of its own below. `wrapped_account_keys`, `key_rotations` and `factor_manif
 custody and account control**: the envelopes open only under a factor the person holds and are
 served to a browser that presents one, and the manifest is the account's list of which factors
 exist — a map of the front door, in an artifact that outlives every session that could have vouched
-for whoever is holding it. `key_rotation_seals` belongs with them: it stages one encapsulated value
-per factor while a rotation is in flight. `currencies` is global reference data belonging to no
-tenant. Every column of all twelve is classified *excluded* in `DataInventory`, one written argument
-each, which is where a table joining this list has to earn its place.
+for whoever is holding it. `key_rotation_seals` belongs with them: it holds one encapsulated value
+per factor for the account's latest rotation, and completion leaves those rows standing.
+`currencies` is global reference data belonging to no tenant. Every column of all twelve is
+classified *excluded* in `DataInventory`, one written argument each, which is where a table joining
+this list has to earn its place.
 
 ## Constraints
 
@@ -225,8 +227,8 @@ each, which is where a table joining this list has to earn its place.
   `categories.description` and `transactions.description` — cross as the column's AEAD envelope in
   unpadded base64url, under the member names they always had; `accounts.name_key`, `payees.name_key`,
   `category_groups.name_key` and `categories.name_key` are the only blind indexes in the schema and
-  the document leaves out all four. **The server's response is entirely unreadable to the operator who assembled it**,
-  save for amounts, dates and identifiers — which is the property this whole design was for,
+  the document leaves out all four. **The server's response is entirely unreadable to the operator
+  who assembled it**, save for amounts, dates and identifiers — which is the property this whole design was for,
   arriving as a fact about the export route rather than as an aspiration in a requirement. **The
   file a person saves is not the response**: the web client opens every one of the eight in the
   tab and writes plaintext, so the delivered file reads in full — and it is assembled where the
@@ -411,8 +413,9 @@ each, which is where a table joining this list has to earn its place.
 - **Rule**: The response body is assembled with `TypedResults.Ok`, never a file result and never
   hand-serialized JSON.
 - **Why**: both of those write through whatever `JsonSerializerOptions` the call site passes,
-  bypassing `ConfigureHttpJsonOptions` — so camelCase and the string-enum converter would come from
-  somewhere other than the rest of the API, and the exported document would name its columns
+  bypassing the HTTP `JsonOptions` — whose web defaults give camelCase and to which
+  `ConfigureHttpJsonOptions` adds the string-enum converter — so both would come from somewhere
+  other than the rest of the API, and the exported document would name its columns
   differently from every response the same client already parses. `Ok<T>` resolves the options from
   DI at execute time.
 - **Enforced in**: `DataExportEndpoints`; the wire shape is pinned by `DataExportCompletenessTests`,

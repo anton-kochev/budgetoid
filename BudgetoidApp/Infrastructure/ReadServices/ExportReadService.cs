@@ -109,6 +109,10 @@ public sealed class ExportReadService(BudgetoidDbContext dbContext) : IExportRea
         // Email and for the same reason: name carries a value converter, so the provider translates the
         // property itself and the NarrativeField exists only once the row has materialized. Encoding it
         // inside the Select would be a call the translator has to make sense of.
+        //
+        // rotation_id is deliberately not among the members — the one budgets column this document
+        // omits, for the reason ExportedBudget gives about its own stamp. budgets carries no blind
+        // index, so there is no name_key here to leave out.
         var rows = await dbContext.Budgets
             .AsNoTracking()
             .Where(budget => budget.UserId == userId)
@@ -199,10 +203,10 @@ public sealed class ExportReadService(BudgetoidDbContext dbContext) : IExportRea
         // accounts above give, and this set is the first here to carry TWO sealed columns — the name and
         // the description, which is the first sealed free-text column in the product.
         //
-        // name_key is deliberately not among the members - the omission EVERY set carrying a blind index
-        // makes here, for the argument ExportedAccount already carries. There is no description_key to
-        // omit: a
-        // description carries no blind index at all, because it is never looked up.
+        // name_key and rotation_id are deliberately not among the members - the blind index for the
+        // argument ExportedAccount already carries, an omission EVERY set carrying one makes here, and
+        // the stamp for the reason ExportedBudget gives about its own. There is no description_key to
+        // omit: a description carries no blind index at all, because it is never looked up.
         //
         // The ordering is untouched — the creation instant and then the id, neither of them sealed.
         var categoryGroupRows = await dbContext.CategoryGroups
@@ -244,10 +248,10 @@ public sealed class ExportReadService(BudgetoidDbContext dbContext) : IExportRea
         // above give, and this set carries TWO sealed columns like the category groups: the name and the
         // description.
         //
-        // name_key is deliberately not among the members - the omission EVERY set carrying a blind index
-        // makes here, for the argument ExportedAccount already carries. There is no description_key to
-        // omit: a
-        // description carries no blind index at all, because it is never looked up.
+        // name_key and rotation_id are deliberately not among the members - the blind index for the
+        // argument ExportedAccount already carries, an omission EVERY set carrying one makes here, and
+        // the stamp for the reason ExportedBudget gives about its own. There is no description_key to
+        // omit: a description carries no blind index at all, because it is never looked up.
         //
         // The ordering is untouched — the creation instant and then the id, neither of them sealed.
         var categoryRows = await dbContext.Categories
@@ -288,11 +292,11 @@ public sealed class ExportReadService(BudgetoidDbContext dbContext) : IExportRea
         // above give: payees.name carries a value converter, so the provider translates the property
         // itself and the NarrativeField exists only once the row has materialized.
         //
-        // name_key is deliberately not among the members - the omission EVERY set carrying a blind index
-        // makes here, for the argument ExportedAccount already carries — a per-budget fingerprint of a
-        // name is
-        // derivable by anybody holding the index key, which is exactly who can read this file, and
-        // meaningless to anybody who is not.
+        // name_key and rotation_id are deliberately not among the members - the blind index for the
+        // argument ExportedAccount already carries, an omission EVERY set carrying one makes here, and
+        // the stamp for the reason ExportedBudget gives about its own. A per-budget fingerprint of a
+        // name is derivable by anybody holding the index key, which is exactly who can read this file,
+        // and meaningless to anybody who is not.
         var payeeRows = await dbContext.Payees
             .AsNoTracking()
             .OrderBy(payee => payee.CreatedAtUtc)

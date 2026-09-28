@@ -393,7 +393,7 @@ So a ninth narrative column reaches the export's opener only once somebody adds 
 lists; until then the export's decoder refuses the new member as undeclared, and every export
 answers `unrecognised` ([export.md](../business-logic/export.md)).
 
-## Adding a column edits the inventory and nothing else
+## Adding a column edits the inventory and no coverage test's list
 
 That property is held by there being one enumerator and one classification, not by anybody
 remembering. Two coverage tests used to carry their own walk over the design-time model, and a third
@@ -427,38 +427,54 @@ no name of any of the eight appears in a case that checks it. Which **cap** it e
 exception, and on a *new* column no tier judges the number: this gate accepts a band naming either,
 and the catalog snapshot reports the unfamiliar constraint as an unexpected item, which is answered
 by pasting in its rendered text with the cap already in it. So adding a column still edits the
-inventory and nothing else, and the cap it was given is a line in a diff somebody approves rather
-than a rule anything checks.
+inventory and no coverage test's list, and the cap it was given is a line in a diff somebody
+approves rather than a rule anything checks. The export gate below is the one that can ask for more
+than a classification, and it names what it wants.
 
 ## The export is judged against the inventory in both directions
 
 The obligations table says *narrative* and *arithmetic* must be in the export and *excluded* must be
 absent. `DataExportInventoryTests` is where that stops being a sentence. It signs one account in,
-seeds a row of every exported table over the API, takes the export, and compares the document with
-the database the container superuser reads back.
+seeds the rows every exported table needs, takes the export, and compares the document with the
+database the container superuser reads back.
 
-- **Rows are found by their `id` value, never by where they sit.** Each object in the document whose
-  `id` is the canonical text of a row's `uuid` is that row. So no table name, path or member count
-  appears in an assertion, and a column added to an exported table is checked the day it is
-  classified, with nothing in the test edited. A path map was the obvious alternative, and it is the
-  edit NFR-023 says adding a table must not need.
+- **Rows are found by their primary key, never by where they sit.** Each table's key comes from the
+  model, and an object belongs to the table one of whose rows it agrees with on every key column,
+  in the wire's exact form. Where several tables match — a budget carries the `userId` that keys
+  `factor_manifests` — the object goes to the one whose columns cover every key it carries, and
+  failing that to the one whose owed set is exactly its keys; anything still unsettled is reported
+  by name. So no table name, row path or member count appears in an assertion — the one literal is
+  the root's `schemaVersion` — and a column added to an exported table is *detected* the day it is
+  classified. A path map was the obvious alternative, and it is the edit NFR-023 says adding a table
+  must not need. The tie-breaks meet no live case the two export tests can see today, so a third
+  case pins them on tables written by hand.
 - **Present is not enough; the value must be the row's.** Every classified column is compared with
   its row in the one form the wire writes it — exact text for ids, dates, instants, strings and
-  envelopes, exact digits for integers — so a member left at its default, read from the wrong
-  column or written in a second form is red. Money is the one number compared as a number, because
-  `-25` and `-25.0000` are the same amount.
-- **Every classified column is compared on a value, and every nullable one on a null too.** No two
-  classified instant or money columns may share a compared value, because a shared value cannot say
-  which column the export read.
+  envelopes, exact digits for integers — so a member left at its default or written in a second
+  form is red. Money is the one number compared as a number, because `-25` and `-25.0000` are the
+  same amount.
+- **A column read from the wrong source is red wherever the fixture makes the two differ, and a
+  guard makes that a precondition.** Two columns of one table may not be equal on every row, and a
+  value on a one-row table may not appear in a column of another table, because in either case a
+  projection reading one into the other changes nothing. Ids are exempt across tables, since an equal
+  id there is a foreign key naming the row it points at. A swap between two many-row tables is not
+  guarded — the export reads each table in its own statement, with no join to mix them — and a
+  constant hard-coded to a value the fixture happens to hold is not caught.
+- **Every classified column is compared on a value, and every nullable one on a null too.**
 - **Absence is about keys, not values.** A user id, a registration instant and a currency code
   legitimately repeat in excluded columns, so the search for an excluded *value* would go red on
   the export being right. What is refused is a member naming an excluded column, a member naming no
-  column, an object that is no row of any table, and a row of a table the inventory wholly excludes.
+  column, an object that is no row of any table, and a row of a table the inventory wholly excludes
+  — which, located by key, now includes the tables with no `id` of their own.
 
-**The seeding is the one authored half, the same shape as the narrative census above.** A new
-exported table, or a nullable column no route writes, needs a line in the test's fixture — and the
-non-vacuity guards go red until it has one, naming the column. Seeding cannot be derived: it goes
-through the API so the domain's validation runs.
+**The seeding is the one authored half, the same shape as the narrative census above.** The account
+and its budget come from the test host's direct seed; the budget-owned rows go through the create
+routes, so the domain's validation runs on them; the superuser fills the columns no route writes.
+Detecting a new column costs no edit. Getting back to green can cost one, and the red names which:
+a create route that now requires the column refuses the fixture's request; a nullable column no
+route writes needs a fill; a column equal to a sibling on every row needs one row that differs; and
+a column of a type the comparer has no arm for needs the arm, pinned by the case that holds the
+others.
 
 **What it does not reach.** Where a row sits and in what order; another tenant's rows, which
 `DataExportTenancyTests` owns; the `schemaVersion` value; the scale money is written at; an excluded
@@ -491,9 +507,10 @@ the gate goes red in one commit, and the fix is not one commit.
   a rule — `Compare_AgainstColumnsCarryingTheOtherFieldClassesCap_AcceptsBoth` — so a red there is
   somebody's fix and the remedy is to delete the case.
 - `DataExportInventoryTests` — the FR-009 gate: every narrative and arithmetic column in the export
-  with its row's value, every excluded one absent, and a third case pinning the comparer's arms to
-  the one wire form of each column type on values written by hand, because the fixture reaches only
-  the types the schema has today.
+  with its row's value, every excluded one absent, and three cases over values written by hand:
+  the comparer's arms against the one wire form of each column type, the primary-key locator's
+  tie-breaks, and the guard that refuses two columns no row can tell apart — because the fixture
+  reaches only the types, keys and collisions the schema has today.
 - `EnvelopeBudgetingIsolationTests` — the CON-005 gate over `Application.Budgeting.*` and
   `Domain.Budgeting.*`, the pin on its subject being empty, and eleven controls over synthetic
   subjects in the test assembly: the body read, the declaration, a clean computation, a
