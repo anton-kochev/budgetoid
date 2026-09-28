@@ -38,10 +38,12 @@ namespace IntegrationTests;
 /// </para>
 /// <para>
 /// <b>What a green run does not cover</b>, so nobody infers it: a value re-encoded in a way
-/// <see cref="LogNeedle" /> does not render (a JWT's base64url payload is one — the email inside a token
-/// is not the email's own bytes), a record a provider writes outside <c>ILogger</c> (stdout, an
-/// <c>EventSource</c>, an OTLP exporter's own path), and a branch of a route this traffic reaches
-/// without taking. Which routes it reaches is a floor below, over the host's own route table.
+/// <see cref="LogNeedle" /> does not render (a JWT's base64url payload is one — every token the traffic
+/// sends is itself a needle, whole, signed part and payload, but the email inside a token is not the
+/// email's own bytes, so a token this traffic did not send is not found by the address it carries), a
+/// value one traffic step writes and deletes inside itself, which no snapshot sees, a record a
+/// provider writes outside <c>ILogger</c> (stdout, an <c>EventSource</c>, an OTLP exporter's own
+/// path), and a branch of a route this traffic reaches without taking. Which routes it reaches is a floor below, over the host's own route table.
 /// </para>
 /// </remarks>
 public sealed class LogRedactionTests
@@ -65,6 +67,22 @@ public sealed class LogRedactionTests
     /// </remarks>
     private static readonly IReadOnlyDictionary<string, string> UndrivenRoutes =
         new Dictionary<string, string>(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Narrative columns the inventory fill is allowed to write, each with the reason no route of the
+    /// traffic writes it.
+    /// </summary>
+    /// <remarks>
+    /// The fill is a backstop, not a way to reach a column: a value it writes has come through no write
+    /// route, so the write route's own logging was never searched. Pinned both ways — a column the fill
+    /// writes that is not here is a column whose write route the traffic skipped, and an entry the fill
+    /// no longer writes has gained a route and is owed its removal.
+    /// </remarks>
+    private static readonly IReadOnlyDictionary<string, string> FilledWithoutAWriteRoute =
+        new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["budgets.name"] = "no write route; the budget is created with the account",
+        };
 
     [Test]
     public async Task LogRecords_CarryNoValueOfANeverLoggedColumn()
@@ -90,15 +108,18 @@ public sealed class LogRedactionTests
         RsaSecurityKey signingKey = new(rsa) { KeyId = "log-census" };
         ApiFactory bearer = CreateRealBearerFactory(host, bearerRecorder, signingKey);
 
-        // Act — the traffic, snapshotting the stored values before every step that replaces or erases
-        // one; then the factories disposed so a record written at shutdown is in the snapshot; then the
-        // values as they stand at the end.
+        // Act — the traffic, snapshotting the stored values after every step; then the factories
+        // disposed so a record written at shutdown is in the snapshot; then the values as they stand at
+        // the end.
         List<StoredValue> stored = [];
         List<string> moments = [];
+        System.Diagnostics.Stopwatch snapshotTime = new();
         async Task SnapshotAsync(string moment)
         {
+            snapshotTime.Start();
             moments.Add(moment);
             stored.AddRange(await ReadStoredValuesAsync(host.ConnectionString));
+            snapshotTime.Stop();
         }
 
         LogCensusTraffic.Run run;
@@ -132,7 +153,7 @@ public sealed class LogRedactionTests
                 .Order(StringComparer.Ordinal),
         ];
 
-        Report(run, bearerRun, moments, appRecords, bearerRecords, columns, needles, offences, declared, undriven);
+        Report(run, bearerRun, moments, snapshotTime.Elapsed, appRecords, bearerRecords, columns, needles, offences, declared, undriven);
 
         // Assert — the precondition on the needles first: a short one matches harmless text by chance.
         string[] shortNeedles =
@@ -150,6 +171,16 @@ public sealed class LogRedactionTests
         // Non-vacuity, every narrative column held a value before the reads and the export ran, so they
         // had it to carry. A column here is on a table nothing in LogCensusTraffic writes a row into.
         await Assert.That(run.EmptyBeforeTheReads).IsEmpty();
+
+        // The fill wrote exactly the columns that have no write route, and no other.
+        await Assert.That(run.FilledFromTheInventory.Except(FilledWithoutAWriteRoute.Keys, StringComparer.Ordinal).ToArray())
+            .IsEmpty()
+            .Because("the traffic left these narrative columns for the inventory fill to write, so their write "
+                     + "route's logging was never searched; drive the write route in LogCensusTraffic");
+        await Assert.That(FilledWithoutAWriteRoute.Keys.Except(run.FilledFromTheInventory, StringComparer.Ordinal).ToArray())
+            .IsEmpty()
+            .Because("the traffic now writes these columns through a route, so the fill no longer does; "
+                     + "remove them from FilledWithoutAWriteRoute");
 
         // Non-vacuity, every column: a column the database never held a value for was searched for
         // nothing but what the traffic happened to send.
@@ -336,7 +367,7 @@ public sealed class LogRedactionTests
     }
 
     /// <summary>
-    /// Records the main host must reach. Measured at 6,965 and 6,973; set well below, because its job is to tell
+    /// Records the main host must reach. Measured at 7,279; set well below, because its job is to tell
     /// "the recorder saw the host" from "it saw nothing", not to pin a count every new route would move.
     /// </summary>
     private const int AppRecordFloor = 1000;
@@ -346,7 +377,7 @@ public sealed class LogRedactionTests
 
     /// <summary>
     /// Routes the table must declare, so an enumeration that found nothing cannot pass the route floor
-    /// by having nothing to demand. Measured at 49.
+    /// by having nothing to demand. Measured at 50, counting <c>* /health</c>.
     /// </summary>
     private const int DeclaredRouteFloor = 40;
 
@@ -490,6 +521,7 @@ public sealed class LogRedactionTests
         LogCensusTraffic.Run run,
         LogCensusTraffic.BearerRun bearerRun,
         IReadOnlyList<string> moments,
+        TimeSpan snapshotTime,
         IReadOnlyList<CapturedLogRecord> appRecords,
         IReadOnlyList<CapturedLogRecord> bearerRecords,
         IReadOnlyList<ColumnNeedles> columns,
@@ -501,7 +533,7 @@ public sealed class LogRedactionTests
         Console.WriteLine($"Main host: {appRecords.Count} records. Bearer host: {bearerRecords.Count} records.");
         Console.WriteLine($"Filled from the inventory: {string.Join(", ", run.FilledFromTheInventory)}");
         Console.WriteLine($"Empty before the reads: {string.Join(", ", run.EmptyBeforeTheReads)}");
-        Console.WriteLine($"Snapshots: {string.Join(" | ", moments)}");
+        Console.WriteLine($"Snapshots: {moments.Count}, {snapshotTime.TotalMilliseconds:F0} ms in all.");
         foreach (ColumnNeedles column in columns)
         {
             Console.WriteLine(

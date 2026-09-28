@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Nodes;
 using Application.Passkeys;
+using Domain.Security;
 using Domain.Users;
 using Infrastructure.Persistence.Inventory;
 using Microsoft.IdentityModel.JsonWebTokens;
@@ -25,7 +26,10 @@ namespace IntegrationTests;
 /// searched without an edit here. But a value that was refused, or replaced, or erased never stands in
 /// the database when the census reads it — so this class reports every identifying value it
 /// <i>sent</i> (<see cref="SentValue" />), labelled with the column it would have filled, and calls the
-/// census back (<c>snapshot</c>) before each step that replaces or deletes a stored value.
+/// census back (<c>snapshot</c>) after every step. After every step rather than before the ones known
+/// to replace or delete, so a step added later cannot take a value away unseen. The limit is the
+/// step: a value one step writes and deletes inside itself is never read back, which is why the
+/// second budget's seed and its removal are two steps.
 /// </para>
 /// <para>
 /// <b>Narrative columns with no write route are filled from the inventory, not by name.</b>
@@ -166,8 +170,8 @@ internal static class LogCensusTraffic
     /// <paramref name="recorder" /> and both authentication flags.
     /// </summary>
     /// <param name="snapshot">
-    /// Called, with the moment's name, before every step that replaces or deletes a stored value, so the
-    /// census can read the value while it still stands.
+    /// Called, with the moment's name, after every step, so the census reads each stored value while it
+    /// still stands, whichever later step replaces or deletes it.
     /// </param>
     public static async Task<Run> DriveAsync(
         PostgresTestHost host,
@@ -190,13 +194,17 @@ internal static class LogCensusTraffic
         uint signCount = 0;
         uint NextSignCount() => ++signCount;
 
+        // Every step is followed by a snapshot, so a value a step stores and a later step replaces or
+        // deletes is still a needle — whichever later step it is.
+        Task Step(string name, Func<List<int>, Task> act) => StepAsync(steps, recorder, name, act, snapshot);
+
         // Registration with a marker email and subject — the one creating path.
         Guid accountId = Guid.Empty;
         string cookie = string.Empty;
         IReadOnlyList<string> verifiers = [];
         sent.Add(SentValue.OfText("credentials", "subject", subject));
         sent.Add(SentValue.OfText("users", "email", email));
-        await StepAsync(steps, recorder, "registration", async statuses =>
+        await Step("registration", async statuses =>
         {
             using HttpClient provider = factory.CreateAuthenticatedClient(subject, email);
             RegistrationCeremonyResult registered = await RegistrationCeremony.RegisterAsync(provider, device);
@@ -208,34 +216,36 @@ internal static class LogCensusTraffic
         });
 
         // The same email under a new subject, then the same subject under a new email: each is refused,
-        // and the half that is new is never stored — so only the sent list makes it a needle.
+        // and the half that is new is never stored — so only the sent list makes it a needle. The
+        // duplicate-email attempt reaches the finish leg, so the handle its authenticator minted is sent
+        // and refused too, and goes on the list the same way.
         string refusedSubject = Marker("refused-subject");
         string refusedEmail = $"{Marker("refused-email")}@example.test";
         sent.Add(SentValue.OfText("credentials", "subject", refusedSubject));
         sent.Add(SentValue.OfText("users", "email", refusedEmail));
-        await StepAsync(steps, recorder, "registration, duplicate email", async statuses =>
-            statuses.AddRange(await AttemptRegistrationAsync(factory, refusedSubject, email)));
-        await StepAsync(steps, recorder, "registration, duplicate subject", async statuses =>
-            statuses.AddRange(await AttemptRegistrationAsync(factory, subject, refusedEmail)));
+        await Step("registration, duplicate email", async statuses =>
+            statuses.AddRange(await AttemptRegistrationAsync(factory, refusedSubject, email, sent)));
+        await Step("registration, duplicate subject", async statuses =>
+            statuses.AddRange(await AttemptRegistrationAsync(factory, subject, refusedEmail, sent)));
 
         using HttpClient client = CookieClient(factory, cookie);
         using HttpClient anonymous = factory.CreateClient();
 
-        await StepAsync(steps, recorder, "passkey sign-in", async statuses =>
+        await Step("passkey sign-in", async statuses =>
             statuses.Add(await SignInAsync(anonymous, device, accountId, NextSignCount(), tamper: false)));
 
         // Refused on its signature; the counter it reported is not stored, but it is spent here anyway so
         // no later assertion depends on whether a refusal advances it.
-        await StepAsync(steps, recorder, "passkey sign-in, tampered signature", async statuses =>
+        await Step("passkey sign-in, tampered signature", async statuses =>
             statuses.Add(await SignInAsync(anonymous, device, accountId, NextSignCount(), tamper: true)));
 
         // A handle no account holds: refused before it could be stored anywhere.
         SyntheticAuthenticator stranger = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         sent.Add(SentValue.OfBytes("passkey_public_keys", "webauthn_credential_id", stranger.CredentialId));
-        await StepAsync(steps, recorder, "passkey sign-in, unregistered handle", async statuses =>
+        await Step("passkey sign-in, unregistered handle", async statuses =>
             statuses.Add(await SignInAsync(anonymous, stranger, accountId, signCount: 1, tamper: false)));
 
-        await StepAsync(steps, recorder, "recovery-code redemption, wrong verifier", async statuses =>
+        await Step("recovery-code redemption, wrong verifier", async statuses =>
         {
             HttpResponseMessage response = await anonymous.PostAsJsonAsync(
                 RedemptionPath,
@@ -244,7 +254,7 @@ internal static class LogCensusTraffic
         });
 
         // A code off the card: a session of its own, then signed out again.
-        await StepAsync(steps, recorder, "recovery-code redemption, then sign-out", async statuses =>
+        await Step("recovery-code redemption, then sign-out", async statuses =>
         {
             HttpResponseMessage redeemed = await anonymous.PostAsJsonAsync(
                 RedemptionPath, new Dictionary<string, string> { ["verifier"] = verifiers[0] });
@@ -260,7 +270,7 @@ internal static class LogCensusTraffic
 
         NarrativeRows? written = null;
         NarrativeRows? toDelete = null;
-        await StepAsync(steps, recorder, "narrative writes", async statuses =>
+        await Step("narrative writes", async statuses =>
         {
             written = await WriteNarrativeRowsAsync(client, statuses);
             toDelete = await WriteNarrativeRowsAsync(client, statuses);
@@ -268,22 +278,33 @@ internal static class LogCensusTraffic
         NarrativeRows kept = written ?? throw new InvalidOperationException("The narrative writes step wrote nothing.");
         NarrativeRows doomed = toDelete ?? throw new InvalidOperationException("The narrative writes step wrote nothing.");
 
-        await StepAsync(steps, recorder, "payee, duplicate nameKey", async statuses =>
+        // One name sealed twice. A browser draws a fresh nonce for every seal, so the refused attempt's
+        // envelope differs from the stored one while its index is equal. SealedNarrative is deterministic
+        // in its label, so each attempt gets an unrelated label — one sharing a long prefix would share
+        // a 16-byte window with the stored envelope and be found by accident. The refused envelope is
+        // never stored, so only the sent list makes it a needle.
+        await Step("payee, duplicate nameKey", async statuses =>
         {
             string label = Marker("payee");
             for (int attempt = 0; attempt < 2; attempt++)
             {
+                NarrativeField envelope = SealedNarrative.Name($"{Guid.NewGuid():N}-payee-seal");
+                if (attempt > 0)
+                {
+                    sent.Add(SentValue.OfBytes("payees", "name", envelope.Envelope.ToArray()));
+                }
+
                 HttpResponseMessage response = await client.PostAsJsonAsync("/api/payees", new
                 {
                     id = Guid.CreateVersion7().ToString("D"),
-                    name = SealedNarrative.EncodedName(label),
+                    name = Base64UrlText.Encode(envelope.Envelope.Span),
                     nameKey = SealedNarrative.EncodedIndex(label),
                 });
                 statuses.Add((int)response.StatusCode);
             }
         });
 
-        await StepAsync(steps, recorder, "single reads", async statuses =>
+        await Step("single reads", async statuses =>
         {
             foreach (string path in new[]
                      {
@@ -296,12 +317,10 @@ internal static class LogCensusTraffic
             }
         });
 
-        await snapshot("before the updates and the deletes");
-
-        await StepAsync(steps, recorder, "narrative updates", async statuses =>
+        await Step("narrative updates", async statuses =>
             await UpdateNarrativeRowsAsync(client, kept, statuses));
 
-        await StepAsync(steps, recorder, "narrative deletes", async statuses =>
+        await Step("narrative deletes", async statuses =>
         {
             foreach (string path in new[]
                      {
@@ -315,7 +334,7 @@ internal static class LogCensusTraffic
 
         SyntheticAuthenticator second = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         sent.Add(SentValue.OfBytes("passkey_public_keys", "webauthn_credential_id", second.CredentialId));
-        await StepAsync(steps, recorder, "add passkey", async statuses =>
+        await Step("add passkey", async statuses =>
             statuses.AddRange(await AddPasskeyAsync(client, second)));
 
         // The same authenticator enrolled a second time. Nothing refuses it before the save — the options
@@ -325,10 +344,10 @@ internal static class LogCensusTraffic
         // security, so the unique violation is the one place a stored handle can come back from the
         // server inside an exception; the census has to see that exception reach a record. The handle is
         // already on the sent list from the step above.
-        await StepAsync(steps, recorder, DuplicateHandleStep, async statuses =>
+        await Step(DuplicateHandleStep, async statuses =>
             statuses.AddRange(await AddPasskeyAsync(client, second)));
 
-        await StepAsync(steps, recorder, "recovery-code regeneration", async statuses =>
+        await Step("recovery-code regeneration", async statuses =>
         {
             AssertionResult assertion = await ReauthenticateAsync(client, device, accountId, NextSignCount());
             HttpResponseMessage response = await client.PostAsJsonAsync(RecoveryCodesPath, new
@@ -345,9 +364,7 @@ internal static class LogCensusTraffic
             statuses.Add((int)response.StatusCode);
         });
 
-        await snapshot("before the revocation and the rotation");
-
-        await StepAsync(steps, recorder, "passkey revocation", async statuses =>
+        await Step("passkey revocation", async statuses =>
         {
             Guid revoked = await CredentialIdOfHandleAsync(host.ConnectionString, second.CredentialId);
             AssertionResult assertion = await ReauthenticateAsync(client, device, accountId, NextSignCount());
@@ -365,7 +382,7 @@ internal static class LogCensusTraffic
         });
 
         Guid rotationId = Guid.CreateVersion7();
-        await StepAsync(steps, recorder, "key rotation, begin", async statuses =>
+        await Step("key rotation, begin", async statuses =>
         {
             IReadOnlyList<Guid> factorIds = await FactorIdsAsync(host.ConnectionString, accountId);
             AssertionResult assertion = await ReauthenticateAsync(client, device, accountId, NextSignCount());
@@ -390,20 +407,20 @@ internal static class LogCensusTraffic
             statuses.Add((int)response.StatusCode);
         });
 
-        await StepAsync(steps, recorder, "key rotation, chunk", async statuses =>
+        await Step("key rotation, chunk", async statuses =>
         {
             object chunk = await ResealEveryRowAsync(host.ConnectionString, accountId, rotationId);
             statuses.Add((int)(await client.PostAsJsonAsync($"{RotationPath}/chunks", chunk)).StatusCode);
         });
 
-        await StepAsync(steps, recorder, "key rotation, completion", async statuses =>
+        await Step("key rotation, completion", async statuses =>
             statuses.Add((int)(await client.PostAsJsonAsync($"{RotationPath}/completion", new { rotationId })).StatusCode));
 
         Fill fill = new([], []);
-        await StepAsync(steps, recorder, "fill empty narrative columns from the inventory", async _ =>
+        await Step("fill empty narrative columns from the inventory", async _ =>
             fill = await FillEmptyNarrativeColumnsAsync(host.ConnectionString));
 
-        await StepAsync(steps, recorder, "list reads", async statuses =>
+        await Step("list reads", async statuses =>
         {
             foreach (string path in new[]
                      {
@@ -418,14 +435,17 @@ internal static class LogCensusTraffic
             {
                 statuses.Add((int)(await client.GetAsync(path)).StatusCode);
             }
+
+            // The health route names no method and needs no session, so it is read without one.
+            statuses.Add((int)(await anonymous.GetAsync(ServiceDefaults.Extensions.HealthPath)).StatusCode);
         });
 
-        await StepAsync(steps, recorder, "export", async statuses =>
+        await Step("export", async statuses =>
             statuses.Add((int)(await client.GetAsync(ExportPath)).StatusCode));
 
         // A body the JSON reader refuses part-way, after it has read an envelope's wire text and the
         // email — which is what a parser error that quoted its input would repeat.
-        await StepAsync(steps, recorder, MalformedBodyStep, async statuses =>
+        await Step(MalformedBodyStep, async statuses =>
         {
             string body = $"{{\"id\":\"{Guid.CreateVersion7():D}\",\"name\":\"{kept.AccountNameWire}\","
                           + $"\"email\":\"{email}\",\"type\":";
@@ -439,7 +459,7 @@ internal static class LogCensusTraffic
         string faultEmail = $"{Marker("email")}@example.test";
         sent.Add(SentValue.OfText("credentials", "subject", faultSubject));
         sent.Add(SentValue.OfText("users", "email", faultEmail));
-        await StepAsync(steps, recorder, "forced 500, recovery codes with no factor manifest", async statuses =>
+        await Step("forced 500, recovery codes with no factor manifest", async statuses =>
             statuses.Add(await IssueCardWithNoManifestAsync(host, factory, faultSubject, faultEmail)));
 
         // A fault: the export refuses an owned set that is not exactly the ambient budget.
@@ -447,17 +467,19 @@ internal static class LogCensusTraffic
         // erasure: an erasure over two owned budgets deletes the ambient budget's transactions only and
         // then fails the cascade on FK_transactions_budgets_budget_id (measured), which is a 500 about
         // the seed rather than the erasure the census wants driven.
-        await StepAsync(steps, recorder, "forced 500, export over two budgets", async statuses =>
+        Guid seeded = Guid.Empty;
+        await Step("forced 500, export over two budgets", async statuses =>
         {
-            Guid seeded = await RepositoryTestHost.SeedAdditionalBudgetOnAsync(
+            seeded = await RepositoryTestHost.SeedAdditionalBudgetOnAsync(
                 host.ConnectionString, accountId, Marker("budget"));
             statuses.Add((int)(await client.GetAsync(ExportPath)).StatusCode);
-            await DeleteBudgetAsync(host.ConnectionString, seeded);
         });
 
-        await snapshot("before the erasure");
+        // Its own step, so the snapshot after the one above reads the seeded budget while it stands.
+        await Step("take the second budget away again", async _ =>
+            await DeleteBudgetAsync(host.ConnectionString, seeded));
 
-        await StepAsync(steps, recorder, ErasureStep, async statuses =>
+        await Step(ErasureStep, async statuses =>
         {
             AssertionResult assertion = await ReauthenticateAsync(client, device, accountId, NextSignCount());
             HttpResponseMessage response = await client.PostAsJsonAsync(ErasurePath, new
@@ -500,11 +522,25 @@ internal static class LogCensusTraffic
         sent.Add(SentValue.OfText("credentials", "subject", registeredSubject));
         sent.Add(SentValue.OfText("users", "email", registeredEmail));
 
+        // A token carries the subject and the address as base64url JSON, which no needle renders — so
+        // the token itself is the needle: whole, signed part, and payload alone, each filed under the
+        // subject it carries. Every token this traffic sends goes through here, the forged one included.
+        string Sent(string token)
+        {
+            int signatureDot = token.LastIndexOf('.');
+            string[] segments = token.Split('.');
+            sent.Add(SentValue.OfText("credentials", "subject", token));
+            sent.Add(SentValue.OfText("credentials", "subject", token[..signatureDot]));
+            sent.Add(SentValue.OfText("credentials", "subject", segments[1]));
+
+            return token;
+        }
+
         // Both registration legs name the provider scheme and nothing else, so a 2xx on either is the
         // bearer handler having validated the token.
         await StepAsync(steps, recorder, ValidatedTokenStep, async statuses =>
         {
-            using HttpClient client = BearerClient(factory, ProviderToken(signingKey, freshSubject, freshEmail));
+            using HttpClient client = BearerClient(factory, Sent(ProviderToken(signingKey, freshSubject, freshEmail)));
             HttpResponseMessage optionsResponse = await client.PostAsync(RegistrationCeremony.OptionsPath, content: null);
             statuses.Add((int)optionsResponse.StatusCode);
             if (!optionsResponse.IsSuccessStatusCode)
@@ -527,15 +563,15 @@ internal static class LogCensusTraffic
 
         await StepAsync(steps, recorder, "provider token, validated, registered identity", async statuses =>
         {
-            using HttpClient client = BearerClient(factory, ProviderToken(signingKey, registeredSubject, registeredEmail));
+            using HttpClient client = BearerClient(factory, Sent(ProviderToken(signingKey, registeredSubject, registeredEmail)));
             statuses.Add((int)(await client.PostAsync(RegistrationCeremony.OptionsPath, content: null)).StatusCode);
         });
 
         // The same header and payload a valid token carries, and random bytes where its signature was.
         await StepAsync(steps, recorder, ForgedTokenStep, async statuses =>
         {
-            string valid = ProviderToken(signingKey, registeredSubject, registeredEmail);
-            string forged = $"{valid[..valid.LastIndexOf('.')]}.{Base64UrlText.Encode(RandomNumberGenerator.GetBytes(256))}";
+            string valid = Sent(ProviderToken(signingKey, registeredSubject, registeredEmail));
+            string forged = Sent($"{valid[..valid.LastIndexOf('.')]}.{Base64UrlText.Encode(RandomNumberGenerator.GetBytes(256))}");
             using HttpClient client = BearerClient(factory, forged);
             statuses.Add((int)(await client.PostAsync(RegistrationCeremony.OptionsPath, content: null)).StatusCode);
         });
@@ -594,12 +630,18 @@ internal static class LogCensusTraffic
         List<Step> steps,
         LogRecorder recorder,
         string name,
-        Func<List<int>, Task> act)
+        Func<List<int>, Task> act,
+        Func<string, Task>? snapshot = null)
     {
         int before = recorder.Snapshot().Count;
         List<int> statuses = [];
         await act(statuses);
         steps.Add(new Step(name, statuses, [.. recorder.Snapshot().Skip(before)]));
+
+        if (snapshot is not null)
+        {
+            await snapshot($"after '{name}'");
+        }
     }
 
     private static HttpClient CookieClient(ApiFactory factory, string cookie)
@@ -640,8 +682,15 @@ internal static class LogCensusTraffic
         });
     }
 
-    /// <summary>Runs a registration that is expected to be refused, and returns every status it met.</summary>
-    private static async Task<IReadOnlyList<int>> AttemptRegistrationAsync(ApiFactory factory, string subject, string email)
+    /// <summary>
+    /// Runs a registration that is expected to be refused, and returns every status it met. A handle the
+    /// attempt sends to the finish leg is added to <paramref name="sent" />.
+    /// </summary>
+    private static async Task<IReadOnlyList<int>> AttemptRegistrationAsync(
+        ApiFactory factory,
+        string subject,
+        string email,
+        List<SentValue> sent)
     {
         using HttpClient provider = factory.CreateAuthenticatedClient(subject, email);
         HttpResponseMessage options = await provider.PostAsync(RegistrationCeremony.OptionsPath, content: null);
@@ -656,6 +705,7 @@ internal static class LogCensusTraffic
         SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
         AttestationResult attestation = device.Register(
             challenge, ApiFactory.PasskeyOrigin, signCount: 0, prfEnabled: true, userHandle: userHandle);
+        sent.Add(SentValue.OfBytes("passkey_public_keys", "webauthn_credential_id", device.CredentialId));
         HttpResponseMessage finished = await RegistrationCeremony.PostAsync(
             provider,
             attestation,

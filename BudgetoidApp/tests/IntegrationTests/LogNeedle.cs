@@ -59,6 +59,9 @@ public enum LogNeedleKind
 
     /// <summary>A 16-byte window of the value as base64url.</summary>
     Base64UrlWindow,
+
+    /// <summary>A 16-byte window of the value as hex, either case.</summary>
+    HexWindow,
 }
 
 /// <summary>
@@ -140,7 +143,7 @@ public sealed record LogNeedle(string Source, LogNeedleKind Kind, string Value, 
 
     /// <summary>
     /// A binary value in every rendering a log record could carry it in: whole, truncated the way EF
-    /// truncates it, and in 16-byte windows for a record that carried only part of it.
+    /// truncates it, and in 16-byte windows, base64 and hex, for a record that carried only part of it.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -149,7 +152,12 @@ public sealed record LogNeedle(string Source, LogNeedleKind Kind, string Value, 
     /// so it is not a substring of the longer rendering the window was taken from.
     /// </para>
     /// <para>
-    /// Base64 is compared ordinally; hex is compared ignoring case, so one needle covers both cases.
+    /// A window's hex needs no such cut, since every byte is two characters of its own; one needle
+    /// per offset, compared ignoring case, covers both cases.
+    /// </para>
+    /// <para>
+    /// Base64 is compared ordinally. The whole value's hex is one needle per case; the truncated and
+    /// windowed hex are compared ignoring case.
     /// </para>
     /// </remarks>
     public static IReadOnlyList<LogNeedle> ForBytes(string source, byte[] value)
@@ -189,6 +197,11 @@ public sealed record LogNeedle(string Source, LogNeedleKind Kind, string Value, 
                 LogNeedleKind.Base64UrlWindow,
                 Base64Url.EncodeToString(window)[..determinedCharacters],
                 StringComparison.Ordinal));
+            needles.Add(new(
+                source,
+                LogNeedleKind.HexWindow,
+                Convert.ToHexString(window),
+                StringComparison.OrdinalIgnoreCase));
         }
 
         return needles;

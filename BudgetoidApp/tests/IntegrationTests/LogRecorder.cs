@@ -116,6 +116,11 @@ public sealed class LogRecorder : ILoggerProvider, ISupportExternalScope
     /// A value as a structured sink could render it: its own text, and — for bytes — the two
     /// encodings a JSON or OTLP exporter would reach for.
     /// </summary>
+    /// <remarks>
+    /// Any sequence of bytes is rendered as bytes, not only an array: an <c>ArraySegment</c>, an
+    /// <c>ImmutableArray</c> or a list of bytes is what a call site holds as often. That arm has to come
+    /// before the general sequence arm, which would render each byte as a number.
+    /// </remarks>
     private static string Render(object? value) => value switch
     {
         null => string.Empty,
@@ -123,6 +128,7 @@ public sealed class LogRecorder : ILoggerProvider, ISupportExternalScope
         byte[] bytes => RenderBytes(bytes),
         ReadOnlyMemory<byte> memory => RenderBytes(memory.ToArray()),
         Memory<byte> memory => RenderBytes(memory.ToArray()),
+        IEnumerable<byte> bytes => RenderBytes([.. bytes]),
         IEnumerable sequence => string.Join(
             " ",
             sequence.Cast<object?>()

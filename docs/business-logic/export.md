@@ -154,8 +154,9 @@ is where a table joining this list has to earn its place.
   `DataExportRefusalTests.Export_ForAnOwnerOfASecondBudget_IsRefusedWithoutABody` and its answered
   control. The [log census](../engineering/log-redaction.md) drives the same refusal as one of its
   two forced 500s and searches the record `GlobalExceptionHandler` writes for it, exception chain
-  and `Data` included, for every value it never logs — the address and every narrative value among
-  them.
+  and `Data` included, for the never-logged values standing at a step boundary, plus the values the
+  traffic sent. The seeded second budget's name is one of them, because its removal is a step of
+  its own.
 - **Example**: an owner of only the budget registration created gets the complete document and a
   `200`. Handed a second budget out of band, the same person gets a bodyless `500` on every export
   until it can read both.
@@ -289,8 +290,8 @@ is where a table joining this list has to earn its place.
 - **Why**: this handler holds every transaction a person has recorded plus the address they signed
   up with. One `LogDebug` of the document, or of the id it was assembled for, copies the lot into a
   sink with a different retention policy and audience from the database it came from — and nothing
-  in the product consumes a log line from this path, so there is nothing to trade against. A stored row is
-  worse: a job record, an `exported_at` column or an audit table is a remnant an
+  in the product consumes a log line from this path, so there is nothing to trade against. A stored
+  row is worse: a job record, an `exported_at` column or an audit table is a remnant an
   [erasure](erasure.md) would have to destroy, and a table carrying neither `budget_id` nor
   `user_id` fails `RlsCoverageTests` and the deploy-time verifier at once.
 - **Enforced in**: `ExportDataHandlerTests.TheHandlerThatAssemblesAnExport_TakesNoLoggerDependency`,
@@ -299,10 +300,10 @@ is where a table joining this list has to earn its place.
   `DataExportEndpoints`, which lives in `Api` and which `UnitTests.csproj` deliberately does not
   reference, and not the framework, which logs on its own. The
   [log census](../engineering/log-redaction.md) reaches both of those on this route, for a narrower
-  claim: it drives the export and its refusal and finds no address and no narrative value in any
-  record written while serving them. It searches for no identifier, because its own rule permits
-  `users.id`, so the "no identifier" half of this rule is still held by the reflection test, over
-  the one type it covers.
+  claim: it drives the export and its refusal and finds, in no record written while serving them,
+  an address or a narrative value standing at a step boundary, or one the traffic sent. It
+  searches for no identifier, because its own rule permits `users.id`, so the "no identifier" half
+  of this rule is still held by the reflection test, over the one type it covers.
 - **Source**: `[SOURCE: user-story]`
 
 ---
@@ -728,8 +729,10 @@ ELSE
 - **Every refusal is logged at `LogError` with a stack trace**, by the catch-all handler. "Logs no
   identifier" survives that only because the message names counts — held by the wording, not by a
   mechanism. The log census reads that record and would catch an address or a narrative value in
-  it, but it looks for no id, so an id added to the message would pass it. On the day a second budget becomes creatable, every export turns into an ERROR-level
-  alert: that is the signal the refusal exists to raise, not noise to silence.
+  it — one standing at a step boundary, or one the traffic sent — but it looks for no id, so an id
+  added to the message would pass it. On the day a second budget becomes creatable, every export
+  turns into an ERROR-level alert: that is the signal the refusal exists to raise, not noise to
+  silence.
 - **Money ships as JSON numbers, and the web client's plain `JSON.parse` is exact for them.**
   `amount` and `openingBalance` are unquoted, and .NET writes the decimal's scale (`12.5000`). A
   `numeric(14,4)` value has at most fourteen significant digits and a double round-trips fifteen,

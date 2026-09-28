@@ -258,9 +258,9 @@ each record, `Data` included.
 ### What holds the line: a census over real traffic
 
 `tests/IntegrationTests/LogRedactionTests.cs` drives traffic through real hosts, reads back the
-values every listed column held at four moments, and searches each captured record for each
-rendering of each of them. The rule itself is one assertion — no offences — and the rest of the file
-is what makes that assertion mean something.
+values every listed column held after each step, adds the identifying values the traffic sent, and
+searches each captured record for each rendering of each of them. The rule itself is one assertion
+— no offences — and the rest of the file is what makes that assertion mean something.
 
 **The recorder.** `LogRecorder` is an `ILoggerProvider` and `ISupportExternalScope`. It is enabled
 at `Trace` for every category through a filter rule naming the provider, and a rule naming a
@@ -271,10 +271,15 @@ level rules would drop, so on levels the census is stricter than Production rath
 
 It flattens each record to text **at `Log` time**, because a scope can read a pooled `HttpContext`
 the next request has already reused and an exception's `Data` can be written after the record left;
-a record rendered at snapshot time would describe some later state of the process. What it captures is the formatted message, every template value, every scope with its
-key/value pairs, and the whole exception chain — each exception's text, every inner exception and
-every member of an aggregate, and each `Data` entry. A `byte[]` template value is rendered as base64
-and as hex, because the formatted message alone says `System.Byte[]`.
+a record rendered at snapshot time would describe some later state of the process. What it
+captures is the formatted message, every template value, every scope with its key/value pairs, and
+the whole exception chain — each exception's text, every inner exception and every member of an
+aggregate, and each `Data` entry. **A byte collection is rendered as bytes** — base64 and hex —
+wherever a template value, a scope or a `Data` entry holds one, because the formatted message alone
+says `System.Byte[]`. That covers a `byte[]`, a `Memory<byte>` or `ReadOnlyMemory<byte>`, and any
+other `IEnumerable<byte>`: an `ArraySegment`, an `ImmutableArray`, a `List<byte>`, an
+`IReadOnlyList<byte>`. The byte arms sit ahead of the general sequence arm in `LogRecorder.Render`,
+which would print each byte as a number.
 
 **Two hosts, because one cannot be both.** The main host repoints the provider's bearer scheme at the
 test handler, which is what lets registration run at all — so a token sent there never meets the
@@ -287,28 +292,57 @@ exception.
 
 **The traffic** covers registration and its refused duplicates; a passkey sign-in, one with an
 unregistered handle and one with a tampered signature; a wrong recovery verifier; every narrative
-write, update and delete; the list and by-id reads; the export; a malformed body; adding a passkey,
-regenerating the recovery codes, redeeming one, signing out and revoking a passkey; a key rotation's
-begin, chunk and completion; two forced 500s — issuing codes for an account holding no factor
-manifest, and an export over two owned budgets; and the erasure, last, because it takes the account
-every other step wrote into.
+write, update and delete, and a payee refused for a duplicate blind index; the by-id reads, the list
+reads, the API description and the health check, the last read anonymously; the export; a malformed
+body; adding a passkey, then enrolling the same authenticator again, which must answer exactly
+409; regenerating the recovery codes, redeeming one, signing out and revoking a passkey; a key
+rotation's begin, chunk and completion; two forced 500s — issuing codes for an account holding no
+factor manifest, and an export over two owned budgets, whose seeded second budget is taken away
+again in a step of its own; and the erasure, last, because it takes the account every other step
+wrote into.
 
 **The route floor.** `RouteTally` is a startup filter that records which endpoint each request was
 matched to and what it answered, and a route counts as reached **only on a 2xx** — a 401 selects the
-endpoint too, and counting it would call a route driven whose handler never ran. Every route
-`EndpointDataSource` declares must be reached (49 measured, with a floor on the declared count so an
-enumeration that found nothing cannot pass by demanding nothing), and the exemption list must name
-only routes the table still declares. The list is empty today. The health check carries no method
-metadata, so it is not in the declared set and not counted.
+endpoint too, and counting it would call a route driven whose handler never ran. What is counted is
+every `RouteEndpoint` in the host's `EndpointDataSource`, with or without a method: one
+`METHOD pattern` key per method an endpoint's `HttpMethodMetadata` names, and one `* pattern` key
+for an endpoint carrying no method metadata, which answers any method. A hit on such an endpoint is
+keyed `*` as well, so the two sides agree; `MapHealthChecks` maps one, and the traffic reads
+`GET /health` anonymously to reach it. Every declared key must be reached — 50 declared and 0
+undriven, measured — with a floor on the declared count so an enumeration that found nothing cannot
+pass by demanding nothing, and the exemption list must name only keys the table still declares. The
+list is empty. An endpoint that is not a `RouteEndpoint` is not counted.
 
 **The needles are read back, never written down.** Every value of every column in
-`NeverLoggedColumns.All` is read on the admin connection, so row-level security hides nothing, at
-four moments: before the updates and deletes, before the revocation and the rotation, before the
-erasure, and after the traffic, with the hosts disposed first so a record written at shutdown is in
-the snapshot. The **union** is searched, so a value a later step replaced or erased is still looked
-for. Beside those, the identifying values the traffic **sent** are needles under the column each
-would have filled — including refused ones that were never stored, because a refused duplicate's
-address is exactly what a refusal path would log.
+`NeverLoggedColumns.All` is read on the admin connection, so row-level security hides nothing,
+**after every step** of the main host's traffic and once more after both hosts are disposed — 29
+snapshots, about 210 ms in all (measured). The **union** is searched, so a value a later step
+replaced or erased is still looked for. After every step rather than at chosen moments, so a step
+added later cannot take a value away before it is read. That is why deleting the seeded second
+budget is a step of its own: its name — which the export's 500 path holds, as an `ExportedBudget`
+from `ListOwnedBudgetsAsync`, when it throws — stands at the boundary between the seed and the
+removal. The records are read after the hosts are disposed, so one written at shutdown is searched
+too. The bearer host's three steps are not snapshotted one by one; they get only the final read.
+
+**The limit is the step.** A value a single step writes and deletes within itself stands at no
+boundary and is never read back, so unless the traffic also lists it as sent, it is never searched.
+
+**The identifying values the traffic sent are needles too**, under the column each would have
+filled — including values that were never stored, because a refused value is exactly what a
+refusal path would log. Beside every address and subject the traffic sent, the list includes:
+
+- the WebAuthn handle the refused duplicate-email registration's authenticator minted, which
+  reaches the finish leg and is refused there;
+- the handle no account holds, which the unregistered-handle sign-in sends;
+- the refused duplicate payee's envelope. To model a real client, which draws a fresh nonce for
+  every seal, each attempt is sealed under an unrelated label led by a GUID, so the refused
+  envelope differs from the stored one while its blind index is equal. A label sharing a long
+  prefix would share a 16-byte window with the stored envelope and be found by accident.
+
+**Every provider token the traffic sends is a needle, the forged one included**: the whole
+token, its `header.payload`, and the payload segment alone, each under `credentials.subject`. A
+token needs needles of its own because the address and subject inside it are base64url of JSON,
+and no text rendering models that — the address's own characters are not in the token.
 
 **Each value is searched in every rendering a record could carry it in.**
 
@@ -317,9 +351,10 @@ address is exactly what a refusal path would log.
   by the default and the relaxed encoder; and the SHA-256 hex, in both cases, of the value and of its
   lower-cased form. A hash is a rendering, not a redaction: anybody holding a guessed address can
   join on its digest.
-- *Bytes*: base64, base64url, upper- and lower-case hex, the first 32 bytes as hex, and every 16-byte
-  window at every offset as base64 and base64url, cut to the characters those sixteen bytes fully
-  determine.
+- *Bytes*: base64, base64url, upper- and lower-case hex, and the first 32 bytes as hex; then, at
+  every offset, a 16-byte window as base64 and as base64url, cut to the characters those sixteen
+  bytes fully determine, and as hex (`HexWindow`), which needs no cut because every byte is two
+  characters of its own. The truncated and windowed hex are compared ignoring case.
 
 **The 32-byte hex needle exists because of a measurement.** With EF's sensitive-data logging on, EF
 renders a `byte[]` parameter as its first 32 bytes followed by `...`, so a whole-value needle misses
@@ -336,18 +371,37 @@ hosting and EF categories present; at least two `GlobalExceptionHandler` errors 
 exception; records from both refusal handlers, `PasskeyVerificationExceptionHandler` and
 `RecoveryCodeRedemptionExceptionHandler`; the validated-token and forged-token steps answering as
 described above, each with its handler record; the malformed-body step writing a record that carries
-the parser's exception; every identifying entry sent at least once; every column holding a value at
-some snapshot; and the needles' columns equal, in both directions, to the inventory's narrative
-columns plus `Entries`.
+the parser's exception; the duplicate-handle step answering exactly 409 and the erasure 204; every
+identifying entry sent at least once; every narrative column holding a value before the list reads
+and the export; every column holding a value at some snapshot; and the needles' columns equal, in
+both directions, to the inventory's narrative columns plus `Entries`.
+
+**The fill, and what its pin costs.** Before the list reads and the export,
+`LogCensusTraffic.FillEmptyNarrativeColumnsAsync` writes an envelope into every row of every
+narrative column the inventory names that holds no value in any row, so those reads carry one
+through the app. A value it writes came through no write route, so that route's logging was never
+searched. `FilledWithoutAWriteRoute` in `LogRedactionTests` therefore pins what the fill writes, in
+both directions, to exactly `budgets.name`, with the reason "no write route; the budget is created
+with the account". The cost, plainly: **a new narrative column that some route writes must be
+driven through that route**, which is one edit to the traffic, or the fill writes it and the pin
+goes red. A column no route writes is filled and searched, and the pin asks for one entry naming
+it with its reason. A column on a table the traffic writes no row into is not filled at all — an
+update over no rows writes nothing — and fails the floor on values before the reads.
+
+**The pin sees only a column that *no* route writes (measured).** Once one route writes a column —
+a PATCH, say — the column holds a value, the fill passes over it, and a second route that logs the
+column while the traffic never gives it one stays green.
 
 **The controls.**
 
 - `LogRecorderTests` proves each capture channel finds a planted value — a template value, a scope
   key the template does not name, an inner exception inside an aggregate, a `Data` entry overwritten
-  after the record was written, a `Trace` record under an EF category, a raw `byte[]` — and that each
-  rendering is found under its own kind. The channel and rendering cases also search for a
-  neighbour value nobody logged and demand it is absent, and every case logs through a real host's
-  `ILoggerFactory`, so what is proved is what the application's pipeline hands a provider.
+  after the record was written, a `Trace` record under an EF category, a raw `byte[]`, and the same
+  bytes in an `ArraySegment`, an `ImmutableArray`, a `List<byte>` and a read-only
+  `IReadOnlyList<byte>` — and that each rendering is found under its own kind, a hex slice at an odd
+  offset among them. Every case also searches for a neighbour value nobody logged and demands it is
+  absent, and every case logs through a real host's `ILoggerFactory`, so what is proved is what the
+  application's pipeline hands a provider.
 - `Census_ForValuesPlantedThroughTheHost_NamesEveryEntryAndANarrativeColumn` plants a value of every
   entry and of a narrative column through the host and asserts the census names each one under its
   column, and a re-cased address under the email.
@@ -358,12 +412,17 @@ columns plus `Entries`.
 **Measured forced reds.** Each change below was made, run, and reverted, and the census went red on
 each. On the EF side: turning on `EnableSensitiveDataLogging` (22 offences, the narrative columns
 caught as the 32-byte hex). In the authentication stack: a `JwtBearer` failure event logging the
-address and subject, and an `OnTokenValidated` doing the same. In the handlers: a `LoggerMessage`
-logging the credential id, a handler logging an `Email` through its `ToString()` — which returns the
-raw address — `/api/me` logging the user by address even at `Debug`, a refused request logged, and an
-address logged as its SHA-256 or URL-escaped. In the pipeline: `GlobalExceptionHandler` logging the
-request body, an exception `Data` entry carrying envelopes on the export's 500, a `PUT` body logged,
-and `AddHttpLogging` with every field on (51 offences).
+address and subject, an `OnTokenValidated` doing the same, the `Authorization` header's token
+logged, and `LogCompleteSecurityArtifact=true` with `ShowPII=true`, which printed the whole forged
+token — `ShowPII` alone printed only key ids and masked the token. In the handlers: a
+`LoggerMessage` logging the credential id, a handler logging an `Email` through its `ToString()` —
+which returns the raw address — `/api/me` logging the user by address even at `Debug`, a refused
+request logged, and an address logged as its SHA-256 or URL-escaped. In the pipeline:
+`GlobalExceptionHandler` logging the request body, a filter logging the request body on a 409
+(caught on the refused handle and the refused payee envelope), an exception `Data` entry carrying
+envelopes on the export's 500, a budget name logged during the export-over-two-budgets step, a
+`PUT` body logged, and `AddHttpLogging` with every field on (51 offences). In the traffic: a
+transaction description dropped from both its POST and its PATCH, which the fill pin caught.
 
 ### What the census host changes, and what it leaves alone
 
@@ -392,16 +451,31 @@ message never quotes the connection string, and a string carrying unrelated opti
 
 - **Records written outside `ILogger`.** Standard output, an `EventSource`, and OpenTelemetry span
   tags are not captured, so a value there is invisible to the census.
+- **The Azure token-provider path.** The census's connection strings carry a password, so the host
+  never fetches an Entra token and that path never runs. [Guessing] its diagnostics go through the
+  Azure SDK's `EventSource` rather than `ILogger`, which would put them under the bullet above
+  even in production.
+- **Records from the real host server.** The census runs on `TestServer`, so nothing Kestrel logs
+  in a deployed host is captured.
+- **The connections the admin tooling and `Tools/DbProvision` open.** The census records the API's
+  hosts only, and never starts those tools.
 - **Log calls that fire only in Production.** The census host runs in Development, so an
   environment branch the host never takes writes nothing the census reads.
 - **A branch a route's traffic reaches the route for but never takes.** The floor asks one 2xx per
   route, not every branch of every handler.
-- **A value in a rendering the needles do not model.** Hashed after some other transformation, salted
-  or keyed with an HMAC, base64 of a hash, a slice of a binary value shorter than 16 bytes, part of a
-  text value, or wrapped inside another encoding — a provider token's payload is base64url of JSON,
-  so the address inside a logged token is not the address's own bytes.
+- **A narrative column one route writes and another logs without being given it.** The fill pin
+  sees a column only when no route writes it.
+- **A value a step writes and deletes within itself.** It stands at no step boundary, so no
+  snapshot reads it.
+- **A value in a rendering the needles do not model.** Hashed after some other transformation,
+  salted or keyed with an HMAC, base64 of a hash, a slice of a binary value shorter than 16 bytes,
+  part of a text value, or wrapped inside another encoding.
+- **A byte type outside `IEnumerable<byte>`**, such as `ReadOnlySequence<byte>`. The recorder
+  renders it through its `ToString()`, not as bytes.
+- **A token the traffic never sent.** One the application builds itself, or re-serialises, is not
+  on the sent list, and the address inside it is not the address's own characters.
 - **The stricter rules beside this one.** Erasure logs no identifier of an erased account, the
   export logs no identifier, and a recovery code's verifier, hash and set credential id reach no log
-  line. Each of those forbids values this census permits or does not search — `users.id` among them —
-  and each is held where its own chapter says: [erasure](../business-logic/erasure.md),
+  line. Each of those forbids values this census permits or does not search — `users.id` among
+  them — and each is held where its own chapter says: [erasure](../business-logic/erasure.md),
   [export](../business-logic/export.md), [recovery codes](../business-logic/recovery-codes.md).

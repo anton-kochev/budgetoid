@@ -1,4 +1,5 @@
 using System.Buffers.Text;
+using System.Collections.Immutable;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Encodings.Web;
@@ -148,6 +149,11 @@ public sealed class LogRecorderTests
             ("LogRecorderControl.Base64UrlSlice",
                 Base64Url.EncodeToString(value.AsSpan(7, 25)),
                 LogNeedleKind.Base64UrlWindow),
+
+            // An odd offset, and neither the whole value nor the first 32 bytes.
+            ("LogRecorderControl.HexSlice",
+                Convert.ToHexStringLower(value.AsSpan(5, 30)),
+                LogNeedleKind.HexWindow),
         ];
 
         // Act
@@ -236,6 +242,7 @@ public sealed class LogRecorderTests
         // Arrange — the array itself, not a rendering of it. The formatted message says
         // "System.Byte[]"; a JSON sink writes the structured value as base64.
         byte[] value = RandomNumberGenerator.GetBytes(48);
+        byte[] neighbour = RandomNumberGenerator.GetBytes(48);
 
         // Act
         IReadOnlyList<CapturedLogRecord> records = await CaptureAsync(loggers =>
@@ -247,6 +254,51 @@ public sealed class LogRecorderTests
 
         // Assert
         await Assert.That(found).Contains(LogNeedleKind.Base64);
+        await Assert.That(LogCensus.Search(records, LogNeedle.ForBytes("control.neighbour", neighbour))).IsEmpty();
+    }
+
+    /// <summary>A byte container other than an array that a call site can hand a logger.</summary>
+    public enum ByteCarrier
+    {
+        ArraySegment,
+        ImmutableArray,
+        List,
+        ReadOnlyList,
+    }
+
+    [Test]
+    [Arguments(ByteCarrier.ArraySegment)]
+    [Arguments(ByteCarrier.ImmutableArray)]
+    [Arguments(ByteCarrier.List)]
+    [Arguments(ByteCarrier.ReadOnlyList)]
+    public async Task Search_ForBytesPassedRawInAnotherContainer_FindsThemAsForAnArray(ByteCarrier carrier)
+    {
+        // Arrange — the same bytes in a container a sink still writes as base64. A recorder that knew
+        // only byte[] would render these element by element, as numbers, and find nothing.
+        byte[] value = RandomNumberGenerator.GetBytes(48);
+        byte[] neighbour = RandomNumberGenerator.GetBytes(48);
+        object carried = carrier switch
+        {
+            ByteCarrier.ArraySegment => new ArraySegment<byte>(value),
+            ByteCarrier.ImmutableArray => ImmutableArray.Create(value),
+            ByteCarrier.List => new List<byte>(value),
+
+            // A read-only wrapper, so the runtime type is not an array the byte[] arm would take.
+            ByteCarrier.ReadOnlyList => (IReadOnlyList<byte>)Array.AsReadOnly(value),
+            _ => throw new ArgumentOutOfRangeException(nameof(carrier)),
+        };
+
+        // Act
+        IReadOnlyList<CapturedLogRecord> records = await CaptureAsync(loggers =>
+            loggers.CreateLogger("LogRecorderControl.RawContainer").LogInformation("A control carrying {Value}", carried));
+        LogNeedleKind[] found =
+        [
+            .. LogCensus.Search(records, LogNeedle.ForBytes("control.bytes", value)).Select(offence => offence.Kind),
+        ];
+
+        // Assert
+        await Assert.That(found).Contains(LogNeedleKind.Base64);
+        await Assert.That(LogCensus.Search(records, LogNeedle.ForBytes("control.neighbour", neighbour))).IsEmpty();
     }
 
     [Test]
@@ -254,6 +306,7 @@ public sealed class LogRecorderTests
     {
         // Arrange
         string planted = Planted();
+        string neighbour = Planted();
 
         // Act
         IReadOnlyList<CapturedLogRecord> records = await CaptureAsync(loggers =>
@@ -264,6 +317,8 @@ public sealed class LogRecorderTests
         await Assert.That(LogCensus.Search(records, LogNeedle.ForText("control.text", planted, ignoresCase: true)))
             .IsNotEmpty();
         await Assert.That(LogCensus.Search(records, LogNeedle.ForText("control.text", planted, ignoresCase: false)))
+            .IsEmpty();
+        await Assert.That(LogCensus.Search(records, LogNeedle.ForText("control.neighbour", neighbour, ignoresCase: true)))
             .IsEmpty();
     }
 

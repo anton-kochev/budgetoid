@@ -45,7 +45,11 @@ public sealed class RouteTally : IStartupFilter
             {
                 if (context.GetEndpoint() is RouteEndpoint endpoint)
                 {
-                    _hits.Enqueue((KeyOf(context.Request.Method, endpoint), context.Response.StatusCode));
+                    // Keyed as Declared keys it, so a route naming no method is reached under '*'.
+                    string method = endpoint.Metadata.GetMetadata<HttpMethodMetadata>() is null
+                        ? AnyMethod
+                        : context.Request.Method;
+                    _hits.Enqueue((KeyOf(method, endpoint), context.Response.StatusCode));
                 }
             }
         });
@@ -60,8 +64,13 @@ public sealed class RouteTally : IStartupFilter
             StringComparer.Ordinal);
 
     /// <summary>
-    /// Every route the host's table declares, as <c>METHOD pattern</c>, one entry per method.
+    /// Every route the host's table declares, as <c>METHOD pattern</c>, one entry per method — and one
+    /// <c>* pattern</c> entry for a route that names no method, which answers every one.
     /// </summary>
+    /// <remarks>
+    /// A route with no <see cref="HttpMethodMetadata" /> is still a route: <c>MapHealthChecks</c> maps
+    /// one. Skipping it would leave it out of the floor with nothing saying so.
+    /// </remarks>
     public static IReadOnlySet<string> Declared(IServiceProvider services)
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -69,10 +78,14 @@ public sealed class RouteTally : IStartupFilter
         return new HashSet<string>(
             services.GetRequiredService<EndpointDataSource>().Endpoints
                 .OfType<RouteEndpoint>()
-                .SelectMany(endpoint => (endpoint.Metadata.GetMetadata<HttpMethodMetadata>()?.HttpMethods ?? [])
-                    .Select(method => KeyOf(method, endpoint))),
+                .SelectMany(endpoint => endpoint.Metadata.GetMetadata<HttpMethodMetadata>() is { } methods
+                    ? methods.HttpMethods.Select(method => KeyOf(method, endpoint))
+                    : [KeyOf(AnyMethod, endpoint)]),
             StringComparer.Ordinal);
     }
+
+    /// <summary>The method a route that names none is keyed under.</summary>
+    private const string AnyMethod = "*";
 
     private static string KeyOf(string method, RouteEndpoint endpoint) =>
         $"{method.ToUpperInvariant()} {endpoint.RoutePattern.RawText}";
