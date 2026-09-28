@@ -204,14 +204,16 @@ public sealed class ExportDataHandlerTests
     /// <remarks>
     /// <para>
     /// The read service answers a refusable snapshot first and an exportable one on any later call. A
-    /// handler that took one snapshot for the gate and a second for the document, or that re-read
-    /// before deciding, is handed the exportable state and answers 200 here — which is the bug the
-    /// single snapshot exists to close: a gate and a document deciding on two different states.
+    /// handler that reads a second time and lets that later state decide the gate — a re-read before
+    /// deciding, or a gate over a fresh read of the owned budgets — is handed the exportable state and
+    /// answers where it should refuse.
     /// </para>
     /// <para>
-    /// The call count is asserted beside the refusal because each catches a handler the other misses:
-    /// one that read twice and still decided on the first snapshot refuses correctly, and only the
-    /// count sees it.
+    /// A handler that reads once for the gate and again for the document refuses here before its
+    /// second read, so the refusal alone cannot see it. The call count catches a handler that read
+    /// twice before refusing on the first snapshot; the split gate-then-document read is
+    /// <see cref="HandleAsync_WhenTheSnapshotIsExportable_ReadsItOnce" />'s to catch, because only the
+    /// exportable path ever reaches the document.
     /// </para>
     /// </remarks>
     [Test]
@@ -237,11 +239,65 @@ public sealed class ExportDataHandlerTests
             readService);
 
         // Act
-        ExportCompletenessException exception =
-            await ThrowsExportCompletenessExceptionAsync(() => handler.HandleAsync(new ExportDataQuery()));
+        await ThrowsExportCompletenessExceptionAsync(() => handler.HandleAsync(new ExportDataQuery()));
 
         // Assert
         await Assert.That(readService.Reads).IsEqualTo(1);
+    }
+
+    /// <summary>
+    /// On the path that reaches the document, the handler reads one snapshot and builds the document
+    /// from that same snapshot.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The mirror of <see cref="HandleAsync_RefusesOnTheOwnedSetCarriedByTheSnapshot" />: the read
+    /// service answers an exportable snapshot first and a refusable one on any later call, each with
+    /// its own account. A handler that gates on one read and builds the document from a second either
+    /// refuses on the second, or builds from it and names the wrong account; a handler that read twice
+    /// and used only the first is caught by the count.
+    /// </para>
+    /// <para>
+    /// What it cannot see: the fake ignores the <c>userId</c> it is handed, so a handler that read
+    /// once for the wrong user passes here — <see cref="InMemoryExportReadService" /> is what holds
+    /// that. And one call to the port says nothing about how many database snapshots the production
+    /// read service takes underneath it; that is <c>DataExportSnapshotTests</c>.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task HandleAsync_WhenTheSnapshotIsExportable_ReadsItOnce()
+    {
+        // Arrange — first snapshot: only the ambient budget, holding one account, so the gate opens.
+        // Any later snapshot: a second owned budget and a different account, which the gate refuses.
+        var userId = Guid.CreateVersion7();
+        var ambientBudgetId = Guid.CreateVersion7();
+        var otherBudgetId = Guid.CreateVersion7();
+        ExportedAccount firstAccount = AccountIn(ambientBudgetId);
+        ExportedAccount laterAccount = AccountIn(ambientBudgetId);
+        var readService = new SequencedExportReadService(
+            new ExportSnapshot(
+                UserRow(userId),
+                [BudgetRow(ambientBudgetId, userId)],
+                new ExportedBudgetContents([firstAccount], [], [], [], [])),
+            new ExportSnapshot(
+                UserRow(userId),
+                [BudgetRow(ambientBudgetId, userId), BudgetRow(otherBudgetId, userId, "Holiday")],
+                new ExportedBudgetContents([laterAccount], [], [], [], [])));
+        var handler = new ExportDataHandler(
+            new StubUserContext(userId),
+            new StubBudgetContext(ambientBudgetId),
+            readService);
+
+        // Act
+        ExportDocument document = await handler.HandleAsync(new ExportDataQuery());
+
+        // Assert — one read, and the document is that read's: the ambient budget carrying the first
+        // snapshot's account.
+        await Assert.That(readService.Reads).IsEqualTo(1);
+        await Assert.That(document.Budgets.Count).IsEqualTo(1);
+        await Assert.That(document.Budgets[0].Id).IsEqualTo(ambientBudgetId);
+        await Assert.That(document.Budgets[0].Accounts.Count).IsEqualTo(1);
+        await Assert.That(document.Budgets[0].Accounts[0].Id).IsEqualTo(firstAccount.Id);
     }
 
     /// <summary>
@@ -422,7 +478,7 @@ public sealed class ExportDataHandlerTests
     /// </summary>
     /// <remarks>
     /// Nested here rather than in <c>Fakes</c> because it models no production behaviour: it exists
-    /// only to make a handler that reads twice visible to the one test above.
+    /// only to make a handler that reads twice visible to the two snapshot tests above.
     /// </remarks>
     private sealed class SequencedExportReadService(ExportSnapshot first, ExportSnapshot later)
         : IExportReadService

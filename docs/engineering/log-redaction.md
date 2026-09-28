@@ -331,8 +331,8 @@ snapshots, about 210 ms in all (measured). The **union** is searched, so a value
 replaced or erased is still looked for. After every step rather than at chosen moments, so a step
 added later cannot take a value away before it is read. That is why deleting the seeded second
 budget is a step of its own: its name — which the export's 500 path holds, as an `ExportedBudget`
-in the snapshot `ReadSnapshotAsync` answers, when it throws — stands at the boundary between the seed and the
-removal. The records are read after the hosts are disposed, so one written at shutdown is searched
+in the snapshot `ReadSnapshotAsync` answers, when it throws — stands at the boundary between the
+seed and the removal. The records are read after the hosts are disposed, so one written at shutdown is searched
 too. The bearer host's three steps are not snapshotted one by one; they get only the final read.
 
 **The limit is the step.** A value a single step writes and deletes within itself stands at no

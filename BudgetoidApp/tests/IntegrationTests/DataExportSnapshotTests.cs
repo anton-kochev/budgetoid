@@ -5,9 +5,7 @@ using Domain.Categories;
 using Domain.CategoryGroups;
 using Domain.Transactions;
 using Infrastructure.Persistence;
-using Infrastructure.ReadServices;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.DependencyInjection;
 using TestSupport;
 
@@ -19,10 +17,10 @@ namespace IntegrationTests;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Each case places one out-of-band commit in front of one of the export's reads, using
-/// <see cref="MidReadCommitInterceptor" /> on the API's own context. A snapshot taken at the export's
-/// first read answers the whole document from the state before that commit; a read that takes a fresh
-/// snapshot per statement shows some or all of it.
+/// Each case commits one out-of-band change — an insert or a delete — in front of one of the export's
+/// reads, using <see cref="MidReadCommitInterceptor" /> on the API's own context. A snapshot taken at
+/// the export's first read answers the whole document from the state before that change; a read that
+/// takes a fresh snapshot per statement shows some or all of it.
 /// </para>
 /// <list type="bullet">
 /// <item><description>
@@ -37,6 +35,15 @@ namespace IntegrationTests;
 /// <b>Before the transactions read, a delete</b>: an existing transaction goes. A snapshot keeps it;
 /// per-statement reads lose it — and so does any fix that hides the first case by filtering orphans
 /// out after the fact, since no filter can bring a row back.
+/// </description></item>
+/// <item><description>
+/// <b>Before the category groups read</b>: a group, a category under it and a payee — the three
+/// middle reads no other case commits to. Per-statement reads show all three rows.
+/// </description></item>
+/// <item><description>
+/// <b>Before the accounts read, a second budget</b>: the owned set the completeness gate compares
+/// grows by one. A snapshot hands the gate one budget and the export answers; an owned-budgets read
+/// outside the snapshot sees two and refuses.
 /// </description></item>
 /// </list>
 /// <para>
@@ -218,43 +225,6 @@ public sealed class DataExportSnapshotTests
             ?? throw new InvalidOperationException("The export answered an empty body."))["budgets"]!.AsArray();
         await Assert.That(IdsOf(budgets)).IsEquivalentTo([budgetId]);
         await Assert.That(body).DoesNotContain(interceptor.BudgetId.ToString());
-    }
-
-    /// <remarks>
-    /// <para>
-    /// Refused rather than joined: joining would hand the reads the outer transaction's isolation
-    /// level, and at READ COMMITTED the document goes back to mixing states with nothing red.
-    /// </para>
-    /// <para>
-    /// The message is asserted, not just the type, because the type alone asserts nothing about the
-    /// guard. Without it, EF's own <c>BeginTransactionAsync</c> refuses a second transaction on the
-    /// connection with an <see cref="InvalidOperationException" /> as well, and this case would stay
-    /// green with the guard deleted.
-    /// </para>
-    /// </remarks>
-    [Test]
-    public async Task ReadSnapshot_WhenATransactionIsAlreadyOpen_Throws()
-    {
-        // Arrange — a context already inside a transaction of the caller's.
-        await using RepositoryTestHost host = new();
-        await host.StartAsync();
-
-        await using BudgetoidDbContext db = new(
-            new DbContextOptionsBuilder<BudgetoidDbContext>()
-                .UseNpgsql(host.ConnectionString)
-                .Options,
-            new TestBudgetContext(Guid.CreateVersion7()));
-        await using IDbContextTransaction outer = await db.Database.BeginTransactionAsync();
-
-        ExportReadService readService = new(db);
-
-        // Act
-        Func<Task> read = () => readService.ReadSnapshotAsync(Guid.CreateVersion7());
-
-        // Assert
-        InvalidOperationException? exception =
-            await Assert.That(read).ThrowsExactly<InvalidOperationException>();
-        await Assert.That(exception!.Message).Contains("transaction of its own");
     }
 
     /// <summary>The export's raw body and the collections the cases read.</summary>

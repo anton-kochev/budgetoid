@@ -85,10 +85,10 @@ is where a table joining this list has to earn its place.
 - **Answer in the same request-response exchange** — an export behind a queue or an emailed link is
   an export behind an operator, and the point of the feature is that a copy of one's own data is
   not. `DataExportEndpoints` answers directly; no job table, queue or notification path exists here.
-  `DataExportEndpointTests.Export_ForAnAuthenticatedOwner_RespondsWithApplicationJson` asserts the
-  `200`, and `DataExportCompletenessTests` reads every row out of that same response's body, so an
-  answer that became a `202` and a link would redden both. The absence of a queue is an absence, and
-  no test can hold one.
+  `DataExportEndpointTests.Export_ForAnAuthenticatedOwner_RespondsWithApplicationJson` asserts a
+  `200`, and `DataExportCompletenessTests` reads every row out of the body of its own export
+  request, so an answer that became a `202` and a link would redden both. The absence of a queue is
+  an absence, and no test can hold one.
 - **Assemble the whole document from one snapshot** — a document whose transactions name an account
   its accounts array does not carry is a file that cannot be restored from, and nothing about it
   looks wrong until somebody tries. → "The seven reads are one snapshot" under Edge Cases, held by
@@ -703,25 +703,28 @@ ELSE
   on a path that already materializes everything. **The web client no longer saves such a body**: a
   document that stops part-way is not JSON, the decoder answers `unrecognised`, and nothing is
   written. A caller reading the response as a file still gets the truncated one.
-- **The seven reads are one snapshot, and only `REPEATABLE READ` makes them one.**
+- **The seven reads are one snapshot, and a default transaction does not make them one.**
   `ExportReadService.ReadSnapshotAsync` runs all seven inside one `REPEATABLE READ` transaction,
   users first, so a write committing mid-export is wholly in the document or wholly out. **Do not
   "simplify" it to `ITransactionalExecutor` or to a default `BeginTransactionAsync`** — both open at
   READ COMMITTED, where PostgreSQL takes a fresh snapshot per statement and the transaction changes
   nothing: under it the four `DataExportSnapshotTests` cases that commit or delete rows inside the
-  budget mid-export go red (measured). It **refuses** to run inside an ambient transaction rather
-  than joining one, because joining would inherit that transaction's level; the refusal's own
-  message is asserted, because EF's `BeginTransactionAsync` throws the same exception type on an
-  open transaction and would green a deleted guard. One session per person does not mean one
-  request at a time — one cookie authorizes as many concurrent calls as a client makes — so this
-  was reachable, not theoretical.
+  budget mid-export go red (measured). `SERIALIZABLE` would hold the same property at a higher
+  price; nothing here needs more than a stable snapshot. There is no guard against being called
+  inside an open transaction because none is needed: EF refuses a nested `BeginTransactionAsync`,
+  and the retrying execution strategy refuses to run inside a user-initiated transaction at all
+  (both measured on a replica, not in this suite). One session per person does not mean one request
+  at a time — one cookie authorizes as many concurrent calls as a client makes — so this was
+  reachable, not theoretical.
   - **The second-budget case does not see the isolation level.** It commits a budget after the
     export's `budgets` read, so at READ COMMITTED the refusal still sees one budget and answers
     (measured). What it catches is an owned-budgets read moved outside the snapshot, after the
     commit.
   - **What the tests do not hold.** A retry carrying state from one attempt to the next: no test
-    injects a transient failure, so none forces a retry, and "each attempt starts from a fresh
-    snapshot" is held by argument in `ExportReadService` alone.
+    injects a transient failure, so none forces a retry. On a replica with a failure injected at
+    the commit, the strategy rolled back, reopened, issued a fresh `BEGIN ISOLATION LEVEL REPEATABLE
+    READ` and read again (measured) — but in this repository "each attempt starts from a fresh
+    snapshot" is held by the delegate keeping everything in locals, and by nothing that runs.
 - **`Content-Disposition` is unreadable to browser JavaScript.** `Api/Program.cs` sets no
   `Access-Control-Expose-Headers`, so a cross-origin `fetch` sees the body and not the filename. The
   web client names the file itself — it writes the file too — from the **browser's** clock, in the

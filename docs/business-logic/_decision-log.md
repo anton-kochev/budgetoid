@@ -16,8 +16,7 @@ does not carry, and a refusal deciding on a budget set that had already changed.
 authorizes as many concurrent calls as a client makes, so this was reachable.
 
 **Decision:** `ExportReadService.ReadSnapshotAsync` runs all seven reads, users first, in one
-`REPEATABLE READ` transaction inside the execution strategy, and refuses to run inside an ambient
-transaction. The handler makes that one call and decides the completeness refusal over the owned
+`REPEATABLE READ` transaction inside the execution strategy. The handler makes that one call and decides the completeness refusal over the owned
 set it carries, so the refusal now runs after the contents are read. [export.md](export.md) owns the
 rule.
 
@@ -27,14 +26,19 @@ rule.
   COMMITTED, and its job is write atomicity, not read consistency.
 - **A new application port for consistent reads**: rejected. It would add a port to the persistence
   boundary for one caller, and a later refactor could move one read outside its lambda. Owning the
-  snapshot in the read service follows `AccountKeyReadService`.
+  snapshot in the read service is what `AccountKeyReadService` does too, though it gets its
+  snapshot from one statement rather than a transaction.
 - **One SQL statement, as the account-keys read does**: rejected. Seven result sets of different
   shapes do not fit one statement without rebuilding the document in SQL.
 - **Keeping the refusal ahead of the contents read**: rejected. It would need the owned set read
   outside the snapshot, which is the bug. The cost is that a refused export reads the budget's rows
   and discards them; every account owns exactly one budget today.
-- **`READ ONLY` on the transaction**: rejected. It takes a `SET TRANSACTION` statement, and
-  `ExecuteSql*` is banned, to guard against a write nothing here makes.
+- **`READ ONLY` on the transaction**: rejected. It would guard against a write nothing here makes.
+- **A guard refusing to run inside an open transaction**: rejected after it was built. EF already
+  refuses a nested `BeginTransactionAsync`, and the retrying execution strategy refuses to run
+  inside a user-initiated transaction at all (measured on a replica), so the reads can never join an
+  outer transaction and inherit its level. The guard changed only the wording of the exception, and
+  its test could redden only on that wording.
 
 ---
 

@@ -41,9 +41,11 @@ namespace IntegrationTests;
 /// </param>
 /// <param name="afterTable">
 /// When set, the interceptor only fires on a read of <paramref name="table" /> that comes after a read
-/// of this table. This exists for <c>budgets</c>: session authentication reads <c>budgets</c> to find
-/// the ambient budget before the endpoint runs, so the export's own budgets read is the one after its
-/// <c>users</c> read, not the first one in the request.
+/// of this table. It exists because session authentication reads before the endpoint runs —
+/// <c>budgets</c> among them, to find the ambient budget — and only the export reads <c>users</c>.
+/// Gating on <c>users</c> places the write in front of the export's own read of
+/// <paramref name="table" />, whether that is <c>budgets</c>, <c>category_groups</c> or
+/// <c>accounts</c>, and keeps any read made during authentication from tripping it.
 /// </param>
 public sealed class MidReadCommitInterceptor(
     string connectionString,
@@ -85,9 +87,6 @@ public sealed class MidReadCommitInterceptor(
     /// How many rows the delete mode removed: one once it has fired, zero before or in insert mode.
     /// </summary>
     public int Deleted { get; private set; }
-
-    /// <summary>The text of the command the write was placed in front of, once it has fired.</summary>
-    public string? InterceptedCommandText { get; private set; }
 
     /// <summary>
     /// Arms the insert mode: commit <see cref="AccountId" /> and <see cref="TransactionId" /> into
@@ -176,7 +175,6 @@ public sealed class MidReadCommitInterceptor(
             return null;
         }
 
-        InterceptedCommandText = command.CommandText;
         return pending;
     }
 

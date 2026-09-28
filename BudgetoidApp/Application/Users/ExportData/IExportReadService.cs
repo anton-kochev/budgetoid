@@ -51,10 +51,6 @@ public interface IExportReadService
     /// budget's rows into memory, and discards them.
     /// </para>
     /// </remarks>
-    /// <exception cref="InvalidOperationException">
-    /// Called while the context is already inside a transaction, whose isolation level this read would
-    /// otherwise silently inherit.
-    /// </exception>
     Task<ExportSnapshot> ReadSnapshotAsync(Guid userId, CancellationToken cancellationToken = default);
 }
 

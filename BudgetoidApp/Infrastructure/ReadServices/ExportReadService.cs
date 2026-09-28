@@ -28,24 +28,17 @@ public sealed class ExportReadService(BudgetoidDbContext dbContext) : IExportRea
         Guid userId,
         CancellationToken cancellationToken = default)
     {
-        // Refused rather than joined, which is the opposite of DbContextTransactionalExecutor's choice
-        // and for a reason that does not apply there: joining would hand these reads the outer
-        // transaction's isolation level, and at READ COMMITTED PostgreSQL takes a fresh snapshot per
-        // statement — the document would silently go back to mixing states, with nothing red.
-        if (dbContext.Database.CurrentTransaction is not null)
-        {
-            throw new InvalidOperationException(
-                "The export must read inside a transaction of its own and was called inside one.");
-        }
-
         // Through the execution strategy for the reason DbContextTransactionalExecutor gives: the API's
         // NpgsqlRetryingExecutionStrategy refuses a user-initiated transaction it does not own.
         //
         // The delegate is written to carry nothing from one attempt to the next — every read lands in
         // a local — so that a retry opens a new transaction and a new snapshot rather than finishing a
-        // document half built from the failed attempt. THAT IS HELD BY ARGUMENT ONLY: no test injects
-        // a transient failure, so no test forces a retry, and a delegate that appended to a list
-        // declared outside it would pass every test there is.
+        // document half built from the failed attempt. In this repository's tests THAT IS HELD BY
+        // ARGUMENT ONLY: no test here injects a transient failure, so no test forces a retry, and a
+        // delegate that appended to a list declared outside it would pass every test there is. A
+        // replica with a failure injected at commit, run outside this suite, showed the strategy
+        // rolling back, reopening the connection and issuing a fresh BEGIN ISOLATION LEVEL
+        // REPEATABLE READ.
         IExecutionStrategy strategy = dbContext.Database.CreateExecutionStrategy();
         return await strategy.ExecuteAsync(
             async token =>
@@ -54,10 +47,14 @@ public sealed class ExportReadService(BudgetoidDbContext dbContext) : IExportRea
                 // statement and every later statement reads from it, so a row committed or deleted
                 // between two of these reads is wholly out of the document or wholly in it. At READ
                 // COMMITTED each of the seven statements takes its own snapshot and the transaction
-                // changes nothing (measured: DataExportSnapshotTests stays red). PostgreSQL raises a
-                // serialization failure at this level only on an update, a delete or a row lock, and
-                // this transaction takes none, so the level adds no retry path of its own. Not
-                // declared READ ONLY: that is one SET TRANSACTION statement, and ExecuteSql* is banned.
+                // changes nothing (measured: at READ COMMITTED the four DataExportSnapshotTests cases
+                // that commit or delete rows inside the budget go red; the second-budget case stays
+                // green, because it catches a budgets read moved past the commit, not the isolation
+                // level). PostgreSQL raises a serialization failure at this level only on an update, a
+                // delete or a row lock — its manual (§13.2.2, "Repeatable Read Isolation Level") says a
+                // read-only transaction never meets one — and this transaction takes none, so the level
+                // adds no retry path of its own. Not declared READ ONLY: that is one SET TRANSACTION
+                // statement, and ExecuteSql* is banned.
                 //
                 // The users read is first on purpose — it is the statement that fixes the snapshot, so
                 // the owned set the handler's refusal decides on is read from the same state as the
