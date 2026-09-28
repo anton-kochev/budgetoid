@@ -28,6 +28,14 @@ namespace Application.Users.ExportData;
 /// guard passes an ambient budget the user does not own and would file one budget's rows under
 /// another's id.
 /// </para>
+/// <para>
+/// <b>The refusal is decided over the snapshot's own owned set, after the contents are read.</b> One
+/// read answers the user, the owned budgets and the contents from one database snapshot, so the set
+/// the gate compares is the set the document would be built from. The cost is that a refused export
+/// has already read the ambient budget's rows, and discards them; refusing on a budgets read taken
+/// before the contents read instead could pass on a set that had changed by the time the contents
+/// came back.
+/// </para>
 /// </remarks>
 public sealed class ExportDataHandler(
     IUserContext userContext,
@@ -41,19 +49,21 @@ public sealed class ExportDataHandler(
     {
         Guid userId = userContext.UserId;
 
-        ExportedUser user = await readService.FindUserAsync(userId, cancellationToken)
+        ExportSnapshot snapshot = await readService.ReadSnapshotAsync(userId, cancellationToken);
+
+        ExportedUser user = snapshot.User
             ?? throw new InvalidOperationException(
                 "The resolved identity for this request answers to no user row.");
 
-        IReadOnlyList<ExportedBudget> owned =
-            await readService.ListOwnedBudgetsAsync(userId, cancellationToken);
+        IReadOnlyList<ExportedBudget> owned = snapshot.OwnedBudgets;
 
         Guid ambientBudgetId = budgetContext.BudgetId;
         HashSet<Guid> ownedIds = [.. owned.Select(budget => budget.Id)];
 
         // Set equality, not a count: the owned set must be exactly the budget this request operates
-        // inside. Refused before the contents are read, so a document that will not be assembled costs
-        // nobody's finances a round trip. Counts only in the message — ids reach the caller.
+        // inside. Decided over the owned set read in the same snapshot as the contents, so the gate and
+        // the document agree on one state — which means the contents have already been read by the
+        // time a refusal throws. Counts only in the message — ids reach the caller.
         if (!ownedIds.SetEquals([ambientBudgetId]))
         {
             int ambientOwned = ownedIds.Contains(ambientBudgetId) ? 1 : 0;
@@ -64,8 +74,7 @@ public sealed class ExportDataHandler(
                 + "and a partial export is a truncation.");
         }
 
-        ExportedBudgetContents contents =
-            await readService.ReadAmbientBudgetContentsAsync(cancellationToken);
+        ExportedBudgetContents contents = snapshot.Contents;
 
         // The owned set is the ambient budget and nothing else — the gate above is what makes that
         // true — so attaching the ambient budget's contents to every budget in the document attaches

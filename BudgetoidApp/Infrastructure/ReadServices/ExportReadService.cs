@@ -1,7 +1,9 @@
+using System.Data;
 using Application.Passkeys;
 using Application.Users.ExportData;
 using Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 
 namespace Infrastructure.ReadServices;
 
@@ -10,15 +12,75 @@ namespace Infrastructure.ReadServices;
 /// shaped for a screen.
 /// </summary>
 /// <remarks>
+/// <para>
 /// Every query is <see cref="EntityFrameworkQueryableExtensions.AsNoTracking{TEntity}" />: nothing here
 /// is mutated, and a tracked graph of an entire account is the one thing this path must not build.
+/// </para>
+/// <para>
+/// All seven run inside one <c>REPEATABLE READ</c> transaction opened by
+/// <see cref="ReadSnapshotAsync" />; the three private reads beneath it are never called outside it.
+/// </para>
 /// </remarks>
 public sealed class ExportReadService(BudgetoidDbContext dbContext) : IExportReadService
 {
     /// <inheritdoc />
-    public async Task<ExportedUser?> FindUserAsync(
+    public async Task<ExportSnapshot> ReadSnapshotAsync(
         Guid userId,
         CancellationToken cancellationToken = default)
+    {
+        // Refused rather than joined, which is the opposite of DbContextTransactionalExecutor's choice
+        // and for a reason that does not apply there: joining would hand these reads the outer
+        // transaction's isolation level, and at READ COMMITTED PostgreSQL takes a fresh snapshot per
+        // statement — the document would silently go back to mixing states, with nothing red.
+        if (dbContext.Database.CurrentTransaction is not null)
+        {
+            throw new InvalidOperationException(
+                "The export must read inside a transaction of its own and was called inside one.");
+        }
+
+        // Through the execution strategy for the reason DbContextTransactionalExecutor gives: the API's
+        // NpgsqlRetryingExecutionStrategy refuses a user-initiated transaction it does not own.
+        //
+        // The delegate is written to carry nothing from one attempt to the next — every read lands in
+        // a local — so that a retry opens a new transaction and a new snapshot rather than finishing a
+        // document half built from the failed attempt. THAT IS HELD BY ARGUMENT ONLY: no test injects
+        // a transient failure, so no test forces a retry, and a delegate that appended to a list
+        // declared outside it would pass every test there is.
+        IExecutionStrategy strategy = dbContext.Database.CreateExecutionStrategy();
+        return await strategy.ExecuteAsync(
+            async token =>
+            {
+                // REPEATABLE READ, not the default: PostgreSQL takes the snapshot at the first
+                // statement and every later statement reads from it, so a row committed or deleted
+                // between two of these reads is wholly out of the document or wholly in it. At READ
+                // COMMITTED each of the seven statements takes its own snapshot and the transaction
+                // changes nothing (measured: DataExportSnapshotTests stays red). PostgreSQL raises a
+                // serialization failure at this level only on an update, a delete or a row lock, and
+                // this transaction takes none, so the level adds no retry path of its own. Not
+                // declared READ ONLY: that is one SET TRANSACTION statement, and ExecuteSql* is banned.
+                //
+                // The users read is first on purpose — it is the statement that fixes the snapshot, so
+                // the owned set the handler's refusal decides on is read from the same state as the
+                // contents.
+                await using IDbContextTransaction transaction =
+                    await dbContext.Database.BeginTransactionAsync(IsolationLevel.RepeatableRead, token);
+
+                ExportedUser? user = await FindUserAsync(userId, token);
+                IReadOnlyList<ExportedBudget> owned = await ListOwnedBudgetsAsync(userId, token);
+                ExportedBudgetContents contents = await ReadAmbientBudgetContentsAsync(token);
+
+                // Committed rather than left to roll back on disposal, as the tidy ending. Nothing
+                // pins the choice and nothing can: the transaction writes nothing, so a commit and a
+                // rollback leave the database in the same state.
+                await transaction.CommitAsync(token);
+                return new ExportSnapshot(user, owned, contents);
+            },
+            cancellationToken);
+    }
+
+    private async Task<ExportedUser?> FindUserAsync(
+        Guid userId,
+        CancellationToken cancellationToken)
     {
         // Projected as the Email value object rather than as Email.Value: the property carries a value
         // converter, so the provider translates the property itself and the unwrapping happens after
@@ -36,10 +98,9 @@ public sealed class ExportReadService(BudgetoidDbContext dbContext) : IExportRea
         return row is null ? null : new ExportedUser(row.Id, row.Email.Value, row.CreatedAtUtc);
     }
 
-    /// <inheritdoc />
-    public async Task<IReadOnlyList<ExportedBudget>> ListOwnedBudgetsAsync(
+    private async Task<IReadOnlyList<ExportedBudget>> ListOwnedBudgetsAsync(
         Guid userId,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken)
     {
         // budgets carries no BudgetIsolation query filter — it is what registration writes and what
         // session authentication reads before any
@@ -84,9 +145,8 @@ public sealed class ExportReadService(BudgetoidDbContext dbContext) : IExportRea
         ];
     }
 
-    /// <inheritdoc />
-    public async Task<ExportedBudgetContents> ReadAmbientBudgetContentsAsync(
-        CancellationToken cancellationToken = default)
+    private async Task<ExportedBudgetContents> ReadAmbientBudgetContentsAsync(
+        CancellationToken cancellationToken)
     {
         // No budget_id predicate on any of the five, and that is deliberate. Every set below carries the
         // BudgetIsolation query filter, which reads IBudgetContext on the context instance running the

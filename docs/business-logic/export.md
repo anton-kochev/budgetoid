@@ -85,6 +85,14 @@ is where a table joining this list has to earn its place.
 - **Answer in the same request-response exchange** — an export behind a queue or an emailed link is
   an export behind an operator, and the point of the feature is that a copy of one's own data is
   not. `DataExportEndpoints` answers directly; no job table, queue or notification path exists here.
+  `DataExportEndpointTests.Export_ForAnAuthenticatedOwner_RespondsWithApplicationJson` asserts the
+  `200`, and `DataExportCompletenessTests` reads every row out of that same response's body, so an
+  answer that became a `202` and a link would redden both. The absence of a queue is an absence, and
+  no test can hold one.
+- **Assemble the whole document from one snapshot** — a document whose transactions name an account
+  its accounts array does not carry is a file that cannot be restored from, and nothing about it
+  looks wrong until somebody tries. → "The seven reads are one snapshot" under Edge Cases, held by
+  `DataExportSnapshotTests`.
 - **Refuse rather than answer partially** when it cannot reach everything the user owns. → the
   central rule below.
 - **Carry `application/json` and a filename-bearing content disposition, rendered in the Gregorian
@@ -144,8 +152,10 @@ is where a table joining this list has to earn its place.
     client cannot perform, since no endpoint creates, deletes or selects budgets. A *named* 5xx
     mapping is what a later reader could soften into "return the ambient budget and a warning";
     leaving it on the catch-all means the only way to change the answer is to change the throw.
-- **Enforced in**: `ExportDataHandler.HandleAsync` throws `ExportCompletenessException` before the
-  contents are read.
+- **Enforced in**: `ExportDataHandler.HandleAsync` throws `ExportCompletenessException` over the
+  owned set carried by the same snapshot as the contents — so the contents are already read when
+  it throws, and are discarded. `…HandleAsync_RefusesOnTheOwnedSetCarriedByTheSnapshot` holds that
+  the handler reads one snapshot and decides on it.
   `ExportDataHandlerTests.HandleAsync_WhenTheUserOwnsABudgetOtherThanTheAmbientOne_`
   `RefusesRatherThanTruncating` and `…HandleAsync_WhenTheAmbientBudgetIsNotOneTheUserOwns_Refuses`
   hold the two directions — the second is red against a `Count > 1` guard that passes the first —
@@ -557,10 +567,8 @@ sequenceDiagram
     S->>M: GET /api/me/export (responseType text)
     M-->>S: 401 (no cookie, or one naming no live session)
     M->>H: identity and ambient budget published
-    H->>R: FindUserAsync(userId)
-    H->>R: ListOwnedBudgetsAsync(userId)
+    H->>R: ReadSnapshotAsync(userId) — user, owned budgets, contents, one REPEATABLE READ transaction
     H-->>S: 500 (owned set is not exactly the ambient budget)
-    H->>R: ReadAmbientBudgetContentsAsync()
     H-->>S: 200 application/json + Content-Disposition
     S->>D: decodeExportDocument(text)
     D-->>S: unrecognised (shape, schema version, row id, wire framing, envelope version, money)
@@ -571,9 +579,10 @@ sequenceDiagram
     S->>S: save the pretty-printed document as application/json
 ```
 
-The gate sits **before** the contents are read, so a document that will not be assembled costs
-nobody a round trip over their own transactions. On the client the order is the same idea turned
-round: the decoder runs **before** any cipher, so a body this bundle cannot read costs no key
+The gate sits **after** the contents are read, over the owned set read in the same snapshot, so
+the refusal and the document decide on one state. The price is that a refused export has already
+read the budget's rows, and throws them away. On the client the order runs the other way: the
+decoder runs **before** any cipher, so a body this bundle cannot read costs no key
 material, and the hand-over check runs **after** the last open and in the same synchronous block
 as the save, comparing custody's holding against the one taken at the press — so nothing leaves
 the tab after the keys have, or under a custody other than the one it was pressed under. With
@@ -630,8 +639,8 @@ ELSE
   `budget_isolation` scopes the five collection reads. See
   [data isolation](../engineering/data-isolation.md).
 - **`IBudgetContext` and the query filters** — the five reads carry no `where budget_id = …` at all;
-  tenancy comes from the filter and the policy beneath it. `ReadAmbientBudgetContentsAsync`
-  deliberately takes no budget id, following
+  tenancy comes from the filter and the policy beneath it. `ReadSnapshotAsync` deliberately takes
+  no budget id, following
   `ITransactionRepository.DeleteAllForAmbientBudgetAsync`: an id parameter would be a tenancy
   argument with no ownership check to pair with it.
 - **Tenancy end to end** — `DataExportTenancyTests` signs two accounts in on one API, furnishes
@@ -694,15 +703,25 @@ ELSE
   on a path that already materializes everything. **The web client no longer saves such a body**: a
   document that stops part-way is not JSON, the decoder answers `unrecognised`, and nothing is
   written. A caller reading the response as a file still gets the truncated one.
-- **The seven reads are not one snapshot.** Each runs at READ COMMITTED, so a write landing
-  mid-export can produce a document whose parts reflect different states — a transaction naming a
-  payee the payee array does not carry. The `budgets` read is one of the seven, so even the refusal
-  can decide on a set that has since changed. Two things not to assume: **one session per person
-  does not mean one request at a time** — one cookie authorizes as many concurrent calls as a client
-  makes, so this is reachable today, not only after multi-budget ships; and
-  **`ITransactionalExecutor` would not close it**, because that opens at READ COMMITTED and
-  PostgreSQL takes a fresh snapshot per statement. Closing it needs `REPEATABLE READ` around all
-  seven.
+- **The seven reads are one snapshot, and only `REPEATABLE READ` makes them one.**
+  `ExportReadService.ReadSnapshotAsync` runs all seven inside one `REPEATABLE READ` transaction,
+  users first, so a write committing mid-export is wholly in the document or wholly out. **Do not
+  "simplify" it to `ITransactionalExecutor` or to a default `BeginTransactionAsync`** — both open at
+  READ COMMITTED, where PostgreSQL takes a fresh snapshot per statement and the transaction changes
+  nothing: under it the four `DataExportSnapshotTests` cases that commit or delete rows inside the
+  budget mid-export go red (measured). It **refuses** to run inside an ambient transaction rather
+  than joining one, because joining would inherit that transaction's level; the refusal's own
+  message is asserted, because EF's `BeginTransactionAsync` throws the same exception type on an
+  open transaction and would green a deleted guard. One session per person does not mean one
+  request at a time — one cookie authorizes as many concurrent calls as a client makes — so this
+  was reachable, not theoretical.
+  - **The second-budget case does not see the isolation level.** It commits a budget after the
+    export's `budgets` read, so at READ COMMITTED the refusal still sees one budget and answers
+    (measured). What it catches is an owned-budgets read moved outside the snapshot, after the
+    commit.
+  - **What the tests do not hold.** A retry carrying state from one attempt to the next: no test
+    injects a transient failure, so none forces a retry, and "each attempt starts from a fresh
+    snapshot" is held by argument in `ExportReadService` alone.
 - **`Content-Disposition` is unreadable to browser JavaScript.** `Api/Program.cs` sets no
   `Access-Control-Expose-Headers`, so a cross-origin `fetch` sees the body and not the filename. The
   web client names the file itself — it writes the file too — from the **browser's** clock, in the

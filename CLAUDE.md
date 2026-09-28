@@ -199,7 +199,9 @@ because every one of these is something a reader will otherwise simplify away.
   gates each hold a different half. Read [erasure.md](docs/business-logic/erasure.md) before
   widening any.
 - **The export refuses rather than truncates** — it throws unless the owned set is *exactly* the
-  ambient budget, **set equality in both directions**. Do not simplify to `Count > 1`.
+  ambient budget, **set equality in both directions**. Do not simplify to `Count > 1`. All seven
+  reads are **one `REPEATABLE READ` snapshot** owned by `ExportReadService` — a default transaction
+  or `ITransactionalExecutor` is READ COMMITTED and closes nothing.
   [export.md](docs/business-logic/export.md)
 - **Seven list reads are delivered whole** — no page, no cursor, no filter, no search term.
   **Their reasons differ and must not be flattened into one**: payees and accounts have no

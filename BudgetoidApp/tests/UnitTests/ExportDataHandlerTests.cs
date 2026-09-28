@@ -198,6 +198,53 @@ public sealed class ExportDataHandlerTests
     }
 
     /// <summary>
+    /// The refusal is decided over the owned set the one snapshot carries — the same snapshot the
+    /// document would be built from — and the handler reads exactly one.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The read service answers a refusable snapshot first and an exportable one on any later call. A
+    /// handler that took one snapshot for the gate and a second for the document, or that re-read
+    /// before deciding, is handed the exportable state and answers 200 here — which is the bug the
+    /// single snapshot exists to close: a gate and a document deciding on two different states.
+    /// </para>
+    /// <para>
+    /// The call count is asserted beside the refusal because each catches a handler the other misses:
+    /// one that read twice and still decided on the first snapshot refuses correctly, and only the
+    /// count sees it.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task HandleAsync_RefusesOnTheOwnedSetCarriedByTheSnapshot()
+    {
+        // Arrange — first snapshot: two owned budgets, the ambient one among them, so the gate must
+        // refuse. Any later snapshot: only the ambient budget, which the gate would let through.
+        var userId = Guid.CreateVersion7();
+        var ambientBudgetId = Guid.CreateVersion7();
+        var otherBudgetId = Guid.CreateVersion7();
+        var readService = new SequencedExportReadService(
+            new ExportSnapshot(
+                UserRow(userId),
+                [BudgetRow(ambientBudgetId, userId), BudgetRow(otherBudgetId, userId, "Holiday")],
+                InMemoryExportReadService.Empty),
+            new ExportSnapshot(
+                UserRow(userId),
+                [BudgetRow(ambientBudgetId, userId)],
+                InMemoryExportReadService.Empty));
+        var handler = new ExportDataHandler(
+            new StubUserContext(userId),
+            new StubBudgetContext(ambientBudgetId),
+            readService);
+
+        // Act
+        ExportCompletenessException exception =
+            await ThrowsExportCompletenessExceptionAsync(() => handler.HandleAsync(new ExportDataQuery()));
+
+        // Assert
+        await Assert.That(readService.Reads).IsEqualTo(1);
+    }
+
+    /// <summary>
     /// The handler that assembles an export may not be handed a logger by the container.
     /// </summary>
     /// <remarks>
@@ -367,5 +414,27 @@ public sealed class ExportDataHandlerTests
         }
 
         throw new InvalidOperationException("Expected InvalidOperationException.");
+    }
+
+    /// <summary>
+    /// Answers <paramref name="first" /> on the first read and <paramref name="later" /> on every read
+    /// after it, and counts the reads — the shape a second snapshot taken mid-export would have.
+    /// </summary>
+    /// <remarks>
+    /// Nested here rather than in <c>Fakes</c> because it models no production behaviour: it exists
+    /// only to make a handler that reads twice visible to the one test above.
+    /// </remarks>
+    private sealed class SequencedExportReadService(ExportSnapshot first, ExportSnapshot later)
+        : IExportReadService
+    {
+        public int Reads { get; private set; }
+
+        public Task<ExportSnapshot> ReadSnapshotAsync(
+            Guid userId,
+            CancellationToken cancellationToken = default)
+        {
+            Reads++;
+            return Task.FromResult(Reads == 1 ? first : later);
+        }
     }
 }

@@ -8,6 +8,36 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-09-28 — The export reads one REPEATABLE READ snapshot, owned by its read service
+
+**Context:** the export ran seven autocommit statements at READ COMMITTED. A write committing
+between two of them could produce a document whose transactions name an account the accounts array
+does not carry, and a refusal deciding on a budget set that had already changed. One cookie
+authorizes as many concurrent calls as a client makes, so this was reachable.
+
+**Decision:** `ExportReadService.ReadSnapshotAsync` runs all seven reads, users first, in one
+`REPEATABLE READ` transaction inside the execution strategy, and refuses to run inside an ambient
+transaction. The handler makes that one call and decides the completeness refusal over the owned
+set it carries, so the refusal now runs after the contents are read. [export.md](export.md) owns the
+rule.
+
+**Alternatives considered:**
+- **An isolation parameter on `ITransactionalExecutor`**: rejected. It joins an open transaction,
+  so a caller asking for `REPEATABLE READ` could silently get the outer transaction's READ
+  COMMITTED, and its job is write atomicity, not read consistency.
+- **A new application port for consistent reads**: rejected. It would add a port to the persistence
+  boundary for one caller, and a later refactor could move one read outside its lambda. Owning the
+  snapshot in the read service follows `AccountKeyReadService`.
+- **One SQL statement, as the account-keys read does**: rejected. Seven result sets of different
+  shapes do not fit one statement without rebuilding the document in SQL.
+- **Keeping the refusal ahead of the contents read**: rejected. It would need the owned set read
+  outside the snapshot, which is the bug. The cost is that a refused export reads the budget's rows
+  and discards them; every account owns exactly one budget today.
+- **`READ ONLY` on the transaction**: rejected. It takes a `SET TRANSACTION` statement, and
+  `ExecuteSql*` is banned, to guard against a write nothing here makes.
+
+---
+
 ## 2026-09-24 — The export is opened in the tab, parsed with plain JSON.parse, and saved whole or not at all
 
 **Context:** the server hands every name and note back sealed, and the web client used to save its

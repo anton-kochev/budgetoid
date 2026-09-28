@@ -103,7 +103,8 @@ is why it is written here rather than left in the driver.
 
 ## Three reads are held by a stronger rule
 
-`IAccountKeyReadService.ListForAccountAsync`, `IExportReadService.ListOwnedBudgetsAsync` and
+`IAccountKeyReadService.ListForAccountAsync`, `IExportReadService.ReadSnapshotAsync` (its owned
+budgets, one record in) and
 `IRotationInventoryReadService.ListOwnedBudgetIdsAsync` are whole today and are held somewhere
 stronger than a shape assertion in this file could hold them.
 The account-key read says in its own remarks that paging it would hand somebody nine of their ten

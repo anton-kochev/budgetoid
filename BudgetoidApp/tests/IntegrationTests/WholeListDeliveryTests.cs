@@ -417,7 +417,7 @@ public sealed class WholeListDeliveryTests
             Surface: null),
         new(
             typeof(IExportReadService),
-            nameof(IExportReadService.ListOwnedBudgetsAsync),
+            nameof(IExportReadService.ReadSnapshotAsync),
             ListDelivery.HeldElsewhere,
             ReasonFamily.HeldByAStrongerRule,
             ListKeying.KeyedOnAnAccount,
@@ -425,7 +425,10 @@ public sealed class WholeListDeliveryTests
             + "truncates, throwing unless the owned set is exactly the ambient budget, by set equality "
             + "in both directions. A gate saying merely 'this comes back whole' would be a weaker "
             + "claim sitting on top of a refusal, and the weaker one is the sentence a later reader "
-            + "would quote.",
+            + "would quote. The list discovered here is ExportSnapshot.OwnedBudgets, one level into "
+            + "the record the export's single snapshot read answers with; the five collections inside "
+            + "the ambient budget sit a second record deep and are outside discovery, which is the "
+            + "limit ReturnsAList states.",
             Surface: null),
         new(
             typeof(IRotationInventoryReadService),
@@ -480,7 +483,7 @@ public sealed class WholeListDeliveryTests
             "ICategoryReadService.GetAllAsync",
             "ICredentialReadService.ListForUserAsync",
             "ICurrencyReadService.GetAllAsync",
-            "IExportReadService.ListOwnedBudgetsAsync",
+            "IExportReadService.ReadSnapshotAsync",
             "IPasskeyRepository.ListWebAuthnCredentialIdsForUserAsync",
             "IPayeeReadService.GetAllAsync",
             "IRotationInventoryReadService.ListOwnedBudgetIdsAsync",
