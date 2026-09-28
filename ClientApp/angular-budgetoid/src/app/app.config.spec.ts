@@ -1,9 +1,15 @@
-import { HttpClient } from '@angular/common/http';
+import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import {
   HttpTestingController,
   provideHttpClientTesting,
 } from '@angular/common/http/testing';
-import { ApplicationInitStatus, ErrorHandler } from '@angular/core';
+import {
+  ApplicationInitStatus,
+  createEnvironmentInjector,
+  EnvironmentInjector,
+  ErrorHandler,
+  NgZone,
+} from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { Router } from '@angular/router';
 import {
@@ -13,12 +19,17 @@ import {
 import { MeApiService } from '@app-core/api/me-api.service';
 import { FailureErrorHandler } from '@app-core/logging/failure-error-handler';
 import { FailureOAuthLogger } from '@app-core/logging/failure-oauth-logger';
+import type { FailureProjection } from '@app-core/logging/log-failure';
+import { provideFailureLogging } from '@app-core/logging/provide-failure-logging';
 import { AuthService } from '@app-core/services/auth-service';
 import { ConfigurationService } from '@app-core/services/configuration.service';
 import { SessionService } from '@app-core/session/session.service';
 import { OAuthLogger, OAuthService } from 'angular-oauth2-oidc';
 import { of } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+// Types only: the global `Zone` declaration. The runtime is the polyfill the
+// builder already loaded, and a second load would throw.
+import type {} from 'zone.js';
 import {
   expectOneErrorLine,
   spyOnEveryConsoleMethod,
@@ -234,6 +245,9 @@ describe('appConfig', () => {
 // zone.js reads it as `Zone[__symbol__('ignoreConsoleErrorUncaughtError')]`:
 // a property of the `Zone` constructor, never of `window`.
 const ZONE_UNCAUGHT_FLAG = '__zone_symbol__ignoreConsoleErrorUncaughtError';
+// What zone.js calls for a rejection no zone claimed, beside the flag.
+const ZONE_REJECTION_HANDLER =
+  '__zone_symbol__unhandledPromiseRejectionHandler';
 
 // The `Zone` constructor, or a thrown precondition: a runner without zone.js
 // would leave the flag pin passing or failing for a reason that is not the
@@ -251,6 +265,17 @@ describe('appConfig failure logging', () => {
   const EMAIL = 'alice@example.test';
   let spies: ConsoleSpies;
   let httpMock: HttpTestingController;
+  // A child injector a case built on its own. Destroyed before the module is
+  // reset, because it registered window listeners of its own.
+  let childInjector: EnvironmentInjector | undefined;
+  // zone.js's own handler, read when the cases are collected: by the time any
+  // `beforeEach` runs, the `appConfig` block above has built modules that
+  // replaced it, so a read there would save this module's handler as the
+  // original.
+  const originalRejectionHandler: unknown = Reflect.get(
+    zoneGlobal(),
+    ZONE_REJECTION_HANDLER,
+  );
 
   beforeEach(() => {
     spies = spyOnEveryConsoleMethod();
@@ -304,11 +329,14 @@ describe('appConfig failure logging', () => {
 
   afterEach(() => {
     httpMock.verify();
+    childInjector?.destroy();
+    childInjector = undefined;
     // Destroys the environment injector, which is what removes the window
     // listeners — left installed they would answer the next file's events.
     TestBed.resetTestingModule();
     vi.restoreAllMocks();
     Reflect.deleteProperty(zoneGlobal(), ZONE_UNCAUGHT_FLAG);
+    Reflect.set(zoneGlobal(), ZONE_REJECTION_HANDLER, originalRejectionHandler);
   });
 
   it('tells zone.js not to print an uncaught error itself', async () => {
@@ -322,6 +350,105 @@ describe('appConfig failure logging', () => {
 
     // Assert
     expect(Reflect.get(zoneGlobal(), ZONE_UNCAUGHT_FLAG)).toBe(true);
+  });
+
+  it('sets zone’s flags when the environment is created, before any app initializer', () => {
+    // Arrange — the module above has already run its initializers, so the
+    // flag it set is cleared here. A child environment injector runs its
+    // environment initializers on creation and never runs app initializers:
+    // a flag set by an app initializer stays unset below, and an error thrown
+    // between the two phases would be printed by zone.js whole.
+    // The rejection handler is put back to zone.js's own for the same reason.
+    const parent = TestBed.inject(EnvironmentInjector);
+    Reflect.deleteProperty(zoneGlobal(), ZONE_UNCAUGHT_FLAG);
+    Reflect.set(zoneGlobal(), ZONE_REJECTION_HANDLER, originalRejectionHandler);
+
+    // Act
+    childInjector = createEnvironmentInjector(
+      [provideFailureLogging()],
+      parent,
+    );
+
+    // Assert — no `ApplicationInitStatus` is touched. The handler is only
+    // checked for being replaced; what it prints is the next case's subject.
+    expect(Reflect.get(zoneGlobal(), ZONE_UNCAUGHT_FLAG)).toBe(true);
+    const handler: unknown = Reflect.get(zoneGlobal(), ZONE_REJECTION_HANDLER);
+    expect(typeof handler).toBe('function');
+    expect(handler).not.toBe(originalRejectionHandler);
+  });
+
+  // The response row is what proves the handler projects the value it was
+  // handed: a handler printing a fixed `Error` of its own would still answer
+  // the plain-error row.
+  const rootRejections: readonly {
+    readonly label: string;
+    readonly rejection: () => unknown;
+    readonly projection: FailureProjection;
+  }[] = [
+    {
+      label: 'a failed response',
+      rejection: () => new HttpErrorResponse({ status: 418, url: EMAIL }),
+      projection: { kind: 'http', status: 418 },
+    },
+    {
+      label: 'a plain error',
+      rejection: () => new Error(EMAIL),
+      projection: { kind: 'error' },
+    },
+  ];
+
+  it.each(rootRejections)(
+    'routes a rejection nobody handles outside Angular’s zone through the funnel, once: $label',
+    async ({ rejection, projection }) => {
+      // Arrange — outside Angular's zone nothing claims the rejection, so
+      // zone.js hands it to its own unhandled-rejection handler. Its default
+      // re-dispatches a `PromiseRejectionEvent` built without the `promise`
+      // member the constructor requires, swallows the throw, and the
+      // rejection disappears without a line. The precondition is that
+      // default being there to replace: the runner's `PromiseRejectionEvent`
+      // is what makes zone.js install it.
+      expect(typeof originalRejectionHandler).toBe('function');
+      await TestBed.inject(ApplicationInitStatus).donePromise;
+      spies.error.mockClear();
+      const reason = rejection();
+
+      // Act
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- an `HttpErrorResponse` is not an `Error`, and it is what an awaited request rejects with.
+      void Zone.root.run(() => Promise.reject(reason));
+      await new Promise<void>((resolve) => setTimeout(resolve));
+
+      // Assert
+      expectOneErrorLine(spies, 'Unhandled rejection', projection);
+    },
+  );
+
+  it('a rejection inside Angular’s zone still prints once', async () => {
+    // Arrange — Angular's zone claims the rejection, so zone.js's own handler
+    // never sees it; a handler that printed too would make this two lines.
+    // `bootstrap()` is what subscribes the zone's `onError` to the
+    // `ErrorHandler`, and TestBed never calls it, so the subscription is
+    // restated here exactly as bootstrap makes it.
+    await TestBed.inject(ApplicationInitStatus).donePromise;
+    const zone = TestBed.inject(NgZone);
+    const errorHandler = TestBed.inject(ErrorHandler);
+    const subscription = zone.runOutsideAngular(() =>
+      zone.onError.subscribe({
+        next: (error: unknown) => errorHandler.handleError(error),
+      }),
+    );
+    spies.error.mockClear();
+
+    // Act
+    try {
+      // `void`, not a handler: the rejection going unhandled is the subject.
+      void zone.run(() => Promise.reject(new Error(EMAIL)));
+      await new Promise<void>((resolve) => setTimeout(resolve));
+    } finally {
+      subscription.unsubscribe();
+    }
+
+    // Assert
+    expectOneErrorLine(spies, 'Unhandled error', { kind: 'error' });
   });
 
   it('routes an unhandled rejection through the funnel and claims it', async () => {

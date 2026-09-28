@@ -77,9 +77,15 @@ places a library or the platform writes to the console without asking, and
 - **`provideBrowserGlobalErrorListeners()` claims the window's `error` and `unhandledrejection`
   events**, hands them to the handler above and calls `preventDefault()`, so the browser prints
   nothing of its own.
-- **An initializer sets zone.js's `ignoreConsoleErrorUncaughtError` flag on the `Zone`
-  constructor**, spelled with `__Zone_symbol_prefix` when a page sets one. Without it zone.js
-  prints an unhandled rejection itself — message, value and stack — past every handler here.
+- **An environment initializer claims zone.js's unhandled rejections.** It sets the
+  `ignoreConsoleErrorUncaughtError` flag on the `Zone` constructor, without which zone.js prints an
+  unhandled rejection itself — message, value and stack — past every handler here, and it installs
+  zone's `unhandledPromiseRejectionHandler` as a call to `logFailure`. Both keys are spelled with
+  `__Zone_symbol_prefix` when a page sets one. The handler is not redundant with the window
+  listener above: for a rejection outside Angular's zone, zone builds a `PromiseRejectionEvent`
+  whose `promise` is undefined, the constructor throws, and zone swallows the throw — so without
+  the handler the flag would turn that rejection from printed whole into printed nowhere. It runs
+  as an *environment* initializer so both keys are set before any app initializer can reject.
 
 **The order in `app.config.ts` is the rule for the logger.** `provideFailureLogging()` sits after
 `provideOAuthClient()` because the last provider for a token wins; above it, the library's
@@ -100,7 +106,9 @@ walking the object rather than listed by hand, so moving the detail from `error`
 **`app.config.spec.ts` holds the registrations**, which the funnel's own specs construct directly
 and cannot see: the `ErrorHandler` and the `OAuthLogger` resolve to the funnel's classes, a window
 `ErrorEvent` and an `unhandledrejection` each end `defaultPrevented` with only the projection
-printed, and the zone flag is set once the initializers have run.
+printed, a rejection inside Angular's zone and one run in zone's root zone each print exactly one
+funnel line, and both zone keys are set by the environment injector alone, before any app
+initializer runs.
 
 **`src/no-console-outside-funnel.spec.ts` is a census over the source**, with comments removed by
 the TypeScript printer rather than a regex, which cannot tell `//` inside a string, template or
