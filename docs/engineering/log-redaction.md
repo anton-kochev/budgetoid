@@ -115,18 +115,23 @@ initializer runs.
 
 **`src/no-console-outside-funnel.spec.ts` is a census over the source**, with comments removed by
 the TypeScript printer rather than a regex, which cannot tell `//` inside a string, template or
-regular expression from a comment. It asserts that only `log-failure.ts` names `console`, that only
-`app.config.ts` calls `provideOAuthClient(`, and that `setupAutomaticSilentRefresh`,
-`silentRefresh(` and `refreshToken(` appear nowhere. **The census, not lint, is what holds
-`main.ts` and every other file**: an inline `eslint-disable-next-line` switches a lint rule off and
-nothing reports it, while the census has no escape. A manufactured probe went red in the census
-where lint stayed quiet.
+regular expression from a comment. It walks `src/` and the scripts `public/` ships, and asserts:
+that only `log-failure.ts` names `console`; that only `app.config.ts` calls `provideOAuthClient(`;
+that `setupAutomaticSilentRefresh`, `silentRefresh(` and `refreshToken(` appear nowhere; that
+`responseType` appears only as the HTTP client's option, because the OAuth library's code flow
+writes its raw token-endpoint failure to the console directly (`auth-service.spec.ts` holds the
+same from the other side: `configure` receives no response type); and that only
+`provide-failure-logging.ts` reaches a global object by a computed key or through `Reflect`.
+**The census, not lint, is what holds `main.ts` and every other file**: an inline
+`eslint-disable-next-line` switches a lint rule off and nothing reports it, while the census has no
+inline escape. A manufactured probe went red in the census where lint stayed quiet.
 
 **Lint is the early warning.** `eslint.config.js` carries three rules because each misses a
 spelling: `no-console` sees `console.x`, `no-restricted-globals` sees `console` passed or
 destructured, and `no-restricted-properties` sees it reached through `globalThis`, `window` or
 `self`. The exemptions are the funnel, `src/testing/console-spies.ts` and `*.spec.ts` — nothing
-else.
+else. The shipped scripts under `public/` get their own narrow block with `no-console`, since they
+are plain scripts rather than TypeScript.
 
 The accounts, categories and transactions service specs each pin one exact failure line, so a
 service that went back to printing its cause fails where it lives.

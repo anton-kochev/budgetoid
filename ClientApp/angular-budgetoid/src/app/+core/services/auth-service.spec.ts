@@ -146,6 +146,28 @@ describe('AuthService', () => {
     expect(setupAutomaticSilentRefresh).not.toHaveBeenCalled();
   });
 
+  // **The client runs the implicit flow, and that is chosen by leaving
+  // `responseType` out.** Under `responseType: 'code'` the library exchanges
+  // the code itself, and that exchange writes the token endpoint's raw failure
+  // and an id-token rejection naming two subjects to the console directly,
+  // past the funnel's logger. `no-console-outside-funnel.spec.ts` holds the
+  // spelling in the source; this holds what reaches `configure`.
+  it('configures the client without choosing a response type', async () => {
+    // Arrange
+    const configure = vi.fn();
+    const service = authServiceOver({
+      configure,
+      loadDiscoveryDocumentAndTryLogin: vi.fn(() => Promise.resolve(true)),
+    });
+
+    // Act
+    await service.initialize();
+
+    // Assert
+    expect(configure).toHaveBeenCalledOnce();
+    expect(configure.mock.calls[0]?.[0]).not.toHaveProperty('responseType');
+  });
+
   // NFR-025 is about how often the provider hears from this browser, so a second
   // ask — the return leg's initializer and then a press of the provider button
   // on the same page, or two presses — must not be a second discovery fetch.

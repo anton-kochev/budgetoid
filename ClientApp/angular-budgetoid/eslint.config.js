@@ -2,6 +2,7 @@
 const eslint = require('@eslint/js');
 const tseslint = require('typescript-eslint');
 const angular = require('angular-eslint');
+const globals = require('globals');
 
 module.exports = tseslint.config(
   {
@@ -145,6 +146,20 @@ module.exports = tseslint.config(
       'no-console': 'off',
       'no-restricted-globals': 'off',
       'no-restricted-properties': 'off',
+    },
+  },
+  {
+    // Scripts the builder copies into the bundle as written. Each is loaded
+    // by a plain `<script>` tag, so it runs as a classic script in the page,
+    // before the application and outside its funnel.
+    files: ['public/**/*.js'],
+    extends: [eslint.configs.recommended],
+    languageOptions: {
+      sourceType: 'script',
+      globals: globals.browser,
+    },
+    rules: {
+      'no-console': 'error',
     },
   },
   {

@@ -8,7 +8,8 @@ import { listFiles } from './production-bundle';
 // FR-034/FR-035: no console line carries an email, a credential subject or a
 // narrative value. `log-failure.ts` is the one module that prints, and it prints
 // a literal reason and a closed projection of the cause. This census holds the
-// "one module" half by reading `src/`.
+// "one module" half by reading `src/` and the scripts in `public/`.
+// `no-console-in-bundle.spec.ts` holds the libraries' half.
 //
 // Lint is not enough on its own. `no-console` is switched off by one inline
 // `eslint-disable-next-line`, and nothing in the lint run reports that the
@@ -28,6 +29,7 @@ import { listFiles } from './production-bundle';
 
 const sourceDir = join(process.cwd(), 'src');
 const testingDir = join(sourceDir, 'testing');
+const publicDir = join(process.cwd(), 'public');
 
 // Loaded at run time rather than imported, so the compiler is not bundled into
 // the spec. Only its types are imported.
@@ -43,7 +45,7 @@ function withoutComments(fileName: string, text: string): string {
     text,
     ts.ScriptTarget.Latest,
     false,
-    ts.ScriptKind.TS,
+    fileName.endsWith('.js') ? ts.ScriptKind.JS : ts.ScriptKind.TS,
   );
 
   return printer.printFile(source);
@@ -54,15 +56,24 @@ interface ShippedSource {
   readonly code: string;
 }
 
-// Every shipped `.ts` file, relative to the client root with `/` separators.
+function shippedSource(path: string): ShippedSource {
+  return {
+    path: relative(process.cwd(), path).split(sep).join('/'),
+    code: withoutComments(path, readFileSync(path, 'utf8')),
+  };
+}
+
+// Every shipped `.ts` file under `src/`, and every script under `public/`,
+// which the builder copies into the bundle as written — `theme-prepaint.js`
+// runs before the application does. Paths are relative to the client root
+// with `/` separators.
 function shippedSources(): ShippedSource[] {
-  return listFiles(sourceDir)
+  const application = listFiles(sourceDir)
     .filter((path) => path.endsWith('.ts') && !path.endsWith('.spec.ts'))
-    .filter((path) => !path.startsWith(testingDir + sep))
-    .map((path) => ({
-      path: relative(process.cwd(), path).split(sep).join('/'),
-      code: withoutComments(path, readFileSync(path, 'utf8')),
-    }));
+    .filter((path) => !path.startsWith(testingDir + sep));
+  const copied = listFiles(publicDir).filter((path) => path.endsWith('.js'));
+
+  return [...application, ...copied].map(shippedSource);
 }
 
 function filesMatching(
@@ -85,6 +96,9 @@ describe('the console', () => {
     // that stops at the top level would leave every case below green.
     expect(sources.length).toBeGreaterThanOrEqual(80);
     expect(sources.map(({ path }) => path)).toContain('src/main.ts');
+    expect(sources.map(({ path }) => path)).toContain(
+      'public/theme-prepaint.js',
+    );
   });
 
   it('is named by no shipped file but the funnel', () => {
@@ -136,6 +150,41 @@ describe('the console', () => {
 
     // Assert
     expect(calling).toEqual([]);
+  });
+
+  it('is not reached through the OAuth code flow', () => {
+    // Arrange — the library chooses the code flow from `responseType`. Its
+    // code exchange writes the token endpoint's raw failure with
+    // `console.error('Error getting token', err)` and an id-token rejection,
+    // which can name two subjects, with `console.error(reason)`, both
+    // directly and past the funnel's logger. The one legitimate spelling is
+    // the HttpClient option in the base API service. The word alone is the
+    // needle, not `responseType:`, so an assignment such as
+    // `oAuth.responseType = 'code'` counts too.
+
+    // Act
+    const naming = filesMatching(sources, /\bresponseType\b/);
+
+    // Assert
+    expect(naming).toEqual(['src/app/+core/api/base-api.service.ts']);
+  });
+
+  it('is not reached through a computed read of a global object', () => {
+    // Arrange — `globalThis['con' + 'sole']` and
+    // `Reflect.get(window, name)` spell the console with no `console` token,
+    // and the lint rules see neither. The one legitimate reader is the
+    // funnel's own provider, which takes zone.js's two unhandled-rejection
+    // keys off `Zone` with `Reflect.get(globalThis, 'Zone')`.
+    const computed =
+      /\b(?:globalThis|window|self)\s*(?:\?\.)?\[|\bReflect\s*\.\s*\w+\s*\(\s*(?:globalThis|window|self)\b/;
+
+    // Act
+    const reading = filesMatching(sources, computed);
+
+    // Assert
+    expect(reading).toEqual([
+      'src/app/+core/logging/provide-failure-logging.ts',
+    ]);
   });
 
   it('is still found once the comments are gone', () => {

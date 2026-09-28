@@ -16,4 +16,7 @@ try {
   if (m === 'light' || m === 'dark') {
     document.documentElement.style.colorScheme = m;
   }
-} catch (e) {}
+} catch {
+  // Storage refused (blocked cookies, a sandboxed frame): paint the default
+  // scheme and leave the choice to ThemeService.
+}
