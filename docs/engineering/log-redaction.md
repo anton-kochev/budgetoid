@@ -131,6 +131,17 @@ else.
 The accounts, categories and transactions service specs each pin one exact failure line, so a
 service that went back to printing its cause fails where it lives.
 
+**`src/no-console-in-bundle.spec.ts` pins what the libraries print.** The source census cannot see
+`node_modules`, and the production bundle carries some two dozen `console` calls of its own — the
+OAuth library, zone.js, core, the router, the component library. The spec parses every emitted
+chunk, keys each reference to the global `console` by its enclosing call with every identifier
+replaced by `_` (so a minifier's renames change nothing and a new call changes the key), and
+compares the result as a multiset against a table in which every key carries the reason it cannot
+print an email, a subject or a narrative value today. A library upgrade that adds a call, or a
+second copy of an existing one, is red until somebody writes that reason. What it cannot see is an
+existing call whose argument changes meaning under the same shape, and a library reaching the
+console through a property or a computed name.
+
 ### Deliberate absences in the browser
 
 - **No test enumerates the narrative fields.** The projection never reads a string off the cause,
