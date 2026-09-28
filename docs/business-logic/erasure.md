@@ -75,6 +75,8 @@ role holds no `DELETE` there of any shape.
 - **Run as one database transaction, deleting every row it covers or leaving every one exactly as it
   found them** — a half-finished erasure is worse than none: the person cannot tell what survived,
   and nothing in the product would be left to tell them. → the atomicity rule below.
+- **End every session and session token on the account — whichever credential opened it and
+  whatever its kind — in the erasure's own transaction, by the cascade.** → the session rule below.
 - **Run as the least-privilege application role, on the connection serving the request** — an
   elevated connection would dissolve
   [ADR 0004](../decisions/0004-connect-as-a-least-privilege-role.md), and an administrator is not
@@ -389,6 +391,66 @@ role holds no `DELETE` there of any shape.
 
 ---
 
+- **Rule**: Erasure ends every session on the account by **deleting** it, never by revoking it.
+  Every `sessions` row and every `session_tokens` row the account holds — opened by any of its
+  credentials, `Full` or `Locked` — leaves by the referential cascade
+  `users → credentials → sessions → session_tokens`, in the same transaction as the user row.
+  `EraseAccountHandler` names neither table.
+- **Why**: four reasons, and the last is what turns the first three into something a person sees.
+  1. **The token an account holds is a `session_tokens` row.** It is the digest a cookie is looked
+     up by, and the one handle this system issues for a request to present. The identity
+     provider's ID token is not issued here and cannot be ended here; what bounds it is where it
+     reaches, which is `/api/registration` alone — the resurrection gotcha under
+     [Edge Cases](#edge-cases--known-gotchas) argues it, and this rule does not restate it.
+  2. **A revocation instant would be a remnant.** A revoked session still present names the erased
+     user, which the no-remnant rule above and the post-condition both forbid. Stamped and then
+     deleted in the same transaction, it is a write nobody can read: the account it would be
+     reported to is gone, and the `204` carries no body to report it in.
+  3. **The cascade is the only way a session row leaves.** The role holds `SELECT`, `INSERT` and
+     `UPDATE (revoked_at_utc)` on `sessions`, `SELECT` and `INSERT` on `session_tokens`, and no
+     `DELETE` on either — by decision, argued in `app-role-grants.sql` — so no statement this role
+     can issue removes one. Revoking first would open no other route; it would only load the
+     account's sessions into the change tracker ahead of the user delete, the shape the
+     change-tracker rule above documents for `budgets`. On the credential-revocation path that load
+     is why a second `DiscardTrackedEntities()` sits between the sweep and the delete. Erasure would
+     inherit the same obligation, for every credential at once, to protect a stamp it then deletes.
+  4. **Authentication re-reads both rows on every request and keeps nothing.**
+     `AuthenticateSessionHandler` looks up `session_tokens` by digest and then reads the `sessions`
+     row, per request, through the request's own scoped context — the session read untracked — and
+     holds no earlier answer. So a deleted row is refused on the very next request from any device
+     holding a cookie for it: a missing token ends the lookup, a token whose session is gone fails
+     the session read, and either way the request stays unauthenticated and the fallback policy
+     answers `401`.
+- **Enforced in**:
+  `AccountErasureEndpointTests.Erase_WithOtherSessionsOnTheAccount_AnswersEachOfThem401`. It opens
+  sessions through three other credentials on the erased account — another passkey, the
+  recovery-code set, and the federated credential under a `Locked` session — proves each live on
+  `GET /api/currencies` before the act (`200`, `200`, `403`), and requires `401` from all three
+  after it. The cascade runs per credential, so one session per credential kind is what the seeding
+  is for. A survivor account carries the same spread and must still answer `200`, `200` and `403`,
+  so an erasure that ended every `Locked` session in the database, or every session a set opened,
+  cannot pass. Dropping the `sessions → credentials` edge reds it, and so does an authentication
+  path that caches what a token resolved to.
+  - **The federated arm is schema-legal, not reachable.** No production path opens a session on the
+    federated credential today — see [sessions.md](sessions.md). It is seeded because it is the
+    cheapest proof that the cascade does not depend on which credential types happen to open
+    sessions now.
+  - **The token half is held by the sweep, not by that test.** `session_tokens` is a row of the
+    file's `OwnedTables`, so `…Erase_ForAFullyFurnishedAccount_LeavesNoRowInAnyTable` requires it
+    empty after an erasure and `…Erase_LeavesAnotherAccountUntouched` requires the survivor's
+    unmoved. The per-session test cannot see a lost token cascade: a token whose session is gone
+    already fails the session read and answers `401`, so from the wire a stray handle and a deleted
+    one look the same. Dropping the `session_tokens → sessions` edge reds the sweeps and leaves that
+    test green.
+- **Counterexample**: borrowing revoke-then-delete from the credential-revocation path, because
+  [sessions.md](sessions.md) says a credential-removal path must revoke explicitly. That rule exists
+  so a surviving account can be told when access ended — `sessionsEnded` in the response. Here
+  nobody survives to be told, the stamp dies in the transaction that wrote it, and the load it needs
+  is one more set of tracked entities in front of the user delete.
+- **Source**: `[SOURCE: user-story]`
+
+---
+
 - **Rule**: No identifier of an erased account is written to a log, a trace or a metric.
 - **Why**: a log line naming the user id that was just erased is a deletion record that outlives the
   row, kept where no gate on this page can see it. Both other gates read *names* — a column in a
@@ -501,7 +563,7 @@ sequenceDiagram
     H->>D: BEGIN
     H->>D: delete transactions (ambient budget)
     H->>D: delete the user row
-    D-->>D: cascade: credentials, sessions, passkey rows, budgets,<br/>accounts, category groups, categories, payees
+    D-->>D: cascade: credentials, sessions, session tokens, passkey rows,<br/>budgets, accounts, category groups, categories, payees
     H->>D: COMMIT
     A-->>C: 204 No Content
 ```

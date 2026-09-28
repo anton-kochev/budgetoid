@@ -8,6 +8,46 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-09-28 — Erasure ends sessions by deletion, not revocation
+
+**Context:** FR-024 requires that an erasure invalidate every session and token issued to the erased
+account. The credential-removal paths already carry a rule that reads as if it applies: revoke
+explicitly, then delete, so that the ending of access is observable. Erasure removes every
+credential on the account, so the question was whether it owes the same sweep.
+
+**Decision:** leave it to the cascade. Every `sessions` row and every `session_tokens` row
+leaves by the referential cascade `users → credentials → sessions → session_tokens`, in the
+erasure's own transaction, whichever credential opened the session and whatever its kind.
+`EraseAccountHandler` revokes nothing and names neither table.
+`AccountErasureEndpointTests.Erase_WithOtherSessionsOnTheAccount_AnswersEachOfThem401` holds the
+sessions and the `session_tokens` row of that file's `OwnedTables` holds the tokens.
+[erasure.md](erasure.md) owns the rule; [sessions.md](sessions.md) names it as the one exception to
+revoke-then-delete.
+
+**Alternatives considered:**
+- **Revoke, then let the cascade delete**: rejected. The stamp is a remnant for as long as it
+  exists, and the transaction that writes it deletes it, so no reader ever sees it — the account it
+  would be reported to is gone. Revoking also loads every session into the change tracker ahead of
+  the user delete, which on the credential-revocation path is why a second
+  `DiscardTrackedEntities()` has to sit between the sweep and the delete, against tables that answer
+  `42501` when EF tries to delete tracked rows itself.
+- **An explicit session delete in the handler**: rejected. The role holds no `DELETE` on `sessions`
+  or `session_tokens`, by design — `app-role-grants.sql` argues both absences — and the cascade
+  already removes the rows, as the referencing table's owner.
+- **Clearing the cookie on the erasure response**: rejected. The erasure.md gotcha on the request's
+  own session row being deleted mid-request argues against it.
+
+**Consequences:** a session on a surviving account records when it ended; a session on an erased
+account records nothing, because nothing of it remains. Authentication re-reads `session_tokens` and
+then `sessions` on every request, so every device holding a cookie for the account is refused with
+`401` on its next request. The test that proves the sessions end cannot see a lost token cascade —
+a token whose session is gone already fails the session read — so the `OwnedTables` sweep is what
+holds the tokens.
+
+**Affected areas:** [erasure.md](erasure.md), [sessions.md](sessions.md).
+
+---
+
 ## 2026-09-28 — The export's column set is judged against the data inventory, by value and in both directions
 
 **Context:** `DataExportCompletenessTests` pins every member of the document by hand, so it holds

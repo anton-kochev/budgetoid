@@ -704,8 +704,10 @@ stateDiagram-v2
     [*] --> Established : a credential authenticates its owner
     Established --> Revoked : someone ends this session, or the credential that opened it
     Established --> Expired : expires_at_utc passes with nobody revoking anything
+    Established --> Erased : the account is erased, and the row is deleted rather than stamped
     Revoked --> [*]
     Expired --> [*]
+    Erased --> [*]
 ```
 
 | Transition | Triggered by | Validations |
@@ -713,6 +715,7 @@ stateDiagram-v2
 | → Established | `Session.Establish(credential, createdAtUtc, expiresAtUtc)`, reached from `RegisterAccountHandler` once a registration ceremony verifies — over the **passkey** credential it just created, never the recovery-codes one — from `CompleteAssertionHandler` once a passkey assertion verifies, from `RedeemRecoveryCodeHandler` once a presented verifier matches a stored hash, and from `GenerateRecoveryCodesHandler` when replacing a set ended at least one of that set's sessions | the credential is required; the expiry must be after the creation instant; the kind is derived from the credential's type and cannot be supplied |
 | Established → Revoked | `Session.Revoke(revokedAtUtc)`, reached two ways: through `RevokeSessionsForCredentialHandler`, which `RevokePasskeyHandler` and `GenerateRecoveryCodesHandler` each call before deleting a credential, and through `RevokeSessionHandler`, which `POST /api/me/session/revocation` calls to end the caller's own | none. Already revoked is a no-op keeping the first instant, which is what makes a retry honest about having ended nothing new |
 | Established → Expired | the clock | none. `IsActiveAt` reads the expiry as well as the revocation, with an exclusive boundary: a session is live up to its expiry and not at it |
+| Established → Erased | `EraseAccountHandler` deleting the user row; the session and its `session_tokens` rows leave by the cascade `users → credentials → sessions → session_tokens`, in the erasure's own transaction. A revoked or expired row leaves the same way | none, and nothing is stamped: a `revoked_at_utc` would be a remnant. The cascade runs as the referencing table's owner, because the role holds no `DELETE` on either table — see [erasure.md](erasure.md). The next request presenting the cookie finds no token row and answers `401` |
 
 There is no transition back. Nothing un-revokes a session and nothing extends one.
 
@@ -868,6 +871,13 @@ ELSE                                                    ← an unenumerated futu
     `GenerateRecoveryCodesHandler` each revoke and then delete — and because the delete removes the
     very rows the revocation just stamped, the schema afterwards is identical either way. So the
     evidence leaves in the response instead, as `sessionsEnded`.
+  - **Erasure is the one exception, and it is named rather than implied.** `EraseAccountHandler`
+    removes every credential on the account and revokes nothing: each session and its token rows
+    leave by the cascade from `users`, in the erasure's own transaction. The rule above exists so a
+    surviving account can be told when access ended; after an erasure nobody is left to tell, and a
+    stamp would be a remnant deleted by the transaction that wrote it. See
+    [erasure.md](erasure.md). This does not loosen the rule for any path that leaves the account
+    standing.
   - **The test nobody should write** is "after revocation the credential has no active session". It
     is green with the revocation call deleted, and therefore proves nothing.
   - **On the recovery-code path a second mutation produces the same wrong number**: swapping the

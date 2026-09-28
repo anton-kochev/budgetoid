@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Security.Cryptography;
 using System.Text.Json.Nodes;
 using Api.Infrastructure;
 using Application.Passkeys;
@@ -34,8 +35,11 @@ namespace IntegrationTests;
 /// fresh assertion rather than by the bearer token. That is why each one registers a
 /// <see cref="SyntheticAuthenticator" /> over HTTP instead of relying on the passkey material
 /// <see cref="SeedIdentityRowsAsync" /> writes out of band: the seeded key answers to no private key,
-/// so no signature could ever verify against it. The seeded rows stay, and are still what puts a row
-/// in <c>sessions</c> — a table no endpoint writes to yet.
+/// so no signature could ever verify against it. The seeded rows stay, because they are what puts a
+/// row in every passkey and recovery-code table the sweep counts. <c>sessions</c> and
+/// <c>session_tokens</c> would hold a row without them: sign-in and registration write both today,
+/// and <see cref="ApiFactory.CreateSignedInClientAsync" /> seeds the same pair for every client it
+/// hands back.
 /// </para>
 /// <para>
 /// What this file is about is unchanged: the deletion order, the post-condition, and the tables the
@@ -100,6 +104,12 @@ public sealed class AccountErasureEndpointTests
     /// cascade really reaches it rather than that some statement was issued.
     /// </para>
     /// <para>
+    /// <c>session_tokens</c> is in the list because a row there is what a cookie is looked up by. It
+    /// carries <c>user_id</c> beside <c>session_id</c> and leaves only through the cascade from
+    /// <c>sessions</c>, so a stray row is a handle that still names the erased person — the
+    /// <c>sessions</c> row going is not enough on its own to prove the handle went with it.
+    /// </para>
+    /// <para>
     /// <b>This list is hand-written and nothing checks it against the live schema</b>, which is why
     /// <c>wrapped_account_keys</c> could be added to the database and leave every test in this file
     /// green while the FR-025 claim quietly covered one table less than it says.
@@ -112,6 +122,7 @@ public sealed class AccountErasureEndpointTests
         new("users", "id", OwnedBy.User),
         new("credentials", "user_id", OwnedBy.User),
         new("sessions", "user_id", OwnedBy.User),
+        new("session_tokens", "user_id", OwnedBy.User),
         new("passkey_public_keys", "user_id", OwnedBy.User),
         new("passkey_signature_counters", "user_id", OwnedBy.User),
         new("recovery_code_hashes", "user_id", OwnedBy.User),
@@ -218,7 +229,9 @@ public sealed class AccountErasureEndpointTests
         IReadOnlyDictionary<string, long> before = await CountOwnedRowsAsync(admin, userId, budgetId);
         foreach (OwnedTable table in OwnedTables)
         {
-            await Assert.That(before[table.Name]).IsGreaterThan(0L);
+            await Assert.That(before[table.Name])
+                .IsGreaterThan(0L)
+                .Because($"the furnishing must put a row in {table.Name} before the erasure");
         }
 
         // The set carries more factor rows than live codes under its credential, so one of them
@@ -237,7 +250,9 @@ public sealed class AccountErasureEndpointTests
         IReadOnlyDictionary<string, long> after = await CountOwnedRowsAsync(admin, userId, budgetId);
         foreach (OwnedTable table in OwnedTables)
         {
-            await Assert.That(after[table.Name]).IsEqualTo(0L);
+            await Assert.That(after[table.Name])
+                .IsEqualTo(0L)
+                .Because($"the erasure must leave no row in {table.Name}");
         }
     }
 
@@ -328,7 +343,9 @@ public sealed class AccountErasureEndpointTests
             await CountOwnedRowsAsync(admin, survivorUserId, survivorBudgetId);
         foreach (OwnedTable table in OwnedTables)
         {
-            await Assert.That(before[table.Name]).IsGreaterThan(0L);
+            await Assert.That(before[table.Name])
+                .IsGreaterThan(0L)
+                .Because($"the furnishing must put a survivor row in {table.Name} before the erasure");
         }
 
         // Act
@@ -343,8 +360,148 @@ public sealed class AccountErasureEndpointTests
             await CountOwnedRowsAsync(admin, survivorUserId, survivorBudgetId);
         foreach (OwnedTable table in OwnedTables)
         {
-            await Assert.That(after[table.Name]).IsEqualTo(before[table.Name]);
+            await Assert.That(after[table.Name])
+                .IsEqualTo(before[table.Name])
+                .Because($"the erasure must not move the survivor's rows in {table.Name}");
         }
+    }
+
+    /// <summary>
+    /// Erasure ends every session the account holds, not only the one that asked for it (FR-024).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Nothing in the handler ends a session: the rows go through the referential cascade from
+    /// <c>credentials</c> into <c>sessions</c> and on into <c>session_tokens</c>. So the sessions
+    /// seeded here are each opened through a <b>different</b> <c>credentials</c> row — a second
+    /// passkey, the recovery-code set, and the federated credential — because the cascade runs per
+    /// credential, and a path that reached one kind and missed another would leave a live handle.
+    /// </para>
+    /// <para>
+    /// <b>No production path opens a session on the federated credential today.</b>
+    /// <c>Session.Establish</c> is called by registration, passkey sign-in, recovery-code generation
+    /// and recovery-code redemption, and every one of them hands it a passkey or a set. F is a
+    /// schema-legal state rather than a reachable one — <c>CK_sessions_kind_matches_credential</c>
+    /// admits it, as a Locked session, because <c>Session</c> derives Locked for a federated
+    /// credential — and it is seeded because it is the cheapest guard that the cascade is not limited
+    /// to the credential types that happen to open sessions now.
+    /// </para>
+    /// <para>
+    /// The probe is <c>GET /api/currencies</c>: reference data with no owner and no row-level
+    /// security policy, so a refusal comes from the session itself — 401 when authentication fails,
+    /// 403 when a Locked session meets <c>FullSessionRequirement</c>. Before the erasure the federated
+    /// session already reads 403, which is what makes its 401 afterwards mean "authentication failed"
+    /// rather than "still refused for the same reason".
+    /// </para>
+    /// <para>
+    /// The survivor account carries the same spread — its client's passkey session, a recovery-code
+    /// session and a federated Locked session — and each is probed before and after. An erasure that
+    /// ended every Locked session in the database, or every session opened by a set, would leave the
+    /// survivor's passkey client answering 200 and be caught only by those two.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task Erase_WithOtherSessionsOnTheAccount_AnswersEachOfThem401()
+    {
+        // Arrange — the erasing session is on passkey A (seeded by the signed-in client) and the
+        // assertion is answered by passkey B (registered over HTTP). Three more sessions on the same
+        // account, each through a different credentials row: passkey C, the recovery-code set R, and
+        // the federated credential F. The domain lets F open only a Locked session, and nothing in
+        // production opens one on it today — it is seeded as a schema-legal state, see the remarks.
+        // Another account is the survivor, with the same three kinds of session, so an erasure that
+        // ended every session in the database — or every Locked one, or every one opened by a set —
+        // cannot pass.
+        await using PostgresTestHost host = await StartSignedInHostAsync();
+        (HttpClient client, Guid userId, _) = await host.Factory.CreateSignedInClientAsync(Subject);
+        SyntheticAuthenticator device = SyntheticAuthenticator.CreateEs256(ApiFactory.PasskeyRelyingPartyId);
+        await RegisterPasskeyAsync(client, device);
+
+        const string survivorSubject = "google-erasure-sessions-survivor";
+        (HttpClient survivorClient, Guid survivorUserId, _) =
+            await host.Factory.CreateSignedInClientAsync(survivorSubject);
+
+        DateTime now = DateTime.UtcNow;
+
+        Guid passkeyCCredentialId = await RepositoryTestHost.SeedPasskeyOnAsync(
+            host.ConnectionString, userId, RandomNumberGenerator.GetBytes(16));
+        byte[] cToken = RandomNumberGenerator.GetBytes(SessionToken.TokenLength);
+        await RepositoryTestHost.SeedSessionOnAsync(
+            host.ConnectionString, passkeyCCredentialId, cToken, SessionKind.Full, now.AddMinutes(-1), now.AddHours(1));
+
+        Guid recoveryCredentialId = await RepositoryTestHost.SeedRecoveryCodesSetOnAsync(host.ConnectionString, userId);
+        byte[] rToken = RandomNumberGenerator.GetBytes(SessionToken.TokenLength);
+        await RepositoryTestHost.SeedSessionOnAsync(
+            host.ConnectionString, recoveryCredentialId, rToken, SessionKind.Full, now.AddMinutes(-1), now.AddHours(1));
+
+        Guid federatedCredentialId = await RepositoryTestHost.FederatedCredentialIdOnAsync(host.ConnectionString, userId);
+        byte[] fToken = RandomNumberGenerator.GetBytes(SessionToken.TokenLength);
+        await RepositoryTestHost.SeedSessionOnAsync(
+            host.ConnectionString, federatedCredentialId, fToken, SessionKind.Locked, now.AddMinutes(-1), now.AddHours(1));
+
+        // The survivor's own recovery-code and federated sessions, through the same seeders, so a
+        // cascade that overreached by kind of session rather than by account is seen.
+        Guid survivorRecoveryCredentialId =
+            await RepositoryTestHost.SeedRecoveryCodesSetOnAsync(host.ConnectionString, survivorUserId);
+        byte[] survivorRToken = RandomNumberGenerator.GetBytes(SessionToken.TokenLength);
+        await RepositoryTestHost.SeedSessionOnAsync(
+            host.ConnectionString, survivorRecoveryCredentialId, survivorRToken, SessionKind.Full, now.AddMinutes(-1), now.AddHours(1));
+
+        Guid survivorFederatedCredentialId =
+            await RepositoryTestHost.FederatedCredentialIdOnAsync(host.ConnectionString, survivorUserId);
+        byte[] survivorFToken = RandomNumberGenerator.GetBytes(SessionToken.TokenLength);
+        await RepositoryTestHost.SeedSessionOnAsync(
+            host.ConnectionString, survivorFederatedCredentialId, survivorFToken, SessionKind.Locked, now.AddMinutes(-1), now.AddHours(1));
+
+        HttpClient probe = host.Factory.CreateClient();
+
+        // Every handle is proved live before the act, on the same route the assertion reads. Without
+        // this half a seeding that never produced a working cookie would read 401 afterwards too.
+        await Assert.That((await ProbeCurrenciesAsync(probe, cToken)).StatusCode).IsEqualTo(HttpStatusCode.OK);
+        await Assert.That((await ProbeCurrenciesAsync(probe, rToken)).StatusCode).IsEqualTo(HttpStatusCode.OK);
+        await Assert.That((await ProbeCurrenciesAsync(probe, fToken)).StatusCode).IsEqualTo(HttpStatusCode.Forbidden);
+        await Assert.That((await survivorClient.GetAsync(CurrenciesPath)).StatusCode).IsEqualTo(HttpStatusCode.OK);
+        await Assert.That((await ProbeCurrenciesAsync(probe, survivorRToken)).StatusCode).IsEqualTo(HttpStatusCode.OK);
+        await Assert.That((await ProbeCurrenciesAsync(probe, survivorFToken)).StatusCode).IsEqualTo(HttpStatusCode.Forbidden);
+
+        // Act
+        HttpResponseMessage response = await EraseAsync(client, device, userId);
+
+        // Assert — one list of every handle that answered wrong, so a failure names all of them
+        // rather than stopping at the first.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
+
+        List<string> offenders = [];
+        foreach ((string label, byte[] token) in new[] { ("passkey C", cToken), ("recovery codes R", rToken), ("federated F", fToken) })
+        {
+            HttpStatusCode status = (await ProbeCurrenciesAsync(probe, token)).StatusCode;
+            if (status != HttpStatusCode.Unauthorized)
+            {
+                offenders.Add($"{label}: {(int)status}");
+            }
+        }
+
+        HttpStatusCode survivorStatus = (await survivorClient.GetAsync(CurrenciesPath)).StatusCode;
+        if (survivorStatus != HttpStatusCode.OK)
+        {
+            offenders.Add($"survivor: {(int)survivorStatus}");
+        }
+
+        // The survivor's other two handles answer exactly as they did before the act: still 200 for
+        // the set's Full session, still 403 for the federated Locked one — not 401.
+        foreach ((string label, byte[] token, HttpStatusCode expected) in new[]
+                 {
+                     ("survivor recovery codes", survivorRToken, HttpStatusCode.OK),
+                     ("survivor federated", survivorFToken, HttpStatusCode.Forbidden),
+                 })
+        {
+            HttpStatusCode status = (await ProbeCurrenciesAsync(probe, token)).StatusCode;
+            if (status != expected)
+            {
+                offenders.Add($"{label}: {(int)status}");
+            }
+        }
+
+        await Assert.That(offenders).IsEmpty();
     }
 
     /// <summary>
@@ -405,12 +562,14 @@ public sealed class AccountErasureEndpointTests
 
         // The seeding is proved before the act, table by table, on the same connection and with the
         // same predicates the assertions below use — the promise this class's remarks make about
-        // every count it asserts zero. Without it, twelve "count is zero" assertions are all satisfied
+        // every count it asserts zero. Without it, fourteen "count is zero" assertions are all satisfied
         // by a database the furnishing never reached.
         IReadOnlyDictionary<string, long> before = await CountOwnedRowsAsync(admin, firstUserId, firstBudgetId);
         foreach (OwnedTable table in OwnedTables)
         {
-            await Assert.That(before[table.Name]).IsGreaterThan(0L);
+            await Assert.That(before[table.Name])
+                .IsGreaterThan(0L)
+                .Because($"the furnishing must put a row in {table.Name} before the erasure");
         }
 
         await Assert.That(await ScalarAsync(admin, "select count(*) from users")).IsGreaterThan(0L);
@@ -437,12 +596,14 @@ public sealed class AccountErasureEndpointTests
             await CountOwnedRowsAsync(admin, firstUserId, firstBudgetId);
         foreach (OwnedTable table in OwnedTables)
         {
-            await Assert.That(afterFirst[table.Name]).IsEqualTo(0L);
+            await Assert.That(afterFirst[table.Name])
+                .IsEqualTo(0L)
+                .Because($"the first erasure must leave no row in {table.Name}");
         }
 
         // No rows at all, not "none belonging to the erased id". The loop above is scoped to the ids
         // the erasure took, so a resurrected account — a different id entirely — passes every one of
-        // those twelve assertions. This unscoped count is the only line that sees it.
+        // those fourteen assertions. This unscoped count is the only line that sees it.
         await Assert.That(await ScalarAsync(admin, "select count(*) from users")).IsEqualTo(0L);
         await Assert.That(await ScalarAsync(admin, "select count(*) from credentials")).IsEqualTo(0L);
         await Assert.That(await ScalarAsync(admin, "select count(*) from budgets")).IsEqualTo(0L);
@@ -452,6 +613,20 @@ public sealed class AccountErasureEndpointTests
     private const string ReauthenticationOptionsPath = "/api/passkeys/reauthentication/options";
     private const string RegistrationOptionsPath = "/api/passkeys/registration/options";
     private const string RegistrationPath = "/api/passkeys/registration";
+    private const string CurrenciesPath = "/api/currencies";
+
+    /// <summary>
+    /// Reads the currencies with one session handle as the cookie. The client header is added here as
+    /// well as by the factory, following <c>SessionCookieAuthenticationTests</c>, so the wire shape
+    /// is stated where it is driven.
+    /// </summary>
+    private static async Task<HttpResponseMessage> ProbeCurrenciesAsync(HttpClient client, byte[] token)
+    {
+        HttpRequestMessage request = new(HttpMethod.Get, CurrenciesPath);
+        request.Headers.Add(FirstPartyRequestTests.ClientHeader, FirstPartyRequestTests.ClientHeaderValue);
+        request.Headers.Add("Cookie", $"{SessionCookieAuthenticationTests.CookieName}={Base64UrlText.Encode(token)}");
+        return await client.SendAsync(request);
+    }
 
     /// <summary>
     /// Runs both authenticated legs of a registration so the account holds a passkey a signature can
@@ -690,7 +865,7 @@ public sealed class AccountErasureEndpointTests
     }
 
     /// <summary>
-    /// Adds the passkey material, the session row, the set of recovery codes and the wrapped account
+    /// Adds the passkey material, the session and its token, the set of recovery codes and the wrapped account
     /// keys, so the FR-025 enumeration has something to find in every user-owned table rather than only
     /// in the two provisioning fills.
     /// </summary>
@@ -741,8 +916,13 @@ public sealed class AccountErasureEndpointTests
 
         // Established against the passkey rather than the federated credential because
         // CK_sessions_kind_matches_credential ties the two together; the seeded row is the full
-        // session a passkey earns, which is the shape production writes.
-        db.Sessions.Add(Session.Establish(passkey, SeedInstant, SeedInstant.AddDays(14)));
+        // session a passkey earns. It goes in with its session_tokens row in this same save, because
+        // every path that opens a session writes the pair, and a session with no handle is a shape
+        // production never produces. The token is random because its digest is the primary key of
+        // session_tokens, and the two accounts of Erase_LeavesAnotherAccountUntouched both land here.
+        Session session = Session.Establish(passkey, SeedInstant, SeedInstant.AddDays(14));
+        db.Sessions.Add(session);
+        db.SessionTokens.Add(SessionToken.For(session, RandomNumberGenerator.GetBytes(SessionToken.TokenLength)));
 
         // One credential for the whole set — IX_credentials_user_id_recovery_codes admits no second
         // one — carrying SeededRecoveryCodeCount codes rather than one. See that constant for why the

@@ -438,7 +438,7 @@ public sealed class RepositoryTestHost : IAsyncDisposable
         FederatedCredentialIdOnAsync(ConnectionString, userId, cancellationToken);
 
     /// <inheritdoc cref="SeedOwnerOnAsync" />
-    private static async Task<Guid> FederatedCredentialIdOnAsync(
+    internal static async Task<Guid> FederatedCredentialIdOnAsync(
         string connectionString,
         Guid userId,
         CancellationToken cancellationToken = default)
@@ -474,7 +474,7 @@ public sealed class RepositoryTestHost : IAsyncDisposable
     /// arm, which is the default.
     /// </para>
     /// </remarks>
-    private static async Task<Guid> SeedRecoveryCodesSetOnAsync(
+    internal static async Task<Guid> SeedRecoveryCodesSetOnAsync(
         string connectionString,
         Guid userId,
         CancellationToken cancellationToken = default)
