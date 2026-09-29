@@ -108,10 +108,11 @@ export function isApiRequest(url: string, apiBaseUrl: string): boolean {
 // routes are now the only requests in the product that carry it.
 //
 // Worth narrowing rather than leaving alone, even though nothing outside
-// registration reads the token: `RegisterService` discards it at the 201, but a
-// browser that abandoned registration keeps it for the hour it lives, and what
-// that person usually does next is sign in with a passkey — so both anonymous
-// assertion legs were being handed a provider credential. Every hop a credential
+// registration reads the token: `SessionService` discards it whenever it
+// publishes `authenticated`, but a browser that abandoned registration holds it
+// until then, and what that person usually does next is sign in with a
+// passkey — so both anonymous assertion legs, which run before that session
+// exists, were being handed a provider credential. Every hop a credential
 // makes is another log, proxy and error report it can be recorded in, and
 // another handler that could start reading it without anybody deciding to.
 //

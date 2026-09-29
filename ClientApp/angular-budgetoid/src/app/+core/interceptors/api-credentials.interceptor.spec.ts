@@ -28,14 +28,14 @@ const REGISTRATION_OPTIONS_URL = `${API_BASE_URL}/api/registration/options`;
 const REGISTRATION_URL = `${API_BASE_URL}/api/registration`;
 
 // The anonymous assertion legs, and the reason the narrowing is a fix rather
-// than tidying. `RegisterService` discards the provider token at the 201, but a
-// person who abandons registration keeps it, and their next act is usually a
-// passkey sign-in — so these two currently carry a provider credential to
-// routes that neither read it nor could act on it. A credential travelling
-// further than it is needed is the defect, whether or not anything reads it:
-// every hop it makes is another log, proxy and error report it can be recorded
-// in, and another handler that could start reading it later without anyone
-// deciding to.
+// than tidying. `SessionService` discards the provider token once this tab
+// holds a session, but a person who abandons registration keeps it until then,
+// and their next act is usually a passkey sign-in — so without the narrowing
+// these two would carry a provider credential to routes that neither read it
+// nor could act on it. A credential travelling further than it is needed is
+// the defect, whether or not anything reads it: every hop it makes is another
+// log, proxy and error report it can be recorded in, and another handler that
+// could start reading it later without anyone deciding to.
 const ASSERTION_OPTIONS_URL = `${API_BASE_URL}/api/passkeys/assertion/options`;
 const ASSERTION_URL = `${API_BASE_URL}/api/passkeys/assertion`;
 

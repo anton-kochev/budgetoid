@@ -18,6 +18,7 @@ import {
 } from '@app-core/security/narrative-cipher';
 import type { NarrativeFieldBinding } from '@app-core/security/narrative-cipher';
 import type { NarrativeText } from '@app-core/security/narrative-text';
+import { AuthService } from '@app-core/services/auth-service';
 import { FileDownloadService } from '@app-core/services/file-download.service';
 import { NEVER, Observable, Subject, of, throwError } from 'rxjs';
 import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
@@ -272,6 +273,16 @@ describe('SettingsService', () => {
         { provide: MeApiService, useValue: api },
         { provide: FileDownloadService, useValue: download },
         { provide: KeyRotationService, useValue: rotations },
+        {
+          // `SessionService` discards the provider's token whenever it
+          // publishes a session, and the real `AuthService` needs
+          // `provideOAuthClient()`. Nothing here is about the identity
+          // provider, so the one member it reaches is a fresh spy.
+          provide: AuthService,
+          useValue: {
+            forgetProviderToken: vi.fn(),
+          } satisfies Pick<AuthService, 'forgetProviderToken'>,
+        },
       ],
     });
     custody = TestBed.inject(AccountKeyCustodyService);

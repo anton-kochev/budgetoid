@@ -38,6 +38,7 @@ import {
   type PasskeyCeremonyFailure,
   type PasskeyCeremonyResult,
 } from '@app-core/security/webauthn-ceremony.service';
+import { AuthService } from '@app-core/services/auth-service';
 import { ConfigurationService } from '@app-core/services/configuration.service';
 import { SessionService } from '@app-core/session/session.service';
 import {
@@ -450,6 +451,15 @@ describe('AccountUnlockService', () => {
           useValue: { getConfig: () => ({ apiBaseUrl: API_ORIGIN }) },
         },
         { provide: WebauthnCeremonyService, useValue: ceremonyStub },
+        // `SessionService` is real here and discards the provider's token
+        // whenever it publishes a session; the real `AuthService` needs
+        // `provideOAuthClient()`, and nothing here is about the provider.
+        {
+          provide: AuthService,
+          useValue: {
+            forgetProviderToken: vi.fn(),
+          } satisfies Pick<AuthService, 'forgetProviderToken'>,
+        },
         // Component-provided in production — the settings screen owns it, so an
         // abandoned attempt dies with the screen — which is why it is listed
         // here rather than resolved from the root injector.

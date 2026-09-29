@@ -14,6 +14,7 @@ import {
 } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
 import { MeApiService } from '@app-core/api/me-api.service';
+import { AuthService } from '@app-core/services/auth-service';
 import { ConfigurationService } from '@app-core/services/configuration.service';
 import { SessionService } from '@app-core/session/session.service';
 import { Router } from '@angular/router';
@@ -304,6 +305,16 @@ describe('sessionExpiryInterceptor and the two readers of GET /api/me', () => {
         provideHttpClientTesting(),
         { provide: ConfigurationService, useValue: configuration },
         { provide: Router, useValue: { navigateByUrl, navigate } },
+        {
+          // `SessionService` discards the provider's token whenever it
+          // publishes a session, and the real `AuthService` needs
+          // `provideOAuthClient()`. Nothing here is about the identity
+          // provider, so the one member it reaches is a fresh spy.
+          provide: AuthService,
+          useValue: {
+            forgetProviderToken: vi.fn(),
+          } satisfies Pick<AuthService, 'forgetProviderToken'>,
+        },
       ],
     });
 

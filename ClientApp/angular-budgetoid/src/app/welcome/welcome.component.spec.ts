@@ -33,6 +33,7 @@ import type {
   PasskeyAssertionPayload,
   PasskeyRequestOptionsJson,
 } from '@app-core/security/webauthn-encoding';
+import { AuthService } from '@app-core/services/auth-service';
 import { ConfigurationService } from '@app-core/services/configuration.service';
 import {
   SessionService,
@@ -54,6 +55,18 @@ const CONFIGURATION_STUB = {
   provide: ConfigurationService,
   useValue: { getConfig: () => ({ apiBaseUrl: API_ORIGIN }) },
 } satisfies Provider;
+
+// `SessionService` discards the provider's token whenever it publishes a
+// session, so it injects `AuthService` — and the real one needs
+// `provideOAuthClient()`. Nothing on this screen is about the identity provider,
+// so the one member it reaches is a spy. A factory rather than one instance, so
+// two blocks cannot share a spy.
+const PROVIDER_SERVICE_STUB: Provider = {
+  provide: AuthService,
+  useFactory: (): Pick<AuthService, 'forgetProviderToken'> => ({
+    forgetProviderToken: vi.fn(),
+  }),
+};
 
 // The two controls, by the names a screen reader announces them under. Buttons
 // are verbs and sentence case, per `voice.md`.
@@ -258,6 +271,7 @@ describe('WelcomeComponent', () => {
         provideHttpClient(),
         provideHttpClientTesting(),
         CONFIGURATION_STUB,
+        PROVIDER_SERVICE_STUB,
       ],
     }).compileComponents();
   });
@@ -333,6 +347,7 @@ describe('WelcomeComponent, as the way into an account', () => {
         provideRouter([]),
         { provide: Store, useValue: store },
         CONFIGURATION_STUB,
+        PROVIDER_SERVICE_STUB,
         { provide: WebauthnCeremonyService, useValue: ceremony },
         // `SignInService` is deliberately **not** listed. The component
         // provides it, so the flow and everything it derives die with the
@@ -772,6 +787,7 @@ describe('WelcomeComponent, after an erasure', () => {
         provideRouter([]),
         { provide: Store, useValue: store },
         CONFIGURATION_STUB,
+        PROVIDER_SERVICE_STUB,
         { provide: WebauthnCeremonyService, useValue: ceremony },
       ],
     }).compileComponents();

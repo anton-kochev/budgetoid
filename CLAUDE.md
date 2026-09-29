@@ -258,6 +258,9 @@ Load-bearing rules. Each links the doc that argues it — **read that doc before
   or a timeout is `unreachable`, and **both guards admit `unreachable` and `unknown`** — only
   `anonymous` may bounce anybody. `sessionExpiryInterceptor` is the single owner of "the session
   ended", acts on **401 only**, and skips requests carrying `EXPECTS_UNAUTHENTICATED`.
+  **A session beginning discards the provider's tokens**, owned by `SessionService` on both arms
+  that publish `authenticated` — `established()` and an authenticated probe — and **never** on an
+  anonymous or unreachable probe, which would take the provider-return leg's nonce.
   [sessions.md](docs/business-logic/sessions.md)
 - **Nothing loads from another origin** — no CDN script, stylesheet, typeface, icon, image, or
   identity-provider picture. `src/no-external-origins.spec.ts` reads the production bundle, so

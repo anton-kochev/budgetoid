@@ -428,16 +428,14 @@ export class RegisterService {
         this.pending = null;
         this.busySignal.set(false);
 
-        // **This order, and each pair of neighbours is the reason.** Publishing
-        // the session first means `authGuard` reads `'authenticated'` when the
-        // navigation below asks it — navigate first and the guard judges `/app`
-        // against a stale `'anonymous'` and bounces the person out of the
-        // account they just created. Forgetting the provider token last, for the
-        // mirror of that: dropped before the navigation, it is dropped while a
-        // request may still be leaving with a bearer attached to it.
+        // **The session before the navigation.** Publishing it first means
+        // `authGuard` reads `'authenticated'` when the navigation below asks it
+        // — navigate first and the guard judges `/app` against a stale
+        // `'anonymous'` and bounces the person out of the account they just
+        // created. `established()` also discards the provider token; the
+        // registration POST has already answered, so no bearer is in flight.
         this.session.established();
         this.adopt(keys);
-        this.auth.forgetProviderToken();
         void this.router.navigateByUrl('/app');
       },
       error: (error: unknown) => {

@@ -94,8 +94,8 @@ change putting this application back in *repeated* contact with it adds no origi
 already carry, and this test stays green. The concrete case is
 `setupAutomaticSilentRefresh()`, which plants a hidden iframe pointed at the provider and re-runs it
 on a timer for as long as the tab is open: a third-party request on every page, forever, to renew a
-token used once and discarded at the `201`. Nothing schedules one, and what holds that is a pin of
-its own in `auth-service.spec.ts` rather than anything here.
+token read on the registration screen and discarded once the tab holds a session. Nothing schedules
+one, and what holds that is a pin of its own in `auth-service.spec.ts` rather than anything here.
 
 And this covers what the build emits, not what the browser permits. The
 `Content-Security-Policy` that enforces the same rule at runtime ships in `globalHeaders` of
@@ -107,12 +107,14 @@ policy cannot see a CDN URL that no browser has been asked to fetch yet.
 
 ## No cookie from a script, and nothing to consent to
 
-**The product loads nothing from another origin and sets no cookie but the session handle, so there
-is no tracker in it and nothing to ask anybody's consent for.** That is why the web client presents
-no consent banner, no cookie notice and no tracking-preference surface. It is not an omission
-waiting on a review; it is what this chapter holding looks like from the screen, and a surface
-asking permission for something the product does not do would be a false sentence in front of
-everybody. [Patterns](../design/patterns.md#nothing-to-consent-to) states the design half.
+**The product loads nothing from another origin, except the provider exchange a person starts on
+`/register`, and sets no cookie but the session handle, so there is no tracker in it and nothing to
+ask anybody's consent for.** That exchange is the two fetches under the gaps above, made only
+because the person pressed **Continue with Google** or came back from it. That is why the web
+client presents no consent banner, no cookie notice and no tracking-preference surface. It is not
+an omission waiting on a review; it is what this chapter holding looks like from the screen, and a
+surface asking permission for something the product does not do would be a false sentence in front
+of everybody. [Patterns](../design/patterns.md#nothing-to-consent-to) states the design half.
 
 "No cookie but the session handle" has two halves, held in two places.
 
@@ -131,27 +133,37 @@ on an empty write list. Like the specs above, it needs `npm run build` first.
 
 What it cannot see:
 
-- **A write built to hide from a syntax scan** — `Reflect.set`, `Object.assign`, a computed key, a
-  `cookieStore` reached through an alias, a destructuring target, `++`.
-- **A `<meta http-equiv>` in HTML.** The spec reads scripts only.
+- **A write built to hide from a syntax scan** — `Reflect.set`, `Object.assign`,
+  `Object.defineProperty(document, 'cookie', …)`, the cookie setter called through its property
+  descriptor, a computed key, a `cookieStore` reached through an alias, `cookieStore.set` reached
+  through `.call`, `.bind` or `Reflect.apply`, a destructuring or loop target, `++`.
+- **A write assembled from a string** — `eval`, `new Function`, a string handed to `setTimeout`.
+  No syntax scan can see one, and this spec does not try: the shipped `Content-Security-Policy`
+  closes that door, because `script-src 'self'` carries no `'unsafe-eval'` and the browser refuses
+  all three.
+- **A `<meta http-equiv="set-cookie">` in HTML.** The spec reads scripts only, but this is not an
+  open gap in a supported browser: Chrome stopped honouring it in 65, Firefox in 68, and the HTML
+  standard dropped it. [Guessing] that Safari ignores it too; nothing here has checked.
 - **A `Set-Cookie` the static host adds to its own responses.** [Guessing] whether Azure Static Web
   Apps sets one on static files: nothing has been observed, because no environment exists to
   observe it on.
 
 ### What the device keeps
 
-Storage on the device is judged by one test: **does it grow with use, and does it carry a time?**
-An audit trail does both — a row per act, each stamped with when. Nothing the client keeps grows
-with use. Two rows carry a time — the session's expiry, and the provider token's stored-at and
-expiry — and each is one value per credential, replaced rather than appended; the second lives for
-one registration in one tab.
+Storage on the device is judged by one test: **is it strictly necessary for something the person
+asked for?** An audit trail fails it — nobody asked for a record of their own acts, and a trail
+grows with every act and stamps each one. Growth and time on their own are not the test, and the
+table has both: the rotation-epoch record adds one key per account unlocked in this browser, and
+two rows carry a time — the session's expiry, and the provider token's stored-at and expiry — each
+one value per credential, replaced rather than appended. Each row answers the test in its last
+column.
 
-| Key | Where | Holds | Why it is not a trail |
+| Key | Where | Holds | Why it is needed, and not a trail |
 | --- | --- | --- | --- |
 | `__Host-budgetoid-session` | cookie, set by the API, `HttpOnly` | the session handle | Serves the request. One per session; its expiry is the session's lifetime, not a record of an act. |
-| angular-oauth2-oidc's token entries | `sessionStorage`, this tab | the provider's tokens, the nonce, and the token's own stored-at and expiry times | Exists only during registration. `AuthService.forgetProviderToken()` discards them at the `201`; an abandoned registration keeps them until the tab closes. |
-| the library's availability probe | `localStorage` | nothing | Written and removed in the same call when the library's service is built. |
-| `budgetoid-theme` | `localStorage` | `system`, `light` or `dark` | One value, overwritten. A preference, not an observation. Nothing writes it today: `ThemeService.setMode` has no caller, so `theme-prepaint.js` and `ThemeService` only ever read it. |
+| angular-oauth2-oidc's token entries | `sessionStorage`, this tab | `access_token`, `id_token`, `id_token_claims_obj` (the decoded claims, the email among them), `granted_scopes`, `session_state`, `nonce`, and stored-at and expiry entries | Serve the registration the person started, and nothing after it. `SessionService` discards them through `AuthService.forgetProviderToken()` whenever the tab learns it holds a session — the registration `201`, a sign-in, a start-up probe that finds one. A tab that abandons registration and never signs in keeps them until it closes. Nothing sends them anywhere else: the bearer is attached only on the two registration routes. The library writes the nonce and PKCE verifier to `localStorage` only on an old-IE user-agent branch no supported browser takes. |
+| the library's availability probe | `localStorage` | a `test` key | Written and removed at once, on every cold load: `AuthService` is built at startup, and the library's service with it. |
+| `budgetoid-theme` | `localStorage` | `system`, `light` or `dark` | One value, overwritten. A preference, not an observation. Nothing writes it today: neither `ThemeService.setMode` nor `toggle`, which calls it, is called from outside the service, so `theme-prepaint.js` and `ThemeService` only ever read it. |
 | `budgetoid-rotation-epoch:<budgetId>` | `localStorage` | one number per account this device has unlocked | Rises only. A rollback control — see [account keys](../business-logic/account-keys.md). |
 
 **The rotation-epoch record leaves a budget id on the device, and nothing in the client removes

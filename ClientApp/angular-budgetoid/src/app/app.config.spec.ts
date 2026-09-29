@@ -84,9 +84,17 @@ describe('appConfig', () => {
       getConfig: () => ({ apiBaseUrl: API_BASE_URL, auth: {} }),
       load: () => Promise.resolve(true),
     };
-    const auth: Pick<AuthService, 'initialize' | 'isProviderReturn'> = {
+    // `forgetProviderToken` because `SessionService` discards the provider's
+    // token when the probe finds a session; absent, that call would throw a
+    // `TypeError` the session's own `catch` absorbs, and this fixture would be
+    // exercising the failure path without saying so.
+    const auth: Pick<
+      AuthService,
+      'initialize' | 'isProviderReturn' | 'forgetProviderToken'
+    > = {
       initialize: () => Promise.resolve(),
       isProviderReturn: () => false,
+      forgetProviderToken: () => undefined,
     };
     const me: Pick<MeApiService, 'getSessionOwner'> = {
       getSessionOwner: () =>
@@ -288,9 +296,17 @@ describe('appConfig failure logging', () => {
       getConfig: () => ({ apiBaseUrl: API_BASE_URL, auth: {} }),
       load: () => Promise.resolve(true),
     };
-    const auth: Pick<AuthService, 'initialize' | 'isProviderReturn'> = {
+    // `forgetProviderToken` because `SessionService` discards the provider's
+    // token when the probe finds a session; absent, that call would throw a
+    // `TypeError` the session's own `catch` absorbs, and this fixture would be
+    // exercising the failure path without saying so.
+    const auth: Pick<
+      AuthService,
+      'initialize' | 'isProviderReturn' | 'forgetProviderToken'
+    > = {
       initialize: () => Promise.resolve(),
       isProviderReturn: () => false,
+      forgetProviderToken: () => undefined,
     };
     const me: Pick<MeApiService, 'getSessionOwner'> = {
       getSessionOwner: () =>

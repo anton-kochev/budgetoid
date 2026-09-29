@@ -1,8 +1,17 @@
+import { provideHttpClient } from '@angular/common/http';
+import {
+  HttpTestingController,
+  provideHttpClientTesting,
+} from '@angular/common/http/testing';
 import { DOCUMENT } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
-import { OAuthEvent, OAuthService } from 'angular-oauth2-oidc';
+import {
+  OAuthEvent,
+  OAuthService,
+  provideOAuthClient,
+} from 'angular-oauth2-oidc';
 import { isObservable, Observable, Subject } from 'rxjs';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuthService } from './auth-service';
 import { ConfigurationService } from './configuration.service';
 
@@ -94,7 +103,8 @@ describe('AuthService', () => {
   });
 
   // **Nothing schedules a background renewal of the provider token.** That
-  // token is used once, on the registration screen, and discarded at the 201;
+  // token is used once, on the registration screen, and discarded the moment
+  // this tab learns it holds a session — `SessionService` owns the discard;
   // every request after it authenticates from the first-party session cookie,
   // so nothing reads it again. Scheduling a renewal — which is what
   // `setupAutomaticSilentRefresh()` does — plants a hidden iframe pointed at
@@ -424,6 +434,25 @@ describe('AuthService', () => {
     // Act & Assert
     expect(service.providerEmail()).toBeNull();
   });
+
+  // **A discard, never a sign-out.** `logOut()` with no argument is the
+  // library's sign-out: once a discovery document has named an end-session
+  // endpoint, it navigates the whole page to Google and ends the person's
+  // Google session on their behalf. `logOut(true)` is the local-discard
+  // overload, and the flag is the entire difference between the two — so it
+  // is asserted as the argument, not as "`logOut` was reached".
+  it('forgetProviderToken discards locally and does not redirect', () => {
+    // Arrange
+    const logOut = vi.fn();
+    const service = authServiceOver({ logOut });
+
+    // Act
+    service.forgetProviderToken();
+
+    // Assert
+    expect(logOut).toHaveBeenCalledOnce();
+    expect(logOut).toHaveBeenCalledWith(true);
+  });
 });
 
 // A macrotask, so every microtask `signIn` chained has had its turn.
@@ -494,3 +523,82 @@ function authServiceReading(
 
   return TestBed.inject(AuthService);
 }
+
+// The same discard against the real library rather than a stub, because what
+// the discard *removes* is the library's business and not this file's to list:
+// a stub proves `logOut(true)` was asked for, and only the real client proves
+// that asking for it empties `sessionStorage` of the provider's material.
+//
+// **On a service nothing initialized**, which is the ordinary case and not an
+// edge. `SessionService` discards on every probe that finds a session, and a
+// cold load that is not the provider coming back never calls `initialize()` —
+// so the client has no configuration, no discovery document and no end-session
+// endpoint. The discard must work there, and it must not reach for the
+// provider to make up for what it was never told.
+describe('AuthService against the real provider client', () => {
+  // Every key `logOut` in angular-oauth2-oidc 17 removes from its storage, seeded
+  // so each is there to be removed. `nonce` and `PKCE_verifier` are the reason
+  // the discard must never run on the provider-return leg: they are what the
+  // answer on the URL is checked against.
+  const LIBRARY_KEYS = [
+    'access_token',
+    'id_token',
+    'refresh_token',
+    'nonce',
+    'PKCE_verifier',
+    'expires_at',
+    'id_token_claims_obj',
+    'id_token_expires_at',
+    'id_token_stored_at',
+    'access_token_stored_at',
+    'granted_scopes',
+    'session_state',
+  ] as const;
+
+  // Not the library's, and not this service's to touch. A discard written as
+  // `sessionStorage.clear()` empties the provider's keys too and passes every
+  // assertion on them; this key is what refuses it.
+  const FOREIGN_KEY = 'budgetoid-foreign-key';
+
+  beforeEach(() => {
+    sessionStorage.clear();
+    TestBed.configureTestingModule({
+      providers: [
+        AuthService,
+        provideOAuthClient(),
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        {
+          provide: ConfigurationService,
+          useValue: { getConfig: () => ({ apiBaseUrl: '', auth: {} }) },
+        },
+      ],
+    });
+  });
+
+  afterEach(() => {
+    sessionStorage.clear();
+  });
+
+  it("forgetProviderToken removes the provider's keys and nothing else, without a request", () => {
+    // Arrange
+    for (const key of LIBRARY_KEYS) {
+      sessionStorage.setItem(key, `${key}-value`);
+    }
+    sessionStorage.setItem(FOREIGN_KEY, 'kept');
+    const service = TestBed.inject(AuthService);
+    const http = TestBed.inject(HttpTestingController);
+
+    // Act
+    service.forgetProviderToken();
+
+    // Assert
+    const left = LIBRARY_KEYS.filter(
+      (key) => sessionStorage.getItem(key) !== null,
+    );
+    expect(left).toEqual([]);
+    expect(sessionStorage.getItem(FOREIGN_KEY)).toBe('kept');
+    // No discovery fetch, no token endpoint, nothing on the wire at all.
+    http.verify();
+  });
+});

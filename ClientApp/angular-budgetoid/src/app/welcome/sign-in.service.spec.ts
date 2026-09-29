@@ -532,11 +532,15 @@ describe('SignInService', () => {
     // a discovery document, a token endpoint, a profile picture.
     expect(http.match(() => true)).toHaveLength(0);
 
-    // The provider service, untouched. The other way the provider gets
-    // contacted is not a request this client composes but a redirect it asks
-    // `AuthService` for, and a census over its members is the only thing that
-    // can see one.
-    expect(calledMembersOf(provider)).toEqual([]);
+    // The provider service, reached for one member and one only. The other way
+    // the provider gets contacted is not a request this client composes but a
+    // redirect it asks `AuthService` for, and a census over its members is the
+    // only thing that can see one — so the census still refuses every member
+    // that contacts Google, `signIn` and `signOut` above all. The one it names
+    // is the discard: `SessionService.established()` drops the provider's
+    // tokens from `sessionStorage` the moment this tab holds a session, and
+    // that is local — it contacts nobody.
+    expect(calledMembersOf(provider)).toEqual(['forgetProviderToken']);
 
     // And the visitor is in. The session is published before the navigation for
     // the reason registration states: navigate first and `authGuard` judges

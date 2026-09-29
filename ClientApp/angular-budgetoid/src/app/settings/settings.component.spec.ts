@@ -47,6 +47,7 @@ import type {
   PasskeyAssertionPayload,
   PasskeyRequestOptionsJson,
 } from '@app-core/security/webauthn-encoding';
+import { AuthService } from '@app-core/services/auth-service';
 import { ConfigurationService } from '@app-core/services/configuration.service';
 import { FileDownloadService } from '@app-core/services/file-download.service';
 import {
@@ -797,6 +798,18 @@ const ROTATION_SECTION_STUBS: readonly (Provider | EnvironmentProviders)[] = [
   CONFIGURATION_STUB,
   { provide: KeyRotationService, useFactory: () => new KeyRotationStub() },
 ];
+
+// `SessionService` discards the provider's token whenever it publishes a
+// session, so it injects `AuthService` — and the real one needs
+// `provideOAuthClient()`. Nothing in the blocks that build the real session is
+// about the identity provider, so the one member it reaches is a spy. A factory
+// rather than one instance, so two blocks cannot share a spy.
+const PROVIDER_SERVICE_STUB: Provider = {
+  provide: AuthService,
+  useFactory: (): Pick<AuthService, 'forgetProviderToken'> => ({
+    forgetProviderToken: vi.fn(),
+  }),
+};
 
 describe('SettingsComponent', () => {
   let service: SettingsServiceStub;
@@ -4368,6 +4381,7 @@ describe('SettingsComponent signing out', () => {
         provideHttpClientTesting(),
         provideRouter([]),
         CONFIGURATION_STUB,
+        PROVIDER_SERVICE_STUB,
       ],
     }).compileComponents();
 
@@ -4602,6 +4616,7 @@ describe.each(ERASURE_WIDTHS)('SettingsComponent erasing, $width', (row) => {
         provideHttpClientTesting(),
         provideRouter([]),
         CONFIGURATION_STUB,
+        PROVIDER_SERVICE_STUB,
         {
           provide: KeyRotationService,
           useFactory: () => new KeyRotationStub(),
@@ -5399,6 +5414,7 @@ describe('SettingsComponent on a second visit', () => {
         { provide: MeApiService, useValue: api },
         { provide: FileDownloadService, useValue: downloads },
         ...ROTATION_SECTION_STUBS,
+        PROVIDER_SERVICE_STUB,
       ],
     }).compileComponents();
 
@@ -5525,6 +5541,7 @@ describe('SettingsComponent unlocking on a second visit', () => {
         { provide: FileDownloadService, useValue: downloads },
         { provide: WebauthnCeremonyService, useValue: ceremony },
         ...ROTATION_SECTION_STUBS,
+        PROVIDER_SERVICE_STUB,
       ],
     }).compileComponents();
 
@@ -5858,6 +5875,7 @@ async function visitWithApi(
       { provide: MeApiService, useValue: api },
       { provide: FileDownloadService, useValue: downloads },
       ...ROTATION_SECTION_STUBS,
+      PROVIDER_SERVICE_STUB,
     ],
   }).compileComponents();
 

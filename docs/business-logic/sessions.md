@@ -433,8 +433,9 @@ required members. A third writer is a decision rather than a refactor.
     nothing else, because an account may not exist without a completed provider exchange and there
     is no first-party credential to present on the one call that creates the first-party account.
   - **Narrowing to them was worth doing even though no other route reads the token.**
-    `RegisterService` discards it at the `201`, but a browser that abandoned registration keeps it
-    for the hour it lives, and what that person usually does next is a passkey sign-in — so both
+    `SessionService` discards it once the tab holds a session — see the provider-token rule below —
+    but a browser that abandoned registration still holds it when that person does what they usually
+    do next, a passkey sign-in, and the discard comes only after that sign-in answers. So both
     anonymous assertion legs were being handed a provider credential they could not act on. Every
     hop a credential makes is another log, proxy and error report it can be recorded in.
   - **The order of the two questions is the security property.** Origin first, route second.
@@ -538,8 +539,9 @@ required members. A third writer is a decision rather than a refactor.
     guess over a network that may itself be the problem. On the establishing side a re-probe also
     costs a round trip at the happiest moment of the flow and can come back `unreachable` — a
     **third** reading of a fact already stated.
-  - **`ended()` is the single owner of "the account's keys go too", and `established()` deliberately
-    owns nothing.** A session ending is where `AccountKeyCustodyService.lock()` is called, in that
+  - **`ended()` is the single owner of "the account's keys go too", and `established()` owns no key
+    material.** What `established()` does own is discarding the provider's tokens, which is a
+    different fact and has its own rule below. A session ending is where `AccountKeyCustodyService.lock()` is called, in that
     one method rather than at each of its callers: a path added later by somebody thinking about
     something other than key material clears the keys for free — the erasure's `204` is one that
     arrived that way, and it has no line of its own for the keys — where copies at the call sites
@@ -566,6 +568,60 @@ required members. A third writer is a decision rather than a refactor.
     navigate. The custody call sits between them rather than after the navigation because
     `/welcome` and `/register` are discarded by that navigation, and it is **not awaited** — `unlock`
     returns `void` precisely so a round trip cannot land between a verified assertion and the app.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: A session beginning is the single owner of discarding the identity provider's tokens.
+  `SessionService` calls `AuthService.forgetProviderToken()` on **both** arms that publish
+  `authenticated` — `established()`, and a start-up probe the server answers with a session — and
+  **never** on `anonymous` or `unreachable`.
+- **Why**: the library keeps the provider's tokens in `sessionStorage`: the access token, the id
+  token, the decoded claims with the email among them, and the nonce. That storage is per tab and
+  survives a reload, so without a discard a registration that was refused or abandoned leaves them
+  sitting in the tab when the same person signs in there a minute later, and a signed-in visit
+  carries a provider credential and an email address it has no use for. Nothing reads them once the
+  session cookie has taken over: the token is read on `/register` and nowhere after.
+  - **The probe arm is not a duplicate of `established()`.** A cold load that finds a session runs
+    no establishing flow and skips `auth.initialize()`, so `established()` never runs there. That
+    is the tab that reloaded after a registration whose `201` was lost on the way back, or after the
+    person signed in from another tab — it holds a session and the tokens both, and only the probe
+    sees it.
+  - **Never on `anonymous` or `unreachable`**, and the reason is order. The provider-return leg —
+    the page load Google redirects back to `/register` — runs the probe **before**
+    `auth.initialize()` reads the answer off the URL. A discard there takes the library's nonce with
+    the tokens, the answer no longer validates, and registration becomes impossible with nothing on
+    the screen saying why. `unreachable` is refused for the same reason: a blinked probe on that leg
+    would cost the same.
+  - **One place, not one per flow**, for the reason `ended()` owns `custody.lock()`: the next
+    establishing path will be written by somebody thinking about sign-in rather than about an id
+    token in `sessionStorage`, and here it discards for free.
+  - **Housekeeping never outranks the session.** A discard that throws — storage refused in a
+    locked-down browser, a quota error — is logged through `logFailure` and changes nothing
+    published. On the probe the call sits outside the `try`, because inside it a throw would reach
+    the `catch` and rewrite a session the server just confirmed as `unreachable`.
+  - **The edge runs one way**: `SessionService` injects `AuthService`, and `AuthService` must never
+    inject `SessionService`. Both are asked from the `APP_INITIALIZER`, and an edge back would be an
+    import cycle between two things bootstrap awaits.
+  - **Correct only while no signed-in flow uses the provider.** A later screen that needs a provider
+    token while signed in breaks this rule, and the discard with it.
+  - The rule sits in the client because the client is the only layer that holds the tokens; the
+    server cannot clear a browser's storage.
+- **Enforced in**: `session.service.spec.ts` — the discard happens on `established()` and on an
+  authenticated probe; it does not happen on a `401` or `403` probe, nor on a network failure, a 500
+  or a timeout; the provider service is asked for nothing but the discard; and a discard that throws
+  does not unpublish the session. `auth-service.spec.ts` holds the discard itself: a local
+  `logOut(true)` that removes the library's keys and no others and makes no request.
+  `register.component.spec.ts` holds that one registration discards exactly once.
+- **Example**: somebody opens `/register`, comes back from Google, and is told an account already
+  exists for that address. They go to `/welcome` and sign in with their passkey in the same tab;
+  `established()` publishes the session and drops the tokens before the navigation to `/app`.
+- **Counterexample**: a discard call in each establishing flow — registration, sign-in, and the
+  probe as a third. It reads as explicit and it is correct on the day it is written; the next flow
+  forgets it and nothing goes red. The other is an `effect()` over `status`, rejected for the reasons
+  the `ended()` bullet above gives: it fires on construction and then when Angular schedules it
+  rather than at the transition, so its order against bootstrap and the navigation is decided by
+  injection and scheduling order, which nothing here controls.
 - **Source**: `[SOURCE: discussion]`
 
 ---

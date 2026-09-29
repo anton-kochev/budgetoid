@@ -1,7 +1,9 @@
 import { HttpErrorResponse } from '@angular/common/http';
 import { Injectable, Signal, inject, signal } from '@angular/core';
 import { MeApiService, type MeDto } from '@app-core/api/me-api.service';
+import { logFailure } from '@app-core/logging/log-failure';
 import { AccountKeyCustodyService } from '@app-core/security/account-key-custody.service';
+import { AuthService } from '@app-core/services/auth-service';
 import { firstValueFrom } from 'rxjs';
 
 // Four states, and the fourth is the one a reader will collapse into the third.
@@ -38,6 +40,12 @@ export class SessionService {
   // `SessionService` stub purely so a call that appeared would land somewhere
   // countable.
   private readonly custody = inject(AccountKeyCustodyService);
+  // **One way too, and for the same reason.** This class tells the provider
+  // service to drop its tokens the moment a session is published; the provider
+  // service must never inject this class. It is asked from the
+  // `APP_INITIALIZER` beside the probe, and an edge back would be an import
+  // cycle between the two things bootstrap awaits.
+  private readonly auth = inject(AuthService);
 
   private readonly statusSignal = signal<SessionStatus>('unknown');
 
@@ -108,7 +116,18 @@ export class SessionService {
       // values written by whoever comes back next.
       this.budgetSignal.set(null);
       this.statusSignal.set(SessionService.readingOf(error));
+
+      return;
     }
+
+    // **Outside the `try`, and only on this arm.** Inside it, a discard that
+    // threw would reach the `catch` above and rewrite a session the server just
+    // confirmed as `unreachable`. And never on `anonymous` or `unreachable`:
+    // the provider-return leg runs this probe *before* `auth.initialize()`
+    // reads the answer off the URL, and a discard there takes the library's
+    // nonce with the tokens, so the answer no longer validates and
+    // registration cannot complete.
+    this.forgetProviderToken();
   }
 
   // The mid-visit transition, called by `sessionExpiryInterceptor` when the API
@@ -152,9 +171,10 @@ export class SessionService {
     // the guards and in {@link readingOf}; writing it a third time is how the
     // third copy drifts.
     //
-    // {@link established} deliberately clears nothing. A session beginning says
-    // nothing about which factor opened it, and the two paths that know —
-    // registration and sign-in — hand the keys over themselves.
+    // {@link established} owns no key material. It discards the provider's
+    // token and nothing else: a session beginning says nothing about which
+    // factor opened it, and the two paths that know — registration and
+    // sign-in — hand the keys over themselves.
     this.custody.lock();
   }
 
@@ -178,8 +198,36 @@ export class SessionService {
   // `unreachable`, and the remedy is the same press a moment later.
   public established(): void {
     this.statusSignal.set('authenticated');
+    this.forgetProviderToken();
 
     void this.readBudget();
+  }
+
+  // Drops the provider's tokens once this tab has published a session, from
+  // both arms that publish one — the probe's answer and {@link established}.
+  //
+  // **Owned here rather than by the paths that establish a session**, for the
+  // reason {@link ended} owns `custody.lock()`: a third establishing path will
+  // be written by somebody thinking about sign-in rather than about the id
+  // token sitting in `sessionStorage`, and put here it discards for free.
+  //
+  // **Correct only while no signed-in flow uses the provider.** Today the
+  // token is read on the registration screen and nowhere after the session
+  // cookie takes over, so a tab holding a session has no use for it. A future
+  // signed-in flow that needs a provider token breaks that, and this call with
+  // it.
+  //
+  // **Guarded, because it is housekeeping and the session is the fact.** A
+  // throw out of the library — `sessionStorage` refused in a locked-down
+  // browser, a quota error — must not unpublish a session the server just
+  // confirmed, nor throw out of a subscriber with a navigation on the next
+  // line. It is logged through the funnel instead, reason and projection only.
+  private forgetProviderToken(): void {
+    try {
+      this.auth.forgetProviderToken();
+    } catch (error: unknown) {
+      logFailure('Provider token discard failed', error);
+    }
   }
 
   // Reads the budget alone, publishing nothing else and never rejecting.

@@ -88,12 +88,12 @@ export class AuthService {
     // `setupAutomaticSilentRefresh()` used to sit on the next line; it plants a
     // hidden iframe pointed at `accounts.google.com` and re-runs it on a timer
     // for as long as the tab is open. The provider token is now used **once**,
-    // on the registration screen, and discarded at the 201 by
-    // `forgetProviderToken()` — every request after that authenticates from the
-    // first-party session cookie. Refreshing it would be a third-party request
-    // on every page of the product, forever, to keep alive a credential nothing
-    // reads. Adding it back is a change to what this application loads from
-    // another origin, not a convenience.
+    // on the registration screen, and discarded by `forgetProviderToken()`
+    // whenever `SessionService` publishes a session — every request after that
+    // authenticates from the first-party session cookie. Refreshing it would be
+    // a third-party request on every page of the product, forever, to keep alive
+    // a credential nothing reads. Adding it back is a change to what this
+    // application loads from another origin, not a convenience.
     //
     // This guard is a deliberate scope departure in the commit that added it —
     // that commit is about registration, and this is a bootstrap fix. It is
@@ -238,13 +238,21 @@ export class AuthService {
    * Discards the provider's tokens locally, without visiting the provider.
    *
    * `logOut(true)` is the local-discard overload: it clears this application's
-   * copy of the id and access tokens and performs **no** redirect to Google's
-   * end-session endpoint. That is the whole point — this is called once the
-   * account exists and a first-party session cookie has taken over, at which
-   * point the id token is a credential this application has no further use for
-   * and every reason to stop carrying. Ending the person's Google session on
-   * their behalf is not something this application was asked to do, and the
-   * redirect would also take them off a screen mid-flow.
+   * copy of the id and access tokens from `sessionStorage` and performs **no**
+   * redirect to Google's end-session endpoint. That is the whole point — the
+   * one caller is `SessionService`, each time it publishes `authenticated`:
+   * from `established()` (the registration 201, a passkey sign-in) and from a
+   * start-up probe that finds a session. A first-party session cookie has taken
+   * over by then, so the id token is a credential this application has no
+   * further use for and every reason to stop carrying. Ending the person's
+   * Google session on their behalf is not something this application was asked
+   * to do, and the redirect would also take them off a screen mid-flow.
+   *
+   * **Never on an `anonymous` or `unreachable` probe.** On the provider-return
+   * leg the probe runs before {@link initialize} reads the answer off the URL,
+   * and a discard there takes the library's nonce with the tokens, so the
+   * answer no longer validates. The arm is chosen in `SessionService`; this
+   * method only discards.
    *
    * **Not a sign-out**, and {@link signOut} is deliberately left alone beside
    * it. A discard ends nothing the person can see; a sign-out ends their visit.

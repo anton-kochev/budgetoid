@@ -107,8 +107,10 @@ Every new surface is designed and reviewed in both themes before shipping.
 ## Nothing to consent to
 
 The product shall present **no consent banner, no cookie notice and no tracking-preference
-surface**. It has nothing to ask consent for: it loads nothing from another origin, sets no cookie
-but the session handle, and keeps nothing on the device that grows with use —
+surface**. It has nothing to ask consent for: it loads nothing from another origin except the
+provider exchange a person starts on `/register`, sets no cookie but the session handle, and keeps
+nothing on the device that is not strictly necessary for something the person asked for — never a
+trail of what they did —
 [no third-party origins](../engineering/no-third-party-origins.md#no-cookie-from-a-script-and-nothing-to-consent-to)
 argues it. A consent surface over none of that would ask a question with only one true answer, and
 teach the person to dismiss the next one unread.

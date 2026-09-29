@@ -2,8 +2,9 @@ import { HttpErrorResponse } from '@angular/common/http';
 import { TestBed } from '@angular/core/testing';
 import { MeApiService, type MeDto } from '@app-core/api/me-api.service';
 import { AccountKeyCustodyService } from '@app-core/security/account-key-custody.service';
-import { Observable, Subject, of, throwError } from 'rxjs';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { AuthService } from '@app-core/services/auth-service';
+import { Observable, Subject, TimeoutError, of, throwError } from 'rxjs';
+import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { SessionService } from './session.service';
 
 // The session cookie is `HttpOnly`, so script cannot read it and a cold load
@@ -65,17 +66,50 @@ function touchedMembersOf(custody: CustodyStub): readonly string[] {
   );
 }
 
+// Every member of the provider service, so a census can name which one was
+// reached rather than only that one was. Listed rather than derived, as
+// `sign-in.service.spec.ts` lists its own: the census is a list somebody has to
+// extend deliberately when `AuthService` grows a member. `signOut` is the member
+// it exists to refuse — it is `logOut()` without the local-discard flag, a
+// redirect to Google's end-session endpoint, and it reads the same as the
+// discard in a diff.
+type ProviderStub = Readonly<Record<keyof AuthService, Mock>>;
+
+function providerStub(): ProviderStub {
+  return {
+    initialize: vi.fn(),
+    isProviderReturn: vi.fn(),
+    isAuthenticated: vi.fn(),
+    providerEmail: vi.fn(),
+    signIn: vi.fn(),
+    forgetProviderToken: vi.fn(),
+    signOut: vi.fn(),
+  };
+}
+
+function calledProviderMembersOf(provider: ProviderStub): readonly string[] {
+  return Object.entries(provider)
+    .filter(([, member]) => member.mock.calls.length > 0)
+    .map(([name]) => name);
+}
+
 describe('SessionService', () => {
   let service: SessionService;
   let api: MeApiStub;
   let custody: CustodyStub;
+  let provider: ProviderStub;
 
   beforeEach(() => {
     api = new MeApiStub();
     custody = new CustodyStub();
+    provider = providerStub();
     TestBed.configureTestingModule({
       providers: [
         { provide: MeApiService, useValue: api },
+        // A census stub, built fresh per case: no `restoreMocks` is configured,
+        // so a spy shared across cases would answer from an earlier case's
+        // history.
+        { provide: AuthService, useValue: provider },
         // Stubbed rather than real, unlike `sign-in.service.spec.ts`, and for
         // the opposite reason: nothing here is interested in what custody
         // *does*, only in whether this class told it to. The real service would
@@ -465,5 +499,165 @@ describe('SessionService', () => {
     // Assert
     expect(service.status()).toBe('unreachable');
     expect(touchedMembersOf(custody)).toEqual([]);
+  });
+  // **The provider's tokens go the moment this tab learns it holds a session,
+  // and this class is where it learns that.** Two arms publish
+  // `'authenticated'` — the probe's answer and `established()` — and both
+  // discard. Owned here rather than by the paths that establish a session, for
+  // the reason `ended()` owns `custody.lock()`: a third establishing path will be
+  // written by somebody thinking about sign-in rather than about the id token
+  // sitting in `sessionStorage`, and put here it discards for free.
+  describe("the provider's token", () => {
+    // A tab that comes back to the product with a live session cookie and an id
+    // token left over from a registration abandoned — or finished — in an
+    // earlier visit. The cookie is what authenticates every request from here;
+    // the bearer is a second credential nothing reads.
+    it("discards the provider's token when the probe finds a session", async () => {
+      // Arrange
+      api.getSessionOwner.mockReturnValue(of(ME));
+
+      // Act
+      await service.probe();
+
+      // Assert
+      expect(service.status()).toBe('authenticated');
+      expect(provider.forgetProviderToken).toHaveBeenCalledOnce();
+    });
+
+    // **The pin a reader will break by "discarding on every probe".** The
+    // provider-return leg runs the probe *before* `auth.initialize()` reads the
+    // answer off the URL, and the person on that leg holds no session yet.
+    // Discarded here, the library's `nonce` goes with the tokens, the answer on
+    // the URL no longer validates, and registration — the one act that creates
+    // an account — cannot complete.
+    it.each([
+      { why: 'unauthenticated', status: 401 },
+      { why: 'refused outright', status: 403 },
+    ])(
+      "keeps the provider's token when the probe finds no session ($why)",
+      async ({ status }) => {
+        // Arrange
+        api.getSessionOwner.mockReturnValue(throwError(() => refusal(status)));
+
+        // Act
+        await service.probe();
+
+        // Assert
+        expect(service.status()).toBe('anonymous');
+        expect(calledProviderMembersOf(provider)).toEqual([]);
+      },
+    );
+
+    // The fourth state's rule, applied to the token. A read that never got an
+    // answer has learned nothing about the visitor — which includes whether the
+    // provider exchange on the URL is still theirs to finish.
+    it.each([
+      { why: 'a network failure', error: NETWORK_FAILURE },
+      { why: 'a server error', error: refusal(500) },
+      { why: 'a timeout', error: new TimeoutError() },
+    ])(
+      "keeps the provider's token when the probe never reached the server ($why)",
+      async ({ error }) => {
+        // Arrange
+        api.getSessionOwner.mockReturnValue(throwError(() => error));
+
+        // Act
+        await service.probe();
+
+        // Assert
+        expect(service.status()).toBe('unreachable');
+        expect(calledProviderMembersOf(provider)).toEqual([]);
+      },
+    );
+
+    // The registration 201 and the sign-in 200 both come through here. Arranged
+    // over a budget read that never answers, so a discard that waited on that
+    // read — or rode inside it — is not what this sees.
+    it("discards the provider's token when a session is established", () => {
+      // Arrange
+      api.getSessionOwner.mockReturnValue(new Subject<MeDto>());
+
+      // Act
+      service.established();
+
+      // Assert
+      expect(service.status()).toBe('authenticated');
+      expect(provider.forgetProviderToken).toHaveBeenCalledOnce();
+    });
+
+    // **A discard, never a sign-out.** `signOut()` is `logOut()` without the
+    // local flag: a top-level redirect to Google's end-session endpoint, which
+    // ends the person's Google session on their behalf and takes them off the
+    // screen that just let them in. The two read alike in a diff, so the rule is
+    // stated as a census — exactly one member, by name — rather than as a spy on
+    // the member that ought to be called.
+    it.each([
+      {
+        arm: 'a session is established',
+        act: (session: SessionService): Promise<void> => {
+          session.established();
+
+          return Promise.resolve();
+        },
+      },
+      {
+        arm: 'the probe finds a session',
+        act: (session: SessionService): Promise<void> => session.probe(),
+      },
+    ])(
+      'asks the provider service for nothing but the discard when $arm',
+      async ({ act }) => {
+        // Arrange
+        api.getSessionOwner.mockReturnValue(of(ME));
+
+        // Act
+        await act(service);
+        await Promise.resolve();
+
+        // Assert
+        expect(calledProviderMembersOf(provider)).toEqual([
+          'forgetProviderToken',
+        ]);
+      },
+    );
+
+    // The discard is housekeeping on a credential nothing reads any more; the
+    // session is the fact. A throw out of the library — `sessionStorage` refused
+    // in a locked-down browser, a quota error — must not turn a verified sign-in
+    // into `'anonymous'`, and out of the probe it must not become
+    // `'unreachable'`: the server answered.
+    it('a discard that throws does not unpublish an established session', () => {
+      // Arrange
+      api.getSessionOwner.mockReturnValue(new Subject<MeDto>());
+      provider.forgetProviderToken.mockImplementation(() => {
+        throw new Error('sessionStorage is unavailable.');
+      });
+
+      // Act
+      const act = (): void => {
+        service.established();
+      };
+
+      // Assert
+      expect(act).not.toThrow();
+      expect(provider.forgetProviderToken).toHaveBeenCalledOnce();
+      expect(service.status()).toBe('authenticated');
+    });
+
+    it('a discard that throws does not unpublish the session the probe found', async () => {
+      // Arrange
+      api.getSessionOwner.mockReturnValue(of(ME));
+      provider.forgetProviderToken.mockImplementation(() => {
+        throw new Error('sessionStorage is unavailable.');
+      });
+
+      // Act
+      await service.probe();
+
+      // Assert
+      expect(provider.forgetProviderToken).toHaveBeenCalledOnce();
+      expect(service.status()).toBe('authenticated');
+      expect(service.budgetId()).toBe(BUDGET_ID);
+    });
   });
 });
