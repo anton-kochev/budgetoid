@@ -143,8 +143,11 @@ if (builder.ExecutionContext.IsPublishMode)
         .ConfigureInfrastructure(infrastructure =>
         {
             // Pin the cheapest tier that still gets automated backups: Burstable Standard_B1ms,
-            // 32 GB storage, 7-day backup retention, geo-redundant backup off. These map straight
-            // to the generated server Bicep.
+            // 32 GB storage, the backup retention the settings screen's erase section states,
+            // geo-redundant backup off. These map straight to the generated server Bicep. The
+            // retention is assigned once, as a plain integer literal, because
+            // settings.component.spec.ts reads this file as text and holds the screen's number to
+            // it. Changing it means changing the prose erasure.md lists under its backup rule.
             PostgreSqlFlexibleServer flexibleServer = infrastructure
                 .GetProvisionableResources()
                 .OfType<PostgreSqlFlexibleServer>()

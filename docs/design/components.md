@@ -2610,10 +2610,12 @@ a person can act on — [erasure.md](../business-logic/erasure.md)'s backup rule
 browser keeps.
 
 **The retention number is on this section and not in the dialog.** It is a figure a value in a
-different project decides, with nothing tying the two together —
-[erasure.md](../business-logic/erasure.md) states the pairing and the commit that has to carry both
-halves. A second copy of the sentence is a second place for the number to drift, so the dialog
-does not repeat it: somebody pressing the trigger has just read it, a few lines above the control.
+different project decides, and the settings spec's *backup window* block holds the number this
+section renders to that value — [erasure.md](../business-logic/erasure.md) states what the pairing
+does not reach. The block reads only this section of the screen, so a second copy of the sentence
+in the dialog would be a second place for the number to drift with nothing holding it, and the
+dialog does not repeat it: somebody pressing the trigger has just read it, a few lines above the
+control.
 
 **Both paragraphs are standing prose and say what erasing *does*.** They read the same before the
 dialog is opened, while it is open, and on a screen reached again after a dialog was cancelled.

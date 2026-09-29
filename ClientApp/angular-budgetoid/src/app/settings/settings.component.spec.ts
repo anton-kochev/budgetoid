@@ -53,6 +53,8 @@ import {
   SessionService,
   type SessionStatus,
 } from '@app-core/session/session.service';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { of, throwError, type Observable } from 'rxjs';
 import {
   afterEach,
@@ -1653,6 +1655,117 @@ describe('SettingsComponent', () => {
     // "Account" is no longer where the requirement puts it and must go red,
     // which a whole-page `textContent` assertion would not notice.
     expect(normalize(section)).toContain(BACKUP_WINDOW);
+  });
+
+  // FR-023, the other half. The case above holds the sentence; this block
+  // holds that the number in it is the one the server is provisioned with.
+  describe('the backup window', () => {
+    it('reads every assignment to BackupRetentionDays outside a line comment and nothing that only mentions it', () => {
+      // Arrange
+      // Numbers the real file does not carry. The decoys each name the
+      // identifier and are each something the parser must pass over: a doc
+      // comment quoting an assignment, the assignment commented out, a longer
+      // identifier starting with the same word, and four comparisons. Around
+      // them sit the assignments: the initializer member with a trailing
+      // comment, and a member-access override after the initializer, which is
+      // the one an ideal-line parser walked straight past.
+      const source = [
+        '/// Retention: see BackupRetentionDays = 30 in the runbook.',
+        'flexibleServer.Backup = new PostgreSqlFlexibleServerBackupProperties',
+        '{',
+        '    // BackupRetentionDays = 35,',
+        '    BackupRetentionDaysLegacy = 90,',
+        '    BackupRetentionDays = 13, // point-in-time window',
+        '};',
+        'flexibleServer.Backup.BackupRetentionDays = 44;',
+        'if (flexibleServer.Backup.BackupRetentionDays == 60) { }',
+        'if (flexibleServer.Backup.BackupRetentionDays != 61) { }',
+        'if (flexibleServer.Backup.BackupRetentionDays >= 62) { }',
+        'if (flexibleServer.Backup.BackupRetentionDays <= 63) { }',
+        '',
+      ].join('\n');
+
+      // Act
+      const assignments = retentionAssignments(source);
+      const expression = retentionAssignments(
+        'flexibleServer.Backup.BackupRetentionDays = 70 / 2;\n',
+      );
+      const named = retentionAssignments(
+        '    BackupRetentionDays = RetentionDays,\n',
+      );
+      const compound = retentionAssignments(
+        'flexibleServer.Backup.BackupRetentionDays += 28;\n',
+      );
+      const oneLine = retentionAssignments(
+        'var backup = new BackupProperties { BackupRetentionDays = 35 };\n',
+      );
+      const stepped = retentionAssignments(
+        [
+          'flexibleServer.Backup.BackupRetentionDays++;',
+          '++flexibleServer.Backup.BackupRetentionDays;',
+          'flexibleServer.Backup.BackupRetentionDays--;',
+          '--flexibleServer.Backup.BackupRetentionDays;',
+          '',
+        ].join('\n'),
+      );
+      const absent = retentionAssignments('var retention = 13;\n');
+      const twice = retentionAssignments(
+        '    BackupRetentionDays = 21,\n    BackupRetentionDays = 21,\n',
+      );
+
+      // Assert
+      // Both assignments, as written, and none of the decoys. A right-hand
+      // side that is not a literal comes back as itself, `/` and all, so the
+      // pin below can name it; nothing comes back for a source with no
+      // assignment, and both for a source with two, so a miss and a duplicate
+      // are each something the pin can refuse.
+      expect(assignments).toEqual(['13', '44']);
+      expect(expression).toEqual(['70 / 2']);
+      expect(named).toEqual(['RetentionDays']);
+      expect(compound).toEqual(['+= 28']);
+      expect(oneLine).toEqual(['35']);
+      expect(stepped).toEqual(['++', '++', '--', '--']);
+      expect(absent).toEqual([]);
+      expect(twice).toHaveLength(2);
+    });
+
+    it('tells a person the backup window the server is provisioned with', () => {
+      // Arrange
+      const source = readFileSync(APP_HOST_PROGRAM_FILE, 'utf8');
+
+      // Act
+      const assignments = retentionAssignments(source);
+      const assigned = assignments[0] ?? '';
+      const stated = [
+        ...normalize(sectionFor(host, 'erase-heading')).matchAll(
+          /\bbackups for up to (\d+) days\b/g,
+        ),
+      ].map((match) => Number(match[1]));
+
+      // Assert
+      // Every parse before the comparison, and never the comparison alone.
+      // Two assignments mean the provisioned value depends on which runs last;
+      // a constant or an expression is a value this side cannot evaluate; copy
+      // that spells the number out leaves the rendered side empty. Each is
+      // named on its own, and a case that went straight to equality would
+      // report numbers instead of the site it could not read.
+      expect(
+        assignments,
+        `${assignments.length} assignments to BackupRetentionDays in ${APP_HOST_PROGRAM_FILE}`,
+      ).toHaveLength(1);
+      expect(
+        assigned,
+        `BackupRetentionDays is set from \`${assigned}\`, not a literal, in ${APP_HOST_PROGRAM_FILE}`,
+      ).toMatch(/^\d+$/);
+      expect(
+        stated,
+        'the erase section states no single retention window in digits',
+      ).toHaveLength(1);
+      expect(
+        stated[0],
+        `the erase section tells a person ${stated[0]} days; ${APP_HOST_PROGRAM_FILE} sets BackupRetentionDays = ${assigned}`,
+      ).toBe(Number(assigned));
+    });
   });
 
   it('shows the account email once it loads', () => {
@@ -5883,6 +5996,55 @@ function precedes(first: Element | null, second: Element | null): boolean {
 function sectionFor(host: HTMLElement, headingId: string): HTMLElement | null {
   return host.querySelector<HTMLElement>(
     `section[aria-labelledby="${headingId}"]`,
+  );
+}
+
+// Where the server's backup retention is provisioned.
+//
+// Resolved from `process.cwd()`, which is the Angular project root under both
+// `npm test` and the watcher; the two `..` climb out of
+// `ClientApp/angular-budgetoid` and into the solution beside it. Held as a
+// constant rather than searched for, so a moved file is a red bar naming a
+// path rather than a scan that quietly finds nothing.
+const APP_HOST_PROGRAM_FILE = join(
+  process.cwd(),
+  '..',
+  '..',
+  'BudgetoidApp',
+  'AppHost',
+  'Program.cs',
+);
+
+// The right-hand side of every assignment to `BackupRetentionDays` in a C#
+// source that no `//` precedes on its line, in order, as written.
+//
+// Every form counts, not only the shape the file uses today: an initializer
+// member, a one-line initializer, a member-access statement, one carrying a
+// trailing comment, a compound assignment, and `++`/`--` either side. A parser
+// that recognised one ideal line would let an override written any other way
+// provision a number the screen never hears of.
+//
+// Exactly three things are excluded: an assignment with a `//` anywhere
+// before the name on its line, a longer identifier starting with the same
+// word, and the comparisons `==`, `!=`, `>=` and `<=`. This is text matching,
+// not a C# parse, so it does **not** know what the compiler assigns: an
+// assignment inside a block comment, on a ` * ` line of one, inside a string,
+// or under `#if false` is counted. Each of those fails loud — a second
+// assignment the pin refuses by count — and never quietly.
+//
+// The right-hand side runs to the first `,`, `;`, `)`, `}`, `//` or end of line
+// and is returned as text, so a constant or an expression reaches the caller
+// as itself rather than as a miss. A `/` inside it is allowed on purpose — a
+// pattern that stopped at any slash would skip `= 70 / 2;` whole. A compound
+// assignment keeps its operator, so `+= 28` never reads as the literal 28, and
+// an increment comes back as `++` or `--`.
+function retentionAssignments(source: string): readonly string[] {
+  const assignment =
+    /^(?:(?!\/\/).)*?(?:(\+\+|--)\s*[\w.]*?\bBackupRetentionDays\b|\bBackupRetentionDays\s*(?:(\+\+|--)|((?:[-+*/%&|^]|<<|>>>?|\?\?)?)=(?!=)\s*([^,;)}\r\n]+?)\s*(?:[,;)}]|\/\/|$)))/gm;
+
+  return [...source.matchAll(assignment)].map(
+    ([, prefix, postfix, operator, rhs]) =>
+      prefix ?? postfix ?? (operator ? `${operator}= ${rhs}` : rhs),
   );
 }
 

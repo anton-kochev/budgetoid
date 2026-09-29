@@ -556,23 +556,38 @@ role holds no `DELETE` there of any shape.
   and both sentences are true at once. A point-in-time restore rebuilds the whole database as an
   operator action against the whole service — it cannot be aimed at one account, and it is reachable
   from no route, handler, role or grant.
-- **Enforced in**: nothing. `BackupRetentionDays = 7` is set on the Postgres resource in
-  `AppHost/Program.cs`, but no test reads it — editing that literal to `35` reds nothing, and
-  neither does an operator changing retention on the server directly. This is the one rule on this
-  page held by a value in a file rather than by a gate.
-  - **The product tells a person about this window, and the number in the copy is held by nothing.**
-    The account settings screen states the seven-day limit in words — *Erased data stays in
-    point-in-time database backups for up to 7 days, and nowhere else on Budgetoid’s servers. Your
-    passkeys stay on your devices until you remove them there.* `settings.component.spec.ts` pins
-    the sentence, so the copy cannot drift on its own, and it makes `BackupRetentionDays = 7` the
-    number a user was told. Its scope is this rule's: *on Budgetoid's servers* is the boundary the
-    scope paragraph above draws, and the passkey is the one thing past it the sentence names,
-    because it is the one a person can act on. Nothing ties the two together, and they live in different projects
-    and different languages, so editing the literal leaves the screen quietly lying about a privacy
-    guarantee. **Whoever changes retention changes the copy in the same commit**; until a gate holds
-    that pairing, this sentence is the only thing that says so. A gate is possible — a test reading
-    `AppHost/Program.cs` as text — and was deliberately not written, because no test in this
-    repository reads a source file. It is on the hardening backlog.
+- **Enforced in**: the retention itself, nothing. `BackupRetentionDays = 7` is set on the Postgres
+  resource in `AppHost/Program.cs`, and no gate holds it against the server it provisions — an
+  operator changing retention on the server directly reds nothing, and neither does a deploy whose
+  generated Bicep came out different from the C#. This is the one rule on this page whose value no
+  test holds against what it provisions.
+  - **The product tells a person about this window, and CI holds the number it states to that
+    value.** The account settings screen states the seven-day limit in words — the sentence is
+    specified in [components.md](../design/components.md), "The copy is the specification" — and
+    `settings.component.spec.ts` holds it twice. One case pins the sentence verbatim, so the copy
+    cannot drift on its own. The *backup window* block reads `AppHost/Program.cs` as text, requires
+    exactly one assignment to `BackupRetentionDays` outside a `//` comment and requires it to be an
+    integer literal, reads the number the rendered erase section states, and fails unless the two
+    agree. So editing the literal to `14` reds that block and only that block, and moving it behind
+    a constant, adding a second assignment or spelling the copy's number out each reds it by name.
+    Its scope is this rule's: *on Budgetoid's servers* is the boundary the scope paragraph above
+    draws, and the passkey is the one thing past it the sentence names, because it is the one a
+    person can act on.
+  - **It goes red in CI and gates no deploy.** The spec runs in the frontend CI job, which nothing
+    makes a required check, and the deploy workflow provisions the server — where retention is
+    applied — without waiting for the job that runs the frontend suite. A retention change merged
+    on its own therefore reaches the server while the red spec stops only the frontend upload, and
+    the screen already deployed goes on stating the old number.
+  - **What the pairing does not reach.** It reads one file with a line-level pattern, not a C#
+    parser: an assignment after a `//` inside a string on the same line is invisible to it, a value
+    set in another file, through a method, or by replacing the whole `Backup` object escapes it, and
+    an assignment in a branch the publish never runs is counted as though it deployed. It holds that
+    two numbers agree, never that the sentence is true: a second backup path, or a retention change
+    made on the server, leaves both numbers equal and the sentence false. And it reads the screen
+    only — the window is restated in prose across `docs/` (this rule's own first line, ADR 0017,
+    `adversarial-properties.md`, `patterns.md`, `components.md`), in `DEPLOYMENT.md` and in the
+    verbatim pin, and none of those is held by anything. **Whoever changes retention changes every
+    one of them in the same commit.**
 - **Source**: `[SOURCE: user-story]`
 
 ## Workflows & State Transitions
