@@ -104,6 +104,18 @@ paint — but **no UI calls it**: the Settings screen carries no theme control, 
 override exists in code and nowhere on screen.
 Every new surface is designed and reviewed in both themes before shipping.
 
+## Nothing to consent to
+
+The product shall present **no consent banner, no cookie notice and no tracking-preference
+surface**. It has nothing to ask consent for: it loads nothing from another origin, sets no cookie
+but the session handle, and keeps nothing on the device that grows with use —
+[no third-party origins](../engineering/no-third-party-origins.md#no-cookie-from-a-script-and-nothing-to-consent-to)
+argues it. A consent surface over none of that would ask a question with only one true answer, and
+teach the person to dismiss the next one unread.
+
+If the product ever needs a new kind of data, it shall ask **at the point of use**, in plain words,
+beside the control that needs it — never up front, never in a banner.
+
 ## Data ownership
 
 The product publicly promises: the user only and always owns their data.

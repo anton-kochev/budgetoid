@@ -261,7 +261,9 @@ Load-bearing rules. Each links the doc that argues it — **read that doc before
   [sessions.md](docs/business-logic/sessions.md)
 - **Nothing loads from another origin** — no CDN script, stylesheet, typeface, icon, image, or
   identity-provider picture. `src/no-external-origins.spec.ts` reads the production bundle, so
-  `npm test` needs a `npm run build` first.
+  `npm test` needs a `npm run build` first. **No script sets a cookie either**, and there is no
+  consent surface because there is nothing to consent to — `no-cookie-writes.spec.ts` parses the
+  bundle for writes, and reads are allowed.
   [no third-party origins](docs/engineering/no-third-party-origins.md)
 - **The application prints only through `logFailure`**, which writes a literal reason and a closed
   projection of the cause — never its message, URL or body. Angular's `ErrorHandler`, the OAuth

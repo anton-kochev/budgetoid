@@ -1,6 +1,7 @@
 # No Third-Party Origins
 
-> Read this before adding a `<link>`, a `<script>`, an `<img>`, or a font to the web app.
+> Read this before adding a `<link>`, a `<script>`, an `<img>`, or a font to the web app — or a
+> cookie, or a key in the browser's storage.
 
 **The web application loads nothing from an origin other than its own.** Not a script, not a
 stylesheet, not a typeface, not an icon, not an image. The reason is not performance and not
@@ -103,3 +104,66 @@ the two Google origins above — so the two gaps are the only third parties in i
 [security headers](security-headers.md) owns it. It and this test are two halves of
 one guarantee: build-time absence cannot see markup a defect injects at runtime, and a runtime
 policy cannot see a CDN URL that no browser has been asked to fetch yet.
+
+## No cookie from a script, and nothing to consent to
+
+**The product loads nothing from another origin and sets no cookie but the session handle, so there
+is no tracker in it and nothing to ask anybody's consent for.** That is why the web client presents
+no consent banner, no cookie notice and no tracking-preference surface. It is not an omission
+waiting on a review; it is what this chapter holding looks like from the screen, and a surface
+asking permission for something the product does not do would be a false sentence in front of
+everybody. [Patterns](../design/patterns.md#nothing-to-consent-to) states the design half.
+
+"No cookie but the session handle" has two halves, held in two places.
+
+**The API half** is the MUST NOT in [sessions.md](../business-logic/sessions.md) — the API sets no
+cookie but `__Host-budgetoid-session` — held by `CookieCensusTests`.
+
+**The client half** is `src/no-cookie-writes.spec.ts`. It reads every `.js` file the production
+build emits — so a dependency's code is covered, not only `src/` — parses each with the TypeScript
+compiler, and fails on any assignment to a property named `cookie`, dotted or string-keyed, under
+any assignment operator, and on any `cookieStore.set` or `cookieStore.delete`. The receiver is not
+checked, because a minifier hands `document` to a one-letter local as readily as anything else.
+Reads are counted, not refused. Angular ships two: platform-browser's cookie getter, and
+HttpClient's XSRF reader, which only reads, and only for same-origin mutating requests — and the API
+is another origin. The spec requires at least one read, so a scan that walked nothing cannot pass
+on an empty write list. Like the specs above, it needs `npm run build` first.
+
+What it cannot see:
+
+- **A write built to hide from a syntax scan** — `Reflect.set`, `Object.assign`, a computed key, a
+  `cookieStore` reached through an alias, a destructuring target, `++`.
+- **A `<meta http-equiv>` in HTML.** The spec reads scripts only.
+- **A `Set-Cookie` the static host adds to its own responses.** [Guessing] whether Azure Static Web
+  Apps sets one on static files: nothing has been observed, because no environment exists to
+  observe it on.
+
+### What the device keeps
+
+Storage on the device is judged by one test: **does it grow with use, and does it carry a time?**
+An audit trail does both — a row per act, each stamped with when. Nothing the client keeps grows
+with use. Two rows carry a time — the session's expiry, and the provider token's stored-at and
+expiry — and each is one value per credential, replaced rather than appended; the second lives for
+one registration in one tab.
+
+| Key | Where | Holds | Why it is not a trail |
+| --- | --- | --- | --- |
+| `__Host-budgetoid-session` | cookie, set by the API, `HttpOnly` | the session handle | Serves the request. One per session; its expiry is the session's lifetime, not a record of an act. |
+| angular-oauth2-oidc's token entries | `sessionStorage`, this tab | the provider's tokens, the nonce, and the token's own stored-at and expiry times | Exists only during registration. `AuthService.forgetProviderToken()` discards them at the `201`; an abandoned registration keeps them until the tab closes. |
+| the library's availability probe | `localStorage` | nothing | Written and removed in the same call when the library's service is built. |
+| `budgetoid-theme` | `localStorage` | `system`, `light` or `dark` | One value, overwritten. A preference, not an observation. Nothing writes it today: `ThemeService.setMode` has no caller, so `theme-prepaint.js` and `ThemeService` only ever read it. |
+| `budgetoid-rotation-epoch:<budgetId>` | `localStorage` | one number per account this device has unlocked | Rises only. A rollback control — see [account keys](../business-logic/account-keys.md). |
+
+**The rotation-epoch record leaves a budget id on the device, and nothing in the client removes
+it.** `SessionService.ended()` drops the budget signal and has custody drop the keys it holds in
+memory; it does not touch this record, and `rotation-epoch-record.ts` exports no way to. So the
+key outlives a sign-out, and outlives an erasure too, naming a budget that no longer exists
+anywhere else. What stays is one opaque identifier and one number per account that ever unlocked
+in this browser, until the person clears the site's data. Clearing it at sign-out is not a free
+fix: a device that forgets an account is in the first-visit state, where a rollback cannot be seen
+at all.
+
+Nothing is persisted beyond this table — the account's keys are held in memory per tab and never
+written anywhere, per [account keys](../business-logic/account-keys.md). **A new key must argue its
+row here, against the test above.** No spec compares this table with the code; only review keeps it
+honest.
