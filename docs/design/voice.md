@@ -65,7 +65,6 @@ figures, not to copy that could just say the number).
   "No accounts yet." / "Every account in one place — one picture of your money." /
   "Add account".
 - **Confirmation**: past-tense fact, one word if possible: "Recorded." "Exported."
-  "Erased."
 - **Destructive confirm**: consequence in plain words, then the action as the verb:
   "This erases your account and everything in it — every budget, account, category,
   payee and transaction. There is no undo." → "Erase everything".

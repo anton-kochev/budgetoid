@@ -153,8 +153,8 @@ export class EraseDialogComponent {
       case 'asserting':
         return { text: 'Waiting for your passkey.', refusal: false };
       // `erased` keeps the erasing line rather than emptying the region: the
-      // tab is already on its way to Welcome, which says *Erased.*, and a
-      // region that went blank in between would announce nothing true.
+      // tab is already on its way to Welcome, and a region that went blank in
+      // between would announce nothing true.
       case 'erasing':
       case 'erased':
         return { text: 'Erasing…', refusal: false };

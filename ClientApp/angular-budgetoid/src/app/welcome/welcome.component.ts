@@ -1,15 +1,11 @@
 import {
   ChangeDetectionStrategy,
   Component,
-  DestroyRef,
-  afterNextRender,
   computed,
   inject,
-  signal,
 } from '@angular/core';
 import { MatButtonModule } from '@angular/material/button';
 import { Router } from '@angular/router';
-import { ErasureNotice } from '@app-core/session/erasure-notice';
 import { BrandLockupComponent } from '@app-shared/components/brand-lockup/brand-lockup.component';
 import { KineticSentenceComponent } from '@app-shared/components/kinetic-sentence/kinetic-sentence.component';
 import { SignInService, type SignInFailure } from './sign-in.service';
@@ -55,34 +51,6 @@ export class WelcomeComponent {
   protected readonly flow = inject(SignInService);
   protected readonly kineticLines = KINETIC_LINES;
 
-  // **The one outcome the region carries that the person did not make here**:
-  // the erasure dialog marks it on its way out, before the session ends and the
-  // router is asked for this screen, so it is already set when this screen is
-  // constructed. Read reactively all the same, so a mark that lands later still
-  // reaches the region. See docs/design/components.md, "The welcome screen".
-  //
-  // Root-provided and never listed here: a copy provided on this component
-  // would be a notice nobody marked.
-  protected readonly notice = inject(ErasureNotice);
-
-  // Whether this screen has rendered once. *Erased.* waits for it, so the
-  // region is in the DOM and empty before the word lands in it — a region
-  // inserted together with its line is announced by nothing, and a tab arriving
-  // here after an erasure brings the mark with it.
-  readonly #arrived = signal(false);
-
-  protected readonly erased = computed(
-    () => this.#arrived() && this.notice.erased(),
-  );
-
-  constructor() {
-    afterNextRender(() => this.#arrived.set(true));
-
-    // **It describes the moment the tab arrived.** A person who signs in, uses
-    // the app and signs out again lands here with nothing having been erased.
-    inject(DestroyRef).onDestroy(() => this.notice.clear());
-  }
-
   // What the screen says when a sign-in ended badly, and `null` when nothing
   // has. Computed off the flow's word rather than stored, so there is one
   // statement of the failure and the screen cannot go on showing an older one.
@@ -99,11 +67,7 @@ export class WelcomeComponent {
     void this.router.navigateByUrl('/register');
   }
 
-  // **A sign-in press clears *Erased.* as it starts**, and the fact must not
-  // come back when that press's own answer does: somebody who presses Sign in
-  // with a passkey has moved on to something the region should answer instead.
   protected signIn(): void {
-    this.notice.clear();
     this.flow.signIn();
   }
 }

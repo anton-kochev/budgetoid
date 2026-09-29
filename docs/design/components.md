@@ -2637,8 +2637,8 @@ dialog is opened, while it is open, and on a screen reached again after a dialog
 ### Accessibility
 
 Heading level `h2` under the screen's one `h1`; no level skipped. No `role="status"` region: nothing
-here is read from the network, and every outcome of the act is said in the dialog's region or on
-Welcome. The trigger is a 48px target and its visible label is its whole accessible name. Nothing is
+here is read from the network, and every refusal of the act is said in the dialog's region. A
+finished erasure is said by nothing: the person lands on Welcome signed out. The trigger is a 48px target and its visible label is its whole accessible name. Nothing is
 communicated by colour.
 
 ## Erasure dialog
@@ -2876,22 +2876,15 @@ that closes it first**: the CDK disposes the overlay on `popstate` before the sc
 `disableClose` says, which is why the screen abandons a press when its overlay closes from outside,
 per *The dismiss* above, and not only when it is torn down.
 
-**After a `204`, the session ends on this device and the person lands on `/welcome`, which says
-"Erased."** — [voice](voice.md)'s confirmation word. The order is Sign out's, for Sign out's reason:
-`SessionService.ended()` first, which is the single owner of clearing the account's keys from this
-tab, then the navigation, because the guard on the way out reads the session the moment the router
-is asked. Nothing is kept for the moment in between: there is no account left to read.
-
-**The word travels to Welcome in memory, never in the address.** A `/welcome?erased` is a URL
-anybody can open or be sent, and navigation state comes back with the browser's Back button; either
-lets the screen announce an erasure that did not happen. So the flow hands a one-shot fact to a
-root-provided holder that Welcome reads and nothing else writes, and a reload drops it — correctly,
-since a reloaded Welcome has not watched anything happen.
+**After a `204`, the session ends on this device and the person lands on `/welcome`**, which shows
+its ordinary content and says nothing about the erasure. The order is Sign out's, for Sign out's
+reason: `SessionService.ended()` first, which is the single owner of clearing the account's keys
+from this tab, then the navigation, because the guard on the way out reads the session the moment
+the router is asked. Nothing is kept for the moment in between: there is no account left to read.
 
 **Other devices find out at their next request.** The erasure deleted every session on the account,
 so each of them answers `401`, and `sessionExpiryInterceptor` takes that tab to Welcome, which says
-nothing: that device did not watch the erasure and has nothing to report it from. Nothing is pushed
-to them.
+nothing there either. Nothing is pushed to them.
 
 ### What a writer will get wrong
 
@@ -2899,8 +2892,9 @@ to them.
   turns a success into a false refusal.
 - **Putting the backup sentence in the dialog**, because the dialog is where the consequence is.
 - **Making the trigger Destructive**, because the act is.
-- **Saying "Erased." in a snackbar.** The Snackbar chapter's surface offers Undo, and nothing here
-  can be undone.
+- **Confirming the erasure anywhere.** The product confirms nothing after an erasure: the account
+  is gone, and so is the screen that asked. Landing on Welcome signed out is the confirmation. Do
+  not add a snackbar, a line on Welcome, or a word carried there to say it.
 - **Validating the word with a validator that reddens the field.** A word half typed is not wrong.
 - **Letting Escape close the overlay mid-ceremony**, which is Material's default and has to be
   switched off for exactly the running states.
@@ -3288,20 +3282,6 @@ and from the commit that gave it the second one, neither of them is the identity
   person. A refusal and an answer that never came are still different sentences: one says this
   passkey does not work here and points at another way in, the other says the server could not be
   reached and points at the same press a minute later.
-- **"Erased." lands in that same region when this tab has just erased its account** —
-  [voice](voice.md)'s confirmation word, `body` `--bud-text`, and the whole of what the screen says
-  about it. It is the one outcome this region carries that the person did not make *here*: the
-  [erasure dialog](#erasure-dialog) hands it over in memory on its way out, and the dialog chapter
-  argues why never in the address. **It arrives with the tab, so the screen holds it back until its
-  own first render has finished** (`afterNextRender`): the region renders empty first and the word
-  lands in it after, rather than the two being created together. Whether a screen reader announces
-  a line filled in that way is not something the test runner can show — jsdom has no screen reader
-  — and a pass with a real one is work this chapter waits on. **One region and one line at a time, in this order**: the busy
-  line while a sign-in runs, then a sign-in refusal, then **Erased.** — the later act speaks over
-  the earlier one. **It clears when a sign-in press starts and when Welcome is left**, and a reload
-  never brings it back: it describes the moment the tab arrived, and a person who then presses Sign
-  in with a passkey has moved on to something the region should answer instead. No other device
-  says it — a tab that did not watch the erasure lands here silent.
 - **The provider line says what Google is for, in three facts and in this order**: an account starts
   there, it happens once and only to check an address, and signing in afterwards never goes near it.
   The order is the reassurance. The sentence it replaced — that the Google account is what signs you
@@ -3313,9 +3293,9 @@ and from the commit that gave it the second one, neither of them is the identity
 
 ### What ships today
 
-All of the above, with one thing unverified: that **Erased.** is announced, per its bullet. What
-does **not** ship is a way back in for somebody holding no passkey: redeeming a recovery code has no
-surface anywhere in the app, so this screen offers no third control and says nothing about one.
+All of the above. What does **not** ship is a way back in for somebody holding no passkey: redeeming
+a recovery code has no surface anywhere in the app, so this screen offers no third control and says
+nothing about one.
 
 ## Registration
 

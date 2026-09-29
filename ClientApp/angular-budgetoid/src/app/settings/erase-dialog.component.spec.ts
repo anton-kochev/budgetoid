@@ -414,8 +414,8 @@ describe('EraseDialogComponent', () => {
       ['asserting', WAITING],
       ['erasing', ERASING],
       // Terminal, and it keeps the erasing line rather than emptying the
-      // region: the tab is on its way to Welcome, which says *Erased.*, and a
-      // region that went blank in between would announce nothing true.
+      // region: the tab is on its way to Welcome, and a region that went
+      // blank in between would announce nothing true.
       ['erased', ERASING],
     ] satisfies readonly (readonly [ErasurePhase, string])[])(
       'says what is happening while %s',

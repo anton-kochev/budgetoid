@@ -705,8 +705,8 @@ ELSE
   browser can run a ceremony at all, the re-authentication challenge, a passkey assertion over it,
   and then `POST /api/me/erasure` carrying the five assertion members and nothing else. Nothing is
   posted before the ceremony answers, so every refusal raised ahead of the erasing request is a fact
-  about this client when it says nothing was erased. On the `204` it marks `ErasureNotice`, calls
-  `SessionService.ended()` and navigates to `/welcome`, which says *Erased.*
+  about this client when it says nothing was erased. On the `204` it calls `SessionService.ended()`
+  and then navigates to `/welcome`.
   - **The challenge's failures read three ways.** A `401` says nothing: the challenge is unmarked,
     so `sessionExpiryInterceptor` ends the session and takes the tab to `/welcome`. A `400` or `403`
     is `unrecognised`. Everything else — a response that never arrived, a `5xx` — is `unstarted`,

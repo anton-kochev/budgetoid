@@ -15,8 +15,6 @@
 // can be read at the instant the router is asked. The router is the real one
 // with its outward call recorded — `welcome.component.spec.ts` and the sign-out
 // block of `settings.component.spec.ts` record the same pair the same way.
-// `ErasureNotice` is the real root holder, because it is the thing Welcome
-// reads.
 //
 // **Vitest spies persist across cases here** (`restoreMocks` is unset), which is
 // why every spy below is built fresh inside `beforeEach` rather than at module
@@ -43,7 +41,6 @@ import type {
   PasskeyRequestOptionsJson,
 } from '@app-core/security/webauthn-encoding';
 import { ConfigurationService } from '@app-core/services/configuration.service';
-import { ErasureNotice } from '@app-core/session/erasure-notice';
 import { SessionService } from '@app-core/session/session.service';
 import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import {
@@ -127,14 +124,12 @@ class CeremonyStub {
 interface Navigation {
   readonly url: string;
   readonly endedCalls: number;
-  readonly erased: boolean;
   readonly phase: ErasurePhase;
 }
 
 describe('ErasureFlowService', () => {
   let http: HttpTestingController;
   let flow: ErasureFlowService;
-  let notice: ErasureNotice;
   let ceremony: CeremonyStub;
   let session: { readonly ended: Mock<() => void> };
   let navigations: Navigation[];
@@ -170,7 +165,6 @@ describe('ErasureFlowService', () => {
 
     http = TestBed.inject(HttpTestingController);
     flow = TestBed.inject(ErasureFlowService);
-    notice = TestBed.inject(ErasureNotice);
 
     const router = TestBed.inject(Router);
 
@@ -179,7 +173,6 @@ describe('ErasureFlowService', () => {
         navigations.push({
           url: typeof url === 'string' ? url : router.serializeUrl(url),
           endedCalls: session.ended.mock.calls.length,
-          erased: notice.erased(),
           phase: flow.phase(),
         });
 
@@ -245,7 +238,7 @@ describe('ErasureFlowService', () => {
     ).toBe(1);
   });
 
-  it('has told Welcome about the erasure by the time it asks to go there', async () => {
+  it('is already erased by the time it asks to leave for Welcome', async () => {
     // Arrange
     flow.erase(WORD);
     const erasing = await reachTheErasingRequest();
@@ -255,10 +248,9 @@ describe('ErasureFlowService', () => {
     await eventually(() => navigations[0] ?? null, 'the navigation to Welcome');
 
     // Assert
-    // Welcome renders "Erased." from the notice on its first paint. Marked
-    // after the navigation, the word lands on a screen that has already
-    // rendered — or, once the router resolves synchronously, never at all.
-    expect(navigations[0]?.erased).toBe(true);
+    // `erased` is the terminal phase every later press is refused on. Set
+    // after the navigation, a press landing in between would still find a
+    // flow willing to start over an account that is gone.
     expect(navigations[0]?.phase).toBe('erased');
   });
 
@@ -281,7 +273,6 @@ describe('ErasureFlowService', () => {
     expect(flow.failure()).toBe('refused');
     expect(session.ended).not.toHaveBeenCalled();
     expect(navigations).toEqual([]);
-    expect(notice.erased()).toBe(false);
     expect(flow.working()).toBe(false);
   });
 
@@ -452,7 +443,6 @@ describe('ErasureFlowService', () => {
     expect(flow.failure()).toBe('undetermined');
     expect(session.ended).not.toHaveBeenCalled();
     expect(navigations).toEqual([]);
-    expect(notice.erased()).toBe(false);
   });
 
   it('never asks again once it cannot tell', async () => {
@@ -795,7 +785,6 @@ describe('ErasureFlowService', () => {
       expect(flow.working()).toBe(false);
       expect(session.ended).not.toHaveBeenCalled();
       expect(navigations).toEqual([]);
-      expect(notice.erased()).toBe(false);
     });
 
     it.each([
@@ -941,7 +930,6 @@ describe('ErasureFlowService', () => {
       // Abandoning covers what has not been sent. A flow that dropped this
       // answer too would leave a tab holding keys and a session for an account
       // that no longer exists.
-      expect(notice.erased()).toBe(true);
       expect(session.ended).toHaveBeenCalledTimes(1);
       expect(navigations).toHaveLength(1);
       expect(navigations[0]?.url).toBe(WELCOME_ROUTE);

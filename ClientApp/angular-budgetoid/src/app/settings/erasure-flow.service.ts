@@ -50,7 +50,6 @@ import {
   type PasskeyCeremonyResult,
 } from '@app-core/security/webauthn-ceremony.service';
 import type { PasskeyRequestOptionsJson } from '@app-core/security/webauthn-encoding';
-import { ErasureNotice } from '@app-core/session/erasure-notice';
 import { SessionService } from '@app-core/session/session.service';
 import { firstValueFrom } from 'rxjs';
 import { confirmsErasure } from './erasure-confirmation';
@@ -111,7 +110,6 @@ export class ErasureFlowService {
   private readonly ceremony = inject(WebauthnCeremonyService);
   private readonly session = inject(SessionService);
   private readonly router = inject(Router);
-  private readonly notice = inject(ErasureNotice);
 
   private readonly phaseSignal: WritableSignal<ErasurePhase> =
     signal<ErasurePhase>('idle');
@@ -384,20 +382,14 @@ export class ErasureFlowService {
 
   // The `204`, and **this order is the property**.
   //
-  // The phase first, so no press is accepted from here on. The notice and
-  // `SessionService.ended()` next, in either order between themselves — but
-  // both before the router. The notice, because Welcome reads it when it is
-  // constructed; marked after the navigation, the word lands on a screen that
-  // has already rendered without it. Welcome shows it only after its own first
-  // render, so its region is there, empty, before the line lands. `ended()`,
-  // which is the single owner of clearing the account's keys from this tab,
-  // because `guestGuard` reads the session the moment it is asked, and a
-  // navigation made first is judged against a stale `authenticated` and sent
-  // back into an account that no longer exists. Sign out's order, for Sign
-  // out's reason.
+  // The phase first, so no press is accepted from here on. Then
+  // `SessionService.ended()` — the single owner of clearing the account's keys
+  // from this tab — and **only then the router**. `guestGuard` reads the
+  // session the moment it is asked, so a navigation made first is judged
+  // against a stale `authenticated` and sent back into an account that no
+  // longer exists. Sign out's order, for Sign out's reason.
   private leave(): void {
     this.phaseSignal.set('erased');
-    this.notice.mark();
     this.session.ended();
     void this.router.navigateByUrl('/welcome');
   }

@@ -291,8 +291,8 @@ Load-bearing rules. Each links the doc that argues it — **read that doc before
   [components.md](docs/design/components.md)
 - **Erasure ends the session through `SessionService.ended()`, and the erasing request is never
   retried.** `ErasureFlowService` lives on the settings component, fetches the challenge on the
-  commit press, and on the `204` marks `ErasureNotice`, calls `ended()`, then navigates to
-  `/welcome`, which says "Erased." The erasing POST carries `EXPECTS_UNAUTHENTICATED` and its
+  commit press, and on the `204` calls `ended()` and only then navigates to `/welcome`, which
+  says nothing about the erasure. The erasing POST carries `EXPECTS_UNAUTHENTICATED` and its
   challenge does not; a POST `401` is read only after one unmarked `GET /api/me`, so an ended
   session goes to the interceptor rather than reading as a refused passkey. A lost, `5xx` or
   unlisted answer is `undetermined` and withdraws the commit for the rest of the screen's life —
