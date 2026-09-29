@@ -19,6 +19,19 @@ import { describe, expect, it } from 'vitest';
 // is the one file that holds the client, and its internals are what the
 // other specs pin.
 //
+// An instance of either class handed to a position the checker types as
+// something else — an argument, an annotated variable, field or element, a
+// declared return type, an `as` cast including `as any` and `as unknown` — is
+// recorded as `path: {escaped}`, because every member reached past that point
+// is out of the checker's sight. So is a provider that makes another token
+// resolve to the client through `useExisting`, `useClass` or `useFactory`.
+// The class itself is not the client: `inject(AuthService)`, `deps` and
+// `provide` take it and record nothing.
+//
+// The census is only as good as the checker's view, so every file it walks,
+// and every fixture below, has to compile clean: a name the checker cannot
+// resolve has no type, and a reach through it is recorded as nothing.
+//
 // The receiver is resolved by the type checker over the program
 // `tsconfig.app.json` builds, plus every non-spec file under `src/app` so
 // that a production file replacement is walked too. A text search cannot do
@@ -31,9 +44,8 @@ import { describe, expect, it } from 'vitest';
 //   `core.providers` specs.
 // - When an allowed site calls. `intro-step.component.ts` may call `signIn`;
 //   whether it does so only on a press is its own spec's business.
-// - A receiver cast to `any` or `unknown` first, a subclass of either class,
-//   or an object spread of either. The checker sees none of these as the
-//   client.
+// - A subclass of either class, or an object spread of either. The checker
+//   sees neither as the client.
 // - A component template. A template can only reach a non-private field, and
 //   every holder of the client today keeps it private; a field made
 //   `protected` and called from a template would not be seen here.
@@ -132,12 +144,97 @@ function providerReaches(
       declaration.name?.text === 'OAuthService' &&
       join(declaration.getSourceFile().fileName).includes(libraryDir));
 
-  const isClientType = (type: typescriptModule.Type): boolean => {
+  const partsOf = (type: typescriptModule.Type): typescriptModule.Type[] => {
     const nonNull = checker.getNonNullableType(type);
-    const parts = nonNull.isUnionOrIntersection() ? nonNull.types : [nonNull];
 
-    return parts.some(
+    return nonNull.isUnionOrIntersection() ? nonNull.types : [nonNull];
+  };
+
+  const isClientType = (type: typescriptModule.Type): boolean =>
+    partsOf(type).some(
       (part) => part.getSymbol()?.declarations?.some(isClientClass) ?? false,
+    );
+
+  // The client class `type` names, as an instance or as the class itself.
+  // `typeof AuthService` is what `inject()`, `deps` and `provide` take, and
+  // handing the class around hands nobody the client.
+  const clientClassOf = (
+    type: typescriptModule.Type,
+    as: 'instance' | 'class',
+  ): typescriptModule.Symbol | undefined =>
+    partsOf(type)
+      .map((part) => ({ part, symbol: part.getSymbol() }))
+      .find(
+        ({ part, symbol }) =>
+          symbol !== undefined &&
+          (symbol.declarations?.some(isClientClass) ?? false) &&
+          (checker.getDeclaredTypeOfSymbol(symbol) === part) ===
+            (as === 'instance'),
+      )?.symbol;
+
+  const isClientInstance = (type: typescriptModule.Type): boolean =>
+    clientClassOf(type, 'instance') !== undefined;
+
+  // An instance of the client, in a position the checker types as something
+  // else — a parameter, an annotated variable, field or element, a declared
+  // return type, a cast. Past that point the value is no longer the client to
+  // the checker, so every member reached through it would go unrecorded; the
+  // hand-off is recorded instead. A position with no type of its own, such as
+  // an unannotated `const`, keeps the client's type and is not a hand-off.
+  const escapes = (node: typescriptModule.Node): boolean => {
+    if (
+      !ts.isExpression(node) ||
+      !isClientInstance(checker.getTypeAtLocation(node))
+    ) {
+      return false;
+    }
+    const parent = node.parent;
+    // `satisfies` checks the value and hands it on unchanged; where it goes
+    // is the outer expression's position, which is walked in its own turn.
+    if (ts.isSatisfiesExpression(parent) && parent.expression === node) {
+      return false;
+    }
+    const contextual = checker.getContextualType(node);
+
+    return contextual !== undefined && !isClientInstance(contextual);
+  };
+
+  // A provider literal that makes another token resolve to the client:
+  // `useExisting` or `useClass` naming either class, or a `useFactory`
+  // returning an instance of one. Providing the class as itself is not one.
+  const providesTheClient = (
+    literal: typescriptModule.ObjectLiteralExpression,
+  ): boolean => {
+    const member = (name: string): typescriptModule.Expression | undefined =>
+      literal.properties.find(
+        (property): property is typescriptModule.PropertyAssignment =>
+          ts.isPropertyAssignment(property) &&
+          (ts.isIdentifier(property.name) ||
+            ts.isStringLiteral(property.name)) &&
+          property.name.text === name,
+      )?.initializer;
+    const provide = member('provide');
+    if (provide === undefined) {
+      return false;
+    }
+    const byClass = member('useExisting') ?? member('useClass');
+    const factory = member('useFactory');
+    const produced =
+      byClass !== undefined
+        ? clientClassOf(checker.getTypeAtLocation(byClass), 'class')
+        : factory !== undefined
+          ? checker
+              .getTypeAtLocation(factory)
+              .getCallSignatures()
+              .map((signature) =>
+                clientClassOf(signature.getReturnType(), 'instance'),
+              )
+              .find((symbol) => symbol !== undefined)
+          : undefined;
+
+    return (
+      produced !== undefined &&
+      checker.getTypeAtLocation(provide).getSymbol() !== produced
     );
   };
 
@@ -195,6 +292,12 @@ function providerReaches(
       ) {
         reaches.push(`${path}: {destructured}`);
       }
+      if (
+        escapes(node) ||
+        (ts.isObjectLiteralExpression(node) && providesTheClient(node))
+      ) {
+        reaches.push(`${path}: {escaped}`);
+      }
       ts.forEachChild(node, visit);
     };
     visit(file);
@@ -208,7 +311,8 @@ const allowedReaches = new Map<string, string>([
   [
     'src/app/+core/core.providers.ts: isProviderReturn',
     'the return leg: the initializer asks whether this page load is the ' +
-      'provider redirecting back, which reads the address and contacts nothing',
+      'provider redirecting back, which reads the address and the exchange ' +
+      "marker in this tab's sessionStorage, and contacts nothing",
   ],
   [
     'src/app/+core/core.providers.ts: initialize',
@@ -238,18 +342,44 @@ const allowedReaches = new Map<string, string>([
   ],
 ]);
 
-// A fake component, fed through the same walker, carrying one of each shape
-// the census has to find. Not a file on disk: the host serves it from memory
-// beside the real project, so it type-checks against the real classes.
+// A fake source file, fed through the same walker. Not a file on disk: the
+// host serves it from memory beside the real project, so it type-checks
+// against the real classes.
 const fixturePath = join(
   applicationDir,
   'identity-provider-callers.fixture.ts',
 );
-const fixtureSource = `
-import { Component, inject } from '@angular/core';
+const fixtureFile = relativePath(fixturePath);
+
+function isFixture(file: typescriptModule.SourceFile): boolean {
+  return join(file.fileName) === fixturePath;
+}
+
+// The imports every fixture below starts from, and the one type they hand the
+// client to. `Starter` names `signIn` and nothing else: a value typed as it is
+// the client with its type forgotten.
+const fixtureImports = `
+import {
+  APP_INITIALIZER,
+  Component,
+  InjectionToken,
+  inject,
+  makeEnvironmentProviders,
+  Provider,
+} from '@angular/core';
 import { OAuthService } from 'angular-oauth2-oidc';
 import { AuthService } from './+core/services/auth-service';
 
+interface Starter {
+  signIn(): void;
+}
+
+const STARTER = new InjectionToken<Starter>('starter');
+void [APP_INITIALIZER, Component, STARTER, makeEnvironmentProviders];
+`;
+
+// One of each shape the census has to find.
+const everyShapeSource = `${fixtureImports}
 @Component({ selector: 'app-fixture', template: '' })
 export class FixtureComponent {
   private readonly auth = inject(AuthService);
@@ -260,8 +390,8 @@ export class FixtureComponent {
     const key = 'providerEmail';
     this.auth[key]();
     inject(OAuthService).initLoginFlow();
-    const narrowed: Pick<AuthService, 'isAuthenticated'> = this.auth;
-    narrowed.isAuthenticated();
+    const narrowed: Pick<AuthService, 'providerEmail'> = this.auth;
+    narrowed.providerEmail();
     const held = this.auth.forgetProviderToken;
     const factory = (auth: AuthService): boolean => auth.isProviderReturn();
     void [signIn, held, factory];
@@ -269,23 +399,192 @@ export class FixtureComponent {
 }
 `;
 
+// Each hands the client to a position typed as something else, where every
+// later member access is out of the checker's sight. The one reach recorded
+// is the hand-off.
+const escapes: readonly (readonly [shape: string, body: string])[] = [
+  [
+    'an argument to a parameter typed as something else',
+    `
+function start(starter: { signIn(): void }): void {
+  starter.signIn();
+}
+export function run(): void {
+  start(inject(AuthService));
+}`,
+  ],
+  [
+    'an annotated const',
+    `
+export function run(): void {
+  const starter: Starter = inject(AuthService);
+  void starter;
+}`,
+  ],
+  [
+    'an annotated field',
+    `
+export class Holder {
+  private readonly starter: Starter = inject(AuthService);
+  public held(): Starter {
+    return this.starter;
+  }
+}`,
+  ],
+  [
+    'an arrow body under a declared return type',
+    `
+export const starter = (): Starter => inject(AuthService);`,
+  ],
+  [
+    'a return under a declared return type',
+    `
+export function starter(): Starter {
+  return inject(AuthService);
+}`,
+  ],
+  [
+    'an as-cast to another type',
+    `
+export const starter = () => inject(AuthService) as Starter;`,
+  ],
+  [
+    'an as-cast to unknown',
+    `
+export const starter = () => inject(AuthService) as unknown;`,
+  ],
+  [
+    'an as-cast to any',
+    `
+export const starter = () => inject(AuthService) as any;`,
+  ],
+  [
+    'an assignment to a variable typed as something else',
+    `
+export function run(): void {
+  let starter: Starter;
+  starter = inject(AuthService);
+  void starter;
+}`,
+  ],
+  [
+    'an element of an annotated array',
+    `
+export function run(): void {
+  const starters: Starter[] = [inject(AuthService)];
+  void starters;
+}`,
+  ],
+  [
+    'a member of an annotated object literal',
+    `
+export function run(): void {
+  const holder: { starter: Starter } = { starter: inject(AuthService) };
+  void holder;
+}`,
+  ],
+  [
+    'an argument to an unknown parameter',
+    `
+function keep(value: unknown): void {
+  void value;
+}
+export function run(): void {
+  keep(inject(AuthService));
+}`,
+  ],
+  [
+    'a provider aliasing another token to the client',
+    `
+export const providers: Provider[] = [
+  { provide: STARTER, useExisting: AuthService },
+];`,
+  ],
+  [
+    'a provider whose factory returns the client',
+    `
+export const providers: Provider[] = [
+  { provide: STARTER, useFactory: () => inject(AuthService) },
+];`,
+  ],
+];
+
+// Each keeps the client typed as the client, so the member it reaches is
+// recorded by name and nothing escapes.
+const kept: readonly (readonly [
+  shape: string,
+  body: string,
+  member: string,
+])[] = [
+  [
+    'an unannotated field called through this',
+    `
+export class Holder {
+  private readonly auth = inject(AuthService);
+  public start(): void {
+    this.auth.signIn();
+  }
+}`,
+    'signIn',
+  ],
+  [
+    'the core.providers factory, taking the class as a dependency',
+    `
+export const providers = makeEnvironmentProviders([
+  {
+    provide: APP_INITIALIZER,
+    useFactory: (auth: AuthService) => () => auth.isProviderReturn(),
+    deps: [AuthService],
+    multi: true,
+  },
+]);`,
+    'isProviderReturn',
+  ],
+  [
+    'the library class, called directly',
+    `
+export const token = () => inject(OAuthService).getIdToken();`,
+    'getIdToken',
+  ],
+  [
+    'an argument to a parameter typed as the client',
+    `
+function start(auth: AuthService): void {
+  auth.signIn();
+}
+export function run(): void {
+  start(inject(AuthService));
+}`,
+    'signIn',
+  ],
+  [
+    'a satisfies check, which hands the value on unchanged',
+    `
+export function run(): void {
+  (inject(AuthService) satisfies Starter).signIn();
+}`,
+    'signIn',
+  ],
+];
+
 function fixtureProgram(
   base: typescriptModule.Program,
   options: typescriptModule.CompilerOptions,
+  source: string,
 ): typescriptModule.Program {
   const host = ts.createCompilerHost(options);
-  const isFixture = (fileName: string): boolean =>
+  const isFixturePath = (fileName: string): boolean =>
     join(fileName) === fixturePath;
   const { getSourceFile, fileExists, readFile } = host;
 
   host.getSourceFile = (fileName, languageVersion, ...rest) =>
-    isFixture(fileName)
-      ? ts.createSourceFile(fileName, fixtureSource, languageVersion, true)
+    isFixturePath(fileName)
+      ? ts.createSourceFile(fileName, source, languageVersion, true)
       : getSourceFile.call(host, fileName, languageVersion, ...rest);
   host.fileExists = (fileName) =>
-    isFixture(fileName) || fileExists.call(host, fileName);
+    isFixturePath(fileName) || fileExists.call(host, fileName);
   host.readFile = (fileName) =>
-    isFixture(fileName) ? fixtureSource : readFile.call(host, fileName);
+    isFixturePath(fileName) ? source : readFile.call(host, fileName);
 
   return ts.createProgram({
     rootNames: [fixturePath],
@@ -295,6 +594,27 @@ function fixtureProgram(
   });
 }
 
+// Every error-category diagnostic in the files `program` holds that `include`
+// admits, as `path: message`.
+function compileErrors(
+  program: typescriptModule.Program,
+  include: (file: typescriptModule.SourceFile) => boolean,
+): string[] {
+  return program
+    .getSourceFiles()
+    .filter(include)
+    .flatMap((file) => [
+      ...program.getSyntacticDiagnostics(file),
+      ...program.getSemanticDiagnostics(file),
+    ])
+    .filter((diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error)
+    .map(
+      (diagnostic) =>
+        `${relativePath(diagnostic.file?.fileName ?? '')}: ` +
+        ts.flattenDiagnosticMessageText(diagnostic.messageText, ' '),
+    );
+}
+
 describe('the identity provider client', () => {
   const parsed = parsedAppConfig();
   const program = ts.createProgram({
@@ -302,6 +622,8 @@ describe('the identity provider client', () => {
     options: parsed.options,
   });
   const census = providerReaches(program, isShippedSource);
+  const reachesIn = (source: string): Walk =>
+    providerReaches(fixtureProgram(program, parsed.options, source), isFixture);
 
   it('is looked for in enough files for the census to mean something', () => {
     // Assert — a moved `src/`, a filter that lets nothing through or a
@@ -316,6 +638,34 @@ describe('the identity provider client', () => {
     expect(census.reaches.length).toBeGreaterThanOrEqual(1);
   });
 
+  // A full type check of every shipped file is seconds of work — past the
+  // default five under a whole-suite run's load — so this case waits longer.
+  it('is looked for in files that compile, shipped and fixture alike', () => {
+    // Arrange — a name the checker cannot resolve has no type, so a reach
+    // through it is recorded as nothing at all: a census over a broken file,
+    // or a fixture naming a member that no longer exists, passes by seeing
+    // less.
+    const fixtures = [
+      everyShapeSource,
+      ...escapes.map(([, body]) => fixtureImports + body),
+      ...kept.map(([, body]) => fixtureImports + body),
+    ];
+
+    // Act
+    const errors = [
+      ...compileErrors(program, isShippedSource),
+      ...fixtures.flatMap((source) =>
+        compileErrors(
+          fixtureProgram(program, parsed.options, source),
+          isFixture,
+        ),
+      ),
+    ];
+
+    // Assert
+    expect(errors).toEqual([]);
+  }, 60_000);
+
   it('is reached only from the sites registration needs', () => {
     // Arrange
     const allowed = [...allowedReaches.keys()].sort();
@@ -328,28 +678,38 @@ describe('the identity provider client', () => {
   });
 
   it('is found in every shape the census names', () => {
-    // Arrange
-    const withFixture = fixtureProgram(program, parsed.options);
-
     // Act
-    const found = providerReaches(
-      withFixture,
-      (file) => join(file.fileName) === fixturePath,
-    );
+    const found = reachesIn(everyShapeSource);
 
     // Assert
-    const path = relativePath(fixturePath);
-    expect(found.walked).toEqual([path]);
+    expect(found.walked).toEqual([fixtureFile]);
     expect(found.reaches).toEqual(
       [
-        `${path}: initialize`,
-        `${path}: {destructured}`,
-        `${path}: [computed]`,
-        `${path}: initLoginFlow`,
-        `${path}: isAuthenticated`,
-        `${path}: forgetProviderToken`,
-        `${path}: isProviderReturn`,
+        `${fixtureFile}: initialize`,
+        `${fixtureFile}: {destructured}`,
+        `${fixtureFile}: [computed]`,
+        `${fixtureFile}: initLoginFlow`,
+        `${fixtureFile}: {escaped}`,
+        `${fixtureFile}: providerEmail`,
+        `${fixtureFile}: forgetProviderToken`,
+        `${fixtureFile}: isProviderReturn`,
       ].sort(),
     );
+  });
+
+  it.each(escapes)('is found escaping as %s', (shape, body) => {
+    // Act
+    const found = reachesIn(fixtureImports + body);
+
+    // Assert
+    expect(found.reaches).toEqual([`${fixtureFile}: {escaped}`]);
+  });
+
+  it.each(kept)('is not escaping as %s', (shape, body, member) => {
+    // Act
+    const found = reachesIn(fixtureImports + body);
+
+    // Assert
+    expect(found.reaches).toEqual([`${fixtureFile}: ${member}`]);
   });
 });

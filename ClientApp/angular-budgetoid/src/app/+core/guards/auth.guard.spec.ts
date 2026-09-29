@@ -18,7 +18,7 @@ interface GuardRun {
 
 // The guard reads `SessionService`, never `AuthService`: the identity provider
 // knows nothing about a first-party session cookie, and after sign-in leaves it
-// there is no token in the browser for `isAuthenticated()` to look at.
+// there is no provider token in the browser to look at.
 function runGuard(status: SessionStatus): GuardRun {
   TestBed.resetTestingModule();
 

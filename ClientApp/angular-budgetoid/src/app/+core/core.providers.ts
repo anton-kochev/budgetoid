@@ -87,9 +87,9 @@ export const provideAppCore = (): EnvironmentProviders =>
           }
 
           // **The identity provider is contacted here only when it is
-          // redirecting a registration back** (NFR-025). Every other cold load
-          // — anonymous or signed in, on any screen — makes no request to
-          // Google at all; the outbound leg prepares the client itself, on the
+          // redirecting a registration back to the tab that started it**
+          // (NFR-025). Every other cold load — anonymous or signed in, on any
+          // screen — makes no request to Google at all; the outbound leg prepares the client itself, on the
           // press that starts it (`AuthService.signIn`). An unconditional call
           // here told Google the address and time of every visit.
           //

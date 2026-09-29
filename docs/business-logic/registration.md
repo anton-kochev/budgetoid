@@ -705,18 +705,22 @@ the *set*, so it is authenticated once.
   it is the obvious one: the app reads that address as *somebody arriving with a session*, which a
   person consenting in order to **create** an account does not have.
   - **The answer is read in the `APP_INITIALIZER`, before the router's first navigation, and only
-    on that page load.** `AuthService.isProviderReturn()` recognises the configured redirect
-    address carrying an answer the library would act on — a fragment naming a non-empty
-    `access_token`, `id_token` and `state`, or a non-empty `error`; or a query naming a `state` with
-    a `code` or an `error`. Anything else there — a campaign parameter, an in-page anchor, half an
-    answer — is somebody opening the screen, and preparing the client for it would contact the
-    provider for an answer the library then declines to read. For a visitor the probe did not
-    recognise, the initializer then awaits `AuthService.initialize()`, which fetches the discovery
-    document and reads the tokens off the URL. A resolver on `/register` is the obvious home and
-    the wrong one: the library clears the fragment once it has read it, but the router writes its
-    navigation's target — fragment included — back to the address bar *after* resolvers run, so
-    the tokens would come straight back. A bare `/register` contacts nobody; the press that starts the
-    exchange prepares the client itself, and `AuthService` prepares it at most once per page load.
+    on that page load.** `AuthService.isProviderReturn()` recognises it only when this tab started
+    an exchange — the press leaves `budgetoid-provider-exchange` in `sessionStorage` just before it
+    navigates away — **and** the configured redirect address carries a fragment naming a non-empty
+    `access_token`, `id_token` and `state`, or a non-empty `error`. The query is not read: the
+    library reads the implicit flow's answer from the fragment alone, and the code flow would need a
+    `responseType` the pinned configuration refuses. Anything else is somebody opening the screen —
+    a campaign parameter, an in-page anchor, half an answer, or a whole one in a tab where nobody
+    pressed — and preparing the client for it would contact the provider for nothing.
+    `initialize()` removes the marker whatever it concluded, so a refused answer left on the
+    address contacts nobody on reload. For a visitor the probe did not recognise, the initializer
+    then awaits `AuthService.initialize()`, which fetches the discovery document and reads the
+    tokens off the URL. A resolver on `/register` is the obvious home and the wrong one: the library
+    clears the fragment once it has read it, but the router writes its navigation's target —
+    fragment included — back to the address bar *after* resolvers run, so the tokens would come
+    straight back. A bare `/register` contacts nobody; the press that starts the exchange prepares
+    the client itself, and `AuthService` prepares it at most once per page load.
     See [no third-party origins](../engineering/no-third-party-origins.md).
   - **No test in this repository can see the other half.** A mismatch is refused by Google with
     `redirect_uri_mismatch` before a single line of this application runs: the browser never comes
@@ -730,8 +734,8 @@ the *set*, so it is authenticated once.
   leg alone contacts the provider at bootstrap is pinned twice: by `core.providers.spec.ts` over a
   stubbed `AuthService`, and by `core.providers.cold-boot.spec.ts` against the real OAuth library,
   which counts every request a cold load makes. What counts as a return is pinned by
-  `auth-service.spec.ts`, and which files may call the provider client at all by
-  `src/identity-provider-callers.spec.ts`.
+  `auth-service.spec.ts`, and which files reach the provider client's members — and where a client
+  value escapes to a type the census cannot follow — by `src/identity-provider-callers.spec.ts`.
 - **Source**: `[SOURCE: discussion]`
 
 ## Workflows & State Transitions

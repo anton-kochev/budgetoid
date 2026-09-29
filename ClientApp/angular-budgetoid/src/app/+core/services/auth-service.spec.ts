@@ -23,6 +23,15 @@ import { ConfigurationService } from './configuration.service';
 //
 // The check subscribes to every observable AuthService exposes, because a claim read
 // inside a cold observable stays invisible until something subscribes.
+// The mark `AuthService.signIn` leaves in this tab's `sessionStorage` just
+// before it sends the person to the provider. Spelled here rather than
+// imported: it is module-private in the subject, and a rename there is a
+// change to what every open tab holds.
+const EXCHANGE_MARKER = 'budgetoid-provider-exchange';
+
+const PROVIDER_ANSWER =
+  'https://budgetoid.app/register#access_token=a&id_token=b&state=c';
+
 function exposedObservables(service: AuthService): Observable<unknown>[] {
   const members = service as unknown as Record<string, unknown>;
 
@@ -32,6 +41,14 @@ function exposedObservables(service: AuthService): Observable<unknown>[] {
 }
 
 describe('AuthService', () => {
+  beforeEach(() => {
+    sessionStorage.clear();
+  });
+
+  afterEach(() => {
+    sessionStorage.clear();
+  });
+
   it('reads no claim from the ID token', () => {
     // Arrange
     const events = new Subject<OAuthEvent>();
@@ -325,10 +342,174 @@ describe('AuthService', () => {
     expect(initLoginFlow).not.toHaveBeenCalled();
   });
 
-  // The provider's answer arrives on the configured redirect address — the
-  // implicit flow puts it in the fragment, a code flow would put it in the
-  // query — and that is the only cold load on which the bootstrap may contact
-  // the provider.
+  // **The marker is what makes a later page load the provider coming back**,
+  // so it has to be in place by the time the page leaves — and the page leaves
+  // inside `initLoginFlow`. Read at that moment, not afterwards.
+  it('marks the tab as mid-exchange before sending anybody to the provider', async () => {
+    // Arrange
+    const markerAtDeparture: (string | null)[] = [];
+    const service = authServiceOver({
+      configure: vi.fn(),
+      loadDiscoveryDocumentAndTryLogin: vi.fn(() => Promise.resolve(true)),
+      initLoginFlow: vi.fn(() => {
+        markerAtDeparture.push(sessionStorage.getItem(EXCHANGE_MARKER));
+      }),
+    });
+
+    // Act
+    service.signIn();
+    await afterPendingWork();
+
+    // Assert
+    expect(markerAtDeparture).toHaveLength(1);
+    expect(markerAtDeparture[0]).not.toBeNull();
+  });
+
+  // A press that goes nowhere starts no round trip, so it leaves nothing that
+  // would make a later page load look like one coming back.
+  it('leaves no marker when the provider could not be reached', async () => {
+    // Arrange
+    const service = authServiceOver({
+      configure: vi.fn(),
+      loadDiscoveryDocumentAndTryLogin: vi.fn(() =>
+        Promise.reject(new Error('The discovery document is unreachable.')),
+      ),
+      initLoginFlow: vi.fn(),
+    });
+
+    // Act
+    service.signIn();
+    await afterPendingWork();
+
+    // Assert
+    expect(sessionStorage.getItem(EXCHANGE_MARKER)).toBeNull();
+  });
+
+  // The passkey step's re-press on a page that came back from the provider:
+  // `initialize()` has already consumed the marker, and the second trip needs
+  // its own.
+  it('marks the tab again on a press after the return leg consumed the marker', async () => {
+    // Arrange
+    const service = authServiceOver({
+      configure: vi.fn(),
+      loadDiscoveryDocumentAndTryLogin: vi.fn(() => Promise.resolve(true)),
+      initLoginFlow: vi.fn(),
+    });
+    await service.initialize();
+
+    // Act
+    service.signIn();
+    await afterPendingWork();
+
+    // Assert
+    expect(sessionStorage.getItem(EXCHANGE_MARKER)).not.toBeNull();
+  });
+
+  // Without the marker the answer would be refused on the way back, so the
+  // trip is not worth starting: a press that does nothing beats a round trip
+  // to Google that ends on a screen reading as if nothing happened.
+  it('starts no exchange when the marker cannot be written', async () => {
+    // Arrange
+    const initLoginFlow = vi.fn();
+    const service = authServiceOver({
+      configure: vi.fn(),
+      loadDiscoveryDocumentAndTryLogin: vi.fn(() => Promise.resolve(true)),
+      initLoginFlow,
+    });
+    const setItem = vi
+      .spyOn(Storage.prototype, 'setItem')
+      .mockImplementation(() => {
+        throw new DOMException('The quota has been exceeded.');
+      });
+
+    try {
+      // Act
+      service.signIn();
+      await afterPendingWork();
+    } finally {
+      setItem.mockRestore();
+    }
+
+    // Assert
+    expect(initLoginFlow).not.toHaveBeenCalled();
+  });
+
+  // **Consumed once the return leg has read the answer, whatever the answer
+  // was.** Left behind, a reload of `/register` — whose fragment the library
+  // has already cleared, but a bookmark or history entry may not have — would
+  // prepare the client again and again.
+  it('removes the marker once initializing has succeeded', async () => {
+    // Arrange
+    const service = authServiceOver({
+      configure: vi.fn(),
+      loadDiscoveryDocumentAndTryLogin: vi.fn(() => Promise.resolve(true)),
+    });
+    sessionStorage.setItem(EXCHANGE_MARKER, 'started');
+
+    // Act
+    await service.initialize();
+
+    // Assert
+    expect(sessionStorage.getItem(EXCHANGE_MARKER)).toBeNull();
+  });
+
+  it('removes the marker when initializing could not reach the provider', async () => {
+    // Arrange
+    const service = authServiceOver({
+      configure: vi.fn(),
+      loadDiscoveryDocumentAndTryLogin: vi.fn(() =>
+        Promise.reject(new Error('The discovery document is unreachable.')),
+      ),
+    });
+    sessionStorage.setItem(EXCHANGE_MARKER, 'started');
+
+    // Act
+    await service.initialize();
+
+    // Assert
+    expect(sessionStorage.getItem(EXCHANGE_MARKER)).toBeNull();
+  });
+
+  // **The `APP_INITIALIZER` awaits this**, so a marker the browser refuses to
+  // remove must not reject it: that is a blank page over a key whose survival
+  // costs only the residual `isProviderReturn` names. The removal runs after
+  // the preparation settles, so the spy stays in place until `initialize()`
+  // has settled too.
+  it('finishes initializing when the marker cannot be removed', async () => {
+    // Arrange
+    const service = authServiceOver({
+      configure: vi.fn(),
+      loadDiscoveryDocumentAndTryLogin: vi.fn(() => Promise.resolve(true)),
+    });
+    sessionStorage.setItem(EXCHANGE_MARKER, 'started');
+    const removeItem = vi
+      .spyOn(Storage.prototype, 'removeItem')
+      .mockImplementation(() => {
+        throw new DOMException('Access is denied.', 'SecurityError');
+      });
+
+    // Act
+    let outcome: PromiseSettledResult<void> | undefined;
+    let removals = 0;
+    try {
+      [outcome] = await Promise.allSettled([service.initialize()]);
+      removals = removeItem.mock.calls.length;
+    } finally {
+      removeItem.mockRestore();
+    }
+
+    // Assert
+    // The count is what makes the settlement discriminate: an `initialize()`
+    // that never reached the removal would resolve too.
+    expect(removals).toBeGreaterThan(0);
+    expect(outcome).toEqual({ status: 'fulfilled', value: undefined });
+  });
+
+  // The provider's answer arrives on the configured redirect address, in the
+  // fragment where the implicit flow puts it, and in a tab that started an
+  // exchange — that is the only cold load on which the bootstrap may contact
+  // the provider. Every case below but the last group seeds the marker, so
+  // each is a statement about the address alone.
   it.each([
     {
       shape: 'an implicit-flow answer in the fragment',
@@ -338,10 +519,6 @@ describe('AuthService', () => {
       shape: 'a refusal in the fragment',
       href: 'https://budgetoid.app/register#error=access_denied&state=c',
     },
-    {
-      shape: 'a code-flow answer in the query',
-      href: 'https://budgetoid.app/register?code=a&state=c',
-    },
     // Google's implicit-flow refusal carries no state, and the library rejects
     // on it without asking for one — so neither does this.
     {
@@ -350,6 +527,7 @@ describe('AuthService', () => {
     },
   ])('recognises $shape as the provider coming back', ({ href }) => {
     // Arrange
+    sessionStorage.setItem(EXCHANGE_MARKER, 'started');
     const service = authServiceOver({}, { href });
 
     // Act & Assert
@@ -381,6 +559,8 @@ describe('AuthService', () => {
       shape: 'an in-page anchor',
       href: 'https://budgetoid.app/register#section',
     },
+    // An anchor named error is not a refusal anybody sent; the library would
+    // reject it, but only after fetching the discovery document.
     {
       shape: 'an in-page anchor named error',
       href: 'https://budgetoid.app/register#error',
@@ -410,8 +590,18 @@ describe('AuthService', () => {
       shape: 'an implicit-flow answer in the query',
       href: 'https://budgetoid.app/register?access_token=a&id_token=b&state=c',
     },
-    // A code-flow answer is bound to the request by its state; without one the
-    // library has nothing to check it against.
+    // Nothing in the query is an answer. This client runs the implicit flow,
+    // `tryLogin` never reaches the code-flow parser without `responseType:
+    // 'code'`, and the key-set pin above refuses that key — so even a complete
+    // code-flow answer is somebody opening the screen.
+    {
+      shape: 'a code-flow answer in the query',
+      href: 'https://budgetoid.app/register?code=a&state=c',
+    },
+    {
+      shape: 'a refusal in the query',
+      href: 'https://budgetoid.app/register?error=x&state=c',
+    },
     {
       shape: 'a code in the query without a state',
       href: 'https://budgetoid.app/register?code=a',
@@ -431,6 +621,7 @@ describe('AuthService', () => {
     },
   ])('does not read $shape as the provider coming back', ({ href }) => {
     // Arrange
+    sessionStorage.setItem(EXCHANGE_MARKER, 'started');
     const service = authServiceOver({}, { href });
 
     // Act & Assert
@@ -439,6 +630,7 @@ describe('AuthService', () => {
 
   it('reads nothing as the provider coming back when no redirect address is configured', () => {
     // Arrange
+    sessionStorage.setItem(EXCHANGE_MARKER, 'started');
     const service = authServiceOver(
       {},
       {
@@ -449,6 +641,69 @@ describe('AuthService', () => {
 
     // Act & Assert
     expect(service.isProviderReturn()).toBe(false);
+  });
+
+  // **An answer-shaped address is not enough on its own.** Anybody can craft
+  // one into a link; only a tab that pressed the provider button is waiting
+  // for an answer, and a crafted link opened anywhere else must cost no
+  // request to Google.
+  it('does not read a full answer as the provider coming back in a tab that started no exchange', () => {
+    // Arrange
+    const service = authServiceOver({}, { href: PROVIDER_ANSWER });
+
+    // Act & Assert
+    expect(service.isProviderReturn()).toBe(false);
+  });
+
+  // The library writes its `nonce` before the trip too, but it is the
+  // library's key and outlives the exchange it was written for. The marker is
+  // this service's own, so its lifetime is this service's to decide.
+  it("does not take the library's nonce for the marker", () => {
+    // Arrange
+    sessionStorage.setItem('nonce', 'library-nonce');
+    const service = authServiceOver({}, { href: PROVIDER_ANSWER });
+
+    // Act & Assert
+    expect(service.isProviderReturn()).toBe(false);
+  });
+
+  // Storage a browser refuses to read is a tab that cannot show it started an
+  // exchange. `APP_INITIALIZER` asks this, so a throw here is a blank page.
+  it('reads storage it cannot open as no exchange, without throwing', () => {
+    // Arrange
+    sessionStorage.setItem(EXCHANGE_MARKER, 'started');
+    const service = authServiceOver({}, { href: PROVIDER_ANSWER });
+    const getItem = vi
+      .spyOn(Storage.prototype, 'getItem')
+      .mockImplementation(() => {
+        throw new DOMException('Access is denied.', 'SecurityError');
+      });
+
+    // Act
+    let answer: boolean | undefined;
+    try {
+      answer = service.isProviderReturn();
+    } finally {
+      getItem.mockRestore();
+    }
+
+    // Assert
+    expect(answer).toBe(false);
+  });
+
+  // A question, not a consumption: the initializer asks it and then prepares,
+  // and the removal belongs to the preparation that settles.
+  it('answers the same when asked twice, and leaves the marker in place', () => {
+    // Arrange
+    sessionStorage.setItem(EXCHANGE_MARKER, 'started');
+    const service = authServiceOver({}, { href: PROVIDER_ANSWER });
+
+    // Act
+    const answers = [service.isProviderReturn(), service.isProviderReturn()];
+
+    // Assert
+    expect(answers).toEqual([true, true]);
+    expect(sessionStorage.getItem(EXCHANGE_MARKER)).toBe('started');
   });
 
   // The `email` claim and nothing else. `openid email` already carries it, so
@@ -548,6 +803,39 @@ describe('AuthService', () => {
     service.forgetProviderToken();
 
     // Assert
+    expect(logOut).toHaveBeenCalledOnce();
+    expect(logOut).toHaveBeenCalledWith(true);
+  });
+
+  // `SessionService` calls this as it publishes a session, so a marker the
+  // browser refuses to remove must neither throw into that publication nor
+  // cost the discard: the marker is removed first, and a throw there would
+  // leave the provider's tokens in place.
+  it('forgetProviderToken still discards when the marker cannot be removed', () => {
+    // Arrange
+    const logOut = vi.fn();
+    const service = authServiceOver({ logOut });
+    const removeItem = vi
+      .spyOn(Storage.prototype, 'removeItem')
+      .mockImplementation(() => {
+        throw new DOMException('Access is denied.', 'SecurityError');
+      });
+
+    // Act
+    let thrown: unknown = null;
+    let removals = 0;
+    try {
+      service.forgetProviderToken();
+    } catch (error: unknown) {
+      thrown = error;
+    } finally {
+      removals = removeItem.mock.calls.length;
+      removeItem.mockRestore();
+    }
+
+    // Assert
+    expect(removals).toBeGreaterThan(0);
+    expect(thrown).toBeNull();
     expect(logOut).toHaveBeenCalledOnce();
     expect(logOut).toHaveBeenCalledWith(true);
   });
@@ -698,5 +986,22 @@ describe('AuthService against the real provider client', () => {
     expect(sessionStorage.getItem(FOREIGN_KEY)).toBe('kept');
     // No discovery fetch, no token endpoint, nothing on the wire at all.
     http.verify();
+  });
+
+  // A session has begun, so no exchange is outstanding in this tab; a marker
+  // left behind would make an answer-shaped link opened here later cost a
+  // discovery fetch.
+  it('forgetProviderToken removes the exchange marker and nothing else', () => {
+    // Arrange
+    sessionStorage.setItem(EXCHANGE_MARKER, 'started');
+    sessionStorage.setItem(FOREIGN_KEY, 'kept');
+    const service = TestBed.inject(AuthService);
+
+    // Act
+    service.forgetProviderToken();
+
+    // Assert
+    expect(sessionStorage.getItem(EXCHANGE_MARKER)).toBeNull();
+    expect(sessionStorage.getItem(FOREIGN_KEY)).toBe('kept');
   });
 });

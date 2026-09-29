@@ -223,7 +223,6 @@ describe('RegisterComponent', () => {
         {
           provide: AuthService,
           useValue: {
-            isAuthenticated: () => true,
             forgetProviderToken,
             // The address the introduction shows back and the reason the
             // `Continue` control is on the screen at all — with `null` here the

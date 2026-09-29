@@ -46,6 +46,12 @@ const API_ORIGIN = 'https://api.budgetoid.app';
 const DISCOVERY_URL =
   'https://accounts.google.com/.well-known/openid-configuration';
 
+// The mark `AuthService.signIn` leaves in the tab just before it sends the
+// person to the provider. Seeded here to stand for a tab that pressed.
+const EXCHANGE_MARKER = 'budgetoid-provider-exchange';
+
+const PROVIDER_ANSWER_PATH = '/register#access_token=a&id_token=b&state=c';
+
 type Visitor = 'anonymous' | 'authenticated';
 
 interface ColdBoot {
@@ -236,21 +242,38 @@ describe('a cold load against the real provider client', () => {
     history.replaceState(null, '', originalHref);
   });
 
-  it.each<{ readonly visitor: Visitor; readonly path: string }>([
-    { visitor: 'anonymous', path: '/welcome' },
-    { visitor: 'authenticated', path: '/app' },
+  it.each<{
+    readonly visitor: Visitor;
+    readonly path: string;
+    readonly marked: boolean;
+  }>([
+    { visitor: 'anonymous', path: '/welcome', marked: false },
+    { visitor: 'authenticated', path: '/app', marked: false },
     // Somebody opening the registration screen has not been to the provider
     // yet; the press on the screen is what contacts it.
-    { visitor: 'anonymous', path: '/register' },
-    // Something after the path that is not the provider's answer: a campaign
-    // link or an in-page anchor is still somebody opening the screen.
-    { visitor: 'anonymous', path: '/register?utm_source=newsletter' },
-    { visitor: 'anonymous', path: '/register#section' },
+    { visitor: 'anonymous', path: '/register', marked: false },
+    // Something after the path that is not the provider's answer, in a tab
+    // that did press: a campaign link, an in-page anchor, or anything in the
+    // query — this client never reads an answer from there — is still
+    // somebody opening the screen.
+    {
+      visitor: 'anonymous',
+      path: '/register?utm_source=newsletter',
+      marked: true,
+    },
+    { visitor: 'anonymous', path: '/register#section', marked: true },
+    { visitor: 'anonymous', path: '/register?code=a&state=c', marked: true },
+    { visitor: 'anonymous', path: '/register?error=x&state=c', marked: true },
+    // The answer's exact shape in a tab that never pressed: a crafted link.
+    { visitor: 'anonymous', path: PROVIDER_ANSWER_PATH, marked: false },
   ])(
-    'reaches no provider for a visitor who is $visitor at $path',
-    async ({ visitor, path }) => {
+    'reaches no provider for a visitor who is $visitor at $path (marked: $marked)',
+    async ({ visitor, path, marked }) => {
       // Arrange
       const expectedProbe = `${API_ORIGIN}/api/me`;
+      if (marked) {
+        sessionStorage.setItem(EXCHANGE_MARKER, 'started');
+      }
 
       // Act
       const boot = await coldBoot(visitor, path);
@@ -293,12 +316,43 @@ describe('a cold load against the real provider client', () => {
   // nothing.
   it('sees the discovery request when the provider redirects a registration back', async () => {
     // Arrange
-    const path = '/register#access_token=a&id_token=b&state=c';
+    sessionStorage.setItem(EXCHANGE_MARKER, 'started');
 
     // Act
-    const boot = await coldBoot('anonymous', path);
+    const boot = await coldBoot('anonymous', PROVIDER_ANSWER_PATH);
 
     // Assert
     expect(foreignRequests(boot)).toEqual([DISCOVERY_URL]);
+  });
+
+  // One exchange, one return leg. The marker is spent by the boot that read
+  // the answer, whatever became of it.
+  it('spends the marker on the boot that reads the answer', async () => {
+    // Arrange
+    sessionStorage.setItem(EXCHANGE_MARKER, 'started');
+
+    // Act
+    await coldBoot('anonymous', PROVIDER_ANSWER_PATH);
+
+    // Assert
+    expect(sessionStorage.getItem(EXCHANGE_MARKER)).toBeNull();
+  });
+
+  // A reload of the address the provider sent the person back to — the
+  // fragment still on it, from history or a bookmark — is not a second return
+  // leg. Without the marker being spent, every reload of that page would ask
+  // Google for the discovery document again.
+  it('reaches no provider on a reload of the address the provider answered on', async () => {
+    // Arrange
+    sessionStorage.setItem(EXCHANGE_MARKER, 'started');
+    await coldBoot('anonymous', PROVIDER_ANSWER_PATH);
+    TestBed.resetTestingModule();
+
+    // Act
+    const reload = await coldBoot('anonymous', PROVIDER_ANSWER_PATH);
+
+    // Assert — the probe first, as above.
+    expect(reload.requested).toContain(`${API_ORIGIN}/api/me`);
+    expect(foreignRequests(reload)).toEqual([]);
   });
 });

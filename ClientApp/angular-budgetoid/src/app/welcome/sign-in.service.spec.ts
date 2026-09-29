@@ -148,7 +148,6 @@ function providerStub(): ProviderStub {
   return {
     initialize: vi.fn(),
     isProviderReturn: vi.fn(),
-    isAuthenticated: vi.fn(),
     providerEmail: vi.fn(),
     signIn: vi.fn(),
     forgetProviderToken: vi.fn(),

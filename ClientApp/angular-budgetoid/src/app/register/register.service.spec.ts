@@ -850,7 +850,6 @@ describe('RegisterService', () => {
         {
           provide: AuthService,
           useValue: {
-            isAuthenticated: () => true,
             // Both are reached only once the account exists — the token is
             // discarded on the 201 and the address is read by the screen's
             // header — and a stub missing either throws inside a subscriber,

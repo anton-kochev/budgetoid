@@ -593,6 +593,13 @@ required members. A third writer is a decision rather than a refactor.
     the tokens, the answer no longer validates, and registration becomes impossible with nothing on
     the screen saying why. `unreachable` is refused for the same reason: a blinked probe on that leg
     would cost the same.
+  - **The same discard ends the exchange marker.** `forgetProviderToken()` also removes
+    `budgetoid-provider-exchange`, the key the press on **Continue with Google** leaves so the return
+    leg knows this tab started an exchange. A tab that pressed, abandoned at the provider and then
+    signed in by passkey — or came back on a probe that found a session, which skips
+    `auth.initialize()` — would otherwise keep it, and an answer-shaped address opened there later
+    would contact the provider. It rides the same two arms for the same ordering reason: removed on
+    `anonymous` or `unreachable`, it would be gone before the return leg read it.
   - **One place, not one per flow**, for the reason `ended()` owns `custody.lock()`: the next
     establishing path will be written by somebody thinking about sign-in rather than about an id
     token in `sessionStorage`, and here it discards for free.

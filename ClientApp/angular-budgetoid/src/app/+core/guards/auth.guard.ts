@@ -3,10 +3,11 @@ import { CanActivateFn, Router } from '@angular/router';
 import { SessionService } from '@app-core/session/session.service';
 
 // Reads `SessionService`, not `AuthService`. The session cookie is `HttpOnly`,
-// so nothing in the browser can look at it, and once sign-in leaves the
-// identity provider there is no token here for `isAuthenticated()` to read
-// either. The one answer both guards act on is computed once, by the probe the
-// `APP_INITIALIZER` awaits, which is also what keeps this function synchronous.
+// so nothing in the browser can look at it, and the identity provider's token
+// is used once, on the registration screen, and discarded when a session
+// begins — so there is no provider token here to read either. The one answer
+// both guards act on is computed once, by the probe the `APP_INITIALIZER`
+// awaits, which is also what keeps this function synchronous.
 //
 // `anonymous` is the only status that may bounce anybody, and that asymmetry is
 // the point rather than an omission. `unreachable` is not a refusal: a server

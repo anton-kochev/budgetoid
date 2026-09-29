@@ -196,7 +196,6 @@ describe('RegisterComponent, around the press that creates the account', () => {
         {
           provide: AuthService,
           useValue: {
-            isAuthenticated: () => true,
             forgetProviderToken: () => undefined,
             // The address the introduction shows back, and the reason the
             // `Continue` control is on the screen at all — with `null` here the

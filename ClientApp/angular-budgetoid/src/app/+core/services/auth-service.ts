@@ -2,6 +2,50 @@ import { DOCUMENT, inject, Injectable } from '@angular/core';
 import { OAuthService } from 'angular-oauth2-oidc';
 import { ConfigurationService } from './configuration.service';
 
+// The mark `signIn` leaves in this tab's `sessionStorage` immediately before
+// it sends the person to the provider, and the second half of what makes a
+// page load the provider coming back — see `isProviderReturn`. Its own key,
+// not the library's `nonce`: that one outlives the exchange it was written
+// for, and this one's lifetime is this service's to decide.
+//
+// `sessionStorage` because it is per tab and survives the top-level round
+// trip to the provider, which is exactly the span an exchange is outstanding.
+// Read through the global, not the injected document's window: every access
+// is guarded anyway, and a storage the browser refuses reads as no exchange.
+const EXCHANGE_MARKER = 'budgetoid-provider-exchange';
+const EXCHANGE_STARTED = 'started';
+
+function exchangeMarked(): boolean {
+  try {
+    return sessionStorage.getItem(EXCHANGE_MARKER) !== null;
+  } catch {
+    // Unreadable storage is a tab that cannot show it started an exchange.
+    // Asked from the `APP_INITIALIZER`, so a throw here is a blank page.
+    return false;
+  }
+}
+
+function markExchange(): boolean {
+  try {
+    sessionStorage.setItem(EXCHANGE_MARKER, EXCHANGE_STARTED);
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function unmarkExchange(): void {
+  try {
+    sessionStorage.removeItem(EXCHANGE_MARKER);
+  } catch {
+    // Swallowed: both callers — `initialize` on the `APP_INITIALIZER` and
+    // `forgetProviderToken` on a session being published — must not fail
+    // over a mark. A marker that survives costs what the residual in
+    // `isProviderReturn` already names.
+  }
+}
+
 @Injectable({
   providedIn: 'root',
 })
@@ -41,9 +85,20 @@ export class AuthService {
    * anonymous or signed in.
    *
    * At most once per page load; see {@link ready}.
+   *
+   * **Consumes the exchange marker once preparation has settled, whatever it
+   * settled as.** By then the library has read any answer off the URL, so no
+   * exchange is outstanding in this tab. Left behind, the marker would make a
+   * reload of an answer-shaped address — a history entry, a bookmark — prepare
+   * the client again on every load. Not removed any earlier: until preparation
+   * settles, the page is still the one the provider answered.
    */
   public async initialize(): Promise<void> {
-    await this.whenReady();
+    try {
+      await this.whenReady();
+    } finally {
+      unmarkExchange();
+    }
   }
 
   private whenReady(): Promise<boolean> {
@@ -78,11 +133,10 @@ export class AuthService {
     // — the provider it depends on is the thing that could not be reached.
     //
     // Nothing is re-thrown and nothing is published. This service holds no
-    // state a screen reads, and `isAuthenticated()` already answers `false` for
-    // a browser that never completed an exchange, so a flag beside it would be
-    // a second, weaker way of asking a question that is already answered. The
-    // `false` this resolves to is for {@link signIn} alone, which must not send
-    // anybody to a login endpoint nobody has learned.
+    // state a screen reads, and registration reads `providerEmail()`, which
+    // already answers `null` for a browser that never completed an exchange. The `false` this resolves to is for {@link signIn}
+    // alone, which must not send anybody to a login endpoint nobody has
+    // learned.
     //
     // **Nothing schedules a silent refresh, and the omission is the rule.**
     // `setupAutomaticSilentRefresh()` used to sit on the next line; it plants a
@@ -116,28 +170,46 @@ export class AuthService {
   /**
    * Whether this page load is the provider redirecting back with its answer.
    *
-   * The configured redirect address — origin and path — carrying an answer the
-   * library would act on, parsed by key and never matched as a substring:
+   * **Two things, both required, and neither is enough alone:**
    *
-   * - **In the fragment**, where the implicit flow this client runs puts it: a
-   *   non-empty `access_token`, `id_token` and `state` together, or a non-empty
-   *   `error` on its own. The refusal needs no `state` because Google's
-   *   documented implicit-flow refusal, `#error=access_denied`, may carry none.
-   * - **In the query**, where a code flow would put it: a non-empty `state`
-   *   with a non-empty `code` or `error`. This client does not run that flow;
-   *   the arm is kept so a switch to it cannot quietly turn the return leg off.
+   * - **This tab started an exchange.** {@link signIn} leaves a marker in
+   *   `sessionStorage` immediately before it leaves for the provider, and
+   *   {@link initialize} consumes it once preparation settles. An
+   *   answer-shaped address is something anybody can put in a link; only a
+   *   tab that pressed the provider button is waiting for one, so a crafted
+   *   link opened anywhere else costs no request to Google (NFR-025).
+   * - **The configured redirect address — origin and path — with an answer in
+   *   the fragment**, parsed by key and never matched as a substring: a
+   *   non-empty `access_token`, `id_token` and `state` together, or a
+   *   non-empty `error` on its own. The refusal needs no `state` because
+   *   Google's documented implicit-flow refusal, `#error=access_denied`, may
+   *   carry none.
    *
-   * The fragment arm mirrors what angular-oauth2-oidc 17.0.2's
-   * `tryLoginImplicitFlow` was read to do: it looks at the fragment alone,
-   * rejects on any `error`, goes on to validate only when all three success
-   * keys are present, and otherwise resolves `false` having read nothing. So
-   * a campaign parameter, an in-page anchor or a partial answer on
-   * `/register` is somebody opening the screen, and preparing the client for
-   * it would contact the provider for an answer the library would not read
-   * (NFR-025). The two parsers are not the same parser: the library decodes
-   * the whole fragment before splitting it, reads past a `?` inside it,
-   * strips a leading `/` from a key and keeps the last of a repeated key, so a
-   * hand-built fragment can make them disagree in either direction.
+   * **The query is not read.** This client runs the implicit flow, and
+   * angular-oauth2-oidc 17.0.2's `tryLogin` reads that flow's answer from the
+   * fragment alone; it reaches the code-flow parser only under `responseType:
+   * 'code'`, a key the configure key-set pin in `auth-service.spec.ts`
+   * refuses. So a `code`, `state` or `error` in the query is somebody opening
+   * the screen, the same as a campaign parameter, an in-page anchor or a
+   * partial answer in the fragment — and preparing the client for any of them
+   * is a contact with the provider that ends in nothing.
+   *
+   * The fragment check is a copy of the library's rule, not the library's
+   * parser. The library decodes the whole fragment before splitting it, reads
+   * past a `?` inside it, strips a leading `/` from a key and keeps the last of
+   * a repeated key, so a hand-built fragment can make the two disagree in
+   * either direction. The marker is what keeps that disagreement to tabs that
+   * started an exchange.
+   *
+   * **The residual, accepted:** a tab that pressed the provider button and
+   * then abandoned the exchange at Google keeps its marker until it closes or
+   * a session begins in it ({@link forgetProviderToken}). An answer-shaped
+   * link opened in that tab costs one discovery-document and key-set fetch,
+   * and the library refuses the answer on its nonce.
+   *
+   * A pure question: it reads the marker and never consumes it, so asking
+   * twice answers the same. Storage the browser refuses to read answers
+   * `false` rather than throwing, because the `APP_INITIALIZER` asks this.
    *
    * Read from the document rather than the router: this is asked by the
    * `APP_INITIALIZER`, before the router has navigated anywhere — see
@@ -162,24 +234,14 @@ export class AuthService {
 
     // `URLSearchParams` drops one leading `?` itself, but not a `#`.
     const fragment = new URLSearchParams(landed.hash.slice(1));
-    const query = landed.searchParams;
-    const present = (params: URLSearchParams, key: string): boolean =>
-      (params.get(key) ?? '').length > 0;
+    const present = (key: string): boolean =>
+      (fragment.get(key) ?? '').length > 0;
 
-    const implicitAnswer =
-      (present(fragment, 'access_token') &&
-        present(fragment, 'id_token') &&
-        present(fragment, 'state')) ||
-      present(fragment, 'error');
-    const codeAnswer =
-      present(query, 'state') &&
-      (present(query, 'code') || present(query, 'error'));
+    const answer =
+      (present('access_token') && present('id_token') && present('state')) ||
+      present('error');
 
-    return implicitAnswer || codeAnswer;
-  }
-
-  public isAuthenticated(): boolean {
-    return this.oAuth.hasValidAccessToken() && this.oAuth.hasValidIdToken();
+    return answer && exchangeMarked();
   }
 
   /**
@@ -258,10 +320,18 @@ export class AuthService {
    * ends in a navigation away, and the failure path — the provider could not be
    * reached — is a press that does nothing, which is also what the library's own
    * `initLoginFlow()` does without a login endpoint, minus the unhandled error.
+   *
+   * **Marks the tab as mid-exchange immediately before leaving, and only
+   * then** — see {@link isProviderReturn}. Not at the press: a press that
+   * could not reach the provider starts no round trip and must leave nothing
+   * that makes a later load look like one coming back. A marker the browser
+   * will not store means the answer would be refused on the way back, so the
+   * trip is not started either: a press that does nothing beats a round trip
+   * to Google that lands on a screen reading as if nothing happened.
    */
   public signIn(): void {
     void this.whenReady().then((ready) => {
-      if (ready) {
+      if (ready && markExchange()) {
         this.oAuth.initLoginFlow();
       }
     });
@@ -293,12 +363,19 @@ export class AuthService {
    * This service offers no provider sign-out at all: the argument-less
    * `logOut()` navigates to the provider's end-session endpoint whenever the
    * library knows one, and a contact with Google on a person's own action is
-   * outside the one window NFR-025 allows. Google's discovery document
-   * publishes no `end_session_endpoint` today, so against this configuration
-   * the two overloads happen to behave alike; the `true` is what keeps this a
-   * discard whatever the provider publishes next.
+   * outside every moment NFR-025 permits — of its three, this product builds
+   * only the account-creation exchange. Google's discovery document publishes
+   * no `end_session_endpoint` today, so against this configuration the two
+   * overloads happen to behave alike; the `true` is what keeps this a discard
+   * whatever the provider publishes next.
+   *
+   * **Also removes the exchange marker, and only that key.** A session has
+   * begun, so no exchange is outstanding in this tab; a marker left behind
+   * would make an answer-shaped link opened here later cost a discovery fetch.
+   * Removed first, so a library that throws cannot leave it behind.
    */
   public forgetProviderToken(): void {
+    unmarkExchange();
     this.oAuth.logOut(true);
   }
 }

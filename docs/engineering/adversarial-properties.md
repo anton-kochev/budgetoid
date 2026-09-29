@@ -277,14 +277,17 @@ covers some of the following without saying the rows exist:
 **This product claims no anonymity.** An account cannot exist without a completed exchange with the
 registration provider, so the provider learns that the person registered, when, and from which
 address, and the product stores the address the provider asserted and the provider's subject
-identifier. The person's browser contacts the provider in two moments: when the registration screen
-starts the exchange, and when the provider redirects that exchange back to `/register` with an
-answer the OAuth library would read. That is held by tests rather than by construction — a cold
-load with the real library, a type-checked census of which files may call the provider client, and
-a scan of the shipped bundle — and
+identifier. The person's browser contacts the provider in two moments, both following the person's
+own press in that tab: when the registration screen starts the exchange, and when the provider
+redirects that exchange back to `/register` — recognised by a marker the press left in the tab and
+a fragment shaped like the answer. The one contact outside them is a tab that pressed, abandoned at
+the provider, and then opened an answer-shaped address somebody built, which costs one discovery
+and key-set fetch before the library refuses it. That is held by tests rather than by
+construction — a cold load with the real library, a census resolved by the type checker of which
+files reach the provider client, and a scan of the shipped bundle — and
 [no-third-party-origins.md](no-third-party-origins.md) names each and what none of them sees: a
-top-level navigation, a timer outlasting the boot, and a member reached through a cast or an
-alias. Signing in is a passkey
+top-level navigation, a timer outlasting the boot, a subclass or an object spread of the client, a
+component template, and a `logOut` reached through an alias. Signing in is a passkey
 assertion against this product's own API and reaches no provider. The API itself fetches the
 provider's published signing keys to validate a registration's token, which names no person. Of the
 three moments NFR-025 permits, the email change and the locked sign-in are not built.

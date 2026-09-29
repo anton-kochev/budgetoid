@@ -81,35 +81,55 @@ made in exactly two places, both on `/register`: when the person presses **Conti
 because the login endpoint that press navigates to is learned from the discovery document; and on
 the page load the provider redirects back to, because the `APP_INITIALIZER` must read the provider's
 answer off the URL before the router's first navigation. `AuthService` prepares the client at most
-once per page load, so a press on the page that came back costs no second fetch. **Nothing else
-contacts the provider**: every other cold load — anonymous or signed in, on any screen, and a bare
-`/register` that carries no answer — makes no request to Google, signing in is a WebAuthn assertion
-against this product's own API, and every request after it authenticates from the first-party
-session cookie. So the page loads privately, *signing in* loads privately, and the two fetches above
-are reachable only while an account is being created. What used to be a standing cost of using the
-product is now a one-time cost of starting to. A page load counts as the provider redirecting back
-only when its address carries an answer the library would act on, so a campaign parameter or an
-in-page anchor on `/register` is a bare `/register` too.
+once per page load, so a press on the page that came back costs no second fetch. **Nothing else a
+person does contacts the provider**, with the one residual below: every other cold load — anonymous
+or signed in, on any screen, and a bare `/register` that carries no answer — makes no request to
+Google, signing in is a WebAuthn assertion against this product's own API, and every request after
+it authenticates from the first-party session cookie. So the page loads privately, *signing in*
+loads privately, and the two fetches above are reachable only from a tab in which somebody pressed
+**Continue with Google**. What used to be a standing cost of using the product is now a one-time
+cost of starting to.
+
+**A page load counts as the provider redirecting back only when this tab started an exchange and
+the address carries an answer shaped like one.** The press leaves `budgetoid-provider-exchange` in
+`sessionStorage` just before it navigates away, and the return leg requires it beside a fragment
+naming a non-empty `access_token`, `id_token` and `state`, or a non-empty `error`. The query is not
+read: the library reads the implicit flow's answer from the fragment alone, and the code flow would
+need a `responseType` the pinned configuration refuses. So a campaign parameter or an in-page anchor
+on `/register` is a bare `/register`, and so is a whole answer-shaped address — a link somebody
+built and shared — opened in a tab where nobody pressed. `initialize()` removes the marker whatever
+it concluded, so a refused answer left on the address contacts nobody when the page is reloaded.
+
+The residual: a tab that pressed and then abandoned at the provider keeps the marker until it closes
+or publishes a session. An answer-shaped address opened in *that* tab costs one discovery and
+key-set fetch, which the library then refuses on its nonce. The provider learns one more time from a
+tab that contacted it minutes earlier; somebody who never pressed contacts nobody.
 
 Four specs hold *when* and *from where*, and each sees what the others cannot:
 
 - `core.providers.cold-boot.spec.ts` boots the application with the real OAuth library and counts
-  every request a cold load makes — anonymous, signed in, on a bare `/register`, and in a tab
-  still holding an abandoned registration's tokens — and fails on any to an origin other than the
+  every request a cold load makes — anonymous, signed in, on a bare `/register`, in a tab still
+  holding an abandoned registration's tokens, on a crafted answer-shaped address in a tab that never
+  pressed, and on a reload of a return already read — and fails on any to an origin other than the
   application's and the API's, or on an `iframe`. Its control is the return leg, which must show
   the discovery request.
 - `core.providers.spec.ts` holds the initializer's decision over a stubbed `AuthService`,
   including the unreachable visitor the cold boot does not simulate.
 - `auth-service.spec.ts` holds the press, the once-per-page-load preparation, and what counts as a
   return.
-- `src/identity-provider-callers.spec.ts` holds *who*: it type-checks the application's sources and
-  pins every file that reaches a member of `AuthService`, or of the library's client directly, to
-  the member it reaches. A new screen that calls `signIn()` or `initialize()` is a new row somebody
-  has to argue.
+- `src/identity-provider-callers.spec.ts` holds *who*: it fails on a program with type errors,
+  resolves receivers with the type checker, and pins each file that reaches a member of
+  `AuthService`, or of the library's client directly, to the member it reaches. Wherever a client
+  value is handed to a place typed as something else — an argument, an annotated variable, a
+  return, a cast, a provider aliasing it — it records `{escaped}`, because past that point it can
+  no longer follow the calls. A new *file* that calls `signIn()` or `initialize()` is a new row
+  somebody has to argue; a new screen that reuses a component or service already in the table adds
+  none, and only review sees it.
 
-None of them sees a top-level navigation, a timer longer than the boot, or what a screen does after
-someone presses something; the call census is what keeps a press that contacts the provider on the
-registration screen.
+None of them sees a top-level navigation, a timer longer than the boot, what a screen does after
+someone presses something, a subclass or an object spread of the client, or a component template.
+The census keeps the calls in the files it lists; that those files render only on `/register` is a
+fact about the route table, which no spec reads.
 
 **What an allow-listed origin buys, and what it therefore cannot catch.**
 `accounts.google.com` is listed above as the issuer `auth-service.ts` configures, legitimately —
@@ -194,6 +214,7 @@ column.
 | `__Host-budgetoid-session` | cookie, set by the API, `HttpOnly` | the session handle | Serves the request. One per session; its expiry is the session's lifetime, not a record of an act. |
 | angular-oauth2-oidc's token entries | `sessionStorage`, this tab | `access_token`, `id_token`, `id_token_claims_obj` (the decoded claims, the email among them), `granted_scopes`, `session_state`, `nonce`, and stored-at and expiry entries | Serve the registration the person started, and nothing after it. `SessionService` discards them through `AuthService.forgetProviderToken()` whenever the tab learns it holds a session — the registration `201`, a sign-in, a start-up probe that finds one. A tab that abandons registration and never signs in keeps them until it closes. Nothing sends them anywhere else: the bearer is attached only on the two registration routes. The library writes the nonce and PKCE verifier to `localStorage` only on an old-IE user-agent branch no supported browser takes. |
 | the library's availability probe | `localStorage` | a `test` key | Written and removed at once, on every cold load: `AuthService` is built at startup, and the library's service with it. |
+| `budgetoid-provider-exchange` | `sessionStorage`, this tab | a fixed value | Present from the press on **Continue with Google** until the return leg has been read, or until the tab publishes a session. It tells the return leg that this tab started an exchange, so an answer-shaped address nobody here asked for contacts nobody. One value, no time; `AuthService.initialize()` and `forgetProviderToken()` remove it. A tab that abandons at the provider keeps it until it closes or signs in. |
 | `budgetoid-theme` | `localStorage` | `system`, `light` or `dark` | One value, overwritten. A preference, not an observation. Nothing writes it today: neither `ThemeService.setMode` nor `toggle`, which calls it, is called from outside the service, so `theme-prepaint.js` and `ThemeService` only ever read it. |
 | `budgetoid-rotation-epoch:<budgetId>` | `localStorage` | one number per account this device has unlocked | Rises only. A rollback control — see [account keys](../business-logic/account-keys.md). |
 

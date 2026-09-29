@@ -115,6 +115,10 @@ const refusedAtAnyArity = new Set([
 // application would pass here. It is on the hardening backlog.
 const refusedBare = 'logOut';
 
+// `AuthService.forgetProviderToken`'s own discard, as `providerCallsIn` records
+// it. esbuild writes `true` as `!0`; either spelling is the local overload.
+const localDiscard = /: forgetProviderToken\.logOut\((?:true|!0)\)$/;
+
 const urlPattern = /https?:\/\/[^\s"'`)\\<>]+/g;
 
 function urlsIn(path: string): string[] {
@@ -154,8 +158,9 @@ function providerOccurrencesIn(path: string): string[] {
 interface ProviderCalls {
   // Calls this spec refuses, as `file: member(argc)`.
   readonly refused: readonly string[];
-  // `logOut` calls carrying an argument — allowed, and counted so a scan that
-  // walked nothing cannot pass on an empty refusal list.
+  // `logOut` calls carrying an argument — allowed, and recorded as
+  // `file: enclosing.logOut(arguments)` so a scan that never reached
+  // `AuthService` cannot pass on an empty refusal list.
   readonly discards: readonly string[];
 }
 
@@ -180,6 +185,26 @@ function calledMemberName(
   return null;
 }
 
+// The name of the nearest named method or function around `node`, or
+// `(top level)`. esbuild keeps method names, so `forgetProviderToken` in the
+// source is `forgetProviderToken` in the chunk; an unnamed function is looked
+// through.
+function enclosingName(node: typescriptModule.Node): string {
+  for (let at = node.parent; at !== undefined; at = at.parent) {
+    if (
+      (ts.isMethodDeclaration(at) ||
+        ts.isFunctionDeclaration(at) ||
+        ts.isFunctionExpression(at)) &&
+      at.name !== undefined &&
+      (ts.isIdentifier(at.name) || ts.isStringLiteral(at.name))
+    ) {
+      return at.name.text;
+    }
+  }
+
+  return '(top level)';
+}
+
 function providerCallsIn(fileName: string, text: string): ProviderCalls {
   const source = ts.createSourceFile(
     fileName,
@@ -199,7 +224,10 @@ function providerCallsIn(fileName: string, text: string): ProviderCalls {
       } else if (name === refusedBare && node.arguments.length === 0) {
         refused.push(site);
       } else if (name === refusedBare) {
-        discards.push(site);
+        const argued = node.arguments.map((argument) => argument.getText());
+        discards.push(
+          `${fileName}: ${enclosingName(node)}.${name}(${argued.join(', ')})`,
+        );
       }
     }
     ts.forEachChild(node, visit);
@@ -279,11 +307,13 @@ describe('production build', () => {
     const refused = calls.flatMap((found) => found.refused);
     const discards = calls.flatMap((found) => found.discards);
 
-    // Assert
+    // Assert — the floor is the application's own discard, not any argued
+    // call: the library calls `logOut(e)` inside its own code, so a scan that
+    // read the vendor chunk and missed `AuthService` would still count one.
     expect(
-      discards.length,
-      'no logOut call carrying an argument — the scan walked nothing',
-    ).toBeGreaterThanOrEqual(1);
+      discards.filter((site) => localDiscard.test(site)),
+      'no logOut(true) inside forgetProviderToken — the scan did not reach AuthService',
+    ).not.toEqual([]);
     expect(refused).toEqual([]);
   });
 });
