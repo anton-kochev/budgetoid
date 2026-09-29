@@ -180,6 +180,25 @@ required members. A third writer is a decision rather than a refactor.
     exists on the table. What the kind *is* enforced by is the application's fallback authorization
     policy — see the rule below, which carries the ADR 0002 statement for why it sits there.
 
+- **The API MUST NOT set any cookie but `__Host-budgetoid-session`.**
+  - **Why**: the session handle is the one thing a cookie is needed for, and it serves the request.
+    Any other cookie would be set for some other purpose — a preference, tracking, analytics, load
+    balancer affinity — which is data the product does not keep, and it would be the first thing to
+    need a consent surface. The product presents none because it has nothing to ask consent for. No
+    framework default writes one today: no cookie authentication scheme, antiforgery, session or
+    TempData middleware, OpenID Connect handler or Data Protection cookie is registered — only the
+    session scheme and `JwtBearer`, which is stateless.
+  - **Enforced in**: `CookieCensusTests.Traffic_SetsNoCookieButTheSession`. It drives the log
+    census's traffic, so every declared route answers a 2xx at least once — the same floor
+    `LogRedactionTests` asserts — then requires the session cookie to have been seen and no other
+    cookie name on any response, matched or not, at any status. `RouteTally` captures the names from
+    `Response.OnStarting`, registered first so it runs last, and
+    `Census_ReportsACookieAddedOutsideAnEndpoint` is the control: a cookie appended outside any
+    endpoint, after the pipeline has returned, is still seen.
+    - **What it does not reach**: a branch the traffic never takes, the provider-token path on the
+      real bearer handler, a cookie appended from an `OnStarting` callback registered before the
+      tally's, and cookies set outside the API — the web client's scripts and the static host.
+
 ## Business Rules & Invariants
 
 - **Rule**: A session's kind is **derived** from the establishing credential's type. There is no way
@@ -350,7 +369,8 @@ required members. A third writer is a decision rather than a refactor.
   **sliding** expiry would need `GRANT UPDATE (expires_at_utc)` — the column list this file argues
   is immutable by omission — and would write a row on every request to buy it.
 - **Enforced in**: `SessionCookie`, which owns the name and builds the attributes once so the issue
-  and the clear cannot drift. `SessionCookieTests` pins each attribute.
+  and the clear cannot drift. `SessionCookieTests` pins each attribute. It is also the only cookie
+  the API sets — see the MUST NOT above.
   - **The clear must match the issue attribute for attribute**, and this is the pin most worth
     having: a browser silently keeps a cookie whose clear does not match, and the symptom is a
     sign-out that appears to work and a session that comes back.

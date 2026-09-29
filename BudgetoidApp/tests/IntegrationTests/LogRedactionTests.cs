@@ -65,7 +65,7 @@ public sealed class LogRedactionTests
     /// Empty is the goal and a reason is owed per entry. A key here that the table no longer declares
     /// is itself a red, so the list cannot outlive the route it excused.
     /// </remarks>
-    private static readonly IReadOnlyDictionary<string, string> UndrivenRoutes =
+    internal static readonly IReadOnlyDictionary<string, string> UndrivenRoutes =
         new Dictionary<string, string>(StringComparer.Ordinal);
 
     /// <summary>
@@ -146,12 +146,7 @@ public sealed class LogRedactionTests
         LogNeedle[] needles = [.. columns.SelectMany(column => column.Needles)];
         IReadOnlyList<LogOffence> offences = LogCensus.Search([.. appRecords, .. bearerRecords], needles);
         IReadOnlySet<string> reached = routes.Reached();
-        string[] undriven =
-        [
-            .. declared
-                .Where(route => !reached.Contains(route) && !UndrivenRoutes.ContainsKey(route))
-                .Order(StringComparer.Ordinal),
-        ];
+        string[] undriven = UndrivenOf(declared, reached);
 
         Report(run, bearerRun, moments, snapshotTime.Elapsed, appRecords, bearerRecords, columns, needles, offences, declared, undriven);
 
@@ -379,7 +374,18 @@ public sealed class LogRedactionTests
     /// Routes the table must declare, so an enumeration that found nothing cannot pass the route floor
     /// by having nothing to demand. Measured at 50, counting <c>* /health</c>.
     /// </summary>
-    private const int DeclaredRouteFloor = 40;
+    internal const int DeclaredRouteFloor = 40;
+
+    /// <summary>
+    /// Declared routes that never answered a 2xx and are not excused by <see cref="UndrivenRoutes" />,
+    /// ordered. The route floor, shared with <see cref="CookieCensusTests" /> so there is one definition.
+    /// </summary>
+    internal static string[] UndrivenOf(IReadOnlySet<string> declared, IReadOnlySet<string> reached) =>
+    [
+        .. declared
+            .Where(route => !reached.Contains(route) && !UndrivenRoutes.ContainsKey(route))
+            .Order(StringComparer.Ordinal),
+    ];
 
     /// <summary>
     /// <c>JwtBearerHandler</c>'s "Successfully validated the token." event, which it writes at

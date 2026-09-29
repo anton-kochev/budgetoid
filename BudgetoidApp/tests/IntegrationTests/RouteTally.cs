@@ -20,10 +20,17 @@ namespace IntegrationTests;
 /// A route counts as <b>reached</b> only on a 2xx. A 401 from the authorization middleware selects
 /// the endpoint too, and a floor that counted it would call a route driven whose handler never ran.
 /// </para>
+/// <para>
+/// <b>Cookie names are read in <c>OnStarting</c>, not in the <c>finally</c></b>, and on every response.
+/// A body-less response starts only after the whole pipeline has returned, so a cookie a later
+/// middleware appends from its own <c>OnStarting</c> is not on the headers yet when the <c>finally</c>
+/// runs. The callback is registered first, so it runs last.
+/// </para>
 /// </remarks>
 public sealed class RouteTally : IStartupFilter
 {
     private readonly ConcurrentQueue<(string Route, int Status)> _hits = new();
+    private readonly ConcurrentQueue<string> _cookieNames = new();
 
     /// <summary>Registers the tally on a host's services.</summary>
     public void AttachTo(IServiceCollection services)
@@ -37,6 +44,21 @@ public sealed class RouteTally : IStartupFilter
     {
         app.Use(async (context, pipeline) =>
         {
+            // Registered before anything below runs, and OnStarting callbacks run last-registered
+            // first, so this one runs after every other: it reads the headers as they go out.
+            context.Response.OnStarting(() =>
+            {
+                foreach (string? header in context.Response.Headers.SetCookie)
+                {
+                    if (!string.IsNullOrWhiteSpace(header))
+                    {
+                        _cookieNames.Enqueue(CookieNameOf(header));
+                    }
+                }
+
+                return Task.CompletedTask;
+            });
+
             try
             {
                 await pipeline(context);
@@ -56,6 +78,20 @@ public sealed class RouteTally : IStartupFilter
 
         next(app);
     };
+
+    /// <summary>
+    /// The name of every cookie any response set — matched endpoint or not, any status — as the
+    /// headers stood when the response started.
+    /// </summary>
+    public IReadOnlySet<string> CookiesSet() => new HashSet<string>(_cookieNames, StringComparer.Ordinal);
+
+    /// <summary>A <c>Set-Cookie</c> value's name: the text before its first <c>=</c>, trimmed.</summary>
+    private static string CookieNameOf(string header)
+    {
+        int equals = header.IndexOf('=', StringComparison.Ordinal);
+
+        return (equals < 0 ? header : header[..equals]).Trim();
+    }
 
     /// <summary>Every route answered with a 2xx at least once, as <c>METHOD pattern</c>.</summary>
     public IReadOnlySet<string> Reached() =>
