@@ -116,13 +116,28 @@ export class AuthService {
   /**
    * Whether this page load is the provider redirecting back with its answer.
    *
-   * The configured redirect address — origin and path — carrying anything at
-   * all after the path. The implicit flow this client runs puts the answer (a
-   * token pair or an `error`) in the fragment; a code flow would put it in the
-   * query, and both are accepted so a change of flow cannot quietly turn the
-   * return leg off. `/register` uses neither for itself, so a bare
-   * `/register` is somebody opening the screen, who has not been to the
-   * provider yet and does not cause a contact by arriving.
+   * The configured redirect address — origin and path — carrying an answer the
+   * library would act on, parsed by key and never matched as a substring:
+   *
+   * - **In the fragment**, where the implicit flow this client runs puts it: a
+   *   non-empty `access_token`, `id_token` and `state` together, or a non-empty
+   *   `error` on its own. The refusal needs no `state` because Google's
+   *   documented implicit-flow refusal, `#error=access_denied`, may carry none.
+   * - **In the query**, where a code flow would put it: a non-empty `state`
+   *   with a non-empty `code` or `error`. This client does not run that flow;
+   *   the arm is kept so a switch to it cannot quietly turn the return leg off.
+   *
+   * The fragment arm mirrors what angular-oauth2-oidc 17.0.2's
+   * `tryLoginImplicitFlow` was read to do: it looks at the fragment alone,
+   * rejects on any `error`, goes on to validate only when all three success
+   * keys are present, and otherwise resolves `false` having read nothing. So
+   * a campaign parameter, an in-page anchor or a partial answer on
+   * `/register` is somebody opening the screen, and preparing the client for
+   * it would contact the provider for an answer the library would not read
+   * (NFR-025). The two parsers are not the same parser: the library decodes
+   * the whole fragment before splitting it, reads past a `?` inside it,
+   * strips a leading `/` from a key and keeps the last of a repeated key, so a
+   * hand-built fragment can make them disagree in either direction.
    *
    * Read from the document rather than the router: this is asked by the
    * `APP_INITIALIZER`, before the router has navigated anywhere — see
@@ -138,11 +153,29 @@ export class AuthService {
     const expected = new URL(redirectUri);
     const landed = new URL(this.document.location.href);
 
-    return (
-      landed.origin === expected.origin &&
-      landed.pathname === expected.pathname &&
-      (landed.hash.length > 1 || landed.search.length > 1)
-    );
+    if (
+      landed.origin !== expected.origin ||
+      landed.pathname !== expected.pathname
+    ) {
+      return false;
+    }
+
+    // `URLSearchParams` drops one leading `?` itself, but not a `#`.
+    const fragment = new URLSearchParams(landed.hash.slice(1));
+    const query = landed.searchParams;
+    const present = (params: URLSearchParams, key: string): boolean =>
+      (params.get(key) ?? '').length > 0;
+
+    const implicitAnswer =
+      (present(fragment, 'access_token') &&
+        present(fragment, 'id_token') &&
+        present(fragment, 'state')) ||
+      present(fragment, 'error');
+    const codeAnswer =
+      present(query, 'state') &&
+      (present(query, 'code') || present(query, 'error'));
+
+    return implicitAnswer || codeAnswer;
   }
 
   public isAuthenticated(): boolean {
@@ -254,16 +287,18 @@ export class AuthService {
    * answer no longer validates. The arm is chosen in `SessionService`; this
    * method only discards.
    *
-   * **Not a sign-out**, and {@link signOut} is deliberately left alone beside
-   * it. A discard ends nothing the person can see; a sign-out ends their visit.
-   * They read the same in a diff and are opposite acts from the seat of the
-   * person using the product.
+   * **Not a sign-out.** A discard ends nothing the person can see; a sign-out
+   * ends their visit, and it is first-party — the settings screen ends the
+   * session on this application's own API, which never involves the provider.
+   * This service offers no provider sign-out at all: the argument-less
+   * `logOut()` navigates to the provider's end-session endpoint whenever the
+   * library knows one, and a contact with Google on a person's own action is
+   * outside the one window NFR-025 allows. Google's discovery document
+   * publishes no `end_session_endpoint` today, so against this configuration
+   * the two overloads happen to behave alike; the `true` is what keeps this a
+   * discard whatever the provider publishes next.
    */
   public forgetProviderToken(): void {
     this.oAuth.logOut(true);
-  }
-
-  public signOut(): void {
-    this.oAuth.logOut();
   }
 }

@@ -249,8 +249,9 @@ same reasoning.
 **Nothing calls `setupAutomaticSilentRefresh()`.** `+core/services/auth-service.ts` used to, and the
 call is deleted: the provider token is obtained once, on the registration screen, and discarded at
 the `201`, so a background renewal keeps alive a credential nothing reads. That decision is argued
-in [no third-party origins](no-third-party-origins.md) and pinned by `auth-service.spec.ts`; this
-section covers only what the browser would do if it came back.
+in [no third-party origins](no-third-party-origins.md), pinned by `auth-service.spec.ts` at the
+call site and by `no-external-origins.spec.ts`, which refuses a call to the member by name anywhere
+in the emitted bundle; this section covers only what the browser would do if it came back.
 
 It would be refused twice over, for two different reasons. The outbound leg frames Google, governed
 by `frame-src` falling back to `default-src 'self'`; the return leg redirects into this origin,
@@ -258,10 +259,13 @@ which `frame-ancestors 'none'` refuses — framed by its own origin is still fra
 fail on its own, because there is no `silent-refresh.html` for the iframe to load.
 
 **Read the two halves as independent, because that is what they are.** The policy is not what
-removed the call, and deleting the call is not what makes the policy right: a restored renewal adds
-no origin the emitted bundle did not already carry, so the build-time check stays green while the
-runtime policy is the only thing refusing it. Neither the loosening of `frame-src` nor the addition
-of a `silent-refresh.html` is the correct answer to a console error from this direction.
+removed the call, and deleting the call is not what makes the policy right. A restored renewal adds
+no origin the emitted bundle did not already carry, so the origin scan stays green; what reddens is
+the bundle's call census, which reads member names rather than origins. A renewal started without
+naming that member — a property written on the client directly, or a library default — reaches
+neither test, and the runtime policy is then the only thing refusing it. Neither the loosening of
+`frame-src` nor the addition of a `silent-refresh.html` is the correct answer to a console error
+from this direction.
 
 ## The API
 

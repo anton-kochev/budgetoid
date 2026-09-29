@@ -277,9 +277,14 @@ covers some of the following without saying the rows exist:
 **This product claims no anonymity.** An account cannot exist without a completed exchange with the
 registration provider, so the provider learns that the person registered, when, and from which
 address, and the product stores the address the provider asserted and the provider's subject
-identifier. The person's browser contacts the provider in two moments and no other: when the
-registration screen starts the exchange, and when the provider redirects that exchange back to
-`/register` ([no-third-party-origins.md](no-third-party-origins.md)). Signing in is a passkey
+identifier. The person's browser contacts the provider in two moments: when the registration screen
+starts the exchange, and when the provider redirects that exchange back to `/register` with an
+answer the OAuth library would read. That is held by tests rather than by construction — a cold
+load with the real library, a type-checked census of which files may call the provider client, and
+a scan of the shipped bundle — and
+[no-third-party-origins.md](no-third-party-origins.md) names each and what none of them sees: a
+top-level navigation, a timer outlasting the boot, and a member reached through a cast or an
+alias. Signing in is a passkey
 assertion against this product's own API and reaches no provider. The API itself fetches the
 provider's published signing keys to validate a registration's token, which names no person. Of the
 three moments NFR-025 permits, the email change and the locked sign-in are not built.

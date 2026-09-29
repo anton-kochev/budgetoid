@@ -22,8 +22,12 @@ URL, and a test over `src/` would have called that clean. Hence Build before Tes
 Emitted JavaScript gets an allowlist rather than absence, because libraries put documentation
 links in error messages and inline SVG carries `www.w3.org` namespace URIs that are never
 fetched. Each entry carries its reason; a new dependency that drags in a new origin fails the
-test on purpose. `assets/app-config*.json` is skipped — the API base URL and OAuth redirect URI
-are an XHR target and a navigation target, not subresources.
+test on purpose. The allowlist is two lists, because its entries are two kinds of thing: origins
+that are named and never fetched, which is what this chapter's rule permits, and the identity
+provider, which *is* contacted and is permitted by a different rule — the one in
+[the two gaps](#two-gaps-this-test-cannot-close) below. `assets/app-config*.json` is skipped —
+the API base URL and OAuth redirect URI are an XHR target and a navigation target, not
+subresources.
 
 ## Typefaces and icons
 
@@ -83,19 +87,46 @@ contacts the provider**: every other cold load — anonymous or signed in, on an
 against this product's own API, and every request after it authenticates from the first-party
 session cookie. So the page loads privately, *signing in* loads privately, and the two fetches above
 are reachable only while an account is being created. What used to be a standing cost of using the
-product is now a one-time cost of starting to. `core.providers.spec.ts` holds the bootstrap half —
-anonymous, signed-in and unreachable visitors alike — and `auth-service.spec.ts` holds the press
-and the once-per-page-load half.
+product is now a one-time cost of starting to. A page load counts as the provider redirecting back
+only when its address carries an answer the library would act on, so a campaign parameter or an
+in-page anchor on `/register` is a bare `/register` too.
+
+Four specs hold *when* and *from where*, and each sees what the others cannot:
+
+- `core.providers.cold-boot.spec.ts` boots the application with the real OAuth library and counts
+  every request a cold load makes — anonymous, signed in, on a bare `/register`, and in a tab
+  still holding an abandoned registration's tokens — and fails on any to an origin other than the
+  application's and the API's, or on an `iframe`. Its control is the return leg, which must show
+  the discovery request.
+- `core.providers.spec.ts` holds the initializer's decision over a stubbed `AuthService`,
+  including the unreachable visitor the cold boot does not simulate.
+- `auth-service.spec.ts` holds the press, the once-per-page-load preparation, and what counts as a
+  return.
+- `src/identity-provider-callers.spec.ts` holds *who*: it type-checks the application's sources and
+  pins every file that reaches a member of `AuthService`, or of the library's client directly, to
+  the member it reaches. A new screen that calls `signIn()` or `initialize()` is a new row somebody
+  has to argue.
+
+None of them sees a top-level navigation, a timer longer than the boot, or what a screen does after
+someone presses something; the call census is what keeps a press that contacts the provider on the
+registration screen.
 
 **What an allow-listed origin buys, and what it therefore cannot catch.**
 `accounts.google.com` is listed above as the issuer `auth-service.ts` configures, legitimately —
 the registration redirect is a top-level navigation to exactly that host. The consequence is that a
 change putting this application back in *repeated* contact with it adds no origin the bundle did not
-already carry, and this test stays green. The concrete case is
-`setupAutomaticSilentRefresh()`, which plants a hidden iframe pointed at the provider and re-runs it
-on a timer for as long as the tab is open: a third-party request on every page, forever, to renew a
-token read on the registration screen and discarded once the tab holds a session. Nothing schedules
-one, and what holds that is a pin of its own in `auth-service.spec.ts` rather than anything here.
+already carry, and the origin scan stays green. So the same spec pins the build-time half of the
+rule above, from two other angles. It requires the provider origin to appear in the emitted
+bundle exactly once, as the configured issuer — every other provider address is learned at runtime
+from the discovery document. And it parses every emitted script and refuses a call to the
+library's standing-contact members: `setupAutomaticSilentRefresh()`, which plants a hidden iframe
+pointed at the provider and re-runs it on a timer for as long as the tab is open;
+`revokeTokenAndLogout()`; and `logOut()` with no argument, which navigates to the provider's
+end-session endpoint whenever the library knows one. Google publishes none today, which is why the
+refusal is about what the provider may publish next. It does not see a method reached through an
+alias, a `logOut` given an argument other than `true`, or standing contact switched on by a
+property written on the client — the library itself calls `logOut` with an argument, so arity
+alone cannot be refused.
 
 And this covers what the build emits, not what the browser permits. The
 `Content-Security-Policy` that enforces the same rule at runtime ships in `globalHeaders` of

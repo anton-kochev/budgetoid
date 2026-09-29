@@ -69,10 +69,10 @@ function touchedMembersOf(custody: CustodyStub): readonly string[] {
 // Every member of the provider service, so a census can name which one was
 // reached rather than only that one was. Listed rather than derived, as
 // `sign-in.service.spec.ts` lists its own: the census is a list somebody has to
-// extend deliberately when `AuthService` grows a member. `signOut` is the member
-// it exists to refuse — it is `logOut()` without the local-discard flag, a
-// redirect to Google's end-session endpoint, and it reads the same as the
-// discard in a diff.
+// extend deliberately when `AuthService` grows a member. What it exists to
+// refuse is a member wrapping the argument-less `logOut()`: that overload
+// navigates to the provider's end-session endpoint whenever the library knows
+// one, `logOut(true)` never does, and the two read the same in a diff.
 type ProviderStub = Readonly<Record<keyof AuthService, Mock>>;
 
 function providerStub(): ProviderStub {
@@ -83,7 +83,6 @@ function providerStub(): ProviderStub {
     providerEmail: vi.fn(),
     signIn: vi.fn(),
     forgetProviderToken: vi.fn(),
-    signOut: vi.fn(),
   };
 }
 
@@ -585,10 +584,11 @@ describe('SessionService', () => {
       expect(provider.forgetProviderToken).toHaveBeenCalledOnce();
     });
 
-    // **A discard, never a sign-out.** `signOut()` is `logOut()` without the
-    // local flag: a top-level redirect to Google's end-session endpoint, which
-    // ends the person's Google session on their behalf and takes them off the
-    // screen that just let them in. The two read alike in a diff, so the rule is
+    // **A discard, never a sign-out.** The argument-less `logOut()` is a
+    // top-level navigation to the provider's end-session endpoint whenever the
+    // library knows one — it would end the person's provider session on their
+    // behalf and take them off the screen that just let them in — while
+    // `logOut(true)` never navigates. The two read alike in a diff, so the rule is
     // stated as a census — exactly one member, by name — rather than as a spy on
     // the member that ought to be called.
     it.each([

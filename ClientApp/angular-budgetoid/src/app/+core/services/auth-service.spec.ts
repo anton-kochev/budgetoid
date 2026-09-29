@@ -118,12 +118,11 @@ describe('AuthService', () => {
   // so an assertion there discriminates nothing and would pass over a restored
   // call.
   //
-  // `src/no-external-origins.spec.ts` cannot hold this. It reads the production
-  // bundle for foreign origins, and `accounts.google.com` is already
-  // allow-listed there as the issuer this service configures, legitimately so:
-  // the sign-in redirect goes to exactly that host. A restored renewal adds no
-  // origin the bundle did not already carry, so that spec stays green while a
-  // timer starts hitting Google on every page.
+  // `src/no-external-origins.spec.ts` holds the spelling: it scans the
+  // production bundle and refuses a `setupAutomaticSilentRefresh` call by name.
+  // Its origin check could not have — a restored renewal adds no origin the
+  // bundle does not already carry. This case holds the behaviour of the one
+  // path that used to make the call, against a stub.
   it('schedules no background renewal of the provider token', async () => {
     // Arrange
     const loadDiscoveryDocumentAndTryLogin = vi.fn(() => Promise.resolve(true));
@@ -176,6 +175,41 @@ describe('AuthService', () => {
     // Assert
     expect(configure).toHaveBeenCalledOnce();
     expect(configure.mock.calls[0]?.[0]).not.toHaveProperty('responseType');
+  });
+
+  // NFR-025. The key set, not a list of refusals: every contact this client
+  // could make on its own is switched on by a key, and the ones that matter are
+  // not the ones anybody would think to refuse by name. `sessionChecksEnabled`
+  // plants an iframe polling the provider's session endpoint, `useSilentRefresh`
+  // and `silentRefreshRedirectUri` arm the hidden-iframe renewal, `openUri`
+  // replaces how the client leaves the page, `responseType` swaps the flow for
+  // one that posts to the token endpoint. Equality refuses any key passed to
+  // `configure` beyond these, named here or not. It cannot see a library
+  // default that turns a contact on with no key passed, nor a direct property
+  // write on `OAuthService` that bypasses `configure`.
+  it('configures the client with exactly the keys it needs', async () => {
+    // Arrange
+    const configure = vi.fn();
+    const service = authServiceOver({
+      configure,
+      loadDiscoveryDocumentAndTryLogin: vi.fn(() => Promise.resolve(true)),
+    });
+
+    // Act
+    await service.initialize();
+
+    // Assert
+    expect(configure).toHaveBeenCalledOnce();
+    const keys = Object.keys(
+      (configure.mock.calls[0]?.[0] ?? {}) as Record<string, unknown>,
+    ).sort();
+    expect(keys).toEqual([
+      'clientId',
+      'issuer',
+      'redirectUri',
+      'scope',
+      'strictDiscoveryDocumentValidation',
+    ]);
   });
 
   // NFR-025 is about how often the provider hears from this browser, so a second
@@ -308,6 +342,12 @@ describe('AuthService', () => {
       shape: 'a code-flow answer in the query',
       href: 'https://budgetoid.app/register?code=a&state=c',
     },
+    // Google's implicit-flow refusal carries no state, and the library rejects
+    // on it without asking for one — so neither does this.
+    {
+      shape: 'a refusal in the fragment without a state',
+      href: 'https://budgetoid.app/register#error=access_denied',
+    },
   ])('recognises $shape as the provider coming back', ({ href }) => {
     // Arrange
     const service = authServiceOver({}, { href });
@@ -325,11 +365,69 @@ describe('AuthService', () => {
     },
     {
       shape: 'another screen',
-      href: 'https://budgetoid.app/welcome#access_token=a',
+      href: 'https://budgetoid.app/welcome#access_token=a&id_token=b&state=c',
     },
     {
       shape: 'the same path on another origin',
-      href: 'https://budgetoid.example/register#access_token=a',
+      href: 'https://budgetoid.example/register#access_token=a&id_token=b&state=c',
+    },
+    // Something after the path that is not an answer the library acts on. A
+    // campaign link or an in-page anchor is still somebody opening the screen.
+    {
+      shape: 'a campaign parameter in the query',
+      href: 'https://budgetoid.app/register?utm_source=newsletter',
+    },
+    {
+      shape: 'an in-page anchor',
+      href: 'https://budgetoid.app/register#section',
+    },
+    {
+      shape: 'an in-page anchor named error',
+      href: 'https://budgetoid.app/register#error',
+    },
+    {
+      shape: 'a fragment carrying only a state',
+      href: 'https://budgetoid.app/register#state=c',
+    },
+    {
+      shape: 'a fragment missing the id token',
+      href: 'https://budgetoid.app/register#access_token=a&state=c',
+    },
+    // Both tokens without the state that binds them to a request: the library
+    // validates only when all three keys are there.
+    {
+      shape: 'a fragment carrying both tokens and no state',
+      href: 'https://budgetoid.app/register#access_token=a&id_token=b',
+    },
+    // A key that is present but empty is not a token. Asking only whether the
+    // key exists would read this as an answer.
+    {
+      shape: 'a fragment naming an empty access token',
+      href: 'https://budgetoid.app/register#access_token=&id_token=b&state=c',
+    },
+    // The library reads an implicit-flow answer from the fragment only.
+    {
+      shape: 'an implicit-flow answer in the query',
+      href: 'https://budgetoid.app/register?access_token=a&id_token=b&state=c',
+    },
+    // A code-flow answer is bound to the request by its state; without one the
+    // library has nothing to check it against.
+    {
+      shape: 'a code in the query without a state',
+      href: 'https://budgetoid.app/register?code=a',
+    },
+    {
+      shape: 'a refusal in the query without a state',
+      href: 'https://budgetoid.app/register?error=x',
+    },
+    // The library reads a code-flow answer from the query only.
+    {
+      shape: 'a code-flow answer in the fragment',
+      href: 'https://budgetoid.app/register#code=a&state=c',
+    },
+    {
+      shape: 'a fragment refusal naming no error',
+      href: 'https://budgetoid.app/register#error=',
     },
   ])('does not read $shape as the provider coming back', ({ href }) => {
     // Arrange

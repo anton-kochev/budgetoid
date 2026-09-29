@@ -152,7 +152,6 @@ function providerStub(): ProviderStub {
     providerEmail: vi.fn(),
     signIn: vi.fn(),
     forgetProviderToken: vi.fn(),
-    signOut: vi.fn(),
   };
 }
 
@@ -536,7 +535,7 @@ describe('SignInService', () => {
     // the provider gets contacted is not a request this client composes but a
     // redirect it asks `AuthService` for, and a census over its members is the
     // only thing that can see one — so the census still refuses every member
-    // that contacts Google, `signIn` and `signOut` above all. The one it names
+    // that contacts Google, `signIn` and `initialize` above all. The one it names
     // is the discard: `SessionService.established()` drops the provider's
     // tokens from `sessionStorage` the moment this tab holds a session, and
     // that is local — it contacts nobody.
