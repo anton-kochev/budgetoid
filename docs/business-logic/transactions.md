@@ -849,4 +849,5 @@ ELSE
 - A missing Currency row for an Account fails loudly rather than guessing a symbol, but the
   `accounts.currency_code` foreign key means it cannot happen — see
   [currencies.md](currencies.md#edge-cases--known-gotchas).
-- `Date` is a calendar date with no timezone. `CreatedAtUtc` is the separate audit timestamp.
+- `Date` is a calendar date with no timezone. `CreatedAtUtc` is the separate record of when the
+  row was created.

@@ -251,18 +251,44 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
       the deferral as permission.
 
 - **A column on any table MUST NOT store an analytics identifier, an advertising identifier, a
-  device fingerprint, or a behavioural event record.**
+  device fingerprint, or a behavioural event record — and the product records no audit trail of
+  what a person does.**
   - **Why**: the account row being minimal is worth little if the same data arrives one table over.
     The product has no reader for any of it, and a column nothing reads is data held for no one.
+    - **An audit trail is a behavioural record, so it is refused in that category** rather than in
+      one of its own: a record of who did what to a row, and when, is the category's definition. The
+      vocabulary refuses the shapes one arrives in — a table or column named for an audit, an
+      activity log or a change log (`audit`, `activity_log`, `changelog`, `change_log`), and a
+      per-row stamp naming who did something (`created_by`, `updated_by`, `modified_by`,
+      `changed_by`, `deleted_by`). When a row last changed may be recorded; who changed it may not.
+    - **Phrases, not bare words, because each bare word is already taken.** `activity` is a
+      budgeting figure — what a category spent this month. `history` would refuse
+      `__EFMigrationsHistory`, EF's own table in `public`, which the catalog scan reads. `created`
+      and `updated` would swallow `created_at_utc`, which the schema carries. `change` names an
+      amount's movement and `by` a report's sort or grouping.
+      `Vocabulary_DoesNotRefuseTheNamesAnAuditPatternWouldOverreachInto` holds the names a bare
+      pattern would reach, the migrations-history table among them, so a pattern gone bare is red at
+      the unit tier and not only in the container-backed suite.
+    - **`created_by` costs something.** A shared budget that wants to say who entered a transaction
+      would need exactly that column. Such a feature has to argue against the pattern's reason, not
+      delete the pattern.
     - **What a first-party security record may still carry**: the session or credential's own
       identifier, when it began, when it expires or was revoked, and when it was last used — each
       read in order to **end** access, and a record that cannot say which session to revoke cannot
       be revoked. What it may not do is accumulate one row per sign-in as history, or count them.
       This is why the vocabulary refuses phrases like `session_count` and `last_login` rather than
       the bare words `session` and `login`: a rule that cannot tell a revocable session from a
-      measured one would refuse the security feature along with the surveillance. `sessions` carries
-      less than the rule permits — `id`, `user_id`, `credential_id`, `kind`, `created_at_utc`,
-      `expires_at_utc`, `revoked_at_utc`, and nothing else.
+      measured one would refuse the security feature along with the surveillance. The **columns** of
+      `sessions` stay inside what the rule permits — `id`, `user_id`, `credential_id`,
+      `credential_type`, `kind`, `created_at_utc`, `expires_at_utc`, `revoked_at_utc`, and nothing
+      else. Its rows do not.
+    - **A known departure: `sessions` accumulates one row per sign-in today.** Revocation stamps
+      `revoked_at_utc` and the row stays; an expired row stays too. Rows leave only by the cascade,
+      when the credential that opened them is deleted or the account is erased, and nothing sweeps
+      an ended session. So an account's `sessions` rows are a timestamped sign-in history, bounded
+      only by the life of the credential — the one behavioural record the schema is known to keep.
+      Closing it is pending work: a retention change, which has to re-argue the `DELETE` rule in
+      [sessions.md](sessions.md#must-not) rather than go around it.
     - **Why not in the database**: PostgreSQL cannot refuse a column for what its name connotes, and
       reaching it would need an event trigger — procedural logic ADR 0002 rules out. A forbidden
       column can only arrive through a migration, so the build is the lowest capable layer. Unlike

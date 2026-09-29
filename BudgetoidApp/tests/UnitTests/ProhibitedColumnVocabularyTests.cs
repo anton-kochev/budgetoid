@@ -83,6 +83,17 @@ public sealed class ProhibitedColumnVocabularyTests
     /// <c>seens</c>, <c>analyticses</c> — which matches nothing rather than something wrong, so a
     /// wrong ending costs a refusal nobody had rather than buying one nobody wanted.
     /// </para>
+    /// <para>
+    /// <b>The audit-trail rows are behavioural events</b>: an audit log, an activity log, a change
+    /// log and a <c>*_by</c> column each record who did what to a row and when, which is the
+    /// category's own definition. <c>audit</c>, <c>audit_log</c>, <c>audit_trail</c> and
+    /// <c>audits</c> are one bare token reached four ways — written, in a phrase, and through the
+    /// plural expansion. <c>activity_log</c> has to be a phrase because the bare <c>activity</c> is
+    /// a budgeting figure (what a category spent this month); since it ends in <c>g</c>, the
+    /// missing <c>y</c>→<c>ies</c> rule never touches it. <c>changelog</c> and <c>change_log</c>
+    /// tokenize differently — one token against two — so both spellings are rows. <c>CreatedBy</c>
+    /// is the name EF gives an unconfigured property, split on its case boundary.
+    /// </para>
     /// </remarks>
     [Test]
     [Arguments("ga_client_id", ProhibitedColumnCategory.AnalyticsIdentifier)]
@@ -116,6 +127,23 @@ public sealed class ProhibitedColumnVocabularyTests
     [Arguments("cookie_id", ProhibitedColumnCategory.DeviceFingerprint)]
     [Arguments("mac_address", ProhibitedColumnCategory.DeviceFingerprint)]
     [Arguments("mac_addresses", ProhibitedColumnCategory.DeviceFingerprint)]
+    [Arguments("audit", ProhibitedColumnCategory.BehaviouralEvent)]
+    [Arguments("audits", ProhibitedColumnCategory.BehaviouralEvent)]
+    [Arguments("audit_log", ProhibitedColumnCategory.BehaviouralEvent)]
+    [Arguments("audit_trail", ProhibitedColumnCategory.BehaviouralEvent)]
+    [Arguments("activity_log", ProhibitedColumnCategory.BehaviouralEvent)]
+    [Arguments("activity_logs", ProhibitedColumnCategory.BehaviouralEvent)]
+    [Arguments("changelog", ProhibitedColumnCategory.BehaviouralEvent)]
+    [Arguments("changelogs", ProhibitedColumnCategory.BehaviouralEvent)]
+    [Arguments("change_log", ProhibitedColumnCategory.BehaviouralEvent)]
+    [Arguments("change_logs", ProhibitedColumnCategory.BehaviouralEvent)]
+    [Arguments("created_by", ProhibitedColumnCategory.BehaviouralEvent)]
+    [Arguments("CreatedBy", ProhibitedColumnCategory.BehaviouralEvent)]
+    [Arguments("updated_by", ProhibitedColumnCategory.BehaviouralEvent)]
+    [Arguments("modified_by", ProhibitedColumnCategory.BehaviouralEvent)]
+    [Arguments("last_modified_by", ProhibitedColumnCategory.BehaviouralEvent)]
+    [Arguments("changed_by", ProhibitedColumnCategory.BehaviouralEvent)]
+    [Arguments("deleted_by", ProhibitedColumnCategory.BehaviouralEvent)]
     public async Task Vocabulary_MatchesAColumnNameFromEachForbiddenCategory(
         string identifier,
         ProhibitedColumnCategory expectedCategory)
@@ -463,6 +491,47 @@ public sealed class ProhibitedColumnVocabularyTests
 
         // Assert — null. A rule here is a pattern that has widened past the third-party tracker it
         // was written for and into the record a person revokes access with.
+        await Assert.That(rule).IsNull();
+    }
+
+    /// <summary>
+    /// The names an audit-trail pattern written too wide would reach are names about a row or a
+    /// report, not a record of who did what.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// None of these is in the EF model, so <see cref="Vocabulary_AndTheShippedSchemaShareNoName" />
+    /// cannot see them. <c>__EFMigrationsHistory</c> is in the shipped database all the same — the
+    /// catalog scan in <c>DataMinimizationSchemaTests</c> reads it — and it tokenizes as
+    /// <c>ef</c>, <c>migrations</c>, <c>history</c>, so a bare <c>history</c> pattern would be red
+    /// only in the container-backed suite. This row makes it red here first.
+    /// </para>
+    /// <para>
+    /// The rest pin the phrases: a timestamp saying when a row last changed names no person
+    /// (<c>updated_at_utc</c>, <c>modified_at_utc</c>); <c>activity</c> is a budgeting figure, so the
+    /// audit pattern is <c>activity_log</c>, never the bare token; <c>change</c> is an amount's
+    /// movement, so the pattern is <c>change_log</c>; and <c>by</c> is how a saved report is sorted
+    /// or grouped, so the patterns are <c>created_by</c> and its siblings, never the bare token.
+    /// </para>
+    /// </remarks>
+    [Test]
+    [Arguments("__EFMigrationsHistory")]
+    [Arguments("updated_at_utc")]
+    [Arguments("modified_at_utc")]
+    [Arguments("category_activity")]
+    [Arguments("balance_change")]
+    [Arguments("sort_by")]
+    [Arguments("group_by")]
+    public async Task Vocabulary_DoesNotRefuseTheNamesAnAuditPatternWouldOverreachInto(
+        string identifier)
+    {
+        // Arrange — the argument rows above are the subject; each sits one token away from an
+        // audit-trail shape and records nothing about who did what.
+
+        // Act
+        ProhibitedColumnRule? rule = ProhibitedColumnVocabulary.Classify(identifier);
+
+        // Assert — null. A rule here is an audit pattern that went bare where it had to be a phrase.
         await Assert.That(rule).IsNull();
     }
 

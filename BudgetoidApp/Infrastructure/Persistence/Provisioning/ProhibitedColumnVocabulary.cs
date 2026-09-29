@@ -95,7 +95,7 @@ public sealed record ProhibitedColumnRule(
 /// <para>
 /// <b>The first matching rule wins, and the order of <see cref="Rules" /> is what decides it.</b> No
 /// pattern shadows another — none of the token runs <see cref="CompiledRules" /> executes is a
-/// contiguous run inside any other, checked pairwise across all 66 of them — but that only rules out
+/// contiguous run inside any other, checked pairwise across all 84 of them — but that only rules out
 /// one pattern swallowing another wholesale. A single name can still carry two patterns side by side,
 /// and then the order is the whole answer: <c>analytics_event_log</c> reaches <c>analytics</c> and
 /// <c>event_log</c>, so reordering the list would turn an
@@ -333,6 +333,60 @@ public static class ProhibitedColumnVocabulary
             "counts interactions, which is behaviour at the finest grain anybody bothers to "
             + "record. A phrase rather than the bare token, so that a domain concept that happens "
             + "to be called a click is not caught by a rule aimed at a metric"),
+        new(
+            "audit",
+            ProhibitedColumnCategory.BehaviouralEvent,
+            "names an audit trail — a record of who did what to a row and when, kept so somebody "
+            + "can look back at it. That is exactly the record the product says it does not keep "
+            + "about the people using it. A bare token, because no budgeting concept is called an "
+            + "audit"),
+        new(
+            "activity_log",
+            ProhibitedColumnCategory.BehaviouralEvent,
+            "is the same audit trail under the name a feed of a person's actions usually gets. A "
+            + "phrase rather than the bare token 'activity', which is a budgeting figure — what a "
+            + "category spent this month"),
+        new(
+            "changelog",
+            ProhibitedColumnCategory.BehaviouralEvent,
+            "is an audit trail of edits, kept so a row's history can be replayed along with who "
+            + "made each change. The product keeps a row's current state and no record of how "
+            + "somebody arrived at it"),
+        new(
+            "change_log",
+            ProhibitedColumnCategory.BehaviouralEvent,
+            "is the same value spelled as two words, which tokenizes differently from the one-word "
+            + "form and so needs its own entry. A phrase rather than the bare token 'change', "
+            + "which is how an amount's movement is named"),
+        new(
+            "created_by",
+            ProhibitedColumnCategory.BehaviouralEvent,
+            "stamps every row with the person who made it, which turns each table into a per-row "
+            + "audit trail. This does cost something: a shared budget that wants to say who entered "
+            + "a transaction would need exactly this column, and that feature has to argue against "
+            + "this reason rather than delete it. A phrase rather than the bare token 'by', which "
+            + "is how a saved report is sorted or grouped"),
+        new(
+            "updated_by",
+            ProhibitedColumnCategory.BehaviouralEvent,
+            "is the per-row audit stamp for the last edit, refused for the reason 'created_by' is. "
+            + "When a row last changed may be recorded; who changed it may not"),
+        new(
+            "modified_by",
+            ProhibitedColumnCategory.BehaviouralEvent,
+            "is the same stamp under the other spelling. Listed separately because the two "
+            + "spellings are chosen by habit and neither is more likely than the other"),
+        new(
+            "changed_by",
+            ProhibitedColumnCategory.BehaviouralEvent,
+            "is the same stamp under a third spelling, listed for the reason its two siblings are: "
+            + "a name chosen by habit is a name nobody stops to check against this list"),
+        new(
+            "deleted_by",
+            ProhibitedColumnCategory.BehaviouralEvent,
+            "records who removed a row, which is an audit stamp on the removal. It is refused twice "
+            + "over: the erasure-remnant vocabulary's 'deleted' rule refuses it too, because a row "
+            + "that can say who deleted it is a row that was never deleted"),
     ];
 
     /// <summary>

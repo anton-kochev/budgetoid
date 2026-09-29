@@ -8,6 +8,46 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-09-29 — The product keeps no audit trail, and the vocabulary says so in the behavioural-event category
+
+**Context:** the requirements say the product records no audit trail of what a person does. The
+prohibited-column vocabulary refused analytics, advertising, fingerprint and tracking shapes, but
+no audit shape: an `audit_log` table or a `created_by` column would have passed the build.
+
+**Decision:** fold the audit shapes into `BehaviouralEvent`, whose definition — a record of what
+somebody did, when — already covers them. Nine patterns: `audit`, `activity_log`, `changelog`,
+`change_log`, and the per-row stamps `created_by`, `updated_by`, `modified_by`, `changed_by` and
+`deleted_by`. Phrases wherever the bare word is taken, and a negative-row test,
+`Vocabulary_DoesNotRefuseTheNamesAnAuditPatternWouldOverreachInto`, holding the names a bare
+pattern would reach. [users-and-ownership.md](users-and-ownership.md) owns the rule.
+
+**Alternatives considered:**
+- **A new `AuditTrail` category**: rejected. The fix a red asks for is the same — drop the column
+  or do not build the table — and so is the reader. A category would add a switch arm for nothing.
+- **Bare `history` and `activity`**: rejected. `history` refuses `__EFMigrationsHistory`, EF's
+  table in `public`, which the catalog scan reads; `activity` is a budgeting figure, what a category
+  spent this month. The same argument keeps `created`, `updated`, `change` and `by` out.
+- **Leaving `created_by` out to keep shared budgets cheap**: rejected. A shared budget that wants to
+  say who entered a transaction would need it, and that feature argues against the pattern's
+  reason when it comes; the reason says so.
+
+**Consequences:** the list is a name check, and review holds the rest. An audit table named
+innocently — `entries`, `journal` — passes, and so do events kept inside a JSON column. Ended
+`sessions` rows are the one known behavioural record the schema still keeps: revocation stamps
+the row and nothing sweeps it, so an account's rows are a sign-in history bounded only by the
+credential's life. [users-and-ownership.md](users-and-ownership.md) records that as pending work,
+which has to re-argue the `DELETE` rule in [sessions.md](sessions.md).
+
+The log side of the same rule is argued elsewhere: outside Development the API writes no
+`Information`-level line per request, because those lines together are a trail of what was done
+and when. See "No line per request outside Development" in
+[log redaction](../engineering/log-redaction.md).
+
+**Affected areas:** [users-and-ownership.md](users-and-ownership.md), [sessions.md](sessions.md),
+[transactions.md](transactions.md).
+
+---
+
 ## 2026-09-28 — Erasure ends sessions by deletion, not revocation
 
 **Context:** FR-024 requires that an erasure invalidate every session and token issued to the erased
