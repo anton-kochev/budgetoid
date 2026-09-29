@@ -20,6 +20,25 @@ WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
 
 builder.AddServiceDefaults();
 
+// Outside Development nothing below Warning is written, except the host's startup and shutdown lines
+// (FR-033). With no logging configuration ASP.NET's floor is Information, which puts a "Request
+// starting" and a "Request finished" line — method, path with its row ids, status, time — on stdout
+// for every request, and from there into Log Analytics: a trail of who did what and when, which the
+// product owes nobody. EF's command log and Npgsql sit at the same level. !IsDevelopment() rather than
+// IsProduction(), so a Staging host is covered too; Development keeps its request lines.
+//
+// A default rule, not a list of noisy categories: a category nobody named is silenced too. AddFilter
+// rather than SetMinimumLevel, because a minimum level only applies where no rule matches and a
+// Logging__LogLevel__Default in the environment is a rule. Two rules of equal specificity resolve to
+// the one added last, and configuration's rules are added when CreateBuilder runs, before this line —
+// so this floor outranks a configured default. A configured *category* rule still outranks it, being
+// longer; that is an operator naming a category on purpose, and it is the way to open one when needed.
+if (!builder.Environment.IsDevelopment())
+{
+    builder.Logging.AddFilter(category: null, LogLevel.Warning);
+    builder.Logging.AddFilter("Microsoft.Hosting.Lifetime", LogLevel.Information);
+}
+
 // Kestrel's 30 MB default is a file-upload default, and this API accepts no files: every endpoint
 // takes a small JSON object, the largest being a passkey registration response whose attestation
 // object is a few kilobytes. Until this line, the anonymous sign-in endpoint would read 30 MB into

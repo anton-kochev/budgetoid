@@ -112,8 +112,11 @@ because every one of these is something a reader will otherwise simplify away.
   is exported *and* never logged), and its narrative half is drawn from the inventory, never typed.
   `LogRedactionTests` searches every record of real traffic that reaches every declared route; the
   SQL fill is pinned to `budgets.name`, so a new narrative column with a write route costs one
-  traffic edit. There is **no runtime redactor**, by decision.
-  [log redaction](docs/engineering/log-redaction.md)
+  traffic edit. There is **no runtime redactor**, by decision. **Outside Development nothing below
+  Warning is written** but the host's lifetime lines — a request line is a trail of who did what
+  when (FR-033). It is an `AddFilter` default in `Api/Program.cs`, never `SetMinimumLevel` (a
+  configured default outranks that) and never an `Api/appsettings.json`; `ProductionLoggingTests`
+  holds it. [log redaction](docs/engineering/log-redaction.md)
 - **A new tenant-owned table needs a grant *and* a policy** — `budget_isolation` for `budget_id`,
   `user_isolation` for `user_id`. Grants fail closed (`42501`), RLS fails open. A table carrying
   neither column fails both.
