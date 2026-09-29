@@ -46,9 +46,9 @@ GRANT SELECT ON currencies TO budgetoid_app;
 
 -- users: a user row carries no identity key of its own — sign-in resolves through credentials
 -- below — so email, the address the account is reached at, is the only updatable column.
--- created_at_utc is an audit fact, immutable by omission from the list. A one-column list is
--- still a list: do not collapse it into a table-wide GRANT UPDATE ON users, which would take
--- created_at_utc with it.
+-- created_at_utc records when the row was created, immutable by omission from the list. A
+-- one-column list is still a list: do not collapse it into a table-wide GRANT UPDATE ON users,
+-- which would take created_at_utc with it.
 --
 -- DELETE is here so that erasing an account runs as this role rather than on an elevated
 -- connection, which is the whole point of ADR 0004. It is policed: users carries user_isolation,

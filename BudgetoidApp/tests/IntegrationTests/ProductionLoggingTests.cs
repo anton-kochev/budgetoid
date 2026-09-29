@@ -4,16 +4,32 @@ using Microsoft.Extensions.Logging;
 namespace IntegrationTests;
 
 /// <summary>
-/// Pins FR-033: any host outside Development writes no Information record for the request pipeline,
-/// while Development keeps its request lines.
+/// Pins FR-033: a Production or a Staging host writes no Information record for the request pipeline,
+/// even under a configured default of Information, while Development keeps its request lines.
 /// </summary>
 /// <remarks>
 /// <para>
 /// <b>Why it matters.</b> With no logging configuration at all, ASP.NET's default minimum is
 /// Information, and <c>Microsoft.AspNetCore.Hosting.Diagnostics</c> writes a "Request starting" and a
-/// "Request finished" line for every request — method, path, status and time — to stdout. EF's command
-/// log and Npgsql sit at the same level. None of that is a narrative value, but it is a per-request
-/// trail of what a person did and when, and the product owes nobody that trail.
+/// "Request finished" line for every request — method, path, status and time — to stdout, and EF's
+/// executed-command line sits at the same level. None of that is a narrative value, but it is a
+/// per-request trail of what a person did and when, and the product owes nobody that trail.
+/// </para>
+/// <para>
+/// <b>Why a configured default is part of the pin.</b> <c>AddFilter(category: null, Warning)</c> and
+/// <c>SetMinimumLevel(Warning)</c> answer the same with no logging configuration at all; they part only
+/// when a <c>Logging:LogLevel:Default</c> rule exists, because a minimum level applies only where no
+/// rule matches. So the default-rule case carries <c>Logging:LogLevel:Default = Information</c>, and its
+/// control carries a <em>category</em> rule the same way and watches it reopen that category — proof
+/// that configuration injected through <see cref="ApiFactory" /> reaches the filter options at all, so
+/// the default case's green is the floor's doing and not an injection that never landed.
+/// </para>
+/// <para>
+/// <b>What this does not reach.</b> A <em>provider-scoped</em> rule —
+/// <c>Logging:Console:LogLevel:Default = Information</c> — outranks a provider-less floor and reopens
+/// it; that is how the filter's specificity works, and no case here asserts it closed. Only the
+/// Production and Staging names are probed; another non-Development name rides on the same
+/// <c>!IsDevelopment()</c> branch by argument, not by a case.
 /// </para>
 /// <para>
 /// <b>The probe asks the host's own <see cref="ILoggerFactory" />, and nothing is attached to it.</b>
@@ -46,15 +62,16 @@ public sealed class ProductionLoggingTests
 
     /// <summary>
     /// The categories that write an Information record on an ordinary request — the request lines,
-    /// routing's endpoint match, EF's executed command, Npgsql — plus <see cref="ArbitraryCategory" />,
-    /// which makes the check deny-by-default rather than a list of known offenders.
+    /// routing's endpoint match, EF's executed command — plus <see cref="ArbitraryCategory" />, which
+    /// makes the check deny-by-default rather than a list of known offenders. A category that could
+    /// write at Information but was not seen doing so on real traffic, Npgsql's among them, is held
+    /// by the arbitrary one rather than listed.
     /// </summary>
     private static readonly string[] ProbedCategories =
     [
         RequestPipelineCategory,
         "Microsoft.AspNetCore.Routing",
         "Microsoft.EntityFrameworkCore.Database.Command",
-        "Npgsql",
         ArbitraryCategory,
     ];
 
@@ -90,6 +107,53 @@ public sealed class ProductionLoggingTests
         await Assert.That(enabledAtInformation).IsEmpty();
         await Assert.That(arbitraryWarningEnabled).IsTrue();
         await Assert.That(lifetimeEnabled).IsTrue();
+    }
+
+    [Test]
+    public async Task NonDevelopmentHost_WithConfiguredDefaultOfInformation_StillEnablesNoInformationRecord()
+    {
+        // Arrange — the configuration an operator exports as Logging__LogLevel__Default=Information.
+        // A minimum level would yield to this rule; the default rule Program adds after it does not.
+        await using PostgresTestHost host = new();
+        await host.StartAsync();
+        await using ApiFactory factory = new(
+            host.AppConnectionString,
+            environment: "Production",
+            settings: new Dictionary<string, string?> { ["Logging:LogLevel:Default"] = "Information" },
+            adminConnectionString: host.ConnectionString);
+        ILoggerFactory loggerFactory = factory.Services.GetRequiredService<ILoggerFactory>();
+
+        // Act
+        bool requestLineEnabled = loggerFactory.CreateLogger(RequestPipelineCategory).IsEnabled(LogLevel.Information);
+        bool arbitraryEnabled = loggerFactory.CreateLogger(ArbitraryCategory).IsEnabled(LogLevel.Information);
+
+        // Assert
+        await Assert.That(requestLineEnabled).IsFalse();
+        await Assert.That(arbitraryEnabled).IsFalse();
+    }
+
+    [Test]
+    public async Task NonDevelopmentHost_WithConfiguredCategoryRule_ReopensThatCategoryOnly()
+    {
+        // Arrange — the control for the test above, injected the same way. A configured category rule
+        // is longer than the floor and outranks it by design: it is how an operator opens one category
+        // on purpose. Seeing it land proves configuration from the factory reaches the filter options.
+        await using PostgresTestHost host = new();
+        await host.StartAsync();
+        await using ApiFactory factory = new(
+            host.AppConnectionString,
+            environment: "Production",
+            settings: new Dictionary<string, string?> { ["Logging:LogLevel:Microsoft.AspNetCore"] = "Information" },
+            adminConnectionString: host.ConnectionString);
+        ILoggerFactory loggerFactory = factory.Services.GetRequiredService<ILoggerFactory>();
+
+        // Act
+        bool requestLineEnabled = loggerFactory.CreateLogger(RequestPipelineCategory).IsEnabled(LogLevel.Information);
+        bool arbitraryEnabled = loggerFactory.CreateLogger(ArbitraryCategory).IsEnabled(LogLevel.Information);
+
+        // Assert — the named category opens; a category it does not name keeps the floor.
+        await Assert.That(requestLineEnabled).IsTrue();
+        await Assert.That(arbitraryEnabled).IsFalse();
     }
 
     [Test]

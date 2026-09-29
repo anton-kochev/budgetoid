@@ -365,7 +365,7 @@ public static class ProhibitedColumnVocabulary
             + "audit trail. This does cost something: a shared budget that wants to say who entered "
             + "a transaction would need exactly this column, and that feature has to argue against "
             + "this reason rather than delete it. A phrase rather than the bare token 'by', which "
-            + "is how a saved report is sorted or grouped"),
+            + "ends ordinary sort and grouping names such as 'sort_by' and 'group_by'"),
         new(
             "updated_by",
             ProhibitedColumnCategory.BehaviouralEvent,

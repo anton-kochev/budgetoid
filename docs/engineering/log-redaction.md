@@ -273,8 +273,8 @@ The rule above is about what a record may hold. This one is about whether it is 
 of `Microsoft.Hosting.Lifetime`.** With no logging configuration ASP.NET's floor is `Information`,
 and at that level `Microsoft.AspNetCore.Hosting.Diagnostics` writes a "Request starting" and a
 "Request finished" line for every request — method, path with its row ids, status, time — to
-standard output, which Container Apps ships to Log Analytics. EF's command log and Npgsql write at
-the same level. No row id is on the never-logged list, so the census passes every one of those
+standard output, which Container Apps ships to Log Analytics. EF's command log and other framework
+categories write at the same level. No row id is on the never-logged list, so the census passes every one of those
 lines, and together they are still a trail of what was done and when. The product keeps no audit
 trail of what a person does, and a trail the framework keeps on its behalf is still kept.
 
@@ -285,31 +285,49 @@ reads them.
 
 **It is a default rule — `AddFilter` with no category — not `SetMinimumLevel`.** A minimum level
 applies only where no rule matches, and a `Logging__LogLevel__Default` in the environment is a
-rule: with `SetMinimumLevel`, setting that variable to `Information` reopened the request lines
-(measured). Two rules of equal specificity resolve to the one added last, and configuration's rules
-are added before `Program.cs` adds its own, so the floor outranks a configured default — the same
-variable left the lines closed (measured).
+rule, so with `SetMinimumLevel` that variable set to `Information` reopens the request lines. Two
+rules of equal specificity resolve to the one added last, and configuration's rules are added
+before `Program.cs` adds its own, so the floor outranks a configured default. The two answer alike
+with no logging configuration at all, which is why the test below injects one.
 
 **It is not a list of noisy categories.** A list silences the categories somebody thought of, and a
 category nobody named writes at `Information` from the day it appears.
 
-**A configured category rule still outranks the floor (measured)** —
-`Logging__LogLevel__Microsoft.AspNetCore=Information` reopens that category, being the more
-specific rule. That is deliberate: it is how an operator opens one category while investigating,
-and it costs naming the category.
+**Two kinds of configured rule still outrank the floor.** A **category** rule —
+`Logging__LogLevel__Microsoft.AspNetCore=Information` — is the more specific rule, so it reopens
+that category and no other. A **provider-scoped** rule — `Logging__Console__LogLevel__Default`, or
+the same under `OpenTelemetry` — reopens the floor for that provider (measured), by the mechanism
+the recorder below relies on: a rule naming a provider outranks every rule that names none. Both
+are deliberate. They are how an operator opens output while investigating, and each costs naming
+what it opens. Nothing in the deployment sets either today.
 
 **The cost, plainly: an incident in a deployed environment has no per-request trail to debug
 from.** What remains is `Warning` and above, including the `Error` record `GlobalExceptionHandler`
 writes for every 500, with its method and path.
 
 **`ProductionLoggingTests` holds it.** On a Production and a Staging host it asks whether
-`Information` is enabled for the request-line category, routing, EF's command category, Npgsql and
-a category name no rule could name on purpose, and requires every answer to be no — the last is
-what fails a per-category list. `Warning` must still be enabled, which refuses a floor of `Error`,
-and the lifetime category must still be at `Information`, which also proves the probe can see an
-enabled level. `DevelopmentHost_StillEnablesTheRequestLine` is the control. The question goes to the
-host's aggregate `ILoggerFactory` with no recorder attached, because `LogRecorder`'s own `Trace`
-rule outranks every category rule and would answer "enabled" over the rule under test.
+`Information` is enabled for the request-line category, routing, EF's command category and a
+category name no rule could name on purpose, and requires every answer to be no. The last is what
+fails a per-category list, and it stands in for every category that could write at `Information`
+but was not seen doing so on real traffic, Npgsql's among them. `Warning` must still be enabled,
+which refuses a floor of `Error`, and the lifetime category must still be at `Information`, which
+also proves the probe can see an enabled level.
+
+- `NonDevelopmentHost_WithConfiguredDefaultOfInformation_StillEnablesNoInformationRecord` injects
+  `Logging:LogLevel:Default = Information` into a Production host and requires the request line and
+  the arbitrary category to stay closed. It is the case that holds `AddFilter` over
+  `SetMinimumLevel`: swapping one for the other turns exactly this case red.
+- `NonDevelopmentHost_WithConfiguredCategoryRule_ReopensThatCategoryOnly` is its control. Injected
+  the same way, a category rule opens its own category and leaves the arbitrary one closed — which
+  also proves configuration from the factory reaches the filter at all, so the default case's green
+  is the floor's doing.
+- `DevelopmentHost_StillEnablesTheRequestLine` is the Development control.
+
+No case asserts the provider-scoped reopening either way, deliberately: it is how the filter's
+specificity works rather than something this code chose. Only Production and Staging are probed;
+another non-Development name rides on the same `!IsDevelopment()` branch by argument. The question
+goes to the host's aggregate `ILoggerFactory` with no recorder attached, because `LogRecorder`'s
+own `Trace` rule outranks every category rule and would answer "enabled" over the rule under test.
 
 ### What holds the line: a census over real traffic
 
@@ -515,8 +533,10 @@ message never quotes the connection string, and a string carrying unrelated opti
 - **Container Apps' own logs.** The platform's ingress and system logs are written outside the
   process, so neither the floor nor the census reaches them. [Guessing] whether they record a line
   per request: nothing has been observed, because no deployed environment exists.
-- **A category rule set at deploy time.** A `Logging__LogLevel__<category>` variable outranks the
-  floor and reopens that category, by design; nothing checks a deployed environment for one.
+- **A rule set at deploy time that outranks the floor.** A `Logging__LogLevel__<category>`
+  variable reopens that category, and a provider-scoped `Logging__Console__LogLevel__Default` — or
+  the same under `OpenTelemetry` — reopens the floor for that provider, both by design. Nothing in
+  the deployment sets either today, and nothing checks a deployed environment for one.
 - **The Azure token-provider path.** The census's connection strings carry a password, so the host
   never fetches an Entra token and that path never runs. [Guessing] its diagnostics go through the
   Azure SDK's `EventSource` rather than `ILogger`, which would put them under the bullet above

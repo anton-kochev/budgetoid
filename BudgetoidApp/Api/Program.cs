@@ -24,15 +24,18 @@ builder.AddServiceDefaults();
 // (FR-033). With no logging configuration ASP.NET's floor is Information, which puts a "Request
 // starting" and a "Request finished" line — method, path with its row ids, status, time — on stdout
 // for every request, and from there into Log Analytics: a trail of who did what and when, which the
-// product owes nobody. EF's command log and Npgsql sit at the same level. !IsDevelopment() rather than
-// IsProduction(), so a Staging host is covered too; Development keeps its request lines.
+// product owes nobody. EF's command log and other framework categories write at the same level.
+// !IsDevelopment() rather than IsProduction(), so a Staging host is covered too; Development keeps
+// its request lines.
 //
 // A default rule, not a list of noisy categories: a category nobody named is silenced too. AddFilter
 // rather than SetMinimumLevel, because a minimum level only applies where no rule matches and a
 // Logging__LogLevel__Default in the environment is a rule. Two rules of equal specificity resolve to
 // the one added last, and configuration's rules are added when CreateBuilder runs, before this line —
-// so this floor outranks a configured default. A configured *category* rule still outranks it, being
-// longer; that is an operator naming a category on purpose, and it is the way to open one when needed.
+// so this floor outranks a configured default. Two configured rules still outrank it: a *category*
+// rule, being longer, and a *provider-scoped* rule (Logging__Console__LogLevel__Default, or the same
+// under OpenTelemetry), because a rule naming a provider outranks every rule that names none. Either
+// is an operator opening output on purpose; nothing in the deployment sets one today.
 if (!builder.Environment.IsDevelopment())
 {
     builder.Logging.AddFilter(category: null, LogLevel.Warning);

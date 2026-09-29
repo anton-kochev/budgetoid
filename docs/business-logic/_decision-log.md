@@ -33,10 +33,10 @@ pattern would reach. [users-and-ownership.md](users-and-ownership.md) owns the r
 
 **Consequences:** the list is a name check, and review holds the rest. An audit table named
 innocently — `entries`, `journal` — passes, and so do events kept inside a JSON column. Ended
-`sessions` rows are the one known behavioural record the schema still keeps: revocation stamps
-the row and nothing sweeps it, so an account's rows are a sign-in history bounded only by the
-credential's life. [users-and-ownership.md](users-and-ownership.md) records that as pending work,
-which has to re-argue the `DELETE` rule in [sessions.md](sessions.md).
+`sessions` rows are a behavioural record the schema keeps: revocation stamps the row and nothing
+sweeps it, so an account's rows are a sign-in history bounded only by the credential's life.
+[users-and-ownership.md](users-and-ownership.md) states that beside the rule, and changing it
+means re-arguing the `DELETE` rule in [sessions.md](sessions.md).
 
 The log side of the same rule is argued elsewhere: outside Development the API writes no
 `Information`-level line per request, because those lines together are a trail of what was done

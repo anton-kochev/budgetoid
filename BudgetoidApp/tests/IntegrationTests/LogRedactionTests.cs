@@ -206,9 +206,7 @@ public sealed class LogRedactionTests
 
         // Non-vacuity, the route table: every route the host declares answered a 2xx at least once, and
         // every exemption still names a declared route.
-        await Assert.That(undriven).IsEmpty();
-        await Assert.That(UndrivenRoutes.Keys.Where(route => !declared.Contains(route)).ToArray()).IsEmpty();
-        await Assert.That(declared.Count).IsGreaterThanOrEqualTo(DeclaredRouteFloor);
+        await AssertRouteFloorAsync(declared, reached);
 
         // The duplicate handle was refused by the repository's catch, after the save, and by nothing
         // earlier: any other status means the unique violation on the exempt table never happened, and
@@ -377,8 +375,20 @@ public sealed class LogRedactionTests
     internal const int DeclaredRouteFloor = 40;
 
     /// <summary>
+    /// The route floor, shared with <see cref="CookieCensusTests" /> so there is one definition: every
+    /// declared route answered a 2xx or is excused, every excuse still names a declared route, and the
+    /// table declared at least <see cref="DeclaredRouteFloor" /> routes.
+    /// </summary>
+    internal static async Task AssertRouteFloorAsync(IReadOnlySet<string> declared, IReadOnlySet<string> reached)
+    {
+        await Assert.That(UndrivenOf(declared, reached)).IsEmpty();
+        await Assert.That(UndrivenRoutes.Keys.Where(route => !declared.Contains(route)).ToArray()).IsEmpty();
+        await Assert.That(declared.Count).IsGreaterThanOrEqualTo(DeclaredRouteFloor);
+    }
+
+    /// <summary>
     /// Declared routes that never answered a 2xx and are not excused by <see cref="UndrivenRoutes" />,
-    /// ordered. The route floor, shared with <see cref="CookieCensusTests" /> so there is one definition.
+    /// ordered.
     /// </summary>
     internal static string[] UndrivenOf(IReadOnlySet<string> declared, IReadOnlySet<string> reached) =>
     [

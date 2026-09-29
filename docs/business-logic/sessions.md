@@ -159,8 +159,12 @@ required members. A third writer is a decision rather than a refactor.
   - **Why**: revocation writes `revoked_at_utc`; it does not remove the row. Session rows do leave —
     the cascade from `credentials`, and through it from `users` — but that reaches them by
     descending from a row rather than by a privilege over this table, so it cannot single one out.
-    No retention sweep exists; when one is built it needs this grant, and the paragraph in
-    `app-role-grants.sql` is what has to be re-argued rather than quietly deleted.
+    **The result is that ended rows accumulate**: a revoked or expired session stays until its
+    credential or the account goes, so an account's `sessions` rows are a timestamped record of its
+    sign-ins for the life of the credential that opened them — which the behavioural-record rule in
+    [users-and-ownership.md](users-and-ownership.md#must) weighs. Nothing sweeps them. A sweep would
+    need this grant, and whoever changes that has to re-argue the paragraph in
+    `app-role-grants.sql` rather than quietly delete it.
   - **Enforced in**: no `DELETE` appears for `sessions` in the grant matrix, pinned by
     `Database_RefusesToDeleteASession`.
 
@@ -186,8 +190,8 @@ required members. A third writer is a decision rather than a refactor.
     balancer affinity — which is data the product does not keep, and it would be the first thing to
     need a consent surface. The product presents none because it has nothing to ask consent for. No
     framework default writes one today: no cookie authentication scheme, antiforgery, session or
-    TempData middleware, OpenID Connect handler or Data Protection cookie is registered — only the
-    session scheme and `JwtBearer`, which is stateless.
+    TempData middleware, or OpenID Connect handler is registered — only the session scheme and
+    `JwtBearer`, which is stateless.
   - **Enforced in**: `CookieCensusTests.Traffic_SetsNoCookieButTheSession`. It drives the log
     census's traffic, so every declared route answers a 2xx at least once — the same floor
     `LogRedactionTests` asserts — then requires the session cookie to have been seen and no other
@@ -195,9 +199,13 @@ required members. A third writer is a decision rather than a refactor.
     `Response.OnStarting`, registered first so it runs last, and
     `Census_ReportsACookieAddedOutsideAnEndpoint` is the control: a cookie appended outside any
     endpoint, after the pipeline has returned, is still seen.
-    - **What it does not reach**: a branch the traffic never takes, the provider-token path on the
-      real bearer handler, a cookie appended from an `OnStarting` callback registered before the
-      tally's, and cookies set outside the API — the web client's scripts and the static host.
+    - **What it does not reach**: a branch the traffic never takes; the provider-token path on the
+      real bearer handler; a cookie appended from an `OnStarting` callback registered before the
+      tally's; a host outside Development, since the census host runs in Development and a cookie
+      set only on another environment's branch is not seen; a cookie written outside ASP.NET Core's
+      response headers, which nothing in this API can do; cookies set outside the API — the web
+      client's scripts and the static host; and the session cookie's own attributes, which the
+      cookie rule below pins.
 
 ## Business Rules & Invariants
 
@@ -254,7 +262,8 @@ required members. A third writer is a decision rather than a refactor.
   single privilege that can erase every session on the system, and it cannot tell "already revoked"
   from "never existed" — a distinction anything reporting a revocation needs. The usual argument for
   `DELETE`, that updated rows accumulate, does not separate the two options: an unrevoked but
-  expired row accumulates identically. **Note what this is not**: a tombstone. A session row exists
+  expired row accumulates identically. What accumulates is a sign-in record — see the MUST NOT on
+  `DELETE` above. **Note what this is not**: a tombstone. A session row exists
   only while its account does, so a revoked session leaves nothing behind an erasure.
 - **Enforced in**: `Session.Revoke` returns without writing when `RevokedAtUtc` is already set;
   `SessionRepository.RevokeForCredentialAsync` loads the credential's unrevoked sessions and calls
@@ -955,8 +964,8 @@ ELSE                                                    ← an unenumerated futu
       stops biting and conclude it no longer applies. It does; the read simply stopped being the
       shape that triggers it.
 - **Revoked and expired rows accumulate.** Nothing sweeps them, and the application role holds no
-  `DELETE` grant to do it with. Not a defect at today's size; it becomes one before the product has
-  many users, and the grant a sweep needs is the one this file argues against adding.
+  `DELETE` grant to do it with. The grant a sweep needs is the one this file argues against adding;
+  the MUST NOT on `DELETE` says what the rows amount to.
 - **`RevokeSessionsForCredentialHandler`'s two callers do not mean the same thing by the number.**
   To `RevokePasskeyHandler` it is evidence and nothing more; to `GenerateRecoveryCodesHandler` it is
   also the condition a re-established session is written on. So a change to what

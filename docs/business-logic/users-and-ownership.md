@@ -265,7 +265,8 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
       budgeting figure — what a category spent this month. `history` would refuse
       `__EFMigrationsHistory`, EF's own table in `public`, which the catalog scan reads. `created`
       and `updated` would swallow `created_at_utc`, which the schema carries. `change` names an
-      amount's movement and `by` a report's sort or grouping.
+      amount's movement, and `by` ends ordinary sort and grouping names such as `sort_by` and
+      `group_by`.
       `Vocabulary_DoesNotRefuseTheNamesAnAuditPatternWouldOverreachInto` holds the names a bare
       pattern would reach, the migrations-history table among them, so a pattern gone bare is red at
       the unit tier and not only in the container-backed suite.
@@ -282,13 +283,17 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
       `sessions` stay inside what the rule permits — `id`, `user_id`, `credential_id`,
       `credential_type`, `kind`, `created_at_utc`, `expires_at_utc`, `revoked_at_utc`, and nothing
       else. Its rows do not.
-    - **A known departure: `sessions` accumulates one row per sign-in today.** Revocation stamps
-      `revoked_at_utc` and the row stays; an expired row stays too. Rows leave only by the cascade,
-      when the credential that opened them is deleted or the account is erased, and nothing sweeps
-      an ended session. So an account's `sessions` rows are a timestamped sign-in history, bounded
-      only by the life of the credential — the one behavioural record the schema is known to keep.
-      Closing it is pending work: a retention change, which has to re-argue the `DELETE` rule in
-      [sessions.md](sessions.md#must-not) rather than go around it.
+    - **`sessions` keeps one row per sign-in.** Revocation stamps `revoked_at_utc` and the row
+      stays; an expired row stays too. Rows leave only by the cascade, when the credential that
+      opened them is deleted or the account is erased, and nothing sweeps an ended session. So the
+      columns are within the rule and the rows accumulate: an account's `sessions` rows are a
+      timestamped sign-in history, bounded only by the life of the credential. Whoever changes that
+      has to re-argue the `DELETE` rule in [sessions.md](sessions.md#must-not) rather than go
+      around it.
+    - **`passkey_signature_counters.signature_counter` is not that kind of record.** On an
+      authenticator that implements the counter it rises with each assertion, but it is a value the
+      authenticator reports, kept for clone detection, and one number per passkey rather than a row
+      per sign-in.
     - **Why not in the database**: PostgreSQL cannot refuse a column for what its name connotes, and
       reaching it would need an event trigger — procedural logic ADR 0002 rules out. A forbidden
       column can only arrive through a migration, so the build is the lowest capable layer. Unlike

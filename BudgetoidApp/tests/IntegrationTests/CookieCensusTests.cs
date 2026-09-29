@@ -18,16 +18,19 @@ namespace IntegrationTests;
 /// constant says, so a rename would pass the census rather than redden it.
 /// </para>
 /// <para>
-/// <b>Its own run of the traffic rather than a second assertion on <see cref="LogRedactionTests" />'s.</b>
-/// A shared run would tie the two failure modes together: a log offence would hide a cookie verdict
-/// and the other way round. The route floor is not restated: it is
-/// <see cref="LogRedactionTests.UndrivenOf" /> and the two members beside it.
+/// <b>Its own run of the traffic rather than a second assertion on
+/// <see cref="LogRedactionTests" />'s.</b> A shared run would tie the two failure modes together: a log
+/// offence would hide a cookie verdict and the other way round. The route floor is not restated: both
+/// classes call <see cref="LogRedactionTests.AssertRouteFloorAsync" />.
 /// </para>
 /// <para>
-/// <b>What a green run does not cover.</b> The provider-token traffic on the real bearer handler is not
-/// driven here; a branch of a route the traffic reaches without taking; a cookie written outside
-/// ASP.NET Core's response headers (nothing in this API can); and the attributes of the session cookie,
-/// which <see cref="SessionCookieIssuanceTests" /> owns.
+/// <b>What a green run does not cover.</b> A branch of a route the traffic reaches without taking; the
+/// provider-token path on the real bearer handler; a cookie appended from an <c>OnStarting</c> callback
+/// registered before the tally's, which runs after the tally has read the headers; a host outside
+/// Development, since <see cref="ApiFactory" /> boots this one in Development and a cookie set only on
+/// another environment's branch is not seen; a cookie written outside ASP.NET Core's response headers
+/// (nothing in this API can); cookies set outside the API — the web client's scripts and the static
+/// host; and the attributes of the session cookie, which <see cref="SessionCookieIssuanceTests" /> owns.
 /// </para>
 /// </remarks>
 public sealed class CookieCensusTests
@@ -64,12 +67,12 @@ public sealed class CookieCensusTests
 
         IReadOnlySet<string> reached = tally.Reached();
         IReadOnlySet<string> cookies = tally.CookiesSet();
-        Console.WriteLine($"Routes declared: {declared.Count}. Cookie names seen: {string.Join(", ", cookies.Order(StringComparer.Ordinal))}");
+        Console.WriteLine(
+            $"Routes declared: {declared.Count}. "
+            + $"Cookie names seen: {string.Join(", ", cookies.Order(StringComparer.Ordinal))}");
 
         // Assert — the route floor first: a census that reached nothing has nothing to say.
-        await Assert.That(LogRedactionTests.UndrivenOf(declared, reached)).IsEmpty();
-        await Assert.That(LogRedactionTests.UndrivenRoutes.Keys.Where(route => !declared.Contains(route)).ToArray()).IsEmpty();
-        await Assert.That(declared.Count).IsGreaterThanOrEqualTo(LogRedactionTests.DeclaredRouteFloor);
+        await LogRedactionTests.AssertRouteFloorAsync(declared, reached);
 
         // Non-vacuity: the capture saw the one cookie the traffic is known to set.
         await Assert.That(cookies).Contains(SessionCookieName);
@@ -107,10 +110,12 @@ public sealed class CookieCensusTests
 
         // Act
         HttpResponseMessage response = await signedIn.Client.GetAsync(ProbePath);
+        byte[] body = await response.Content.ReadAsByteArrayAsync();
 
-        // Assert — the request matched nothing and the response carried no body.
+        // Assert — the request matched nothing and the response carried no body. The bytes are read
+        // rather than Content-Length, which a chunked body leaves unset.
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.NotFound);
-        await Assert.That(response.Content.Headers.ContentLength ?? 0).IsEqualTo(0);
+        await Assert.That(body.Length).IsEqualTo(0);
         await Assert.That(tally.CookiesSet()).Contains(ProbeCookieName);
     }
 

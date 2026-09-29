@@ -116,7 +116,7 @@ because every one of these is something a reader will otherwise simplify away.
   Warning is written** but the host's lifetime lines — a request line is a trail of who did what
   when (FR-033). It is an `AddFilter` default in `Api/Program.cs`, never `SetMinimumLevel` (a
   configured default outranks that) and never an `Api/appsettings.json`; `ProductionLoggingTests`
-  holds it. [log redaction](docs/engineering/log-redaction.md)
+  holds both. A configured category or provider-scoped rule still reopens output, by design. [log redaction](docs/engineering/log-redaction.md)
 - **A new tenant-owned table needs a grant *and* a policy** — `budget_isolation` for `budget_id`,
   `user_isolation` for `user_id`. Grants fail closed (`42501`), RLS fails open. A table carrying
   neither column fails both.
@@ -342,7 +342,9 @@ Load-bearing rules. Each links the doc that argues it — **read that doc before
   observation. That record is `rotation-epoch-record.ts`, `localStorage`, one key per `budgetId`,
   rising only; learning the `budgetId` is why an unlock reads `GET /api/me` beside the keys, since
   custody may not inject `SessionService` — that class injects custody, and the edge would be a cycle.
-  Clearing has **one owner**, `SessionService.ended()`, never an `effect()`.
+  Ending custody — dropping the keys held in memory — has **one owner**, `SessionService.ended()`,
+  never an `effect()`. The epoch record itself is **never cleared**, by decision: a device that
+  forgot it would be back in the first-visit state, where a rollback cannot be seen.
   [account-keys.md](docs/business-logic/account-keys.md),
   [sessions.md](docs/business-logic/sessions.md)
 - **A screenful of sealed columns is opened once per distinct ciphertext, and the driver owns the

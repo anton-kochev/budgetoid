@@ -150,10 +150,10 @@ public sealed class AppRoleGrantsTests
 
         // Assert — reassigning user_id would hand a whole tenant to another account, base_currency_code
         // would restate every amount filed under the budget in a unit nobody chose, and an editable
-        // created_at_utc would rewrite an audit fact. id is the one that reads as pedantry and is not:
-        // the budget id is the associated data every narrative envelope in the tenant was sealed
-        // against, so moving it invalidates the whole tenant's sealed columns in place and nothing on
-        // this side could notice.
+        // created_at_utc would rewrite when the row was created. id is the one that reads as pedantry
+        // and is not: the budget id is the associated data every narrative envelope in the tenant was
+        // sealed against, so moving it invalidates the whole tenant's sealed columns in place and
+        // nothing on this side could notice.
         await Assert.That(userRefusal.SqlState).IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
         await Assert.That(currencyRefusal.SqlState)
             .IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
@@ -311,7 +311,7 @@ public sealed class AppRoleGrantsTests
         // with vacuous. With the row reachable, only the column grant decides.
         await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(userId);
 
-        // Act — created_at_utc is an audit fact and immutable by omission. With the identity
+        // Act — created_at_utc is a creation fact and immutable by omission. With the identity
         // columns gone from this table it is the only omitted column left, which makes it the one
         // statement that can still tell a real GRANT UPDATE (email) list apart from a table-wide
         // grant: a table-wide grant would let it through. email is the only column on that list,
