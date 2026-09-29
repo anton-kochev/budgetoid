@@ -2599,7 +2599,15 @@ the alternative offered beside the destructive act, per [patterns](patterns.md).
 > Erasing removes your account and everything in it — every budget, account, category, payee and
 > transaction. There is no undo, and Budgetoid offers no way to bring an account back.
 >
-> Erased data stays in point-in-time database backups for up to 7 days, and in no other place.
+> Erased data stays in point-in-time database backups for up to 7 days, and nowhere else on
+> Budgetoid’s servers. Your passkeys stay on your devices until you remove them there.
+
+**The second paragraph is scoped to what the service holds, and says what it does not reach.** *In
+no other place* was a promise about storage Budgetoid cannot see: a passkey stays in the person's
+authenticator after an erasure, and nothing on the server can reach a device to remove it. So the
+sentence names the servers as the boundary of its claim and names the one thing past that boundary
+a person can act on — [erasure.md](../business-logic/erasure.md)'s backup rule lists what else a
+browser keeps.
 
 **The retention number is on this section and not in the dialog.** It is a figure a value in a
 different project decides, with nothing tying the two together —
@@ -2713,7 +2721,8 @@ act does; what survives it physically is said once, on the screen.
   the word gate refuses moves focus to the field and does nothing else.
 - **While the act is running it stays in place**, `disabledInteractive` with `aria-busy="true"`,
   and its label does not change — the region says what is happening.
-- **It is withdrawn on `undetermined`** — below — and never comes back in that dialog's life.
+- **It is withdrawn on `undetermined`** — below — and never comes back on that screen: not in
+  that dialog, and not in any dialog opened later from the same visit to Settings.
 
 ### The dismiss
 
@@ -2725,15 +2734,35 @@ act does; what survives it physically is said once, on the screen.
   matters. The system sheet carries its own cancel, which is the way out of a prompt, and it lands
   on `cancelled`. Cancel takes `disabledInteractive` for the busy reason, without `aria-busy`: it is
   doing no work itself.
+- **The browser's Back closes the overlay anyway, and the screen answers it.** The CDK disposes the
+  overlay on `popstate` — Back or Forward — whatever `disableClose` says, measured, and the Settings
+  screen underneath stays. So `disableClose` cannot be the whole rule, and the screen holds the other
+  half: when its overlay closes from outside while the passkey is being asked, it abandons the press.
+  Each press carries its own `AbortController`; abandoning aborts the device's prompt, posts nothing,
+  publishes no word, and puts the flow back at rest, so the next dialog opens with its commit live.
+  The screen's own teardown abandons the same way. **Once the erasing request is out there is no
+  branch left**: nothing can recall it, and a `204` arriving after the overlay or the screen has gone
+  still ends the session and takes the tab to Welcome.
 - **After `undetermined` it reads Close.** *Cancel* promises that nothing happened, and that is the
-  one thing this state cannot say.
+  one thing this state cannot say. A dialog opened withdrawn reads **Close** from the start.
 
 ### The status region, and what each line says
 
-**One `role="status"` region, in the DOM and empty from the moment the overlay opens**, so what
-arrives is announced — the rule [A value read from the network](#a-value-read-from-the-network)
-argues, applied to an overlay whose own first paint is the open. At most one line at a time; a press
-clears the previous line as it starts, and nothing else clears it.
+**One `role="status"` region, rendered empty on the dialog's first render, with its line landing on
+a later pass** — the rule [A value read from the network](#a-value-read-from-the-network) argues,
+applied to an overlay whose own first render is the open. The region has to exist before its text
+does, and an overlay creates both at once unless something holds the text back, so the dialog
+does: its line waits until the first render has finished (`afterNextRender`). That matters most for
+a dialog opened over `undetermined`, whose line is there from the start. At most one line at a
+time; a press clears the previous line as it starts, and nothing else clears it.
+
+**Whether a screen reader announces that line is not proven, and that is a known gap rather than a
+guarantee.** One render pass later can still be the same tick as the region's creation, and whether
+assistive technology has registered the node by then is not something the code decides. The
+specs run under jsdom, which has
+no accessibility tree and no screen reader: they can show the region is present and empty on the
+first render and the line arrives after it, not that anybody hears it. Closing that takes a pass
+with a real screen reader, and it is work this chapter waits on.
 
 | State | Copy | Where it renders |
 | --- | --- | --- |
@@ -2743,7 +2772,7 @@ clears the previous line as it starts, and nothing else clears it.
 | `unsupported` | "This browser can’t check a passkey. Open Budgetoid in a different browser, or on a phone or laptop that can — nothing was erased." | Inside the region, `--bud-over` |
 | `cancelled` | "The passkey check was cancelled or timed out. Try again whenever you’re ready — nothing was erased." | Inside the region, `--bud-over` |
 | `no-prf`, `ceremony-failed` | "Your device couldn’t finish the passkey check. Try again, or choose another passkey — nothing was erased." | Inside the region, `--bud-over` |
-| `unstarted` | "Budgetoid couldn’t reach the server to start. Try again in a minute — nothing was erased." | Inside the region, `--bud-over` |
+| `unstarted` | "Budgetoid couldn’t start the passkey check. Try again in a minute — nothing was erased." | Inside the region, `--bud-over` |
 | `refused` | "Budgetoid didn’t accept that passkey for this account. Try again with a passkey you made for it — nothing was erased." | Inside the region, `--bud-over` |
 | `unrecognised` | "Budgetoid couldn’t read this request. Reload the page and try again — nothing was erased." | Inside the region, `--bud-over` |
 | `undetermined` | "Budgetoid can’t tell whether your account was erased. Reload the page to find out." | Inside the region, `--bud-over`; the commit is withdrawn |
@@ -2760,23 +2789,37 @@ erasing request. Every word above `refused` is raised before that request exists
 erased* is a fact about this client, not a guess about the server. A flow that ever posted before
 the ceremony would make five sentences false at once.
 
-**`refused` is a `401` from the erasure request itself**, which is the gate declining the assertion
-before the transaction opens — [erasure.md](../business-logic/erasure.md)'s decision tree. The
-gate's refusals are byte-identical by design: an expired challenge, a bad signature and another
-account's passkey are one answer, so the sentence names the likeliest act and no cause. A discoverable
-ceremony lets the authenticator offer any passkey it holds for Budgetoid, including one made for a
-different account, which is why *for this account* is in the sentence.
+**`refused` is a `401` from the erasure request itself, once the session is known to be live.** A
+`401` there has two readings. Usually it is the gate declining the assertion before the transaction
+opens — [erasure.md](../business-logic/erasure.md)'s decision tree. But the route sits behind the
+fallback authorization policy, so a session that had already ended — expired, revoked, or erased
+from another tab — is answered `401` before the gate runs. Both mean this request erased nothing,
+and the flow tells them apart before it publishes anything, with **one unmarked `GET /api/me`**: a
+`401` there is a session that had ended, `sessionExpiryInterceptor` ends it and takes the tab to
+Welcome, and the dialog says nothing; a `200`, or a probe that cannot answer, leaves `refused`.
+The gate's refusals are byte-identical by design: an expired challenge, a bad signature and another
+account's passkey are one answer, so the sentence names the likeliest act and no cause. A
+discoverable ceremony lets the authenticator offer any passkey it holds for Budgetoid, including one
+made for a different account, which is why *for this account* is in the sentence.
 
 **That request expects a `401` and is marked so.** Unmarked, `sessionExpiryInterceptor` reads the
 gate's verdict as a session ending and takes the tab to `/welcome` over a sentence this dialog
-never got to say. The challenge request before it is **not** marked: a `401` there is a session that
-really has ended, which is exactly what the interceptor owns — and the screen leaving takes the
-overlay with it, below.
+never got to say. The probe after it is **not** marked, and neither is the challenge request before
+it: a `401` on either is a session that really has ended, which is exactly what the interceptor
+owns — and the screen leaving takes the overlay with it, below. So the dialog says nothing on a
+`401` from the challenge either.
 
-**`unrecognised` is an answer this client could not use**, a `400` the framework raises before the
-handler is entered — nothing about the account is judged, so nothing was erased. Reload, because a
-bundle out of step with its API is how a request comes to be malformed, and a reload is the one
-thing that fetches a different one.
+**`unstarted` is every other way the challenge request fails, and its sentence names no cause.** A
+response that never arrived and a `5xx` have the same next step — try again in a minute — so two
+sentences would be a distinction nobody can act on, and *couldn’t reach the server* would be false
+of a server that answered `500`. Nothing was minted that this browser holds, so no ceremony runs and
+nothing is posted.
+
+**`unrecognised` is an answer this client could not use**: a `400` or a `403`, on the challenge or
+on the erasing request, raised before any handler judged the account — so nothing was erased. A
+`403` is chiefly the missing `X-Budgetoid-Client` header. Reload, because a bundle out of step with
+its API is how a request comes to be malformed, and a reload is the one thing that fetches a
+different one.
 
 **`undetermined` is the one line that cannot say what happened, and it is written to say exactly
 that.** A lost response, a `5xx` and a network failure after the request left all mean the same: the
@@ -2784,34 +2827,54 @@ erasure may have committed. So the sentence makes no claim either way and names 
 finds out. A reload asks the server who this is: if the account is gone, the session went with it,
 the probe answers `anonymous` and the tab lands on Welcome; if not, the screen comes back as it was.
 
-**The commit is withdrawn on `undetermined` and the request is never sent again from this dialog.**
+**The commit is withdrawn on `undetermined` and the request is never sent again from this screen.**
 Erasure is not idempotent to the caller: a second request after a lost `204` is answered `401`,
 because the session was deleted with the account, and this dialog would render that as `refused` —
-*nothing was erased*, over an account that no longer exists. So the commit leaves the DOM for the
-rest of the dialog's life rather than going disabled, since a control that will never be enabled
-makes a promise it cannot keep, and focus moves to the dismiss, which now reads **Close**. **No
-retry is automatic either** — not in the flow, and not in any interceptor the request passes
-through. **Reopening the dialog from the trigger is safe, and that is why the withdrawal is scoped
-to the dialog rather than the screen**: the first request a fresh dialog makes is the challenge,
-which needs a live session, so an account that is gone answers there, the interceptor takes the tab
-to Welcome, and the erasing request is never reached.
+*nothing was erased*, over an account that no longer exists. So the commit leaves the DOM rather
+than going disabled, since a control that will never be enabled makes a promise it cannot keep, and
+focus moves to the dismiss, which now reads **Close**. **No retry is automatic either** — not in the
+flow, and not in any interceptor the request passes through.
+
+**`undetermined` holds for the Settings screen's life, and every later dialog on it opens
+withdrawn.** Every open resets the flow to rest and clears the last word — except this one. A
+dialog opened from the trigger after it shows no commit, a **Close**, and the `undetermined` line,
+and asks the server for nothing. Offering the commit again would stake the account on the next
+challenge failing, and a session that outlived the erasure it could not see is exactly the case
+where it does not. The way forward is the reload the sentence names.
+
+**Leaving Settings and coming back is a fresh flow, and that leaves a narrow window.** If the lost
+erasure is still running on the server when the person returns and presses again, a challenge
+failure or a refused ceremony inside that window can still end on a line saying *nothing was
+erased*. A `401` on the second erasing request is not part of it: the probe above catches the
+ended session. [erasure.md](../business-logic/erasure.md) records the risk.
 
 **Colour is never the message** — every line above reads the same with `--bud-over` removed.
 
 ### Focus
 
-- **On open, focus moves to the field.** The word is the next thing asked for, and a trap that
-  opens on the commit puts a keyboard user one press from the ceremony.
-- **On close, focus returns to the trigger** — Material's restore, not a reimplementation.
+- **On open, the host moves focus once, straight to the field.** The word is the next thing asked
+  for, and a trap that opens on the commit puts a keyboard user one press from the ceremony. The
+  opener names the field by id in the host's `autoFocus`, rather than leaving it to
+  `first-tabbable`, which reaches the field only because of the order of the markup — and nothing
+  else focuses it, so there is no second move to land before or after the host's.
+- **A dialog opened withdrawn sends that one move to the dismiss** — **Close**, the one control
+  left.
+- **On close, focus returns to the Erase everything trigger, named explicitly.** The host's
+  `restoreFocus` is handed the trigger element rather than left to restore whatever had focus at
+  the open: a tap on a phone, or a click in a browser that does not focus buttons, leaves that as
+  the body, and a keyboard or screen-reader user would start again from the top of the page.
 - **On `undetermined`, focus moves to the dismiss**, because the control it stood on has left.
 - **A refusal moves nothing.** Focus stays on the commit, which is where the next attempt starts.
 
 ### How the overlay ends
 
 **It lives no longer than the screen that opened it.** A router navigation alone does not close a
-Material dialog, so the Settings screen closes it in its own teardown — which every way off the
-screen passes through: the tab going to Welcome after a `204`, the interceptor sending an ended
-session there, and the browser's own Back.
+Material dialog — measured, with `navigateByUrl` — so the Settings screen closes it in its own
+teardown, which every navigation off the screen passes through: the tab going to Welcome after a
+`204`, and the interceptor sending an ended session there. **The browser's Back is the exception
+that closes it first**: the CDK disposes the overlay on `popstate` before the screen goes, whatever
+`disableClose` says, which is why the screen abandons a press when its overlay closes from outside,
+per *The dismiss* above, and not only when it is torn down.
 
 **After a `204`, the session ends on this device and the person lands on `/welcome`, which says
 "Erased."** — [voice](voice.md)'s confirmation word. The order is Sign out's, for Sign out's reason:
@@ -2841,16 +2904,34 @@ to them.
 - **Validating the word with a validator that reddens the field.** A word half typed is not wrong.
 - **Letting Escape close the overlay mid-ceremony**, which is Material's default and has to be
   switched off for exactly the running states.
+- **Trusting `disableClose` to hold the browser's Back.** It does not, and the screen's abandon is
+  what stands behind it.
 
 ### Accessibility
 
 The overlay is a modal dialog whose name is the title and whose description is the consequence
-block; focus is trapped while it is open and restored on close. The title is the overlay's heading.
+block; focus is trapped while it is open and restored to the trigger on close. The title is the
+overlay's heading.
 The field has a programmatic label. The region is `role="status"`, polite, present and empty from
 open, and never `assertive` — `undetermined` reads closest to the carve-out and is not it, because
 the person is looking at the press that produced it. Every control is a 48px target, and the commit
 and the dismiss keep their tab stops through every state they are drawn in. Nothing is communicated
-by colour alone. Reduced motion takes the host's entry to a fade, per Dialogs and sheets.
+by colour alone. Reduced motion takes the host's entry to a fade, per Dialogs and sheets — which is
+the target, and not what ships; see below.
+
+### What ships today
+
+**Two departures, each named as work rather than smoothed over by moving the target.**
+
+- **The entry is Material's, not this book's.** Dialogs and sheets specifies a `--bud-motion-large`
+  (500ms) entry on the deliberate curve, and a fade of 200ms or less under reduced motion. What
+  ships is Material's default: a 150ms open on the centred dialog and a 195ms slide up on the bottom
+  sheet. Under `prefers-reduced-motion` Material turns the animation off entirely, so the overlay
+  appears with no fade at all. That half is inside [motion](motion.md)'s rule — nothing translates
+  or scales — but it is not the fade specified. Nothing overrides either host's timing.
+- **Nothing has confirmed the region's lines are heard.** The status region renders empty on the
+  first render and its line lands after, as specified above; whether a screen reader announces it
+  is waiting on a pass with a real one.
 
 ## The locked account
 
@@ -3207,11 +3288,15 @@ and from the commit that gave it the second one, neither of them is the identity
   person. A refusal and an answer that never came are still different sentences: one says this
   passkey does not work here and points at another way in, the other says the server could not be
   reached and points at the same press a minute later.
-- **"Erased." lands in that same region, announced, when this tab has just erased its account** —
+- **"Erased." lands in that same region when this tab has just erased its account** —
   [voice](voice.md)'s confirmation word, `body` `--bud-text`, and the whole of what the screen says
   about it. It is the one outcome this region carries that the person did not make *here*: the
   [erasure dialog](#erasure-dialog) hands it over in memory on its way out, and the dialog chapter
-  argues why never in the address. **One region and one line at a time, in this order**: the busy
+  argues why never in the address. **It arrives with the tab, so the screen holds it back until its
+  own first render has finished** (`afterNextRender`): the region renders empty first and the word
+  lands in it after, rather than the two being created together. Whether a screen reader announces
+  a line filled in that way is not something the test runner can show — jsdom has no screen reader
+  — and a pass with a real one is work this chapter waits on. **One region and one line at a time, in this order**: the busy
   line while a sign-in runs, then a sign-in refusal, then **Erased.** — the later act speaks over
   the earlier one. **It clears when a sign-in press starts and when Welcome is left**, and a reload
   never brings it back: it describes the moment the tab arrived, and a person who then presses Sign
@@ -3228,9 +3313,9 @@ and from the commit that gave it the second one, neither of them is the identity
 
 ### What ships today
 
-All of the above. What does **not** ship is a way back in for somebody holding no passkey: redeeming
-a recovery code has no surface anywhere in the app, so this screen offers no third control and says
-nothing about one.
+All of the above, with one thing unverified: that **Erased.** is announced, per its bullet. What
+does **not** ship is a way back in for somebody holding no passkey: redeeming a recovery code has no
+surface anywhere in the app, so this screen offers no third control and says nothing about one.
 
 ## Registration
 
@@ -3900,16 +3985,32 @@ M3 base: `MatDialog` / `MatBottomSheet`. Overlay level: `--bud-overlay` surface,
 
 - Compact: bottom sheet, top corners `--bud-radius-lg`, 32×4px hairline drag handle
   centered 8px from top, content padded `--bud-space-5`, safe-area bottom padding.
+- **The sheet's container carries no padding; its content draws its own inset and its own
+  handle.** Material pads the container `8px 16px`, which is no book value, so the global
+  stylesheet removes it for every sheet, and the insets above are the content's to set.
 - Expanded: centered dialog, max 560px, `--bud-radius-lg`.
 - Title: Inter 600 16 (`body-lg` weight 600) — overlay titles are Inter, not Mohave.
 - Actions right-aligned: Ghost for dismiss, Primary (or Destructive) for commit.
 - Entry: slide up (large duration, deliberate ease) / fade in for dialogs. Reduced
   motion: fade only.
 
+**The entry above is the target, and what ships is Material's.** The dialog opens with Material's
+own 150ms transition and the sheet slides up over Material's 195ms, and under
+`prefers-reduced-motion` Material turns both off, so the overlay appears with no fade. Bringing the
+two hosts onto `--bud-motion-large`, the deliberate curve and a reduced-motion fade is work this
+chapter owes; the [erasure dialog](#erasure-dialog) records the same departure from its side.
+
+**Back closes an overlay whatever `disableClose` says.** The CDK disposes it on `popstate` — Back or
+Forward — and the screen underneath stays, measured. A router navigation made in code does not
+close it. So a rule that an overlay stays open while its act runs is held by `disableClose` only
+against Escape and the backdrop, and whatever the act was doing has to be answered by the screen
+when the overlay closes from outside.
+
 **The [erasure dialog](#erasure-dialog) is the first overlay the product builds**, and the rules it
 adds belong to it until a second overlay needs them: the host is chosen once at open and not swapped
 on resize, the overlay lives no longer than the screen that opened it, and while an act it started
-is running, the dismiss, Escape and the backdrop do nothing.
+is running, the dismiss, Escape and the backdrop do nothing — and a close from outside abandons the
+act if nothing has been sent.
 
 ## Snackbar
 

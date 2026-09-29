@@ -13,7 +13,9 @@
 //
 // **One writer of each half.** `ErasureFlowService` marks it after the `204`
 // and before it navigates to Welcome — the one order that matters, because
-// Welcome reads it on its first paint; Welcome reads it and clears it when a
+// Welcome reads it when it is constructed. Welcome renders the line only after
+// its own first render, so its status region exists, empty, before the line
+// lands in it and the line is announced. Welcome also clears it when a
 // sign-in press starts and when the screen is left. Nothing else touches it.
 import { Injectable, signal, type Signal } from '@angular/core';
 

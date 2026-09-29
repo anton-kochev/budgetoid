@@ -27,10 +27,10 @@ revoke-then-delete.
 **Alternatives considered:**
 - **Revoke, then let the cascade delete**: rejected. The stamp is a remnant for as long as it
   exists, and the transaction that writes it deletes it, so no reader ever sees it — the account it
-  would be reported to is gone. Revoking also loads every session into the change tracker ahead of
-  the user delete, which on the credential-revocation path is why a second
-  `DiscardTrackedEntities()` has to sit between the sweep and the delete, against tables that answer
-  `42501` when EF tries to delete tracked rows itself.
+  would be reported to is gone. The change-tracker cost the credential-revocation path pays is not
+  part of this: `EraseAccountHandler` already discards the tracker before its deletes, and EF maps
+  `Session` to `Credential` rather than to `User`, so the decision rests on the remnant and on the
+  grants below.
 - **An explicit session delete in the handler**: rejected. The role holds no `DELETE` on `sessions`
   or `session_tokens`, by design — `app-role-grants.sql` argues both absences — and the cascade
   already removes the rows, as the referencing table's owner.

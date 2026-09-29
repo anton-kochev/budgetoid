@@ -42,6 +42,7 @@
   <input
     #field
     matInput
+    [id]="fieldId"
     type="text"
     autocomplete="off"
     autocapitalize="off"
@@ -53,7 +54,9 @@
 
 <!-- One region, in the DOM and empty from the moment the overlay opens, so
      what arrives is announced — a region created together with its first line
-     is announced by nothing. `status` and never `alert`: the person is looking
+     is announced by nothing. Empty on the first render even over
+     `undetermined`, whose line is there from the start: `line()` waits for
+     that render to finish. `status` and never `alert`: the person is looking
      at the press that produced every line, `undetermined` included. -->
 <div class="e-outcome" role="status">
   @if (line(); as current) {
@@ -73,6 +76,7 @@
   <button
     #dismissButton
     class="e-button"
+    [id]="dismissId"
     mat-button
     type="button"
     [disabled]="working"

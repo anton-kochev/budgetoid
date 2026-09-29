@@ -282,12 +282,14 @@ role holds no `DELETE` there of any shape.
   - **Erasure is therefore not idempotent to the caller**, and the cost is real: a client retrying
     after a lost `204` sees a failure over data that is already destroyed. The remedy is client-side,
     and it is built: `ErasureFlowService` reads a response that never arrived, a `5xx` or any status
-    it does not list as `undetermined`, withdraws the commit for the rest of that dialog and retries
-    nothing — `erasure-flow.service.spec.ts`, "cannot tell whether the account is gone when the
-    erasing request gets no answer", "cannot tell whether the account is gone on a %i" and "never
-    asks again once it cannot tell". It must **not** be answered by storing a marker that an erasure
-    happened, nor by answering `204` without a valid assertion, which would put a path through this
-    handler that reports success having verified nothing.
+    it does not list as `undetermined`, withdraws the commit for the rest of that Settings screen's
+    life and retries nothing — `erasure-flow.service.spec.ts`, "cannot tell whether the account is
+    gone when the erasing request gets no answer", "cannot tell whether the account is gone on a
+    %i", "never asks again once it cannot tell" and "keeps undetermined across a reset, so no later
+    dialog offers the commit". The window it leaves open is the client-flow gotcha's below. It must
+    **not** be answered by storing a marker that an erasure happened, nor by answering `204` without
+    a valid assertion, which would put a path through this handler that reports success having
+    verified nothing.
 - **Enforced in**: `UserRepository.DeleteAsync`, which removes whatever the id matched and saves; an
   absent row leaves an empty set and the save is a no-op rather than a branch.
   - **A second request from the same client is refused, and — this is the part that matters — it
@@ -414,35 +416,37 @@ role holds no `DELETE` there of any shape.
      user, which the no-remnant rule above and the post-condition both forbid. Stamped and then
      deleted in the same transaction, it is a write nobody can read: the account it would be
      reported to is gone, and the `204` carries no body to report it in.
-  3. **The cascade is the only way a session row leaves.** The role holds `SELECT`, `INSERT` and
+  3. **A cascade is the only way a session row leaves.** The role holds `SELECT`, `INSERT` and
      `UPDATE (revoked_at_utc)` on `sessions`, `SELECT` and `INSERT` on `session_tokens`, and no
      `DELETE` on either — by decision, argued in `app-role-grants.sql` — so no statement this role
-     can issue removes one. Revoking first would open no other route; it would only load the
-     account's sessions into the change tracker ahead of the user delete, the shape the
-     change-tracker rule above documents for `budgets`. On the credential-revocation path that load
-     is why a second `DiscardTrackedEntities()` sits between the sweep and the delete. Erasure would
-     inherit the same obligation, for every credential at once, to protect a stamp it then deletes.
-  4. **Authentication re-reads both rows on every request and keeps nothing.**
+     can issue names `sessions` or `session_tokens` to remove a row. They leave only as the cascade
+     of a `credentials` or `users` delete, and revoking first would open no other route out. **The
+     change-tracker cost is not a reason here**, though it is one on the credential-revocation path,
+     where a second `DiscardTrackedEntities()` sits between the sweep and the delete:
+     `EraseAccountHandler` already discards the tracker before its deletes, and EF maps `Session`
+     to `Credential` rather than to `User`, so a user delete would not walk into tracked sessions.
+  4. **Authentication re-reads both rows on every request and keeps nothing between requests.**
      `AuthenticateSessionHandler` looks up `session_tokens` by digest and then reads the `sessions`
-     row, per request, through the request's own scoped context — the session read untracked — and
-     holds no earlier answer. So a deleted row is refused on the very next request from any device
-     holding a cookie for it: a missing token ends the lookup, a token whose session is gone fails
-     the session read, and either way the request stays unauthenticated and the fallback policy
-     answers `401`.
+     row, per request, through the request's own scoped context — the token read stays tracked for
+     the rest of that request, the session read is untracked — and holds no earlier request's
+     answer. So a deleted row is refused on the very next request from any device holding a cookie
+     for it: a missing token ends the lookup, a token whose session is gone fails the session read,
+     and either way the request stays unauthenticated and the fallback policy answers `401`.
 - **Enforced in**:
   `AccountErasureEndpointTests.Erase_WithOtherSessionsOnTheAccount_AnswersEachOfThem401`. It opens
   sessions through three other credentials on the erased account — another passkey, the
   recovery-code set, and the federated credential under a `Locked` session — proves each live on
   `GET /api/currencies` before the act (`200`, `200`, `403`), and requires `401` from all three
-  after it. The cascade runs per credential, so one session per credential kind is what the seeding
-  is for. A survivor account carries the same spread and must still answer `200`, `200` and `403`,
-  so an erasure that ended every `Locked` session in the database, or every session a set opened,
-  cannot pass. Dropping the `sessions → credentials` edge reds it, and so does an authentication
+  after it. One composite foreign key carries the cascade for every credential type, so the spread
+  is not a property of the cascade; it is a cheap guard against a later application-level sweep
+  that filters by credential type or session kind and misses one. A survivor account carries the
+  same spread and must still answer `200`, `200` and `403`, so an erasure that ended every `Locked`
+  session in the database, or every session a set opened, cannot pass. Dropping the `sessions → credentials` edge reds it, and so does an authentication
   path that caches what a token resolved to.
   - **The federated arm is schema-legal, not reachable.** No production path opens a session on the
-    federated credential today — see [sessions.md](sessions.md). It is seeded because it is the
-    cheapest proof that the cascade does not depend on which credential types happen to open
-    sessions now.
+    federated credential today — see [sessions.md](sessions.md). It is seeded for the same guard:
+    a sweep keyed on the kinds that open sessions today would skip exactly this one, and the seed
+    costs one row.
   - **The token half is held by the sweep, not by that test.** `session_tokens` is a row of the
     file's `OwnedTables`, so `…Erase_ForAFullyFurnishedAccount_LeavesNoRowInAnyTable` requires it
     empty after an erasure and `…Erase_LeavesAnotherAccountUntouched` requires the survivor's
@@ -453,8 +457,7 @@ role holds no `DELETE` there of any shape.
 - **Counterexample**: borrowing revoke-then-delete from the credential-revocation path, because
   [sessions.md](sessions.md) says a credential-removal path must revoke explicitly. That rule exists
   so a surviving account can be told when access ended — `sessionsEnded` in the response. Here
-  nobody survives to be told, the stamp dies in the transaction that wrote it, and the load it needs
-  is one more set of tracked entities in front of the user delete.
+  nobody survives to be told, and the stamp dies in the transaction that wrote it.
 - **Source**: `[SOURCE: user-story]`
 
 ---
@@ -524,18 +527,28 @@ role holds no `DELETE` there of any shape.
   - **That scope is the claim and is narrower than it reads at a glance.** Every gate on this page
     answers for rows in this database: the schema vocabulary, the row count and the route table each
     read something the service owns. What a **browser** keeps of its own is outside all three — the
-    route issues no instruction to a client, and no cascade reaches a device. After an erasure two
+    route issues no instruction to a client, and no cascade reaches a device. After an erasure three
     things are still there.
+    - **The session cookie.** The erasing route does not clear `__Host-budgetoid-session` — the
+      gotcha on the request's own session row argues why — so the browser keeps it until its
+      `Expires`, which is the deleted session row's own expiry. It names nothing, and it answers `401`
+      everywhere, the sign-out route included: that route admits an *ended* session, and one the
+      cascade took is not ended but absent. [sessions.md](sessions.md) records it as the one end
+      where the ended-session route answers `401`.
     - **The rotation-epoch record.** `rotation-epoch-record.ts` keeps one `localStorage` key per
       budget id, and the erased budget's entry stays, keyed on a budget that no longer exists. It is
       not cleared, by decision: the record only ever rises, custody is its single writer, and the
       module exports no way to lower or remove an entry. `SessionService.ended()`, which the erasing
       tab calls on the `204`, locks custody and leaves the record alone.
-    - **The passkey.** It stays in the person's authenticator. Nothing on the server reaches a
-      device, and this client sends the authenticator nothing about the erasure:
-      `WebauthnCeremonyService`, the one module that touches `navigator.credentials`, only creates
-      and asserts. The passkey's credential id no longer names a row, so a sign-in with it is
-      refused as any unknown credential is.
+    - **The passkey.** It stays in the person's authenticator, and it carries two things of the
+      account's with it: the **user handle**, which encodes the erased account's own id, and the
+      account's **email address** as the credential's user name and display name — both creation
+      paths, `BeginAccountRegistrationHandler` and `BeginRegistrationHandler`, set the two to the
+      address. So the authenticator goes on listing a sign-in for an account that no longer exists,
+      under the address it was reached at. Nothing on the server reaches a device, and this client
+      sends the authenticator nothing about the erasure: `WebauthnCeremonyService`, the one module
+      that touches `navigator.credentials`, only creates and asserts. The passkey's credential id no
+      longer names a row, so a sign-in with it is refused as any unknown credential is.
 
     So a sentence promising that nothing survives an erasure *anywhere* would be a promise about
     somebody else's storage, made by a handler that cannot see it.
@@ -548,9 +561,13 @@ role holds no `DELETE` there of any shape.
   neither does an operator changing retention on the server directly. This is the one rule on this
   page held by a value in a file rather than by a gate.
   - **The product tells a person about this window, and the number in the copy is held by nothing.**
-    The account settings screen states the seven-day limit in words — `settings.component.spec.ts`
-    pins the sentence, so the copy cannot drift on its own — which makes `BackupRetentionDays = 7`
-    the number a user was told. Nothing ties the two together, and they live in different projects
+    The account settings screen states the seven-day limit in words — *Erased data stays in
+    point-in-time database backups for up to 7 days, and nowhere else on Budgetoid’s servers. Your
+    passkeys stay on your devices until you remove them there.* `settings.component.spec.ts` pins
+    the sentence, so the copy cannot drift on its own, and it makes `BackupRetentionDays = 7` the
+    number a user was told. Its scope is this rule's: *on Budgetoid's servers* is the boundary the
+    scope paragraph above draws, and the passkey is the one thing past it the sentence names,
+    because it is the one a person can act on. Nothing ties the two together, and they live in different projects
     and different languages, so editing the literal leaves the screen quietly lying about a privacy
     guarantee. **Whoever changes retention changes the copy in the same commit**; until a gate holds
     that pairing, this sentence is the only thing that says so. A gate is possible — a test reading
@@ -639,9 +656,11 @@ ELSE
   from the five assertion members one by one, so nothing else the ceremony returned can ride along.
   **The erasing request carries `EXPECTS_UNAUTHENTICATED` and the challenge does not.** A `401` on
   the erasing request is the gate's verdict or a session that had already ended before the gate
-  ran, and either way this request erased nothing — so the dialog says `refused` rather than
-  `sessionExpiryInterceptor` taking the tab to `/welcome` over a sentence it never got to show. A
-  `401` on the challenge is a session that ended, which is the interceptor's to act on. See
+  ran, and either way this request erased nothing — so `sessionExpiryInterceptor` must not take the
+  tab to `/welcome` over a sentence the dialog never got to show. The flow tells the two readings
+  apart with one **unmarked** `GET /api/me` (`MeApiService.getMe`): a `401` there is the
+  interceptor's to act on, and the dialog says nothing; a `200`, or a probe that cannot answer, is
+  `refused`. A `401` on the challenge is a session that ended, which is the interceptor's too. See
   [sessions.md](sessions.md) for the token's rule.
 
 ## Edge Cases & Known Gotchas
@@ -687,28 +706,63 @@ ELSE
   and then `POST /api/me/erasure` carrying the five assertion members and nothing else. Nothing is
   posted before the ceremony answers, so every refusal raised ahead of the erasing request is a fact
   about this client when it says nothing was erased. On the `204` it marks `ErasureNotice`, calls
-  `SessionService.ended()` and navigates to `/welcome`, which says *Erased.* The erasing request's
-  own refusals read three ways: a `401` is `refused` — the gate declined the assertion, or the
-  session had already ended before the gate ran, and neither erased anything through this request;
-  a `400` or `403` is `unrecognised`; and everything else, a response that never arrived included,
-  is `undetermined`, because the erasure may have committed.
-  - **`undetermined` withdraws the commit for the life of that dialog, and nothing retries it.**
-    That is the client's half of the not-idempotent-to-the-caller rule above: a second erasing
-    request after a lost `204` is answered `401` and would read *nothing was erased* over an account
-    that is gone.
-  - **Opening the dialog again starts a fresh attempt, and that is safe.** `SettingsComponent` calls
-    `ErasureFlowService.reset()` before each open, which clears the word and the withdrawal. The
-    fresh attempt's first request is the challenge, and it is unmarked: if the lost request did
-    erase the account, the session went with it, the challenge answers `401`,
-    `sessionExpiryInterceptor` ends the session and leaves for `/welcome`, and no ceremony runs and
-    no erasing request is sent. `reset()` does nothing while a press is in flight or after the
-    `204`: mid-press it would put a live commit beside a ceremony or a request still running, and
-    after the `204` it would reopen the commit over a deleted session.
+  `SessionService.ended()` and navigates to `/welcome`, which says *Erased.*
+  - **The challenge's failures read three ways.** A `401` says nothing: the challenge is unmarked,
+    so `sessionExpiryInterceptor` ends the session and takes the tab to `/welcome`. A `400` or `403`
+    is `unrecognised`. Everything else — a response that never arrived, a `5xx` — is `unstarted`,
+    whose sentence names no cause, because every one of them has the same next step (try again in a
+    minute). `challengeFailureOf` in `erasure-outcome.ts` owns the reading.
+  - **The erasing request's failures read three ways too.** A `400` or `403` is `unrecognised`.
+    Everything else but a `401`, a response that never arrived included, is `undetermined`, because
+    the erasure may have committed; `erasureFailureOf` owns that reading. A `401` has two readings —
+    the gate declined the assertion, or the session had already ended before the gate ran — and
+    neither erased anything through this request, so the flow resolves it with **one unmarked
+    `GET /api/me`** before it says anything. A `401` there is a session that had ended: the
+    interceptor ends it and leaves for `/welcome`, and the dialog says nothing. A `200`, or a probe
+    that cannot answer, is `refused` — the erasing request's `401` already proved it erased nothing.
+    The flow stays `erasing` while the probe is out, so the commit does not reopen over an answer
+    nobody has read yet.
+  - **`undetermined` holds for the Settings screen's life, and nothing retries it.** That is the
+    client's half of the not-idempotent-to-the-caller rule above: a second erasing request after a
+    lost `204` is answered `401` and would read *nothing was erased* over an account that is gone.
+    `SettingsComponent` calls `ErasureFlowService.reset()` before each open, and `reset()` clears
+    every other word but keeps this one, so every later dialog on that screen opens withdrawn — no
+    commit, **Close**, the `undetermined` line — and asks the server for nothing. The way forward is
+    a reload, which asks the server who this is from the start. `reset()` also does nothing while a
+    press is in flight or after the `204`: mid-press it would put a live commit beside a ceremony or
+    a request still running, and after the `204` it would reopen the commit over a deleted session.
+  - **What the screen-long hold does not cover.** Leaving Settings and coming back gives a fresh
+    flow, because `ErasureFlowService` is provided on the screen and dies with it. If the lost
+    erasure is still running on the server by then, a press inside that window can still end on a
+    sentence saying *nothing was erased*: the challenge can fail, or the ceremony be refused, before
+    the commit lands. A `401` on that press's erasing request is not part of the risk — the probe
+    catches the ended session. The window is as long as the lost commit takes, and nothing in the
+    client closes it.
+  - **A press is abandoned when its screen goes or its overlay is closed from outside, and only
+    until the erasing request is out.** The CDK disposes the overlay on `popstate` — the browser's
+    Back or Forward — whatever `disableClose` says, and a router `navigateByUrl` does not close it;
+    both measured. So the flow owns the other half: each press carries an `AbortController`, handed
+    to `WebauthnCeremonyService.assertPasskey` as an optional `AbortSignal`, and the press is
+    abandoned when the screen is destroyed (`DestroyRef`) or when `SettingsComponent` sees its
+    overlay close while the phase is still `asserting`. The device's prompt is cancelled, nothing is
+    posted, no word is published, and the phase returns to `idle`. Once the erasing request is out
+    there is no branch: a `204` still ends the session and navigates to `/welcome`, whatever became
+    of the dialog or the screen.
   - **Held in** `erasure-flow.service.spec.ts`: "leaves a 401 on the challenge to the session
-    interceptor", "marks the erasing request and leaves the challenge unmarked", and the `reset`
-    block — "clears undetermined, so a new dialog offers the commit again", "changes nothing while a
-    press is in flight", "changes nothing while the erasing request is out" and "changes nothing
-    once the account is erased".
+    interceptor", "says it could not start when the challenge meets $label", "reads a 403 on the
+    challenge as unrecognised", "marks the erasing request and leaves the challenge unmarked"; the
+    *after a 401 on the erasing request* block — "asks who this is, unmarked, before reading a 401
+    on the erasing request", "says refused once the probe finds the session still there", "says
+    nothing once the probe finds the session gone, and leaves ending it to the interceptor" and
+    "says refused when the probe meets $label"; the *when the screen goes* block — "cancels the
+    device’s prompt when the screen goes", "sends no erasing request once abandoned mid-ceremony",
+    "comes to rest once abandoned mid-ceremony" and "still leaves for Welcome when the 204 arrives
+    after the screen went"; and the `reset` block — "keeps undetermined across a reset, so no later
+    dialog offers the commit", "changes nothing while a press is in flight", "changes nothing while
+    the erasing request is out" and "changes nothing once the account is erased". On the screen,
+    `settings.component.spec.ts` holds "keeps the commit withdrawn in every later dialog on this
+    screen", "sends no erasing request after the overlay closes from outside mid-ceremony" and
+    "sends no erasing request after the screen is destroyed mid-ceremony".
 - **A failed erasure still spends the assertion, and still advances the signature counter.** Both
   are the gate's writes, both committed before the transaction opened, and neither returns with the
   rollback — so the person has to run the ceremony again. Correct rather than a defect, and it must

@@ -2,6 +2,7 @@ import {
   ChangeDetectionStrategy,
   Component,
   ElementRef,
+  afterNextRender,
   afterRenderEffect,
   computed,
   effect,
@@ -9,13 +10,11 @@ import {
   signal,
   viewChild,
 } from '@angular/core';
-import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { MatBottomSheetRef } from '@angular/material/bottom-sheet';
 import { MatButtonModule } from '@angular/material/button';
 import { MatDialogRef } from '@angular/material/dialog';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
-import { take } from 'rxjs';
 import {
   ErasureFlowService,
   type ErasureFailure,
@@ -31,6 +30,16 @@ import {
  */
 export const ERASE_DIALOG_TITLE_ID = 'erase-dialog-title';
 export const ERASE_DIALOG_CONSEQUENCE_ID = 'erase-dialog-consequence';
+
+/**
+ * The ids of the two controls the opener may send focus to: the field, and the
+ * dismiss. The opener hands one to the host's `autoFocus` as a selector — the
+ * field for an ordinary dialog, the dismiss for one opened withdrawn — so focus
+ * moves once, straight there, and the host restores it to the trigger on close.
+ * Fixed for the reason the two above are.
+ */
+export const ERASE_DIALOG_FIELD_ID = 'erase-dialog-field';
+export const ERASE_DIALOG_DISMISS_ID = 'erase-dialog-dismiss';
 
 // The field's cap. **Not a narrative cap** — the word is never stored or sent,
 // so no column's byte limit stands behind it — but every text control in this
@@ -99,7 +108,16 @@ export class EraseDialogComponent {
 
   protected readonly titleId = ERASE_DIALOG_TITLE_ID;
   protected readonly consequenceId = ERASE_DIALOG_CONSEQUENCE_ID;
+  protected readonly fieldId = ERASE_DIALOG_FIELD_ID;
+  protected readonly dismissId = ERASE_DIALOG_DISMISS_ID;
   protected readonly labelId = 'erase-dialog-label';
+
+  // Whether this dialog has rendered once. The region's line waits for it, so
+  // the region is in the DOM and empty before anything lands in it — a region
+  // created together with its first line is announced by nothing. That matters
+  // most for a dialog opened over `undetermined`, whose line is there from the
+  // start.
+  readonly #painted = signal(false);
 
   // What the field holds, as typed. Starts empty in every instance, and every
   // open is a new instance — a word half typed into a dialog somebody cancelled
@@ -110,12 +128,12 @@ export class EraseDialogComponent {
     this.flow.pressable(this.typed()),
   );
 
-  // **Withdrawn on `undetermined`, and never back in this dialog's life.**
-  // Derived rather than latched, because the flow cannot leave `undetermined`
-  // while this dialog is open: `pressable` is false from there on, so no press
-  // starts and clears it, and the only other way out is
-  // `ErasureFlowService.reset`, which the screen calls before it opens the
-  // *next* dialog. A latch here would be a second record of a fact the flow
+  // **Withdrawn on `undetermined`, and never back on this screen.** Derived
+  // rather than latched, because the flow cannot leave `undetermined` at all:
+  // `pressable` is false from there on, so no press starts and clears it, and
+  // `ErasureFlowService.reset` keeps it. So a dialog opened after one that
+  // could not tell opens withdrawn — no commit, *Close*, the line — and asks
+  // for nothing. A latch here would be a second record of a fact the flow
   // already holds.
   protected readonly withdrawn = computed(
     () => this.flow.failure() === 'undetermined',
@@ -124,8 +142,13 @@ export class EraseDialogComponent {
   // The region's one line, and whether it is a refusal — which is only the
   // colour; every line reads the same with `--bud-over` removed. At most one
   // line at a time: a press clears the previous word as it starts, so a running
-  // phase and a word are never both there to choose between.
+  // phase and a word are never both there to choose between. Nothing until the
+  // first render is done, for the reason `#painted` gives.
   protected readonly line = computed<StatusLine | null>(() => {
+    if (!this.#painted()) {
+      return null;
+    }
+
     switch (this.flow.phase()) {
       case 'asserting':
         return { text: 'Waiting for your passkey.', refusal: false };
@@ -164,24 +187,22 @@ export class EraseDialogComponent {
       }
     });
 
-    // **On open, focus moves to the field.** The word is the next thing asked
-    // for, and a trap that opened on the commit would put a keyboard user one
-    // press from the ceremony. Stated here rather than left to Material's
-    // `first-tabbable`, which reaches the field only because of the order of
-    // the markup — a tabbable control added above it would take the focus
-    // without anybody deciding so. Once the host reports it has opened. The
-    // opener passes `autoFocus: false`, under which the host focuses only its
-    // own container and only while focus is still outside it — so whichever of
-    // the two runs later, the field keeps it.
-    const opened =
-      this.dialogRef?.afterOpened() ?? this.sheetRef?.afterOpened() ?? null;
+    // The region's line lands on the pass after this one.
+    afterNextRender(() => this.#painted.set(true));
 
-    opened
-      ?.pipe(take(1), takeUntilDestroyed())
-      .subscribe(() => this.field().nativeElement.focus());
-
-    // **On `undetermined`, focus moves to the dismiss**, because the control
-    // it stood on has left the DOM.
+    // **Focus on open is the host's, aimed by id.** The opener passes
+    // `autoFocus` as a selector for {@link ERASE_DIALOG_FIELD_ID} — the word is
+    // the next thing asked for, and a trap that opened on the commit would put
+    // a keyboard user one press from the ceremony — or, for a dialog opened
+    // withdrawn, for {@link ERASE_DIALOG_DISMISS_ID}, the one control left.
+    // Named rather than left to `first-tabbable`, which reaches the field only
+    // because of the order of the markup. One move, straight there: focusing
+    // from here as well would be a second move the host's own could land
+    // before or after.
+    //
+    // **When `undetermined` arrives mid-dialog, focus moves to the dismiss**,
+    // because the control it stood on has left the DOM. Opened withdrawn, this
+    // lands on the element the host already focused, which moves nothing.
     afterRenderEffect(() => {
       if (this.withdrawn()) {
         this.dismissButton().nativeElement.focus();
@@ -241,7 +262,7 @@ function sentenceOf(failure: ErasureFailure): string {
     case 'ceremony-failed':
       return 'Your device couldn’t finish the passkey check. Try again, or choose another passkey — nothing was erased.';
     case 'unstarted':
-      return 'Budgetoid couldn’t reach the server to start. Try again in a minute — nothing was erased.';
+      return 'Budgetoid couldn’t start the passkey check. Try again in a minute — nothing was erased.';
     case 'refused':
       return 'Budgetoid didn’t accept that passkey for this account. Try again with a passkey you made for it — nothing was erased.';
     case 'unrecognised':

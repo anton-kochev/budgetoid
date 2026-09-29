@@ -136,10 +136,12 @@ html {
 }
 
 // A bottom sheet's own inset and elevation. Material pads its container
-// `8px 16px` and draws an M2 shadow, and neither is a book value; the content
-// owns the sheet's inset (`--bud-space-5`, and the handle `--bud-space-2` from
-// the top), so the container carries none. Two classes, because Material's
-// single-class rule is injected after this stylesheet and would win a tie.
+// `8px 16px` and draws an M2 shadow, and neither is a book value; see
+// docs/design/components.md, "Dialogs and sheets". A sheet's content draws its
+// own inset and its own handle (`--bud-space-5`, and the handle `--bud-space-2`
+// from the top), so the container carries none. Two classes, because
+// Material's single-class rule is injected after this stylesheet and would win
+// a tie.
 .cdk-overlay-pane .mat-bottom-sheet-container {
   padding: 0;
   box-shadow: var(--bud-shadow-overlay);

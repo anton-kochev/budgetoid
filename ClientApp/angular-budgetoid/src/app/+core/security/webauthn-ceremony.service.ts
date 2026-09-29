@@ -267,9 +267,18 @@ export class WebauthnCeremonyService {
    * The server's options carry no `allowCredentials` and none is added — see
    * `toRequestOptions` for the enumeration-oracle argument. The spread below
    * preserves that absence; it does not restate it.
+   *
+   * **`signal` is the caller's handle on a prompt it did not draw.** A screen
+   * that goes while the device is still being asked aborts it, and the system
+   * sheet comes down with the screen instead of asking on behalf of nothing.
+   * Handed to `get()` as given, and added only when given: the sign-in leg
+   * passes none, and a member nobody can abort is a member added for nothing.
+   * An aborted prompt rejects with an `AbortError`, which reads as `failed`
+   * here; the caller that aborted it has already stopped listening.
    */
   public async assertPasskey(
     options: PasskeyRequestOptionsJson,
+    signal?: AbortSignal,
   ): Promise<PasskeyCeremonyResult<PasskeyAssertionCeremony>> {
     if (!this.available()) {
       return { ok: false, failure: 'unsupported' };
@@ -285,6 +294,7 @@ export class WebauthnCeremonyService {
           ...request,
           extensions: { prf: { eval: { first: prfEvalInput() } } },
         },
+        ...(signal === undefined ? {} : { signal }),
       });
 
       if (!(asserted instanceof PublicKeyCredential)) {

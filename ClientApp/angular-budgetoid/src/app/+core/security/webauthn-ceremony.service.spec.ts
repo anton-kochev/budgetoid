@@ -61,6 +61,22 @@ import { WebauthnCeremonyService } from './webauthn-ceremony.service';
 
 const utf8 = new TextEncoder();
 
+// `assertPasskey` with the caller's abort signal as its second parameter. Bound
+// through a type that already names the parameter, so a case that passes one
+// compiles against a method that does not take it yet and fails on what reaches
+// `get()` instead. A method of one parameter is assignable to this type, so the
+// helper stays valid once the parameter exists.
+type AssertPasskeyWithSignal = (
+  options: Parameters<WebauthnCeremonyService['assertPasskey']>[0],
+  signal?: AbortSignal,
+) => ReturnType<WebauthnCeremonyService['assertPasskey']>;
+
+function assertWithSignal(
+  service: WebauthnCeremonyService,
+): AssertPasskeyWithSignal {
+  return service.assertPasskey.bind(service);
+}
+
 function toHex(bytes: Uint8Array): string {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join(
     '',
@@ -1217,6 +1233,37 @@ describe('WebauthnCeremonyService', () => {
     // ceremony here has its own `catch`, so a branch added to one is not a
     // branch added to any of the others.
     expect(ceremonyFailure(result)).toBe('cancelled');
+  });
+
+  it('passes the caller’s abort signal to the platform prompt', async () => {
+    // Arrange
+    // A screen that goes while the device is still being asked has to be able
+    // to take the system sheet down with it. The signal is the only handle a
+    // caller has on a prompt it did not draw, so it reaches `get()` as given —
+    // the same object, not a fresh controller of the service's own that nobody
+    // outside can abort.
+    const controller = new AbortController();
+
+    // Act
+    await assertWithSignal(service)(SERVER_REQUEST_OPTIONS, controller.signal);
+
+    // Assert
+    const captured = get.mock.calls[0]?.[0];
+    expect(captured, 'get() was never called').toBeDefined();
+    expect(captured?.signal).toBe(controller.signal);
+  });
+
+  it('adds no signal when the caller gives none', async () => {
+    // Act
+    await service.assertPasskey(SERVER_REQUEST_OPTIONS);
+
+    // Assert
+    // Absent, not `signal: undefined` and not a controller minted here: the
+    // sign-in leg hands none, and a request that carried a signal nobody can
+    // reach is a member added for nothing.
+    const captured = get.mock.calls[0]?.[0];
+    expect(captured, 'get() was never called').toBeDefined();
+    expect(captured !== undefined && 'signal' in captured).toBe(false);
   });
 
   it('refuses a resolved sign-in credential that is not a PublicKeyCredential', async () => {

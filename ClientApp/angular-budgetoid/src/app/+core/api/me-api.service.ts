@@ -559,15 +559,16 @@ export class MeApiService extends BaseApiService {
   // transaction opens. But the route sits behind the fallback authorization
   // policy, so a session that had already ended — expired, revoked, or erased
   // from another tab — is also answered 401, before the gate runs. Either way
-  // this request erased nothing, and the dialog says that as `refused`,
-  // *nothing was erased*. Unmarked, `sessionExpiryInterceptor` reads the
-  // verdict as a session ending and takes the tab to `/welcome` over a sentence
-  // the dialog never got to say. A session that really had ended is not lost
-  // by the mark: the next press starts with the unmarked re-authentication
-  // challenge, whose 401 the interceptor acts on. The token rides on the method
-  // rather than on a parameter, for `getAccountKeys`'s reason: one caller, one
-  // question, one meaning of a 401 to this caller. The challenge minted just
-  // before this is the opposite case and stays unmarked — see
+  // this request erased nothing. Unmarked, `sessionExpiryInterceptor` reads
+  // the verdict as a session ending and takes the tab to `/welcome` over a
+  // sentence the dialog never got to say. A session that really had ended is
+  // not lost by the mark: the flow resolves a 401 here with one unmarked
+  // `GET /api/me` probe, whose own 401 the interceptor acts on — and only a
+  // probe that does not find the session gone lets the dialog say `refused`,
+  // *nothing was erased*. The token rides on the method rather than on a
+  // parameter, for `getAccountKeys`'s reason: one caller, one question, one
+  // meaning of a 401 to this caller. The challenge minted just before this is
+  // the opposite case and stays unmarked — see
   // `reauthentication-api.service.ts`.
   //
   // `Observable<void>`: the answer is `204`. A body would have to be assembled

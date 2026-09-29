@@ -27,8 +27,10 @@ import {
   provideHttpClientTesting,
   type TestRequest,
 } from '@angular/common/http/testing';
+import { EnvironmentInjector, createEnvironmentInjector } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { Router, provideRouter, type UrlTree } from '@angular/router';
+import type { MeDto } from '@app-core/api/me-api.service';
 import { EXPECTS_UNAUTHENTICATED } from '@app-core/interceptors/expects-unauthenticated.token';
 import {
   WebauthnCeremonyService,
@@ -56,7 +58,15 @@ const OPTIONS_URL = `${API_ORIGIN}/api/passkeys/reauthentication/options`;
 // signed over one of its challenges is one the erasure gate refuses.
 const SIGN_IN_OPTIONS_URL = `${API_ORIGIN}/api/passkeys/assertion/options`;
 const ERASURE_URL = `${API_ORIGIN}/api/me/erasure`;
+// The probe a 401 on the erasing request is read against: *is* there still a
+// session?
+const ME_URL = `${API_ORIGIN}/api/me`;
 const WELCOME_ROUTE = '/welcome';
+
+const ME: MeDto = {
+  email: 'owner@example.test',
+  budgetId: '3f5b0a91-7c24-4a1e-9d3b-6e8f0c2a5471',
+};
 
 const WORD = 'erase';
 
@@ -85,9 +95,13 @@ class CeremonyStub {
   #release: (() => void) | null = null;
 
   public readonly available: Mock<() => boolean> = vi.fn(() => this.supported);
+  // The optional second parameter is the caller's abort signal, which the real
+  // service hands to the platform prompt. Read back from `mock.calls` by the
+  // teardown cases.
   public readonly assertPasskey: Mock<
     (
       options: PasskeyRequestOptionsJson,
+      signal?: AbortSignal,
     ) => Promise<PasskeyCeremonyResult<PasskeyAssertionCeremony>>
   > = vi.fn(async () => {
     if (this.held) {
@@ -255,17 +269,15 @@ describe('ErasureFlowService', () => {
 
     // Act
     erasing.flush(null, { status: 401, statusText: 'Unauthorized' });
+    (await requestTo(ME_URL)).flush(ME);
     await settle();
 
     // Assert
-    // A 401 here has two readings the client cannot tell apart: the gate
-    // declined the assertion, or the session had already ended — expired,
-    // revoked, erased elsewhere — and the route's fallback authorization policy
-    // turned the request away before the gate. Neither erased anything through
-    // this request. The flow does not settle which: it neither ends the
-    // session nor navigates, because on the first reading that signs somebody
-    // out of an account they are still inside, and on either it takes away the
-    // one sentence that says what happened.
+    // A 401 here has two readings, and the probe after it tells them apart:
+    // the session is still there, so the gate declined the assertion. That
+    // erased nothing through this request. The flow neither ends the session
+    // nor navigates, because that signs somebody out of an account they are
+    // still inside and takes away the one sentence that says what happened.
     expect(flow.failure()).toBe('refused');
     expect(session.ended).not.toHaveBeenCalled();
     expect(navigations).toEqual([]);
@@ -370,7 +382,10 @@ describe('ErasureFlowService', () => {
     // client invented is one the route refuses too.
     expect(options.request.method).toBe('POST');
     expect(http.match(SIGN_IN_OPTIONS_URL)).toHaveLength(0);
-    expect(ceremony.assertPasskey).toHaveBeenCalledWith(OPTIONS);
+    expect(ceremony.assertPasskey).toHaveBeenCalledWith(
+      OPTIONS,
+      expect.any(AbortSignal),
+    );
 
     erasing.flush(null, { status: 204, statusText: 'No Content' });
   });
@@ -677,18 +692,357 @@ describe('ErasureFlowService', () => {
 
     // Act
     erasing.flush(null, { status: 401, statusText: 'Unauthorized' });
+    (await requestTo(ME_URL)).flush(ME);
     await settle();
 
     // Assert
-    // A 401 there erased nothing through that request, whether the gate
-    // declined the assertion or the session had already ended before the gate.
-    // So the commit stays open and the sentence says *Try again with a passkey
-    // you made for it*. On the second reading the retry's challenge is
-    // unmarked, so the ended session is `sessionExpiryInterceptor`'s to act
-    // on. Only `undetermined` closes the commit; a flow that closed it on every
+    // A 401 there, with the session still answering the probe, is the gate
+    // declining the assertion — it erased nothing. So the commit stays open and
+    // the sentence says *Try again with a passkey you made for it*. Only
+    // `undetermined` closes the commit; a flow that closed it on every
     // request-side word would make that sentence a lie.
     expect(flow.failure()).toBe('refused');
     expect(flow.pressable(WORD)).toBe(true);
+  });
+
+  it('reads a 403 on the challenge as unrecognised', async () => {
+    // Arrange
+    flow.erase(WORD);
+
+    // Act
+    (await requestTo(OPTIONS_URL)).flush(null, {
+      status: 403,
+      statusText: 'Forbidden',
+    });
+    await settle();
+
+    // Assert
+    // Refused before any handler ran: *try again in a minute* would send
+    // somebody round the same refusal forever, where a reload is what can
+    // change it. Still nothing minted, nothing asked, nothing posted.
+    expect(flow.failure()).toBe('unrecognised');
+    expect(ceremony.assertPasskey).not.toHaveBeenCalled();
+    expect(http.match(ERASURE_URL)).toHaveLength(0);
+    expect(flow.working()).toBe(false);
+  });
+
+  // A 401 on the erasing request has two readings: the gate declined the
+  // assertion, or the session had already ended — expired, revoked, erased from
+  // another tab — and the route's fallback policy turned the request away before
+  // the gate. The erasing request is marked, so the interceptor hears neither.
+  // The flow asks, **unmarked**, whether there is still a session, and lets the
+  // answer decide: a session that is there makes it the gate's `refused`; one
+  // that is not is the interceptor's to end, on the probe's own 401.
+  describe('after a 401 on the erasing request', () => {
+    async function refuseTheErasingRequest(): Promise<void> {
+      flow.erase(WORD);
+      const erasing = await reachTheErasingRequest();
+
+      erasing.flush(null, { status: 401, statusText: 'Unauthorized' });
+    }
+
+    it('asks who this is, unmarked, before reading a 401 on the erasing request', async () => {
+      // Act
+      await refuseTheErasingRequest();
+      const probe = await requestTo(ME_URL);
+
+      // Assert
+      // Unmarked, or its 401 is suppressed exactly as the erasing request's
+      // was and the dead session is never ended. Still `erasing` while it is
+      // out: no sentence has been earned yet, and the commit must not reopen
+      // for a second press over an answer nobody has read.
+      expect(probe.request.method).toBe('GET');
+      expect(probe.request.context.get(EXPECTS_UNAUTHENTICATED)).toBe(false);
+      expect(flow.phase()).toBe('erasing');
+      expect(flow.failure()).toBeNull();
+      expect(flow.pressable(WORD)).toBe(false);
+
+      probe.flush(ME);
+    });
+
+    it('says refused once the probe finds the session still there', async () => {
+      // Arrange
+      await refuseTheErasingRequest();
+      const probe = await requestTo(ME_URL);
+
+      // Act
+      probe.flush(ME);
+      await eventually(() => flow.failure(), 'the refusal');
+
+      // Assert
+      expect(flow.failure()).toBe('refused');
+      expect(flow.phase()).toBe('idle');
+      expect(session.ended).not.toHaveBeenCalled();
+      expect(navigations).toEqual([]);
+    });
+
+    it('says nothing once the probe finds the session gone, and leaves ending it to the interceptor', async () => {
+      // Arrange
+      await refuseTheErasingRequest();
+      const probe = await requestTo(ME_URL);
+
+      // Act
+      probe.flush(null, { status: 401, statusText: 'Unauthorized' });
+      await settle();
+
+      // Assert
+      // *Didn't accept that passkey* would be false: nothing judged it. The
+      // probe's own 401 is unmarked, so `sessionExpiryInterceptor` ends the
+      // session and takes the tab to Welcome — and a flow that did either
+      // itself is a second owner of that fact.
+      expect(flow.failure()).toBeNull();
+      expect(flow.phase()).toBe('idle');
+      expect(flow.working()).toBe(false);
+      expect(session.ended).not.toHaveBeenCalled();
+      expect(navigations).toEqual([]);
+      expect(notice.erased()).toBe(false);
+    });
+
+    it.each([
+      { label: 'no answer at all', status: 0 },
+      { label: 'a server error', status: 500 },
+    ])('says refused when the probe meets $label', async ({ status }) => {
+      // Arrange
+      await refuseTheErasingRequest();
+      const probe = await requestTo(ME_URL);
+
+      // Act
+      if (status === 0) {
+        probe.error(new ProgressEvent('error'), {
+          status: 0,
+          statusText: 'Unknown Error',
+        });
+      } else {
+        probe.flush(null, { status, statusText: 'Failed' });
+      }
+      await eventually(() => flow.failure(), 'the refusal');
+
+      // Assert
+      // The erasing request's 401 already proved it erased nothing; a probe
+      // that could not answer takes nothing away from that. `refused` is
+      // true on either reading, and the retry's unmarked challenge catches
+      // a session that really has gone.
+      expect(flow.failure()).toBe('refused');
+      expect(flow.phase()).toBe('idle');
+      expect(session.ended).not.toHaveBeenCalled();
+    });
+  });
+
+  // The flow dies with the screen that provided it, and an attempt abandoned
+  // there asks and sends nothing more. Provided here in an environment
+  // injector the case can destroy, which is what the screen's teardown is to a
+  // component-provided service.
+  describe('when the screen goes', () => {
+    function provideOnAScreen(): EnvironmentInjector {
+      const screen = createEnvironmentInjector(
+        [ErasureFlowService],
+        TestBed.inject(EnvironmentInjector),
+      );
+
+      // The navigation recorder reads `flow`, so it reads this one.
+      flow = screen.get(ErasureFlowService);
+
+      return screen;
+    }
+
+    async function theCeremonyStarts(): Promise<void> {
+      await eventually(
+        () => (ceremony.assertPasskey.mock.calls.length > 0 ? true : null),
+        'the ceremony to start',
+      );
+    }
+
+    it('asks the device nothing when the screen goes before the challenge answers', async () => {
+      // Arrange
+      const screen = provideOnAScreen();
+      flow.erase(WORD);
+      const challenge = await requestTo(OPTIONS_URL);
+
+      // Act
+      screen.destroy();
+      // A flow may cancel the challenge as it goes; one that does has nothing
+      // left to answer.
+      if (!challenge.cancelled) {
+        challenge.flush(OPTIONS);
+      }
+      await settle();
+
+      // Assert
+      // A system sheet raised over a screen that has gone has nothing on it
+      // to receive its answer.
+      expect(ceremony.assertPasskey).not.toHaveBeenCalled();
+      expect(http.match(ERASURE_URL)).toHaveLength(0);
+    });
+
+    it('sends no erasing request when the screen goes while the device is asked', async () => {
+      // Arrange
+      ceremony.held = true;
+      const screen = provideOnAScreen();
+      flow.erase(WORD);
+      (await requestTo(OPTIONS_URL)).flush(OPTIONS);
+      await theCeremonyStarts();
+
+      // Act
+      screen.destroy();
+      ceremony.settle();
+      await settle();
+
+      // Assert
+      // The passkey answered for a dialog nobody can see any more. Posted
+      // anyway, it erases the account from a screen the person already left,
+      // with nothing to say it happened.
+      expect(http.match(ERASURE_URL)).toHaveLength(0);
+      expect(session.ended).not.toHaveBeenCalled();
+      expect(navigations).toEqual([]);
+    });
+
+    it('cancels the device’s prompt when the screen goes', async () => {
+      // Arrange
+      ceremony.held = true;
+      const screen = provideOnAScreen();
+      flow.erase(WORD);
+      (await requestTo(OPTIONS_URL)).flush(OPTIONS);
+      await theCeremonyStarts();
+      const signal = ceremony.assertPasskey.mock.calls[0]?.[1];
+      expect(signal, 'the ceremony was handed no abort signal').toBeInstanceOf(
+        AbortSignal,
+      );
+      expect(signal?.aborted).toBe(false);
+
+      // Act
+      screen.destroy();
+
+      // Assert
+      // Ignoring the answer is not enough on its own: the system sheet stays
+      // up over whatever screen came next, asking for a passkey on behalf of
+      // nothing.
+      expect(signal?.aborted).toBe(true);
+
+      ceremony.settle();
+    });
+
+    it('still leaves for Welcome when the 204 arrives after the screen went', async () => {
+      // Arrange
+      const screen = provideOnAScreen();
+      flow.erase(WORD);
+      const erasing = await reachTheErasingRequest();
+
+      // Act
+      // The request is out and nothing can recall it. The account is gone the
+      // moment it commits, whatever became of the screen.
+      screen.destroy();
+      erasing.flush(null, { status: 204, statusText: 'No Content' });
+      await eventually(
+        () => navigations[0] ?? null,
+        'the navigation to Welcome',
+      );
+
+      // Assert
+      // Abandoning covers what has not been sent. A flow that dropped this
+      // answer too would leave a tab holding keys and a session for an account
+      // that no longer exists.
+      expect(notice.erased()).toBe(true);
+      expect(session.ended).toHaveBeenCalledTimes(1);
+      expect(navigations).toHaveLength(1);
+      expect(navigations[0]?.url).toBe(WELCOME_ROUTE);
+      expect(
+        navigations[0]?.endedCalls,
+        'the flow asked to leave for Welcome before it ended the session.',
+      ).toBe(1);
+    });
+
+    it('sends no erasing request once abandoned mid-ceremony', async () => {
+      // Arrange
+      ceremony.held = true;
+      flow.erase(WORD);
+      (await requestTo(OPTIONS_URL)).flush(OPTIONS);
+      await theCeremonyStarts();
+
+      // Act
+      // What the screen calls when its overlay is closed from outside — the
+      // CDK disposes it on the browser's Back whatever `disableClose` says —
+      // while the screen itself stays.
+      flow.abandon();
+      ceremony.settle();
+      await settle();
+
+      // Assert
+      expect(http.match(ERASURE_URL)).toHaveLength(0);
+      expect(session.ended).not.toHaveBeenCalled();
+      expect(navigations).toEqual([]);
+    });
+
+    it('comes to rest once abandoned mid-ceremony', async () => {
+      // Arrange
+      ceremony.held = true;
+      flow.erase(WORD);
+      (await requestTo(OPTIONS_URL)).flush(OPTIONS);
+      await theCeremonyStarts();
+
+      // Act
+      flow.abandon();
+      ceremony.settle();
+      await settle();
+
+      // Assert
+      // The screen stays, and so does the flow on it. Left `asserting`, the
+      // flow reads as working for the screen's life: every later dialog opens
+      // with the commit inert, Cancel inert and `disableClose` set, and
+      // `reset()` refuses to clear it.
+      expect(flow.phase()).toBe('idle');
+      expect(flow.working()).toBe(false);
+      expect(flow.failure()).toBeNull();
+    });
+
+    it('comes to rest when the screen goes mid-ceremony', async () => {
+      // Arrange
+      ceremony.held = true;
+      const screen = provideOnAScreen();
+      flow.erase(WORD);
+      (await requestTo(OPTIONS_URL)).flush(OPTIONS);
+      await theCeremonyStarts();
+
+      // Act
+      screen.destroy();
+      ceremony.settle();
+      await settle();
+
+      // Assert
+      expect(flow.phase()).toBe('idle');
+      expect(flow.working()).toBe(false);
+    });
+
+    it.each([
+      { label: 'no answer at all', status: 0 },
+      { label: 'a 403', status: 403 },
+    ])(
+      'says nothing when the challenge meets $label after the press was abandoned',
+      async ({ status }) => {
+        // Arrange
+        flow.erase(WORD);
+        const challenge = await requestTo(OPTIONS_URL);
+
+        // Act
+        flow.abandon();
+        if (status === 0) {
+          challenge.error(new ProgressEvent('error'), {
+            status: 0,
+            statusText: 'Unknown Error',
+          });
+        } else {
+          challenge.flush(null, { status, statusText: 'Forbidden' });
+        }
+        await settle();
+
+        // Assert
+        // Whoever abandoned the press has stopped listening. A word raised
+        // now lands in the region of the next dialog this screen opens — a
+        // sentence about a press made in one already gone.
+        expect(flow.failure()).toBeNull();
+        expect(flow.phase()).toBe('idle');
+        expect(ceremony.assertPasskey).not.toHaveBeenCalled();
+      },
+    );
   });
 
   describe('reset', () => {
@@ -703,36 +1057,74 @@ describe('ErasureFlowService', () => {
       flow.reset();
 
       // Assert
-      // Opening the dialog starts a fresh attempt: the book scopes a
-      // withdrawal to the dialog rather than the screen, and the region is
-      // empty from the moment the overlay opens.
+      // Opening the dialog starts a fresh attempt, and a refusal from the
+      // last one is about a press made in a dialog already dismissed.
       expect(flow.failure()).toBeNull();
       expect(flow.phase()).toBe('idle');
       expect(flow.working()).toBe(false);
       expect(flow.pressable(WORD)).toBe(true);
     });
 
-    it('clears undetermined, so a new dialog offers the commit again', async () => {
+    it('keeps undetermined across a reset, so no later dialog offers the commit', async () => {
       // Arrange
       flow.erase(WORD);
       const erasing = await reachTheErasingRequest();
-      erasing.error(new ProgressEvent('error'), {
-        status: 0,
-        statusText: 'Unknown Error',
-      });
+      erasing.flush(null, { status: 504, statusText: 'Gateway Timeout' });
       await settle();
-      expect(flow.pressable(WORD)).toBe(false);
+      expect(flow.failure()).toBe('undetermined');
 
       // Act
       flow.reset();
 
       // Assert
-      // Safe because the first request a fresh attempt makes is the
-      // challenge, which a session deleted with the account fails at before
-      // the erasing request is reachable.
+      // Latched for the screen's life. A new dialog that offered the commit
+      // again would stake the account on the next challenge failing — and a
+      // session that outlived the erasure it could not see is exactly the case
+      // where it does not.
+      expect(flow.failure()).toBe('undetermined');
+      expect(flow.pressable(WORD)).toBe(false);
+    });
+
+    it.each([
+      { word: 'cancelled', refused: 'cancelled' },
+      { word: 'no-prf', refused: 'no-prf' },
+      { word: 'ceremony-failed', refused: 'failed' },
+    ] satisfies readonly {
+      readonly word: ErasureFailure;
+      readonly refused: PasskeyCeremonyFailure;
+    }[])('clears any other word on reset: $word', async ({ word, refused }) => {
+      // Arrange
+      ceremony.answer = { ok: false, failure: refused };
+      flow.erase(WORD);
+      (await requestTo(OPTIONS_URL)).flush(OPTIONS);
+      await eventually(() => flow.failure(), 'the refusal');
+      expect(flow.failure()).toBe(word);
+
+      // Act
+      flow.reset();
+
+      // Assert
+      // Only `undetermined` survives: every other word is a press that
+      // erased nothing, and the next dialog's region is empty.
       expect(flow.failure()).toBeNull();
-      expect(flow.phase()).toBe('idle');
       expect(flow.pressable(WORD)).toBe(true);
+    });
+
+    it('clears unstarted on reset', async () => {
+      // Arrange
+      flow.erase(WORD);
+      (await requestTo(OPTIONS_URL)).flush(null, {
+        status: 500,
+        statusText: 'Server Error',
+      });
+      await eventually(() => flow.failure(), 'the refusal');
+      expect(flow.failure()).toBe('unstarted');
+
+      // Act
+      flow.reset();
+
+      // Assert
+      expect(flow.failure()).toBeNull();
     });
 
     it('changes nothing while a press is in flight', async () => {

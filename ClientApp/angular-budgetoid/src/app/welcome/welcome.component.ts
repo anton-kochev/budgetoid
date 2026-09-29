@@ -2,8 +2,10 @@ import {
   ChangeDetectionStrategy,
   Component,
   DestroyRef,
+  afterNextRender,
   computed,
   inject,
+  signal,
 } from '@angular/core';
 import { MatButtonModule } from '@angular/material/button';
 import { Router } from '@angular/router';
@@ -55,15 +57,27 @@ export class WelcomeComponent {
 
   // **The one outcome the region carries that the person did not make here**:
   // the erasure dialog marks it on its way out, before the session ends and the
-  // router is asked for this screen. Read reactively rather than taken once at
-  // construction — the mark and the first paint are not ordered by anything
-  // this screen controls. See docs/design/components.md, "The welcome screen".
+  // router is asked for this screen, so it is already set when this screen is
+  // constructed. Read reactively all the same, so a mark that lands later still
+  // reaches the region. See docs/design/components.md, "The welcome screen".
   //
   // Root-provided and never listed here: a copy provided on this component
   // would be a notice nobody marked.
   protected readonly notice = inject(ErasureNotice);
 
+  // Whether this screen has rendered once. *Erased.* waits for it, so the
+  // region is in the DOM and empty before the word lands in it — a region
+  // inserted together with its line is announced by nothing, and a tab arriving
+  // here after an erasure brings the mark with it.
+  readonly #arrived = signal(false);
+
+  protected readonly erased = computed(
+    () => this.#arrived() && this.notice.erased(),
+  );
+
   constructor() {
+    afterNextRender(() => this.#arrived.set(true));
+
     // **It describes the moment the tab arrived.** A person who signs in, uses
     // the app and signs out again lands here with nothing having been erased.
     inject(DestroyRef).onDestroy(() => this.notice.clear());

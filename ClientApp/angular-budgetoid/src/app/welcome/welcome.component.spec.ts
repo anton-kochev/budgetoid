@@ -20,7 +20,7 @@ import {
   HttpTestingController,
   provideHttpClientTesting,
 } from '@angular/common/http/testing';
-import type { Provider } from '@angular/core';
+import { Injector, afterEveryRender, type Provider } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { provideNoopAnimations } from '@angular/platform-browser/animations';
 import { Router, provideRouter, type UrlTree } from '@angular/router';
@@ -190,9 +190,13 @@ function importKeyEncryptionKey(): Promise<CryptoKey> {
 // claims nothing about how many awaits the implementation contains today, and a
 // flow that never arrives fails with a sentence naming what never came rather
 // than with a null dereference.
+//
+// `between` runs after each wait — a render, for a reading that only a later
+// pass can produce.
 async function eventually<TValue>(
   read: () => TValue | null | undefined,
   what: string,
+  between: () => void = () => undefined,
 ): Promise<TValue> {
   for (let attempt = 0; attempt < 200; attempt += 1) {
     const value = read();
@@ -202,6 +206,7 @@ async function eventually<TValue>(
     }
 
     await new Promise((resolve) => setTimeout(resolve, 0));
+    between();
   }
 
   throw new Error(`Timed out waiting for ${what}.`);
@@ -826,7 +831,7 @@ describe('WelcomeComponent, after an erasure', () => {
     expect(region?.querySelector('.w-error')).toBeNull();
   });
 
-  it('says Erased. on arrival when the dialog marked it on the way out', () => {
+  it('says Erased. on arrival when the dialog marked it on the way out', async () => {
     // Arrange
     // The order the dialog keeps: the notice is marked, the session ended,
     // and only then is the router asked for Welcome.
@@ -836,7 +841,68 @@ describe('WelcomeComponent, after an erasure', () => {
     render();
 
     // Assert
-    expect(collapse(liveRegion(host())?.textContent ?? '')).toBe(ERASED);
+    // Once the screen has settled — the first paint itself is the case below.
+    await eventually(
+      () =>
+        collapse(liveRegion(host())?.textContent ?? '') === ERASED
+          ? true
+          : null,
+      'the region to say Erased.',
+      () => current().detectChanges(),
+    );
+  });
+
+  it('renders the region empty on first paint when arriving erased, then says Erased.', async () => {
+    // Arrange
+    // Marked before the screen exists, which is the order the dialog keeps.
+    // Read at the first render that has a region — an `earlyRead` hook
+    // registered before the component runs ahead of every hook the screen
+    // registers, whichever way the tick is driven — so a region filled later
+    // in the same tick still reads empty here.
+    notice.mark();
+    const firstPaints: { region: Element; text: string }[] = [];
+    const probe = afterEveryRender(
+      {
+        earlyRead: () => {
+          const region = fixture === null ? null : liveRegion(host());
+
+          if (region !== null && firstPaints.length === 0) {
+            firstPaints.push({
+              region,
+              text: collapse(region.textContent ?? ''),
+            });
+          }
+        },
+      },
+      { injector: TestBed.inject(Injector) },
+    );
+
+    // Act
+    render();
+    const first = await eventually(
+      () => firstPaints[0],
+      'a render with a live region',
+      () => current().detectChanges(),
+    ).finally(() => probe.destroy());
+
+    // Assert
+    // A region inserted together with its line is announced by nothing, so
+    // the one word a person arriving here needs to hear would go unheard.
+    expect(first.text).toBe('');
+
+    // Act
+    await eventually(
+      () =>
+        collapse(liveRegion(host())?.textContent ?? '') === ERASED
+          ? true
+          : null,
+      'the region to say Erased.',
+      () => current().detectChanges(),
+    );
+
+    // Assert
+    // In the node that was already there.
+    expect(liveRegion(host())).toBe(first.region);
   });
 
   it('says nothing about an erasure nobody marked', () => {

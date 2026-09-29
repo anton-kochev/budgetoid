@@ -289,14 +289,17 @@ Load-bearing rules. Each links the doc that argues it — **read that doc before
   [export.md](docs/business-logic/export.md), [erasure.md](docs/business-logic/erasure.md),
   [recovery-codes.md](docs/business-logic/recovery-codes.md),
   [components.md](docs/design/components.md)
-- **Erasure is the third caller of `SessionService.ended()`, and it never runs twice on one
-  answer.** `ErasureFlowService` lives on the settings component, fetches the challenge on the
+- **Erasure ends the session through `SessionService.ended()`, and the erasing request is never
+  retried.** `ErasureFlowService` lives on the settings component, fetches the challenge on the
   commit press, and on the `204` marks `ErasureNotice`, calls `ended()`, then navigates to
   `/welcome`, which says "Erased." The erasing POST carries `EXPECTS_UNAUTHENTICATED` and its
-  challenge does not. A lost or 5xx answer is `undetermined` and withdraws the commit for that
-  dialog; reopening resets the flow, which is safe only because the fresh attempt starts with the
-  unmarked challenge. The overlay dies with the screen that opened it.
-  [erasure.md](docs/business-logic/erasure.md), [components.md](docs/design/components.md)
+  challenge does not; a POST `401` is read only after one unmarked `GET /api/me`, so an ended
+  session goes to the interceptor rather than reading as a refused passkey. A lost, `5xx` or
+  unlisted answer is `undetermined` and withdraws the commit for the rest of the screen's life —
+  a reload is the way forward. Back disposes the overlay whatever `disableClose` says, so a
+  press is abandoned when its screen or overlay goes; a POST already out still ends the session
+  on a `204`. [erasure.md](docs/business-logic/erasure.md),
+  [components.md](docs/design/components.md)
 - **The browser runs both halves of the front door.** `webauthn-encoding.ts` is pure translation over
   a **strict** decoder — a lenient one must never appear beside it. `webauthn-ceremony.service.ts`
   runs **three** ceremonies and sends two; the third mints its own challenge and spends neither nonce

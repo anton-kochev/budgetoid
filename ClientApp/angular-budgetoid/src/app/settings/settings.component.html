@@ -846,8 +846,9 @@
     offers no way to bring an account back.
   </p>
   <p class="s-prose">
-    Erased data stays in point-in-time database backups for up to 7 days, and in
-    no other place.
+    Erased data stays in point-in-time database backups for up to 7 days, and
+    nowhere else on Budgetoid&rsquo;s servers. Your passkeys stay on your
+    devices until you remove them there.
   </p>
 
   <!-- The way into the erasure dialog, and live. Both paragraphs above are
@@ -872,6 +873,7 @@
        `aria-haspopup="dialog"`, so a screen reader says what the press opens
        before it is made. -->
   <button
+    #erasureTrigger
     class="s-button"
     mat-stroked-button
     type="button"

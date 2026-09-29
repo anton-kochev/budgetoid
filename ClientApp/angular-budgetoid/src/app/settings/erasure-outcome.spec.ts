@@ -12,11 +12,73 @@
 // `status >= 500` check misses.
 import { HttpErrorResponse } from '@angular/common/http';
 import { describe, expect, it } from 'vitest';
-import { erasureFailureOf } from './erasure-outcome';
+import { challengeFailureOf, erasureFailureOf } from './erasure-outcome';
 
 function httpError(status: number): HttpErrorResponse {
   return new HttpErrorResponse({ status, statusText: 'test' });
 }
+
+// How the re-authentication challenge that starts an erasure is read when it
+// fails. The challenge comes before anything is posted, so every word here ends
+// on *nothing was erased* — what the table decides is which of two things the
+// person is told to do next, and when to say nothing at all.
+describe('challengeFailureOf', () => {
+  it('says nothing about a 401, which is the session interceptor’s', () => {
+    // Act
+    const failure = challengeFailureOf(httpError(401));
+
+    // Assert
+    // The challenge is unmarked, so a 401 on it is a session that really has
+    // ended; `sessionExpiryInterceptor` owns that fact and takes the tab to
+    // Welcome. A word here would be a second owner of it.
+    expect(failure).toBeNull();
+  });
+
+  it.each([400, 403])(
+    'reads a %i on the challenge as a request this client could not use',
+    (status) => {
+      // Act
+      const failure = challengeFailureOf(httpError(status));
+
+      // Assert
+      // Refused before any handler ran — a reload is the remedy, and *try again
+      // in a minute* would send somebody round the same refusal forever.
+      expect(failure).toBe('unrecognised');
+    },
+  );
+
+  it.each([0, 408, 418, 429, 500, 502, 503, 504])(
+    'reads a %i on the challenge as not having started',
+    (status) => {
+      // Act
+      const failure = challengeFailureOf(httpError(status));
+
+      // Assert
+      // Everything else is a check that never got going. `418` is in the row as
+      // a status nobody listed: the default is `unstarted`, and a mapping that
+      // read the whole `4xx` band as `unrecognised` fails on it and on the
+      // proxy's `408` and `429`.
+      expect(failure).toBe('unstarted');
+    },
+  );
+
+  it.each([
+    new Error('not an HTTP answer'),
+    null,
+    'a string',
+    { status: 403 },
+    { status: 401 },
+  ])('reads %s on the challenge as not having started', (error) => {
+    // Act
+    const failure = challengeFailureOf(error);
+
+    // Assert
+    // `{ status: 403 }` and `{ status: 401 }` are the near misses: a shape
+    // carrying a status is not the server's answer, so it earns neither a
+    // reload sentence nor the interceptor's silence.
+    expect(failure).toBe('unstarted');
+  });
+});
 
 describe('erasureFailureOf', () => {
   it('reads a 401 as refused', () => {

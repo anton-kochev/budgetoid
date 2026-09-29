@@ -13,7 +13,11 @@
 // **Not `providedIn: 'root'`.** An attempt abandoned on a screen dies with the
 // screen: `SettingsComponent` provides this beside `RotationFlowService` and
 // opens the dialog with its own view container, so the dialog's content reaches
-// this instance and no other.
+// this instance and no other. Dying is not only being dropped: the screen's
+// teardown aborts a press that has not posted — the device's prompt comes down
+// and nothing more is asked or sent — and so does {@link abandon}, which the
+// screen calls when the overlay is closed from outside while the screen stays.
+// Once the erasing request is out there is nothing left to abandon.
 //
 // **Nothing secret lives on this instance.** The ceremony result is a local of
 // one method, and only its `payload` is ever read — the key-encryption key
@@ -28,6 +32,7 @@
 // client rather than a guess about the server.
 import { HttpErrorResponse } from '@angular/common/http';
 import {
+  DestroyRef,
   Injectable,
   computed,
   inject,
@@ -50,7 +55,9 @@ import { SessionService } from '@app-core/session/session.service';
 import { firstValueFrom } from 'rxjs';
 import { confirmsErasure } from './erasure-confirmation';
 import {
+  challengeFailureOf,
   erasureFailureOf,
+  type ChallengeRequestFailure,
   type ErasureRequestFailure,
 } from './erasure-outcome';
 
@@ -60,7 +67,8 @@ import {
  * * `idle` — nothing is running; the last press, if any, has ended.
  * * `asserting` — the challenge is being fetched or the device is being asked.
  *   Nothing has been posted.
- * * `erasing` — the erasing request is out and nothing can recall it.
+ * * `erasing` — the erasing request is out and nothing can recall it. It stays
+ *   here while a `401` on it is being told apart from an ended session.
  * * `erased` — it answered `204`. Terminal: the tab is on its way to Welcome,
  *   and no press is accepted in the window before the screen's teardown closes
  *   the dialog.
@@ -74,9 +82,10 @@ export type ErasurePhase = 'idle' | 'asserting' | 'erasing' | 'erased';
  * The ceremony's words first, raised before anything is posted. `failed` is
  * renamed `ceremony-failed`, because on this surface it would read as "erasing
  * failed", and `duplicate` folds into it: that is an authenticator declining a
- * credential named in an exclusion list, and an assertion carries none.
- * `unstarted` is a challenge that never arrived. The last three are the erasing
- * request's own — see `erasure-outcome.ts`, which owns that reading.
+ * credential named in an exclusion list, and an assertion carries none. Then
+ * the challenge request's own — `unstarted`, and `unrecognised`, which it
+ * shares with the erasing request — and the erasing request's three. See
+ * `erasure-outcome.ts`, which owns both readings.
  *
  * **It is not `RotationCeremonyFailure` imported.** Each flow states what *it*
  * can report, so the day one gains a word the other does not silently gain it.
@@ -86,8 +95,14 @@ export type ErasureFailure =
   | 'cancelled'
   | 'no-prf'
   | 'ceremony-failed'
-  | 'unstarted'
+  | ChallengeRequestFailure
   | ErasureRequestFailure;
+
+// How the challenge leg ended: with the server's options, or with the word the
+// press ends on — `null` when the flow has nothing to say.
+type ChallengeOutcome =
+  | { readonly ok: true; readonly options: PasskeyRequestOptionsJson }
+  | { readonly ok: false; readonly failure: ChallengeRequestFailure | null };
 
 @Injectable()
 export class ErasureFlowService {
@@ -103,6 +118,10 @@ export class ErasureFlowService {
   private readonly failureSignal: WritableSignal<ErasureFailure | null> =
     signal<ErasureFailure | null>(null);
 
+  // The press in flight's handle, until it posts or ends. One per press, so an
+  // abort reaches the attempt that is running and never a later one.
+  #press: AbortController | null = null;
+
   public readonly phase: Signal<ErasurePhase> = this.phaseSignal.asReadonly();
   public readonly failure: Signal<ErasureFailure | null> =
     this.failureSignal.asReadonly();
@@ -116,6 +135,13 @@ export class ErasureFlowService {
     () => this.phaseSignal() !== 'idle',
   );
 
+  constructor() {
+    // The screen that provides this is going. A press that has not posted is
+    // abandoned with it; one that has is left to finish, because a `204` still
+    // has to end the session.
+    inject(DestroyRef).onDestroy(() => this.abandon());
+  }
+
   /**
    * Whether a press of the commit with `typed` in the field would start
    * anything: the word matches, nothing is running, and the commit has not been
@@ -127,13 +153,13 @@ export class ErasureFlowService {
    * arrives whatever `aria-disabled` says, and a gate written in two places is
    * two gates that can disagree.
    *
-   * **`undetermined` closes it until {@link reset}, which is to say for the
-   * rest of the dialog that saw it.** Erasure is not idempotent to the caller:
-   * a second erasing request after a lost `204` is answered `401` — the session
-   * went with the account — and would read as *nothing was erased* over an
-   * account that is gone. Nothing inside the dialog clears the word, so the
-   * dialog cannot offer that request again. Opening a new dialog does clear it,
-   * through {@link reset}, and that is safe for the reason given there.
+   * **`undetermined` closes it for the screen's life.** Erasure is not
+   * idempotent to the caller: a second erasing request after a lost `204` is
+   * answered `401` — the session went with the account — and would read as
+   * *nothing was erased* over an account that is gone. Nothing clears the word,
+   * {@link reset} included, so no dialog on this screen can offer that request
+   * again. The way forward is a reload, which the sentence names: it asks the
+   * server who this is from the start.
    */
   public pressable(typed: string): boolean {
     return (
@@ -144,20 +170,20 @@ export class ErasureFlowService {
   }
 
   /**
-   * Puts the flow back at rest with no word, for a new dialog — or does
-   * nothing while a press is running or has erased the account.
+   * Puts the flow back at rest for a new dialog — clearing every word but
+   * `undetermined` — or does nothing while a press is running or has erased
+   * the account.
    *
-   * **A new dialog is a fresh attempt.** The design book scopes the commit's
-   * withdrawal to the dialog, not to the screen, and the dialog's region is
-   * empty from the moment it opens; this instance outlives any one dialog, so
-   * `SettingsComponent` calls this before it opens one.
+   * **A new dialog is a fresh attempt.** A refusal from the last one is about a
+   * press made in a dialog already dismissed, and the new dialog's region is
+   * empty; this instance outlives any one dialog, so `SettingsComponent` calls
+   * this before it opens one.
    *
-   * **Safe after `undetermined`**, because the first request a fresh attempt
-   * makes is the re-authentication challenge, and that request is unmarked. If
-   * the lost request did erase the account, the session went with it: the
-   * challenge answers `401`, `sessionExpiryInterceptor` ends the session and
-   * takes the tab to Welcome, and no ceremony runs and no erasing request is
-   * sent.
+   * **`undetermined` holds for the screen's life.** A new dialog that offered
+   * the commit again would stake the account on the next challenge failing —
+   * and a session that outlived the erasure it could not see is exactly the
+   * case where it does not. So every later dialog opens withdrawn, and the way
+   * forward is a reload.
    *
    * **Inert while {@link working}.** Mid-ceremony, a reset would put the flow
    * at rest while the device is still being asked, with the commit live for a
@@ -170,7 +196,25 @@ export class ErasureFlowService {
     }
 
     this.phaseSignal.set('idle');
-    this.failureSignal.set(null);
+
+    if (this.failureSignal() !== 'undetermined') {
+      this.failureSignal.set(null);
+    }
+  }
+
+  /**
+   * Abandons a press that has not posted: the device's prompt is aborted, and
+   * the press ends with nothing asked, sent or said after it. Does nothing once
+   * the erasing request is out — that request cannot be recalled, and its `204`
+   * still has to end the session.
+   *
+   * Called from the screen's teardown, and by the screen when the overlay is
+   * closed from outside mid-ceremony — the CDK disposes it on the browser's
+   * Back whatever `disableClose` says — while the screen itself stays.
+   */
+  public abandon(): void {
+    this.#press?.abort();
+    this.#press = null;
   }
 
   /**
@@ -202,17 +246,39 @@ export class ErasureFlowService {
 
     this.phaseSignal.set('asserting');
 
-    void this.run();
+    const press = new AbortController();
+
+    this.#press = press;
+
+    void this.run(press.signal);
   }
 
-  private async run(): Promise<void> {
-    const options = await this.challenge();
+  private async run(abort: AbortSignal): Promise<void> {
+    const challenge = await this.challenge();
 
-    if (options === null) {
+    if (abort.aborted) {
+      this.abandoned();
+
       return;
     }
 
-    const ceremony = await this.assert(options);
+    if (!challenge.ok) {
+      this.end(challenge.failure);
+
+      return;
+    }
+
+    const ceremony = await this.assert(challenge.options, abort);
+
+    // **The last point at which abandoning means anything.** Past this line
+    // the erasing request is sent, and there is no branch after it.
+    if (abort.aborted) {
+      this.abandoned();
+
+      return;
+    }
+
+    this.#press = null;
 
     if (!ceremony.ok) {
       this.end(ErasureFlowService.failureOf(ceremony.failure));
@@ -236,7 +302,13 @@ export class ErasureFlowService {
     } catch (error: unknown) {
       // **No retry, automatic or otherwise.** See {@link pressable} and
       // {@link reset}.
-      this.end(erasureFailureOf(error));
+      const failure = erasureFailureOf(error);
+
+      this.end(
+        failure === 'refused' && (await this.sessionHasEnded())
+          ? null
+          : failure,
+      );
 
       return;
     }
@@ -244,24 +316,23 @@ export class ErasureFlowService {
     this.leave();
   }
 
-  // The server's own options, unchanged — or `null` when the press ended here.
-  private async challenge(): Promise<PasskeyRequestOptionsJson | null> {
+  // The server's own options, or the word the press ends on.
+  private async challenge(): Promise<ChallengeOutcome> {
     try {
-      return await firstValueFrom(this.reauthentication.getRequestOptions());
+      return {
+        ok: true,
+        options: await firstValueFrom(
+          this.reauthentication.getRequestOptions(),
+        ),
+      };
     } catch (error: unknown) {
       // **A 401 here is chosen, not inherited: the flow says nothing.** This
       // request is unmarked, so a 401 on it is a session that really has ended
       // — `sessionExpiryInterceptor`'s fact. It ends the session, takes the
       // tab to Welcome, and the screen's teardown takes the dialog with it.
-      // `unstarted` would claim the server could not be reached when it
-      // answered; ending the session here would be a second owner of that
-      // fact, and two owners drift.
-      const sessionEnded =
-        error instanceof HttpErrorResponse && error.status === 401;
-
-      this.end(sessionEnded ? null : 'unstarted');
-
-      return null;
+      // Ending the session here would be a second owner of that fact, and two
+      // owners drift. `challengeFailureOf` owns the reading.
+      return { ok: false, failure: challengeFailureOf(error) };
     }
   }
 
@@ -270,32 +341,60 @@ export class ErasureFlowService {
   // nothing, so *nothing was erased* stays true.
   private async assert(
     options: PasskeyRequestOptionsJson,
+    abort: AbortSignal,
   ): Promise<PasskeyCeremonyResult<PasskeyAssertionCeremony>> {
     try {
-      return await this.ceremony.assertPasskey(options);
+      return await this.ceremony.assertPasskey(options, abort);
     } catch {
       return { ok: false, failure: 'failed' };
+    }
+  }
+
+  // Whether a `401` on the erasing request was a session that had already
+  // ended, rather than the gate declining the assertion. The erasing request
+  // is marked, so the interceptor heard neither reading; this probe is
+  // **unmarked**, so on the first reading its own `401` is the interceptor's to
+  // act on — it ends the session and takes the tab to Welcome — and the flow
+  // says nothing. A `200`, or a probe that cannot answer, leaves `refused`:
+  // the erasing request's `401` already proved it erased nothing, and the next
+  // press's unmarked challenge catches a session that really has gone.
+  private async sessionHasEnded(): Promise<boolean> {
+    try {
+      await firstValueFrom(this.me.getMe());
+
+      return false;
+    } catch (error: unknown) {
+      return error instanceof HttpErrorResponse && error.status === 401;
     }
   }
 
   // Ends a press that did not erase anything — or may have, for
   // `undetermined` — back at rest with its word.
   private end(failure: ErasureFailure | null): void {
+    this.#press = null;
     this.phaseSignal.set('idle');
     this.failureSignal.set(failure);
+  }
+
+  // Ends an abandoned press at rest, saying nothing: whoever abandoned it has
+  // stopped listening. The word was cleared when the press started.
+  private abandoned(): void {
+    this.phaseSignal.set('idle');
   }
 
   // The `204`, and **this order is the property**.
   //
   // The phase first, so no press is accepted from here on. The notice and
   // `SessionService.ended()` next, in either order between themselves — but
-  // both before the router. The notice, because Welcome renders *Erased.* from
-  // it on its first paint, and marked after the navigation the word lands on a
-  // screen that has already rendered. `ended()`, which is the single owner of
-  // clearing the account's keys from this tab, because `guestGuard` reads the
-  // session the moment it is asked, and a navigation made first is judged
-  // against a stale `authenticated` and sent back into an account that no
-  // longer exists. Sign out's order, for Sign out's reason.
+  // both before the router. The notice, because Welcome reads it when it is
+  // constructed; marked after the navigation, the word lands on a screen that
+  // has already rendered without it. Welcome shows it only after its own first
+  // render, so its region is there, empty, before the line lands. `ended()`,
+  // which is the single owner of clearing the account's keys from this tab,
+  // because `guestGuard` reads the session the moment it is asked, and a
+  // navigation made first is judged against a stale `authenticated` and sent
+  // back into an account that no longer exists. Sign out's order, for Sign
+  // out's reason.
   private leave(): void {
     this.phaseSignal.set('erased');
     this.notice.mark();

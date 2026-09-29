@@ -3,10 +3,12 @@ import {
   ChangeDetectionStrategy,
   Component,
   DestroyRef,
+  ElementRef,
   OnInit,
   ViewContainerRef,
   computed,
   inject,
+  viewChild,
 } from '@angular/core';
 import type { DialogConfig } from '@angular/cdk/dialog';
 import {
@@ -21,6 +23,8 @@ import { AccountUnlockService } from './account-unlock.service';
 import { toCredentialRow, type CredentialRow } from './credential-row';
 import {
   ERASE_DIALOG_CONSEQUENCE_ID,
+  ERASE_DIALOG_DISMISS_ID,
+  ERASE_DIALOG_FIELD_ID,
   ERASE_DIALOG_TITLE_ID,
   EraseDialogComponent,
 } from './erase-dialog.component';
@@ -125,6 +129,14 @@ export class SettingsComponent implements OnInit {
   private readonly breakpoints = inject(BreakpointObserver);
   private readonly viewContainerRef = inject(ViewContainerRef);
 
+  // The control that opens the erasure confirmation, and where focus goes back
+  // to when it closes. `read: ElementRef`, because it sits on a `mat-button`,
+  // whose component instance is what the query answers by default.
+  private readonly erasureTrigger = viewChild.required<
+    string,
+    ElementRef<HTMLButtonElement>
+  >('erasureTrigger', { read: ElementRef });
+
   // The erasure confirmation while it is open, whichever host it is in.
   private erasure:
     | MatDialogRef<EraseDialogComponent>
@@ -133,10 +145,17 @@ export class SettingsComponent implements OnInit {
 
   constructor() {
     // **The overlay lives no longer than this screen.** A router navigation
-    // alone does not close a Material overlay, and every way off the screen
-    // passes through this teardown — the tab going to Welcome after a `204`,
-    // the interceptor sending an ended session there, the browser's Back — so
-    // this is where it is closed, through the ref's own close.
+    // alone does not close a Material overlay, and every navigation off the
+    // screen passes through this teardown — the tab going to Welcome after a
+    // `204`, the interceptor sending an ended session there — so this is where
+    // it is closed, through the ref's own close. The flow, provided here, dies
+    // with the screen too, and abandons a press that has not posted as it goes.
+    //
+    // **The browser's Back closes the overlay first.** The CDK disposes it on
+    // `popstate` whatever `disableClose` says — measured — before the screen
+    // goes, which is why `openErasure` abandons a press when its overlay closes
+    // mid-ceremony, not only here. Abandoning covers what has not been sent: an
+    // erasing request already out still ends the session on a `204`.
     //
     // **Not the only thing that would, today, and it is kept on purpose.**
     // Because the overlay is opened with this screen's view container, the CDK
@@ -171,19 +190,27 @@ export class SettingsComponent implements OnInit {
       return;
     }
 
-    // **Every open is a fresh attempt**, so the last dialog's word — a
-    // refusal, or `undetermined` and the commit it withdrew — does not carry
-    // into this one. `ErasureFlowService.reset` argues why that is safe, and
-    // refuses while a press is running. Before the open, so the content's first
-    // pass already reads the flow at rest.
+    // **Every open is a fresh attempt**, so the last dialog's refusal does not
+    // carry into this one — except `undetermined`, which `reset` keeps for the
+    // screen's life, so this dialog opens withdrawn and asks for nothing.
+    // `ErasureFlowService.reset` argues both halves, and refuses while a press
+    // is running. Before the open, so the content's first pass already reads
+    // the flow at rest.
     this.erasureFlow.reset();
 
     const viewContainerRef = this.viewContainerRef;
-    // `autoFocus: false`: the content moves focus to its own field once the
-    // host has opened (`erase-dialog.component.ts` argues why it owns that),
-    // and `false` is the one setting under which the host focuses nothing over
-    // it — only its own container, and only while focus is still outside.
-    const autoFocus = false;
+    // **One focus move, made by the host, to a control named by id**: the field
+    // — the word is the next thing asked for — or, in a dialog opened
+    // withdrawn, the dismiss, the one control left. A selector rather than
+    // `first-tabbable`, which reaches the field only because of the order of
+    // the markup. `erase-dialog.component.ts` owns the ids.
+    const withdrawn = this.erasureFlow.failure() === 'undetermined';
+    const autoFocus = `#${withdrawn ? ERASE_DIALOG_DISMISS_ID : ERASE_DIALOG_FIELD_ID}`;
+    // **Back to the trigger, named rather than remembered.** The host's default
+    // restores whatever had focus when it opened, and a tap on a phone — or a
+    // click in a browser that does not focus buttons — leaves that as the body,
+    // so a keyboard or screen-reader user would start again from the top.
+    const restoreFocus = this.erasureTrigger().nativeElement;
     // Named by the title and described by the consequence, under both hosts.
     const ariaLabelledBy = ERASE_DIALOG_TITLE_ID;
     const ariaDescribedBy = ERASE_DIALOG_CONSEQUENCE_ID;
@@ -196,6 +223,7 @@ export class SettingsComponent implements OnInit {
       opened = this.dialog.open(EraseDialogComponent, {
         viewContainerRef,
         autoFocus,
+        restoreFocus,
         ariaLabelledBy,
         ariaDescribedBy,
         // The Dialogs and sheets chapter's maximum; the width below it is the
@@ -217,24 +245,13 @@ export class SettingsComponent implements OnInit {
         Pick<DialogConfig, 'ariaLabelledBy' | 'ariaDescribedBy'> = {
         viewContainerRef,
         autoFocus,
+        restoreFocus,
         ariaLabelledBy,
         ariaDescribedBy,
       };
 
       opened = this.sheet.open(EraseDialogComponent, sheetConfig);
     }
-
-    // **The content's first pass runs here, inside the press that opened it.**
-    // In the running app the tick that follows the click does the same thing
-    // a moment later, so this changes nothing a person can see. What it fixes
-    // is *where* the first pass runs: Material's form field registers an
-    // `effect()` bound to the zone it was created in — this press's — and a
-    // first pass started from outside that zone re-enters it mid-render and
-    // asks for a second tick inside the first. Measured: without this line the
-    // Settings spec, whose settle step ticks from outside the zone, ends with
-    // six unhandled `NG0101` errors and a failed run. Rendered here, the
-    // effect has already run where it belongs.
-    opened.componentRef?.changeDetectorRef.detectChanges();
 
     this.erasure = opened;
 
@@ -244,6 +261,15 @@ export class SettingsComponent implements OnInit {
     closed.subscribe(() => {
       if (this.erasure === opened) {
         this.erasure = null;
+      }
+
+      // **Closed from outside while the device is still being asked** — the
+      // browser's Back, which the CDK honours whatever `disableClose` says. The
+      // screen stays, the dialog does not, and a passkey answering now would
+      // erase the account with nothing on screen to say so. Once the erasing
+      // request is out there is nothing to abandon.
+      if (this.erasureFlow.phase() === 'asserting') {
+        this.erasureFlow.abandon();
       }
     });
   }

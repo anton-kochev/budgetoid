@@ -69,6 +69,10 @@ import {
 } from './account-unlock.service';
 import { credentialRegistrationDate } from './credential-registration-date';
 import {
+  ERASE_DIALOG_DISMISS_ID,
+  ERASE_DIALOG_FIELD_ID,
+} from './erase-dialog.component';
+import {
   ErasureFlowService,
   type ErasureFailure,
   type ErasurePhase,
@@ -99,7 +103,7 @@ function meDto(email: string): MeDto {
 const ERASE_BUTTON = 'Erase everything';
 const EXPORT_BUTTON = 'Export';
 const BACKUP_WINDOW =
-  'Erased data stays in point-in-time database backups for up to 7 days, and in no other place.';
+  'Erased data stays in point-in-time database backups for up to 7 days, and nowhere else on Budgetoid’s servers. Your passkeys stay on your devices until you remove them there.';
 // The sentences this screen uses to explain a control it cannot offer yet, in
 // the shape `voice.md`'s "not built yet" pattern sets: name the missing piece
 // and what it waits on, in the same breath as the control it disables. Declared
@@ -767,6 +771,7 @@ class ErasureFlowStub implements ErasureFlowSurface {
   public pressable = vi.fn((): boolean => false);
   public erase = vi.fn();
   public reset = vi.fn();
+  public abandon = vi.fn();
 }
 
 // What the three blocks below need in order to mount the *shipped* component
@@ -4663,10 +4668,13 @@ describe.each(ERASURE_WIDTHS)('SettingsComponent erasing, $width', (row) => {
     await openPane();
 
     // Act
-    // Every way off the screen passes through its teardown — the tab going to
-    // Welcome after a 204, the interceptor sending an ended session there, and
-    // the browser's Back. A router navigation alone does not close a Material
-    // overlay.
+    // Every navigation off the screen passes through its teardown — the tab
+    // going to Welcome after a 204, the interceptor sending an ended session
+    // there. A router navigation alone does not close a Material overlay. The
+    // browser's Back is the exception that closes it first: the CDK disposes
+    // the overlay on `popstate` whatever `disableClose` says, before the
+    // screen goes — which is why the screen abandons the attempt when its
+    // overlay closes from outside, as well as when it is torn down.
     current().destroy();
     fixture = null;
 
@@ -4747,13 +4755,11 @@ describe.each(ERASURE_WIDTHS)('SettingsComponent erasing, $width', (row) => {
     }
   });
 
-  // The two reopening cases below let a press run to its end, which the cases
-  // above never do — so the flow's word changes *after* the press, in a promise
+  // The cases below let a press run past the challenge, which the cases above
+  // never do — so the flow's word changes *after* the press, in a promise
   // continuation, and the dialog's `disableClose` effect goes dirty from there.
-  // Ticked from outside the zone, as `settleSync` does, that effect re-enters
-  // the zone mid-render and the zone's own scheduler asks for a second tick
-  // inside the first (`NG0101`). So these tick inside the zone, where the
-  // application's own ticks run.
+  // Every render in this block ticks inside the zone (`tickInZone`) for that
+  // reason; `until` is `eventually` with such a tick between reads.
   it('opens a fresh attempt after a refusal was cancelled away', async () => {
     // Arrange
     ceremony.assertPasskey.mockImplementation(() =>
@@ -4793,7 +4799,7 @@ describe.each(ERASURE_WIDTHS)('SettingsComponent erasing, $width', (row) => {
     expect(normalize(pane)).not.toContain('nothing was erased');
   });
 
-  it('offers the commit again in a new dialog after one that could not tell', async () => {
+  it('keeps the commit withdrawn in every later dialog on this screen', async () => {
     // Arrange
     const keyEncryptionKey = await crypto.subtle.generateKey(
       { name: 'AES-GCM', length: 256 },
@@ -4840,15 +4846,276 @@ describe.each(ERASURE_WIDTHS)('SettingsComponent erasing, $width', (row) => {
     pane = await until(overlayPane, 'the confirmation to open again');
 
     // Assert
-    // Opening is a fresh attempt, and that is safe here: the first request it
-    // makes is the challenge, which a session deleted with the account fails
-    // at before the erasing request is reachable. The new dialog is the
-    // ordinary one — commit present, dismiss saying *Cancel*, region empty.
-    expect(buttonNamed(pane, ERASE_BUTTON)).not.toBeNull();
-    expect(buttonNamed(pane, 'Cancel')).not.toBeNull();
-    expect(buttonNamed(pane, 'Close')).toBeNull();
-    expect(normalize(statusOf(pane))).toBe('');
+    // Latched for the screen's life. A new dialog that offered the commit
+    // again would stake the account on the next challenge failing — and a
+    // session that outlived the erasure it could not see is exactly the case
+    // where it does not. So the new dialog is the withdrawn one: no commit, a
+    // dismiss saying *Close*, focus on it, and no challenge asked for.
+    expect(buttonNamed(pane, ERASE_BUTTON)).toBeNull();
+    expect(buttonNamed(pane, 'Cancel')).toBeNull();
+    const dismiss = await until(
+      () => buttonNamed(pane, 'Close'),
+      'the Close control in the new dialog',
+    );
+    await until(
+      () => (document.activeElement === dismiss ? true : null),
+      'focus to land on Close',
+    );
+    expect(http.match(OPTIONS_URL)).toHaveLength(0);
   });
+
+  it('aims the host’s focus at the field, and at the dismiss once the commit is withdrawn', async () => {
+    // Arrange
+    // Read at the opener, because the document cannot tell who moved focus:
+    // the dialog's own effect also focuses the dismiss whenever it renders
+    // withdrawn. Measured: an opener that always aimed at the field — which a
+    // withdrawn dialog does not render — still ends with focus on Close in
+    // the bottom sheet, so the case above goes red for it on the expanded
+    // host only. The book gives the one move on open to the host.
+    const openDialog = vi.spyOn(MatDialog.prototype, 'open');
+    const openSheet = vi.spyOn(MatBottomSheet.prototype, 'open');
+    const aimedAt = (): unknown[] =>
+      [...openDialog.mock.calls, ...openSheet.mock.calls].map(
+        ([, config]) => config?.autoFocus,
+      );
+
+    try {
+      const keyEncryptionKey = await crypto.subtle.generateKey(
+        { name: 'AES-GCM', length: 256 },
+        false,
+        ['encrypt', 'decrypt'],
+      );
+      ceremony.assertPasskey.mockImplementation(() =>
+        Promise.resolve({
+          ok: true,
+          value: { payload: ASSERTION_PAYLOAD, keyEncryptionKey },
+        }),
+      );
+      trigger()?.click();
+      const pane = await until(overlayPane, 'the confirmation to open');
+      press(pane);
+      (
+        await until(
+          () => http.match(OPTIONS_URL)[0] ?? null,
+          'the challenge request',
+        )
+      ).flush(CHALLENGE);
+      (
+        await until(
+          () => http.match(ERASURE_URL)[0] ?? null,
+          'the erasing request',
+        )
+      ).error(new ProgressEvent('error'), {
+        status: 0,
+        statusText: 'Unknown Error',
+      });
+      const close = await until(
+        () => buttonNamed(pane, 'Close'),
+        'the Close control',
+      );
+      close.click();
+      await until(
+        () => (overlayPane() === null ? true : null),
+        'the confirmation to close',
+      );
+
+      // Act
+      trigger()?.click();
+      await until(overlayPane, 'the confirmation to open again');
+
+      // Assert
+      expect(aimedAt()).toEqual([
+        `#${ERASE_DIALOG_FIELD_ID}`,
+        `#${ERASE_DIALOG_DISMISS_ID}`,
+      ]);
+    } finally {
+      openDialog.mockRestore();
+      openSheet.mockRestore();
+    }
+  });
+
+  it('sends no erasing request after the overlay closes from outside mid-ceremony', async () => {
+    // Arrange
+    const answer = await holdTheCeremony();
+    trigger()?.click();
+    const pane = await until(overlayPane, 'the confirmation to open');
+    press(pane);
+    (
+      await until(
+        () => http.match(OPTIONS_URL)[0] ?? null,
+        'the challenge request',
+      )
+    ).flush(CHALLENGE);
+    await until(
+      () => (ceremony.assertPasskey.mock.calls.length > 0 ? true : null),
+      'the ceremony to start',
+    );
+
+    // Act
+    // Through the ref, which is what the CDK's own disposal on `popstate`
+    // amounts to: it closes the overlay whatever `disableClose` says, and the
+    // screen underneath stays.
+    closeFromOutside();
+    await until(
+      () => (overlayPane() === null ? true : null),
+      'the confirmation to close',
+    );
+    answer();
+    await settle();
+
+    // Assert
+    // The passkey answered for a dialog nobody can see any more. Posted anyway,
+    // it erases the account with nothing on screen to say so.
+    expect(http.match(ERASURE_URL)).toHaveLength(0);
+  });
+
+  it('sends no erasing request after the screen is destroyed mid-ceremony', async () => {
+    // Arrange
+    const answer = await holdTheCeremony();
+    trigger()?.click();
+    const pane = await until(overlayPane, 'the confirmation to open');
+    press(pane);
+    (
+      await until(
+        () => http.match(OPTIONS_URL)[0] ?? null,
+        'the challenge request',
+      )
+    ).flush(CHALLENGE);
+    await until(
+      () => (ceremony.assertPasskey.mock.calls.length > 0 ? true : null),
+      'the ceremony to start',
+    );
+
+    // Act
+    current().destroy();
+    fixture = null;
+    answer();
+    await settle();
+
+    // Assert
+    expect(http.match(ERASURE_URL)).toHaveLength(0);
+  });
+
+  it('moves focus once on open, straight to the field', async () => {
+    // Arrange
+    // Every element focus visits, in order. The press does not focus the
+    // trigger, so anything recorded is the overlay's doing.
+    const visited: Element[] = [];
+    const record = (event: FocusEvent): void => {
+      if (event.target instanceof Element) {
+        visited.push(event.target);
+      }
+    };
+    document.addEventListener('focusin', record);
+
+    try {
+      // Act
+      trigger()?.click();
+      const pane = await openPane();
+      const field = await until(
+        () => pane.querySelector<HTMLInputElement>('input'),
+        'the field',
+      );
+      await until(
+        () => (document.activeElement === field ? true : null),
+        'focus to land in the field',
+      );
+      await settle();
+
+      // Assert
+      // A stop on the container first is a second announcement — the
+      // overlay's name and description read out, then cut off by the field's
+      // label — for a move nobody sees.
+      expect(visited.map(describeElement)).toEqual([describeElement(field)]);
+      expect(visited[0]).toBe(field);
+    } finally {
+      document.removeEventListener('focusin', record);
+    }
+  });
+
+  it('gives focus back to the trigger on close even when the press did not focus it', async () => {
+    // Arrange
+    // A tap on a phone, or a click in a browser that does not focus buttons
+    // on click, leaves focus where it was. Restoring "whatever had focus
+    // before" then returns it to the body, and a keyboard or screen-reader
+    // user starts again from the top of the page.
+    (document.activeElement as HTMLElement | null)?.blur();
+    const erase = trigger();
+    expect(erase).not.toBeNull();
+    expect(document.activeElement).not.toBe(erase);
+
+    // Act
+    erase?.click();
+    const pane = await openPane();
+    await until(
+      () =>
+        document.activeElement === pane.querySelector('input') ? true : null,
+      'focus to land in the field',
+    );
+    buttonNamed(pane, 'Cancel')?.click();
+    await closedPane();
+
+    // Assert
+    await until(
+      () => (document.activeElement === erase ? true : null),
+      'focus to return to the trigger',
+    );
+  });
+
+  // Makes the device's answer wait for the case, and hands back what answers
+  // it — a passkey that verified, so a flow that is not stopped posts.
+  async function holdTheCeremony(): Promise<() => void> {
+    const keyEncryptionKey = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      false,
+      ['encrypt', 'decrypt'],
+    );
+    const pending: {
+      resolve?: (
+        result: PasskeyCeremonyResult<PasskeyAssertionCeremony>,
+      ) => void;
+    } = {};
+
+    ceremony.assertPasskey.mockImplementation(
+      () =>
+        new Promise<PasskeyCeremonyResult<PasskeyAssertionCeremony>>(
+          (resolve) => (pending.resolve = resolve),
+        ),
+    );
+
+    return () =>
+      pending.resolve?.({
+        ok: true,
+        value: { payload: ASSERTION_PAYLOAD, keyEncryptionKey },
+      });
+  }
+
+  // Closes the open overlay through its own ref, as the CDK does on
+  // `popstate`, without going through anything the dialog draws.
+  function closeFromOutside(): void {
+    const dialogRef = TestBed.inject(MatDialog).openDialogs[0];
+
+    if (dialogRef !== undefined) {
+      dialogRef.close();
+
+      return;
+    }
+
+    const sheetRef = TestBed.inject(MatBottomSheet)._openedBottomSheetRef;
+
+    if (sheetRef === null) {
+      throw new Error('No overlay is open to close.');
+    }
+
+    sheetRef.dismiss();
+  }
+
+  function describeElement(element: Element): string {
+    return [
+      element.tagName.toLowerCase(),
+      ...Array.from(element.classList),
+    ].join('.');
+  }
 
   // Types the word into the open confirmation and presses its commit.
   function press(pane: HTMLElement): void {
@@ -4873,8 +5140,20 @@ describe.each(ERASURE_WIDTHS)('SettingsComponent erasing, $width', (row) => {
     return document.querySelector<HTMLElement>('.cdk-overlay-pane');
   }
 
+  // One render, from wherever it is called. Only `tickInZone` calls it.
+  function renderOnce(): void {
+    TestBed.tick();
+    fixture?.detectChanges();
+  }
+
+  // Inside the zone, where the application's own ticks run. Every render in
+  // this block goes through here: Material's form field registers an
+  // `effect()` bound to the zone it was created in, and a pass started from
+  // outside that zone re-enters it mid-render and asks for a second tick
+  // inside the first (`NG0101`). So the harness does not depend on the screen
+  // rendering the dialog's first pass itself inside the press.
   function tickInZone(): void {
-    TestBed.inject(NgZone).run(() => settleSync());
+    TestBed.inject(NgZone).run(() => renderOnce());
   }
 
   // `eventually`, ticking inside the zone between reads.
@@ -4902,8 +5181,7 @@ describe.each(ERASURE_WIDTHS)('SettingsComponent erasing, $width', (row) => {
   }
 
   function settleSync(): void {
-    TestBed.tick();
-    fixture?.detectChanges();
+    tickInZone();
   }
 
   async function settle(): Promise<void> {
@@ -4915,7 +5193,7 @@ describe.each(ERASURE_WIDTHS)('SettingsComponent erasing, $width', (row) => {
 
   async function openPane(): Promise<HTMLElement> {
     return eventually(() => {
-      settleSync();
+      tickInZone();
       return document.querySelector<HTMLElement>('.cdk-overlay-pane');
     }, 'the confirmation to open');
   }

@@ -19,7 +19,7 @@
 //
 // **Vitest spies persist across cases** (`restoreMocks` is unset), so the stub
 // is rebuilt in every `beforeEach`.
-import { signal } from '@angular/core';
+import { Injector, afterEveryRender, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import {
   MatBottomSheet,
@@ -81,7 +81,7 @@ const FAILURE_SENTENCES = {
   'ceremony-failed':
     'Your device couldn’t finish the passkey check. Try again, or choose another passkey — nothing was erased.',
   unstarted:
-    'Budgetoid couldn’t reach the server to start. Try again in a minute — nothing was erased.',
+    'Budgetoid couldn’t start the passkey check. Try again in a minute — nothing was erased.',
   refused:
     'Budgetoid didn’t accept that passkey for this account. Try again with a passkey you made for it — nothing was erased.',
   unrecognised:
@@ -115,6 +115,9 @@ class ErasureFlowStub implements ErasureFlowSurface {
   public readonly erase: Mock<(typed: string) => void> = vi.fn();
   // Settings calls it when it opens the overlay; the dialog never does.
   public readonly reset: Mock<() => void> = vi.fn();
+  // Settings calls it when the overlay is closed from outside mid-ceremony;
+  // the dialog never does.
+  public readonly abandon: Mock<() => void> = vi.fn();
 }
 
 // The two hosts, behind one shape: open, read `disableClose`, and learn whether
@@ -532,6 +535,61 @@ describe('EraseDialogComponent', () => {
         () => (document.activeElement === close ? true : null),
         'focus to land on Close',
       );
+    });
+  });
+
+  describe('opened over a flow that already cannot tell', () => {
+    it('opens with an empty region when already undetermined, then says it after the first render', async () => {
+      // Arrange
+      // `undetermined` outlives the dialog that saw it, so a later dialog on
+      // the same screen opens over it. Read at the first render that has a
+      // region — an `earlyRead` hook registered before the open runs ahead of
+      // every hook the dialog registers, whichever way the tick is driven — so
+      // a region that is filled later in the same tick still reads empty here.
+      flow.failure.set('undetermined');
+      const firstPaints: { region: Element; text: string }[] = [];
+      const probe = afterEveryRender(
+        {
+          earlyRead: () => {
+            const region = document.querySelector(
+              '.cdk-overlay-pane [role="status"]',
+            );
+
+            if (region !== null && firstPaints.length === 0) {
+              firstPaints.push({ region, text: normalize(region) });
+            }
+          },
+        },
+        { injector: TestBed.inject(Injector) },
+      );
+
+      // Act
+      HOSTS[0]?.open();
+      render();
+      const first = await eventually(
+        () => firstPaints[0],
+        'a render with a status region',
+      ).finally(() => probe.destroy());
+
+      // Assert
+      // A region created together with its first line is announced by
+      // nothing: the one sentence that says the account may be gone would go
+      // unheard by the person who most needs it.
+      expect(first.text).toBe('');
+
+      // Act
+      await eventually(
+        () =>
+          normalize(statusRegion()) === FAILURE_SENTENCES.undetermined
+            ? true
+            : null,
+        'the region to say it cannot tell',
+      );
+
+      // Assert
+      // In the node that was already there.
+      expect(statusRegion()).toBe(first.region);
+      expect(commitButton()).toBeNull();
     });
   });
 

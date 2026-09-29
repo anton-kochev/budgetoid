@@ -561,8 +561,8 @@ required members. A third writer is a decision rather than a refactor.
   raced a just-signed-in person off `/app` and onto a `/welcome` that had nothing to say. If the
   session genuinely has ended, the next unmarked read says so from a screen that can render it. See
   [account-keys.md](account-keys.md). The erasing request is signed in as well and carries the
-  token on the rule itself — its `401` is usually its gate's verdict — as the census below sets
-  out. The **re-throw** keeps this an observer rather than a handler; swallowed, the error reaches no
+  token on the rule itself — its `401` is usually its gate's verdict, and the flow asks an unmarked
+  probe whether it was — as the census below sets out. The **re-throw** keeps this an observer rather than a handler; swallowed, the error reaches no
   caller's `catchError` and the screen that made the request sits on its loading line forever.
 - **Enforced in**: `sessionExpiryInterceptor`, registered after `apiCredentialsInterceptor` so the
   unwinding puts it nearest the backend. The exclusion is carried on the **request**, as an
@@ -589,12 +589,15 @@ required members. A third writer is a decision rather than a refactor.
     `getSessionOwner()`. `eraseAccount()` carries it on the rule's own terms: a `401` there is
     usually the gate declining the assertion — that route's verdict on that request — and otherwise
     a session that had already ended before the gate ran, and either way the request erased
-    nothing, which the erasure dialog says as `refused`. Unmarked, the interceptor would take the
-    tab to `/welcome` over a sentence the dialog never got to show. A session that really had
-    ended is not lost by the mark, because the next press opens with the re-authentication
-    challenge from `ReauthenticationApiService`, which is **unmarked** — so the mark is per request
-    rather than per act, and the two legs of one erasure answer the question opposite ways. See
-    [erasure.md](erasure.md).
+    nothing. Unmarked, the interceptor would take the tab to `/welcome` over a sentence the dialog
+    never got to show. **A session that really had ended is not lost by the mark**, because
+    `ErasureFlowService` resolves every `401` there with one **unmarked** `GET /api/me` —
+    `getMe()`, the counterexample above, used for exactly the reason it is one. A `401` on that
+    probe is the interceptor's to act on, and it ends the session and leaves for `/welcome` while
+    the dialog says nothing; a `200`, or a probe that cannot answer, lets the dialog say `refused`.
+    The re-authentication challenge before the erasing request, from `ReauthenticationApiService`,
+    is unmarked as well — so the mark is per request rather than per act, and the legs of one
+    erasure answer the question opposite ways. See [erasure.md](erasure.md).
     - **The rotation begin is the difference worth reading beside it.**
       `KeyRotationApiService.beginRotation` also carries a re-authentication assertion to a gate
       that answers `401` when it declines, and it is unmarked, like the other three members of that
@@ -616,8 +619,9 @@ required members. A third writer is a decision rather than a refactor.
 - **Why**: leaving people with no way out once sessions are real is worse than the route costs. The
   caller names no session — the id comes from the claim its own authentication produced — so there
   is no session id on the wire for anyone to substitute. Idempotence stops a dead cookie living on
-  the client forever: a `401` on the second call would leave the browser holding a handle nothing
-  will ever clear.
+  the client for the rest of its lifetime: a `401` on the second call would leave the browser
+  holding a handle nothing clears before its `Expires`. An erased account is the one end where that
+  does happen, on purpose — the rule below says why it is harmless there.
 - **Enforced in**: `SessionEndpoints` and `RevokeSessionHandler`, over
   `ISessionRepository.RevokeAsync`, whose idempotence is `Session.Revoke`'s.
   `SignOutTests.SigningOut_LeavesAnotherDeviceSignedIn` is the negative control — without it, a
@@ -641,6 +645,15 @@ required members. A third writer is a decision rather than a refactor.
   until somebody argues for it.
 - **Counterexample**: relaxing the *lookup* instead — admitting a request whose token matched
   nothing so that sign-out "always works". That is an unauthenticated route with extra steps.
+- **Note** — **an erased account is the one end where this route answers `401`**, and the cookie
+  stays on the client until its own `Expires`, which is the deleted session row's expiry. An erasure
+  leaves no *ended* session behind, only an absent one: the cascade takes the `session_tokens` row,
+  so `AuthenticateSessionHandler` finds no token and returns nothing, and
+  `SessionCookieAuthenticationHandler` answers `NoResult` before it ever reads
+  `AcceptsEndedSessionAttribute`. That is the dead cookie the sign-out rule above exists to avoid,
+  and here it is harmless: the handle names no row, so it opens nothing and every route answers it
+  `401`. **Do not "fix" it by relaxing the lookup** — that is this rule's own counterexample. See
+  [erasure.md](erasure.md).
 - **Source**: `[SOURCE: discussion]`
 
 ---
@@ -723,10 +736,9 @@ stateDiagram-v2
     [*] --> Established : a credential authenticates its owner
     Established --> Revoked : someone ends this session, or the credential that opened it
     Established --> Expired : expires_at_utc passes with nobody revoking anything
-    Established --> Erased : the account is erased, and the row is deleted rather than stamped
-    Revoked --> [*]
-    Expired --> [*]
-    Erased --> [*]
+    Established --> [*] : the account is erased (the row is deleted)
+    Revoked --> [*] : the row is deleted when its credential is removed or the account is erased
+    Expired --> [*] : the row is deleted when its credential is removed or the account is erased
 ```
 
 | Transition | Triggered by | Validations |
@@ -734,7 +746,7 @@ stateDiagram-v2
 | → Established | `Session.Establish(credential, createdAtUtc, expiresAtUtc)`, reached from `RegisterAccountHandler` once a registration ceremony verifies — over the **passkey** credential it just created, never the recovery-codes one — from `CompleteAssertionHandler` once a passkey assertion verifies, from `RedeemRecoveryCodeHandler` once a presented verifier matches a stored hash, and from `GenerateRecoveryCodesHandler` when replacing a set ended at least one of that set's sessions | the credential is required; the expiry must be after the creation instant; the kind is derived from the credential's type and cannot be supplied |
 | Established → Revoked | `Session.Revoke(revokedAtUtc)`, reached two ways: through `RevokeSessionsForCredentialHandler`, which `RevokePasskeyHandler` and `GenerateRecoveryCodesHandler` each call before deleting a credential, and through `RevokeSessionHandler`, which `POST /api/me/session/revocation` calls to end the caller's own | none. Already revoked is a no-op keeping the first instant, which is what makes a retry honest about having ended nothing new |
 | Established → Expired | the clock | none. `IsActiveAt` reads the expiry as well as the revocation, with an exclusive boundary: a session is live up to its expiry and not at it |
-| Established → Erased | `EraseAccountHandler` deleting the user row; the session and its `session_tokens` rows leave by the cascade `users → credentials → sessions → session_tokens`, in the erasure's own transaction. A revoked or expired row leaves the same way | none, and nothing is stamped: a `revoked_at_utc` would be a remnant. The cascade runs as the referencing table's owner, because the role holds no `DELETE` on either table — see [erasure.md](erasure.md). The next request presenting the cookie finds no token row and answers `401` |
+| Established → deleted | `EraseAccountHandler` deleting the user row; the session and its `session_tokens` rows leave by the cascade `users → credentials → sessions → session_tokens`, in the erasure's own transaction. A revoked or expired row leaves the same way | none, and nothing is stamped: a `revoked_at_utc` would be a remnant. The cascade runs as the referencing table's owner; the role holds no `DELETE` on either table, so a cascade is the only way these rows leave — see [erasure.md](erasure.md). The next request presenting the cookie finds no token row and answers `401` — **the sign-out route included**, which makes this the one end where the cookie stays on the client until its `Expires`. Harmless, because it names nothing; do not answer it by relaxing the lookup — see the ended-session rule |
 
 There is no transition back. Nothing un-revokes a session and nothing extends one.
 
