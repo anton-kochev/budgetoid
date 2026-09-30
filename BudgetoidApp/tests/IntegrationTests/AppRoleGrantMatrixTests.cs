@@ -85,7 +85,9 @@ namespace IntegrationTests;
 /// holds each rule to a fixed "nothing", not to a matrix, so it is no second copy of this one. So
 /// this class pins table, column and schema privileges in CI and nothing more, and a reader must not
 /// trust it one step further than that. A column written by something other than the role's own
-/// statement is <c>ImmutableColumnRewritePathTests</c>'.
+/// statement — by a trigger, a rewrite rule, a referential action or a stored generated column — is
+/// one of the verifier's rules too, and <c>DeploymentProvisioningTests</c> drives those sabotages
+/// with the rest.
 /// </para>
 /// <para>
 /// The two catalogs are read separately because PostgreSQL stores the two kinds of grant in
@@ -766,8 +768,9 @@ public sealed class AppRoleGrantMatrixTests
     /// table with no session setting, a role holding <c>UPDATE (a)</c> alone got <c>UPDATE 0</c> for
     /// <c>set a = default where false</c> and <c>42501</c> for the same statement on another column.
     /// So a <c>42501</c> here is the column's <c>UPDATE</c> grant, and nothing else. What it still
-    /// cannot see is a column written by something other than the statement — a trigger, a rule or a
-    /// referential action — which <c>ImmutableColumnRewritePathTests</c> holds.
+    /// cannot see is a column written by something other than the statement — a trigger, a rule, a
+    /// referential action or a stored generated column — which the deploy verifier refuses and
+    /// <c>DeploymentProvisioningTests</c> holds.
     /// </para>
     /// <para>
     /// The columns are discovered at run time from <c>pg_attribute</c> over tables and partitioned

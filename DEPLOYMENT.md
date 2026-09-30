@@ -115,8 +115,9 @@ introduced it.
 `azd deploy`, so new application code never starts against an old schema. One command does the whole
 job — `BudgetoidApp/Tools/DbProvision`, which migrates, provisions the `budgetoid_app` role with its
 grants and row-level security policies, and then verifies two things: that the policies actually
-cover every tenant-owned table, and that the role reaches nothing the grant script leaves behind.
-After binding the role to the API's identity it runs the reach check once more.
+cover every tenant-owned table, and that, over the catalogs `AppRoleReach` reads, the role reaches
+nothing the grant script leaves behind. After binding the role to the API's identity it runs the
+reach check once more.
 
 The ordering used to live in this runbook and now lives in code, because getting it wrong is silent.
 A missing grant is fail-closed: it announces itself as `42501` at the first statement that needs it.
@@ -127,29 +128,66 @@ tool verifies rather than assumes
 ([ADR 0006](docs/decisions/0006-automate-migrations-and-provisioning-in-the-pipeline.md)). An
 *extra* grant is fail-open too, and the script only takes back what it can: it re-converges the
 role's own grants on `public`, not role attributes, memberships, `PUBLIC` grants, default
-privileges, ownership, other schemas, or a grant some third role made. The reach check refuses those
+privileges, ownership, other schemas, stored session defaults, triggers, rules, or a grant some
+third role made. The reach check refuses those, over the catalogs `AppRoleReach` reads; its remarks
+list what it does not read
 ([ADR 0026](docs/decisions/0026-verify-at-deploy-the-reach-the-grant-script-cannot-take-back.md)).
 
-**A reach refusal exits `1` and prints one sentence per widening**, each naming the object and the
-statement that removes it — for example `ALTER ROLE budgetoid_app NOBYPASSRLS`, a `REVOKE` naming
+**A reach refusal exits `1` and prints one problem per line**, each naming the object and the
+statement that clears it — for example `ALTER ROLE budgetoid_app NOBYPASSRLS`, a `REVOKE` naming
 the object and grantee, or a `SET ROLE <grantor>; REVOKE …; RESET ROLE` for a grant a third role
 made. Re-running the deploy will not fix it; that is why it was refused. Run the printed statement
-on the admin connection (see *Verifying by hand* for the `psql` setup), then deploy again, and find
-out who made the widening. A refusal from the second run, after the identity label, points at the
-label step, which no test here can run.
+as the principal the line names (see *Verifying by hand* for the `psql` setup), then deploy again,
+and find out who made the widening. A refusal from the second run, after the identity label, points
+at the label step, which no test here can run. The kinds that are not a grant:
 
-**Check at the first deploy: who owns the `budgetoid` database.** The script revokes `TEMPORARY` on
-the database from `PUBLIC`, and a `REVOKE` on a database by anyone but its owner is a warning that
-changes nothing. Whether the deploying Entra administrator owns the database on Azure has not been
-measured. If it does not, the first deploy refuses with a sentence naming `TEMPORARY` on the
-database and saying the statement must run as the owner. Look first, with the environment from
-*Verifying by hand*:
+- **A stored session default** names the parameter and never its value. The server applies it to
+  the role's sessions before the API sends a statement — `session_replication_role = replica`
+  stored this way switched foreign-key enforcement off. The line carries the `ALTER ROLE … RESET` or
+  `ALTER DATABASE … RESET` that removes that one row. A `CREATEROLE` administrator's or the
+  database owner's `RESET` of a superuser-only parameter answers `42501`, and `RESET ALL` succeeds
+  but keeps that setting, so do not reach for it. [Guessing] On Azure such a row may need the
+  platform's support to remove.
+- **A trigger or a rewrite rule** is refused whatever it does, disabled and constraint triggers
+  included, because it writes with someone else's privileges. The line carries the `DROP TRIGGER`
+  or `DROP RULE`, to run as the table's owner.
+- **A referential action or a generated column** names a column the role cannot `UPDATE` that
+  something the role can do still writes, and the foreign keys that reach it. Drop each constraint,
+  or re-create it with `NO ACTION` or `RESTRICT`, as the table's owner. For a generated column, drop
+  the expression or take back what lets the role write that table.
+
+One added by a migration turns `VerifyAppRoleReachAsync_OnAFreshlyProvisionedDatabase_DoesNotThrow`
+red in CI before it can ship, so one refused at deploy did not arrive by a migration CI ran.
+
+**Check at the first deploy: who owns the `budgetoid` database, and how the tool's principal
+reaches it.** Whether the deploying Entra administrator owns the database on Azure has not been
+measured, and three outcomes follow from what it is:
+
+- **It owns the database, or inherits a role that does.** The script's `TEMPORARY` revoke works.
+- **It owns nothing.** A `REVOKE` on a database by anyone but its owner changes nothing. With no
+  grant option there it is `WARNING 01006`; through an inherited role that holds the grant option it
+  is performed as that role, takes back only that role's entries, and says nothing at all. Either
+  way the script reports success and the verifier refuses the first deploy with a line naming
+  `TEMPORARY` on the database and saying the statement must run as the owner.
+- **It cannot run the migration.** An administrator whose membership is `INHERIT FALSE`, or one
+  without `CREATE` on schema `public`, fails the migration with `42501` before either verifier runs.
+
+Look first, with the environment from *Verifying by hand*:
 
 ```sh
-psql -c "select datdba::regrole from pg_database where datname = current_database()"
+psql -c "select datdba::regrole, pg_has_role(current_user, datdba, 'USAGE') as inherits, pg_has_role(current_user, datdba, 'SET') as can_set from pg_database where datname = current_database()"
 ```
 
-It should name the principal the tool logs in as, or a role that principal is a member of.
+`inherits` true is the first case: the tool's principal is the owner or a member of it **with
+inherit**. Membership alone is not enough — `can_set` true with `inherits` false is an
+`INHERIT FALSE` membership, the third case. `inherits` and `can_set` both false is the second case,
+or the third when the principal holds no `CREATE` on schema `public` either.
+
+**The reach check must read the catalogs as the principal that ran the grant script.** On a schema,
+it accepts a grant recorded against the one grant-option holder that principal inherits, when the
+principal does not inherit the owner — the shape where the script's own `GRANT USAGE` lands with
+the holder as grantor. Both runs pass the connection string the tool provisioned with; read as
+anybody else, the same catalog can answer differently.
 
 Migrations never run at API startup and never on the application role: `budgetoid_app` is denied
 `CREATE` on the schema and cannot apply a migration even as a no-op
@@ -493,8 +531,9 @@ failure to notice first.
 
 1. `aspire run` locally still works (dev CORS to `localhost:4200`, local Postgres container).
 2. DB: the deploy run's provisioning step exits 0 — it reports the migrations it applied, then
-   confirms row-level security covers every tenant-owned table and that the role's reach holds
-   nothing beyond its grant matrix. `\dp payees` shows `budgetoid_app`
+   confirms row-level security covers every tenant-owned table and that, over the catalogs
+   `AppRoleReach` reads, the role holds nothing beyond its grant matrix. `\dp payees` shows
+   `budgetoid_app`
    with the column grants, and `az postgres flexible-server firewall-rule list` comes back empty.
    **Empty is the whole point and it is not self-maintaining.** ARM deployments are incremental, so
    a rule that already exists on the server survives being deleted from the template — after the

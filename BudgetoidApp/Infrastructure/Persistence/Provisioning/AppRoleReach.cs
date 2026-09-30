@@ -31,7 +31,7 @@ public sealed record AppRoleAttributes(
 /// </summary>
 /// <param name="ObjectKind">
 /// The object's keyword as <c>REVOKE … ON</c> takes it: <c>SCHEMA</c>, <c>TABLE</c>,
-/// <c>SEQUENCE</c>, <c>ROUTINE</c>, <c>PARAMETER</c> or <c>DATABASE</c>.
+/// <c>SEQUENCE</c>, <c>ROUTINE</c>, <c>PARAMETER</c>, <c>DATABASE</c> or <c>TABLESPACE</c>.
 /// </param>
 /// <param name="ObjectName">The object's name, quoted and qualified as <c>REVOKE</c> takes it.</param>
 /// <param name="Column">
@@ -55,12 +55,14 @@ public sealed record ReachGrant(
     bool WithGrantOption);
 
 /// <summary>
-/// One privilege granted to the application role itself by a role that is not the object's owner.
+/// One privilege granted to the application role itself by a role that is not the object's owner,
+/// and not accepted as the verifying principal's own grant.
 /// </summary>
 /// <remarks>
-/// The grant script's <c>REVOKE ALL … FROM budgetoid_app</c> is performed as the object's owner even
-/// when a superuser sends it, and a <c>REVOKE</c> takes back only the entries its own grantor made —
-/// so an entry recorded against another grantor survives every re-run.
+/// A <c>GRANT</c> or <c>REVOKE</c> sent by the owner, a superuser or a member inheriting the owner is
+/// recorded as the owner's; one sent through a role holding a grant option is recorded as that
+/// role's. A <c>REVOKE</c> takes back only the entries recorded against its own grantor — so an entry
+/// recorded against another grantor survives every re-run of the grant script.
 /// </remarks>
 /// <param name="ObjectKind">
 /// The object's keyword as <c>REVOKE … ON</c> takes it: <c>TABLE</c>, <c>SEQUENCE</c>,
@@ -116,13 +118,71 @@ public sealed record DefaultPrivilege(
 public sealed record OwnedObject(string Description, bool Shared);
 
 /// <summary>
+/// One parameter a <c>pg_db_role_setting</c> row applies to the application role's sessions. The
+/// value is deliberately absent: it is never read.
+/// </summary>
+/// <param name="Database">
+/// The database the row is limited to, quoted as <c>ALTER … IN DATABASE</c> takes it, or
+/// <see langword="null" /> for a row that applies in every database.
+/// </param>
+/// <param name="ForEveryRole">
+/// Whether the row is stored for every role in <paramref name="Database" /> (<c>setrole = 0</c>,
+/// written by <c>ALTER DATABASE … SET</c>) rather than for the application role.
+/// </param>
+/// <param name="Parameter">The parameter's name.</param>
+public sealed record SessionDefault(string? Database, bool ForEveryRole, string Parameter);
+
+/// <summary>A trigger somebody created, as <c>pg_trigger</c> records it.</summary>
+/// <param name="Name">The trigger's name, quoted as <c>DROP TRIGGER</c> takes it.</param>
+/// <param name="Table">The table it is on, quoted and qualified.</param>
+/// <param name="Enabled">Whether it fires today; a disabled one is one statement from firing.</param>
+/// <param name="IsConstraintTrigger">Whether it was created as a constraint trigger.</param>
+public sealed record UserTrigger(string Name, string Table, bool Enabled, bool IsConstraintTrigger);
+
+/// <summary>A rewrite rule other than a view's own <c>_RETURN</c>.</summary>
+/// <param name="Name">The rule's name, quoted as <c>DROP RULE</c> takes it.</param>
+/// <param name="Table">The relation it is on, quoted and qualified.</param>
+public sealed record RewriteRule(string Name, string Table);
+
+/// <summary>
+/// A column a foreign key's referential action writes, set off by something the application role
+/// can do, which the role could not <c>UPDATE</c> itself.
+/// </summary>
+/// <param name="Table">The written column's table, quoted and qualified.</param>
+/// <param name="Column">The written column, quoted.</param>
+/// <param name="Constraints">
+/// Every foreign key whose action reaches the column, quoted as <c>ALTER TABLE … DROP CONSTRAINT</c>
+/// takes it.
+/// </param>
+public sealed record ReferentialActionWrite(
+    string Table,
+    string Column,
+    IReadOnlyList<string> Constraints);
+
+/// <summary>
+/// A generated column on a table where the application role can cause a column to be written, and
+/// which the role could not <c>UPDATE</c> itself.
+/// </summary>
+/// <param name="Table">The generated column's table, quoted and qualified.</param>
+/// <param name="Column">The generated column, quoted.</param>
+public sealed record GeneratedColumnWrite(string Table, string Column);
+
+/// <summary>
 /// What the live catalogs say the application role can reach, read on the admin connection before
 /// anyone decides whether it is too much.
 /// </summary>
 /// <remarks>
+/// <para>
 /// Discovery reads; <see cref="AppRoleReach.FindProblems" /> judges. So the grant lists hold what the
 /// role reaches, not only what is wrong with it — <c>USAGE</c> on schema <c>public</c> and
 /// <c>CONNECT</c> through <c>PUBLIC</c> are in here, and are the rule's to accept.
+/// </para>
+/// <para>
+/// The categories after <paramref name="NonOwnerGrants" /> are init-only properties rather than
+/// positional parameters, each defaulting to empty. <see cref="AppRoleReach.DiscoverAsync" /> is the
+/// one production constructor and sets every one of them; a snapshot built by hand without them
+/// describes a role those rules found nothing on.
+/// </para>
 /// </remarks>
 /// <param name="RoleName">The role the snapshot describes.</param>
 /// <param name="Attributes">
@@ -131,8 +191,10 @@ public sealed record OwnedObject(string Description, bool Shared);
 /// </param>
 /// <param name="MemberOf">
 /// Every role the application role is a <b>member</b> of (<c>pg_auth_members.member</c>). Not the
-/// roles that are members of it: on PostgreSQL 16 and later the role that created it is granted
-/// membership in it automatically, which widens the creator and not the application role.
+/// roles that are members of it: on PostgreSQL 16 and later a role created by a non-superuser
+/// <c>CREATEROLE</c> role gets its creator as a member, with <c>ADMIN OPTION</c> (measured on
+/// postgres:17.10 and 18.3; a superuser-created role gets no such row). That widens the creator and
+/// not the application role.
 /// </param>
 /// <param name="SchemaGrants">Every privilege the role effectively holds on any schema.</param>
 /// <param name="DefaultPrivileges">
@@ -149,7 +211,7 @@ public sealed record OwnedObject(string Description, bool Shared);
 /// <param name="OutsidePublicRelationGrants">
 /// Privileges the role effectively holds on relations and columns of every kind in any schema other
 /// than <c>public</c>, <c>pg_catalog</c> and <c>information_schema</c> — whether or not it holds
-/// <c>USAGE</c> on that schema today.
+/// <c>USAGE</c> on that schema today. The two system schemas are <see cref="SystemSchemaGrants" />.
 /// </param>
 /// <param name="ParameterGrants">
 /// <c>pg_parameter_acl</c> entries naming the role, <c>PUBLIC</c> or a role it is a member of.
@@ -161,7 +223,8 @@ public sealed record OwnedObject(string Description, bool Shared);
 /// <param name="DatabaseGrants">Every privilege the role effectively holds on the current database.</param>
 /// <param name="NonOwnerGrants">
 /// Privileges granted to the role itself, on relations, columns, sequences, schemas, routines and the
-/// current database, whose recorded grantor is not the object's owner.
+/// current database, whose recorded grantor is not the object's owner, less the schema entries
+/// <see cref="AppRoleReach.FindProblems" /> accepts as the verifying principal's own.
 /// </param>
 public sealed record AppRoleReachSnapshot(
     string RoleName,
@@ -175,11 +238,51 @@ public sealed record AppRoleReachSnapshot(
     IReadOnlyList<ReachGrant> ParameterGrants,
     IReadOnlyList<ReachGrant> ExecutableRoutines,
     IReadOnlyList<ReachGrant> DatabaseGrants,
-    IReadOnlyList<NonOwnerGrant> NonOwnerGrants);
+    IReadOnlyList<NonOwnerGrant> NonOwnerGrants)
+{
+    /// <summary>
+    /// Privileges granted to the role itself — not to <c>PUBLIC</c> or a role it is a member of — on
+    /// relations, columns and routines in <c>pg_catalog</c> and <c>information_schema</c>.
+    /// </summary>
+    public IReadOnlyList<ReachGrant> SystemSchemaGrants { get; init; } = [];
+
+    /// <summary>
+    /// Parameters stored in <c>pg_db_role_setting</c> for the role in any database, or for every role
+    /// in the current database.
+    /// </summary>
+    public IReadOnlyList<SessionDefault> SessionDefaults { get; init; } = [];
+
+    /// <summary>
+    /// Every privilege the role effectively holds on any tablespace, through itself, <c>PUBLIC</c> or
+    /// a role it is a member of.
+    /// </summary>
+    public IReadOnlyList<ReachGrant> TablespaceGrants { get; init; } = [];
+
+    /// <summary>Every trigger that is not internal, in any schema, enabled or not.</summary>
+    public IReadOnlyList<UserTrigger> Triggers { get; init; } = [];
+
+    /// <summary>
+    /// Every rewrite rule outside <c>pg_catalog</c> and <c>information_schema</c> other than a view's
+    /// <c>_RETURN</c>.
+    /// </summary>
+    public IReadOnlyList<RewriteRule> Rules { get; init; } = [];
+
+    /// <summary>
+    /// Columns a chain of referential actions writes, starting from a <c>DELETE</c> or column
+    /// <c>UPDATE</c> the role holds, which the role cannot <c>UPDATE</c> itself.
+    /// </summary>
+    public IReadOnlyList<ReferentialActionWrite> ReferentialActionWrites { get; init; } = [];
+
+    /// <summary>
+    /// Generated columns the role cannot <c>UPDATE</c>, on a table where a column the role can write,
+    /// directly or through a referential action, lives.
+    /// </summary>
+    public IReadOnlyList<GeneratedColumnWrite> GeneratedColumnWrites { get; init; } = [];
+}
 
 /// <summary>
-/// Reads what the application role can reach and names every widening the grant script does not
-/// converge away.
+/// Reads what the application role can reach, over the catalogs listed below, and names every
+/// widening there the grant script does not converge away.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -187,30 +290,54 @@ public sealed record AppRoleReachSnapshot(
 /// <c>42501</c>. An extra one is fail-open and silent. The role's own grants on relations in
 /// <c>public</c> are converged by every run of <c>app-role-grants.sql</c> — it <c>REVOKE</c>s all on
 /// every table and every sequence in the schema before re-granting — and the matrix is pinned by
-/// <c>AppRoleGrantMatrixTests</c>. That convergence reaches only the entries the object's owner
-/// made: a <c>REVOKE</c> is performed as the owner, even when a superuser sends it, and takes back
-/// nothing another grantor recorded. So what is read here is the reach a re-run leaves standing:
-/// role attributes, memberships, <c>PUBLIC</c> grants, default privileges, ownership, grants on
-/// relations outside <c>public</c>, grants to the role made by anyone but the object's owner, and
-/// privileges on schemas, parameters, routines and the database. The expected answer to every rule
-/// is a fixed "nothing" (bar <c>USAGE</c> on schemas and <c>CONNECT</c> on the database), so this is
-/// not a second executed copy of the grant matrix.
+/// <c>AppRoleGrantMatrixTests</c>. That convergence reaches only the entries recorded against the
+/// script's own grantor: a <c>REVOKE</c> sent by the owner, a superuser or a member inheriting the
+/// owner is performed as the owner, one sent through a grant-option holder is performed as that
+/// holder, and neither takes back an entry another grantor recorded. So what is read here is the
+/// reach a re-run leaves standing: role attributes, memberships, <c>PUBLIC</c> grants, default
+/// privileges, ownership, grants on relations outside <c>public</c>, grants to the role itself in
+/// <c>pg_catalog</c> and <c>information_schema</c>, grants to the role made by anyone but the
+/// object's owner, privileges on schemas, parameters, routines, tablespaces and the database, stored
+/// session defaults, and the writes the role can cause without holding <c>UPDATE</c> on what is
+/// written — triggers, rewrite rules, referential actions and generated columns. The expected answer
+/// to every rule is a fixed "nothing" (bar <c>USAGE</c> on schemas and <c>CONNECT</c> on the
+/// database), so this is not a second executed copy of the grant matrix.
 /// </para>
 /// <para>
 /// Every ACL is read as <c>coalesce(acl, acldefault(kind, owner))</c>, because a null ACL is not
 /// "no privileges" but the built-in default, which for functions and databases grants
 /// <c>PUBLIC</c>. <c>pg_default_acl.defaclacl</c> is the one exception: the column is never null.
 /// "Holds" means effectively: an entry counts when it names the role, <c>PUBLIC</c>, or any role the
-/// role is a member of (<c>pg_has_role … 'MEMBER'</c>).
+/// role is a member of (<c>pg_has_role … 'MEMBER'</c>). The system-schema rule is narrower on
+/// purpose and reads only entries naming the role itself: out of the box <c>pg_catalog</c> and
+/// <c>information_schema</c> grant to <c>PUBLIC</c>, the bootstrap superuser, <c>pg_monitor</c> and
+/// <c>pg_read_all_stats</c> (measured on postgres:17.10 and 18.3), and a membership is refused on its
+/// own.
+/// </para>
+/// <para>
+/// The non-owner rule depends on who is asking. On a schema it accepts a grant whose grantor is the
+/// one grant-option holder the verifying principal inherits, when that principal does not inherit the
+/// owner — the shape a deploy principal that owns nothing has, where every <c>GRANT USAGE</c> the
+/// script sends is recorded against that holder. <see cref="DiscoverAsync" /> therefore has to run on
+/// a connection as the principal that ran the script; both call sites,
+/// <see cref="DeploymentDatabaseProvisioning.ProvisionAsync" /> and the deploy tool, pass the one
+/// admin connection string they provisioned with. Read as anybody else, the same catalog can answer
+/// differently.
 /// </para>
 /// <para>
 /// <b>Not checked, by scope rather than oversight:</b> privileges on types and domains, languages,
-/// large objects, foreign data wrappers and foreign servers; per-role and per-database settings
-/// (<c>rolconfig</c>, <c>pg_db_role_setting</c>); <c>USAGE</c> on a schema — only <c>CREATE</c> and
-/// grant options are refused there; the grantor of a parameter grant, because a parameter has no
-/// owner to compare it with and every parameter entry naming the role is refused whoever made it;
-/// objects the role owns in another database of the cluster. A grant the script converges away on
-/// the same run is not reported either — the deploy that removed it is the report.
+/// large objects, foreign data wrappers and foreign servers; <c>USAGE</c> on a schema — only
+/// <c>CREATE</c> and grant options are refused there; <c>PUBLIC</c> grants and grants to a role the
+/// application role is a member of in <c>pg_catalog</c> and <c>information_schema</c>; rewrite rules
+/// in those two schemas; event triggers; a setting stored for every role in a database other than the
+/// current one, although the role can connect to it; <c>CONNECT</c> and <c>TEMPORARY</c> on the
+/// cluster's other databases, such as <c>postgres</c>, which the role holds through <c>PUBLIC</c>
+/// because the grant script and the database rule are both scoped to <c>current_database()</c>; the
+/// grantor of a parameter grant, because a parameter has no owner to compare it with and every
+/// parameter entry naming the role is refused whoever made it; objects the role owns in another
+/// database of the cluster; and any write a referential action makes into <c>pg_catalog</c> or
+/// <c>information_schema</c>. A grant the script converges away on the same run is not reported
+/// either — the deploy that removed it is the report.
 /// </para>
 /// </remarks>
 public static class AppRoleReach
@@ -226,7 +353,8 @@ public static class AppRoleReach
         """;
 
     // member = the role. The reverse direction (roleid = the role) is the creator's automatic
-    // membership on PostgreSQL 16+, which widens the creator and must not be refused.
+    // membership on PostgreSQL 16+ when the creator is not a superuser, which widens the creator and
+    // must not be refused.
     private const string MembershipSql =
         """
         select quote_ident(r.rolname)
@@ -236,8 +364,9 @@ public static class AppRoleReach
         order by 1
         """;
 
-    // The grantee filter every ACL read shares: the role itself, PUBLIC (grantee 0), or a role it is
-    // a member of. pg_has_role(x, x, 'MEMBER') is true, so the first case is inside the third.
+    // The grantee filter every effective ACL read shares: the role itself, PUBLIC (grantee 0), or a
+    // role it is a member of. pg_has_role(x, x, 'MEMBER') is true, so the first case is inside the
+    // third.
     private const string GranteeFilter = "(a.grantee = 0 or pg_has_role(@role, a.grantee, 'MEMBER'))";
 
     private const string GranteeName =
@@ -290,9 +419,9 @@ public static class AppRoleReach
         """;
 
     // PUBLIC only. The role's own table, column and sequence grants in public are the matrix, and the
-    // script's REVOKE ALL ON ALL TABLES / ALL SEQUENCES IN SCHEMA public converges the ones the owner
-    // made; a grant to the role by anyone else survives that REVOKE and is NonOwnerSql's to refuse. A
-    // grant to a role it is a member of is already a refused membership.
+    // script's REVOKE ALL ON ALL TABLES / ALL SEQUENCES IN SCHEMA public converges the ones recorded
+    // against its own grantor; a grant to the role by anyone else survives that REVOKE and is
+    // NonOwnerSql's to refuse. A grant to a role it is a member of is already a refused membership.
     private const string PublicRelationSql =
         """
         select case when c.relkind = 'S' then 'SEQUENCE' else 'TABLE' end,
@@ -321,7 +450,8 @@ public static class AppRoleReach
 
     // Every relkind and every grantee the role reaches through, because the script names no schema
     // but public and so converges nothing here. USAGE on the schema is deliberately not a condition:
-    // it is one GRANT away, and the relation grant would already be waiting behind it.
+    // it is one GRANT away, and the relation grant would already be waiting behind it. The two system
+    // schemas are SystemSchemaSql's, which reads a narrower grantee set.
     private const string OutsidePublicRelationSql =
         $"""
         select case when c.relkind = 'S' then 'SEQUENCE' else 'TABLE' end,
@@ -346,6 +476,43 @@ public static class AppRoleReach
         order by 2, 3 nulls first, 4, 5
         """;
 
+    // The role itself only. PUBLIC, the bootstrap superuser, pg_monitor and pg_read_all_stats hold
+    // grants here out of the box, so the effective grantee filter would refuse every fresh database;
+    // a grant through a membership is already a refused membership. Relations, columns and routines,
+    // the three ACLs a system schema's objects carry.
+    private const string SystemSchemaSql =
+        """
+        select case when c.relkind = 'S' then 'SEQUENCE' else 'TABLE' end,
+               format('%I.%I', n.nspname, c.relname), null::text,
+               quote_ident(pg_get_userbyid(a.grantee)), a.privilege_type, a.is_grantable
+        from pg_class c
+        join pg_namespace n on n.oid = c.relnamespace
+        cross join lateral aclexplode(coalesce(
+            c.relacl,
+            acldefault((case when c.relkind = 'S' then 's' else 'r' end)::"char", c.relowner))) a
+        where n.nspname in ('pg_catalog', 'information_schema')
+          and a.grantee = @role
+        union all
+        select 'TABLE', format('%I.%I', n.nspname, c.relname), quote_ident(att.attname),
+               quote_ident(pg_get_userbyid(a.grantee)), a.privilege_type, a.is_grantable
+        from pg_class c
+        join pg_namespace n on n.oid = c.relnamespace
+        join pg_attribute att on att.attrelid = c.oid and att.attnum > 0 and not att.attisdropped
+        cross join lateral aclexplode(coalesce(att.attacl, acldefault('c', c.relowner))) a
+        where n.nspname in ('pg_catalog', 'information_schema')
+          and a.grantee = @role
+        union all
+        select 'ROUTINE',
+               format('%I.%I(%s)', n.nspname, p.proname, pg_get_function_identity_arguments(p.oid)),
+               null::text, quote_ident(pg_get_userbyid(a.grantee)), a.privilege_type, a.is_grantable
+        from pg_proc p
+        join pg_namespace n on n.oid = p.pronamespace
+        cross join lateral aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
+        where n.nspname in ('pg_catalog', 'information_schema')
+          and a.grantee = @role
+        order by 2, 3 nulls first, 5
+        """;
+
     // A parameter has no owner; its built-in default is the bootstrap superuser's (oid 10) and names
     // nobody else, so the owner argument only decides a row the grantee filter drops.
     private const string ParameterSql =
@@ -358,7 +525,7 @@ public static class AppRoleReach
         """;
 
     // A routine created with no grant carries a NULL proacl, which reads as PUBLIC EXECUTE; that is
-    // why acldefault is not optional here.
+    // why acldefault is not optional here. The system schemas are SystemSchemaSql's.
     private const string RoutineSql =
         $"""
         select 'ROUTINE',
@@ -383,13 +550,168 @@ public static class AppRoleReach
         order by 4, 5
         """;
 
+    // Only CREATE exists on a tablespace, so every entry the filter keeps is a finding.
+    private const string TablespaceSql =
+        $"""
+        select 'TABLESPACE', quote_ident(t.spcname), null::text, {GranteeName}, a.privilege_type,
+               a.is_grantable
+        from pg_tablespace t
+        cross join lateral aclexplode(coalesce(t.spcacl, acldefault('t', t.spcowner))) a
+        where {GranteeFilter}
+        order by 2, 4, 5
+        """;
+
+    // pg_db_role_setting only: rolconfig is the setdatabase = 0 subset of these rows, so reading it
+    // too would report the same setting twice. The value is split off in SQL and never leaves the
+    // server — the parameter is the finding, and a value can be anything somebody typed.
+    private const string SessionDefaultSql =
+        """
+        select case when s.setdatabase = 0 then null else quote_ident(d.datname) end,
+               s.setrole = 0,
+               split_part(setting, '=', 1)
+        from pg_db_role_setting s
+        left join pg_database d on d.oid = s.setdatabase
+        cross join lateral unnest(s.setconfig) setting
+        where s.setrole = @role
+           or (s.setrole = 0
+               and s.setdatabase = (select oid from pg_database where datname = current_database()))
+        order by 2, 1 nulls first, 3
+        """;
+
+    // tgisinternal is what separates a foreign key's own triggers, which the referential-action rule
+    // judges, from one somebody created. A constraint trigger is not internal; a disabled one is one
+    // ALTER TABLE from firing.
+    private const string TriggerSql =
+        """
+        select quote_ident(t.tgname), format('%I.%I', n.nspname, c.relname), t.tgenabled <> 'D',
+               t.tgconstraint <> 0
+        from pg_trigger t
+        join pg_class c on c.oid = t.tgrelid
+        join pg_namespace n on n.oid = c.relnamespace
+        where not t.tgisinternal
+        order by 2, 1
+        """;
+
+    // _RETURN is a view's definition, not a rule anybody added. pg_catalog carries two rules of its
+    // own on pg_settings.
+    private const string RuleSql =
+        """
+        select quote_ident(r.rulename), format('%I.%I', n.nspname, c.relname)
+        from pg_rewrite r
+        join pg_class c on c.oid = r.ev_class
+        join pg_namespace n on n.oid = c.relnamespace
+        where r.rulename <> '_RETURN'
+          and n.nspname not in ('pg_catalog', 'information_schema')
+        order by 2, 1
+        """;
+
+    // What the role can cause to be written, as (table, column) pairs — attnum 0 for a whole row
+    // deleted. Seeds: tables it can DELETE from and columns it can UPDATE, effectively. A referential
+    // action runs as the referencing table's owner, so each step is taken whatever the role holds on
+    // the child: ON DELETE CASCADE from a reached row deletes the child row; ON DELETE SET NULL / SET
+    // DEFAULT writes the child's confdelsetcols (all of conkey when that is empty); ON UPDATE CASCADE /
+    // SET NULL / SET DEFAULT writes the child's conkey when a reached column is in confkey. UNION, not
+    // UNION ALL, so a cycle of foreign keys stops. via is the constraint that took the step.
+    private const string ReachedWritesCte =
+        """
+        with recursive fk as (
+            select con.conname, con.conrelid, con.confrelid, con.conkey, con.confkey,
+                   con.confupdtype, con.confdeltype,
+                   coalesce(nullif(con.confdelsetcols, '{}'), con.conkey) as delete_written
+            from pg_constraint con
+            join pg_class cc on cc.oid = con.conrelid
+            join pg_namespace cn on cn.oid = cc.relnamespace
+            where con.contype = 'f'
+              and cn.nspname not in ('pg_catalog', 'information_schema')
+        ),
+        reach (relid, attnum, via) as (
+            select c.oid, 0::int2, null::name
+            from pg_class c
+            join pg_namespace n on n.oid = c.relnamespace
+            where n.nspname not in ('pg_catalog', 'information_schema')
+              and c.relkind in ('r', 'p')
+              and has_table_privilege(@role, c.oid, 'DELETE')
+            union
+            select a.attrelid, a.attnum, null::name
+            from pg_attribute a
+            join pg_class c on c.oid = a.attrelid
+            join pg_namespace n on n.oid = c.relnamespace
+            where n.nspname not in ('pg_catalog', 'information_schema')
+              and c.relkind in ('r', 'p')
+              and a.attnum > 0
+              and not a.attisdropped
+              and has_column_privilege(@role, a.attrelid, a.attnum, 'UPDATE')
+            union
+            select w.relid, w.attnum, fk.conname
+            from reach r
+            join fk on fk.confrelid = r.relid
+            cross join lateral (
+                select fk.conrelid, 0::int2
+                where r.attnum = 0 and fk.confdeltype = 'c'
+                union all
+                select fk.conrelid, x
+                from unnest(fk.delete_written) x
+                where r.attnum = 0 and fk.confdeltype in ('n', 'd')
+                union all
+                select fk.conrelid, x
+                from unnest(fk.conkey) x
+                where r.attnum = any (fk.confkey) and fk.confupdtype in ('c', 'n', 'd')
+            ) w (relid, attnum)
+        )
+        """;
+
+    // A column reached through a constraint that the role could not have written itself. One row per
+    // column, whichever constraints reach it.
+    private const string ReferentialActionSql =
+        $"""
+        {ReachedWritesCte}
+        select format('%I.%I', n.nspname, c.relname), quote_ident(a.attname),
+               array_agg(distinct quote_ident(r.via::text) order by quote_ident(r.via::text))
+        from reach r
+        join pg_attribute a on a.attrelid = r.relid and a.attnum = r.attnum
+        join pg_class c on c.oid = r.relid
+        join pg_namespace n on n.oid = c.relnamespace
+        where r.attnum > 0
+          and r.via is not null
+          and not has_column_privilege(@role, r.relid, r.attnum, 'UPDATE')
+        group by n.nspname, c.relname, a.attname
+        order by 1, 2
+        """;
+
+    // attgenerated <> '' rather than = 's': PostgreSQL 18's virtual generated columns move with their
+    // base columns too.
+    private const string GeneratedColumnSql =
+        $"""
+        {ReachedWritesCte}
+        select format('%I.%I', n.nspname, c.relname), quote_ident(g.attname)
+        from pg_attribute g
+        join pg_class c on c.oid = g.attrelid
+        join pg_namespace n on n.oid = c.relnamespace
+        where g.attnum > 0
+          and not g.attisdropped
+          and g.attgenerated <> ''
+          and exists (select 1 from reach r where r.relid = g.attrelid and r.attnum > 0)
+          and not has_column_privilege(@role, g.attrelid, g.attnum, 'UPDATE')
+        order by 1, 2
+        """;
+
     // Grantee is the role itself, and the grantor is compared to the owner by oid — never to a role
     // name, because the owner differs per path (the container superuser, a non-superuser deploy
     // principal, pg_database_owner for schema public). A grant sent by a superuser or by a member of
-    // the owning role is recorded with the owner as its grantor, so every grant the script makes
-    // compares equal. Every schema is read, pg_catalog included: a foreign grantor is wrong anywhere.
-    // Parameters are left out — pg_parameter_acl has no owner, and ParameterSql already refuses every
-    // entry naming the role whoever made it.
+    // the owning role is recorded with the owner as its grantor, so every grant the script makes as
+    // one of those compares equal. Every schema is read, pg_catalog included: a foreign grantor is
+    // wrong anywhere. Parameters are left out — pg_parameter_acl has no owner, and ParameterSql
+    // already refuses every entry naming the role whoever made it.
+    //
+    // The schema arm alone also accepts the grant the script itself makes as a deploy principal that
+    // owns nothing: a GRANT sent through an inherited grant-option holder is recorded with that holder
+    // as its grantor. All three conditions are about current_user, the principal that ran the script:
+    // it does not inherit the owner (a superuser or the database owner does, and falls back to
+    // owner-only); it inherits the grantor ('USAGE', not 'MEMBER' — a SET-only member's own GRANT
+    // records nothing, so such an entry was made by somebody switching roles on purpose); and the
+    // grantor is the only role it inherits holding any grant option in the schema's ACL, because with
+    // two, which one PostgreSQL records is not the principal's to decide and its REVOKE can miss the
+    // other's entry. The owner's own entry carries no grant option in aclexplode, so it never counts.
     private const string NonOwnerSql =
         """
         select case when c.relkind = 'S' then 'SEQUENCE' else 'TABLE' end,
@@ -418,6 +740,16 @@ public static class AppRoleReach
         from pg_namespace n
         cross join lateral aclexplode(coalesce(n.nspacl, acldefault('n', n.nspowner))) a
         where a.grantee = @role and a.grantor <> n.nspowner
+          and not (
+              not pg_has_role(current_user, n.nspowner, 'USAGE')
+              and pg_has_role(current_user, a.grantor, 'USAGE')
+              and not exists (
+                  select 1
+                  from aclexplode(coalesce(n.nspacl, acldefault('n', n.nspowner))) holder
+                  where holder.is_grantable
+                    and holder.grantee <> 0
+                    and holder.grantee <> a.grantor
+                    and pg_has_role(current_user, holder.grantee, 'USAGE')))
         union all
         select 'DATABASE', quote_ident(d.datname), null::text,
                quote_ident(pg_get_userbyid(a.grantor)), quote_ident(pg_get_userbyid(d.datdba)),
@@ -445,9 +777,14 @@ public static class AppRoleReach
     /// </summary>
     /// <remarks>
     /// Every catalog read here is open to any role, so a non-superuser deploy principal reads the
-    /// same answer the container superuser does.
+    /// same rows the container superuser does. What differs is the non-owner rule's schema arm, which
+    /// asks about <c>current_user</c>: <paramref name="connection" /> must be open as the principal
+    /// that ran the grant script.
     /// </remarks>
-    /// <param name="connection">An open connection; the admin connection at deploy time.</param>
+    /// <param name="connection">
+    /// An open connection as the principal that ran <c>app-role-grants.sql</c>; the admin connection
+    /// at deploy time.
+    /// </param>
     /// <param name="roleName">The application role to describe.</param>
     /// <param name="cancellationToken">Cancels the catalog reads.</param>
     /// <returns>The snapshot; a missing role yields <see langword="null" /> attributes.</returns>
@@ -523,6 +860,50 @@ public static class AppRoleReach
                 reader.GetString(5),
                 reader.GetBoolean(6)),
             cancellationToken);
+        IReadOnlyList<ReachGrant> systemSchemaGrants =
+            await ReadGrantsAsync(connection, SystemSchemaSql, found.Oid, cancellationToken);
+        IReadOnlyList<SessionDefault> sessionDefaults = await ReadAsync(
+            connection,
+            SessionDefaultSql,
+            found.Oid,
+            reader => new SessionDefault(
+                reader.IsDBNull(0) ? null : reader.GetString(0),
+                reader.GetBoolean(1),
+                reader.GetString(2)),
+            cancellationToken);
+        IReadOnlyList<ReachGrant> tablespaceGrants =
+            await ReadGrantsAsync(connection, TablespaceSql, found.Oid, cancellationToken);
+        IReadOnlyList<UserTrigger> triggers = await ReadAsync(
+            connection,
+            TriggerSql,
+            roleOid: null,
+            reader => new UserTrigger(
+                reader.GetString(0),
+                reader.GetString(1),
+                reader.GetBoolean(2),
+                reader.GetBoolean(3)),
+            cancellationToken);
+        IReadOnlyList<RewriteRule> rules = await ReadAsync(
+            connection,
+            RuleSql,
+            roleOid: null,
+            reader => new RewriteRule(reader.GetString(0), reader.GetString(1)),
+            cancellationToken);
+        IReadOnlyList<ReferentialActionWrite> referentialActionWrites = await ReadAsync(
+            connection,
+            ReferentialActionSql,
+            found.Oid,
+            reader => new ReferentialActionWrite(
+                reader.GetString(0),
+                reader.GetString(1),
+                reader.GetFieldValue<string[]>(2)),
+            cancellationToken);
+        IReadOnlyList<GeneratedColumnWrite> generatedColumnWrites = await ReadAsync(
+            connection,
+            GeneratedColumnSql,
+            found.Oid,
+            reader => new GeneratedColumnWrite(reader.GetString(0), reader.GetString(1)),
+            cancellationToken);
 
         return new AppRoleReachSnapshot(
             roleName,
@@ -536,16 +917,28 @@ public static class AppRoleReach
             parameterGrants,
             executableRoutines,
             databaseGrants,
-            nonOwnerGrants);
+            nonOwnerGrants)
+        {
+            SystemSchemaGrants = systemSchemaGrants,
+            SessionDefaults = sessionDefaults,
+            TablespaceGrants = tablespaceGrants,
+            Triggers = triggers,
+            Rules = rules,
+            ReferentialActionWrites = referentialActionWrites,
+            GeneratedColumnWrites = generatedColumnWrites,
+        };
     }
 
     /// <summary>
     /// Names every widening in <paramref name="snapshot" />: a missing, elevated or non-login role;
     /// any membership; <c>CREATE</c> or a grant option on a schema; any default privilege; anything
     /// owned; any <c>PUBLIC</c> grant on a table or column in <c>public</c>; any grant the role holds on
-    /// a relation or column outside <c>public</c>; any parameter grant; any executable non-system
-    /// routine; <c>CREATE</c>, <c>TEMPORARY</c> or a grant option on the current database; and any
-    /// grant to the role whose grantor is not the object's owner.
+    /// a relation or column outside <c>public</c>; any grant to the role itself in a system schema; any
+    /// parameter grant; any executable non-system routine; <c>CREATE</c>, <c>TEMPORARY</c> or a grant
+    /// option on the current database; any tablespace privilege; any stored session default; any
+    /// trigger or rewrite rule somebody created; any column a referential action or a generated
+    /// column writes for the role past its <c>UPDATE</c>; and any grant to the role whose grantor is
+    /// neither the object's owner nor, on a schema, the verifying principal's own grant-option holder.
     /// </summary>
     /// <remarks>
     /// Two things are accepted rather than refused: <c>USAGE</c> without its grant option on a
@@ -555,7 +948,7 @@ public static class AppRoleReach
     /// </remarks>
     /// <param name="snapshot">What <see cref="DiscoverAsync" /> read.</param>
     /// <returns>
-    /// One sentence per widening, each naming its object and how to remove it; empty when there are
+    /// One sentence per finding, each naming its object and how to remove it; empty when there are
     /// none.
     /// </returns>
     public static IReadOnlyList<string> FindProblems(AppRoleReachSnapshot snapshot)
@@ -668,6 +1061,15 @@ public static class AppRoleReach
                 + "connection.");
         }
 
+        foreach (IReadOnlyList<ReachGrant> group in GroupByHolder(snapshot.SystemSchemaGrants))
+        {
+            problems.Add(
+                $"In a system schema, {DescribeObject(group[0])} grants {DescribePrivileges(group)} "
+                + $"to {role} by name, beyond what PostgreSQL grants every role there; a system "
+                + "catalog or function reaches across every tenant at once, and no line of the grant "
+                + $"script names it. Run {DescribeRevoke(group, _ => true)} as a role allowed to.");
+        }
+
         foreach (IReadOnlyList<ReachGrant> group in GroupByHolder(snapshot.ParameterGrants))
         {
             ReachGrant first = group[0];
@@ -698,8 +1100,71 @@ public static class AppRoleReach
                 + "meant to hold there; it gives the role a place to put objects or rows no grant or "
                 + "policy in this repository describes, or the power to hand that on. Run "
                 + $"{DescribeRevoke(group, grant => grant.Privilege != "CONNECT")} on the admin "
-                + "connection as the database owner — a REVOKE on a database by anyone else is a "
-                + "warning that changes nothing.");
+                + "connection as the database owner — sent by anyone else it changes nothing: a role "
+                + "without the grant option gets a warning, and a holder of it takes back only its "
+                + "own entries, silently.");
+        }
+
+        foreach (IReadOnlyList<ReachGrant> group in GroupByHolder(snapshot.TablespaceGrants))
+        {
+            ReachGrant first = group[0];
+            problems.Add(
+                $"Tablespace {first.ObjectName} grants {DescribePrivileges(group)} to "
+                + $"{DescribeHolder(first.Grantee, role)}; with CREATE there the role can place a "
+                + "relation it owns, and no line of the grant script names a tablespace. Run "
+                + $"{DescribeRevoke(group, _ => true)} as the tablespace's owner.");
+        }
+
+        foreach (SessionDefault setting in snapshot.SessionDefaults)
+        {
+            problems.Add(DescribeSessionDefault(setting, role));
+        }
+
+        foreach (UserTrigger trigger in snapshot.Triggers)
+        {
+            string state = (trigger.IsConstraintTrigger, trigger.Enabled) switch
+            {
+                (true, true) => "a constraint trigger, enabled",
+                (true, false) => "a constraint trigger, disabled and one ALTER TABLE from firing",
+                (false, true) => "enabled",
+                (false, false) => "disabled and one ALTER TABLE from firing",
+            };
+            problems.Add(
+                $"Trigger {trigger.Name} on {trigger.Table} ({state}) runs a function on the role's "
+                + "statements that may write columns the statement never named, and a column "
+                + "privilege checks only what the statement names; the grant matrix declares no "
+                + $"trigger. Run DROP TRIGGER {trigger.Name} ON {trigger.Table} as the table's owner.");
+        }
+
+        foreach (RewriteRule rule in snapshot.Rules)
+        {
+            problems.Add(
+                $"Rule {rule.Name} on {rule.Table} rewrites the statements sent to it, and its "
+                + "actions run with the rule owner's privileges rather than the role's; the grant "
+                + $"matrix declares no rule. Run DROP RULE {rule.Name} ON {rule.Table} as the "
+                + "relation's owner.");
+        }
+
+        foreach (ReferentialActionWrite write in snapshot.ReferentialActionWrites)
+        {
+            string constraints = string.Join(", ", write.Constraints);
+            problems.Add(
+                $"A referential action writes column {write.Column} of table {write.Table}, which "
+                + $"{role} cannot UPDATE, whenever {role} deletes or updates what it may: the action "
+                + "runs as the referencing table's owner, so no column privilege checks it. "
+                + $"Constraint(s): {constraints}. Drop each, or re-create it with NO ACTION or "
+                + "RESTRICT in place of the writing action, as the table's owner.");
+        }
+
+        foreach (GeneratedColumnWrite generated in snapshot.GeneratedColumnWrites)
+        {
+            problems.Add(
+                $"A generated column, column {generated.Column} of table {generated.Table}, is "
+                + $"recomputed whenever a column it reads is written, and {role} can cause a write to "
+                + "that table, directly or through a foreign key's action, while it cannot UPDATE "
+                + "this one; nobody's UPDATE privilege is asked about the recomputation. Drop the "
+                + "generation expression, or take back what lets the role write that table, as its "
+                + "owner.");
         }
 
         foreach (IGrouping<(string ObjectKind, string ObjectName, string? Column, string Grantor),
@@ -721,12 +1186,12 @@ public static class AppRoleReach
             string on = $"ON {first.ObjectKind} {first.ObjectName}";
             problems.Add(
                 $"{Capitalize(target)} grants {privileges} to {role} with {first.Grantor} as the "
-                + $"grantor rather than its owner {first.Owner}. A REVOKE is performed as the owner "
-                + "even when a superuser sends it and takes back only the owner's own entries, so "
-                + $"the grant script's REVOKE ALL … FROM {role} leaves this one standing on every "
-                + $"re-run. Run SET ROLE {first.Grantor}; REVOKE {revoked} {on} FROM {role}; RESET "
-                + "ROLE on the admin connection — REVOKE … GRANTED BY another role is refused with "
-                + "0A000 — or have the owner run "
+                + $"grantor rather than its owner {first.Owner}. A REVOKE takes back only the entries "
+                + "recorded against its own grantor — the owner's when the owner, a superuser or a "
+                + "member inheriting the owner sends it — so the grant script's REVOKE ALL … FROM "
+                + $"{role} leaves this one standing on every re-run. Run SET ROLE {first.Grantor}; "
+                + $"REVOKE {revoked} {on} FROM {role}; RESET ROLE on the admin connection — "
+                + "REVOKE … GRANTED BY another role is refused with 0A000 — or have the owner run "
                 + $"REVOKE GRANT OPTION FOR {revoked} {on} FROM {first.Grantor} CASCADE.");
         }
 
@@ -756,6 +1221,35 @@ public static class AppRoleReach
                 + $"the grant script never takes it back. Run ALTER ROLE {role} NO{keyword} as a "
                 + "role allowed to change that attribute.");
         }
+    }
+
+    // The value is never in the sentence — it is never read. The remedy names the one statement that
+    // removes this row, and the caveat is measured on postgres:17.10 and 18.3: as a CREATEROLE
+    // administrator, or as the database owner, RESET of a superuser-only parameter answers 42501, and
+    // RESET ALL succeeds while leaving that parameter's setting stored.
+    private static string DescribeSessionDefault(SessionDefault setting, string role)
+    {
+        (string where, string reset) = setting switch
+        {
+            { ForEveryRole: true } =>
+                ($"Database {setting.Database} stores a session default for {setting.Parameter} for "
+                 + $"every role, {role} included",
+                 $"ALTER DATABASE {setting.Database} RESET {setting.Parameter}"),
+            { Database: null } =>
+                ($"Role {role} stores a session default for {setting.Parameter} in every database",
+                 $"ALTER ROLE {role} RESET {setting.Parameter}"),
+            _ =>
+                ($"Role {role} stores a session default for {setting.Parameter} in database "
+                 + $"{setting.Database}",
+                 $"ALTER ROLE {role} IN DATABASE {setting.Database} RESET {setting.Parameter}"),
+        };
+
+        return
+            $"{where}: the server applies it to the role's sessions before the API sends a "
+            + "statement, with no grant on the parameter, so no REVOKE in the grant script touches "
+            + $"it. Run {reset} as a principal allowed to — a CREATEROLE administrator's or the "
+            + "database owner's RESET of a superuser-only parameter answers 42501, and RESET ALL "
+            + "succeeds but keeps that setting.";
     }
 
     // One sentence per object and grantee rather than per privilege: ALL on a table is seven rows

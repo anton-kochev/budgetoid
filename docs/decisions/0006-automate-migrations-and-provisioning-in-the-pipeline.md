@@ -46,11 +46,12 @@ and must never become a migration.
 ## Decision
 
 **One tool performs the whole database step, not two mechanisms coordinated by YAML.**
-`BudgetoidApp/Tools/DbProvision` calls `DeploymentDatabaseProvisioning.ProvisionAsync`, which
-validates the role password, logs the pending migration count, migrates, applies the grants and the
-policies through `DatabaseProvisioning.ApplyGrantsAsync`, and then verifies row-level security
-coverage and the application role's reach. The reach check refuses whatever a re-run of the grant
-script cannot take back — an *extra* grant is fail-open too — and the tool runs it once more after
+`BudgetoidApp/Tools/DbProvision` calls `DeploymentDatabaseProvisioning.ProvisionAsync`, which logs
+the pending migration count, migrates, applies the grants and the policies through
+`DatabaseProvisioning.ApplyGrantsAsync`, and then verifies row-level security coverage and the
+application role's reach; it leaves the role credential-free. The reach check refuses what it reads
+of the reach a re-run of the grant script cannot take back — an *extra* grant is fail-open too —
+and the tool runs it once more after
 binding the role to its identity; its argument is
 [ADR 0026](0026-verify-at-deploy-the-reach-the-grant-script-cannot-take-back.md). The ordering
 that used to live in the runbook now lives inside one method, in the layer that already owns the

@@ -6,8 +6,8 @@ namespace Infrastructure.Persistence.Provisioning;
 /// <summary>
 /// Performs a deploy's database work as one operation: migrate the schema on the admin connection,
 /// then provision the application role with its grants and row-level security policies, then verify
-/// that the policies actually cover every tenant-owned table and that the role reaches nothing the
-/// grant script leaves behind.
+/// that the policies actually cover every tenant-owned table and that, over the catalogs
+/// <see cref="AppRoleReach"/> reads, the role reaches nothing the grant script leaves behind.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -24,10 +24,9 @@ namespace Infrastructure.Persistence.Provisioning;
 /// but only the part a re-run cannot converge. The table and column matrix is re-converged by every
 /// run of the script, which <c>REVOKE</c>s all on every table and sequence in <c>public</c> from the
 /// role before re-granting, and <c>AppRoleGrantMatrixTests</c> holds it in CI. That convergence
-/// takes back only the grants the object's owner made. What a re-run leaves standing — role
-/// attributes, memberships, <c>PUBLIC</c> grants, default privileges, ownership, grants on relations
-/// outside <c>public</c>, grants to the role made by anyone but the object's owner, and privileges
-/// on schemas, parameters, routines and the database — is <see cref="VerifyAppRoleReachAsync"/>.
+/// takes back only the entries recorded against the script's own grantor. What a re-run leaves
+/// standing, as far as <see cref="AppRoleReach"/> reads it, is <see cref="VerifyAppRoleReachAsync"/>;
+/// its remarks list the categories and what is not read.
 /// </para>
 /// <para>
 /// It does <b>not</b> attach a credential to the role, and that omission is the same argument read the
@@ -47,9 +46,9 @@ public static class DeploymentDatabaseProvisioning
 {
     /// <summary>
     /// Brings an empty or already-deployed database to the state the application expects: schema
-    /// migrated, application role present with exactly its grant matrix and isolation policies, and
-    /// both that coverage and the role's reach verified. Idempotent — this runs on every deploy, so the second run is the
-    /// common case.
+    /// migrated, application role present with its grant matrix and isolation policies, and both
+    /// that coverage and the role's reach verified. Idempotent — this runs on every deploy, so the
+    /// second run is the common case.
     /// </summary>
     /// <remarks>
     /// The role is left <b>credential-free</b>, and a deploy is not finished until it has attached one
@@ -74,8 +73,8 @@ public static class DeploymentDatabaseProvisioning
     /// a table whose tenancy nobody has decided, or a relation no policy can cover.
     /// </exception>
     /// <exception cref="AppRoleReachException">
-    /// Provisioning ran, but the application role reaches something the grant script did not take
-    /// back.
+    /// Provisioning ran, but the application role is missing, cannot log in, or reaches something
+    /// the grant script did not take back.
     /// </exception>
     public static async Task ProvisionAsync(
         string adminConnectionString,
@@ -282,19 +281,22 @@ public static class DeploymentDatabaseProvisioning
     }
 
     /// <summary>
-    /// Asserts that the application role reaches nothing beyond its grant matrix that a re-run of
-    /// <c>app-role-grants.sql</c> would leave in place, and throws naming every widening found.
+    /// Asserts that the application role exists, can log in, and — over the catalogs
+    /// <see cref="AppRoleReach"/> reads — reaches nothing beyond its grant matrix that a re-run of
+    /// <c>app-role-grants.sql</c> would leave in place, and throws naming every finding.
     /// </summary>
     /// <remarks>
     /// <para>
     /// The grant script converges what it grants, not what it never mentions. Role attributes are no
-    /// grant, and <c>PUBLIC</c> grants, memberships, default privileges and ownership all survive its
-    /// <c>REVOKE ALL … FROM budgetoid_app</c>. So do grants on relations in any schema but
-    /// <c>public</c>, which the script never names, and grants to the role recorded against a grantor
-    /// other than the object's owner, because that <c>REVOKE</c> is performed as the owner and takes
-    /// back only the owner's entries. A missing grant announces itself as <c>42501</c>; an
-    /// extra one is fail-open and silent, which is why it is verified here. The rules are
-    /// <see cref="AppRoleReach.FindProblems" />.
+    /// grant, and <c>PUBLIC</c> grants, memberships, default privileges, ownership and stored session
+    /// defaults all survive its <c>REVOKE ALL … FROM budgetoid_app</c>. So do grants in any schema but
+    /// <c>public</c>, which the script never names, and grants to the role recorded against another
+    /// grantor, because a <c>REVOKE</c> takes back only the entries recorded against its own. So do
+    /// the paths that write a column with no <c>UPDATE</c> on it — triggers, rewrite rules,
+    /// referential actions and generated columns — which are read here on every deploy, against the
+    /// live database. A missing grant announces itself as <c>42501</c>; an extra one is fail-open and
+    /// silent, which is why it is verified here. The rules, and what they do not read, are
+    /// <see cref="AppRoleReach" />'s.
     /// </para>
     /// <para>
     /// This does not collide with the "restate, don't share" argument <c>AppRoleGrantMatrixTests</c>
@@ -308,12 +310,21 @@ public static class DeploymentDatabaseProvisioning
     /// which no test here can run, so whether it changes the role's reach is found out by the deploy
     /// rather than assumed.
     /// </para>
+    /// <para>
+    /// It has to connect as the principal that ran the grant script: on a schema, a grant recorded
+    /// against the one grant-option holder that principal inherits is its own, and only a connection
+    /// as that principal can tell. Both call sites pass the connection string they provisioned with.
+    /// </para>
     /// </remarks>
-    /// <param name="adminConnectionString">Connection string used to read the catalogs.</param>
+    /// <param name="adminConnectionString">
+    /// Connection string for the principal that ran <c>app-role-grants.sql</c>, used to read the
+    /// catalogs.
+    /// </param>
     /// <param name="log">Sink for what was inspected; written on the failure path too.</param>
     /// <param name="cancellationToken">Cancels the catalog reads.</param>
     /// <exception cref="AppRoleReachException">
-    /// The application role reaches at least one thing its grant matrix does not give it.
+    /// The application role is missing, cannot log in, or reaches at least one thing its grant
+    /// matrix does not give it.
     /// </exception>
     public static async Task VerifyAppRoleReachAsync(
         string adminConnectionString,
@@ -346,8 +357,18 @@ public static class DeploymentDatabaseProvisioning
               + "schema public, "
               + $"{snapshot.ParameterGrants.Count} parameter privilege(s), "
               + $"{snapshot.ExecutableRoutines.Count} executable routine privilege(s), "
-              + $"{snapshot.DatabaseGrants.Count} database privilege(s) and "
-              + $"{snapshot.NonOwnerGrants.Count} privilege(s) granted by a non-owner.");
+              + $"{snapshot.DatabaseGrants.Count} database privilege(s), "
+              + $"{snapshot.NonOwnerGrants.Count} privilege(s) granted by a non-owner, "
+              + $"{snapshot.SystemSchemaGrants.Count} system-schema privilege(s) granted to it by "
+              + "name, "
+              + $"{snapshot.TablespaceGrants.Count} tablespace privilege(s), "
+              + $"{snapshot.SessionDefaults.Count} stored session default(s), "
+              + $"{snapshot.Triggers.Count} user-defined trigger(s), "
+              + $"{snapshot.Rules.Count} rewrite rule(s) beyond a view's own, "
+              + $"{snapshot.ReferentialActionWrites.Count} column(s) a referential action writes "
+              + "past its UPDATE and "
+              + $"{snapshot.GeneratedColumnWrites.Count} generated column(s) rewritten past its "
+              + "UPDATE.");
 
         IReadOnlyList<string> problems = AppRoleReach.FindProblems(snapshot);
         if (problems.Count > 0)
@@ -356,9 +377,12 @@ public static class DeploymentDatabaseProvisioning
         }
 
         log?.Invoke(
-            $"Role {snapshot.RoleName} holds no attribute, membership, ownership, default privilege, "
-            + "PUBLIC relation grant, relation grant outside schema public, grant made by anyone "
-            + "but the object's owner, parameter or routine privilege, or schema or database "
-            + "privilege beyond its grant matrix.");
+            $"Role {snapshot.RoleName}, over the catalogs this check reads, holds no attribute, "
+            + "membership, ownership, default privilege, PUBLIC relation grant, relation grant "
+            + "outside schema public, system-schema grant by name, grant made by anyone but the "
+            + "object's owner or this principal's own grant-option holder, parameter, routine or "
+            + "tablespace privilege, schema or database privilege beyond its grant matrix, or stored "
+            + "session default; no user-defined trigger or added rewrite rule exists; and no "
+            + "referential action or generated column writes a column it cannot UPDATE.");
     }
 }

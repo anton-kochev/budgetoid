@@ -7,8 +7,9 @@
 -- nothing. The database block below does the same for the database itself, where the role holds
 -- CONNECT alone, and holds it through PUBLIC.
 --
--- Converging has two limits, and neither is closed here. A REVOKE is performed as the object's
--- owner, even when a superuser sends it, and takes back only the entries the owner made: a grant to
+-- Converging has two limits, and neither is closed here. A REVOKE takes back only the entries
+-- recorded against its own grantor — the owner's when the owner, a superuser or a member inheriting
+-- the owner sends it, a grant-option holder's when it is sent through one — so a grant to
 -- budgetoid_app by a third role holding a grant option survives every run (measured on
 -- postgres:17.10). And no line here names a schema other than public, so nothing is taken back
 -- there. DeploymentDatabaseProvisioning.VerifyAppRoleReachAsync refuses both after this script
@@ -69,16 +70,18 @@ $provision$;
 -- The database is named by current_database() rather than spelled out because its name is not
 -- fixed per environment, and REVOKE takes no expression — hence the DO block and format(%I).
 --
--- WHAT THIS CANNOT DO, measured on postgres:17 as a non-superuser CREATEROLE role that does not own
--- the database: both statements answer WARNING 01006 "no privileges could be revoked" and change
--- nothing. That is a warning, not an error — the script carries on, the deploy reports success, and
--- the role keeps TEMPORARY. REVOKE on a database is the owner's act (or a holder of the grant
--- option's, for its own grants only), so the same limit covers a grant a third role made: the
--- owner's REVOKE leaves it standing. Whether the deploying administrator owns the database on Azure
--- Flexible Server has not been measured. Nothing in this script turns that silence into a refusal;
--- the deploy does, after the script: DeploymentDatabaseProvisioning.VerifyAppRoleReachAsync reads
--- the database's effective ACL for budgetoid_app, PUBLIC and any role it is a member of, and refuses
--- CREATE, TEMPORARY or any grant option there, naming the database.
+-- WHAT THIS CANNOT DO, measured on postgres:17.10 and 18.3 when the sender does not own the
+-- database. Sent by a role holding no grant option on it, both statements answer WARNING 01006 "no
+-- privileges could be revoked" and change nothing. Sent through a role that holds the grant option
+-- — a deploy principal that owns nothing and inherits such a role — they are performed as that holder,
+-- take back only its own entries, and change nothing with no warning at all. Neither is an error:
+-- the script carries on, reports success, and the role keeps TEMPORARY. The same limit covers a
+-- grant a third role made: the owner's REVOKE leaves it standing. Whether the deploying
+-- administrator owns the database on Azure Flexible Server has not been measured. Nothing in this
+-- script turns that silence into a refusal; the deploy step does, after the script:
+-- DeploymentDatabaseProvisioning.VerifyAppRoleReachAsync reads the database's effective ACL for
+-- budgetoid_app, PUBLIC and any role it is a member of, and refuses CREATE, TEMPORARY or any grant
+-- option there, naming the database.
 DO $database$
 BEGIN
     EXECUTE format('REVOKE TEMPORARY ON DATABASE %I FROM PUBLIC', current_database());

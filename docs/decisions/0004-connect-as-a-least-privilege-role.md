@@ -92,21 +92,22 @@ exists to close**, and nothing fails at the time it is done.
 Omission has one precondition: the role's own `UPDATE` must be the only thing that can write the
 column. A trigger, a rewrite rule and a foreign key's referential action each write columns the
 statement never named, with someone else's privileges, so any one of them would make an omitted
-column writable while every grant still reads correct. `ImmutableColumnRewritePathTests` holds
-that the schema carries none that could, as a CI gate
+column writable while every grant still reads correct. The deploy refuses a user-defined trigger,
+an added rewrite rule, and a referential action or generated column that writes a column the role
+cannot `UPDATE`, reading the live database each time
 ([ADR 0026](0026-verify-at-deploy-the-reach-the-grant-script-cannot-take-back.md)).
 
 **The script is idempotent and convergent, and is deliberately not an EF migration.** It first
 revokes all on every table and sequence in `public` from the role, and each table's block is then
 `REVOKE ALL` followed by the grants it should have, so a re-run converges the role's own grants
 there to exactly what is written — deleting a line removes the privilege on the next run rather than
-leaving it behind on a database that already has it. Convergence reaches only what a `REVOKE` from
-the role can take back, which is the grants the object's owner made; what it leaves standing is
-refused at deploy instead
+leaving it behind on a database that already has it. Convergence reaches only the entries recorded
+against the script's own grantor, because a `REVOKE` takes back nothing another grantor recorded;
+what `AppRoleReach` reads of what it leaves standing is refused at deploy instead
 ([ADR 0026](0026-verify-at-deploy-the-reach-the-grant-script-cannot-take-back.md)). It must never
-become a migration: the repository keeps a single regenerated baseline, hand-added SQL in it is lost on every
-regeneration, and grants target a **role** rather than the schema, so they belong to a step that
-re-runs rather than to a history that applies once.
+become a migration: the repository keeps a single regenerated baseline, hand-added SQL in it is
+lost on every regeneration, and grants target a **role** rather than the schema, so they belong to
+a step that re-runs rather than to a history that applies once.
 
 **Migrations always run as admin, and that was measured rather than assumed.** `SELECT` on
 `__EFMigrationsHistory` is not enough to run `MigrateAsync` even against an already-migrated

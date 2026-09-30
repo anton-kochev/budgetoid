@@ -1,8 +1,9 @@
 // Deploy-time database provisioning: migrates the schema, provisions the application role with its
 // grants and row-level security policies, verifies that the policies cover every tenant-owned
-// table and that the role reaches nothing the grant script leaves behind, binds the role to the
-// API's managed identity, and verifies that reach once more. Runs from the deploy pipeline on every
-// push to main; DEPLOYMENT.md's break-glass recipe documents running it by hand.
+// table and that, over the catalogs AppRoleReach reads, the role reaches nothing the grant script
+// leaves behind, binds the role to the API's managed identity, and verifies that reach once more.
+// Runs from the deploy pipeline on every push to main; DEPLOYMENT.md's break-glass recipe
+// documents running it by hand.
 //
 // Input comes from environment variables only, never from argv: the admin connection string is a
 // database administrator credential — in the pipeline a short-lived Microsoft Entra access token —
@@ -19,7 +20,7 @@
 //
 // Exit codes:
 //   0  provisioned, coverage and reach verified, and the application role bound to the identity
-//   1  provisioning failed
+//   1  provisioning failed or a verification refused
 //   2  a required environment variable is missing, empty, or malformed
 
 using Infrastructure.Persistence.Provisioning;
@@ -67,8 +68,10 @@ try
         + "password has been cleared.");
 
     // The reach check once more, after the label. ProvisionAsync already ran it, but the label step
-    // hands the role to Azure's pgaadauth provider, which no test can run — whether it grants the
-    // role anything is found out here, and a refusal fails the deploy like every refusal above.
+    // hands the role to Azure's pgaadauth provider, which no test can run — whether it widens the
+    // role in any way AppRoleReach reads is found out here, and a refusal fails the deploy like every
+    // refusal above. Same connection string as ProvisionAsync: the reach rules must be read as the
+    // principal that ran the grant script.
     await DeploymentDatabaseProvisioning.VerifyAppRoleReachAsync(
         adminConnectionString, Console.WriteLine);
 

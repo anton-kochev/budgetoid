@@ -17,8 +17,7 @@ namespace IntegrationTests;
 /// <b>What this pins is an absence of translation</b>, which ADR 0004 argues: every column the role
 /// cannot write is one no domain method reaches, so a <c>42501</c> at runtime is a missing grant and not
 /// a caller's mistake. A 400 or a 409 would tell the client to change its request; a 500 tells the
-/// operator to change the grant script. Until this class, the only evidence was a manual measurement
-/// recorded in <c>CategoryIntegrationTests</c>.
+/// operator to change the grant script.
 /// </para>
 /// <para>
 /// <b>The two statements were picked for the catches already sitting on their path.</b>

@@ -8,15 +8,15 @@ namespace IntegrationTests;
 
 /// <summary>
 /// Covers the one operation a deploy cannot be trusted to perform in two steps: migrating the schema
-/// and then provisioning the role, its grants, and its row-level security policies. The grant matrix
-/// is fail-closed, so a missing grant stops a feature dead with <c>42501</c>. Row-level security is
-/// fail-open: a granted table with no policy is readable and writable by the application role across
-/// every tenant, silently and indistinguishably from working. A deploy that migrates and forgets to
-/// provision is therefore a tenancy breach nothing reports, which is why the ordering belongs in code
-/// and why <c>VerifyRowLevelSecurityCoverageAsync</c> exists at all — and why it is named for row-level
-/// security rather than for provisioning as a whole. It does not check the grants, and it should not:
-/// a missing grant is fail-closed and announces itself as <c>42501</c> at the first statement that
-/// needs it, so there is nothing silent there to verify.
+/// and then provisioning the role, its grants, and its row-level security policies. A missing grant
+/// is fail-closed: it stops a feature dead with <c>42501</c>. Row-level security is fail-open: a
+/// granted table with no policy is readable and writable by the application role across every tenant,
+/// silently and indistinguishably from working. A deploy that migrates and forgets to provision is
+/// therefore a tenancy breach nothing reports, which is why the ordering belongs in code and why
+/// <c>VerifyRowLevelSecurityCoverageAsync</c> exists at all — and why it is named for row-level
+/// security rather than for provisioning as a whole. It does not check the grants. An extra grant is
+/// the other fail-open half, silent in the same way, and it is <c>VerifyAppRoleReachAsync</c>'s: its
+/// sabotages are in this file too, one rule at a time.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -615,10 +615,12 @@ public sealed class DeploymentProvisioningTests
         string catalogColumn)
     {
         // Arrange — one role attribute switched on. None of these is a grant, so nothing the grant
-        // script REVOKEs touches it, and a non-superuser CREATEROLE admin cannot switch BYPASSRLS or
-        // SUPERUSER back off even if the script tried. BYPASSRLS is the sharp one: every isolation
-        // policy stays present, enabled and correct in the catalog, and none of them applies to the
-        // role any more.
+        // script REVOKEs touches it. Nor could the script count on switching one off: measured on
+        // postgres:17.10, a CREATEROLE admin can take CREATEROLE off a role it administers but
+        // CREATEDB, REPLICATION or BYPASSRLS only when it holds that attribute itself, and no role
+        // but a superuser can alter a role that has SUPERUSER. BYPASSRLS is the sharp one: every
+        // isolation policy stays present, enabled and correct in the catalog, and none of them
+        // applies to the role any more.
         await using PostgreSqlContainer container = await StartBareContainerAsync();
         await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
 
@@ -1667,6 +1669,610 @@ public sealed class DeploymentProvisioningTests
         await Assert.That(heldFromMiddleAfterTheScript).IsTrue();
         await Assert.That(caught).IsTypeOf<AppRoleReachException>();
         await Assert.That(ProblemsNaming(caught, expectedTokens)).IsNotEmpty();
+    }
+
+    [Test]
+    [Arguments("select on pg_statistic")]
+    [Arguments("select on the rolpassword column of pg_authid")]
+    [Arguments("execute on pg_read_file")]
+    public async Task VerifyAppRoleReachAsync_GrantOnASystemSchemaObject_ThrowsNamingTheObject(
+        string sabotage)
+    {
+        // Arrange — a grant to the role on an object in pg_catalog. pg_statistic holds sampled
+        // column values of every table, policed ones included; rolpassword is every role's password
+        // hash; pg_read_file reads the server's files. None of them is in a schema the grant script
+        // names, so nothing takes the grant back. The fresh-database control is what keeps this
+        // rule honest: out of the box the only grantees in the system schemas are PUBLIC, the
+        // bootstrap superuser, pg_monitor and pg_read_all_stats, so the rule has to be about who
+        // holds the grant and not about where the object lives.
+        const string role = DatabaseProvisioning.AppRoleName;
+        (string Grant, string Probe, string[] ExpectedTokens) arranged = sabotage switch
+        {
+            "select on pg_statistic" => (
+                $"grant select on pg_catalog.pg_statistic to {role}",
+                $"select has_table_privilege('{role}', 'pg_catalog.pg_statistic', 'SELECT')",
+                ["pg_statistic", "SELECT"]),
+            "select on the rolpassword column of pg_authid" => (
+                $"grant select (rolpassword) on pg_catalog.pg_authid to {role}",
+                $"select has_column_privilege('{role}', 'pg_catalog.pg_authid', 'rolpassword', "
+                + "'SELECT')",
+                ["pg_authid", "rolpassword", "SELECT"]),
+            "execute on pg_read_file" => (
+                $"grant execute on function pg_catalog.pg_read_file(text) to {role}",
+                $"select has_function_privilege('{role}', 'pg_catalog.pg_read_file(text)', "
+                + "'EXECUTE')",
+                ["pg_read_file", "EXECUTE"]),
+            _ => throw new ArgumentOutOfRangeException(nameof(sabotage), sabotage, null),
+        };
+        (string grant, string probe, string[] expectedTokens) = arranged;
+
+        await using PostgreSqlContainer container = await StartBareContainerAsync();
+        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+
+        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        bool heldBefore = await ScalarBoolAsync(admin, probe);
+        await ExecuteAsync(admin, grant);
+        bool heldAfter = await ScalarBoolAsync(admin, probe);
+
+        // Act
+        List<string> logLines = [];
+        InvalidOperationException? caught =
+            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+
+        // Assert — the grant is what gave the role the privilege, then the system-schema sentence
+        // names the object.
+        await Assert.That(heldBefore).IsFalse();
+        await Assert.That(heldAfter).IsTrue();
+        await Assert.That(caught).IsTypeOf<AppRoleReachException>();
+        await Assert.That(ProblemsCarrying(caught, "system schema", expectedTokens)).IsNotEmpty();
+    }
+
+    [Test]
+    [Arguments("for the role")]
+    [Arguments("for the role in the current database")]
+    [Arguments("for the role in database postgres")]
+    [Arguments("for every role in the current database")]
+    public async Task VerifyAppRoleReachAsync_SessionDefaultStoredForTheAppRole_ThrowsNamingTheParameter(
+        string sabotage)
+    {
+        // Arrange — a setting the server applies to the role's every session before the API sends a
+        // statement. session_replication_role = replica stops ordinary triggers — the foreign keys'
+        // among them — for the session; a stored default is how the role gets it with no grant on
+        // the parameter at all. pg_db_role_setting holds all four shapes, empty on a fresh cluster:
+        // for the role everywhere (setdatabase 0, which rolconfig also shows), for the role in one
+        // database — this one, or postgres, which the role can connect to as well — and for every
+        // role in this database (setrole 0). The value is not the finding, the parameter is, so the
+        // sentence must name the parameter and not echo what it was set to.
+        const string role = DatabaseProvisioning.AppRoleName;
+        (string Sql, string Parameter, string Value, string? Database, string Probe) arranged =
+            sabotage switch
+            {
+                "for the role" => (
+                    $"alter role {role} set session_replication_role = replica",
+                    "session_replication_role",
+                    "replica",
+                    null,
+                    "select count(*) = 1 from pg_db_role_setting "
+                    + $"where setrole = '{role}'::regrole and setdatabase = 0"),
+                "for the role in the current database" => (
+                    $"alter role {role} in database {{database}} set work_mem = '8MB'",
+                    "work_mem",
+                    "8MB",
+                    "{database}",
+                    "select count(*) = 1 from pg_db_role_setting "
+                    + $"where setrole = '{role}'::regrole and setdatabase = "
+                    + "(select oid from pg_database where datname = current_database())"),
+                "for the role in database postgres" => (
+                    $"alter role {role} in database postgres set work_mem = '8MB'",
+                    "work_mem",
+                    "8MB",
+                    "postgres",
+                    "select count(*) = 1 from pg_db_role_setting "
+                    + $"where setrole = '{role}'::regrole and setdatabase = "
+                    + "(select oid from pg_database where datname = 'postgres')"),
+                "for every role in the current database" => (
+                    "alter database {database} set session_replication_role = replica",
+                    "session_replication_role",
+                    "replica",
+                    "{database}",
+                    "select count(*) = 1 from pg_db_role_setting where setrole = 0 and setdatabase = "
+                    + "(select oid from pg_database where datname = current_database())"),
+                _ => throw new ArgumentOutOfRangeException(nameof(sabotage), sabotage, null),
+            };
+        (string sql, string parameter, string value, string? database, string probe) = arranged;
+
+        await using PostgreSqlContainer container = await StartBareContainerAsync();
+        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+
+        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+
+        // ALTER … IN DATABASE and ALTER DATABASE take a name and no expression.
+        string currentDatabase = await ScalarStringAsync(admin, "select current_database()");
+        sql = sql.Replace("{database}", currentDatabase, StringComparison.Ordinal);
+        database = database?.Replace("{database}", currentDatabase, StringComparison.Ordinal);
+
+        bool clusterStartedEmpty =
+            await ScalarBoolAsync(admin, "select count(*) = 0 from pg_db_role_setting");
+        await ExecuteAsync(admin, sql);
+        bool storedWhereExpected = await ScalarBoolAsync(admin, probe);
+
+        // Act
+        List<string> logLines = [];
+        InvalidOperationException? caught =
+            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+
+        // Assert — the setting landed in the one row this sabotage aims at; the session-default
+        // sentence names the parameter, and the database where the row is scoped to one, as a whole
+        // word so budgetoid_app cannot stand in for budgetoid; and no such sentence carries the
+        // value.
+        await Assert.That(clusterStartedEmpty).IsTrue();
+        await Assert.That(storedWhereExpected).IsTrue();
+        await Assert.That(caught).IsTypeOf<AppRoleReachException>();
+        await Assert.That(
+                ProblemsWhere(
+                    caught,
+                    problem => problem.Contains("session default", StringComparison.OrdinalIgnoreCase)
+                        && problem.Contains(parameter, StringComparison.Ordinal)
+                        && (database is null || NamesWholeWord(problem, database))))
+            .IsNotEmpty();
+        await Assert.That(
+                ProblemsWhere(
+                    caught,
+                    problem => problem.Contains("session default", StringComparison.OrdinalIgnoreCase)
+                        && NamesWholeWord(problem, value)))
+            .IsEmpty();
+    }
+
+    [Test]
+    [Arguments("the app role")]
+    [Arguments("PUBLIC")]
+    public async Task VerifyAppRoleReachAsync_CreateOnATablespace_ThrowsNamingTheTablespace(
+        string grantee)
+    {
+        // Arrange — CREATE on pg_default, the tablespace every table lands in. With it the role
+        // could put a relation it owns there, and CREATE on a tablespace is a grant on a cluster
+        // object no line of the grant script names. The PUBLIC row is the same grant reached
+        // through inheritance. Neither tablespace grants anybody anything out of the box: both ACLs
+        // are NULL, which is the owner alone.
+        const string role = DatabaseProvisioning.AppRoleName;
+        string granteeSql = grantee == "PUBLIC" ? "public" : role;
+
+        await using PostgreSqlContainer container = await StartBareContainerAsync();
+        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+
+        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        string probe = $"select has_tablespace_privilege('{role}', 'pg_default', 'CREATE')";
+        bool heldBefore = await ScalarBoolAsync(admin, probe);
+        await ExecuteAsync(admin, $"grant create on tablespace pg_default to {granteeSql}");
+        bool heldAfter = await ScalarBoolAsync(admin, probe);
+
+        // Act
+        List<string> logLines = [];
+        InvalidOperationException? caught =
+            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+
+        // Assert — "tablespace pg_default" is the rule's own clause; CREATE is the privilege; the
+        // PUBLIC row also has to say who holds it, in the grantee's capitals.
+        string[] tokens = grantee == "PUBLIC" ? ["CREATE", "PUBLIC"] : ["CREATE"];
+        await Assert.That(heldBefore).IsFalse();
+        await Assert.That(heldAfter).IsTrue();
+        await Assert.That(caught).IsTypeOf<AppRoleReachException>();
+        await Assert.That(ProblemsCarrying(caught, "tablespace pg_default", tokens)).IsNotEmpty();
+    }
+
+    [Test]
+    [Arguments("before update on budgets")]
+    [Arguments("disabled")]
+    [Arguments("constraint")]
+    [Arguments("in another schema")]
+    public async Task VerifyAppRoleReachAsync_UserDefinedTrigger_ThrowsNamingTheTrigger(string sabotage)
+    {
+        // Arrange — a trigger somebody created. A column privilege is checked against the statement
+        // the role sends; a BEFORE UPDATE trigger assigning NEW.<column> writes a column the
+        // statement never named, and the column probe in AppRoleGrantMatrixTests still reports it
+        // refused. A disabled trigger counts — ENABLE TRIGGER is one statement away — and so does a
+        // constraint trigger, which pg_trigger records with tgisinternal false. The foreign keys'
+        // own triggers are internal and are the referential-action rule's to judge, which is what
+        // the fresh-database control holds. A table in another schema writes the same way.
+        //
+        // The trigger function's EXECUTE is taken from PUBLIC so the routine rule stays quiet and
+        // the refusal can only be the trigger's.
+        const string function = "public.sabotage_rewrite_fn()";
+        (string[] Sql, string Name, string Table, string Probe) arranged = sabotage switch
+        {
+            "before update on budgets" => (
+                [
+                    "create trigger sabotage_before_update before update on public.budgets "
+                    + $"for each row execute function {function}",
+                ],
+                "sabotage_before_update",
+                "public.budgets",
+                "select tgenabled = 'O' from pg_trigger where tgname = 'sabotage_before_update'"),
+            "disabled" => (
+                [
+                    "create trigger sabotage_switched_off before update on public.accounts "
+                    + $"for each row execute function {function}",
+                    "alter table public.accounts disable trigger sabotage_switched_off",
+                ],
+                "sabotage_switched_off",
+                "public.accounts",
+                "select tgenabled = 'D' from pg_trigger where tgname = 'sabotage_switched_off'"),
+            "constraint" => (
+                [
+                    "create constraint trigger sabotage_deferred after update on public.payees "
+                    + "deferrable initially deferred "
+                    + $"for each row execute function {function}",
+                ],
+                "sabotage_deferred",
+                "public.payees",
+                "select tgconstraint <> 0 and not tgisinternal from pg_trigger "
+                + "where tgname = 'sabotage_deferred'"),
+            "in another schema" => (
+                [
+                    "create schema sabotage_far",
+                    "create table sabotage_far.far_table (id int)",
+                    "create trigger sabotage_far_rewrite before update on sabotage_far.far_table "
+                    + $"for each row execute function {function}",
+                ],
+                "sabotage_far_rewrite",
+                "sabotage_far.far_table",
+                "select exists (select 1 from pg_trigger "
+                + "where tgname = 'sabotage_far_rewrite' "
+                + "and tgrelid = 'sabotage_far.far_table'::regclass)"),
+            _ => throw new ArgumentOutOfRangeException(nameof(sabotage), sabotage, null),
+        };
+        (string[] sql, string name, string table, string probe) = arranged;
+
+        await using PostgreSqlContainer container = await StartBareContainerAsync();
+        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+
+        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await ExecuteAsync(
+            admin,
+            $"create function {function} returns trigger language plpgsql "
+            + "as $$ begin return new; end $$");
+        await ExecuteAsync(admin, $"revoke execute on function {function} from public");
+        foreach (string statement in sql)
+        {
+            await ExecuteAsync(admin, statement);
+        }
+
+        bool landedAsDescribed = await ScalarBoolAsync(admin, probe);
+
+        // Act
+        List<string> logLines = [];
+        InvalidOperationException? caught =
+            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+
+        // Assert — "trigger <name> on <table>" is the rule's clause: no other sentence writes the
+        // word before a trigger's name.
+        await Assert.That(landedAsDescribed).IsTrue();
+        await Assert.That(caught).IsTypeOf<AppRoleReachException>();
+        await Assert.That(ProblemsCarrying(caught, $"trigger {name} on {table}")).IsNotEmpty();
+    }
+
+    [Test]
+    [Arguments("do also on budgets")]
+    [Arguments("in another schema")]
+    public async Task VerifyAppRoleReachAsync_RewriteRuleBeyondAViewsOwn_ThrowsNamingTheRule(
+        string sabotage)
+    {
+        // Arrange — a rewrite rule. Its actions run with the rule owner's privileges, so a DO ALSO
+        // INSERT writes a table the role holds nothing on, on the role's own UPDATE. The one rule
+        // that is not a finding is a view's _RETURN, which is the view's definition; the view
+        // control below holds that exclusion, and the fresh-database control holds the pg_catalog
+        // one, where pg_settings carries two rules of its own.
+        (string[] Sql, string Name, string Table) arranged = sabotage switch
+        {
+            "do also on budgets" => (
+                [
+                    "create rule sabotage_also as on update to public.budgets "
+                    + "do also notify sabotage_channel",
+                ],
+                "sabotage_also",
+                "public.budgets"),
+            "in another schema" => (
+                [
+                    "create schema sabotage_far",
+                    "create table sabotage_far.far_table (id int)",
+                    "create table sabotage_far.far_log (id int)",
+                    "create rule sabotage_far_copy as on insert to sabotage_far.far_table "
+                    + "do also insert into sabotage_far.far_log values (new.id)",
+                ],
+                "sabotage_far_copy",
+                "sabotage_far.far_table"),
+            _ => throw new ArgumentOutOfRangeException(nameof(sabotage), sabotage, null),
+        };
+        (string[] sql, string name, string table) = arranged;
+
+        await using PostgreSqlContainer container = await StartBareContainerAsync();
+        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+
+        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        foreach (string statement in sql)
+        {
+            await ExecuteAsync(admin, statement);
+        }
+
+        bool ruleExists = await ScalarBoolAsync(
+            admin,
+            "select exists (select 1 from pg_rewrite "
+            + $"where rulename = '{name}' and ev_class = '{table}'::regclass)");
+
+        // Act
+        List<string> logLines = [];
+        InvalidOperationException? caught =
+            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+
+        // Assert
+        await Assert.That(ruleExists).IsTrue();
+        await Assert.That(caught).IsTypeOf<AppRoleReachException>();
+        await Assert.That(ProblemsCarrying(caught, $"rule {name} on {table}")).IsNotEmpty();
+    }
+
+    [Test]
+    public async Task VerifyAppRoleReachAsync_ViewInPublic_DoesNotThrow()
+    {
+        // Arrange — the control for the rewrite-rule refusal. A view is a relation whose definition is a
+        // rewrite rule named _RETURN, and the migration creates no view, so without this one the
+        // _RETURN exclusion is held by nothing. No grant on it to the role or to PUBLIC.
+        await using PostgreSqlContainer container = await StartBareContainerAsync();
+        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+
+        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await ExecuteAsync(admin, "create view public.sabotage_plain_view as select 1 as x");
+        bool viewCarriesItsOwnRule = await ScalarBoolAsync(
+            admin,
+            "select exists (select 1 from pg_rewrite where rulename = '_RETURN' "
+            + "and ev_class = 'public.sabotage_plain_view'::regclass)");
+
+        // Act
+        List<string> logLines = [];
+        InvalidOperationException? caught =
+            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+
+        // Assert — nothing thrown at all, for the reason the fresh-database control gives.
+        await Assert.That(viewCarriesItsOwnRule).IsTrue();
+        await Assert.That(caught).IsNull();
+    }
+
+    [Test]
+    [Arguments("on update cascade from users email")]
+    [Arguments("on delete set null behind an on delete cascade")]
+    [Arguments("on update cascade behind a granted column")]
+    [Arguments("on update cascade behind a refused column")]
+    [Arguments("on update cascade behind an on delete set null")]
+    public async Task VerifyAppRoleReachAsync_ReferentialActionWritesAColumnTheRoleCannotUpdate_ThrowsNamingTheColumn(
+        string sabotage)
+    {
+        // Arrange — a foreign key whose action rewrites a referencing column the role cannot UPDATE,
+        // set off by something the role can do. The action runs as the table owner, so the column
+        // privilege never checks it. Each row was run on postgres:17.10 as the role and wrote the
+        // column below:
+        //
+        // - UPDATE (email) on users is granted, and an ON UPDATE CASCADE from another table's column
+        //   carries a new email into it. email has a unique index, which is all a foreign key needs.
+        // - DELETE on users is granted, and cascades a delete into a table the role cannot DELETE
+        //   from, whose ON DELETE SET NULL child is then rewritten: a rule that asked only "can the
+        //   role DELETE the referenced table" never gets past the first hop.
+        // - Two ON UPDATE CASCADE hops, the middle column granted: the middle is written and is no
+        //   finding, because the role could write it itself, and the leaf is. Exactly one sentence,
+        //   so a rule that reports every written column whatever the role holds goes red here.
+        // - The same two hops, the middle column refused: the leaf is reached only through a column
+        //   the role cannot write, so only a rule that follows the chain names it.
+        // - ON DELETE SET NULL on a referenced key, which the referencing table's ON UPDATE CASCADE
+        //   then carries on: a delete becomes an update one hop down.
+        const string role = DatabaseProvisioning.AppRoleName;
+        (string[] Sql, string ArmedProbe, string WrittenTable, string WrittenColumn, bool OnlyOne)
+            arranged = sabotage switch
+            {
+                "on update cascade from users email" => (
+                    [
+                        "create table public.sabotage_email_holder (id int primary key, "
+                        + "email_copy varchar(254) collate case_insensitive "
+                        + "references public.users (email) on update cascade)",
+                    ],
+                    $"select has_column_privilege('{role}', 'public.users', 'email', 'UPDATE')",
+                    "public.sabotage_email_holder",
+                    "email_copy",
+                    false),
+                "on delete set null behind an on delete cascade" => (
+                    [
+                        "create table public.sabotage_parent (id uuid primary key, "
+                        + "user_ref uuid references public.users (id) on delete cascade)",
+                        "create table public.sabotage_kid (id int primary key, "
+                        + "parent_ref uuid references public.sabotage_parent (id) on delete set null)",
+                    ],
+                    $"select has_table_privilege('{role}', 'public.users', 'DELETE') "
+                    + $"and not has_table_privilege('{role}', 'public.sabotage_parent', 'DELETE')",
+                    "public.sabotage_kid",
+                    "parent_ref",
+                    false),
+                "on update cascade behind a granted column" => (
+                    [
+                        "create table public.sabotage_relay (id int primary key, "
+                        + "relay_code varchar(254) collate case_insensitive unique "
+                        + "references public.users (email) on update cascade)",
+                        $"grant update (relay_code) on public.sabotage_relay to {role}",
+                        "create table public.sabotage_leaf (id int primary key, "
+                        + "leaf_code varchar(254) collate case_insensitive "
+                        + "references public.sabotage_relay (relay_code) on update cascade)",
+                    ],
+                    $"select has_column_privilege('{role}', 'public.users', 'email', 'UPDATE') "
+                    + $"and has_column_privilege('{role}', 'public.sabotage_relay', 'relay_code', "
+                    + "'UPDATE')",
+                    "public.sabotage_leaf",
+                    "leaf_code",
+                    true),
+                "on update cascade behind a refused column" => (
+                    [
+                        "create table public.sabotage_relay (id int primary key, "
+                        + "relay_code varchar(254) collate case_insensitive unique "
+                        + "references public.users (email) on update cascade)",
+                        "create table public.sabotage_leaf (id int primary key, "
+                        + "leaf_code varchar(254) collate case_insensitive "
+                        + "references public.sabotage_relay (relay_code) on update cascade)",
+                    ],
+                    $"select has_column_privilege('{role}', 'public.users', 'email', 'UPDATE') "
+                    + $"and not has_column_privilege('{role}', 'public.sabotage_relay', "
+                    + "'relay_code', 'UPDATE')",
+                    "public.sabotage_leaf",
+                    "leaf_code",
+                    false),
+                "on update cascade behind an on delete set null" => (
+                    [
+                        "create table public.sabotage_owner_relay (id int primary key, "
+                        + "owner_ref uuid unique references public.users (id) on delete set null)",
+                        "create table public.sabotage_tail (id int primary key, "
+                        + "tail_ref uuid references public.sabotage_owner_relay (owner_ref) "
+                        + "on update cascade)",
+                    ],
+                    $"select has_table_privilege('{role}', 'public.users', 'DELETE')",
+                    "public.sabotage_tail",
+                    "tail_ref",
+                    false),
+                _ => throw new ArgumentOutOfRangeException(nameof(sabotage), sabotage, null),
+            };
+        (string[] sql, string armedProbe, string writtenTable, string writtenColumn, bool onlyOne) =
+            arranged;
+
+        await using PostgreSqlContainer container = await StartBareContainerAsync();
+        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+
+        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        foreach (string statement in sql)
+        {
+            await ExecuteAsync(admin, statement);
+        }
+
+        bool armed = await ScalarBoolAsync(admin, armedProbe);
+        bool roleCanWriteItItself = await ScalarBoolAsync(
+            admin,
+            $"select has_column_privilege('{role}', '{writtenTable}', '{writtenColumn}', 'UPDATE')");
+
+        // Act
+        List<string> logLines = [];
+        InvalidOperationException? caught =
+            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+
+        // Assert — the role can set the chain off and cannot write the column itself; then the
+        // referential-action sentence names the written column.
+        await Assert.That(armed).IsTrue();
+        await Assert.That(roleCanWriteItItself).IsFalse();
+        await Assert.That(caught).IsTypeOf<AppRoleReachException>();
+        await Assert.That(
+                ProblemsCarrying(
+                    caught, "referential action", $"column {writtenColumn} of table {writtenTable}"))
+            .IsNotEmpty();
+        if (onlyOne)
+        {
+            await Assert.That(ProblemsCarrying(caught, "referential action").Count).IsEqualTo(1);
+        }
+    }
+
+    [Test]
+    public async Task VerifyAppRoleReachAsync_ReferentialActionTheRoleCannotSetOff_DoesNotThrow()
+    {
+        // Arrange — the precise negative for the rule above: an ON UPDATE CASCADE onto users.id,
+        // which the role cannot UPDATE. The action writes a column the role cannot write, and
+        // nothing the role can do fires it, so it is no reach of the role's. A rule that refused
+        // every writing action regardless of who can set it off goes red here.
+        const string role = DatabaseProvisioning.AppRoleName;
+        await using PostgreSqlContainer container = await StartBareContainerAsync();
+        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+
+        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await ExecuteAsync(
+            admin,
+            "create table public.sabotage_quiet (id int primary key, "
+            + "user_copy uuid references public.users (id) on update cascade)");
+        bool actionIsCascade = await ScalarBoolAsync(
+            admin,
+            "select confupdtype = 'c' from pg_constraint "
+            + "where conrelid = 'public.sabotage_quiet'::regclass and contype = 'f'");
+        bool roleCanSetItOff = await ScalarBoolAsync(
+            admin, $"select has_column_privilege('{role}', 'public.users', 'id', 'UPDATE')");
+
+        // Act
+        List<string> logLines = [];
+        InvalidOperationException? caught =
+            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+
+        // Assert
+        await Assert.That(actionIsCascade).IsTrue();
+        await Assert.That(roleCanSetItOff).IsFalse();
+        await Assert.That(caught).IsNull();
+    }
+
+    [Test]
+    [Arguments("base column granted to the role")]
+    [Arguments("base column nulled behind an on delete cascade")]
+    public async Task VerifyAppRoleReachAsync_StoredGeneratedColumnRewrittenForTheRole_ThrowsNamingTheColumn(
+        string sabotage)
+    {
+        // Arrange — a stored generated column is recomputed whenever a column it reads changes, and
+        // nobody's UPDATE privilege is asked about it. Both rows were run on postgres:17.10 as the
+        // role: an UPDATE of the granted base column rewrote the generated one, and a DELETE on users
+        // cascaded, set the base column NULL one hop down, and rewrote the generated column beside
+        // it. The second row is only reachable through the referential-action walk: the role holds
+        // no privilege on that table at all.
+        const string role = DatabaseProvisioning.AppRoleName;
+        (string[] Sql, string ArmedProbe, string Table, string Column) arranged = sabotage switch
+        {
+            "base column granted to the role" => (
+                [
+                    "create table public.sabotage_derive (id int primary key, base_text text, "
+                    + "derived_upper text generated always as (upper(base_text)) stored)",
+                    $"grant update (base_text) on public.sabotage_derive to {role}",
+                ],
+                $"select has_column_privilege('{role}', 'public.sabotage_derive', 'base_text', "
+                + "'UPDATE')",
+                "public.sabotage_derive",
+                "derived_upper"),
+            "base column nulled behind an on delete cascade" => (
+                [
+                    "create table public.sabotage_parent (id uuid primary key, "
+                    + "user_ref uuid references public.users (id) on delete cascade)",
+                    "create table public.sabotage_kid (id int primary key, "
+                    + "parent_ref uuid references public.sabotage_parent (id) on delete set null, "
+                    + "parent_gone boolean generated always as (parent_ref is null) stored)",
+                ],
+                $"select has_table_privilege('{role}', 'public.users', 'DELETE') "
+                + $"and not has_column_privilege('{role}', 'public.sabotage_kid', 'parent_ref', "
+                + "'UPDATE')",
+                "public.sabotage_kid",
+                "parent_gone"),
+            _ => throw new ArgumentOutOfRangeException(nameof(sabotage), sabotage, null),
+        };
+        (string[] sql, string armedProbe, string table, string column) = arranged;
+
+        await using PostgreSqlContainer container = await StartBareContainerAsync();
+        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+
+        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        foreach (string statement in sql)
+        {
+            await ExecuteAsync(admin, statement);
+        }
+
+        bool armed = await ScalarBoolAsync(admin, armedProbe);
+        bool isStoredGenerated = await ScalarBoolAsync(
+            admin,
+            "select attgenerated = 's' from pg_attribute "
+            + $"where attrelid = '{table}'::regclass and attname = '{column}'");
+
+        // Act
+        List<string> logLines = [];
+        InvalidOperationException? caught =
+            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+
+        // Assert
+        await Assert.That(armed).IsTrue();
+        await Assert.That(isStoredGenerated).IsTrue();
+        await Assert.That(caught).IsTypeOf<AppRoleReachException>();
+        await Assert.That(
+                ProblemsCarrying(caught, "generated column", $"column {column} of table {table}"))
+            .IsNotEmpty();
     }
 
     [Test]
@@ -3086,6 +3692,21 @@ public sealed class DeploymentProvisioningTests
         ProblemsWhere(
             caught,
             problem => tokens.All(token => problem.Contains(token, StringComparison.Ordinal)));
+
+    /// <summary>
+    /// The problems in a caught <see cref="AppRoleReachException" /> that carry
+    /// <paramref name="ruleClause" /> — the clause only one rule's sentence writes, matched in any
+    /// case so a sentence may open with it — and every one of <paramref name="tokens" />, matched
+    /// ordinally.
+    /// </summary>
+    private static List<string> ProblemsCarrying(
+        InvalidOperationException? caught,
+        string ruleClause,
+        params string[] tokens) =>
+        ProblemsWhere(
+            caught,
+            problem => problem.Contains(ruleClause, StringComparison.OrdinalIgnoreCase)
+                && tokens.All(token => problem.Contains(token, StringComparison.Ordinal)));
 
     /// <summary>
     /// The problems in a caught <see cref="AppRoleReachException" /> that satisfy
