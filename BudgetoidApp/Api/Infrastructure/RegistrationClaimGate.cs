@@ -17,6 +17,12 @@ namespace Api.Infrastructure;
 /// by an edit that keeps them distinct from each other, which is the property those tests hold.
 /// </para>
 /// <para>
+/// <b>The checks are <see cref="ProviderClaims" />'s; the titles are this filter's.</b>
+/// <see cref="ProviderAuthorizationGate" /> asks the same three questions of a provider principal it
+/// authenticates beside a session, and answers them in a different shape, so the judgement is shared and
+/// the response is not.
+/// </para>
+/// <para>
 /// <b>Why an endpoint filter and not any of the three things that run earlier.</b> A
 /// <c>RequireAssertion</c> on the group's policy, or a custom <c>IAuthorizationRequirement</c>, both run
 /// before the delegate — and both answer <b>403 with no title</b>. That collapses two refusals a caller
@@ -89,21 +95,21 @@ public sealed class RegistrationClaimGate : IEndpointFilter
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(next);
 
-        ClaimsPrincipal principal = context.HttpContext.User;
-
-        // One sentence for both halves, deliberately: telling a caller which of the two the server
-        // could not read describes the token they are already holding.
-        if (!HasRequiredClaim(principal, "sub") || !HasRequiredClaim(principal, "email"))
+        // HttpContext.User is the provider's principal here, and only here: the group's policy names
+        // the provider scheme, so AuthorizationMiddleware re-authenticated on it and replaced whatever
+        // the default scheme produced. ProviderAuthorizationGate cannot make that assumption and does
+        // not.
+        //
+        // One sentence for both missing-claim halves, deliberately: telling a caller which of the two
+        // the server could not read describes the token they are already holding.
+        return ProviderClaims.RefusalFor(context.HttpContext.User) switch
         {
-            return Refuse(MissingClaimsTitle);
-        }
-
-        if (!HasVerifiedEmailClaim(principal))
-        {
-            return Refuse(UnverifiedEmailTitle);
-        }
-
-        return next(context);
+            null => next(context),
+            ProviderClaims.Refusal.MissingClaims => Refuse(MissingClaimsTitle),
+            ProviderClaims.Refusal.UnverifiedEmail => Refuse(UnverifiedEmailTitle),
+            var unexpected => throw new ArgumentOutOfRangeException(
+                nameof(context), unexpected, "A provider claim refusal was added and nobody titled it."),
+        };
     }
 
     /// <summary>
@@ -118,20 +124,4 @@ public sealed class RegistrationClaimGate : IEndpointFilter
     private static ValueTask<object?> Refuse(string title) =>
         ValueTask.FromResult<object?>(
             Results.Problem(title: title, statusCode: StatusCodes.Status401Unauthorized));
-
-    /// <summary>
-    /// Whether the principal carries a claim of this type with something in it.
-    /// </summary>
-    /// <remarks>
-    /// <b>Whitespace counts as missing.</b> A subject of three spaces is not an identifier a later
-    /// sign-in can be matched on, and an address of three spaces is not one anybody can be reached at;
-    /// admitting either would file a row keyed on nothing.
-    /// </remarks>
-    private static bool HasRequiredClaim(ClaimsPrincipal principal, string claimType) =>
-        !string.IsNullOrWhiteSpace(principal.FindFirstValue(claimType));
-
-    // Only a value bool.TryParse reads as true counts. Truthy dialects such as "1" are rejected:
-    // no provider this codebase talks to emits one, so accepting one only widens the hole.
-    private static bool HasVerifiedEmailClaim(ClaimsPrincipal principal) =>
-        bool.TryParse(principal.FindFirstValue("email_verified"), out bool verified) && verified;
 }

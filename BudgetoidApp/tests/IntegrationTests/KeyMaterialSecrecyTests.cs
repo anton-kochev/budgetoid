@@ -1455,6 +1455,20 @@ public sealed class KeyMaterialSecrecyTests
             "base64url over an assertion signature, verified with a published public key"),
         new("CredentialEndpoints.RevocationRequest", "UserHandle",
             "base64url over the sixteen bytes of the account id the authenticator kept"),
+
+        // The erasure's five members, and the erasure's arguments hold for them word for word: the same
+        // re-authentication assertion answering the same challenge pool. The provider token this route
+        // also takes is a header, not a body member, so nothing here argues for it.
+        new("EmailChangeEndpoints.EmailChangeRequest", "AuthenticatorData",
+            "base64url over the authenticator's signed bytes: a relying-party hash, flags and a counter"),
+        new("EmailChangeEndpoints.EmailChangeRequest", "ClientDataJson",
+            "base64url over the JSON the browser signed — type, challenge, origin — a public transcript"),
+        new("EmailChangeEndpoints.EmailChangeRequest", "CredentialId",
+            "base64url over the authenticator's opaque handle, which selects a key and is not one"),
+        new("EmailChangeEndpoints.EmailChangeRequest", "Signature",
+            "base64url over an assertion signature, verified with a published public key"),
+        new("EmailChangeEndpoints.EmailChangeRequest", "UserHandle",
+            "base64url over the sixteen bytes of the account id the authenticator kept"),
         new("KeyRotationEndpoints.BeginRotationRequest", "AuthenticatorData",
             "base64url over the authenticator's signed bytes: a relying-party hash, flags and a counter"),
         new("KeyRotationEndpoints.BeginRotationRequest", "ClientDataJson",

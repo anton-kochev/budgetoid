@@ -29,8 +29,9 @@ presenting it is authenticated from it, publishing the account and the ambient b
 `POST /api/me/session/revocation` ends it. **Two of the four have a screen**: `/register` runs its
 creation ceremony and `/welcome` runs the assertion. The other two are reached today only by the
 integration suite — nothing in the browser redeems a code or regenerates a set. Every request this
-app makes is authenticated from the cookie; the identity provider is contacted once, on the
-registration screen.
+app makes is authenticated from the cookie; the browser contacts the identity provider from the
+registration screen alone. The server's email-change route takes a provider token beside the cookie,
+and no screen calls it yet — see [email-change.md](email-change.md).
 
 ## Key Entities
 
@@ -432,10 +433,13 @@ required members. A third writer is a decision rather than a refactor.
   - **The bearer is permanent on those two routes.** They authenticate on the provider's scheme and
     nothing else, because an account may not exist without a completed provider exchange and there
     is no first-party credential to present on the one call that creates the first-party account.
-  - **Narrowing to them was worth doing even though no other route reads the token.**
-    `SessionService` discards it once the tab holds a session — see the provider-token rule below —
-    but a browser that abandoned registration still holds it when that person does what they usually
-    do next, a passkey sign-in, and the discard comes only after that sign-in answers. So both
+  - **Narrowing to them was worth doing, and no route the client calls reads the token anywhere
+    else.** The server's `POST /api/me/email-change` does read one, beside a session, but nothing in
+    this client calls it yet, so the interceptor attaches no bearer there; the screen that does will
+    have to widen this rule and the one below, not work around them. Why narrow at all:
+    `SessionService` discards the token once the tab holds a session — see the provider-token rule
+    below — but a browser that abandoned registration still holds it when that person does what they
+    usually do next, a passkey sign-in, and the discard comes only after that sign-in answers. So both
     anonymous assertion legs were being handed a provider credential they could not act on. Every
     hop a credential makes is another log, proxy and error report it can be recorded in.
   - **The order of the two questions is the security property.** Origin first, route second.
@@ -611,7 +615,9 @@ required members. A third writer is a decision rather than a refactor.
     inject `SessionService`. Both are asked from the `APP_INITIALIZER`, and an edge back would be an
     import cycle between two things bootstrap awaits.
   - **Correct only while no signed-in flow uses the provider.** A later screen that needs a provider
-    token while signed in breaks this rule, and the discard with it.
+    token while signed in breaks this rule, and the discard with it. The server already has one such
+    route, `POST /api/me/email-change`; no screen calls it yet, and the one that does has to re-argue
+    this rule in the same commit.
   - The rule sits in the client because the client is the only layer that holds the tokens; the
     server cannot clear a browser's storage.
 - **Enforced in**: `session.service.spec.ts` — the discard happens on `established()` and on an
@@ -778,7 +784,11 @@ required members. A third writer is a decision rather than a refactor.
   outside the anonymous surface and the **registration** group. That group declares a policy naming
   the identity provider's scheme, which takes it out of the fallback; the outcome is right rather
   than worked around, because a caller with no session at all gives a requirement about session
-  kinds nothing to judge. Naming the scheme on the fallback restates the default and is worth the
+  kinds nothing to judge. `POST /api/me/email-change` reads a provider token too and **stays** on
+  the fallback: it authenticates that token in a filter beside the session rather than in a policy,
+  so a locked session is refused there like everywhere else — see
+  [email-change.md](email-change.md). Naming the scheme on the fallback restates the default and
+  is worth the
   line twice over: it makes the fallback readable off the route table, and a later change of default
   cannot silently move every route that declares nothing onto some other handler. Routes opt out
   with `AllowsLockedSessionAttribute`; the opted-out set is exactly
@@ -806,6 +816,11 @@ required members. A third writer is a decision rather than a refactor.
   `POST /api/me/erasure` each answer `403` with a body identical to the others and naming no
   session, credential or kind. Two 403s live on this path and they must stay distinguishable to a
   reader: the first-party control's carries its own title, this one carries none.
+  - **The email change is refused the same way, and on this route the reason is sharpest**: the
+    Google identity is exactly what a locked session holds, so letting one move it would let the
+    weakest credential re-point the account. Pinned by
+    `EmailChangeEndpointTests.EmailChange_ForALockedSession_IsRefused403_WhileAFullSessionOnTheSameAccountSucceeds`,
+    which pairs the refusal with a full session on the same account.
   - **The account-keys refusal is the one this rule reads most literally**, and the widening made it
     more so rather than less. A federated credential can derive no key-encryption key, so a locked
     session reaching that route would be handed **every** wrapped row on the account and hold nothing
@@ -836,7 +851,7 @@ stateDiagram-v2
 | Transition | Triggered by | Validations |
 |---|---|---|
 | → Established | `Session.Establish(credential, createdAtUtc, expiresAtUtc)`, reached from `RegisterAccountHandler` once a registration ceremony verifies — over the **passkey** credential it just created, never the recovery-codes one — from `CompleteAssertionHandler` once a passkey assertion verifies, from `RedeemRecoveryCodeHandler` once a presented verifier matches a stored hash, and from `GenerateRecoveryCodesHandler` when replacing a set ended at least one of that set's sessions | the credential is required; the expiry must be after the creation instant; the kind is derived from the credential's type and cannot be supplied |
-| Established → Revoked | `Session.Revoke(revokedAtUtc)`, reached two ways: through `RevokeSessionsForCredentialHandler`, which `RevokePasskeyHandler` and `GenerateRecoveryCodesHandler` each call before deleting a credential, and through `RevokeSessionHandler`, which `POST /api/me/session/revocation` calls to end the caller's own | none. Already revoked is a no-op keeping the first instant, which is what makes a retry honest about having ended nothing new |
+| Established → Revoked | `Session.Revoke(revokedAtUtc)`, reached two ways: through `RevokeSessionsForCredentialHandler`, which `RevokePasskeyHandler`, `GenerateRecoveryCodesHandler` and `ChangeEmailHandler` each call before deleting a credential, and through `RevokeSessionHandler`, which `POST /api/me/session/revocation` calls to end the caller's own | none. Already revoked is a no-op keeping the first instant, which is what makes a retry honest about having ended nothing new |
 | Established → Expired | the clock | none. `IsActiveAt` reads the expiry as well as the revocation, with an exclusive boundary: a session is live up to its expiry and not at it |
 | Established → deleted | `EraseAccountHandler` deleting the user row; the session and its `session_tokens` rows leave by the cascade `users → credentials → sessions → session_tokens`, in the erasure's own transaction. A revoked or expired row leaves the same way | none, and nothing is stamped: a `revoked_at_utc` would be a remnant. The cascade runs as the referencing table's owner; the role holds no `DELETE` on either table, so a cascade is the only way these rows leave — see [erasure.md](erasure.md). The next request presenting the cookie finds no token row and answers `401` — **the sign-out route included**, which makes this the one end where the cookie stays on the client until its `Expires`. Harmless, because it names nothing; do not answer it by relaxing the lookup — see the ended-session rule |
 
@@ -970,15 +985,26 @@ ELSE                                                    ← an unenumerated futu
   not rest on the subtle property that the value a retried delegate returns belongs to the attempt
   that survived. **Registration has no delegate at all**, so there the question does not arise.
 - **The session cookie is the API's default authentication scheme, and nothing forwards to another
-  one.** `JwtBearer` stays registered and is reached by exactly **one** policy — the registration
-  group's — so a bearer presented anywhere else authenticates nothing and gets the same `401` an
-  anonymous request does. A policy scheme that chose a handler per request would put a second way to
-  authenticate an ordinary route back on the table.
-- **`sub` means exactly one thing: this installation's own account id.** The two registration routes
-  are the only ones a provider bearer reaches and they publish no identity at all — the handler
-  derives the account id from the ceremony's own challenge and publishes it after the signature
-  verifies — so there is no request on which an account id and a provider subject could meet under
-  one claim name.
+  one.** `JwtBearer` stays registered and is reached two ways: by exactly **one** policy — the
+  registration group's — and by `ProviderAuthorizationGate`, a filter on `POST /api/me/email-change`
+  that authenticates the bearer **beside** a full session and never as the request's identity. A
+  bearer presented anywhere else authenticates nothing and gets the same `401` an anonymous request
+  does; a bearer presented to the email change with no cookie gets that same `401` too
+  (`EmailChange_WithAProviderTokenAndNoSession_IsRefused401_AndChangesNothing`). A policy scheme that
+  chose a handler per request would put a second way to authenticate an ordinary route back on the
+  table.
+- **A session's `sub` and a provider's `sub` meet on one request, and never in one principal.**
+  On the registration routes the provider's principal is the only one — the policy names that
+  scheme — and the account id is never a claim: the handler derives it and publishes it after the
+  signature verifies. On the email change both exist at once: `HttpContext.User` is the session's,
+  and its `sub` is this installation's account id; the provider's principal is the result of the
+  gate's own `AuthenticateAsync` call, read once for its subject and address and never merged in. So
+  no principal on any request carries both, and a `sub` read off one means one thing. A policy naming
+  both schemes would break that — `AuthorizationMiddleware` merges every named scheme's principal
+  into one, carrying two `sub` claims — which is why the email change takes a filter instead; see
+  [ADR 0027](../decisions/0027-authenticate-the-email-change-on-the-session-and-a-fresh-provider-token-side-by-side.md).
+  `EmailChange_WithANewSubjectAndAddress_StoresBothFromTheProviderToken` asserts the filed subject is
+  not the account id.
 - **A refused request can leave an identity published behind it.** When a token's digest matches but
   the session is dead, `app.current_user_id` names the account whose handle really did match, on a
   request that then goes on to be refused. It reaches no budget, and every route that runs without
@@ -991,10 +1017,12 @@ ELSE                                                    ← an unenumerated futu
   first passes a test asserting the sessions are gone — while leaving nothing to say when access
   ended. Any credential-removal path must revoke explicitly **and then** delete, or the fact is
   unobservable.
-  - **How the two paths that exist resolve it.** `RevokePasskeyHandler` and
-    `GenerateRecoveryCodesHandler` each revoke and then delete — and because the delete removes the
+  - **How the three paths that exist resolve it.** `RevokePasskeyHandler`,
+    `GenerateRecoveryCodesHandler` and `ChangeEmailHandler` — which retires the federated credential
+    when the Google identity moves — each revoke and then delete, and because the delete removes the
     very rows the revocation just stamped, the schema afterwards is identical either way. So the
-    evidence leaves in the response instead, as `sessionsEnded`.
+    evidence leaves in the response instead, as `sessionsEnded`. See
+    [email-change.md](email-change.md).
   - **Erasure is the one exception, and it is named rather than implied.** `EraseAccountHandler`
     removes every credential on the account and revokes nothing: each session and its token rows
     leave by the cascade from `users`, in the erasure's own transaction. The rule above exists so a
@@ -1029,15 +1057,17 @@ ELSE                                                    ← an unenumerated futu
 - **Revoked and expired rows accumulate.** Nothing sweeps them, and the application role holds no
   `DELETE` grant to do it with. The grant a sweep needs is the one this file argues against adding;
   the MUST NOT on `DELETE` says what the rows amount to.
-- **`RevokeSessionsForCredentialHandler`'s two callers do not mean the same thing by the number.**
-  To `RevokePasskeyHandler` it is evidence and nothing more; to `GenerateRecoveryCodesHandler` it is
-  also the condition a re-established session is written on. So a change to what
-  `RevokeForCredentialAsync` counts — the obvious candidate being to narrow `revoked_at_utc is null`
-  to a live-at-now reading — changes behaviour on one path while looking like a reporting fix on
-  both. Both callers reach it through the command handler rather than straight to
-  `ISessionRepository`, because the handler is where the clock is read, so one decision to end
-  access is stamped as one instant however many rows it touches. Revoking the **federated**
-  credential still has no caller and is not expected to gain one.
+- **`RevokeSessionsForCredentialHandler`'s three callers do not all mean the same thing by the
+  number.** To `RevokePasskeyHandler` and `ChangeEmailHandler` it is evidence and nothing more; to
+  `GenerateRecoveryCodesHandler` it is also the condition a re-established session is written on.
+  So a change to what `RevokeForCredentialAsync` counts — the obvious candidate being to narrow
+  `revoked_at_utc is null` to a live-at-now reading — changes behaviour on one path while looking
+  like a reporting fix on all three. All three reach it through the command handler rather than
+  straight to `ISessionRepository`, because the handler is where the clock is read, so one decision
+  to end access is stamped as one instant however many rows it touches. **`ChangeEmailHandler` is the
+  one caller that sweeps the federated credential**, and it does so only when the Google identity
+  moves; since nothing establishes a locked session, that sweep finds nothing on a real account
+  today — see [email-change.md](email-change.md).
 - **The expiry is decided by the caller, and the four callers read one value.** `Session.Establish`
   validates only that the expiry is after the creation instant; the number — **14 days** — is
   `SessionPolicy.Lifetime` in `Application/Sessions`, which all four handlers add to the instant

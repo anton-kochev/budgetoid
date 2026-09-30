@@ -232,4 +232,51 @@ public enum ConflictKind
     /// </para>
     /// </remarks>
     RotationNameCollision,
+
+    /// <summary>
+    /// The Google account the caller chose to move this account to is already attached to another
+    /// account.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The remedy is a different Google account</b>, or to leave the address as it is. Nothing the
+    /// caller sent was malformed and nothing about their own account moved: a <c>credentials</c> row
+    /// already holds the <c>(provider, subject)</c> pair the change would file, and that index admits one.
+    /// </para>
+    /// <para>
+    /// <b>Deliberately not <see cref="SubjectAlreadyRegistered"/>, though it is the same index
+    /// refusing.</b> That one is said to somebody with no account, and its remedy is to sign in to the
+    /// account the identity is attached to, with that account's passkey or a recovery code. This caller
+    /// is already signed in to their own account and is changing it; the account the chosen identity is
+    /// attached to is somebody else's business, and nothing here should send them towards it.
+    /// </para>
+    /// <para>
+    /// <b>Deliberately not <see cref="EmailAlreadyLinked"/> either, though the remedy is the same.</b>
+    /// Google asserts exactly one address per Google account, so on this path both refusals are answered
+    /// by choosing a different Google account. What differs is the fact the person learns:
+    /// <see cref="EmailAlreadyLinked"/> says the <em>address</em> collided while the chosen Google identity
+    /// is attached to nobody else; this one says the <em>Google identity itself</em> is attached to
+    /// another account.
+    /// </para>
+    /// </remarks>
+    ProviderIdentityInUse,
+
+    /// <summary>
+    /// The account's own Google credential changed between this request's read and its save.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>A fact about timing, not about anything the caller sent.</b> Another email change on the same
+    /// account committed first, so the credential this one would retire is no longer the account's. The
+    /// remedy is to read the address back — it may already be the one asked for — and change it again
+    /// from there if it is not.
+    /// </para>
+    /// <para>
+    /// <b>Deliberately not <see cref="ProviderIdentityInUse"/>.</b> That says the chosen Google identity
+    /// is attached to another account, so choosing it again is refused again for as long as it stays
+    /// there; this says the account moved under the request, and a fresh change choosing the same Google
+    /// account may succeed.
+    /// </para>
+    /// </remarks>
+    AccountIdentityMoved,
 }

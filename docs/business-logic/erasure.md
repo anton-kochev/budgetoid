@@ -410,7 +410,8 @@ role holds no `DELETE` there of any shape.
   1. **The token an account holds is a `session_tokens` row.** It is the digest a cookie is looked
      up by, and the one handle this system issues for a request to present. The identity
      provider's ID token is not issued here and cannot be ended here; what bounds it is where it
-     reaches, which is `/api/registration` alone — the resurrection gotcha under
+     reaches — `/api/registration` as a caller's only credential, and the email change only beside
+     a live session, which an erasure deletes. The resurrection gotcha under
      [Edge Cases](#edge-cases--known-gotchas) argues it, and this rule does not restate it.
   2. **A revocation instant would be a remnant.** A revoked session still present names the erased
      user, which the no-remnant rule above and the post-condition both forbid. Stamped and then
@@ -636,7 +637,7 @@ ELSE IF the caller's session reads no budget content         ← a federated sig
        FullSessionRequirement, before the handler runs
 ELSE IF the presented cookie names no live session           ← including one the cascade just took
   THEN 401 from the fallback policy — nothing is minted on the way past,
-       because nothing outside /api/registration writes a users row
+       because nothing outside /api/registration inserts a users row
 ELSE IF the gate refuses the assertion                       ← consumed/expired/wrong-pool nonce,
   THEN 401, the nonce spent                                    bad signature, another account's key
 ELSE
@@ -649,7 +650,9 @@ ELSE
   `transactions`, which is everything erasure needs. `AppRoleGrantMatrixTests` pins the set in both
   directions, so a grant added to make an erasure problem go away fails a test rather than shipping.
   - **Two of the role's other `DELETE` grants look like they belong to erasure and do not.**
-    `credentials` holds one for passkey revocation and `recovery_code_hashes` for redeeming a code.
+    `credentials` holds one for removing a single credential — passkey revocation, replacing a
+    recovery-code set, and retiring the federated credential on an email change — and
+    `recovery_code_hashes` for redeeming a code.
     Erasure uses neither: it empties both tables through the cascade from `users`, and would still
     work if both grants were revoked tomorrow.
 - **Row-level security** — `user_isolation` scopes the `users` delete, `budget_isolation` scopes the
@@ -688,16 +691,23 @@ ELSE
   structural rather than a rule some route could forget.** A Google ID token stays valid for up to
   an hour after the account it names is gone, so any path where being authenticated *creates* an
   account lets a second erasure attempt, an in-flight poll or a second tab write a fresh `users` row
-  moments after they asked to be forgotten. Two things close it. **A provider token reaches exactly
-  two routes**, both under `/api/registration`, because the fallback policy names the session cookie
-  scheme. And **those two cannot complete without a fresh server-minted challenge and a WebAuthn
-  credential the caller's own authenticator produced**. Any scheme that reinstates creation behind a
-  route marker reopens this.
+  moments after they asked to be forgotten. Two things close it. **A provider token is a caller's
+  only credential on exactly two routes**, both under `/api/registration`, because the fallback
+  policy names the session cookie scheme. The one other route that reads a token,
+  `POST /api/me/email-change`, reads it only beside a live full session — which the erasure deleted
+  — and creates nothing. And **the two registration routes cannot complete without a fresh
+  server-minted challenge and a WebAuthn credential the caller's own authenticator produced**. Any
+  scheme that reinstates creation behind a route marker reopens this.
   - **What a stale token still buys is one new account, and that is not a resurrection.** Somebody
     holding a live provider token after erasing can run `/api/registration` again and create a fresh
     account under the same address — consciously, through the whole ceremony, with a new identifier,
     a new passkey and a new set of codes. A person choosing to come back, not a poll bringing them
     back.
+- **An email change in flight when the erasure commits does not answer truthfully.** The erasure
+  wins, and nothing survives it. What the losing change *says* is the email change's problem and is
+  recorded there: an address-only change escapes as a `500`, and one that moves the Google identity
+  answers `409 account_identity_moved` [Guessing — argued, not run]. See
+  [email-change.md](email-change.md).
 - **The request's own session row is deleted mid-request.** A request carrying the session cookie
   reads its `session_tokens` row and then its `sessions` row to authenticate at all, so this
   endpoint deletes — by cascade, from `users` through `credentials` — the rows that authorized the

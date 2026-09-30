@@ -1,7 +1,8 @@
 # ADR 0019 — Authenticate from a session cookie, and split its discovery key onto an exempt table
 
 - **Status:** Accepted and implemented. The cookie is the only thing that authenticates a request to
-  this API, the two registration routes aside.
+  this API as an account, the two registration routes aside. The email change also reads a provider
+  token, beside the cookie and never in its place.
 - **Date:** 2026-08-16
 - **Area:** Persistence / Security (row-level security coverage, grant matrix, sessions)
 
@@ -183,14 +184,22 @@ move every route that declares nothing onto some other handler.
 
 `JwtBearer` stays registered and is reached by **exactly one policy**: the `/api/registration` group's,
 which names the provider's scheme because an account may not exist without a completed provider
-exchange. A bearer presented to any other route therefore authenticates nothing at all — the cookie
-handler answers `NoResult` and the request is answered the same `401` an anonymous one gets. That is
-what makes "an authenticated request can never name an account that does not exist" a **structural**
-fact rather than a check: the cookie is only ever issued over a session row, and a session row is only
-ever written beside the account it names. The claim gates that read a provider token did not leave with
-the bridge; they moved onto the one group that still reads one.
+exchange. Beyond that policy it is reached only by `ProviderAuthorizationGate`, an endpoint filter on
+`POST /api/me/email-change`, which calls the scheme itself as a **second proof beside a full
+session** and never makes it the request's identity
+([ADR 0027](0027-authenticate-the-email-change-on-the-session-and-a-fresh-provider-token-side-by-side.md)).
+A bearer presented to any other route authenticates nothing at all — the cookie handler answers
+`NoResult` and the request is answered the same `401` an anonymous one gets — and a bearer presented
+to the email change with no cookie gets that same `401`. That is what makes "an authenticated request
+can never name an account that does not exist" a **structural** fact rather than a check: the cookie
+is only ever issued over a session row, and a session row is only ever written beside the account it
+names. The claim checks that read a provider token did not leave with the bridge; they live in
+`ProviderClaims`, called by the registration group's filter and by the email change's.
 
 Two things the bridge's removal closed downstream. `FullSessionRequirement` no longer has to admit a
 principal that authenticated on any scheme but the cookie's — while the bridge stood, a Google bearer
 carried no session and therefore no kind claim, and a requirement refusing what it did not find would
-have refused the whole product. And `sub` means one thing again: this installation's own account id.
+have refused the whole product. And outside the registration group, whose only principal is the
+provider's, the `sub` on `HttpContext.User` means one thing: this installation's own account id. The
+email change is the one request on which a session's `sub` and a provider's `sub` both exist, and
+they live in two principals that are never merged.

@@ -8,6 +8,41 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-09-30 — The email change asks for a passkey as well as a fresh Google sign-in
+
+**Context:** the story asks that moving an account to another Google identity and address take a
+fresh provider sign-in beside the session. That pair has a hole: somebody holding a stolen
+full-session cookie can sign in to their **own** Google account and present that token. The session
+proves somebody holds the cookie; the token proves the caller controls the Google account they
+chose. Neither says the caller owns the account, so the pair lets them re-point its Google identity
+and address at themselves.
+
+**Decision:** the email change also takes a fresh passkey assertion over a `reauthentication`
+challenge, the gate erasure, passkey revocation, recovery-code generation and the rotation begin
+already use. It runs after the provider token is judged, so a refused token spends no challenge.
+Every passkey refusal in the product now carries the constant `refusal: "assertion"`, so a client of
+this route can tell "retry the passkey" from "sign in to Google again".
+[email-change.md](email-change.md) owns the rules; the authentication shape is
+[ADR 0027](../decisions/0027-authenticate-the-email-change-on-the-session-and-a-fresh-provider-token-side-by-side.md).
+
+**Alternatives considered:**
+- **The session and the provider token alone, as the story's criteria read**: rejected for the
+  stolen-cookie case above.
+- **A passkey assertion instead of the provider token**: rejected. Only the provider can vouch for
+  the address and the Google identity being moved to.
+- **The passkey before the provider token**: rejected. The gate spends its nonce whatever happens
+  next, so a lapsed Google sign-in would cost the person a second ceremony.
+
+**Consequences:** the route asks for three proofs, and a person without a working passkey cannot
+move their Google identity — the same position they are in for erasure. The challenge is spent on
+every refusal after the passkey gate, including a taken address, so a `409` means running the
+ceremony again. No screen calls the route yet.
+
+**Affected areas:** [email-change.md](email-change.md), [passkeys.md](passkeys.md),
+[users-and-ownership.md](users-and-ownership.md), [sessions.md](sessions.md).
+
+---
+
 ## 2026-09-29 — The product keeps no audit trail, and the vocabulary says so in the behavioural-event category
 
 **Context:** the requirements say the product records no audit trail of what a person does. The

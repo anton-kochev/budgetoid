@@ -69,8 +69,22 @@ public sealed class RegistrationRouteTests
     ];
 
     /// <summary>
-    /// NFR-025: the identity provider's scheme is named by the two registration routes and by nothing
-    /// else.
+    /// The one route that reaches the provider's scheme through <see cref="ProviderAuthorizationGate" />
+    /// rather than through a policy, exactly as the route table spells it.
+    /// </summary>
+    /// <remarks>
+    /// Written out for the reason <see cref="RegistrationRoutes" /> is: a second route taking the gate is
+    /// a red somebody has to answer for in the same commit.
+    /// </remarks>
+    private static readonly string[] ProviderGatedRoutes =
+    [
+        "/api/me/email-change",
+    ];
+
+    /// <summary>
+    /// NFR-025: the identity provider's scheme is reached by the two registration routes, which name it in
+    /// their policy, and by <c>POST /api/me/email-change</c>, which carries
+    /// <see cref="RequiresProviderAuthorizationMetadata" /> — and by nothing else.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -101,9 +115,27 @@ public sealed class RegistrationRouteTests
     /// routes. So the fallback's own schemes are read from
     /// <see cref="IAuthorizationPolicyProvider.GetFallbackPolicyAsync" /> and pinned separately.
     /// </para>
+    /// <para>
+    /// <b>The email change reaches the scheme a second way, and the policy census cannot see it.</b> Its
+    /// route stays on the fallback policy — a full session is the first proof — and the provider token
+    /// is authenticated inside <see cref="ProviderAuthorizationGate" />, an endpoint filter. A filter does
+    /// not appear in <see cref="RouteEndpoint.Metadata" /> (dumped: the route carries the handler's
+    /// method, binding and response metadata and <see cref="RequiresProviderAuthorizationMetadata" />,
+    /// and no trace of the filter type), so the marker <c>RequireProviderAuthorization()</c> adds beside
+    /// the filter is the only thing a census of the route table can read. The two halves are pinned
+    /// separately and each against a written-out set: a registration route that moved onto the gate, or
+    /// the email change that moved into a policy naming the scheme, is a red in both.
+    /// </para>
+    /// <para>
+    /// <b>What this cannot see:</b> a route whose own code calls <c>AuthenticateAsync</c> with the
+    /// provider's scheme, or adds <see cref="ProviderAuthorizationGate" /> directly, without the marker.
+    /// Nothing in the route table records that call, so such a route reaches the provider's scheme and
+    /// this test stays green. The marker's internal constructor stops a second spelling of it outside
+    /// <c>Api</c>, not a route that never asked for it.
+    /// </para>
     /// </remarks>
     [Test]
-    public async Task TheProviderScheme_IsNamedByExactlyTheTwoRegistrationRoutes()
+    public async Task TheProviderScheme_IsReachedByExactlyTheRegistrationRoutesAndTheEmailChange()
     {
         // Arrange
         await using ApiFactory factory = new(
@@ -123,6 +155,12 @@ public sealed class RegistrationRouteTests
             .Order(StringComparer.Ordinal)
             .ToArray();
         AuthorizationPolicy? fallback = await policies.GetFallbackPolicyAsync();
+        string[] gatedByTheProvider = endpoints
+            .Where(endpoint => endpoint.Metadata.OfType<RequiresProviderAuthorizationMetadata>().Any())
+            .Select(PatternOf)
+            .Distinct(StringComparer.Ordinal)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
 
         // Assert — joined rather than compared as collections so a failure names the route that moved
         // instead of reporting that two sets differ.
@@ -141,6 +179,12 @@ public sealed class RegistrationRouteTests
         await Assert.That(fallback).IsNotNull();
         await Assert.That(string.Join(", ", fallback!.AuthenticationSchemes.Order(StringComparer.Ordinal)))
             .IsEqualTo(SessionCookieAuthenticationHandler.SchemeName);
+
+        // The second way in: exactly the email change carries the gate's marker. Joined for the same
+        // reason as above, and non-empty by the written-out expectation, so a marker that stopped being
+        // added reads as a missing route rather than as the rule holding.
+        await Assert.That(string.Join(", ", gatedByTheProvider))
+            .IsEqualTo(string.Join(", ", ProviderGatedRoutes.Order(StringComparer.Ordinal)));
     }
 
     /// <summary>

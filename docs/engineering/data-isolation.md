@@ -126,13 +126,14 @@ Enforced today:
   | `passkey_public_keys` | the `excludeCredentials` read in the registration ceremony | `where user_id`, watched by `RegistrationOptions_ForOneAccount_ExcludeNoOtherAccountsCredential` |
   | `passkey_public_keys` | `FindByWebAuthnCredentialIdForUserAsync` on the re-authentication gate | `where user_id`, watched by `ErasureReauthenticationTests.Erasure_WithAnotherAccountsPasskey_IsRefusedAndErasesNeitherAccount` |
   | `passkey_public_keys` | `INSERT` at passkey registration, and again at account registration | the credential it hangs off, written in the same save |
-  | `credentials` | `FindUserIdByFederatedCredentialAsync`, the re-read that settles an ambiguous email collision on a losing registration | provider and subject, which name a principal rather than an account. Its **one** caller is `RegisterAccountHandler.RefusalFor`; it is unaffected by the identity that handler published for a row that was never written, because this table is exempt |
+  | `credentials` | `FindUserIdByFederatedCredentialAsync`, the re-read that settles an ambiguous email collision on a losing registration, and the email change's subject lookup | provider and subject, which name a principal rather than an account. `RegisterAccountHandler.RefusalFor` calls it, unaffected by the identity that handler published for a row that was never written, because this table is exempt. `ChangeEmailHandler` calls it twice — before its transaction opens, and again to settle an ambiguous `EmailTaken` — and only after its passkey gate has passed, because an unproven caller asking it is an oracle for which Google identities hold an account ([email-change.md](../business-logic/email-change.md)) |
   | `credentials` | `FindPasskeyCredentialAsync`, on the **sign-in assertion** and on revocation | `where user_id`, watched by `Revocation_OfAnotherAccountsCredential_IsRefusedAndRemovesNeitherAccountsRows`; and `type`, watched by `Revocation_OfTheFederatedCredential_IsRefusedAndRemovesNothing` |
   | `credentials` | `CountPasskeysForUserAsync`, behind the last-passkey rule | `where user_id` and `type`, watched by `Revocation_OfTheOnlyRemainingPasskey_IsRefusedWithConflictAndRemovesNothing` |
   | `credentials` | `ListForUserAsync`, behind `GET /api/me/credentials` | `where user_id`, watched by `Credentials_ForASecondAccount_ListThatAccountsCredentialsAndNotTheFirsts` |
-  | `credentials` | `INSERT` at passkey registration, and **three rows at once** at account registration | the owner is a value the application supplies, not one it filters by — and on account registration it is an id **derived** from the ceremony's own challenge and published a statement earlier, so every row in that save carries it by construction ([registration.md](../business-logic/registration.md)) |
+  | `credentials` | `INSERT` at passkey registration, **three rows at once** at account registration, and one federated row when an email change moves the Google identity | the owner is a value the application supplies, not one it filters by — on account registration it is an id **derived** from the ceremony's own challenge and published a statement earlier, so every row in that save carries it by construction ([registration.md](../business-logic/registration.md)); on the email change it is the id of the user row loaded for the session's account, and `FederatedIdentityChange.Decide` refuses a current credential belonging to anybody else |
   | `credentials` | `FindRecoveryCodeCredentialAsync`, on a generation and on a redemption | `where user_id` and `type` — and on the redemption the owner is the one the matched code named, never the request's |
-  | `credentials` | **`DELETE`**, revoking a passkey, and again replacing a recovery-code set | the owner-scoped read above it, and nothing else — `FindPasskeyCredentialAsync` for the first, `FindRecoveryCodeCredentialAsync` for the second, each carrying owner **and** type |
+  | `credentials` | `EmailChangeRepository.FindFederatedCredentialAsync`, on the email change | `where user_id` and `type`, the owner being the session's account, watched by `EmailChangeRepositoryTests.FindFederatedCredentialAsync_ReturnsOnlyThisAccountsFederatedCredential` — a stranger seeded to sort first and a passkey filed ahead of the federated row, so a read missing either predicate returns the wrong row; run against both mutations, it went red under each — and end to end by `EmailChangeEndpointTests.EmailChange_ForOneAccount_LeavesAnotherAccountsFederatedCredentialWhereItWas` |
+  | `credentials` | **`DELETE`**, revoking a passkey, replacing a recovery-code set, and retiring the federated credential on an email change | the owner-scoped read above it, and nothing else — `FindPasskeyCredentialAsync` for the first, `FindRecoveryCodeCredentialAsync` for the second, `FindFederatedCredentialAsync` for the third, each carrying owner **and** type |
   | `recovery_code_hashes` | `FindByVerifierHashAsync`, the discovery lookup on redemption | **nothing, deliberately** — it runs before there is an identity to key a filter on, and the account it answers is the one the redemption then adopts |
   | `recovery_code_hashes` | `FindOwnedByVerifierHashAsync`, the re-read inside a redemption's transaction | `where user_id` **and** `verifier_hash` — the owner being the account the discovery lookup resolved, and this is the read that scopes the `DELETE` below |
   | `recovery_code_hashes` | `CountRemainingForUserAsync`, behind `GET /api/me/recovery-codes` and again at the end of a redemption | `where user_id` — the account's own on the read, the matched code's on the redemption |
@@ -146,9 +147,17 @@ Enforced today:
   Where a row names a test, that test is what would notice the access losing its filter — no layer
   below the application can.
 
-  **Every named test on `credentials` has been watched fail**, under the deletion of the exact clause
-  it guards, rather than merely asserted to guard it. That is worth recording because three of them
-  were green the day they were written and a test that has only ever been green is not yet evidence.
+  **Every named test on `credentials` but one has been watched fail**, under the deletion of the
+  exact clause it guards, rather than merely asserted to guard it; the one is named at the end of
+  this paragraph. That is worth recording
+  because three of them were green the day they were written and a test that has only ever been
+  green is not yet evidence. The email change's find test was run against both of its clauses: an
+  owner-less read reddened `FindFederatedCredentialAsync_ReturnsOnlyThisAccountsFederatedCredential`
+  and four other cases in `EmailChangeRepositoryTests`, and a type-less read reddened the find test.
+  Its stranger sorts first on purpose — the test's remarks record an earlier arrangement, with the
+  stranger sorting after the account, that an owner-less read passed. The endpoint-tier
+  `EmailChange_ForOneAccount_LeavesAnotherAccountsFederatedCredentialWhereItWas` has not been run
+  against either mutation [Guessing].
   What each mutation produces, so the next reader can repeat it: dropping the owner clause from
   `FindPasskeyCredentialAsync` lets one account revoke another's passkey (`200` where `404` was
   wanted); dropping its `type` clause lets an account revoke its **own federated** credential, after
@@ -167,7 +176,9 @@ Enforced today:
   scoping it**, and EF issues it by primary key alone. Two things make that sound, and
   both have to stay true: `credentials.user_id` is immutable, so the binding between an id and its
   owner cannot move between the read that scoped it and the write that used it; and the read and the
-  write share one transaction. The delete takes the loaded **entity**, never an id — which is worth
+  write share one transaction — on the email change, the one `ITransactionalExecutor` delegate that
+  also carries the session sweep. The delete takes the loaded **entity**, never an id — which is
+  worth
   something only because no source of a `Credential` accepts a caller-chosen id: every public factory
   mints its own, and every query that materializes an existing row carries the owner and the type.
   Adding a source that does not is what review has to catch. See

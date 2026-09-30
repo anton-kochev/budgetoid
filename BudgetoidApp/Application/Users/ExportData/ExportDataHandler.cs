@@ -8,8 +8,8 @@ namespace Application.Users.ExportData;
 /// <remarks>
 /// <para>
 /// <b>It takes no <c>ILogger</c> and no <c>ILoggerFactory</c>, and must never take one.</b> The value
-/// it holds in memory is every transaction a person has recorded plus the address they signed up
-/// with; a single <c>LogDebug</c> of the document, or of the id it was assembled for, copies the lot
+/// it holds in memory is every transaction a person has recorded plus the address the account holds;
+/// a single <c>LogDebug</c> of the document, or of the id it was assembled for, copies the lot
 /// into a sink with a different retention policy and a different audience from the database it came
 /// from. No gate anywhere reads a log line from this path, so there is nothing to trade against.
 /// </para>

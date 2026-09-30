@@ -86,10 +86,22 @@ because every one of these is something a reader will otherwise simplify away.
   `AllowsLockedSessionAttribute`, and the opted-out set is exactly `POST /api/me/session/revocation`.
   Polarity follows from which mistake is audible. [sessions.md](docs/business-logic/sessions.md)
 - **Registration is one act and one transaction, and the account id is derived rather than chosen.**
-  Two routes authenticated by the provider scheme and nothing else — **the only reason `JwtBearer` is
-  still registered**. No `ITransactionalExecutor` may wrap the finish leg. The ladder's order is the
-  rule. [registration.md](docs/business-logic/registration.md),
+  Two routes authenticated by the provider scheme and nothing else. No `ITransactionalExecutor` may
+  wrap the finish leg. The ladder's order is the rule.
+  [registration.md](docs/business-logic/registration.md),
   [ADR 0021](docs/decisions/0021-make-registration-one-consented-act-and-derive-the-account-id-from-its-own-challenge.md)
+- **The email change takes a fresh provider token *beside* a full session, never in its place, and
+  the two principals never merge.** `POST /api/me/email-change` rides the fallback policy;
+  `RequireProviderAuthorization()` adds `ProviderAuthorizationGate`, which authenticates the provider
+  scheme itself and judges *that* principal — the cookie's `sub` is the account id, so reading
+  `HttpContext.User` files the account id as a Google subject. The gate adds a marker because filters
+  are invisible to route metadata; `RegistrationRouteTests` reads it, so the provider scheme is
+  reached by exactly the two registration routes and this one. A passkey re-authentication runs
+  **after** the gate, so a provider refusal never spends the nonce. The federated credential is
+  retired and refiled in one save (no `UPDATE` grant on `credentials`), its sessions revoked first;
+  every refusal throws, so the sweep never commits. Every passkey refusal product-wide carries the
+  constant `refusal: "assertion"`. [email-change.md](docs/business-logic/email-change.md),
+  [ADR 0027](docs/decisions/0027-authenticate-the-email-change-on-the-session-and-a-fresh-provider-token-side-by-side.md)
 - **EF escape hatches are compile errors** via `BudgetoidApp/BannedSymbols.txt` —
   `IgnoreQueryFilters`, `FromSql*`, `ExecuteSql*`, `Find`/`FindAsync`, `ExecuteUpdate`/`ExecuteDelete`.
 - **A credential type has exactly one spelling, written out, never derived from the member name.**

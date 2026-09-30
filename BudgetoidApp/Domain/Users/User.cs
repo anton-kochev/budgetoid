@@ -69,4 +69,21 @@ public sealed class User
             CreatedAtUtc = createdAtUtc,
         };
     }
+
+    /// <summary>
+    /// Replaces the account's address with the one the provider now asserts, under the rules the
+    /// creation path applies.
+    /// </summary>
+    /// <remarks>
+    /// The address is the only thing that moves: <c>users</c> carries <c>UPDATE (email)</c> and nothing
+    /// else, so every other column is immutable by its omission from that grant.
+    /// </remarks>
+    /// <exception cref="ValidationException">The address is not one this product accepts.</exception>
+    public void ChangeEmail(string email)
+    {
+        // Validated into a local before the assignment, so a refused address leaves the old one in place.
+        Email emailValue = Email.Create(email);
+
+        Email = emailValue;
+    }
 }

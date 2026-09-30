@@ -24,10 +24,10 @@ public static class RegistrationEndpoints
         // this is the leg that mints the challenge the identifier is derived from.
         //
         // Naming the scheme is what makes AuthorizationMiddleware re-authenticate against the provider's
-        // handler rather than against whatever the default resolved to — which today is a policy scheme
-        // that forwards a cookie-bearing request to the session handler. Without it, a browser already
-        // holding a session could reach these two routes on that session, and the account it would create
-        // is one nobody's provider vouched for.
+        // handler rather than against the default scheme — the session cookie's own handler, which
+        // AddAuthentication names directly in Program.cs and the fallback policy names again. Without it,
+        // a browser already holding a session could reach these two routes on that session, and the
+        // account it would create is one nobody's provider vouched for.
         //
         // Declaring a policy also takes both routes out of the FALLBACK policy, which carries
         // FullSessionRequirement. That is the right outcome and not a side effect worked around: this

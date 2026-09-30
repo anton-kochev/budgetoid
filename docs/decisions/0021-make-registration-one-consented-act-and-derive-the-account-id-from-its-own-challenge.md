@@ -62,8 +62,11 @@ challenge rather than chosen.**
    `AuthorizationMiddleware` re-authenticate against the provider's handler rather than against
    the default, which is the session cookie's — so without the name a browser already holding a
    session could create an account nobody's provider vouched for, and no bearer would be read at all.
-   **This policy is the only reason `JwtBearer` is still registered**: nothing defaults to it and no
-   other route names it, so a bearer presented anywhere else authenticates nothing.
+   **This is the one policy that names `JwtBearer`**: nothing defaults to it and no other policy
+   names it. Its one other reader is `ProviderAuthorizationGate` on the email change, which calls the
+   scheme itself beside a full session and never makes the bearer the request's identity
+   ([ADR 0027](0027-authenticate-the-email-change-on-the-session-and-a-fresh-provider-token-side-by-side.md)),
+   so a bearer presented anywhere else authenticates nothing.
    Declaring a policy at all takes both routes out of the
    **fallback** policy and therefore out of `FullSessionRequirement`, which is the right outcome rather
    than a side effect worked around: this caller holds no session, so a rule about what kind of session
@@ -74,7 +77,8 @@ challenge rather than chosen.**
    because a provisioning middleware ran before the endpoint's own policy and would otherwise have
    refused a provider principal with no account before the handler was ever entered. That middleware
    and that marker are both deleted, and **the argument they carried survives intact, held by the
-   policy above**: a bearer authenticates here and nowhere else, so "this route serves callers who
+   policy above**: a bearer is a caller's only credential here and nowhere else — the email change
+   reads one only beside a session that already names an account — so "this route serves callers who
    have no account" is a property of the two routes' own authentication rather than of metadata
    somebody could add to a seventh group by mistake. What was the marker's arm is now three
    properties of this group: the claim gates run **before** the handler, as an endpoint filter, so an

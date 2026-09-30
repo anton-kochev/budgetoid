@@ -71,6 +71,81 @@ public sealed class UserTests
         await Assert.That(properties.Length).IsGreaterThan(0);
     }
 
+    [Test]
+    public async Task ChangeEmail_WithSurroundingWhitespace_StoresTheTrimmedAddress()
+    {
+        // Arrange
+        User user = User.CreateWithId(Guid.CreateVersion7(), "person@example.com", UtcNow());
+
+        // Act
+        user.ChangeEmail("  moved@example.com\t");
+
+        // Assert
+        await Assert.That(user.Email.Value).IsEqualTo("moved@example.com");
+    }
+
+    [Test]
+    public async Task ChangeEmail_Blank_Throws()
+    {
+        // Arrange
+        User user = User.CreateWithId(Guid.CreateVersion7(), "person@example.com", UtcNow());
+
+        // Act
+        ValidationException exception = ThrowsValidationException(() => user.ChangeEmail("   "));
+
+        // Assert — the key the creation path reports, and the address left as it was.
+        await Assert.That(exception.Errors.ContainsKey("Email")).IsTrue();
+        await Assert.That(user.Email.Value).IsEqualTo("person@example.com");
+    }
+
+    [Test]
+    public async Task ChangeEmail_LongerThanTheLimit_Throws()
+    {
+        // Arrange — Email.MaxLength is 254, the RFC 5321 path limit less the angle brackets; one
+        // character past it after trimming.
+        User user = User.CreateWithId(Guid.CreateVersion7(), "person@example.com", UtcNow());
+        string overLong = new string('a', Email.MaxLength + 1 - "@example.com".Length) + "@example.com";
+
+        // Act
+        ValidationException exception = ThrowsValidationException(() => user.ChangeEmail(overLong));
+
+        // Assert
+        await Assert.That(overLong.Length).IsEqualTo(255);
+        await Assert.That(exception.Errors.ContainsKey("Email")).IsTrue();
+        await Assert.That(user.Email.Value).IsEqualTo("person@example.com");
+    }
+
+    [Test]
+    public async Task ChangeEmail_AtTheLimit_IsAccepted()
+    {
+        // Arrange — exactly Email.MaxLength (254) characters.
+        User user = User.CreateWithId(Guid.CreateVersion7(), "person@example.com", UtcNow());
+        string atLimit = new string('a', Email.MaxLength - "@example.com".Length) + "@example.com";
+
+        // Act
+        user.ChangeEmail(atLimit);
+
+        // Assert
+        await Assert.That(atLimit.Length).IsEqualTo(254);
+        await Assert.That(user.Email.Value).IsEqualTo(atLimit);
+    }
+
+    [Test]
+    public async Task ChangeEmail_LeavesEveryOtherPropertyAsItWas()
+    {
+        // Arrange — users carries UPDATE (email) and nothing else, so nothing else may move.
+        var id = Guid.CreateVersion7();
+        DateTime createdAtUtc = UtcNow();
+        User user = User.CreateWithId(id, "person@example.com", createdAtUtc);
+
+        // Act
+        user.ChangeEmail("moved@example.com");
+
+        // Assert
+        await Assert.That(user.Id).IsEqualTo(id);
+        await Assert.That(user.CreatedAtUtc).IsEqualTo(createdAtUtc);
+    }
+
     private static DateTime UtcNow() => new(2026, 6, 12, 13, 14, 15, DateTimeKind.Utc);
 
     private static ValidationException ThrowsValidationException(Action action)

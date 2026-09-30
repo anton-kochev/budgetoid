@@ -251,7 +251,8 @@ read from a column this server holds, in the clear or inferred from its length o
 covers some of the following without saying the rows exist:
 
 - **The provider identity.** Which provider gated registration and its subject identifier for the
-  person — a stronger cross-service identifier than the email address.
+  person — a stronger cross-service identifier than the email address. After an email change that
+  moved the Google identity, the replacement credential's `created_at_utc` says when it moved.
 - **The shape of a person's security setup.** How many passkeys and recovery codes the account
   holds (from its factor rows, and from the manifest's length, since every entry is the same
   width), each passkey's COSE algorithm, which narrows the device family, and each credential's
@@ -289,8 +290,11 @@ files reach the provider client, and a scan of the shipped bundle — and
 top-level navigation, a timer outlasting the boot, a subclass or an object spread of the client, a
 component template, and a `logOut` reached through an alias. Signing in is a passkey
 assertion against this product's own API and reaches no provider. The API itself fetches the
-provider's published signing keys to validate a registration's token, which names no person. Of the
-three moments NFR-025 permits, the email change and the locked sign-in are not built.
+provider's published signing keys to validate a provider token — registration's, and the email
+change's — which names no person. Of the three moments NFR-025 permits, the locked sign-in is not
+built. The email change is built on the server — `POST /api/me/email-change` validates a fresh
+provider token beside a session — and no screen calls it yet, so no browser contacts the provider
+for it today; see [email-change.md](../business-logic/email-change.md).
 
 ## Keeping this chapter true
 

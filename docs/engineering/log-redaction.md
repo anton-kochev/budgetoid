@@ -373,8 +373,15 @@ body; adding a passkey, then enrolling the same authenticator again, which must 
 409; regenerating the recovery codes, redeeming one, signing out and revoking a passkey; a key
 rotation's begin, chunk and completion; two forced 500s — issuing codes for an account holding no
 factor manifest, and an export over two owned budgets, whose seeded second budget is taken away
-again in a step of its own; and the erasure, last, because it takes the account every other step
-wrote into.
+again in a step of its own; the email change, four ways — an address another account holds, a
+Google identity another account holds, an address the provider does not verify, and a success that
+moves both the subject and the address, answering exactly `409,409,401,200`; and the erasure, last,
+because it takes the account every other step wrote into. The email change's success retires the
+credential holding the registered subject and moves the registered address out of `users`, so the
+old values survive only in the snapshots and on the sent list. On the bearer host the traffic also
+changes the email of the account its validated token registered, first with a forged token — `401`,
+refused by `ProviderAuthorizationGate` before the passkey gate, with the handler's failure record —
+and then with a valid one, `200` with the handler's success record.
 
 **The route floor.** `RouteTally` is a startup filter that records which endpoint each request was
 matched to and what it answered, and a route counts as reached **only on a 2xx** — a 401 selects the
@@ -383,21 +390,23 @@ every `RouteEndpoint` in the host's `EndpointDataSource`, with or without a meth
 `METHOD pattern` key per method an endpoint's `HttpMethodMetadata` names, and one `* pattern` key
 for an endpoint carrying no method metadata, which answers any method. A hit on such an endpoint is
 keyed `*` as well, so the two sides agree; `MapHealthChecks` maps one, and the traffic reads
-`GET /health` anonymously to reach it. Every declared key must be reached — 50 declared and 0
-undriven, measured — with a floor on the declared count so an enumeration that found nothing cannot
+`GET /health` anonymously to reach it. Every declared key must be reached — [Guessing] 51 declared
+and 0 undriven, counted as the measured 50 plus `POST /api/me/email-change` and not re-run — with a
+floor on the declared count so an enumeration that found nothing cannot
 pass by demanding nothing, and the exemption list must name only keys the table still declares. The
 list is empty. An endpoint that is not a `RouteEndpoint` is not counted.
 
 **The needles are read back, never written down.** Every value of every column in
 `NeverLoggedColumns.All` is read on the admin connection, so row-level security hides nothing,
-**after every step** of the main host's traffic and once more after both hosts are disposed — 29
-snapshots, about 210 ms in all (measured). The **union** is searched, so a value a later step
+**after every step** of the main host's traffic and once more after both hosts are disposed —
+[Guessing] 30 snapshots, counted as the measured 29 plus the email change's step and not re-run;
+the measured 29 took about 210 ms in all. The **union** is searched, so a value a later step
 replaced or erased is still looked for. After every step rather than at chosen moments, so a step
 added later cannot take a value away before it is read. That is why deleting the seeded second
 budget is a step of its own: its name — which the export's 500 path holds, as an `ExportedBudget`
 in the snapshot `ReadSnapshotAsync` answers, when it throws — stands at the boundary between the
 seed and the removal. The records are read after the hosts are disposed, so one written at shutdown is searched
-too. The bearer host's three steps are not snapshotted one by one; they get only the final read.
+too. The bearer host's five steps are not snapshotted one by one; they get only the final read.
 
 **The limit is the step.** A value a single step writes and deletes within itself stands at no
 boundary and is never read back, so unless the traffic also lists it as sent, it is never searched.
@@ -445,8 +454,10 @@ the needle.** Printing the value would put it in a log of its own.
 hosting and EF categories present; at least two `GlobalExceptionHandler` errors carrying an
 exception; records from both refusal handlers, `PasskeyVerificationExceptionHandler` and
 `RecoveryCodeRedemptionExceptionHandler`; the validated-token and forged-token steps answering as
-described above, each with its handler record; the malformed-body step writing a record that carries
-the parser's exception; the duplicate-handle step answering exactly 409 and the erasure 204; every
+described above, each with its handler record, and the two bearer-host email-change steps the same
+way; the malformed-body step writing a record that carries the parser's exception; the
+duplicate-handle step answering exactly 409, the email change `409,409,401,200` and the erasure 204;
+every
 identifying entry sent at least once; every narrative column holding a value before the list reads
 and the export; every column holding a value at some snapshot; and the needles' columns equal, in
 both directions, to the inventory's narrative columns plus `Entries`.

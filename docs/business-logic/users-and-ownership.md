@@ -17,15 +17,18 @@ This area covers **who a user is** and how that identity comes to exist. There i
 `POST /api/registration` creates an account as one consented act, with its passkey and its set of
 recovery codes in the same save — that path has its own file, [registration.md](registration.md),
 and the invariant it establishes is a claim about **every** account in the schema, stated below.
-Nothing else writes a `users` row.
+Nothing else inserts a `users` row. One route updates one: the email change moves an existing
+account's address and Google identity, and creates nothing — see [email-change.md](email-change.md).
 
 An authenticated request resolves an account that already exists or is refused, and that refusal is
 **structural rather than a check**: a request authenticates from a session cookie, a cookie is only
 ever issued over a session row, and a session row is only ever written beside the account it names —
 so "an authenticated request naming an account that does not exist" is not a state the pipeline can
 be in. Every route outside `/api/registration` inherits a fallback policy naming the **session
-cookie** scheme, so a provider bearer presented anywhere else authenticates nothing and is answered
-a `401` indistinguishable from an anonymous one.
+cookie** scheme, so a provider bearer there is never the request's identity: presented with no
+cookie it is answered a `401` indistinguishable from an anonymous one. One of those routes reads a
+bearer at all — the email change, which judges it in a filter **beside** the session, as a second
+proof. Everywhere else it authenticates nothing.
 
 A user owns **Budgets** and nothing else. Everything else — accounts, category groups, categories,
 payees, transactions — belongs to a budget, so **the budget, not the user, is the unit of tenancy**;
@@ -58,8 +61,9 @@ that reads as complete and is not is worse here than anywhere else in this file.
   [passkeys.md](passkeys.md) — and may issue themselves one set of recovery codes. A signed-in
   person may **revoke a passkey**, proving presence with a fresh WebAuthn assertion, and an
   account's **last** passkey is refused. The **federated** credential is not revocable at all: it is
-  replaced by an email change that is not built. A recovery-code set has no revocation route either;
-  it is **replaced** by issuing again.
+  **replaced** by the email change, which retires it and files a new one in one save when the Google
+  identity moves — a server route no screen calls yet; see [email-change.md](email-change.md). A
+  recovery-code set has no revocation route either; it is **replaced** by issuing again.
 - **`CK_credentials_type_shape` does not discriminate between `passkey` and `recovery_codes`.** Its
   two arms are byte-identical — both require `provider is null and subject is null` — because both
   are self-contained credentials with no issuer and no issuer-assigned identifier. What tells them
@@ -71,8 +75,9 @@ that reads as complete and is not is worse here than anywhere else in this file.
 - **Email** — a value object wrapping the email string; required, trimmed, at most `Email.MaxLength`
   = 254 characters. Two `Email` values are equal iff their strings are equal. Uniqueness is a
   **wider** comparison: `users.email` carries a unique index on the `case_insensitive` collation, so
-  at most one user row holds a given address whatever its casing. The address is written once, at
-  registration, and no later request changes it.
+  at most one user row holds a given address whatever its casing. The address is written at
+  registration, and afterwards only by the email change, on a request the person makes for it with
+  a fresh provider token and a passkey — never by a sign-in.
   - **This is the only column in the schema still carrying that collation**, and the reason is worth
     knowing before somebody reads the collation as a general habit. The four name columns that used
     to share it became `bytea` as they were sealed, and `bytea` is not a collatable type, so each
@@ -157,7 +162,7 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
     that owes a policy and has none.
 
 - **`POST /api/registration` is the only thing in this product that brings an account into
-  existence.** No middleware mints one, no marker permits one, and no other route writes a `users`
+  existence.** No middleware mints one, no marker permits one, and no other route inserts a `users`
   row on the way past. → the three-credential invariant below, which owns the argument and the
   enforcement.
   - **Why**: a Google ID token stays valid for up to an hour after the account it names is erased.
@@ -168,13 +173,17 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
     re-authentication gate in front of erasure refuses it forever. "Leaving the product means
     actually leaving" is the claim [erasure.md](erasure.md) opens with; a single consented creation
     path is what makes it true of every route rather than of the marked ones.
-  - **What closes it is structural.** A provider token reaches exactly **two** routes, both under
-    `/api/registration`, and neither completes without a live server-minted challenge and a WebAuthn
-    credential the caller's own authenticator produced. Any scheme where a marker on a route group
-    permits account creation reopens it: a marked route called on boot mints from a stale token,
-    which is how this was reachable before. `RegistrationRouteTests` reads the group's scheme off
-    the route table and `AnonymousSurfaceTests` reads the anonymous set whole, so neither surface
-    widens quietly.
+  - **What closes it is structural.** A provider token is a caller's **only** credential on exactly
+    **two** routes, both under `/api/registration`, and neither completes without a live
+    server-minted challenge and a WebAuthn credential the caller's own authenticator produced. The
+    one other route that reads a provider token, `POST /api/me/email-change`, reads it beside a full
+    session — so a token outliving an erasure meets the fallback's `401` there, having no session to
+    stand beside — and it creates nothing. Any scheme where a marker on a route group permits account
+    creation reopens it: a marked route called on boot mints from a stale token, which is how this
+    was reachable before.
+    `RegistrationRouteTests.TheProviderScheme_IsReachedByExactlyTheRegistrationRoutesAndTheEmailChange`
+    reads both off the route table and `AnonymousSurfaceTests` reads the anonymous set whole, so
+    neither surface widens quietly.
   - **Counterexample**: answering the authenticated-but-unresolved case with `204` on the erasure
     route, on the grounds that "no account" satisfies erasure's post-condition. It reads well and it
     is wrong: it creates a path through the erasure handler that reports success having verified
@@ -198,14 +207,16 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
     `CurrentUser.UserId` exists because the request needs a scoped home for the identity the session
     resolved; no query filters by it.
 
-- **A principal reaching `/api/registration` must carry `sub`, `email` and `email_verified`
-  claims.**
+- **A provider principal reaching `/api/registration` or `POST /api/me/email-change` must carry
+  `sub`, `email` and `email_verified` claims.**
   - **Why**: `sub` is the stable identity the account's federated credential is filed under, and
     `email` is the address the account is reached at. `email_verified` decides whether that address
-    may be registered at all: an address the provider will not vouch for is one anybody could have
-    typed.
-    - **Why those two routes rather than every request**: they are the only routes a provider token
-      authenticates at all, so there is no other request on which the claims exist to be judged.
+    may be registered — or moved to — at all: an address the provider will not vouch for is one
+    anybody could have typed.
+    - **Why those three routes rather than every request**: they are the only routes a provider
+      token is read on at all, so there is no other request on which the claims exist to be judged.
+      On the email change the principal judged is the one the gate authenticates itself, never the
+      session's — see [email-change.md](email-change.md).
     - **Why not in the database**: the rule is about a token, and the database cannot inspect one.
       Pushing it lower would mean procedural logic, which
       [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) rules out.
@@ -219,13 +230,17 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
     costs — the `400` that can overtake the `401` — are [registration.md](registration.md)'s. What
     belongs here is the half this file's rules decide: the command has nowhere for the
     verified-email answer to land, so the judgement cannot come down into the Application ring.
+    The three checks are one definition, `ProviderClaims.RefusalFor`, which the email change's
+    `ProviderAuthorizationGate` calls too; that gate answers with a `refusal` word instead of a
+    title, and `EmailChangeEndpointTests` holds its refusals.
 
 - **The verified-email claim is read and never stored.**
   - **Why**: it answers one question — may this address be registered — and once answered it holds
     nothing about the person worth keeping. Storing it would be a claim the product carries for no
     reader, the thing the account row exists to avoid.
-  - **Enforced in**: `RegisterAccountCommand` carries only the subject and the email, so there is no
-    field for the answer to land in; the pinned `users` column set leaves it nowhere to go.
+  - **Enforced in**: `RegisterAccountCommand` and `ChangeEmailCommand` each carry the subject and
+    the email and no verified-email member, so there is no field for the answer to land in; the
+    pinned `users` column set leaves it nowhere to go.
 
 - **A user row carries an internal identifier, an email address and a creation timestamp, and no
   other column.**
@@ -397,34 +412,44 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
 
 ---
 
-- **Rule**: The identity provider is contacted **once in an account's life**, at registration. What
-  it reports afterwards changes nothing about the stored account, and nothing in the product asks it
-  again.
-- **Why**: it vouched for this person once, and that is not standing authority to rewrite what the
+- **Rule**: What the identity provider reports changes the stored account **only on a request the
+  person makes for it**. Registration is the first such request; the email change is the only other.
+  A sign-in never asks the provider anything, and nothing refreshes the account from a token on the
+  way past.
+- **Why**: the provider vouching for this person once is not standing authority to rewrite what the
   account holds — an address the user never asked to change is not an address they can be reached
-  at. Signing in afterwards is a passkey assertion or a redeemed recovery code, neither of which
-  involves any third party, so there is no later moment at which the provider has anything to say.
-  - **Consequence, accepted**: the stored address goes stale, and there is no way to update it yet.
-    Changing it is its own operation, requiring its own fresh authorization exchange, and that is
-    not built.
-  - **The federated credential is still the account's link to that one exchange**, filed under
+  at. Signing in is a passkey assertion or a redeemed recovery code, neither of which involves any
+  third party, so there is no sign-in on which the provider has anything to say.
+  - **Consequence, accepted**: the stored address goes stale until the person asks to move it.
+    Moving it is its own operation — a full session, a fresh provider token and a passkey assertion
+    together — and the server half of it is built: `POST /api/me/email-change`. No screen calls it
+    yet, so today a stored address changes only through the integration suite. See
+    [email-change.md](email-change.md).
+  - **The federated credential is still the account's link to the provider**, filed under
     `(provider, subject)` and unique across the table, which is what makes a second registration
-    from the same Google identity a `409` rather than a second account. It is read on exactly one
-    path after creation — `RegisterAccountHandler` re-reads it to settle an ambiguous email
-    collision.
-- **Enforced in**: nothing writes `users.email` after the insert. The `UPDATE` grant on `users`
-  names `email` alone and **has no caller at all**; the domain exposes no mutator; and
-  `RegisterAccountCommand` is the only command that carries an address. The default budget is
-  written **in the same save** as the user and its credentials, so "an account exists ⇒ it owns a
-  budget" needs no repair step, and the read that follows a session's resolve throws if it is absent
-  — documented in [budgets.md](budgets.md#business-rules--invariants).
+    from the same Google identity a `409` rather than a second account. After creation it is read by
+    `RegisterAccountHandler`'s re-read that settles an ambiguous email collision, and by the email
+    change, which reads it to compare the subject and, when the Google identity moves, retires it
+    and files a replacement in one save.
+- **Enforced in**: registration inserts `users.email`; `EmailChangeRepository.ApplyAsync` updates it
+  through `User.ChangeEmail`, spending the `users` `UPDATE (email)` grant. Those are the only two
+  writers, measured by a search of Domain, Application and Infrastructure: the address is set in
+  `User.CreateWithId`, reached through `RegistrationRepository`, and in `User.ChangeEmail`, called
+  only from `EmailChangeRepository.ApplyAsync`. `RegisterAccountCommand` and `ChangeEmailCommand` carry an
+  address, and the email change takes its address from the provider's
+  principal, never from the body. The default budget is written **in the same save** as the user and
+  its credentials, so "an account exists ⇒ it owns a budget" needs no repair step, and the read that
+  follows a session's resolve throws if it is absent — documented in
+  [budgets.md](budgets.md#business-rules--invariants).
 - **Example**: a person registered as `old@example.com` changes their Google address to
   `new@example.com` and signs in with their passkey. Nothing in that exchange reaches Google, and
-  the account is still reachable at `old@example.com`.
+  the account is still reachable at `old@example.com` — until the person makes an email change,
+  presenting a fresh Google sign-in for the new address beside a passkey assertion.
 - **Counterexample**: keying identity on `email` instead of the credential. It would break the
   moment somebody changed their Google address — the same human would arrive as a stranger — which
-  is also why the address is not refreshed: the credential is the identity, so a changed address is
-  new *information about* the account, not a new account and not a fact the account must adopt.
+  is also why the address is not refreshed on its own: the credential is the identity, so a changed
+  address is new *information about* the account, not a new account and not a fact the account must
+  adopt until the person asks.
 - **Source**: `[SOURCE: discussion]`
 
 ---
@@ -433,7 +458,8 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
   readable at `GET /api/me`, by that account and by nobody else. Nothing else about the account is
   returned.
 - **Why**: a settings surface has to show the address the account can actually be reached at, and
-  that is the **stored** one — deliberately never refreshed by the rule above. A client that decoded
+  that is the **stored** one — refreshed only by an email change the person asks for, under the rule
+  above. A client that decoded
   the ID token instead would show whatever Google asserts today, a different value the moment the
   person changes their Google address, while the account is still reachable only at the old one. The
   disagreement between the two is not a defect this endpoint papers over; it is why the endpoint
@@ -494,8 +520,8 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
   `{"budgetId": …, "email": "old@example.com"}`.
   `SignedInUserEndpointTests.Me_ForASubjectWhoseProviderAddressChanged_RespondsWithTheStoredAddress`
   drives it: the account is registered under one address, the same subject's later token is presented
-  to the one path that writes an address, the `409` is asserted so the attempt is known to have
-  reached that path at all, and the account is then read back. It asserts both that the stored
+  to the registration route, the `409` is asserted so the attempt is known to have reached that path
+  at all, and the account is then read back. It asserts both that the stored
   address is returned **and** that the provider's newer address appears nowhere in the body — the
   second half because a widened projection carrying it would satisfy the first. An **echo** of the
   claim is caught elsewhere for free: the session cookie's principal carries no address of any kind,
@@ -516,8 +542,10 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
   `created_at_utc` — are immutable. On `users`, `Email` is the only column that can change.
 - **Why**: the credential is the identity anchor — repointing its subject would silently hand an
   account to a different principal, and changing its `user_id` would move a sign-in between
-  accounts. That identity is written whole at registration and has no edit that means anything. The
-  address is the one column on `users` an edit could ever legitimately touch.
+  accounts. That identity is written whole when the row is filed and has no edit that means
+  anything: **a new Google identity is a new row**, filed by the email change beside the delete of
+  the old one, never the old row rewritten. The address is the one column on `users` an edit can
+  legitimately touch, and the email change is what touches it.
   - **Scope, stated precisely because the obvious reading is wrong**: the identity columns *are*
     every column of `credentials`, so the table holds no `UPDATE` grant of any shape. Read that as a
     property of the table rather than the current state of a list. A passkey's mutable fact — the
@@ -529,9 +557,10 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
     [ADR 0012](../decisions/0012-split-a-passkeys-material-by-whether-it-is-read-before-identity.md).
 - **Enforced in**: **database-owned, restated in the domain.** The role has no `UPDATE` grant on
   `credentials` of any shape — not a column list with nothing on it, but no grant at all — so every
-  `UPDATE` is refused with `42501`. The role *does* hold `INSERT` and, since revocation, `DELETE`.
+  `UPDATE` is refused with `42501`. The role *does* hold `INSERT` and `DELETE`.
   **Removing a whole row is not an edit of an identity**, so the `DELETE` leaves this rule
-  untouched; it is bounded by the revocation rule below and by the application alone. On `users` the
+  untouched; it is bounded by the revocation rule below, by the email change's owner- and
+  type-scoped read, and by the application alone. On `users` the
   `UPDATE` grant names `email` alone, leaving `created_at_utc` immutable by *omission* rather than
   by a `REVOKE`, which additive column privileges could not express. A one-column list is still a
   list and must not be "simplified" into a table-wide grant; see
@@ -539,13 +568,14 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
   `AppRoleGrantsTests.Database_RefusesEveryUpdateOnACredentialsIdentity_WhileStillAllowingInsertAndDelete`
   pins the refusals column for column against a permitted insert and delete, and
   `Database_RefusesToChangeAUsersCreatedAt_WhileStillAllowingProfileEdits` pins that the users grant
-  really is a list. Above them, neither `User.cs` nor `Credential.cs` exposes a mutator.
-  - **Gap, stated rather than hidden**: the `users` `UPDATE` grant has no caller. It is a privilege
-    the role holds and nothing exercises, the opposite of how the rest of this matrix is built. It
-    stays because the gated email change and the erasure scheduling that need it are both specified
-    and both next; if either slips, the grant should be revoked rather than left standing.
-- **Example**: nothing in the application can change a stored email, so the 409 on the insert path
-  is the only outcome a duplicate address can produce.
+  really is a list. Above them, `Credential.cs` exposes no mutator, and `User.cs` exposes one,
+  `ChangeEmail`, which moves the address and nothing else. The grant's caller is
+  `EmailChangeRepository.ApplyAsync`, which loads the user and moves that one property so EF names
+  `email` alone; `EmailChangeRepositoryTests.ApplyAsync_WithAnAddressOnlyChange_UpdatesOnlyTheEmail`
+  reads the statement off the wire and finds no `created_at_utc` in it.
+- **Example**: an email change to an address another account holds is refused by
+  `IX_users_email` exactly as a registration is, and answers `409 email_already_linked` — see
+  [email-change.md](email-change.md).
 - **Source**: `[SOURCE: discussion]`
 
 ---
@@ -596,9 +626,10 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
 - **Rule**: The application role may **delete a `users` row**, and that one statement removes the
   account's whole structural graph. Of the other **user-owned** tables it holds `DELETE` on exactly
   two, `credentials` and `recovery_code_hashes`, and **neither grant exists for erasure** — the
-  first is for passkey revocation, the second for redeeming a recovery code. The user-owned tables
-  beside them hold no `DELETE` of any shape and are emptied by the cascade descending from the
-  `users` row — `budgets`, `sessions`, `session_tokens`, `passkey_public_keys`,
+  first is for removing one credential (revoking a passkey, replacing a recovery-code set, and
+  retiring the federated credential on an email change), the second for redeeming a recovery code.
+  The user-owned tables beside them hold no `DELETE` of any shape and are emptied by the cascade
+  descending from the `users` row — `budgets`, `sessions`, `session_tokens`, `passkey_public_keys`,
   `passkey_signature_counters`, `wrapped_account_keys`, `key_rotations` and `factor_manifests` —
   and so is `recovery_code_hashes`, whose own grant is spent on a redemption rather than here. The
   budget-owned rows leave the same way, `transactions` excepted, which erasure empties itself
@@ -788,6 +819,11 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
     *any* index covers the column — uniqueness and filter irrelevant. It is therefore declared
     explicitly now. Removing that declaration would silently leave cascade delete and every read of
     an account's credentials with only a federated-rows-only index.
+  - **The email change is a path that inserts one, and it leans on this index both ways.** It files
+    the replacement in the same save that deletes the retired row, so it relies on EF sending the
+    delete first (measured — see [email-change.md](email-change.md)); and a racing change that
+    already filed its own replacement is refused here, which the repository answers as
+    `account_identity_moved`.
   - **The same rule shape exists over the other self-contained type.**
     `IX_credentials_user_id_recovery_codes`, partial on `type = 'recovery_codes'`, gives an account
     at most **one issued set**. Nothing else on the row refuses a second — the provider-identity
@@ -800,13 +836,15 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
 
 ---
 
-- **Rule**: An email address may be held by only one user. A collision on the insert path is a
-  **409**. There is no other path on which one can occur.
+- **Rule**: An email address may be held by only one user. A collision is a **409** on both paths
+  that write one: registration's insert, and the email change's update.
 - **Why**: identity is the credential row; `email` is what the provider asserted when the account
-  was created. A collision that is not a lost race leaves nothing to adopt — no credential carries
-  this subject, so the person behind it is new, and failing closed with a legible 409 is the honest
-  answer. Nothing updates `users.email` after the insert, so a returning user cannot collide with
-  anyone.
+  was created, or when the person last moved it. A collision on registration that is not a lost
+  race leaves nothing to adopt — no credential carries this subject, so the person behind it is new,
+  and failing closed with a legible 409 is the honest answer. A signing-in user cannot collide with
+  anyone, because no sign-in writes the address. The email change answers the same index with the
+  same member, `email_already_linked`, and settles the same ambiguity the same way — see
+  [email-change.md](email-change.md).
 - **Enforced in**: three layers, deliberately. The unique index `IX_users_email` on the
   `case_insensitive` collation is what makes the rule *true*. `RegistrationRepository` reports the
   rejection without interpreting it: `RegisterAsync` writes the whole account in one save and
@@ -874,7 +912,7 @@ stateDiagram-v2
 | SessionRead → Refused | The session is revoked or past its expiry | 401, except on the one route carrying `AcceptsEndedSessionAttribute`, which reaches no ambient budget even there |
 | SessionRead → BudgetResolved | A live session | The account's first budget; `ResolveBudget` runs after `ResolveUser` because that call clears it |
 | Neither → Refused | An authenticated bearer on any route outside `/api/registration`, or nothing at all | **The same 401.** The fallback policy names the session cookie scheme, so `AuthorizationMiddleware` re-authenticates against that handler alone and it answers `NoResult` for a request with no cookie |
-| Provider → Gated | Either leg of `/api/registration` | The group's policy names `ProviderAuthentication.SchemeName` and nothing else, so this is the only place a bearer authenticates. `RegistrationClaimGate` then requires `sub`, `email` and `email_verified`, with a distinct title for each of the two refusals |
+| Provider → Gated | Either leg of `/api/registration` | The group's policy names `ProviderAuthentication.SchemeName` and nothing else, so this is the only place a bearer is the request's identity. (The email change authenticates one too, but beside a session that already resolved the account — see [email-change.md](email-change.md).) `RegistrationClaimGate` then requires `sub`, `email` and `email_verified`, with a distinct title for each of the two refusals |
 | Gated → Creating | A verified account-registration ceremony, a `prf` result, a canonical factor id, two envelopes and ten submissions | `User.CreateWithId` validates the derived identifier and the address; `Credential.CreateFederated` validates provider and subject; `Budget.CreateDefault` validates the owner. See [registration.md](registration.md) |
 | Creating → Conflict | A unique violation on one of four pinned index names | `RegisterAsync` reports which, `RefusalFor` chooses the sentence, and **the race winner is never adopted** |
 
@@ -895,8 +933,11 @@ IF the request presents __Host-budgetoid-session
     ELSE
       publish the account's first budget and continue    ← the account certainly exists: the cookie
                                                            was issued over a session row written
-                                                           beside it
-ELSE IF the route is under /api/registration             ← the only routes JwtBearer authenticates
+                                                           beside it. On POST /api/me/email-change
+                                                           a provider bearer is then judged beside
+                                                           it, never in its place
+ELSE IF the route is under /api/registration             ← the only routes where JwtBearer is the
+                                                           request's identity
   IF sub or email is missing or blank
     THEN 401 ProblemDetails "Authenticated principal is missing required claims."
   ELSE IF email_verified does not parse as true              ← absent, blank, "false" and "1" all fail
@@ -939,29 +980,34 @@ The budget branch that runs after this, on every path, is in
 
 ## Integration Points
 
-- **Google OAuth / OIDC**: the provider is contacted **once in an account's life**, on the
-  registration screen, and the identity it vouches for reaches the account through a federated
-  credential rather than a column on the user. The API reads three claims and no others — `sub` and
-  `email`, which are stored, and `email_verified`, read and discarded. The frontend attaches the
-  **ID token** (not the access token) as the `Authorization: Bearer` header on the **two
-  registration routes and nowhere else** — the same two routes that accept it, so the set of
-  requests carrying one and the set of routes reading one are identical. The client's own narrowing
-  is not what makes a bearer useless elsewhere; it is what stops a credential travelling further
-  than the routes that can act on it. The authorization request asks for `openid email` and nothing
-  more, pinned by `no-profile-scope.spec.ts`, which reads the built bundle.
+- **Google OAuth / OIDC**: the browser contacts the provider from the registration screen alone
+  today, and the identity it vouches for reaches the account through a federated credential rather
+  than a column on the user. The API reads three claims and no others — `sub` and `email`, which are
+  stored, and `email_verified`, read and discarded — on the two registration routes and on
+  `POST /api/me/email-change`. The frontend attaches the **ID token** (not the access token) as the
+  `Authorization: Bearer` header on the **two registration routes and nowhere else**. Those are two
+  of the three routes that read one; the third, the email change, has no caller in this client yet,
+  so no browser sends it a token today. The client's own narrowing is not what makes a bearer useless
+  elsewhere; it is what stops a credential travelling further than the routes that can act on it.
+  The authorization request asks for `openid email` and nothing more, pinned by
+  `no-profile-scope.spec.ts`, which reads the built bundle.
   - **The client reads exactly one claim, and only on the registration screen.** `providerEmail()`
     reads `email` so the introduction step can show which account is about to be created; it reads
     no other member — not `name`, and above all not `picture`, an image from another origin this
     application does not load at all — and `auth-service.spec.ts` pins that through a proxy
     recording every claim touched.
   - **`GET /api/me` is the only source for the *account's* address.** The token asserts what the
-    provider says today, while the account is reachable at what was stored when it was created. Do
+    provider says today, while the account is reachable at what was stored — at registration, or at
+    the last email change. Do
     not "optimize" the call away by decoding the token; the two values legitimately disagree, the
     stored one is the answer, and after registration there is no token to decode.
 - **`GET /api/me`**: an authenticated read of the caller's own address. It needed no grant — the
   role already holds `SELECT` on `users`, so `AppRoleGrantMatrixTests` staying green *untouched* is
   the proof, and a `42501` here would be a query bug rather than a missing privilege.
   `user_isolation` scopes the read.
+- **[Email Change](email-change.md)**: the one path that writes `users.email` and replaces the
+  federated credential after the account exists. It reads a provider token in a filter, beside a
+  full session, and asks for a passkey assertion too.
 - **[Registration](registration.md)**: the one way an account comes to exist. Its two routes are the
   only ones in this application whose policy **names** an authentication scheme, and the account
   they leave behind satisfies the three-credential invariant from its first instant — which is the
@@ -1037,12 +1083,13 @@ The budget branch that runs after this, on every path, is in
   person cannot even erase, because the erasure handler reads the ambient budget. That trade is
   bounded by production holding no data, and the stronger option is recorded in the decision log.
 
-- **A returning user's stored email is deliberately never refreshed, and it will go stale.** The
-  obvious "fix" is to re-apply a token's claims to an account that already exists, which is what the
-  code once did on every authenticated request. Do not restore it: the provider gates registration
-  and is not standing authority to rewrite the account afterwards. There is now no request on which
-  it could be done at all — a returning person signs in with a passkey, contacting no third party —
-  so what keeps the rule is the shape of the product rather than a branch somebody could re-add.
+- **A returning user's stored email is never refreshed on the way past, and it will go stale until
+  they move it.** The obvious "fix" is to re-apply a token's claims to an account that already
+  exists on every authenticated request. Do not do it: the provider is not standing authority to
+  rewrite the account. A returning person signs in with a passkey, contacting no third party, so no
+  sign-in carries a token to re-apply. The one request that does carry one beside a session, the
+  email change, writes only because the person asked it to and proved it with a passkey — see
+  [email-change.md](email-change.md).
 
 - **`case_insensitive` folds case but not accents.** It is ICU `und-u-ks-level2`, so
   `josé@example.com` and `jose@example.com` are two distinct rows and both can exist at once.
@@ -1072,7 +1119,11 @@ The budget branch that runs after this, on every path, is in
   the needle is longer, it quietly answers false. See
   [ciphertext-envelope.md](ciphertext-envelope.md).
 
-- **An over-long email from the identity provider fails *registration* with a 400, and nothing after
-  it.** The 254-character bound is checked where the value is written, so an existing account never
-  meets it again however long their provider address grows. Softening it would mean truncating the
-  address or swallowing the validation error, and ADR 0002 rules out both.
+- **An over-long email from the identity provider fails *registration* or an *email change* with a
+  400, and nothing else.** The 254-character bound is checked where the value is written, so an
+  existing account meets it again only when the person asks to move to a longer address — never on a
+  sign-in, however long their provider address grows. On the email change that `400` comes after the
+  passkey gate has spent its challenge. Softening it would mean truncating the address or swallowing
+  the validation error, and ADR 0002 rules out both.
+  `FederatedIdentityChangeTests.Decide_WithAnAddressLongerThanTheLimit_Throws` holds the email
+  change's side.

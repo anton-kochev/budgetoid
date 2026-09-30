@@ -83,7 +83,7 @@ existence, are in [users-and-ownership.md](users-and-ownership.md).
 | **Card** | The physical artifact a recovery-code set is written or printed on. Not a modelled thing — nothing in the schema, the API or the client knows it exists — but the word several rules turn on, because losing *it* is the event regeneration answers and transcribing *it* is what canonicalisation forgives. Use it only for the artifact; the ten codes themselves are the **recovery-code set**. |
 | **WebAuthn ceremony** | One of the four exchanges a passkey takes part in: account registration, which creates the account the passkey will reach; registration, which attaches a further passkey to an account that exists; assertion, which signs in with one; and re-authentication, which re-proves possession before an action too destructive to take on a bearer token alone. Each runs in two legs — a server-issued nonce, then a signed response — and each nonce is bound to its own pool, spendable in no other. **An assertion the browser mints for itself is not one of the four**: unlocking an account runs a ceremony with no endpoint, no pool and nothing on the server to check it, because what it proves is proved by the envelopes opening — see [Account Keys](account-keys.md). |
 | **User handle** | The `user.id` a registration ceremony hands the authenticator, which the authenticator stores forever and presents on every later assertion. It **is** the account identifier, compared byte-for-byte with nothing to look up first, which is why registration derives that identifier from the ceremony's own challenge rather than choosing it — see [registration.md](registration.md). |
-| **Revocation** | Removing one way of signing in. Revoking a **passkey** deletes its credential row, and the sessions, key and counter beneath it go with it; the account must keep at least one passkey, so the last one is refused. Revoking a **session** is the opposite shape — a column written, never a row removed. The federated credential is revoked by neither: it is replaced — see [passkeys.md](passkeys.md) and [sessions.md](sessions.md). |
+| **Revocation** | Removing one way of signing in. Revoking a **passkey** deletes its credential row, and the sessions, key and counter beneath it go with it; the account must keep at least one passkey, so the last one is refused. Revoking a **session** is the opposite shape — a column written, never a row removed. The federated credential is revoked by neither: it is replaced, by the email change — see [passkeys.md](passkeys.md), [sessions.md](sessions.md) and [email-change.md](email-change.md). |
 | **PRF** | The WebAuthn `prf` extension: a secret the authenticator derives and the server never sees. Requested at registration and **required** for one to complete — a registration completes only when the client reports a `prf` result that is present and true, so reporting nothing and reporting `enabled: false` are alike refused. The claim is the client's and unverifiable, so the refusal is a product gate rather than a control; the product stores nothing about it. See [passkeys.md](passkeys.md). |
 | **Relying party** | The site a passkey is bound to, named by its `rpId`. An authenticator signs over `SHA-256(rpId)`, so a credential registered here cannot be asserted anywhere else. |
 | **Locked session** | A session established from a federated credential. `federated` is the **only** credential type that cannot reach budget content, because an authorization exchange returns claims rather than a secret a client can turn into a key. |
@@ -122,9 +122,11 @@ lists, edits and deletes Transactions; lists Payees, creates one through a reque
 one by id and renames it; and reads global Currencies. The budget itself is not manageable — it
 arrives with the account, never configured. The same owner can download a complete copy of
 everything the server holds about them, can see the address the account is registered under, and can
-ask how many recovery codes are left; none of it is behind a support request. They can also destroy
-the account outright, from the settings screen, behind a typed confirmation and a WebAuthn
-re-authentication made moments earlier — see [erasure.md](erasure.md). Issuing themselves a
+ask how many recovery codes are left; none of it is behind a support request. The server also lets
+them move the account to another Google identity and address, behind a fresh Google sign-in and a
+passkey assertion, through a route no screen calls yet — see [email-change.md](email-change.md).
+They can also destroy the account outright, from the settings screen, behind a typed confirmation
+and a WebAuthn re-authentication made moments earlier — see [erasure.md](erasure.md). Issuing themselves a
 replacement set of recovery codes is gated on the same ceremony and is a route no screen reaches
 yet, so today only the integration suite calls it — see [passkeys.md](passkeys.md). A visitor with
 no session reaches the welcome screen — which both starts an account and signs a returning person in
@@ -199,6 +201,10 @@ references are additionally constrained by composite foreign keys to a row in th
 - [Currencies](currencies.md) — global ISO-4217 reference data.
 - [Erasure](erasure.md) — the one action that destroys an account and everything under it, and the
   order it has to delete in.
+- [Email Change](email-change.md) — moving an account to another Google identity and address on a
+  full session, a fresh provider token and a passkey assertion at once, and the one save that
+  retires the old federated credential and files the new one. The server route is built; no screen
+  calls it yet.
 - [Export](export.md) — the complete copy of a person's own data, why it refuses rather than hands
   back the part it can reach, and how the browser opens it and saves the whole file or nothing.
 

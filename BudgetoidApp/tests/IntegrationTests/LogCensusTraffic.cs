@@ -64,6 +64,7 @@ internal static class LogCensusTraffic
     private const string SignOutPath = "/api/me/session/revocation";
     private const string ErasurePath = "/api/me/erasure";
     private const string RotationPath = "/api/me/key-rotation";
+    private const string EmailChangePath = "/api/me/email-change";
 
     /// <summary>The issuer the application's bearer handler accepts.</summary>
     public const string ProviderIssuer = "https://accounts.google.com";
@@ -88,6 +89,12 @@ internal static class LogCensusTraffic
 
     /// <summary>The name of the step that erases the primary account.</summary>
     public const string ErasureStep = "erasure";
+
+    public const string EmailChangeStep = "email change";
+
+    public const string BearerEmailChangeStep = "email change, provider token validated";
+
+    public const string ForgedEmailChangeStep = "email change, provider token forged";
 
     /// <summary>One step of the traffic and the records it wrote.</summary>
     public sealed record Step(string Name, IReadOnlyList<int> Statuses, IReadOnlyList<CapturedLogRecord> Records);
@@ -479,6 +486,44 @@ internal static class LogCensusTraffic
         await Step("take the second budget away again", async _ =>
             await DeleteBudgetAsync(host.ConnectionString, seeded));
 
+        // The email change, four ways: an address the fault account holds under this account's own
+        // subject (409 email_already_linked), the fault account's subject (409 provider_identity_in_use),
+        // an address the provider does not vouch for (401 email_unverified, refused by the provider gate
+        // before the passkey), then a new subject and address (200). The success retires the credential holding `subject` and
+        // moves `email` out of users, so the old values survive only in the snapshots and on the sent
+        // list; the new ones are stored until the erasure below takes them. The refused address is new and
+        // never stored, so only the sent list makes it a needle.
+        string movedSubject = Marker("moved-subject");
+        string movedEmail = $"{Marker("moved-email")}@Log-Census.Example";
+        string inUseRefusedEmail = $"{Marker("in-use-email")}@example.test";
+        string unverifiedEmail = $"{Marker("unverified-email")}@example.test";
+        sent.Add(SentValue.OfText("credentials", "subject", movedSubject));
+        sent.Add(SentValue.OfText("users", "email", movedEmail));
+        sent.Add(SentValue.OfText("users", "email", inUseRefusedEmail));
+        sent.Add(SentValue.OfText("users", "email", unverifiedEmail));
+        await Step(EmailChangeStep, async statuses =>
+        {
+            (string Subject, string Email, string EmailVerified, string? ConflictKind)[] attempts =
+            [
+                (subject, faultEmail, "true", "email_already_linked"),
+                (faultSubject, inUseRefusedEmail, "true", "provider_identity_in_use"),
+                (movedSubject, unverifiedEmail, "false", null),
+                (movedSubject, movedEmail, "true", null),
+            ];
+
+            foreach ((string attemptSubject, string attemptEmail, string emailVerified, string? conflictKind) in attempts)
+            {
+                AssertionResult assertion = await ReauthenticateAsync(client, device, accountId, NextSignCount());
+                using HttpRequestMessage request = EmailChangeRequest(assertion);
+                request.Headers.Add(TestAuthHandler.SubjectHeader, attemptSubject);
+                request.Headers.Add(TestAuthHandler.EmailHeader, attemptEmail);
+                request.Headers.Add(TestAuthHandler.EmailVerifiedHeader, emailVerified);
+                HttpResponseMessage response = await client.SendAsync(request);
+                statuses.Add((int)response.StatusCode);
+                await RequireConflictKindAsync(EmailChangeStep, response, conflictKind);
+            }
+        });
+
         await Step(ErasureStep, async statuses =>
         {
             AssertionResult assertion = await ReauthenticateAsync(client, device, accountId, NextSignCount());
@@ -538,6 +583,12 @@ internal static class LogCensusTraffic
 
         // Both registration legs name the provider scheme and nothing else, so a 2xx on either is the
         // bearer handler having validated the token.
+        // The account the validated token registers, kept for the email change below: its cookie, its
+        // authenticator and the handle the authenticator holds.
+        string registeredCookie = string.Empty;
+        SyntheticAuthenticator? registeredDevice = null;
+        byte[] registeredHandle = [];
+
         await StepAsync(steps, recorder, ValidatedTokenStep, async statuses =>
         {
             using HttpClient client = BearerClient(factory, Sent(ProviderToken(signingKey, freshSubject, freshEmail)));
@@ -559,6 +610,12 @@ internal static class LogCensusTraffic
             HttpResponseMessage finished = await RegistrationCeremony.PostAsync(
                 client, attestation, WrappedKeyFixture.Mint(), RegistrationCeremony.CardOf(RegistrationCeremony.Verifiers()));
             statuses.Add((int)finished.StatusCode);
+            if (finished.IsSuccessStatusCode)
+            {
+                registeredCookie = RegistrationCeremony.SessionCookieValueOf(finished);
+                registeredDevice = device;
+                registeredHandle = options.UserHandle;
+            }
         });
 
         await StepAsync(steps, recorder, "provider token, validated, registered identity", async statuses =>
@@ -575,6 +632,40 @@ internal static class LogCensusTraffic
             using HttpClient client = BearerClient(factory, forged);
             statuses.Add((int)(await client.PostAsync(RegistrationCeremony.OptionsPath, content: null)).StatusCode);
         });
+
+        // The email change on this host, so the bearer handler's own records on that route are searched:
+        // a cookie of the account registered above, a forged token and then a valid one, each beside a
+        // fresh assertion. The forged token is refused by the provider filter before the passkey gate.
+        string movedSubject = Marker("bearer-moved-subject");
+        string movedEmail = $"{Marker("bearer-moved-email")}@Bearer.Example";
+        sent.Add(SentValue.OfText("credentials", "subject", movedSubject));
+        sent.Add(SentValue.OfText("users", "email", movedEmail));
+        uint registeredCount = 0;
+
+        async Task<int> ChangeEmailAsync(string token)
+        {
+            SyntheticAuthenticator device = registeredDevice
+                ?? throw new InvalidOperationException(
+                    $"'{ValidatedTokenStep}' registered no account, so there is no session to change an email on.");
+            using HttpClient client = CookieClient(factory, registeredCookie);
+            byte[] challenge = await RegistrationCeremony.BeginCeremonyAsync(client, ReauthenticationOptionsPath);
+            AssertionResult assertion = device.Authenticate(
+                challenge, ApiFactory.PasskeyOrigin, registeredHandle, ++registeredCount);
+            using HttpRequestMessage request = EmailChangeRequest(assertion);
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+            return (int)(await client.SendAsync(request)).StatusCode;
+        }
+
+        await StepAsync(steps, recorder, ForgedEmailChangeStep, async statuses =>
+        {
+            string valid = Sent(ProviderToken(signingKey, movedSubject, movedEmail));
+            string forged = Sent($"{valid[..valid.LastIndexOf('.')]}.{Base64UrlText.Encode(RandomNumberGenerator.GetBytes(256))}");
+            statuses.Add(await ChangeEmailAsync(forged));
+        });
+
+        await StepAsync(steps, recorder, BearerEmailChangeStep, async statuses =>
+            statuses.Add(await ChangeEmailAsync(Sent(ProviderToken(signingKey, movedSubject, movedEmail)))));
 
         return new BearerRun(steps, sent);
     }
@@ -741,6 +832,41 @@ internal static class LogCensusTraffic
         });
 
         return (int)response.StatusCode;
+    }
+
+    /// <summary>An email-change POST carrying <paramref name="assertion" />; the caller adds the provider token.</summary>
+    private static HttpRequestMessage EmailChangeRequest(AssertionResult assertion) =>
+        new(HttpMethod.Post, EmailChangePath)
+        {
+            Content = JsonContent.Create(new
+            {
+                credentialId = assertion.CredentialIdBase64Url,
+                clientDataJson = assertion.ClientDataJsonBase64Url,
+                authenticatorData = assertion.AuthenticatorDataBase64Url,
+                signature = assertion.SignatureBase64Url,
+                userHandle = assertion.UserHandleBase64Url,
+            }),
+        };
+
+    /// <summary>
+    /// Throws unless a 409 carries <paramref name="expected" /> as its <c>conflictKind</c>; a null
+    /// expectation asks for no 409 at all. A status alone cannot tell the two email-change refusals apart.
+    /// </summary>
+    private static async Task RequireConflictKindAsync(string step, HttpResponseMessage response, string? expected)
+    {
+        string? actual = null;
+        if (response.StatusCode == System.Net.HttpStatusCode.Conflict)
+        {
+            JsonObject body = await RegistrationCeremony.ReadJsonObjectAsync(response);
+            actual = body["conflictKind"]?.GetValue<string>() ?? "<no conflictKind>";
+        }
+
+        if (!string.Equals(actual, expected, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"'{step}' expected conflictKind '{expected ?? "<none>"}' and got '{actual ?? "<none>"}' "
+                + $"on a {(int)response.StatusCode}.");
+        }
     }
 
     /// <summary>Runs the re-authentication options leg and has <paramref name="device" /> answer it.</summary>

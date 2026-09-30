@@ -120,8 +120,10 @@ builder.Services.AddSingleton<IPasskeyCeremonyPolicy, ConfiguredPasskeyCeremonyP
 //
 // JwtBearer stays registered, but nothing defaults to it any more. It is reached by exactly one
 // policy — the registration group's, which names ProviderAuthentication.SchemeName — because an
-// account may not exist without a completed provider exchange. A bearer presented to any other route
-// therefore authenticates nothing at all.
+// account may not exist without a completed provider exchange. Beyond that policy it is reached only by
+// ProviderAuthorizationGate, on a route that declares RequireProviderAuthorization(): there the bearer is
+// a second proof judged beside the session, never the request's identity. A bearer presented to any
+// other route therefore authenticates nothing at all.
 builder.Services.AddAuthentication(SessionCookieAuthenticationHandler.SchemeName)
     // No options of its own: everything this scheme reads is on the request, and the collaborator it
     // needs is resolved per request from the container. See SessionCookieAuthenticationHandler.
@@ -365,6 +367,7 @@ app.MapCategoryGroupEndpoints();
 app.MapCategoryEndpoints();
 app.MapPasskeyEndpoints();
 app.MapAccountErasureEndpoints();
+app.MapEmailChangeEndpoints();
 app.MapCredentialEndpoints();
 app.MapAccountKeyEndpoints();
 app.MapKeyRotationEndpoints();

@@ -208,6 +208,11 @@ public sealed class PasskeyCeremonyTests
         await Assert.That(refusals[0].Response.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
         await Assert.That(first.Contains(PasskeyVerificationExceptionHandler.Title, StringComparison.Ordinal))
             .IsTrue();
+
+        // The refusal word is product-wide, not the email change's alone: a sign-in refusal carries it too.
+        // Read off the first body, which every other entry above already equals.
+        JsonNode? firstBody = JsonNode.Parse(first[(first.IndexOf(' ', StringComparison.Ordinal) + 1)..]);
+        await Assert.That(firstBody?["refusal"]?.GetValue<string>()).IsEqualTo(PasskeyVerificationExceptionHandler.Refusal);
         await Assert.That((await SessionsOpenedSinceAsync(host, before)).Count).IsEqualTo(0);
     }
 

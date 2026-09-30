@@ -1,10 +1,10 @@
 namespace Application.Users.GetSignedInUser;
 
 /// <summary>
-/// The signed-in account as the caller is shown it: the address it signed up with, the budget the
-/// request is operating inside, and nothing else.
+/// The signed-in account as the caller is shown it: the address it holds now, the budget the request is
+/// operating inside, and nothing else.
 /// </summary>
-/// <param name="Email">The address the account is registered under, as <c>users</c> stores it — never
+/// <param name="Email">The address the account holds, as <c>users</c> stores it — never
 /// the one on the provider token the request arrived with.</param>
 /// <param name="BudgetId">The ambient budget, read from <c>IBudgetContext.BudgetId</c> and rendered in
 /// the hyphenated <c>D</c> form. It is the fourth field of the client's blind-index message.</param>

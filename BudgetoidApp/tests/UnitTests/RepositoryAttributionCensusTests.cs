@@ -104,12 +104,12 @@ public sealed record AttributionCensus(
 /// see <c>Discovery_IsBlindToARepositoryOutsideTheNamespace</c>, which is a permanent demonstration
 /// rather than a defect to fix by widening the scan. Widening only moves the blind spot; what covers
 /// it instead is <c>Discovery_FindsExactlyTheRepositoriesTheNamespaceDeclares</c>, which pins the
-/// fourteen names, so a repository that leaves the namespace goes red there rather than quietly leaving
+/// fifteen names, so a repository that leaves the namespace goes red there rather than quietly leaving
 /// the census with nothing to count.
 /// </para>
 /// <para>
 /// <b>A gap this recorded, closed, and then partly reopened by a deletion.</b> Narrowing on
-/// <c>PostgresException.ConstraintName</c> is the house rule — ten of the fourteen repositories do it,
+/// <c>PostgresException.ConstraintName</c> is the house rule — twelve of the fifteen repositories do it,
 /// and two of those spell it inside a helper rather than in the <c>when</c> clause. Having a narrowed
 /// <c>catch</c> is not the same as having it <i>tested from both sides</i>, and
 /// <see cref="PinnedElsewhere" /> says per entry which halves exist. It once said, for three entries,
@@ -133,7 +133,7 @@ public sealed record AttributionCensus(
 /// one that hides a gap it does have, and the second is only easier to notice.
 /// </para>
 /// <para>
-/// <b>What is not claimed is that the fourteen are now uniformly covered</b> — only that every entry says
+/// <b>What is not claimed is that the fifteen are now uniformly covered</b> — only that every entry says
 /// which halves it holds. <c>SessionRepository</c> holds neither and says so, because it translates
 /// nothing; <c>SessionTokenRepository</c> says the stronger version of that, having no <c>catch</c> at
 /// all over a member that writes nothing; <c>NarrativeResealRepository</c> used to say a third version —
@@ -156,8 +156,8 @@ public sealed record AttributionCensus(
 /// Sabotaged in four directions before it was believed, each on synthetic input so the proof is
 /// permanent rather than a sentence about a change that was reverted: a repository in neither set, one
 /// in both, a set naming a repository that does not exist, and — the control without which the first
-/// three could all pass while the real census checked nothing — the live fourteen classified against
-/// two <b>empty</b> sets, which must report all fourteen unlisted.
+/// three could all pass while the real census checked nothing — the live fifteen classified against
+/// two <b>empty</b> sets, which must report all fifteen unlisted.
 /// </para>
 /// <para>
 /// It lives in <c>UnitTests</c> because <c>UnitTests.csproj</c> already references Infrastructure, so
@@ -219,12 +219,14 @@ public sealed class RepositoryAttributionCensusTests
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Read <see cref="AttributionPin.PinsWhat" /> on each, not the bucket name. Three of the nine are
+    /// Read <see cref="AttributionPin.PinsWhat" /> on each, not the bucket name. Four of the ten are
     /// pinned in both directions on every narrowing they hold — <c>TransactionRepository</c>;
     /// <c>UserRepository</c>, which now holds only one narrowing because the insert that carried its
-    /// other one was deleted with the provisioning path; and <c>RegistrationRepository</c>, which holds
+    /// other one was deleted with the provisioning path; <c>RegistrationRepository</c>, which holds
     /// both halves on all four of its narrowings, the second half being <b>one</b> test rather than
-    /// four. Two — <c>SessionRepository</c> and <c>SessionTokenRepository</c> — have nothing to
+    /// four; and <c>EmailChangeRepository</c>, whose three constraint-name filters share one control
+    /// the same way and whose concurrency catch has a control of its own, with a limit its entry
+    /// states. Two — <c>SessionRepository</c> and <c>SessionTokenRepository</c> — have nothing to
     /// attribute at all, which is a different statement and each says so in its own words: a
     /// <c>catch</c> narrowed by no constraint name, and no <c>catch</c> over a member that writes
     /// nothing. <c>NarrativeResealRepository</c> used to be a third, with no <c>catch</c> over a member
@@ -262,6 +264,50 @@ public sealed class RepositoryAttributionCensusTests
     /// </remarks>
     private static readonly AttributionPin[] PinnedElsewhere =
     [
+        new(
+            nameof(EmailChangeRepository),
+            "EmailChangeRepositoryTests",
+            "FOUR CATCHES ON ApplyAsync: THREE NARROWED ON A CONSTRAINT NAME AND ONE ON EF's ENTRIES, and "
+            + "all four are held at the repository layer, on the app role, in the one file. "
+            + "THE THREE NAMED FILTERS, each translated by its own test: IX_credentials_provider_subject "
+            + "becomes SubjectTaken, held by "
+            + "ApplyAsync_WithASubjectAnotherAccountHolds_AnswersSubjectTaken_AndChangesNeitherAccount; "
+            + "IX_users_email becomes EmailTaken, held by "
+            + "ApplyAsync_ToAnAddressAnotherAccountHolds_AnswersEmailTaken_AndChangesNothing and, for the "
+            + "case-insensitive collation, ApplyAsync_ToAnAddressAnotherAccountHoldsInAnotherCase_"
+            + "AnswersEmailTaken; IX_credentials_user_id_federated becomes FederatedCredentialMoved, held "
+            + "by ApplyAsync_WhenARacingChangeAlreadyReplacedTheRetiredCredential_"
+            + "AnswersFederatedCredentialMoved. That last one is the realistic lost race, where the winner "
+            + "also filed its replacement, and it was measured to surface the 23505 on that index rather "
+            + "than the concurrency exception: against a scratch implementation with the same catch shape, "
+            + "dropping only that arm reddened that test and no other. "
+            + "ONE CONTROL FOR ALL THREE, the shape RegistrationRepository's entry describes: "
+            + "ApplyAsync_WhenAnotherUniqueRuleIsBroken_LetsTheViolationEscape stages PK_credentials by "
+            + "reading the filed credential's id off the decided change and filing a bare passkey row "
+            + "under that id for a stranger, so neither partial index and not AK_credentials_id_user_id_"
+            + "type can be what refuses. It asserts a DbUpdateException with the unique-violation SQLSTATE "
+            + "whose ConstraintName IS PK_credentials and is none of the three names, and that neither "
+            + "account moved. Widening any one clause to the bare SQLSTATE swallows it; measured on the "
+            + "email clause, against a scratch implementation with the same catch shape. PK_credentials is the only other unique rule this save can reach, and in "
+            + "production only through a UUIDv7 collision. "
+            + "THE FOURTH CATCH is a DbUpdateConcurrencyException narrowed by IsRetiredCredentialGone: the "
+            + "change retires a credential, and every entry EF could not account for is that credential, "
+            + "Deleted, with the entry count tested first. Translated by "
+            + "ApplyAsync_WhenTheRetiredCredentialWasAlreadyDeleted_AnswersFederatedCredentialMoved, which "
+            + "deletes the retired row on another connection inside SavingChanges. Controlled by "
+            + "ApplyAsync_WhenTheAccountIsErasedUnderneathTheSave_LetsTheConcurrencyFailureEscape, which "
+            + "erases the account on another connection inside SavingChanges during an address-only "
+            + "change. That is reachable in production as an erasure racing an email change. It asserts "
+            + "that no outcome was answered, that a DbUpdateConcurrencyException escaped, and that EF "
+            + "attributed it to the User entry. Measured: with the catch widened to any concurrency "
+            + "exception, it fails answering FederatedCredentialMoved. "
+            + "WHAT THAT CONTROL DOES NOT PIN: its change retires nothing, so the predicate declines on "
+            + "that first clause and never reads the entries. Measured: a predicate cut down to 'a "
+            + "credential was retired' keeps every test green; All relaxed to Any would too, by reading "
+            + "rather than by a run, since the only entry here is the User. Staging it "
+            + "needs a save that retires a credential and fails on another entity. Erasing the account "
+            + "cannot do that, because the cascade takes the retired credential too and the DELETE fails "
+            + "first"),
         new(
             nameof(KeyRotationRepository),
             "KeyRotationBeginEndpointTests and KeyRotationRepositoryTests",
@@ -686,6 +732,7 @@ public sealed class RepositoryAttributionCensusTests
             nameof(BudgetRepository),
             nameof(CategoryGroupRepository),
             nameof(CategoryRepository),
+            nameof(EmailChangeRepository),
             nameof(KeyRotationRepository),
             nameof(NarrativeResealRepository),
             nameof(PasskeyRepository),

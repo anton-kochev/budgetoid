@@ -44,8 +44,19 @@ public sealed class InMemoryUserRepository(InMemoryTransactionRepository transac
     private readonly List<User> _users = [];
     private readonly List<Credential> _credentials = [];
     private readonly List<Budget> _budgets = [];
+    private readonly List<string> _federatedLookupSubjects = [];
 
     public int DeleteCallCount { get; private set; }
+
+    /// <summary>
+    /// How many times the discovery lookup was asked, so a refusal can be shown to have read nothing.
+    /// </summary>
+    public int FederatedLookupCount => _federatedLookupSubjects.Count;
+
+    /// <summary>
+    /// The subject every discovery lookup was asked about, in call order and exactly as handed in.
+    /// </summary>
+    public IReadOnlyList<string> FederatedLookupSubjects => _federatedLookupSubjects;
 
     /// <summary>The rows still here, so an erasure's post-condition can be asserted directly.</summary>
     public IReadOnlyList<User> Users => _users;
@@ -76,6 +87,8 @@ public sealed class InMemoryUserRepository(InMemoryTransactionRepository transac
         string subject,
         CancellationToken cancellationToken = default)
     {
+        _federatedLookupSubjects.Add(subject);
+
         // Ordinal on both halves, matching the case-sensitive column comparison the real lookup makes.
         Credential? credential = _credentials.SingleOrDefault(credential =>
             string.Equals(credential.Provider, provider, StringComparison.Ordinal)

@@ -217,6 +217,11 @@ public sealed class LogRedactionTests
         // snapshots — and the snapshots are what kept the columns above non-empty.
         await Assert.That(string.Join(",", StatusesOf(run, LogCensusTraffic.ErasureStep))).IsEqualTo("204");
 
+        // The email change reached both conflicts, the unverified-address refusal and the success, in
+        // that order — the conflictKind of
+        // each 409 is checked inside the step.
+        await Assert.That(string.Join(",", StatusesOf(run, LogCensusTraffic.EmailChangeStep))).IsEqualTo("409,409,401,200");
+
         // Non-vacuity, the main host: the recorder reached the framework, EF and the three places this
         // product writes a record of its own.
         await Assert.That(appRecords.Count).IsGreaterThanOrEqualTo(AppRecordFloor);
@@ -260,6 +265,19 @@ public sealed class LogRedactionTests
         await Assert.That(string.Join(",", forged.Statuses)).IsEqualTo("401");
         await Assert.That(forged.Records.Any(record =>
                 record.Category == typeof(JwtBearerHandler).FullName && record.Exception is not null))
+            .IsTrue();
+
+        // The email change on the bearer host: the forged token refused by the provider filter, on the
+        // handler's own failure record, and the valid one accepted, on its own success record.
+        LogCensusTraffic.Step forgedChange = bearerRun.Steps.Single(step => step.Name == LogCensusTraffic.ForgedEmailChangeStep);
+        await Assert.That(string.Join(",", forgedChange.Statuses)).IsEqualTo("401");
+        await Assert.That(forgedChange.Records.Any(record =>
+                record.Category == typeof(JwtBearerHandler).FullName && record.Exception is not null))
+            .IsTrue();
+        LogCensusTraffic.Step validatedChange = bearerRun.Steps.Single(step => step.Name == LogCensusTraffic.BearerEmailChangeStep);
+        await Assert.That(string.Join(",", validatedChange.Statuses)).IsEqualTo("200");
+        await Assert.That(validatedChange.Records.Any(record =>
+                record.Category == typeof(JwtBearerHandler).FullName && record.EventId == TokenValidationSucceededEventId))
             .IsTrue();
     }
 

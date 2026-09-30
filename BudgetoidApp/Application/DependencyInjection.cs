@@ -43,6 +43,7 @@ using Application.Transactions.DeleteTransaction;
 using Application.Transactions.GetTransaction;
 using Application.Transactions.GetTransactions;
 using Application.Transactions.UpdateTransaction;
+using Application.Users.ChangeEmail;
 using Application.Users.EraseAccount;
 using Application.Users.ExportData;
 using Application.Users.GetSignedInUser;
@@ -87,6 +88,7 @@ public static class DependencyInjection
         services.AddScoped<ExportDataHandler>();
         services.AddScoped<GetSignedInUserHandler>();
         services.AddScoped<ListCredentialsHandler>();
+        services.AddScoped<ChangeEmailHandler>();
         services.AddScoped<GetAccountKeysHandler>();
         services.AddScoped<RevokeSessionsForCredentialHandler>();
         services.AddScoped<AuthenticateSessionHandler>();

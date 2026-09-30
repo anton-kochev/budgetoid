@@ -145,7 +145,7 @@ public static class NeverLoggedColumns
         NeverLoggedColumn.Identifying(
             "users",
             "email",
-            "the address a person registered with, which is the person rather than a fact about them: "
+            "the address a person's account holds, which is the person rather than a fact about them: "
             + "it reaches them directly, it is the same string at every other service they use, and it "
             + "is the key anybody holding a log would join on. It is exported because the export goes "
             + "to them; a log record goes to whoever operates, ships and reads the logs, and none of "

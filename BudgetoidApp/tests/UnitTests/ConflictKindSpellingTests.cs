@@ -131,6 +131,8 @@ public sealed class ConflictKindSpellingTests
         new(ConflictKind.RotationIncomplete, "rotation_incomplete"),
         new(ConflictKind.RotationAlreadyCompleted, "rotation_already_completed"),
         new(ConflictKind.RotationNameCollision, "rotation_name_collision"),
+        new(ConflictKind.ProviderIdentityInUse, "provider_identity_in_use"),
+        new(ConflictKind.AccountIdentityMoved, "account_identity_moved"),
     ];
 
     [Test]

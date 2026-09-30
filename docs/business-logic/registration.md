@@ -33,8 +33,9 @@ credential opens lives in [sessions.md](sessions.md). This file covers **the act
 the order its checks run in, and the one value it derives rather than chooses.
 
 **This is the only way an account comes to exist**, so every invariant below, stated as what **this
-path** establishes, is also a claim about every account in the schema — nothing else writes a `users`
-row.
+path** establishes, is also a claim about every account in the schema — nothing else inserts a
+`users` row. The email change updates one column of an existing row, and creates nothing — see
+[email-change.md](email-change.md).
 
 **The two sides of the path meet, and this is the one write path in the product where they do.** The
 `/register` screen runs the ceremony, draws the account's keys, mints the set, mints a keypair for
@@ -75,7 +76,8 @@ the screen looks like is the **Registration** chapter of [components.md](../desi
 - **`RegistrationClaimGate`** — the `IEndpointFilter` on the group that judges `sub`, `email` and
   `email_verified`, with a distinct title for each of its two refusals. It carries no value out: the
   route delegate reads the two claim members off the principal itself, so nothing plumbed through
-  the filter can disagree with what the handler is given.
+  the filter can disagree with what the handler is given. The three checks are `ProviderClaims`',
+  shared with the email change's `ProviderAuthorizationGate`; the titles are this filter's.
 - **`RegistrationResponse`** — one member, describing the sign-in:
   `{"session": {"kind": "full", "expiresAtUtc": …}}`. Nested rather than flattened, so widening it
   later cannot produce "kind present, expiry absent".
@@ -120,13 +122,18 @@ the *set*, so it is authenticated once.
     of the **fallback** policy and therefore out of `FullSessionRequirement`, which is correct
     rather than worked around: this caller holds no session, so a rule about what kind of session
     may read budget content has nothing to judge.
-    - **This policy is the only reason `JwtBearer` is still registered.** Nothing defaults to it and
-      no other route names it, so a provider bearer presented anywhere else authenticates nothing.
+    - **This is the one policy that names `JwtBearer`, and one other reader reaches it.** Nothing
+      defaults to it and no other policy names it. `POST /api/me/email-change` authenticates a
+      provider token too, but through `ProviderAuthorizationGate`, a filter that calls the scheme
+      itself **beside** a full session and never instead of one — see
+      [email-change.md](email-change.md). A provider bearer presented to any other route
+      authenticates nothing.
   - **Enforced in**: `RegistrationEndpoints`, one `RequireAuthorization` call on the group, over
     `ProviderAuthentication.SchemeName` — a name rather than the `JwtBearer` literal, because "did
     the provider vouch for this caller?" and "which handler validates the bearer" are the same value
-    only until sign-in leaves the identity provider. `RegistrationRouteTests` reads the group's
-    scheme off the route table.
+    only until sign-in leaves the identity provider.
+    `RegistrationRouteTests.TheProviderScheme_IsReachedByExactlyTheRegistrationRoutesAndTheEmailChange`
+    reads the group's scheme off the route table, and the email change's marker beside it.
 
 - **Both routes MUST carry `RegistrationClaimGate`, declared on the group.**
   - **Why**: the policy says which scheme may speak for this caller; the gate says what that scheme
@@ -338,8 +345,11 @@ the *set*, so it is authenticated once.
     deserialization failure is a fact about the caller's own request.
 - **Enforced in**: `RegistrationEndpoints`, on the group — one `RequireAuthorization` naming the
   provider scheme and one `AddEndpointFilter<RegistrationClaimGate>()`. `RegistrationClaimGateTests`
-  is now the only thing holding the two claim rules; it stayed green through the middleware's
-  deletion, which is what proved the filter was carrying them rather than duplicating them.
+  is the only thing holding the two claim rules **on this group**; it stayed green through the
+  middleware's deletion, which is what proved the filter was carrying them rather than duplicating
+  them. The checks themselves now live in `ProviderClaims`, which the email change's gate calls too,
+  so `EmailChangeEndpointTests` reaches the same three rules through the other gate — see
+  [email-change.md](email-change.md).
 - **Source**: `[SOURCE: discussion]`
 
 ---
@@ -696,8 +706,9 @@ the *set*, so it is authenticated once.
 
 - **Rule**: **The identity provider's redirect lands on `/register`, and the matching entry in the
   Google Cloud console's authorized redirect URIs is part of that change.**
-- **Why**: the registration screen is the only surface that can do anything with a fresh provider
-  token — it reads the asserted address off the id token **while that token is still valid**, and
+- **Why**: the registration screen is the only screen that does anything with a fresh provider token
+  — the email-change route takes one as well, and no screen calls it yet. It reads the asserted
+  address off the id token **while that token is still valid**, and
   both legs authenticate as the provider scheme and nothing else. The validity clause is
   load-bearing: `AuthService.providerEmail` answers `null` for a token whose hour has run out, which
   is what puts the screen back on its **Continue with Google** arm instead of showing an address

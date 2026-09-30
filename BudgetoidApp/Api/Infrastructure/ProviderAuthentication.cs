@@ -19,7 +19,9 @@ namespace Api.Infrastructure;
 /// <b>This constant survives the day the registration under it does not.</b> Sign-in has already left
 /// the identity provider: the session cookie is the default scheme and the fallback policy names it, so
 /// the <c>JwtBearer</c> registration is now reached by exactly one policy — the registration group's,
-/// through this name. What registration still needs is a way to say "the provider vouched for this
+/// through this name — and otherwise only by <see cref="ProviderAuthorizationGate" />, which
+/// authenticates it through this name as a second proof beside a session and never as the request's
+/// identity. What registration still needs is a way to say "the provider vouched for this
 /// caller", and if that ever becomes a claim gate rather than a scheme, this is the name it will be
 /// reached through, so the route table does not have to be edited in the same commit that deletes a
 /// handler.

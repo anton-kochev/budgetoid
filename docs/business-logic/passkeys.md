@@ -221,7 +221,9 @@ erDiagram
     accountable.
     - **The company the grant keeps.** `webauthn_challenges` is one of the four identity tables
       holding `DELETE`. The others are `users`, the root every owned row cascades from;
-      `credentials`, which holds it for **revocation** rather than erasure
+      `credentials`, which holds it for **removing one credential** — revocation, replacing a
+      recovery-code set, and retiring the federated credential on an email change — rather than
+      erasure
       ([ADR 0014](../decisions/0014-scope-the-credential-delete-in-the-application.md)); and
       `recovery_code_hashes`, whose grant rests on **this** table's sentence word for word
       ([ADR 0017](../decisions/0017-consume-a-recovery-code-by-deleting-its-row.md)). Two of the
@@ -266,6 +268,15 @@ erDiagram
   - **Enforced in**: every refusal — unknown credential, bad signature, wrong origin, consumed or
     expired challenge, counter regression, user-handle mismatch — produces a byte-identical 401,
     pinned by the two "every reachable refusal" tests.
+  - **The body carries one extension, and it is a constant**: `refusal: "assertion"`, written by
+    `PasskeyVerificationExceptionHandler` for **every** passkey refusal in the product, sign-in
+    included. It names which *proof* failed and never why, so every refusal is still the same bytes
+    as every other and the oracle stays closed. It exists for the email change, where a `401` can
+    also mean the provider token was refused (`provider_token`, `email_unverified`) and a client has
+    to tell "retry the passkey" from "sign in to Google again" — see
+    [email-change.md](email-change.md).
+    `PasskeyCeremonyTests.EveryReachableAssertionRefusal_ProducesTheIdenticalResponse` reads it off
+    the one body every sign-in refusal shares.
 
 ## Business Rules & Invariants
 
@@ -485,6 +496,8 @@ erDiagram
   `ErasureReauthenticationTests.Erasure_WithAnotherAccountsPasskey_IsRefusedAndErasesNeitherAccount`
   asserts **both** accounts survive; the "Neither" is the point, because the wrong design damages
   one of each.
+  `EmailChangeEndpointTests.EmailChange_WithAnotherAccountsPasskey_IsRefused401Assertion_AndChangesNeitherAccount`
+  holds the same on the email change.
 - **Source**: `[SOURCE: user-story]`
 
 ---
@@ -744,8 +757,10 @@ factor, and an account identifier derived from the challenge it just spent —
   capability: it is gated by a fresh re-authentication exactly as erasure is, and this client
   already runs that ceremony — what holds the Revoke control off is the confirmation step it is
   specified to have and nothing has built, which the screen says above the list. See
-  [components.md](../design/components.md). Nothing **replaces** a passkey, and nothing removes or replaces the **federated** credential —
-  that is the email change, and it is not built.
+  [components.md](../design/components.md). Nothing **replaces** a passkey. The **federated**
+  credential is replaced by `POST /api/me/email-change`, which retires it and files a new one in
+  one save when the Google identity moves, behind this file's re-authentication ceremony — a route
+  the server answers and no screen calls yet; see [email-change.md](email-change.md).
   - **The browser runs one more ceremony than the server has pools for, and it spends none of
     them.** `deriveKeyFromLocalAssertion` on the same service is what the Account keys section of
     `/app/settings` runs to obtain a key-encryption key for an unlock: it mints its own 32-byte
@@ -778,10 +793,14 @@ factor, and an account identifier derived from the challenge it just spent —
     strength precisely: `Credential.CreateFederated` and `Credential.CreatePasskey` are both public,
     so the lookup is not the only source of an instance. What holds is that both factories mint
     their own id, so a fabricated `Credential` cannot name an existing row — and that adding a
-    source which *can* means adding a query to `PasskeyRepository`.
+    source which *can* means adding a query to a repository. The email change's delete is the same
+    shape: `EmailChangeRepository.FindFederatedCredentialAsync(userId)` carries owner **and** type,
+    and the entity it loads is the one the save removes, watched by `EmailChangeRepositoryTests`'
+    `FindFederatedCredentialAsync_ReturnsOnlyThisAccountsFederatedCredential`.
 - **The re-authentication pool is one ceremony, not one per sensitive action.** Every act gated on
-  a fresh assertion spends it — erasure, passkey revocation, generating a set of recovery codes and
-  beginning a key rotation — and none can tell which act a given nonce was requested for. That is
+  a fresh assertion spends it — erasure, passkey revocation, generating a set of recovery codes,
+  beginning a key rotation and the email change — and none can tell which act a given nonce was
+  requested for. That is
   the design rather than a gap: each is an act a stolen session must not be able to take, and each
   is reachable only by the account holder. If two sensitive actions ever need telling apart, the
   split is a new **ceremony value** — never a column on `webauthn_challenges`, which the pinned
