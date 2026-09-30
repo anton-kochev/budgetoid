@@ -656,8 +656,9 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
   afterwards. `RlsIsolationTests.Database_RefusesToDeleteAnotherUsersRow_WhileStillAllowingItsOwn`
   pins that the grant is tenant-scoped — a foreign row reports **zero rows affected**, not `42501`,
   which is the policy holding rather than the grant matrix.
-  `AppRoleGrantMatrixTests.AppRoleGrants_MatchTheDeclaredMatrix` pins the whole privilege set in
-  both directions.
+  `AppRoleGrantMatrixTests.AppRoleGrants_MatchTheDeclaredMatrix` pins the written privilege set in
+  both directions, and `AppRoleEffectivePrivileges_MatchTheDeclaredMatrix` beside it the set the
+  role can exercise however it came to hold it.
   - **Its caller is the erasure endpoint.** `POST /api/me/erasure` reaches this grant through
     `EraseAccountHandler` and `IUserRepository.DeleteAsync`, and the id it deletes is read from
     `IUserContext` rather than from the route or the body. `EraseAccountCommand` carries the

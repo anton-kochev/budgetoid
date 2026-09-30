@@ -1,8 +1,18 @@
 -- Provisions the least-privilege application role and its exact grant matrix. Idempotent by
 -- design: the test hosts run it on every container, local dev runs it on every boot, and
--- production re-runs it on every deploy. Each table's block REVOKEs the role's privileges
--- before re-granting, so a re-run converges the role to exactly what is written here —
--- removing a line removes the privilege on the next run instead of leaving it behind.
+-- production re-runs it on every deploy. Before any table block runs, the role's privileges on
+-- every table and every sequence in schema public are REVOKEd, so a re-run converges the role's
+-- own grants there to exactly what is written here — removing a line removes the privilege on
+-- the next run instead of leaving it behind, and a relation with no block of its own keeps
+-- nothing. The database block below does the same for the database itself, where the role holds
+-- CONNECT alone, and holds it through PUBLIC.
+--
+-- Converging has two limits, and neither is closed here. A REVOKE is performed as the object's
+-- owner, even when a superuser sends it, and takes back only the entries the owner made: a grant to
+-- budgetoid_app by a third role holding a grant option survives every run (measured on
+-- postgres:17.10). And no line here names a schema other than public, so nothing is taken back
+-- there. DeploymentDatabaseProvisioning.VerifyAppRoleReachAsync refuses both after this script
+-- runs, naming the object and, for the first, the grantor.
 --
 -- PostgreSQL column privileges are ADDITIVE. REVOKE UPDATE (col) ON t cannot subtract a
 -- column from a table-wide GRANT UPDATE ON t — it only removes a previously granted
@@ -11,9 +21,10 @@
 -- column-list grant into a table-wide one: that silently re-opens every immutability hole
 -- the list exists to close.
 --
--- Grants name every table explicitly, so a new table is invisible to the role until someone
--- grants it here. That is intended (fail-closed): when a new feature fails with 42501, add
--- the narrowest grant it needs to this file — never GRANT ALL.
+-- Grants name every table explicitly, and the blanket REVOKE below takes back any grant on a
+-- table this file does not name, so a new table is invisible to the role until someone grants it
+-- here. That is intended (fail-closed): when a new feature fails with 42501, add the narrowest
+-- grant it needs to this file — never GRANT ALL.
 
 -- The role is created WITHOUT a credential, and this file contains no secret of any kind. How
 -- budgetoid_app proves who it is differs per environment and is attached separately: in
@@ -37,8 +48,58 @@ BEGIN
 END
 $provision$;
 
+-- The database itself: the role holds CONNECT and nothing else, and it holds CONNECT through
+-- PUBLIC rather than through a grant of its own. That is the one privilege on this file's list
+-- that no line of it grants, so it is written down here instead of being left to the default.
+--
+-- A new database's ACL is NULL, and PostgreSQL reads a NULL ACL as PUBLIC holding CONNECT and
+-- TEMPORARY. Every role inherits PUBLIC, so without this block budgetoid_app could create a
+-- temporary table: a place to put rows that no grant, no policy and no census in this repository
+-- describes, and a privilege NFR-006 says the role does not have. TEMPORARY is therefore taken
+-- from PUBLIC. CONNECT stays with PUBLIC on purpose: revoking it would lock out every principal
+-- that connects by the default — the Entra administrator, the platform's own roles — and granting
+-- it back to each one is a list this file would then have to know and keep right.
+--
+-- The second statement is the convergence contract the table blocks keep, applied one level up:
+-- revoking from PUBLIC leaves a direct grant to budgetoid_app standing (measured on postgres:17 —
+-- has_database_privilege still answered TEMPORARY after the PUBLIC revoke alone), so the role's own
+-- grants on the database are revoked too. REVOKE ALL rather than TEMPORARY alone, because a direct
+-- CREATE would let the role make schemas; the role keeps CONNECT through PUBLIC either way.
+--
+-- The database is named by current_database() rather than spelled out because its name is not
+-- fixed per environment, and REVOKE takes no expression — hence the DO block and format(%I).
+--
+-- WHAT THIS CANNOT DO, measured on postgres:17 as a non-superuser CREATEROLE role that does not own
+-- the database: both statements answer WARNING 01006 "no privileges could be revoked" and change
+-- nothing. That is a warning, not an error — the script carries on, the deploy reports success, and
+-- the role keeps TEMPORARY. REVOKE on a database is the owner's act (or a holder of the grant
+-- option's, for its own grants only), so the same limit covers a grant a third role made: the
+-- owner's REVOKE leaves it standing. Whether the deploying administrator owns the database on Azure
+-- Flexible Server has not been measured. Nothing in this script turns that silence into a refusal;
+-- the deploy does, after the script: DeploymentDatabaseProvisioning.VerifyAppRoleReachAsync reads
+-- the database's effective ACL for budgetoid_app, PUBLIC and any role it is a member of, and refuses
+-- CREATE, TEMPORARY or any grant option there, naming the database.
+DO $database$
+BEGIN
+    EXECUTE format('REVOKE TEMPORARY ON DATABASE %I FROM PUBLIC', current_database());
+    EXECUTE format('REVOKE ALL ON DATABASE %I FROM budgetoid_app', current_database());
+END
+$database$;
+
 -- USAGE only: the role can resolve objects in the schema but cannot CREATE new ones.
 GRANT USAGE ON SCHEMA public TO budgetoid_app;
+
+-- Every relation in public, before any block below grants anything back. The per-table REVOKEs
+-- only reach the tables they name, so without these two lines a grant on a table with no block, a
+-- view, a materialized view or a sequence would survive every run. ALL TABLES covers views and
+-- materialized views as well as tables; sequences need a statement of their own (both measured on
+-- postgres:17.10). A table-level REVOKE ALL takes that table's column grants with it.
+--
+-- The REVOKE ALL ON <table> line at the head of every block below is now redundant with these two,
+-- and it stays: each one states that block's intent — this table's privileges are exactly the lines
+-- that follow — where a reader deciding a grant is looking, and the block reads whole on its own.
+REVOKE ALL ON ALL TABLES IN SCHEMA public FROM budgetoid_app;
+REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM budgetoid_app;
 
 -- currencies: reference data seeded by the migration; the application only reads it.
 REVOKE ALL ON currencies FROM budgetoid_app;

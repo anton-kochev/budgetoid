@@ -224,7 +224,10 @@ because every one of these is something a reader will otherwise simplify away.
   [ADR 0004](docs/decisions/0004-connect-as-a-least-privilege-role.md)
 - **Immutable columns are enforced by omission from a `GRANT UPDATE` column list** — never by
   `REVOKE`, never widened to table-wide. Grants and policies live in
-  `Infrastructure/Persistence/Provisioning/app-role-grants.sql`, never in a migration.
+  `Infrastructure/Persistence/Provisioning/app-role-grants.sql`, never in a migration. The deploy
+  refuses any reach a re-run of that script cannot take back, and omission holds only while no
+  trigger, rule or foreign-key action writes the column — `ImmutableColumnRewritePathTests`.
+  [ADR 0026](docs/decisions/0026-verify-at-deploy-the-reach-the-grant-script-cannot-take-back.md)
 - **In production the app role has no password** — the missing `Password=` is what makes Aspire
   fetch an Entra token for the API's managed identity. Do not "complete" it.
   [ADR 0007](docs/decisions/0007-authenticate-to-postgres-with-managed-identity.md)

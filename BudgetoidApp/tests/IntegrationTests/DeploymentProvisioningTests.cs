@@ -276,6 +276,71 @@ public sealed class DeploymentProvisioningTests
     private const string UnreachableAdminConnectionString =
         "Host=127.0.0.1;Port=1;Username=postgres;Password=postgres;Database=budgetoid;Timeout=2";
 
+    /// <summary>
+    /// The database privileges the application role is meant to hold, and all of them: CONNECT, and
+    /// nothing else. It arrives through PUBLIC rather than through a grant, and stays there by
+    /// decision — revoking CONNECT from PUBLIC would also shut out every principal that relies on it.
+    /// </summary>
+    /// <remarks>
+    /// A literal for the reason <see cref="BudgetIsolationPolicy" /> gives: an expectation read out of
+    /// <c>app-role-grants.sql</c> would agree with the script by construction.
+    /// </remarks>
+    private static readonly string[] DeclaredDatabasePrivileges = ["CONNECT"];
+
+    /// <summary>
+    /// Every privilege a database has, in the spelling <c>has_database_privilege</c> takes, plus each
+    /// one's grant option. The grant options are asked about separately because holding one is a
+    /// second privilege — the power to hand the first to somebody else.
+    /// </summary>
+    private static readonly string[] DatabasePrivileges =
+    [
+        "CONNECT",
+        "CREATE",
+        "TEMPORARY",
+        "CONNECT WITH GRANT OPTION",
+        "CREATE WITH GRANT OPTION",
+        "TEMPORARY WITH GRANT OPTION",
+    ];
+
+    /// <summary>
+    /// A database name no line of the grant script could spell, so a script that hard-coded the
+    /// container's <c>budgetoid</c> revokes on the wrong database.
+    /// </summary>
+    private const string RenamedDatabase = "deploy_target";
+
+    /// <summary>What the missing-role sabotage renames the application role to.</summary>
+    private const string RenamedAppRole = "budgetoid_app_renamed_away";
+
+    /// <summary>
+    /// A predefined role whose membership reaches every table at once, used by the membership
+    /// sabotage.
+    /// </summary>
+    private const string PredefinedWriteRole = "pg_write_all_data";
+
+    /// <summary>A table the ownership sabotage creates and hands to the application role.</summary>
+    private const string AppOwnedTable = "sabotage_owned";
+
+    /// <summary>
+    /// The table the PUBLIC-grant sabotages aim at. budgets, because its UPDATE grant is one column
+    /// wide, so any wider UPDATE on it is a widening by definition.
+    /// </summary>
+    private const string PublicGrantTable = "budgets";
+
+    /// <summary>
+    /// A budgets column immutable by omission from the script's column list, used by the
+    /// column-level sabotages. Distinctive enough that a problem naming it cannot do so by accident.
+    /// </summary>
+    private const string ImmutableColumn = "base_currency_code";
+
+    /// <summary>A superuser-only parameter the parameter-grant sabotage grants SET on.</summary>
+    private const string GrantedParameter = "session_replication_role";
+
+    /// <summary>A function created with no grant, so its ACL is NULL.</summary>
+    private const string DefaultCallableFunction = "sabotage_callable";
+
+    /// <summary>A function whose EXECUTE is taken from PUBLIC and granted to the role by name.</summary>
+    private const string GrantedCallableFunction = "sabotage_granted_callable";
+
     [Test]
     public async Task ProvisionAsync_OnEmptyDatabase_MigratesSchemaAndCreatesCredentialFreeRole()
     {
@@ -440,6 +505,1168 @@ public sealed class DeploymentProvisioningTests
         // it, a discovery query that lost its user_id branch would still pass every line above.
         await Assert.That(tables.Select(entry => entry.RequiredPolicy).Distinct().Order().ToList())
             .IsEquivalentTo(new[] { BudgetIsolationPolicy, UserIsolationPolicy });
+    }
+
+    [Test]
+    public async Task ProvisionAsync_LeavesTheAppRoleExactlyTheDeclaredDatabasePrivileges()
+    {
+        // Arrange — a database created here under a name no line of the grant script could spell,
+        // and provisioned instead of the container's own. The container's database is called
+        // budgetoid, so on it a script that hard-coded REVOKE ... ON DATABASE budgetoid would pass
+        // for one that names current_database(); on this one it revokes on the wrong database and
+        // leaves TEMPORARY standing here.
+        //
+        // The new database's ACL is NULL, which is the state that hands PUBLIC both CONNECT and
+        // TEMPORARY. It is made from template1 and is not a copy of template1's ACL — measured on
+        // postgres:17: template1 carries {=c/postgres,postgres=CTc/postgres}, a database created
+        // from it carries NULL, because CREATE DATABASE does not copy the template's ACL. The
+        // precondition is read rather than trusted.
+        await using PostgreSqlContainer container = await StartBareContainerAsync();
+        await using (NpgsqlConnection maintenance = await OpenAdminOnPostgresDatabaseAsync(container))
+        {
+            await ExecuteAsync(maintenance, $"create database {RenamedDatabase}");
+        }
+
+        string targetConnectionString = BuildConnectionStringFor(container, RenamedDatabase);
+        await using NpgsqlConnection admin = new(targetConnectionString);
+        await admin.OpenAsync();
+        bool aclWasDefault = await DatabaseAclIsDefaultAsync(admin);
+
+        // Act
+        await DeploymentDatabaseProvisioning.ProvisionAsync(targetConnectionString);
+
+        bool provisionedHere = await TableExistsAsync(admin, MigratedTable);
+
+        // Effective privileges, not grants. has_database_privilege folds in what PUBLIC holds, which
+        // is the whole subject: the role holds TEMPORARY through PUBLIC unless the script takes it
+        // from PUBLIC, and a read of the role's own grants would call that clean.
+        IReadOnlyList<string> held =
+            await ReadDatabasePrivilegesAsync(admin, DatabaseProvisioning.AppRoleName);
+        List<string> unexpected = held.Except(DeclaredDatabasePrivileges).ToList();
+        List<string> missing = DeclaredDatabasePrivileges.Except(held).ToList();
+
+        // Where CONNECT comes from, which the effective set cannot tell. REVOKE ALL FROM PUBLIC plus
+        // GRANT CONNECT TO budgetoid_app leaves the role holding exactly CONNECT, and it is not the
+        // decision: CONNECT stays with PUBLIC so every principal that connects by the default keeps
+        // connecting, and the role holds no grant of its own on the database. So PUBLIC is read the
+        // same way the role is, and the role's own ACL entries are read raw.
+        IReadOnlyList<string> heldByPublic = await ReadDatabasePrivilegesAsync(admin, "public");
+        List<string> publicUnexpected = heldByPublic.Except(DeclaredDatabasePrivileges).ToList();
+        List<string> publicMissing = DeclaredDatabasePrivileges.Except(heldByPublic).ToList();
+        IReadOnlyList<string> directGrants = await ReadAppRoleDirectDatabaseGrantsAsync(admin);
+
+        // The consequence, read on the connection the application actually uses. It is the same
+        // server-side check as the catalog read above, so it is not a second witness to the ACL; it
+        // is here because it pins that the database this test reads is the database the role
+        // connects to, and because a temporary table is the thing NFR-006 is actually about — a role
+        // that can make one has a place to put rows no grant in this repository describes.
+        await DatabaseProvisioning.AttachAppRolePasswordAsync(
+            targetConnectionString, AppRolePassword);
+        string? tempTableSqlState = await TryCreateTempTableAsAppRoleAsync(targetConnectionString);
+
+        // Assert — the preconditions first, so a red below cannot be a database that started out
+        // already locked down, or a provisioning run that went to the container's own database.
+        // Then each direction as its own named list, so a failure says which privilege is extra and
+        // which is gone rather than that two sets differ.
+        await Assert.That(aclWasDefault).IsTrue();
+        await Assert.That(provisionedHere).IsTrue();
+        await Assert.That(unexpected).IsEmpty();
+        await Assert.That(missing).IsEmpty();
+        await Assert.That(publicUnexpected).IsEmpty();
+        await Assert.That(publicMissing).IsEmpty();
+        await Assert.That(directGrants).IsEmpty();
+
+        // 42501, insufficient_privilege. Measured: "permission denied to create temporary tables in
+        // database".
+        await Assert.That(tempTableSqlState).IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+    }
+
+    [Test]
+    public async Task VerifyAppRoleReachAsync_OnAFreshlyProvisionedDatabase_DoesNotThrow()
+    {
+        // Arrange — provisioning and nothing else. This is the control for every refusal below, and
+        // it is green on a verifier that checks nothing; that is expected. What it stops is the
+        // opposite cheat: a verifier that refuses everything would turn every sabotage test green,
+        // and only a clean database that it must accept separates "found the widening" from
+        // "refuses whatever it is shown". It also pins that the rules below are not tripped by
+        // something provisioning itself leaves behind.
+        await using PostgreSqlContainer container = await StartBareContainerAsync();
+        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+
+        // Act
+        List<string> logLines = [];
+        InvalidOperationException? caught =
+            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+
+        // Assert — nothing thrown at all, rather than no AppRoleReachException in particular: any
+        // refusal of a clean database is the failure this test exists to catch.
+        await Assert.That(caught).IsNull();
+        await Assert.That(logLines).IsNotEmpty();
+    }
+
+    [Test]
+    [Arguments("BYPASSRLS", "rolbypassrls")]
+    [Arguments("CREATEDB", "rolcreatedb")]
+    [Arguments("CREATEROLE", "rolcreaterole")]
+    [Arguments("REPLICATION", "rolreplication")]
+    [Arguments("SUPERUSER", "rolsuper")]
+    public async Task VerifyAppRoleReachAsync_AppRoleGivenAnElevatedAttribute_ThrowsNamingTheAttribute(
+        string attribute,
+        string catalogColumn)
+    {
+        // Arrange — one role attribute switched on. None of these is a grant, so nothing the grant
+        // script REVOKEs touches it, and a non-superuser CREATEROLE admin cannot switch BYPASSRLS or
+        // SUPERUSER back off even if the script tried. BYPASSRLS is the sharp one: every isolation
+        // policy stays present, enabled and correct in the catalog, and none of them applies to the
+        // role any more.
+        await using PostgreSqlContainer container = await StartBareContainerAsync();
+        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+
+        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await ExecuteAsync(admin, $"alter role {DatabaseProvisioning.AppRoleName} {attribute}");
+        bool attributeSet = await ReadAppRoleFlagAsync(admin, catalogColumn);
+
+        // Act
+        List<string> logLines = [];
+        InvalidOperationException? caught =
+            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+
+        // Assert — the sabotage took, then the refusal names the attribute by its SQL keyword.
+        await Assert.That(attributeSet).IsTrue();
+        await Assert.That(caught).IsTypeOf<AppRoleReachException>();
+        await Assert.That(ProblemsNaming(caught, attribute)).IsNotEmpty();
+        await Assert.That(logLines).IsNotEmpty();
+    }
+
+    [Test]
+    public async Task VerifyAppRoleReachAsync_AppRoleUnableToLogIn_ThrowsNamingLogin()
+    {
+        // Arrange — NOLOGIN. The script converges this one on a re-run (ALTER ROLE ... WITH LOGIN),
+        // so it is the verifier called directly that has to see it: a role that cannot log in is not
+        // the role the API connects as, and a snapshot describing it describes the wrong thing.
+        await using PostgreSqlContainer container = await StartBareContainerAsync();
+        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+
+        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await ExecuteAsync(admin, $"alter role {DatabaseProvisioning.AppRoleName} nologin");
+        bool canLogin = await ReadAppRoleFlagAsync(admin, "rolcanlogin");
+
+        // Act
+        List<string> logLines = [];
+        InvalidOperationException? caught =
+            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+
+        // Assert — "LOGIN" covers both spellings an implementer would reach for, NOLOGIN and LOGIN.
+        await Assert.That(canLogin).IsFalse();
+        await Assert.That(caught).IsTypeOf<AppRoleReachException>();
+        await Assert.That(ProblemsNaming(caught, "LOGIN")).IsNotEmpty();
+    }
+
+    [Test]
+    public async Task VerifyAppRoleReachAsync_AppRoleMissing_ThrowsNamingTheRole()
+    {
+        // Arrange — provisioned, then the role renamed away, so no role called budgetoid_app exists.
+        // Discovery then reads null attributes and empty lists everywhere, and an implementation that
+        // reads "nothing found" as "nothing wrong" certifies a role that is not there.
+        await using PostgreSqlContainer container = await StartBareContainerAsync();
+        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+
+        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await ExecuteAsync(
+            admin, $"alter role {DatabaseProvisioning.AppRoleName} rename to {RenamedAppRole}");
+        (bool roleExists, _, _) = await ReadAppRoleAsync(admin);
+
+        // Act
+        List<string> logLines = [];
+        InvalidOperationException? caught =
+            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+
+        // Assert — the missing-role sentence itself, and nothing beside it. The role's name alone
+        // would be satisfied by any other rule's sentence, since every one names the role; and a
+        // second problem would mean the verifier went on to judge empty lists as if a role were
+        // there, which is the "nothing found" reading this test exists to refuse.
+        await Assert.That(roleExists).IsFalse();
+        await Assert.That(caught).IsTypeOf<AppRoleReachException>();
+        await Assert.That(
+                ProblemsNaming(caught, $"No role named {DatabaseProvisioning.AppRoleName} exists"))
+            .IsNotEmpty();
+        await Assert.That(((AppRoleReachException)caught!).Problems.Count).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task VerifyAppRoleReachAsync_AppRoleMadeAMemberOfAPredefinedRole_ThrowsNamingTheRole()
+    {
+        // Arrange — membership in pg_write_all_data, which carries INSERT, UPDATE and DELETE on every
+        // table in the database. Membership is not a privilege on any table, so the script's
+        // per-table REVOKE ALL leaves it standing and every column-list grant in the file becomes
+        // decoration. The rule reads pg_auth_members.member = the role; the reverse direction is the
+        // creator's automatic membership on PostgreSQL 16+ and is pinned harmless in
+        // NonSuperuserDeploymentProvisioningTests.
+        await using PostgreSqlContainer container = await StartBareContainerAsync();
+        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+
+        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await ExecuteAsync(
+            admin, $"grant {PredefinedWriteRole} to {DatabaseProvisioning.AppRoleName}");
+        bool isMember = await ScalarBoolAsync(
+            admin,
+            $"select pg_has_role('{DatabaseProvisioning.AppRoleName}', '{PredefinedWriteRole}', "
+            + "'MEMBER')");
+
+        // Act
+        List<string> logLines = [];
+        InvalidOperationException? caught =
+            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+
+        // Assert
+        await Assert.That(isMember).IsTrue();
+        await Assert.That(caught).IsTypeOf<AppRoleReachException>();
+        await Assert.That(ProblemsNaming(caught, PredefinedWriteRole)).IsNotEmpty();
+    }
+
+    [Test]
+    public async Task VerifyAppRoleReachAsync_CreateOnSchemaPublic_ThrowsNamingTheSchemaAndCreate()
+    {
+        // Arrange — CREATE on the schema. The script only ever GRANTs USAGE there and never REVOKEs,
+        // so this survives every re-run, and it hands the role a place to make tables it owns — and
+        // an owner is not subject to row-level security.
+        await using PostgreSqlContainer container = await StartBareContainerAsync();
+        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+
+        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await ExecuteAsync(
+            admin, $"grant create on schema public to {DatabaseProvisioning.AppRoleName}");
+        bool holdsCreate = await ScalarBoolAsync(
+            admin,
+            $"select has_schema_privilege('{DatabaseProvisioning.AppRoleName}', 'public', 'CREATE')");
+
+        // Act
+        List<string> logLines = [];
+        InvalidOperationException? caught =
+            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+
+        // Assert
+        await Assert.That(holdsCreate).IsTrue();
+        await Assert.That(caught).IsTypeOf<AppRoleReachException>();
+        await Assert.That(ProblemsNaming(caught, "public", "CREATE")).IsNotEmpty();
+    }
+
+    [Test]
+    public async Task VerifyAppRoleReachAsync_CreateOnAnotherSchema_ThrowsNamingTheSchema()
+    {
+        // Arrange — CREATE on a schema the grant script never names. The schema rule reads every row
+        // of pg_namespace rather than public alone, and a rule narrowed to the one schema the script
+        // mentions passes this: the role can make tables it owns here just as well, and an owner is
+        // not subject to row-level security wherever the table lives.
+        const string schema = "sabotage_other_schema";
+        await using PostgreSqlContainer container = await StartBareContainerAsync();
+        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+
+        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await ExecuteAsync(admin, $"create schema {schema}");
+        await ExecuteAsync(
+            admin, $"grant create on schema {schema} to {DatabaseProvisioning.AppRoleName}");
+        bool holdsCreate = await ScalarBoolAsync(
+            admin,
+            $"select has_schema_privilege('{DatabaseProvisioning.AppRoleName}', '{schema}', "
+            + "'CREATE')");
+
+        // Act
+        List<string> logLines = [];
+        InvalidOperationException? caught =
+            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+
+        // Assert — "Schema <name>" rather than the bare name, so the sentence has to be the schema
+        // rule's and not some other rule that happens to mention it.
+        await Assert.That(holdsCreate).IsTrue();
+        await Assert.That(caught).IsTypeOf<AppRoleReachException>();
+        await Assert.That(ProblemsNaming(caught, $"Schema {schema}", "CREATE")).IsNotEmpty();
+    }
+
+    [Test]
+    public async Task VerifyAppRoleReachAsync_UsageOnSchemaPublicWithGrantOption_ThrowsNamingTheGrantOption()
+    {
+        // Arrange — the USAGE the script grants, re-granted WITH GRANT OPTION. The privilege itself
+        // is declared, so a rule reading only "which privileges" calls this clean; the grant option
+        // is the widening — the role may hand the schema to anybody. The script's plain GRANT USAGE
+        // does not take the option back.
+        await using PostgreSqlContainer container = await StartBareContainerAsync();
+        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+
+        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await ExecuteAsync(
+            admin,
+            $"grant usage on schema public to {DatabaseProvisioning.AppRoleName} with grant option");
+        bool holdsGrantOption = await ScalarBoolAsync(
+            admin,
+            $"select has_schema_privilege('{DatabaseProvisioning.AppRoleName}', 'public', "
+            + "'USAGE WITH GRANT OPTION')");
+
+        // Act
+        List<string> logLines = [];
+        InvalidOperationException? caught =
+            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+
+        // Assert — the schema, the privilege, and the words "grant option" in any case.
+        await Assert.That(holdsGrantOption).IsTrue();
+        await Assert.That(caught).IsTypeOf<AppRoleReachException>();
+        await Assert.That(
+                ProblemsWhere(
+                    caught,
+                    problem => problem.Contains("public", StringComparison.Ordinal)
+                        && problem.Contains("USAGE", StringComparison.Ordinal)
+                        && problem.Contains("grant option", StringComparison.OrdinalIgnoreCase)))
+            .IsNotEmpty();
+    }
+
+    [Test]
+    public async Task VerifyAppRoleReachAsync_DefaultPrivilegesGrantingTheAppRole_ThrowsNamingTheDefault()
+    {
+        // Arrange — a default privilege: it grants nothing that exists today and everything the
+        // schema owner creates next. The next migration's table then arrives with ALL for the role,
+        // column lists and all, before anybody writes a line of the grant script for it.
+        await using PostgreSqlContainer container = await StartBareContainerAsync();
+        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+
+        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await ExecuteAsync(
+            admin,
+            "alter default privileges in schema public grant all on tables to "
+            + DatabaseProvisioning.AppRoleName);
+        int defaultAclRows = await CountDefaultAclRowsAsync(admin);
+
+        // Act
+        List<string> logLines = [];
+        InvalidOperationException? caught =
+            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+
+        // Assert — "default" in any case, the grantee, and the schema the entry is limited to, in
+        // the clause the remedy has to carry: an ALTER DEFAULT PRIVILEGES … REVOKE without
+        // IN SCHEMA public names a different pg_default_acl row and leaves this one standing
+        // (measured on postgres:17.10).
+        await Assert.That(defaultAclRows).IsEqualTo(1);
+        await Assert.That(caught).IsTypeOf<AppRoleReachException>();
+        await Assert.That(
+                ProblemsWhere(
+                    caught,
+                    problem => problem.Contains("default", StringComparison.OrdinalIgnoreCase)
+                        && problem.Contains(
+                            DatabaseProvisioning.AppRoleName, StringComparison.Ordinal)
+                        && problem.Contains("IN SCHEMA public", StringComparison.Ordinal)))
+            .IsNotEmpty();
+    }
+
+    [Test]
+    public async Task VerifyAppRoleReachAsync_GlobalDefaultPrivilege_ThrowsNamingTheDefault()
+    {
+        // Arrange — a default privilege with no IN SCHEMA, which applies to tables the creator makes
+        // in any schema. pg_default_acl stores it with defaclnamespace 0, so a rule that joined
+        // pg_namespace with an inner join would drop the row, and a remedy that named a schema would
+        // leave it standing (measured on postgres:17.10: the IN SCHEMA public REVOKE ran, the row
+        // stayed, and the next table created answered SELECT for the role).
+        await using PostgreSqlContainer container = await StartBareContainerAsync();
+        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+
+        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await ExecuteAsync(
+            admin,
+            $"alter default privileges grant select on tables to {DatabaseProvisioning.AppRoleName}");
+        bool entryIsGlobal = await ScalarBoolAsync(
+            admin, "select bool_and(defaclnamespace = 0) and count(*) = 1 from pg_default_acl");
+
+        // Act
+        List<string> logLines = [];
+        InvalidOperationException? caught =
+            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+
+        // Assert — the default and the role are named, and no schema is, in either case.
+        await Assert.That(entryIsGlobal).IsTrue();
+        await Assert.That(caught).IsTypeOf<AppRoleReachException>();
+        await Assert.That(
+                ProblemsWhere(
+                    caught,
+                    problem => problem.Contains("default", StringComparison.OrdinalIgnoreCase)
+                        && problem.Contains(
+                            DatabaseProvisioning.AppRoleName, StringComparison.Ordinal)
+                        && !problem.Contains("IN SCHEMA", StringComparison.OrdinalIgnoreCase)))
+            .IsNotEmpty();
+    }
+
+    [Test]
+    public async Task VerifyAppRoleReachAsync_DefaultPrivilegesGrantingPublic_ThrowsNamingTheDefault()
+    {
+        // Arrange — the same default privilege aimed at PUBLIC, which the role inherits. A rule that
+        // filters pg_default_acl on the role's own name misses it.
+        await using PostgreSqlContainer container = await StartBareContainerAsync();
+        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+
+        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await ExecuteAsync(
+            admin, "alter default privileges in schema public grant select on tables to public");
+        int defaultAclRows = await CountDefaultAclRowsAsync(admin);
+
+        // Act
+        List<string> logLines = [];
+        InvalidOperationException? caught =
+            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+
+        // Assert — PUBLIC in capitals, the grantee's spelling, so the schema name "public" cannot
+        // satisfy it.
+        await Assert.That(defaultAclRows).IsEqualTo(1);
+        await Assert.That(caught).IsTypeOf<AppRoleReachException>();
+        await Assert.That(
+                ProblemsWhere(
+                    caught,
+                    problem => problem.Contains("default", StringComparison.OrdinalIgnoreCase)
+                        && problem.Contains("PUBLIC", StringComparison.Ordinal)))
+            .IsNotEmpty();
+    }
+
+    [Test]
+    public async Task VerifyAppRoleReachAsync_TableOwnedByTheAppRole_ThrowsNamingTheTable()
+    {
+        // Arrange — a table handed to the role. An owner is not subject to row-level security and
+        // may grant itself anything on what it owns, and REVOKE ALL ... FROM budgetoid_app does not
+        // take ownership away. The table is outside the grant script, so the script never sees it.
+        await using PostgreSqlContainer container = await StartBareContainerAsync();
+        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+
+        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await ExecuteAsync(admin, $"create table public.{AppOwnedTable} (id uuid primary key)");
+        await ExecuteAsync(
+            admin,
+            $"alter table public.{AppOwnedTable} owner to {DatabaseProvisioning.AppRoleName}");
+        bool ownedByTheRole = await ScalarBoolAsync(
+            admin,
+            $"select pg_get_userbyid(relowner) = '{DatabaseProvisioning.AppRoleName}' "
+            + $"from pg_class where oid = 'public.{AppOwnedTable}'::regclass");
+
+        // Act
+        List<string> logLines = [];
+        InvalidOperationException? caught =
+            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+
+        // Assert
+        await Assert.That(ownedByTheRole).IsTrue();
+        await Assert.That(caught).IsTypeOf<AppRoleReachException>();
+        await Assert.That(ProblemsNaming(caught, AppOwnedTable)).IsNotEmpty();
+    }
+
+    [Test]
+    [Arguments("UPDATE on a table")]
+    [Arguments("TRUNCATE on a table")]
+    [Arguments("DELETE on a table")]
+    [Arguments("INSERT on a table")]
+    [Arguments("TRIGGER on a table")]
+    [Arguments("REFERENCES on a table")]
+    [Arguments("MAINTAIN on a table")]
+    [Arguments("SELECT on a view")]
+    [Arguments("USAGE on a sequence")]
+    public async Task VerifyAppRoleReachAsync_PrivilegeOnARelationGrantedToPublic_ThrowsNamingTheRelation(
+        string sabotage)
+    {
+        // Arrange — a privilege on a relation in public, to PUBLIC. The script's REVOKE ALL … FROM
+        // budgetoid_app does not reach PUBLIC, and the role inherits PUBLIC. One row per privilege a
+        // table has (MAINTAIN is PostgreSQL 17's, and these containers are 17), so a rule that
+        // filtered the privilege type — on the reading that SELECT is harmless, or that only writes
+        // matter — goes red on the row it dropped. The view and sequence rows hold the relation kinds
+        // the rule reads beside tables; each is created here, because the migration makes neither.
+        const string view = "public.sabotage_public_view";
+        const string sequence = "public.sabotage_public_sequence";
+        (string[] SabotageSql, string Probe, string[] ExpectedTokens) arranged = sabotage switch
+        {
+            "SELECT on a view" => (
+                [$"create view {view} as select 1 as x", $"grant select on {view} to public"],
+                $"select has_table_privilege('public', '{view}', 'SELECT')",
+                [view, "SELECT", "PUBLIC"]),
+            "USAGE on a sequence" => (
+                [$"create sequence {sequence}", $"grant usage on sequence {sequence} to public"],
+                $"select has_sequence_privilege('public', '{sequence}', 'USAGE')",
+                [sequence, "USAGE", "PUBLIC"]),
+            _ when sabotage.EndsWith(" on a table", StringComparison.Ordinal) => TablePrivilege(
+                sabotage[..sabotage.IndexOf(' ', StringComparison.Ordinal)]),
+            _ => throw new ArgumentOutOfRangeException(nameof(sabotage), sabotage, null),
+        };
+        (string[] sabotageSql, string probe, string[] expectedTokens) = arranged;
+
+        await using PostgreSqlContainer container = await StartBareContainerAsync();
+        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+
+        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        foreach (string statement in sabotageSql)
+        {
+            await ExecuteAsync(admin, statement);
+        }
+
+        bool publicHoldsIt = await ScalarBoolAsync(admin, probe);
+
+        // Act
+        List<string> logLines = [];
+        InvalidOperationException? caught =
+            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+
+        // Assert
+        await Assert.That(publicHoldsIt).IsTrue();
+        await Assert.That(caught).IsTypeOf<AppRoleReachException>();
+        await Assert.That(ProblemsNaming(caught, expectedTokens)).IsNotEmpty();
+
+        static (string[], string, string[]) TablePrivilege(string privilege) => (
+            [$"grant {privilege.ToLowerInvariant()} on {PublicGrantTable} to public"],
+            $"select has_table_privilege('public', '{PublicGrantTable}', '{privilege}')",
+            [$"public.{PublicGrantTable}", privilege, "PUBLIC"]);
+    }
+
+    [Test]
+    public async Task VerifyAppRoleReachAsync_UpdateOnAColumnGrantedToPublic_ThrowsNamingTheColumn()
+    {
+        // Arrange — the same widening one level down: UPDATE on one immutable column, to PUBLIC. It
+        // lives in pg_attribute.attacl, not in pg_class.relacl, so a rule reading relation ACLs
+        // alone reads budgets as clean while the role can rewrite base_currency_code — a column
+        // immutable by omission from the script's column list.
+        await using PostgreSqlContainer container = await StartBareContainerAsync();
+        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+
+        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await ExecuteAsync(
+            admin, $"grant update ({ImmutableColumn}) on {PublicGrantTable} to public");
+        bool publicHoldsTableUpdate = await ScalarBoolAsync(
+            admin, $"select has_table_privilege('public', '{PublicGrantTable}', 'UPDATE')");
+        bool publicHoldsColumnUpdate = await ScalarBoolAsync(
+            admin,
+            $"select has_column_privilege('public', '{PublicGrantTable}', '{ImmutableColumn}', "
+            + "'UPDATE')");
+
+        // Act
+        List<string> logLines = [];
+        InvalidOperationException? caught =
+            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+
+        // Assert — the table-level read is asserted false first: that is what makes the column ACL
+        // the only place this grant can be seen.
+        await Assert.That(publicHoldsTableUpdate).IsFalse();
+        await Assert.That(publicHoldsColumnUpdate).IsTrue();
+        await Assert.That(caught).IsTypeOf<AppRoleReachException>();
+        await Assert.That(ProblemsNaming(caught, PublicGrantTable, ImmutableColumn)).IsNotEmpty();
+    }
+
+    [Test]
+    public async Task VerifyAppRoleReachAsync_SetOnAParameterGrantedToTheAppRole_ThrowsNamingTheParameter()
+    {
+        // Arrange — SET on session_replication_role, a superuser-only parameter. Set to replica it
+        // stops ordinary triggers firing for the session, and foreign keys are enforced by triggers.
+        // A parameter grant lives in pg_parameter_acl and nothing in the script names it.
+        await using PostgreSqlContainer container = await StartBareContainerAsync();
+        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+
+        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await ExecuteAsync(
+            admin,
+            $"grant set on parameter {GrantedParameter} to {DatabaseProvisioning.AppRoleName}");
+        bool holdsSet = await ScalarBoolAsync(
+            admin,
+            $"select has_parameter_privilege('{DatabaseProvisioning.AppRoleName}', "
+            + $"'{GrantedParameter}', 'SET')");
+
+        // Act
+        List<string> logLines = [];
+        InvalidOperationException? caught =
+            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+
+        // Assert
+        await Assert.That(holdsSet).IsTrue();
+        await Assert.That(caught).IsTypeOf<AppRoleReachException>();
+        await Assert.That(ProblemsNaming(caught, GrantedParameter)).IsNotEmpty();
+    }
+
+    [Test]
+    public async Task VerifyAppRoleReachAsync_FunctionCreatedInPublic_ThrowsNamingTheFunction()
+    {
+        // Arrange — a function created with no grant at all. Its proacl is NULL, and a NULL ACL on a
+        // function is not "nobody" but the built-in default, which gives PUBLIC EXECUTE. So
+        // aclexplode(proacl) returns no rows here; only acldefault('f', proowner) shows the grant.
+        await using PostgreSqlContainer container = await StartBareContainerAsync();
+        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+
+        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await ExecuteAsync(
+            admin,
+            $"create function public.{DefaultCallableFunction}() returns int "
+            + "language sql as 'select 1'");
+        bool aclIsNull = await ScalarBoolAsync(
+            admin,
+            $"select proacl is null from pg_proc where proname = '{DefaultCallableFunction}'");
+        bool roleCanExecute = await ScalarBoolAsync(
+            admin,
+            $"select has_function_privilege('{DatabaseProvisioning.AppRoleName}', "
+            + $"'public.{DefaultCallableFunction}()', 'EXECUTE')");
+
+        // Act
+        List<string> logLines = [];
+        InvalidOperationException? caught =
+            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+
+        // Assert — the NULL ACL first: it is the whole trap, and a sabotage that set one would test
+        // an easier case under this name.
+        await Assert.That(aclIsNull).IsTrue();
+        await Assert.That(roleCanExecute).IsTrue();
+        await Assert.That(caught).IsTypeOf<AppRoleReachException>();
+        await Assert.That(ProblemsNaming(caught, DefaultCallableFunction)).IsNotEmpty();
+    }
+
+    [Test]
+    public async Task VerifyAppRoleReachAsync_FunctionGrantedToTheAppRole_ThrowsNamingTheFunction()
+    {
+        // Arrange — the other half of the routine rule: EXECUTE taken from PUBLIC and granted to the
+        // role by name, so the ACL is explicit and PUBLIC holds nothing. A rule that only looks for
+        // PUBLIC's default EXECUTE misses it.
+        await using PostgreSqlContainer container = await StartBareContainerAsync();
+        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+
+        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await ExecuteAsync(
+            admin,
+            $"create function public.{GrantedCallableFunction}() returns int "
+            + "language sql as 'select 1'");
+        await ExecuteAsync(
+            admin, $"revoke execute on function public.{GrantedCallableFunction}() from public");
+        await ExecuteAsync(
+            admin,
+            $"grant execute on function public.{GrantedCallableFunction}() "
+            + $"to {DatabaseProvisioning.AppRoleName}");
+        bool publicCanExecute = await ScalarBoolAsync(
+            admin,
+            $"select has_function_privilege('public', 'public.{GrantedCallableFunction}()', "
+            + "'EXECUTE')");
+        bool roleCanExecute = await ScalarBoolAsync(
+            admin,
+            $"select has_function_privilege('{DatabaseProvisioning.AppRoleName}', "
+            + $"'public.{GrantedCallableFunction}()', 'EXECUTE')");
+
+        // Act
+        List<string> logLines = [];
+        InvalidOperationException? caught =
+            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+
+        // Assert
+        await Assert.That(publicCanExecute).IsFalse();
+        await Assert.That(roleCanExecute).IsTrue();
+        await Assert.That(caught).IsTypeOf<AppRoleReachException>();
+        await Assert.That(ProblemsNaming(caught, GrantedCallableFunction)).IsNotEmpty();
+    }
+
+    [Test]
+    public async Task VerifyAppRoleReachAsync_CreateOnTheDatabaseGrantedToTheAppRole_ThrowsNamingTheDatabase()
+    {
+        // Arrange — CREATE on the current database, which lets the role make schemas it owns. Named
+        // through current_database() so the expectation is the database the verifier was pointed at.
+        // Called directly: the script's REVOKE ALL ... FROM budgetoid_app would converge this on a
+        // re-run by an owner, and the gate is what reports it when the REVOKE cannot run.
+        await using PostgreSqlContainer container = await StartBareContainerAsync();
+        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+
+        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        string database = await ScalarStringAsync(admin, "select current_database()");
+        await ExecuteAsync(
+            admin, $"grant create on database {database} to {DatabaseProvisioning.AppRoleName}");
+        bool holdsCreate = await ScalarBoolAsync(
+            admin,
+            $"select has_database_privilege('{DatabaseProvisioning.AppRoleName}', "
+            + "current_database(), 'CREATE')");
+
+        // Act
+        List<string> logLines = [];
+        InvalidOperationException? caught =
+            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+
+        // Assert — the database name as a whole word, because "budgetoid" is also a prefix of
+        // "budgetoid_app" and a substring match would be satisfied by the role's name alone.
+        await Assert.That(holdsCreate).IsTrue();
+        await Assert.That(caught).IsTypeOf<AppRoleReachException>();
+        await Assert.That(
+                ProblemsWhere(
+                    caught,
+                    problem => problem.Contains("CREATE", StringComparison.Ordinal)
+                        && NamesWholeWord(problem, database)))
+            .IsNotEmpty();
+    }
+
+    [Test]
+    public async Task VerifyAppRoleReachAsync_TemporaryOnTheDatabaseRegrantedToPublic_ThrowsNamingTemporary()
+    {
+        // Arrange — TEMPORARY handed back to PUBLIC after provisioning took it away. The role
+        // inherits PUBLIC, so it can make temporary tables again: rows no grant, no policy and no
+        // census in this repository describes.
+        await using PostgreSqlContainer container = await StartBareContainerAsync();
+        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+
+        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        string database = await ScalarStringAsync(admin, "select current_database()");
+        await ExecuteAsync(admin, $"grant temporary on database {database} to public");
+        bool roleHoldsTemporary = await ScalarBoolAsync(
+            admin,
+            $"select has_database_privilege('{DatabaseProvisioning.AppRoleName}', "
+            + "current_database(), 'TEMPORARY')");
+
+        // Act
+        List<string> logLines = [];
+        InvalidOperationException? caught =
+            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+
+        // Assert
+        await Assert.That(roleHoldsTemporary).IsTrue();
+        await Assert.That(caught).IsTypeOf<AppRoleReachException>();
+        await Assert.That(
+                ProblemsWhere(
+                    caught,
+                    problem => problem.Contains("TEMPORARY", StringComparison.Ordinal)
+                        && problem.Contains("PUBLIC", StringComparison.Ordinal)
+                        && NamesWholeWord(problem, database)))
+            .IsNotEmpty();
+    }
+
+    [Test]
+    public async Task ProvisionAsync_WhenAWideningSurvivedTheLastDeploy_RefusesTheDeploy()
+    {
+        // Arrange — a deployed database with CREATE on schema public hand-granted to the role. The
+        // script only ever GRANTs USAGE on the schema and never REVOKEs there, so the next deploy
+        // leaves the CREATE in place; this is the deploy that has to refuse.
+        await using PostgreSqlContainer container = await StartBareContainerAsync();
+        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+
+        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await ExecuteAsync(
+            admin, $"grant create on schema public to {DatabaseProvisioning.AppRoleName}");
+
+        // Act
+        InvalidOperationException? caught = null;
+        try
+        {
+            await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        }
+        catch (InvalidOperationException exception)
+        {
+            caught = exception;
+        }
+
+        bool createSurvived = await ScalarBoolAsync(
+            admin,
+            $"select has_schema_privilege('{DatabaseProvisioning.AppRoleName}', 'public', 'CREATE')");
+
+        // Assert — the widening survived the re-run first, so the refusal is about something the
+        // script genuinely left behind rather than about a script that stopped converging.
+        await Assert.That(createSurvived).IsTrue();
+        await Assert.That(caught).IsTypeOf<AppRoleReachException>();
+        await Assert.That(ProblemsNaming(caught, "public", "CREATE")).IsNotEmpty();
+    }
+
+    [Test]
+    public async Task ProvisionAsync_WhenTheScriptConvergesAHandIssuedGrant_Succeeds()
+    {
+        // Arrange — a hand-issued CREATE on the current database, to the role. The verifier refuses
+        // exactly this when it is still there (VerifyAppRoleReachAsync_CreateOnTheDatabaseGranted…),
+        // and the script's REVOKE ALL ON DATABASE … FROM budgetoid_app takes it back — so the deploy
+        // passes only if the script runs before the verifier looks. A widening the verifier would
+        // not refuse anyway could not tell those two orders apart; this one can. The relation-level
+        // version of the same convergence is ApplyGrantsAsync_TakesBackAHandIssuedGrantOnAnyRelation…
+        //
+        // This is the stated limit, pinned: a widening the script converges away is not reported.
+        // The deploy that removed it is the report, and there is nothing left for the gate to name.
+        await using PostgreSqlContainer container = await StartBareContainerAsync();
+        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+
+        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        string database = await ScalarStringAsync(admin, "select current_database()");
+        await ExecuteAsync(
+            admin, $"grant create on database {database} to {DatabaseProvisioning.AppRoleName}");
+        bool grantedBeforeTheDeploy = await ScalarBoolAsync(
+            admin,
+            $"select has_database_privilege('{DatabaseProvisioning.AppRoleName}', "
+            + "current_database(), 'CREATE')");
+
+        // Act
+        InvalidOperationException? caught = null;
+        try
+        {
+            await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+        }
+        catch (InvalidOperationException exception)
+        {
+            caught = exception;
+        }
+
+        bool grantedAfterTheDeploy = await ScalarBoolAsync(
+            admin,
+            $"select has_database_privilege('{DatabaseProvisioning.AppRoleName}', "
+            + "current_database(), 'CREATE')");
+
+        // Assert — held before, the deploy went through, and gone after. The exception is asserted
+        // before the grant's absence so that a script which stopped converging reports the
+        // verifier's sentence naming the database rather than a bare "expected false".
+        await Assert.That(grantedBeforeTheDeploy).IsTrue();
+        await Assert.That(caught).IsNull();
+        await Assert.That(grantedAfterTheDeploy).IsFalse();
+    }
+
+    [Test]
+    [Arguments("sequence")]
+    [Arguments("unscripted table")]
+    [Arguments("unscripted view")]
+    [Arguments("unscripted materialized view")]
+    [Arguments("budgets column")]
+    public async Task ApplyGrantsAsync_TakesBackAHandIssuedGrantOnAnyRelationInPublic(string relation)
+    {
+        // Arrange — a hand-issued grant to the role on a relation in public. The per-table blocks
+        // REVOKE only the tables they name, so a relation with no block — or a relation that is not a
+        // table at all — keeps its grant through every re-run unless the script revokes the whole
+        // schema. The grant script is called on its own rather than through ProvisionAsync: an
+        // unscripted table carries no ownership column and would stop RLS coverage first, which is a
+        // different refusal from the one this test is about.
+        //
+        // The budgets row is the scripted case, and passes already; it rides here so the matrix states
+        // "any relation in public" rather than "any relation the script forgot".
+        //
+        // Each probe asks the has_*_privilege functions for a comma-separated list, which answers true
+        // when ANY listed privilege is held — so "false after" means every privilege granted is gone.
+        const string role = DatabaseProvisioning.AppRoleName;
+        (string create, string grant, string probe) = relation switch
+        {
+            "sequence" => (
+                "create sequence public.sabotage_unscripted_sequence",
+                $"grant usage, update on sequence public.sabotage_unscripted_sequence to {role}",
+                $"select has_sequence_privilege('{role}', 'public.sabotage_unscripted_sequence', "
+                + "'USAGE, UPDATE')"),
+            "unscripted table" => (
+                "create table public.sabotage_unscripted_table (id int)",
+                $"grant all on public.sabotage_unscripted_table to {role}",
+                $"select has_table_privilege('{role}', 'public.sabotage_unscripted_table', "
+                + "'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER, MAINTAIN')"),
+            "unscripted view" => (
+                "create view public.sabotage_unscripted_view as select 1 as x",
+                $"grant select on public.sabotage_unscripted_view to {role}",
+                $"select has_table_privilege('{role}', 'public.sabotage_unscripted_view', 'SELECT')"),
+            "unscripted materialized view" => (
+                "create materialized view public.sabotage_unscripted_matview as select 1 as x",
+                $"grant select on public.sabotage_unscripted_matview to {role}",
+                $"select has_table_privilege('{role}', 'public.sabotage_unscripted_matview', "
+                + "'SELECT')"),
+            "budgets column" => (
+                string.Empty,
+                $"grant update ({ImmutableColumn}) on {PublicGrantTable} to {role}",
+                $"select has_column_privilege('{role}', '{PublicGrantTable}', '{ImmutableColumn}', "
+                + "'UPDATE')"),
+            _ => throw new ArgumentOutOfRangeException(nameof(relation), relation, null),
+        };
+
+        await using PostgreSqlContainer container = await StartBareContainerAsync();
+        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+
+        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        if (create.Length > 0)
+        {
+            await ExecuteAsync(admin, create);
+        }
+
+        await ExecuteAsync(admin, grant);
+        bool heldBeforeTheScript = await ScalarBoolAsync(admin, probe);
+
+        // Act
+        await DatabaseProvisioning.ApplyGrantsAsync(container.GetConnectionString());
+
+        bool heldAfterTheScript = await ScalarBoolAsync(admin, probe);
+
+        // Assert — the grant took first, so "gone after" is about the script and not a sabotage that
+        // never landed.
+        await Assert.That(heldBeforeTheScript).IsTrue();
+        await Assert.That(heldAfterTheScript).IsFalse();
+    }
+
+    [Test]
+    [Arguments("table to the role")]
+    [Arguments("column to the role")]
+    [Arguments("sequence to the role")]
+    [Arguments("table to PUBLIC")]
+    [Arguments("table to the role without schema usage")]
+    [Arguments("view to the role")]
+    [Arguments("materialized view to the role")]
+    public async Task VerifyAppRoleReachAsync_GrantOnARelationOutsidePublic_ThrowsNamingTheRelation(
+        string sabotage)
+    {
+        // Arrange — a grant on a relation in a schema the grant script never names. The script's
+        // REVOKEs are all in public, so nothing converges this away; the verifier is the only thing
+        // that can see it. The last row withholds USAGE on the schema: the refusal does not depend on
+        // the role being able to reach the relation today, because USAGE is one GRANT away and the
+        // relation grant is already waiting behind it.
+        const string role = DatabaseProvisioning.AppRoleName;
+        const string schema = "sabotage_elsewhere";
+        const string table = $"{schema}.sabotage_elsewhere_table";
+        const string sequence = $"{schema}.sabotage_elsewhere_sequence";
+        const string column = "sabotage_elsewhere_column";
+        const string view = $"{schema}.sabotage_elsewhere_view";
+        const string materializedView = $"{schema}.sabotage_elsewhere_matview";
+
+        (string[] SabotageSql, string Probe, bool SchemaUsage, string[] ExpectedTokens) arranged =
+            sabotage switch
+            {
+                "table to the role" => (
+                    [$"grant usage on schema {schema} to {role}", $"grant all on {table} to {role}"],
+                    $"select has_table_privilege('{role}', '{table}', 'SELECT')",
+                    true,
+                    [table]),
+                "column to the role" => (
+                    [
+                        $"grant usage on schema {schema} to {role}",
+                        $"grant update ({column}) on {table} to {role}",
+                    ],
+                    $"select has_column_privilege('{role}', '{table}', '{column}', 'UPDATE')",
+                    true,
+                    [table, column]),
+                "sequence to the role" => (
+                    [
+                        $"grant usage on schema {schema} to {role}",
+                        $"grant usage on sequence {sequence} to {role}",
+                    ],
+                    $"select has_sequence_privilege('{role}', '{sequence}', 'USAGE')",
+                    true,
+                    [sequence]),
+                "table to PUBLIC" => (
+                    [$"grant usage on schema {schema} to {role}", $"grant select on {table} to public"],
+                    $"select has_table_privilege('public', '{table}', 'SELECT')",
+                    true,
+                    [table]),
+                "table to the role without schema usage" => (
+                    [$"grant select on {table} to {role}"],
+                    $"select has_table_privilege('{role}', '{table}', 'SELECT')",
+                    false,
+                    [table]),
+                "view to the role" => (
+                    [
+                        $"create view {view} as select 1 as x",
+                        $"grant usage on schema {schema} to {role}",
+                        $"grant select on {view} to {role}",
+                    ],
+                    $"select has_table_privilege('{role}', '{view}', 'SELECT')",
+                    true,
+                    [view]),
+                "materialized view to the role" => (
+                    [
+                        $"create materialized view {materializedView} as select 1 as x",
+                        $"grant usage on schema {schema} to {role}",
+                        $"grant select on {materializedView} to {role}",
+                    ],
+                    $"select has_table_privilege('{role}', '{materializedView}', 'SELECT')",
+                    true,
+                    [materializedView]),
+                _ => throw new ArgumentOutOfRangeException(nameof(sabotage), sabotage, null),
+            };
+        (string[] sabotageSql, string probe, bool schemaUsage, string[] expectedTokens) = arranged;
+
+        await using PostgreSqlContainer container = await StartBareContainerAsync();
+        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+
+        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await ExecuteAsync(admin, $"create schema {schema}");
+        await ExecuteAsync(admin, $"create table {table} (id int, {column} text)");
+        await ExecuteAsync(admin, $"create sequence {sequence}");
+        foreach (string statement in sabotageSql)
+        {
+            await ExecuteAsync(admin, statement);
+        }
+
+        bool grantHeld = await ScalarBoolAsync(admin, probe);
+        bool roleHasSchemaUsage = await ScalarBoolAsync(
+            admin, $"select has_schema_privilege('{role}', '{schema}', 'USAGE')");
+
+        // Act
+        List<string> logLines = [];
+        InvalidOperationException? caught =
+            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+
+        // Assert — the sabotage landed as described first, including whether the schema is open to
+        // the role, so the no-usage row cannot pass as a copy of the first.
+        await Assert.That(grantHeld).IsTrue();
+        await Assert.That(roleHasSchemaUsage).IsEqualTo(schemaUsage);
+        await Assert.That(caught).IsTypeOf<AppRoleReachException>();
+        await Assert.That(ProblemsNaming(caught, expectedTokens)).IsNotEmpty();
+    }
+
+    [Test]
+    public async Task VerifyAppRoleReachAsync_RelationOutsidePublicWithNoGrantToTheRole_DoesNotThrow()
+    {
+        // Arrange — the control for the outside-public rule. A schema the script never names, holding
+        // one relation of each kind that rule reads, all granted to a role that is neither the
+        // application role nor PUBLIC. The application role reaches none of it, so a verifier that
+        // refuses whatever sits outside public — rather than what the role can reach there — goes red
+        // here and nowhere else.
+        const string role = DatabaseProvisioning.AppRoleName;
+        const string bystander = "sabotage_bystander";
+        const string schema = "sabotage_elsewhere";
+        const string table = $"{schema}.sabotage_elsewhere_table";
+        const string view = $"{schema}.sabotage_elsewhere_view";
+        const string sequence = $"{schema}.sabotage_elsewhere_sequence";
+
+        await using PostgreSqlContainer container = await StartBareContainerAsync();
+        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+
+        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+        await ExecuteAsync(admin, $"create role {bystander}");
+        await ExecuteAsync(admin, $"create schema {schema}");
+        await ExecuteAsync(admin, $"create table {table} (id int)");
+        await ExecuteAsync(admin, $"create view {view} as select id from {table}");
+        await ExecuteAsync(admin, $"create sequence {sequence}");
+        await ExecuteAsync(admin, $"grant usage on schema {schema} to {bystander}");
+        await ExecuteAsync(admin, $"grant all on {table} to {bystander}");
+        await ExecuteAsync(admin, $"grant select on {view} to {bystander}");
+        await ExecuteAsync(admin, $"grant usage, update on sequence {sequence} to {bystander}");
+
+        // The grants landed on the bystander, and neither the role nor PUBLIC reaches anything here.
+        // Each probe is a comma-separated list, true when ANY listed privilege is held.
+        bool bystanderHoldsAll = await ScalarBoolAsync(
+            admin,
+            $"select has_table_privilege('{bystander}', '{table}', 'SELECT') "
+            + $"and has_table_privilege('{bystander}', '{view}', 'SELECT') "
+            + $"and has_sequence_privilege('{bystander}', '{sequence}', 'USAGE')");
+        bool roleOrPublicHoldsAny = await ScalarBoolAsync(
+            admin,
+            $"select has_table_privilege('{role}', '{table}', "
+            + "'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER, MAINTAIN') "
+            + $"or has_table_privilege('{role}', '{view}', 'SELECT, INSERT, UPDATE, DELETE') "
+            + $"or has_sequence_privilege('{role}', '{sequence}', 'USAGE, SELECT, UPDATE') "
+            + $"or has_schema_privilege('{role}', '{schema}', 'USAGE, CREATE') "
+            + $"or has_table_privilege('public', '{table}', "
+            + "'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER, MAINTAIN') "
+            + $"or has_table_privilege('public', '{view}', 'SELECT, INSERT, UPDATE, DELETE') "
+            + $"or has_sequence_privilege('public', '{sequence}', 'USAGE, SELECT, UPDATE') "
+            + $"or has_schema_privilege('public', '{schema}', 'USAGE, CREATE')");
+
+        // Act
+        List<string> logLines = [];
+        InvalidOperationException? caught =
+            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+
+        // Assert — nothing thrown at all, for the reason the fresh-database control gives.
+        await Assert.That(bystanderHoldsAll).IsTrue();
+        await Assert.That(roleOrPublicHoldsAny).IsFalse();
+        await Assert.That(caught).IsNull();
+    }
+
+    [Test]
+    [Arguments("select on a scripted table")]
+    [Arguments("update on an unlisted budgets column")]
+    [Arguments("usage on schema public")]
+    [Arguments("connect on the current database")]
+    [Arguments("execute on a function in public")]
+    public async Task VerifyAppRoleReachAsync_GrantMadeByAThirdRole_ThrowsNamingTheGrantor(
+        string sabotage)
+    {
+        // Arrange — a grant to the role made by a third role holding a grant option, rather than by
+        // the object's owner. PostgreSQL records the grantor in the ACL entry (budgetoid_app=r/middle),
+        // and the script's REVOKE ALL ... FROM budgetoid_app leaves an entry with another grantor
+        // standing — the second precondition below reads it after the script. Each row is there to
+        // hold one arm of the non-owner grantor rule, and bar the function row no other rule refuses
+        // any of them.
+        //
+        // The currencies row adds a second entry for a privilege the script already grants — the
+        // effective set is unchanged, and only the grantor tells the two apart. The budgets row is the
+        // dangerous one: user_id is immutable by its absence from the one-column UPDATE list, and this
+        // makes it writable.
+        //
+        // The schema, database and routine rows are the arms the table rows cannot hold. USAGE on
+        // public and CONNECT on the database are the two privileges the verifier otherwise accepts,
+        // so a grantor rule switched off there leaves every other rule quiet. The function in public
+        // is not quiet: the routine rule refuses it too, whoever granted it, and that sentence names
+        // the function, EXECUTE and the role. A grantor's bare name is not enough to tell the two
+        // apart — a fixture named after it, or any other sentence that happens to spell it, supplies
+        // it — so every row asks for the non-owner sentence's own clause, "with middle as the grantor
+        // rather than its owner", which no other rule writes. The function's name deliberately
+        // carries no grantor either.
+        const string role = DatabaseProvisioning.AppRoleName;
+        const string middle = "middle";
+        const string function = "public.sabotage_third_role_callable()";
+        const string grantorClause = $"with {middle} as the grantor rather than its owner";
+
+        (string OwnerGrant, string MiddleGrant, string GrantorProbe, string[] ExpectedTokens) arranged =
+            sabotage switch
+            {
+                "usage on schema public" => (
+                    $"grant usage on schema public to {middle} with grant option",
+                    $"grant usage on schema public to {role}",
+                    "select exists (select 1 from pg_namespace n, aclexplode(n.nspacl) a "
+                    + "where n.nspname = 'public' "
+                    + $"and a.grantee = '{role}'::regrole and a.grantor = '{middle}'::regrole "
+                    + "and a.privilege_type = 'USAGE')",
+                    ["Schema public", "USAGE", grantorClause]),
+                "connect on the current database" => (
+                    $"grant connect on database {{database}} to {middle} with grant option",
+                    $"grant connect on database {{database}} to {role}",
+                    "select exists (select 1 from pg_database d, aclexplode(d.datacl) a "
+                    + "where d.datname = current_database() "
+                    + $"and a.grantee = '{role}'::regrole and a.grantor = '{middle}'::regrole "
+                    + "and a.privilege_type = 'CONNECT')",
+                    ["Database {database}", "CONNECT", grantorClause]),
+                "execute on a function in public" => (
+                    $"create function {function} returns int language sql as 'select 1'; "
+                    + $"revoke execute on function {function} from public; "
+                    + $"grant execute on function {function} to {middle} with grant option",
+                    $"grant execute on function {function} to {role}",
+                    "select exists (select 1 from pg_proc p, aclexplode(p.proacl) a "
+                    + $"where p.oid = '{function}'::regprocedure "
+                    + $"and a.grantee = '{role}'::regrole and a.grantor = '{middle}'::regrole "
+                    + "and a.privilege_type = 'EXECUTE')",
+                    [function, "EXECUTE", grantorClause]),
+                "select on a scripted table" => (
+                    $"grant select on public.currencies to {middle} with grant option",
+                    $"grant select on public.currencies to {role}",
+                    "select exists (select 1 from pg_class c, aclexplode(c.relacl) a "
+                    + "where c.oid = 'public.currencies'::regclass "
+                    + $"and a.grantee = '{role}'::regrole and a.grantor = '{middle}'::regrole "
+                    + "and a.privilege_type = 'SELECT')",
+                    ["currencies", grantorClause]),
+                "update on an unlisted budgets column" => (
+                    $"grant update (user_id) on public.budgets to {middle} with grant option",
+                    $"grant update (user_id) on public.budgets to {role}",
+                    "select exists (select 1 from pg_attribute t, aclexplode(t.attacl) a "
+                    + "where t.attrelid = 'public.budgets'::regclass and t.attname = 'user_id' "
+                    + $"and a.grantee = '{role}'::regrole and a.grantor = '{middle}'::regrole "
+                    + "and a.privilege_type = 'UPDATE')",
+                    ["budgets", "user_id", grantorClause]),
+                _ => throw new ArgumentOutOfRangeException(nameof(sabotage), sabotage, null),
+            };
+        (string ownerGrant, string middleGrant, string grantorProbe, string[] expectedTokens) =
+            arranged;
+
+        await using PostgreSqlContainer container = await StartBareContainerAsync();
+        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+
+        await using NpgsqlConnection admin = await OpenAdminAsync(container);
+
+        // GRANT … ON DATABASE takes a name and no expression, so the database row names it here.
+        string database = await ScalarStringAsync(admin, "select current_database()");
+        ownerGrant = ownerGrant.Replace("{database}", database, StringComparison.Ordinal);
+        middleGrant = middleGrant.Replace("{database}", database, StringComparison.Ordinal);
+        expectedTokens = [.. expectedTokens.Select(
+            token => token.Replace("{database}", database, StringComparison.Ordinal))];
+
+        await ExecuteAsync(admin, $"create role {middle}");
+        await ExecuteAsync(admin, ownerGrant);
+        await ExecuteAsync(admin, $"set role {middle}; {middleGrant}; reset role");
+
+        bool heldFromMiddleBeforeTheScript = await ScalarBoolAsync(admin, grantorProbe);
+
+        // Act — the script re-run first, then the verifier: the script is what a deploy runs before
+        // the gate, and a grant it took back would leave the gate nothing to find.
+        await DatabaseProvisioning.ApplyGrantsAsync(container.GetConnectionString());
+        bool heldFromMiddleAfterTheScript = await ScalarBoolAsync(admin, grantorProbe);
+
+        List<string> logLines = [];
+        InvalidOperationException? caught =
+            await TryVerifyAppRoleReachAsync(container.GetConnectionString(), logLines);
+
+        // Assert — the grant is held with middle as its grantor, and still is after the script ran,
+        // so the refusal below is the verifier's and not the script's.
+        await Assert.That(heldFromMiddleBeforeTheScript).IsTrue();
+        await Assert.That(heldFromMiddleAfterTheScript).IsTrue();
+        await Assert.That(caught).IsTypeOf<AppRoleReachException>();
+        await Assert.That(ProblemsNaming(caught, expectedTokens)).IsNotEmpty();
     }
 
     [Test]
@@ -1738,6 +2965,207 @@ public sealed class DeploymentProvisioningTests
             await reader.IsDBNullAsync(1) ? null : reader.GetString(1),
             reader.GetString(2),
             reader.GetBoolean(3));
+    }
+
+    /// <summary>
+    /// Reports whether the connection's own database still carries a NULL ACL — PostgreSQL's
+    /// default, under which PUBLIC holds CONNECT and TEMPORARY.
+    /// </summary>
+    private static async Task<bool> DatabaseAclIsDefaultAsync(NpgsqlConnection connection)
+    {
+        await using NpgsqlCommand command = new(
+            "select datacl is null from pg_database where datname = current_database()",
+            connection);
+        return (bool)(await command.ExecuteScalarAsync())!;
+    }
+
+    /// <summary>
+    /// Returns which of <see cref="DatabasePrivileges" /> <paramref name="role" /> effectively holds
+    /// on the connection's own database — through its own grants, through PUBLIC, or through any
+    /// role it is a member of. <c>public</c> names PUBLIC itself.
+    /// </summary>
+    /// <remarks>
+    /// <c>current_database()</c> rather than a name, so the question is asked about the database
+    /// provisioning ran against and nothing else.
+    /// </remarks>
+    private static async Task<IReadOnlyList<string>> ReadDatabasePrivilegesAsync(
+        NpgsqlConnection connection,
+        string role)
+    {
+        await using NpgsqlCommand command = new(
+            """
+            select privilege
+            from unnest(@privileges) as privilege
+            where has_database_privilege(@role, current_database(), privilege)
+            order by privilege
+            """,
+            connection);
+        command.Parameters.AddWithValue("privileges", DatabasePrivileges);
+        command.Parameters.AddWithValue("role", role);
+
+        List<string> held = [];
+        await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            held.Add(reader.GetString(0));
+        }
+
+        return held;
+    }
+
+    /// <summary>
+    /// Returns the application role's own entries in the connection's database ACL, each as the
+    /// privilege keyword with <c>WITH GRANT OPTION</c> appended where held. Raw ACL rather than
+    /// effective privileges: this is the question "does the role hold a grant of its own", which
+    /// <c>has_database_privilege</c> folds together with PUBLIC and cannot answer.
+    /// </summary>
+    private static async Task<IReadOnlyList<string>> ReadAppRoleDirectDatabaseGrantsAsync(
+        NpgsqlConnection connection)
+    {
+        await using NpgsqlCommand command = new(
+            """
+            select a.privilege_type
+                   || case when a.is_grantable then ' WITH GRANT OPTION' else '' end
+            from pg_database d
+            cross join lateral aclexplode(d.datacl) a
+            where d.datname = current_database()
+              and a.grantee = (select oid from pg_roles where rolname = @role)
+            order by 1
+            """,
+            connection);
+        command.Parameters.AddWithValue("role", DatabaseProvisioning.AppRoleName);
+
+        List<string> grants = [];
+        await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            grants.Add(reader.GetString(0));
+        }
+
+        return grants;
+    }
+
+    /// <summary>The container's connection string re-pointed at another database on it.</summary>
+    private static string BuildConnectionStringFor(PostgreSqlContainer container, string database) =>
+        new NpgsqlConnectionStringBuilder(container.GetConnectionString())
+        {
+            Database = database,
+        }.ConnectionString;
+
+    /// <summary>
+    /// Calls the reach verifier and returns what it threw, or <see langword="null" /> if it
+    /// accepted. Caught as the base <see cref="InvalidOperationException" /> so the caller's
+    /// <c>IsTypeOf</c> proves the exact type rather than a catch clause filtering for it.
+    /// </summary>
+    private static async Task<InvalidOperationException?> TryVerifyAppRoleReachAsync(
+        string adminConnectionString,
+        List<string> logLines)
+    {
+        try
+        {
+            await DeploymentDatabaseProvisioning.VerifyAppRoleReachAsync(
+                adminConnectionString,
+                log: logLines.Add);
+            return null;
+        }
+        catch (InvalidOperationException exception)
+        {
+            return exception;
+        }
+    }
+
+    /// <summary>
+    /// The problems in a caught <see cref="AppRoleReachException" /> that contain every one of
+    /// <paramref name="tokens" />, matched ordinally. Empty when nothing was caught or the exception
+    /// is of another type. A collection rather than a joined string, because TUnit truncates string
+    /// assertions and would hide which problem was which.
+    /// </summary>
+    private static List<string> ProblemsNaming(
+        InvalidOperationException? caught,
+        params string[] tokens) =>
+        ProblemsWhere(
+            caught,
+            problem => tokens.All(token => problem.Contains(token, StringComparison.Ordinal)));
+
+    /// <summary>
+    /// The problems in a caught <see cref="AppRoleReachException" /> that satisfy
+    /// <paramref name="predicate" />; empty when nothing was caught or the exception is of another
+    /// type.
+    /// </summary>
+    private static List<string> ProblemsWhere(
+        InvalidOperationException? caught,
+        Func<string, bool> predicate) =>
+        (caught as AppRoleReachException)?.Problems.Where(predicate).ToList() ?? [];
+
+    /// <summary>
+    /// Whether <paramref name="text" /> contains <paramref name="word" /> bounded by non-word
+    /// characters, so a database called <c>budgetoid</c> is not found inside <c>budgetoid_app</c>.
+    /// </summary>
+    private static bool NamesWholeWord(string text, string word) =>
+        System.Text.RegularExpressions.Regex.IsMatch(
+            text, $@"\b{System.Text.RegularExpressions.Regex.Escape(word)}\b");
+
+    /// <summary>
+    /// Reads one boolean column of <c>pg_roles</c> for the application role. The column name is a
+    /// constant of this class, never input.
+    /// </summary>
+    private static Task<bool> ReadAppRoleFlagAsync(NpgsqlConnection connection, string column) =>
+        ScalarBoolAsync(
+            connection,
+            $"select {column} from pg_roles where rolname = '{DatabaseProvisioning.AppRoleName}'");
+
+    /// <summary>Counts <c>pg_default_acl</c> rows, which a freshly provisioned database has none of.</summary>
+    private static async Task<int> CountDefaultAclRowsAsync(NpgsqlConnection connection)
+    {
+        await using NpgsqlCommand command = new("select count(*) from pg_default_acl", connection);
+        return (int)(long)(await command.ExecuteScalarAsync())!;
+    }
+
+    /// <summary>
+    /// Runs a query returning one boolean, used for the sabotage preconditions. The SQL is built from
+    /// constants of this class rather than from input.
+    /// </summary>
+    private static async Task<bool> ScalarBoolAsync(NpgsqlConnection connection, string sql)
+    {
+        await using NpgsqlCommand command = new(sql, connection);
+        return (bool)(await command.ExecuteScalarAsync())!;
+    }
+
+    /// <summary>Runs a query returning one string.</summary>
+    private static async Task<string> ScalarStringAsync(NpgsqlConnection connection, string sql)
+    {
+        await using NpgsqlCommand command = new(sql, connection);
+        return (string)(await command.ExecuteScalarAsync())!;
+    }
+
+    /// <summary>
+    /// Logs in as the application role and tries to create a temporary table, reporting the SQLSTATE
+    /// it was refused with, or <see langword="null" /> if it was allowed. Pooling off for the reason
+    /// <see cref="TryLoginAsAppRoleAsync" /> gives.
+    /// </summary>
+    private static async Task<string?> TryCreateTempTableAsAppRoleAsync(string adminConnectionString)
+    {
+        string connectionString =
+            new NpgsqlConnectionStringBuilder(adminConnectionString)
+            {
+                Username = DatabaseProvisioning.AppRoleName,
+                Password = AppRolePassword,
+                Pooling = false,
+            }.ConnectionString;
+
+        await using NpgsqlConnection connection = new(connectionString);
+        await connection.OpenAsync();
+        try
+        {
+            await using NpgsqlCommand command = new(
+                "create temp table provisioning_probe (x int)", connection);
+            await command.ExecuteNonQueryAsync();
+            return null;
+        }
+        catch (PostgresException exception)
+        {
+            return exception.SqlState;
+        }
     }
 
     /// <summary>

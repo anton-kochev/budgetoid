@@ -6,17 +6,28 @@ namespace Infrastructure.Persistence.Provisioning;
 /// <summary>
 /// Performs a deploy's database work as one operation: migrate the schema on the admin connection,
 /// then provision the application role with its grants and row-level security policies, then verify
-/// that the policies actually cover every tenant-owned table.
+/// that the policies actually cover every tenant-owned table and that the role reaches nothing the
+/// grant script leaves behind.
 /// </summary>
 /// <remarks>
 /// <para>
 /// These were <c>DEPLOYMENT.md</c> Steps 3 and 4 — an EF migration bundle, then
 /// <c>app-role-grants.sql</c> piped through <c>psql</c> — and the ordering being manual is the
-/// problem this class removes. Skipping the second step is not a visible failure: the grant matrix is
-/// fail-closed and announces a missing privilege as <c>42501</c> at the first statement that needs
-/// it, but row-level security is fail-open, and a granted table with no enforced policy is readable
-/// and writable by the application role across every tenant, silently. A deploy that migrates and
+/// problem this class removes. Skipping the second step is not a visible failure: a <i>missing</i>
+/// grant is fail-closed and announces itself as <c>42501</c> at the first statement that needs it,
+/// but row-level security is fail-open, and a granted table with no enforced policy is readable and
+/// writable by the application role across every tenant, silently. A deploy that migrates and
 /// forgets to provision is therefore a tenancy breach nothing reports.
+/// </para>
+/// <para>
+/// An <i>extra</i> grant is fail-open and silent too, which is why grants are verified as well —
+/// but only the part a re-run cannot converge. The table and column matrix is re-converged by every
+/// run of the script, which <c>REVOKE</c>s all on every table and sequence in <c>public</c> from the
+/// role before re-granting, and <c>AppRoleGrantMatrixTests</c> holds it in CI. That convergence
+/// takes back only the grants the object's owner made. What a re-run leaves standing — role
+/// attributes, memberships, <c>PUBLIC</c> grants, default privileges, ownership, grants on relations
+/// outside <c>public</c>, grants to the role made by anyone but the object's owner, and privileges
+/// on schemas, parameters, routines and the database — is <see cref="VerifyAppRoleReachAsync"/>.
 /// </para>
 /// <para>
 /// It does <b>not</b> attach a credential to the role, and that omission is the same argument read the
@@ -37,7 +48,7 @@ public static class DeploymentDatabaseProvisioning
     /// <summary>
     /// Brings an empty or already-deployed database to the state the application expects: schema
     /// migrated, application role present with exactly its grant matrix and isolation policies, and
-    /// that coverage verified. Idempotent — this runs on every deploy, so the second run is the
+    /// both that coverage and the role's reach verified. Idempotent — this runs on every deploy, so the second run is the
     /// common case.
     /// </summary>
     /// <remarks>
@@ -61,6 +72,10 @@ public static class DeploymentDatabaseProvisioning
     /// <exception cref="RowLevelSecurityCoverageException">
     /// Provisioning ran but left at least one tenant-owned table unprotected, or the schema contains
     /// a table whose tenancy nobody has decided, or a relation no policy can cover.
+    /// </exception>
+    /// <exception cref="AppRoleReachException">
+    /// Provisioning ran, but the application role reaches something the grant script did not take
+    /// back.
     /// </exception>
     public static async Task ProvisionAsync(
         string adminConnectionString,
@@ -95,6 +110,10 @@ public static class DeploymentDatabaseProvisioning
         await DatabaseProvisioning.ApplyGrantsAsync(adminConnectionString, cancellationToken);
 
         await VerifyRowLevelSecurityCoverageAsync(adminConnectionString, log, cancellationToken);
+
+        // After the script, never before it: a widening the script converges away is no longer
+        // there to report, so only what a re-run left standing refuses the deploy.
+        await VerifyAppRoleReachAsync(adminConnectionString, log, cancellationToken);
     }
 
     /// <summary>
@@ -105,8 +124,9 @@ public static class DeploymentDatabaseProvisioning
     /// <remarks>
     /// <para>
     /// It verifies row-level security and nothing else, which is why it is not named for provisioning
-    /// as a whole: a missing grant is fail-closed and reports itself as <c>42501</c> the first time it
-    /// matters, so there is nothing silent there to verify.
+    /// as a whole. Grants are the other half: a missing grant is fail-closed and reports itself as
+    /// <c>42501</c> the first time it matters, but an extra one is fail-open and silent, and that
+    /// half is <see cref="VerifyAppRoleReachAsync" />.
     /// </para>
     /// <para>
     /// The subject and the rule come from <see cref="RowLevelSecurityCoverage" /> rather than from a
@@ -259,5 +279,86 @@ public static class DeploymentDatabaseProvisioning
             "Row-level security covers every tenant-owned table with exactly the one isolation "
             + "policy its ownership requires, keyed on the session setting and the ownership column "
             + "that tenancy calls for, and every other relation is exempt for a written reason.");
+    }
+
+    /// <summary>
+    /// Asserts that the application role reaches nothing beyond its grant matrix that a re-run of
+    /// <c>app-role-grants.sql</c> would leave in place, and throws naming every widening found.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The grant script converges what it grants, not what it never mentions. Role attributes are no
+    /// grant, and <c>PUBLIC</c> grants, memberships, default privileges and ownership all survive its
+    /// <c>REVOKE ALL … FROM budgetoid_app</c>. So do grants on relations in any schema but
+    /// <c>public</c>, which the script never names, and grants to the role recorded against a grantor
+    /// other than the object's owner, because that <c>REVOKE</c> is performed as the owner and takes
+    /// back only the owner's entries. A missing grant announces itself as <c>42501</c>; an
+    /// extra one is fail-open and silent, which is why it is verified here. The rules are
+    /// <see cref="AppRoleReach.FindProblems" />.
+    /// </para>
+    /// <para>
+    /// This does not collide with the "restate, don't share" argument <c>AppRoleGrantMatrixTests</c>
+    /// makes against a second executed copy of the grant matrix, because it is not one: its expected
+    /// answer is a fixed "nothing" rather than a list of tables and columns, and the matrix itself is
+    /// left to the script's convergence and that test.
+    /// </para>
+    /// <para>
+    /// It is called by <see cref="ProvisionAsync" /> and again by the deploy tool after the managed
+    /// identity is attached. That step hands the role to Azure's <c>pgaadauth</c> label provider,
+    /// which no test here can run, so whether it changes the role's reach is found out by the deploy
+    /// rather than assumed.
+    /// </para>
+    /// </remarks>
+    /// <param name="adminConnectionString">Connection string used to read the catalogs.</param>
+    /// <param name="log">Sink for what was inspected; written on the failure path too.</param>
+    /// <param name="cancellationToken">Cancels the catalog reads.</param>
+    /// <exception cref="AppRoleReachException">
+    /// The application role reaches at least one thing its grant matrix does not give it.
+    /// </exception>
+    public static async Task VerifyAppRoleReachAsync(
+        string adminConnectionString,
+        Action<string>? log = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(adminConnectionString);
+
+        AppRoleReachSnapshot snapshot;
+        await using (NpgsqlConnection connection = new(adminConnectionString))
+        {
+            await connection.OpenAsync(cancellationToken);
+            snapshot = await AppRoleReach.DiscoverAsync(
+                connection,
+                DatabaseProvisioning.AppRoleName,
+                cancellationToken);
+        }
+
+        // Counts before the verdict, for the reason VerifyRowLevelSecurityCoverageAsync gives: a
+        // refusal or a pass is only worth reading once the operator can see what was inspected, and a
+        // category that read zero rows looks, on a green deploy, exactly like one nobody read.
+        log?.Invoke(snapshot.Attributes is null
+            ? $"Verifying the reach of role {snapshot.RoleName}: no role of that name exists."
+            : $"Verifying the reach of role {snapshot.RoleName}: read {snapshot.MemberOf.Count} "
+              + $"membership(s), {snapshot.SchemaGrants.Count} schema privilege(s), "
+              + $"{snapshot.DefaultPrivileges.Count} default privilege(s), "
+              + $"{snapshot.OwnedObjects.Count} owned object(s), "
+              + $"{snapshot.PublicRelationGrants.Count} PUBLIC relation privilege(s), "
+              + $"{snapshot.OutsidePublicRelationGrants.Count} relation privilege(s) outside "
+              + "schema public, "
+              + $"{snapshot.ParameterGrants.Count} parameter privilege(s), "
+              + $"{snapshot.ExecutableRoutines.Count} executable routine privilege(s), "
+              + $"{snapshot.DatabaseGrants.Count} database privilege(s) and "
+              + $"{snapshot.NonOwnerGrants.Count} privilege(s) granted by a non-owner.");
+
+        IReadOnlyList<string> problems = AppRoleReach.FindProblems(snapshot);
+        if (problems.Count > 0)
+        {
+            throw new AppRoleReachException(problems);
+        }
+
+        log?.Invoke(
+            $"Role {snapshot.RoleName} holds no attribute, membership, ownership, default privilege, "
+            + "PUBLIC relation grant, relation grant outside schema public, grant made by anyone "
+            + "but the object's owner, parameter or routine privilege, or schema or database "
+            + "privilege beyond its grant matrix.");
     }
 }

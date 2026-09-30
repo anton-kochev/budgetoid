@@ -13,8 +13,8 @@ through `psql`. The order between them is load-bearing rather than tidy — the 
 tables, so the schema has to exist first — and that order lived entirely in prose.
 
 [ADR 0005](0005-isolate-budget-owned-rows-with-row-level-security.md) put the `budget_isolation`
-policies into that same script, and doing so changed what forgetting the second step costs. **The
-grant matrix is fail-closed**: a privilege nobody granted announces itself as `42501` at the first
+policies into that same script, and doing so changed what forgetting the second step costs. **A
+missing grant is fail-closed**: a privilege nobody granted announces itself as `42501` at the first
 statement that needs it, so a deploy that migrated and skipped provisioning broke a feature loudly
 and was repaired within the hour. **Row-level security is fail-open.** A migrated table with no
 enforced policy is readable and writable by the application role across every tenant, nothing raises,
@@ -49,8 +49,12 @@ and must never become a migration.
 `BudgetoidApp/Tools/DbProvision` calls `DeploymentDatabaseProvisioning.ProvisionAsync`, which
 validates the role password, logs the pending migration count, migrates, applies the grants and the
 policies through `DatabaseProvisioning.ApplyGrantsAsync`, and then verifies row-level security
-coverage. The ordering that used to live in the runbook now lives inside one method, in the layer that
-already owns the grants: the logic sits in `Infrastructure` beside `DatabaseProvisioning`, and the
+coverage and the application role's reach. The reach check refuses whatever a re-run of the grant
+script cannot take back — an *extra* grant is fail-open too — and the tool runs it once more after
+binding the role to its identity; its argument is
+[ADR 0026](0026-verify-at-deploy-the-reach-the-grant-script-cannot-take-back.md). The ordering
+that used to live in the runbook now lives inside one method, in the layer that already owns the
+grants: the logic sits in `Infrastructure` beside `DatabaseProvisioning`, and the
 console project is a shim that reads two environment variables, calls the method, and maps an
 exception to an exit code. It has no logic of its own, which is why nothing tests it directly —
 `tests/IntegrationTests/DeploymentProvisioningTests.cs` tests the method the shim calls.
@@ -226,7 +230,9 @@ remember the database half.
   the database migrated, the deploy red, and the new application code undeployed. That is the right
   order of events — the still-running previous code has no queries against a table it does not know
   about — but the recovery is to add the policy to `app-role-grants.sql` and re-run, not to reach for
-  the database.
+  the database. A reach refusal aborts at the same point and is the exception to that recovery: it
+  names only what the script cannot take back, so its fix is the statement the refusal carries, run
+  on the admin connection.
 - **Rotating the application role's password has a window.** `azd provision` writes the container's
   connection string before the tool re-passwords the role, so a genuinely new value leaves a minute or
   two in which a cold-start replica presents the new password to a role that still has the old one — a
@@ -249,5 +255,6 @@ remember the database half.
   superseded.
 - **The tool's log is the pipeline's only window into the step.** A run that reported nothing would
   read identically to a run that did nothing, so the pending-migration count, the role being
-  provisioned, and the tables verified are all printed, and the tests assert that a supplied log
-  delegate is actually called. The message wording is not a contract; the trace existing is.
+  provisioned, the tables verified, and the counts the reach check read are all printed, and the
+  tests assert that a supplied log delegate is actually called. The message wording is not a
+  contract; the trace existing is.

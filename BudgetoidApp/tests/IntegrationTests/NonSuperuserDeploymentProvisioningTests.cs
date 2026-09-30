@@ -104,9 +104,32 @@ public sealed class NonSuperuserDeploymentProvisioningTests
         string? knownParameterSqlState = await TrySetRoleDefaultAsync(
             deployAdmin, "statement_timeout = '5s'");
 
+        // The membership this principal holds IN the application role because it created it —
+        // automatic on PostgreSQL 16 and later. It widens the creator, not the role, which is why
+        // the reach rule reads pg_auth_members.member and never roleid. Asserted present so the
+        // verifier's acceptance below is not vacuous: this is the one row a rule reading the wrong
+        // column would refuse.
+        bool creatorIsMemberOfAppRole =
+            await CreatorMembershipExistsAsync(admin, DeployAdminRole);
+
+        // The reach verifier, called on its own as this principal. ProvisionAsync above already ran
+        // it as its last step; calling it again here keeps this line red or green by itself, so a
+        // refusal reads as the verifier's rather than as one more way provisioning can fail.
+        Exception? reachFailure = null;
+        try
+        {
+            await DeploymentDatabaseProvisioning.VerifyAppRoleReachAsync(deployAdminConnectionString);
+        }
+        catch (Exception exception)
+        {
+            reachFailure = exception;
+        }
+
         // Assert — the failure first and as the exception rather than a boolean, so a regression
         // reports the SQLSTATE and the statement that produced it instead of "expected true".
         await Assert.That(provisioningFailure).IsNull();
+        await Assert.That(creatorIsMemberOfAppRole).IsTrue();
+        await Assert.That(reachFailure).IsNull();
 
         await Assert.That(deployAdminIsSuperuser).IsFalse();
         await Assert.That(placeholderDefaultSqlState)
@@ -225,6 +248,30 @@ public sealed class NonSuperuserDeploymentProvisioningTests
         }
 
         return (true, reader.GetBoolean(0), reader.GetBoolean(1));
+    }
+
+    /// <summary>
+    /// Reports whether <c>pg_auth_members</c> holds the row in which <paramref name="creator"/> is a
+    /// member of the application role (<c>roleid</c> = the application role,
+    /// <c>member</c> = the creator).
+    /// </summary>
+    private static async Task<bool> CreatorMembershipExistsAsync(
+        NpgsqlConnection connection,
+        string creator)
+    {
+        await using NpgsqlCommand command = new(
+            """
+            select exists (
+                select 1
+                from pg_auth_members m
+                join pg_roles granted on granted.oid = m.roleid
+                join pg_roles holder on holder.oid = m.member
+                where granted.rolname = @appRole and holder.rolname = @creator)
+            """,
+            connection);
+        command.Parameters.AddWithValue("appRole", DatabaseProvisioning.AppRoleName);
+        command.Parameters.AddWithValue("creator", creator);
+        return (bool)(await command.ExecuteScalarAsync())!;
     }
 
     /// <summary>

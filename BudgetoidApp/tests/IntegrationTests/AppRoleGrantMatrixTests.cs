@@ -61,15 +61,31 @@ namespace IntegrationTests;
 /// any grant option lands in the unexpected half.
 /// </para>
 /// <para>
-/// What this still does not cover is <b>known and deferred</b> to the story that owns the
-/// enumerated privilege list, not overlooked. Schema privileges are invisible here
-/// (<c>pg_namespace.nspacl</c> — <c>GRANT CREATE ON SCHEMA public</c> is the largest widening
-/// available and this query never reads that catalog). So are role attributes:
-/// <c>ALTER ROLE budgetoid_app BYPASSRLS</c> voids every policy in the project and no grant matrix
-/// of any shape would see it. So are <c>pg_default_acl</c>, which decides what future objects are
-/// granted at creation, and <c>pg_proc.proacl</c>, which carries <c>EXECUTE</c> on functions. This
-/// file pins table and column privileges on relations in <c>public</c>, and a reader must not trust
-/// it one step further than that.
+/// The ACL reader sees only what is <i>written</i> into <c>relacl</c> and <c>attacl</c>, and three
+/// siblings in this class close the gaps that leaves. A privilege held through a predefined role
+/// such as <c>pg_write_all_data</c>, or through owning the table, never appears in either column;
+/// <c>AppRoleEffectivePrivileges_MatchTheDeclaredMatrix</c> compares the same matrix against
+/// effective privileges instead.
+/// <c>AppRoleUpdates_AreRefusedOnEveryColumnOffTheDeclaredLists_AndAcceptedOnEveryColumnOnThem</c>
+/// sends an <c>UPDATE</c> at every column the catalog holds, on the role's own connection.
+/// <c>AppRoleSchemaPrivileges_MatchTheDeclaredSet</c> reads the schemas, which no relation-level
+/// query touches.
+/// </para>
+/// <para>
+/// The reach a re-run of the grant script leaves standing belongs to a different owner, and it is
+/// not this class. Some of it overlaps what the readers here see — a grant to the role on a table in
+/// <c>public</c> made by a third role holding a grant option is in <c>relacl</c>, and reddens the
+/// matrix here when it adds a privilege the matrix does not declare, though not when it repeats one,
+/// because the entry key carries no grantor — and some of it no matrix of any shape would see, such as
+/// <c>ALTER ROLE budgetoid_app BYPASSRLS</c>, which voids every policy in the project.
+/// <c>AppRoleReach</c> reads all of it, and its remarks are the one list of what it reads and what it
+/// does not; that list is not restated here, so the two cannot drift apart.
+/// <c>DeploymentDatabaseProvisioning.VerifyAppRoleReachAsync</c> runs it after the grant script on
+/// every deploy, and <c>DeploymentProvisioningTests</c> drives one sabotage at a time. That verifier
+/// holds each rule to a fixed "nothing", not to a matrix, so it is no second copy of this one. So
+/// this class pins table, column and schema privileges in CI and nothing more, and a reader must not
+/// trust it one step further than that. A column written by something other than the role's own
+/// statement is <c>ImmutableColumnRewritePathTests</c>'.
 /// </para>
 /// <para>
 /// The two catalogs are read separately because PostgreSQL stores the two kinds of grant in
@@ -80,8 +96,9 @@ namespace IntegrationTests;
 /// row spelled differently.
 /// </para>
 /// <para>
-/// Every observation is made on the container superuser connection, and that is correct rather than
-/// a privilege blind spot. <c>pg_class</c>, <c>pg_attribute</c> and <c>pg_roles</c> describe the
+/// Every catalog read is made on the container superuser connection, and that is correct rather than
+/// a privilege blind spot — the column probe is the one statement sent as the role itself, because
+/// it measures a refusal rather than reading a catalog. <c>pg_class</c>, <c>pg_attribute</c> and <c>pg_roles</c> describe the
 /// cluster, and the cluster reads the same whoever asks — the same point
 /// <c>RowLevelSecurityCoverage.DiscoverAsync</c> makes about its own catalog reads. Sending these
 /// queries on the application role's own connection would only reintroduce the filtering the
@@ -659,6 +676,295 @@ public sealed class AppRoleGrantMatrixTests
     }
 
     /// <summary>
+    /// The same declared matrix, compared against what the role can <b>actually do</b> rather than
+    /// against what the ACL columns spell. <see cref="AppRoleGrants_MatchTheDeclaredMatrix" /> reads
+    /// <c>relacl</c> and <c>attacl</c>, and two ways of holding a privilege never write to either: a
+    /// predefined role such as <c>pg_write_all_data</c> carries its reach in the role itself, and an
+    /// owner's privileges live in the <i>implicit</i> ACL a null <c>relacl</c> stands for. This test
+    /// asks <c>has_table_privilege</c> and <c>has_column_privilege</c>, which answer what the role can
+    /// exercise however it came to hold it. Two edits to the grants file were run to measure the
+    /// gap: <c>GRANT pg_write_all_data TO budgetoid_app</c>, and a table created there and handed to
+    /// the role with <c>ALTER TABLE … OWNER TO budgetoid_app</c> and no grant, so its <c>relacl</c>
+    /// stays null. Each turned this test red while the ACL reader above stayed green. Handing an
+    /// already-granted table such as <c>currencies</c> to the role is <i>not</i> that gap: the
+    /// transfer rewrites a non-null <c>relacl</c> with the new owner's privileges spelled out, and
+    /// the ACL reader went red on it as well.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The key is built so that a widened <c>UPDATE</c> still reads as the wrong thing. An effective
+    /// column question on a table with a table-wide <c>UPDATE</c> answers true for every column, so
+    /// a column entry is emitted only where the role holds the column privilege <b>without</b> the
+    /// table-level one, or the column's grant option <b>without</b> the table's. A table-wide
+    /// <c>UPDATE ON budgets</c> therefore reads as the unexpected <c>budgets: UPDATE</c> and the
+    /// missing <c>budgets.name: UPDATE</c> together — the same two-sided failure the grant-matrix
+    /// test gives for the same edit — while a column grant option on a privilege the table already
+    /// gives, such as <c>SELECT (email) ON users … WITH GRANT OPTION</c>, still reads as its own
+    /// unexpected entry. <see cref="EffectiveColumnPrivilegeSql" /> says why the two are subtracted
+    /// separately.
+    /// </para>
+    /// <para>
+    /// <c>MAINTAIN</c> is asked only on a server that has it. It is a PostgreSQL 17 privilege, so the
+    /// list is chosen from <c>server_version_num</c> rather than hard-coded either way; the
+    /// containers this suite runs on are 17, so the <c>MAINTAIN</c> arm is the one exercised.
+    /// Sequences are additionally asked about <c>USAGE</c> through <c>has_sequence_privilege</c>,
+    /// because <c>has_table_privilege</c> refuses that word outright (<c>22023</c>, unrecognized
+    /// privilege type) rather than answering false.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task AppRoleEffectivePrivileges_MatchTheDeclaredMatrix()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartHostAsync();
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        string[] tablePrivileges = await TablePrivilegesToAskAsync(admin);
+
+        // Act
+        HashSet<string> held = await ReadEffectiveTablePrivilegesAsync(admin, tablePrivileges);
+        held.UnionWith(await ReadEffectiveColumnPrivilegesAsync(admin));
+        HashSet<string> expected = ExpectedMatrix();
+
+        // Assert — both directions in one list, for the reason the grant-matrix test gives.
+        List<string> differences =
+        [
+            .. held.Except(expected, StringComparer.Ordinal)
+                .Order(StringComparer.Ordinal)
+                .Select(entry => $"unexpected effective privilege: {entry}"),
+            .. expected.Except(held, StringComparer.Ordinal)
+                .Order(StringComparer.Ordinal)
+                .Select(entry => $"missing effective privilege: {entry}"),
+        ];
+
+        await Assert.That(differences).IsEmpty();
+    }
+
+    /// <summary>
+    /// Sends an <c>UPDATE</c> naming each column of every table in <c>public</c>, one column per
+    /// statement, on the application role's own connection — and requires <c>42501</c> for every
+    /// column off the declared lists and success for every column on them. This is the
+    /// statement-shaped half of the matrix, and unlike the probes in <c>AppRoleGrantsTests</c> it
+    /// asks about every column the catalog holds rather than the ones somebody thought to write down.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>WHERE false</c> keeps the policy out of the answer. With a real predicate (measured as
+    /// <c>where c = c</c>) every granted column on a policed table answered <c>22P02</c> instead,
+    /// because the session-less connection reaches the policy and an unset setting reads as
+    /// <c>''::uuid</c> — so the accept half could never pass. With no row in reach there is also no
+    /// <c>WITH CHECK</c> to fail.
+    /// </para>
+    /// <para>
+    /// <c>set c = default</c> keeps every privilege but <c>UPDATE</c> out of it. The probe used to
+    /// read <c>set c = c</c>, and reading <c>c</c> on the right-hand side needs <c>SELECT</c> on it
+    /// too, so a <c>42501</c> meant "one of the two is missing" — and on a column the role could
+    /// <c>UPDATE</c> but not read, the refusal half passed while the column was writable. That was
+    /// run: with <c>GRANT SELECT ON currencies</c> swapped for <c>GRANT UPDATE ON currencies</c> in the
+    /// grants file, the <c>c = c</c> probe stayed green, and the <c>= default</c> probe named all four
+    /// currencies columns as accepted. On postgres:17.10, against a <c>FORCE ROW LEVEL SECURITY</c>
+    /// table with no session setting, a role holding <c>UPDATE (a)</c> alone got <c>UPDATE 0</c> for
+    /// <c>set a = default where false</c> and <c>42501</c> for the same statement on another column.
+    /// So a <c>42501</c> here is the column's <c>UPDATE</c> grant, and nothing else. What it still
+    /// cannot see is a column written by something other than the statement — a trigger, a rule or a
+    /// referential action — which <c>ImmutableColumnRewritePathTests</c> holds.
+    /// </para>
+    /// <para>
+    /// The columns are discovered at run time from <c>pg_attribute</c> over tables and partitioned
+    /// tables, with the statement quoted server-side by <c>format('%I')</c>. A tenant table added
+    /// tomorrow is probed the day it lands. Because a discovery that returned nothing would pass both
+    /// halves vacuously, a floor follows: <c>budget_id</c> on every budget-owned table (at least the
+    /// five known today), <c>accounts.currency_code</c>, and every <c>budgets</c> column but
+    /// <c>name</c> must be among the refusals actually observed.
+    /// </para>
+    /// <para>
+    /// <c>__EFMigrationsHistory</c> is probed like any other table and not exempted. It holds
+    /// <c>SELECT</c> alone, so every one of its columns is off every list and must refuse; a role
+    /// that could rewrite that table could tell the next deploy's migrator the schema is somewhere
+    /// it is not.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task AppRoleUpdates_AreRefusedOnEveryColumnOffTheDeclaredLists_AndAcceptedOnEveryColumnOnThem()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartHostAsync();
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        List<ColumnProbe> probes = await DiscoverColumnProbesAsync(admin);
+
+        HashSet<string> declared = new(StringComparer.Ordinal);
+        foreach ((string table, string[] columns) in ExpectedUpdateColumnGrants)
+        {
+            foreach (string column in columns)
+            {
+                declared.Add($"{table}.{column}");
+            }
+        }
+
+        await using NpgsqlConnection app = new(host.AppConnectionString);
+        await app.OpenAsync();
+
+        // Act — one statement per column, each answer recorded as the SQLSTATE or as accepted.
+        Dictionary<string, string> outcomes = new(StringComparer.Ordinal);
+        foreach (ColumnProbe probe in probes)
+        {
+            outcomes[probe.Key] = await ProbeUpdateAsync(app, probe.Statement);
+        }
+
+        // Assert — every column off the lists refused with 42501, every column on them accepted, and
+        // every declared column present in the schema to be probed at all.
+        List<string> offenders =
+        [
+            .. outcomes
+                .Where(o => !declared.Contains(o.Key) && o.Value != PostgresErrorCodes.InsufficientPrivilege)
+                .Select(o => $"not refused: {o.Key} answered {o.Value}"),
+            .. outcomes
+                .Where(o => declared.Contains(o.Key) && o.Value != Accepted)
+                .Select(o => $"not accepted: {o.Key} answered {o.Value}"),
+            .. declared
+                .Where(key => !outcomes.ContainsKey(key))
+                .Select(key => $"declared but not in the schema: {key}"),
+        ];
+        offenders.Sort(StringComparer.Ordinal);
+
+        await Assert.That(offenders).IsEmpty();
+
+        // Assert — the floor. Derived from the same discovery, then checked against names known today
+        // so an empty discovery cannot satisfy it.
+        string[] budgetOwnedTables = [.. probes
+            .Where(p => p.Column == "budget_id")
+            .Select(p => p.Table)];
+        string[] knownBudgetOwnedTables =
+            ["accounts", "category_groups", "categories", "payees", "transactions"];
+        string[] floor =
+        [
+            .. budgetOwnedTables.Select(table => $"{table}.budget_id"),
+            .. knownBudgetOwnedTables.Select(table => $"{table}.budget_id"),
+            "accounts.currency_code",
+            .. probes
+                .Where(p => p.Table == "budgets" && p.Column != "name")
+                .Select(p => p.Key),
+            "budgets.id",
+            "budgets.user_id",
+            "budgets.base_currency_code",
+            "budgets.created_at_utc",
+            "budgets.rotation_id",
+        ];
+        List<string> floorMissing =
+        [
+            .. floor
+                .Distinct(StringComparer.Ordinal)
+                .Where(key => !outcomes.TryGetValue(key, out string? outcome)
+                    || outcome != PostgresErrorCodes.InsufficientPrivilege)
+                .Order(StringComparer.Ordinal),
+        ];
+
+        await Assert.That(floorMissing).IsEmpty();
+    }
+
+    /// <summary>
+    /// The role's effective privileges on every schema in the database must be exactly
+    /// <c>USAGE</c> on <c>public</c>, <c>pg_catalog</c> and <c>information_schema</c>.
+    /// <c>GRANT CREATE ON SCHEMA public</c> lets the role create objects it then owns — tables,
+    /// views, functions — and neither relation-level reader in this file looks at
+    /// <c>pg_namespace</c>, so without this test that grant reddens nothing here.
+    /// </summary>
+    /// <remarks>
+    /// <c>has_schema_privilege</c> rather than <c>aclexplode(nspacl)</c>, for the reason the
+    /// effective-privilege test gives: it answers ownership, membership and predefined roles too.
+    /// Both privileges a schema has are asked, each also <c>WITH GRANT OPTION</c>, over every row of
+    /// <c>pg_namespace</c> with no name filter — <c>pg_toast</c> and any temporary schemas included —
+    /// so a grant on a schema nobody expected is exactly as visible as one on <c>public</c>.
+    /// </remarks>
+    [Test]
+    public async Task AppRoleSchemaPrivileges_MatchTheDeclaredSet()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartHostAsync();
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        HashSet<string> expected = new(StringComparer.Ordinal)
+        {
+            "public: USAGE",
+            "pg_catalog: USAGE",
+            "information_schema: USAGE",
+        };
+
+        // Act
+        HashSet<string> held = await ReadEffectiveSchemaPrivilegesAsync(admin);
+
+        // Assert
+        List<string> differences =
+        [
+            .. held.Except(expected, StringComparer.Ordinal)
+                .Order(StringComparer.Ordinal)
+                .Select(entry => $"unexpected schema privilege: {entry}"),
+            .. expected.Except(held, StringComparer.Ordinal)
+                .Order(StringComparer.Ordinal)
+                .Select(entry => $"missing schema privilege: {entry}"),
+        ];
+
+        await Assert.That(differences).IsEmpty();
+    }
+
+    /// <summary>
+    /// The schema entries written to the role <b>by name</b> must be exactly <c>USAGE</c> on
+    /// <c>public</c>, with no grant option. This is the grant script's own
+    /// <c>GRANT USAGE ON SCHEMA public</c>, pinned as a line of the file rather than as an effect.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <see cref="AppRoleSchemaPrivileges_MatchTheDeclaredSet" /> cannot hold this line, and the reason
+    /// is a default. In a fresh postgres:17.10 container, <c>public</c> carries
+    /// <c>{pg_database_owner=UC/pg_database_owner,=U/pg_database_owner}</c>: <c>PUBLIC</c> holds
+    /// <c>USAGE</c> there, every role inherits it, and so the effective question answers true with the
+    /// script's grant deleted. Its "missing" half can never fire for <c>public</c>.
+    /// </para>
+    /// <para>
+    /// The default does not survive every path. The rebaseline recipe in <c>DEPLOYMENT.md</c> runs
+    /// <c>drop schema public cascade</c> then <c>create schema public</c>, and on postgres:17.10 the
+    /// recreated schema has a null <c>nspacl</c> owned by the creating role, whose default names that
+    /// owner alone — <c>has_schema_privilege</c> for another role answered false there, as it did for
+    /// a new <c>create schema x</c>. On that path the script's own line is the only thing that lets
+    /// the role resolve a table, so deleting it is an outage the effective test would not have seen
+    /// coming.
+    /// </para>
+    /// <para>
+    /// The ACL is read through <c>aclexplode</c> with the grantee equal to the role's own oid —
+    /// not <c>PUBLIC</c>, not a role it is a member of — and through
+    /// <c>coalesce(nspacl, acldefault('n', nspowner))</c>, so a schema the role owns shows its
+    /// implicit entries too. The grant option is part of the key, for the reason
+    /// <see cref="Grantable" /> gives.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task AppRoleOwnSchemaGrants_AreUsageOnPublicAlone()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartHostAsync();
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        HashSet<string> expected = new(StringComparer.Ordinal) { "public: USAGE" };
+
+        // Act
+        HashSet<string> held = await ReadOwnSchemaGrantsAsync(admin);
+
+        // Assert
+        List<string> differences =
+        [
+            .. held.Except(expected, StringComparer.Ordinal)
+                .Order(StringComparer.Ordinal)
+                .Select(entry => $"unexpected own schema grant: {entry}"),
+            .. expected.Except(held, StringComparer.Ordinal)
+                .Order(StringComparer.Ordinal)
+                .Select(entry => $"missing own schema grant: {entry}"),
+        ];
+
+        await Assert.That(differences).IsEmpty();
+    }
+
+    /// <summary>
     /// Flattens both halves of the declared matrix into the one comparable set. Table entries read
     /// <c>table: PRIVILEGE</c> and column entries <c>table.column: UPDATE</c>, which keeps the two
     /// kinds of grant distinguishable in the same set — a table-wide <c>UPDATE</c> can never
@@ -784,6 +1090,250 @@ public sealed class AppRoleGrantMatrixTests
         }
 
         return held;
+    }
+
+    /// <summary>
+    /// Every table-level privilege word PostgreSQL 16 and earlier recognise. <c>MAINTAIN</c> is
+    /// appended by <see cref="TablePrivilegesToAskAsync" /> on a server that has it.
+    /// </summary>
+    private static readonly string[] TablePrivilegesBeforeMaintain =
+        ["SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"];
+
+    /// <summary>The privileges that exist at column level as well as table level.</summary>
+    private static readonly string[] ColumnPrivileges = ["SELECT", "INSERT", "UPDATE", "REFERENCES"];
+
+    private const int FirstServerVersionWithMaintain = 170000;
+
+    private static async Task<string[]> TablePrivilegesToAskAsync(NpgsqlConnection connection)
+    {
+        await using NpgsqlCommand command = new(
+            "select cast(current_setting('server_version_num') as integer)", connection);
+        int serverVersion = (int)(await command.ExecuteScalarAsync())!;
+        return serverVersion >= FirstServerVersionWithMaintain
+            ? [.. TablePrivilegesBeforeMaintain, "MAINTAIN"]
+            : TablePrivilegesBeforeMaintain;
+    }
+
+    /// <summary>
+    /// Every table-level privilege the role can exercise on a relation in <c>public</c>, whatever
+    /// its source. No <c>relkind</c> filter, for the reason the class remarks give; sequences are
+    /// also asked about <c>USAGE</c> through the one function that accepts it.
+    /// </summary>
+    private const string EffectiveTablePrivilegeSql =
+        """
+        select c.relname, p.privilege,
+               has_table_privilege(cast(@role as name), c.oid, p.privilege),
+               has_table_privilege(cast(@role as name), c.oid, p.privilege || ' WITH GRANT OPTION')
+        from pg_class c
+        join pg_namespace n on n.oid = c.relnamespace
+        cross join unnest(@privileges) p(privilege)
+        where n.nspname = 'public'
+        union all
+        select c.relname, 'USAGE',
+               has_sequence_privilege(cast(@role as name), c.oid, 'USAGE'),
+               has_sequence_privilege(cast(@role as name), c.oid, 'USAGE WITH GRANT OPTION')
+        from pg_class c
+        join pg_namespace n on n.oid = c.relnamespace
+        where n.nspname = 'public'
+          and c.relkind = 'S'
+        """;
+
+    /// <summary>
+    /// Every column-level privilege the role can exercise in <c>public</c> <b>that the table-level
+    /// privilege of the same name does not already cover</b>. Without that subtraction a table-wide
+    /// <c>UPDATE</c> would answer true on every column and could satisfy the column-level
+    /// expectations it replaced.
+    /// </summary>
+    /// <remarks>
+    /// The privilege and its grant option are subtracted <b>each at its own level</b>, and a column
+    /// entry is emitted when either survives: the column privilege the table does not cover, or the
+    /// column grant option the table does not cover. Subtracting them together, as this query used
+    /// to, emitted nothing for <c>GRANT SELECT (email) ON users … WITH GRANT OPTION</c>: the role
+    /// already holds <c>SELECT</c> on <c>users</c> table-wide, so the column privilege was covered,
+    /// and the grant option riding on it was dropped with it. That edit to the grants file was run
+    /// and left this test green; it now reads as the unexpected
+    /// <c>users.email: SELECT WITH GRANT OPTION</c>.
+    /// </remarks>
+    private const string EffectiveColumnPrivilegeSql =
+        """
+        with asked as (
+            select c.relname, a.attname, p.privilege,
+                   has_column_privilege(cast(@role as name), c.oid, a.attnum, p.privilege)
+                       as column_privilege,
+                   has_table_privilege(cast(@role as name), c.oid, p.privilege) as table_privilege,
+                   has_column_privilege(
+                           cast(@role as name), c.oid, a.attnum, p.privilege || ' WITH GRANT OPTION')
+                       as column_grant_option,
+                   has_table_privilege(
+                           cast(@role as name), c.oid, p.privilege || ' WITH GRANT OPTION')
+                       as table_grant_option
+            from pg_attribute a
+            join pg_class c on c.oid = a.attrelid
+            join pg_namespace n on n.oid = c.relnamespace
+            cross join unnest(@privileges) p(privilege)
+            where n.nspname = 'public'
+              and a.attnum > 0
+              and not a.attisdropped
+        )
+        select relname, attname, privilege,
+               (column_privilege and not table_privilege)
+                   or (column_grant_option and not table_grant_option),
+               column_grant_option and not table_grant_option
+        from asked
+        """;
+
+    private static async Task<HashSet<string>> ReadEffectiveTablePrivilegesAsync(
+        NpgsqlConnection connection, string[] privileges)
+    {
+        HashSet<string> held = new(StringComparer.Ordinal);
+        await using NpgsqlCommand command = new(EffectiveTablePrivilegeSql, connection);
+        command.Parameters.AddWithValue("role", AppRoleName);
+        command.Parameters.AddWithValue("privileges", privileges);
+        await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            if (reader.GetBoolean(2))
+            {
+                held.Add(Grantable(
+                    TableEntry(reader.GetString(0), reader.GetString(1)), reader.GetBoolean(3)));
+            }
+        }
+
+        return held;
+    }
+
+    private static async Task<HashSet<string>> ReadEffectiveColumnPrivilegesAsync(
+        NpgsqlConnection connection)
+    {
+        HashSet<string> held = new(StringComparer.Ordinal);
+        await using NpgsqlCommand command = new(EffectiveColumnPrivilegeSql, connection);
+        command.Parameters.AddWithValue("role", AppRoleName);
+        command.Parameters.AddWithValue("privileges", ColumnPrivileges);
+        await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            if (reader.GetBoolean(3))
+            {
+                held.Add(Grantable(
+                    ColumnEntry(reader.GetString(0), reader.GetString(1), reader.GetString(2)),
+                    reader.GetBoolean(4)));
+            }
+        }
+
+        return held;
+    }
+
+    /// <summary>
+    /// Every schema privilege the role can exercise, over every row of <c>pg_namespace</c>.
+    /// </summary>
+    private const string EffectiveSchemaPrivilegeSql =
+        """
+        select n.nspname, p.privilege,
+               has_schema_privilege(cast(@role as name), n.oid, p.privilege),
+               has_schema_privilege(cast(@role as name), n.oid, p.privilege || ' WITH GRANT OPTION')
+        from pg_namespace n
+        cross join unnest(array['USAGE', 'CREATE']) p(privilege)
+        """;
+
+    private static async Task<HashSet<string>> ReadEffectiveSchemaPrivilegesAsync(
+        NpgsqlConnection connection)
+    {
+        HashSet<string> held = new(StringComparer.Ordinal);
+        await using NpgsqlCommand command = new(EffectiveSchemaPrivilegeSql, connection);
+        command.Parameters.AddWithValue("role", AppRoleName);
+        await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            if (reader.GetBoolean(2))
+            {
+                held.Add(Grantable(
+                    TableEntry(reader.GetString(0), reader.GetString(1)), reader.GetBoolean(3)));
+            }
+        }
+
+        return held;
+    }
+
+    /// <summary>
+    /// Every schema ACL entry whose grantee is the role itself, over every row of
+    /// <c>pg_namespace</c>.
+    /// </summary>
+    private const string OwnSchemaGrantSql =
+        """
+        select n.nspname, acl.privilege_type, acl.is_grantable
+        from pg_namespace n
+        cross join lateral aclexplode(coalesce(n.nspacl, acldefault('n', n.nspowner))) acl
+        where acl.grantee = (select oid from pg_roles where rolname = @role)
+        """;
+
+    private static async Task<HashSet<string>> ReadOwnSchemaGrantsAsync(NpgsqlConnection connection)
+    {
+        HashSet<string> held = new(StringComparer.Ordinal);
+        await using NpgsqlCommand command = new(OwnSchemaGrantSql, connection);
+        command.Parameters.AddWithValue("role", AppRoleName);
+        await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            held.Add(Grantable(
+                TableEntry(reader.GetString(0), reader.GetString(1)), reader.GetBoolean(2)));
+        }
+
+        return held;
+    }
+
+    /// <summary>What <see cref="ProbeUpdateAsync" /> records for a statement that ran.</summary>
+    private const string Accepted = "accepted";
+
+    /// <summary>One column of one table, and the <c>UPDATE</c> that names it alone.</summary>
+    private sealed record ColumnProbe(string Table, string Column, string Statement)
+    {
+        public string Key => $"{Table}.{Column}";
+    }
+
+    /// <summary>
+    /// Every column of every table and partitioned table in <c>public</c>, with its probe statement
+    /// quoted by the server rather than assembled here.
+    /// </summary>
+    private const string ColumnProbeSql =
+        """
+        select c.relname, a.attname,
+               format('update %I.%I set %I = default where false',
+                      n.nspname, c.relname, a.attname)
+        from pg_attribute a
+        join pg_class c on c.oid = a.attrelid
+        join pg_namespace n on n.oid = c.relnamespace
+        where n.nspname = 'public'
+          and c.relkind in ('r', 'p')
+          and a.attnum > 0
+          and not a.attisdropped
+        order by c.relname, a.attnum
+        """;
+
+    private static async Task<List<ColumnProbe>> DiscoverColumnProbesAsync(NpgsqlConnection connection)
+    {
+        List<ColumnProbe> probes = [];
+        await using NpgsqlCommand command = new(ColumnProbeSql, connection);
+        await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            probes.Add(new ColumnProbe(reader.GetString(0), reader.GetString(1), reader.GetString(2)));
+        }
+
+        return probes;
+    }
+
+    private static async Task<string> ProbeUpdateAsync(NpgsqlConnection app, string statement)
+    {
+        await using NpgsqlCommand command = new(statement, app);
+        try
+        {
+            await command.ExecuteNonQueryAsync();
+            return Accepted;
+        }
+        catch (PostgresException refusal)
+        {
+            return refusal.SqlState;
+        }
     }
 
     private static async Task<RepositoryTestHost> StartHostAsync()

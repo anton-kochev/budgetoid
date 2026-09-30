@@ -114,16 +114,42 @@ introduced it.
 **Every deploy does this automatically.** The pipeline runs it between `azd provision` and
 `azd deploy`, so new application code never starts against an old schema. One command does the whole
 job — `BudgetoidApp/Tools/DbProvision`, which migrates, provisions the `budgetoid_app` role with its
-grants and row-level security policies, and then verifies that the policies actually cover every
-budget-owned table.
+grants and row-level security policies, and then verifies two things: that the policies actually
+cover every tenant-owned table, and that the role reaches nothing the grant script leaves behind.
+After binding the role to the API's identity it runs the reach check once more.
 
 The ordering used to live in this runbook and now lives in code, because getting it wrong is silent.
-The grant matrix is fail-closed: a missing privilege announces itself as `42501` at the first
-statement that needs it. Row-level security is fail-**open** — a migrated table with no enforced
-policy is readable and writable by the application role across every tenant, and nothing reports it.
-A deploy that migrated but skipped provisioning was therefore a tenancy breach you would not hear
-about, which is why the tool verifies rather than assumes
-([ADR 0006](docs/decisions/0006-automate-migrations-and-provisioning-in-the-pipeline.md)).
+A missing grant is fail-closed: it announces itself as `42501` at the first statement that needs it.
+Row-level security is fail-**open** — a migrated table with no enforced policy is readable and
+writable by the application role across every tenant, and nothing reports it. A deploy that migrated
+but skipped provisioning was therefore a tenancy breach you would not hear about, which is why the
+tool verifies rather than assumes
+([ADR 0006](docs/decisions/0006-automate-migrations-and-provisioning-in-the-pipeline.md)). An
+*extra* grant is fail-open too, and the script only takes back what it can: it re-converges the
+role's own grants on `public`, not role attributes, memberships, `PUBLIC` grants, default
+privileges, ownership, other schemas, or a grant some third role made. The reach check refuses those
+([ADR 0026](docs/decisions/0026-verify-at-deploy-the-reach-the-grant-script-cannot-take-back.md)).
+
+**A reach refusal exits `1` and prints one sentence per widening**, each naming the object and the
+statement that removes it — for example `ALTER ROLE budgetoid_app NOBYPASSRLS`, a `REVOKE` naming
+the object and grantee, or a `SET ROLE <grantor>; REVOKE …; RESET ROLE` for a grant a third role
+made. Re-running the deploy will not fix it; that is why it was refused. Run the printed statement
+on the admin connection (see *Verifying by hand* for the `psql` setup), then deploy again, and find
+out who made the widening. A refusal from the second run, after the identity label, points at the
+label step, which no test here can run.
+
+**Check at the first deploy: who owns the `budgetoid` database.** The script revokes `TEMPORARY` on
+the database from `PUBLIC`, and a `REVOKE` on a database by anyone but its owner is a warning that
+changes nothing. Whether the deploying Entra administrator owns the database on Azure has not been
+measured. If it does not, the first deploy refuses with a sentence naming `TEMPORARY` on the
+database and saying the statement must run as the owner. Look first, with the environment from
+*Verifying by hand*:
+
+```sh
+psql -c "select datdba::regrole from pg_database where datname = current_database()"
+```
+
+It should name the principal the tool logs in as, or a role that principal is a member of.
 
 Migrations never run at API startup and never on the application role: `budgetoid_app` is denied
 `CREATE` on the schema and cannot apply a migration even as a no-op
@@ -178,10 +204,11 @@ server is `--server-name`. A CLI old enough to reject `--server-name` wants `-n 
 --rule-name AllowMigrationClient` instead — the same call with the two names swapped, which fails
 loudly rather than quietly.
 
-Exit codes: **0** provisioned, verified, and the role bound to the identity; **1** provisioning
-failed; **2** a required environment variable is missing, empty, or malformed. On success the tool
-prints what it did — how many migrations were pending, which tables it verified, and which identity
-the role was bound to. A first run against a database migrated by hand should report no pending
+Exit codes: **0** provisioned, coverage and reach verified, and the role bound to the identity;
+**1** provisioning failed or a verification refused; **2** a required environment variable is
+missing, empty, or malformed. On success the tool prints what it did — how many migrations were
+pending, which tables it verified, what the reach check read, and which identity the role was bound
+to. A first run against a database migrated by hand should report no pending
 migrations; that line is the evidence the histories agree.
 
 If the `SECURITY LABEL` statement is rejected, the label's non-admin form is the suspect — the vendor
@@ -231,15 +258,17 @@ That takes `__EFMigrationsHistory`, every table, and the `case_insensitive` ICU 
 All three come back from the baseline — the collation is a model-level annotation the migration
 emits, not a hand-run statement. Then run the same `DbProvision` command the break-glass recipe
 uses: it migrates the fresh schema, re-runs `app-role-grants.sql` (idempotent by design, and the
-source of the `USAGE` grant on the recreated schema), verifies row-level security coverage, and
-rebinds `budgetoid_app` to the API's managed identity. The role itself is never dropped, so only its
-grants need restoring, and provisioning restores them.
+source of the `USAGE` grant on the recreated schema), verifies row-level security coverage and the
+role's reach, and rebinds `budgetoid_app` to the API's managed identity. The role itself is never
+dropped, so only its grants need restoring, and provisioning restores them.
 
 Then remove the firewall rule, as always.
 
 ### Verifying by hand
 
-The tool's own verification covers row-level security. To inspect the grant matrix as well:
+The tool's own verification covers row-level security and the role's reach beyond the grant
+script. The table and column grant matrix itself is held in CI, not at deploy, because the script
+re-converges it on every run. To inspect it as well:
 
 ```sh
 export PGHOST="$HOST"
@@ -464,7 +493,8 @@ failure to notice first.
 
 1. `aspire run` locally still works (dev CORS to `localhost:4200`, local Postgres container).
 2. DB: the deploy run's provisioning step exits 0 — it reports the migrations it applied, then
-   confirms row-level security covers every budget-owned table. `\dp payees` shows `budgetoid_app`
+   confirms row-level security covers every tenant-owned table and that the role's reach holds
+   nothing beyond its grant matrix. `\dp payees` shows `budgetoid_app`
    with the column grants, and `az postgres flexible-server firewall-rule list` comes back empty.
    **Empty is the whole point and it is not self-maintaining.** ARM deployments are incremental, so
    a rule that already exists on the server survives being deleted from the template — after the

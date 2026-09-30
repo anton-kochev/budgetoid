@@ -89,14 +89,24 @@ last-used timestamp are both specified, and each joins the list while the identi
 it.
 **"Simplifying" any column-list grant into a table-wide one silently re-opens every hole the list
 exists to close**, and nothing fails at the time it is done.
+Omission has one precondition: the role's own `UPDATE` must be the only thing that can write the
+column. A trigger, a rewrite rule and a foreign key's referential action each write columns the
+statement never named, with someone else's privileges, so any one of them would make an omitted
+column writable while every grant still reads correct. `ImmutableColumnRewritePathTests` holds
+that the schema carries none that could, as a CI gate
+([ADR 0026](0026-verify-at-deploy-the-reach-the-grant-script-cannot-take-back.md)).
 
-**The script is idempotent and convergent, and is deliberately not an EF migration.** Each table's
-block is `REVOKE ALL` followed by the grants it should have, so a re-run converges the role to
-exactly what is written — deleting a line removes the privilege on the next run rather than leaving
-it behind on a database that already has it. It must never become a migration: the repository keeps a
-single regenerated baseline, hand-added SQL in it is lost on every regeneration, and grants target a
-**role** rather than the schema, so they belong to a step that re-runs rather than to a history that
-applies once.
+**The script is idempotent and convergent, and is deliberately not an EF migration.** It first
+revokes all on every table and sequence in `public` from the role, and each table's block is then
+`REVOKE ALL` followed by the grants it should have, so a re-run converges the role's own grants
+there to exactly what is written — deleting a line removes the privilege on the next run rather than
+leaving it behind on a database that already has it. Convergence reaches only what a `REVOKE` from
+the role can take back, which is the grants the object's owner made; what it leaves standing is
+refused at deploy instead
+([ADR 0026](0026-verify-at-deploy-the-reach-the-grant-script-cannot-take-back.md)). It must never
+become a migration: the repository keeps a single regenerated baseline, hand-added SQL in it is lost on every
+regeneration, and grants target a **role** rather than the schema, so they belong to a step that
+re-runs rather than to a history that applies once.
 
 **Migrations always run as admin, and that was measured rather than assumed.** `SELECT` on
 `__EFMigrationsHistory` is not enough to run `MigrateAsync` even against an already-migrated
@@ -117,7 +127,10 @@ grant that unblocks it, never `GRANT ALL`.
 error.** Every column the role cannot write is one no domain method reaches, so a `42501` arriving at
 a user means the domain was bypassed — by raw SQL, an `ExecuteUpdate`, or a write path built without
 the entity. A 400 would be a lie about whose mistake it was; a 500 naming the real failure is the
-honest answer, and `GlobalExceptionHandler` already produces it.
+honest answer, and `GlobalExceptionHandler` already produces it. `PrivilegeRefusalSurfacingTests`
+holds that on two routes whose repositories already catch `23505` — a 500 with no `conflictKind`
+and no `errors`, nothing written, and an Error record carrying `42501` — so widening either catch
+to swallow the refusal is red.
 
 **The tests run under the role, because a test on the admin connection measures nothing.** PostgreSQL
 skips every privilege check for a superuser, and the test containers' account is one — so a

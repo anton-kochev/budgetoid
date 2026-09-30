@@ -20,12 +20,16 @@ Enforced today:
   round-trip. The policies live in `Infrastructure/Persistence/Provisioning/app-role-grants.sql`,
   never in a migration ([ADR 0005](../decisions/0005-isolate-budget-owned-rows-with-row-level-security.md),
   [ADR 0011](../decisions/0011-police-the-user-owned-tables.md)).
-  **A new tenant-owned table needs a grant *and* a policy**: the grants are fail-closed, so a
-  missing one fails loudly with `42501`, but RLS is fail-**open** — a granted table with no policy
-  is readable across every tenant, silently. `tests/IntegrationTests/RlsCoverageTests.cs` reads the
-  live schema and requires **every relation in `public` that can hold or expose rows** to be
-  accounted for: an ordinary or partitioned table policed with the policy its ownership calls for,
-  or an explicit exemption carrying its reason. Two refusals rather than one. A table carrying
+  **A new tenant-owned table needs a grant *and* a policy**: a missing grant is fail-closed and
+  fails loudly with `42501`, but RLS is fail-**open** — a granted table with no policy is readable
+  across every tenant, silently. An *extra* grant is fail-open as well, and `BYPASSRLS` on the role
+  voids every policy here while each stays correct in the catalog; the deploy refuses both, with
+  the rest of what a re-run of the grant script cannot take back
+  ([ADR 0026](../decisions/0026-verify-at-deploy-the-reach-the-grant-script-cannot-take-back.md)).
+  `tests/IntegrationTests/RlsCoverageTests.cs` reads the live schema and requires **every relation
+  in `public` that can hold or expose rows** to be accounted for: an ordinary or partitioned table
+  policed with the policy its ownership calls for, or an explicit exemption carrying its reason. Two
+  refusals rather than one. A table carrying
   neither `budget_id` nor `user_id` is refused because "we forgot" and "it needs nothing" produce
   the identical catalog. A **view, materialized view or foreign table is refused outright** — a
   view runs with its *owner's* privileges unless `security_invoker` is set, and an owner bypasses
@@ -251,7 +255,11 @@ Enforced today:
   what stops the *application* from moving a row between budgets. The database holds the same rule
   independently: `budget_id` is absent from every `UPDATE` column list granted to the application
   role, so a raw `UPDATE` fails with `42501` whatever issued it
-  ([ADR 0004](../decisions/0004-connect-as-a-least-privilege-role.md)).
+  ([ADR 0004](../decisions/0004-connect-as-a-least-privilege-role.md)). That holds only while the
+  role's own `UPDATE` is the only way to write the column: a trigger, a rewrite rule or a foreign
+  key's `ON UPDATE CASCADE` or any `SET NULL`/`SET DEFAULT` action writes it with someone else's
+  privileges. `ImmutableColumnRewritePathTests` holds that the schema has none of them that could
+  ([ADR 0026](../decisions/0026-verify-at-deploy-the-reach-the-grant-script-cannot-take-back.md)).
 - **Server-assigned ownership.** `BudgetId` comes only from `IBudgetContext`, never from a request
   DTO or route. `CreateTransactionCommand` has no `BudgetId` field; keep it that way. The policies'
   `WITH CHECK` half holds the same rule underneath: an insert can only land in the ambient budget,
@@ -384,7 +392,16 @@ including one carrying neither ownership column, and one that is a view or mater
 sabotaged once per failure mode: a dropped policy, a *renamed* one, row security switched off, an
 unclassifiable table, a policy narrowed to `FOR SELECT`, one with a trivial `USING`, one keyed on
 the wrong session setting, one on `users` naming no ownership column, one whose `WITH CHECK` is
-wider than its `USING`, a restrictive one, and a granted view over a policed table),
+wider than its `USING`, a restrictive one, and a granted view over a policed table — and the reach
+gate beside it, sabotaged once per rule of `AppRoleReach.FindProblems`, among them `BYPASSRLS` on
+the role, a membership in a predefined role, and a grant made by a third role, against a clean
+database it must accept),
+`tests/IntegrationTests/AppRoleGrantMatrixTests.cs` (the grant matrix in both directions, read as
+written ACLs, as effective privileges, as an `UPDATE … SET c = DEFAULT WHERE false` probe sent as
+the role at every column of every table in `public`, and as schema privileges),
+`tests/IntegrationTests/ImmutableColumnRewritePathTests.cs` (no user trigger, no rule but a view's
+own, and no foreign-key action writing a column the role cannot `UPDATE` — the precondition of
+immutability by omission, in CI only),
 `tests/IntegrationTests/BudgetIsolationTests.cs` (DbContext-level two-budgets-same-process +
 endpoint-level two-factory), the `BudgetId` immutability unit test in
 `tests/UnitTests/TransactionTests.cs`, `tests/UnitTests/OwnershipKeyImmutabilityTests.cs` (the same
