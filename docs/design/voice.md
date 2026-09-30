@@ -64,7 +64,10 @@ figures, not to copy that could just say the number).
 - **Empty state**: fact → orientation (optional) → action.
   "No accounts yet." / "Every account in one place — one picture of your money." /
   "Add account".
-- **Confirmation**: past-tense fact, one word if possible: "Recorded." "Exported."
+- **Confirmation**: past-tense fact, one word if possible: "Recorded." "Exported." Where the
+  result may already have been true before the press — the same value chosen again, or an earlier
+  request that committed without its answer arriving — state the result instead of the act: "Your
+  email address is &lt;address&gt;." A past-tense act claims a change that may not have happened.
 - **Destructive confirm**: consequence in plain words, then the action as the verb:
   "This erases your account and everything in it — every budget, account, category,
   payee and transaction. There is no undo." → "Erase everything".
@@ -88,6 +91,13 @@ figures, not to copy that could just say the number).
   the control worked: a confirmation step, a place to show new codes. Each correction is
   narrower than the one before, which is the shape this rule produces when it is applied
   rather than admired.
+- **Leaving for another site**: where the person goes, what they do there, where they come back,
+  and what the trip costs here — in that order, as standing prose before the press. "Changing your
+  email address takes you to Google to choose the account whose address you want, then brings you
+  back here to confirm with a passkey." Name the site; no interstitial announcing that the person
+  is leaving, and no label above the sentence. The return is a promise, so name only a place the
+  flow actually lands on. The cost is a fact about this tab, stated in its own block, never as a
+  warning: "Coming back reloads this page."
 - **Controls blocked by different things get different sentences, and the rule carries no
   count.** Each inert control says what holds *it* off, and a control that is off only for a
   while — Export, while this tab cannot open what the file is written from — says so in its

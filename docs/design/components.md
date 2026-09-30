@@ -698,6 +698,373 @@ is about what is attached to the account rather than about the browser holding i
   request that got no answer, because here silence is not evidence about the visitor: the visitor has
   already said what they want.
 
+## Changing the email address
+
+The account's way to take a new address: one trip to Google to choose it, one passkey to confirm it
+here. M3 base: **none** — two blocks of prose, a sentence present only while the control is held
+off, one button, and the Account section's existing `role="status"` region, for the reason the
+sections below give: one act about one thing is a sentence, and every component that would wrap it
+exists to group things there is more than one of.
+
+It sits in the **Account** section, **between the address row it changes and Sign out**. The act is
+about that row and nothing else, so it goes beside it; Sign out stays last, because it is about the
+browser holding the account rather than about anything the account holds.
+
+**There is no field for an address anywhere in this flow, and the product runs no check of its
+own.** The new address is the one Google asserts for the account the person chooses there — no
+emailed code, no link, no typed value. So nothing on this screen is a form, and the
+[write chapter](#a-write-that-does-not-happen)'s rules about typed text do not reach it.
+
+### The copy is the specification
+
+> Changing your email address takes you to Google to choose the account whose address you want,
+> then brings you back here to confirm with a passkey. The new address is the one Google holds for
+> that account — there’s nothing to type and no email to wait for.
+
+> Coming back reloads this page. That locks your account’s keys in this tab, so you’ll unlock
+> again afterwards, and it would stop a key rotation running in this tab where it is.
+
+**Two blocks, and the second is the consequence**, standing on its own for the reason the Key
+rotation chapter gives for its own pair: a cost folded into the sentence about the act is read once
+by somebody who came for the act. It names what the trip costs **in this tab**, because that is the
+only place it costs anything.
+
+**Both are standing prose, so both are true at rest, while the control is held off, while the
+section waits for a passkey, and after an outcome.** Each says what the act *does*, per
+[voice](voice.md)'s rule for a long act. The rotation clause is written as *would* on purpose: the
+press is held off while this tab walks a run (below), so the clause states what a reload does to one
+rather than what this press is about to do — and it is the reason that gate exists.
+
+Four sentences a writer reaches for, refused:
+
+- *We’ll send a code to your new address.* False, and the one this chapter most needs kept out:
+  the product sends nothing and checks nothing itself.
+- *Unlock first.* The act does not need the keys, and the reload locks them anyway.
+- *You’ll be signed out.* False. The session in this tab survives the trip; only the keys go.
+- *Your Google account signs you in to Budgetoid.* False since the passkey took sign-in over, and
+  the welcome screen's provider line argues it.
+
+### The Change control
+
+- **Outline** (`mat-stroked-button`), 48px target, visible label **Change email address**.
+- **Not Primary.** Export is the screen's one main action, and a screen with two is a screen with
+  none — Sign out's reason, unchanged.
+- **Not Destructive.** Nothing is lost that the same act cannot restore: the previous address comes
+  back by choosing the previous Google account. The fill promises there is no way back, and there
+  is one.
+- **Not Ghost**, though the Buttons table names Ghost for inline actions and this control sits
+  beside a row. The row is a `<dl>` and is not a target; the control is its own element after it,
+  the secondary action of a section, which is what Outline is for. Sign out beneath it is Outline
+  too, and two secondary actions in one section at two weights would rank them.
+- **The label names its object.** The book's labels are a bare verb only where the verb cannot be
+  misread — **Export**, **Unlock**, **Sign out** — and carry the object where it can: **Register a
+  passkey**, **Generate recovery codes**, **Rotate keys**. A bare **Change** in a screen reader's
+  list of buttons says nothing about what it changes. The label is the whole accessible name; it is
+  the only such control on the screen, so nothing is composed.
+- **A button, not a link.** The press prepares the request Google answers before the page leaves, so
+  there is no address to put in an `href`, and a link opened in a new tab would split the return
+  from the screen that reads it.
+- **Offered on a locked account at full strength**, with no sentence about unlocking. The act needs
+  no key, and the trip locks the account whatever it held.
+
+### Held off, and a reason for each
+
+**The press is held off in four cases, and no two share a sentence** — with each other, or with
+Export's. Each is a state of this tab that ends on this screen, so the control takes
+`disabledInteractive` and keeps its tab stop: the [Buttons](#buttons) chapter's fourth case for the
+first three, its busy case for the fourth.
+
+| Held off by | Copy | Where it renders |
+| --- | --- | --- |
+| A key rotation this tab is walking | "Changing your email address is off while this tab gives your account new keys, because the trip to Google would stop the rotation. It comes back when the rotation finishes." | Above the control, `body` `--bud-text` |
+| An export in flight | "Changing your email address is off while this tab writes your export, because the trip to Google would lose the file. It comes back when the export ends." | Above the control, `body` `--bud-text` |
+| An unlock running | "Changing your email address is off while this tab unlocks your account, because the trip to Google would cut the unlock short. It comes back when the unlock ends." | Above the control, `body` `--bud-text` |
+| The flow itself, on its way to Google | "Taking you to Google…" | Inside the region, `body` `--bud-text`; the control carries `aria-busy="true"` |
+
+The copy is the specification, not an example of it.
+
+**The unlock sentence is a reason and not advice**, which is why it may render where Export's may
+not. Export says nothing while an unlock runs because its locked sentence would tell somebody to
+press a button they are already holding down — *do not advise when unsure*. This sentence advises
+nothing: it names the act in progress and says the control returns when it ends. *An unlock running*
+is `AccountUnlockService`'s *working* reading, the one its own control and handler bind — the system
+sheet and the account-key read after it alike — and nothing narrower.
+
+**The rotation term is narrower than Export's, and the difference is the reason.** Export's *a run
+is in flight* includes a run this tab only knows is staged, because a staged run has re-sealed rows
+custody cannot open. Here the question is what a reload stops, and a reload stops only a run this
+tab is **walking** — a staged run is server state and the rotation section offers to finish it after
+any load. So this gate reads the rotation flow's own *working* reading and nothing wider.
+
+**When more than one is true, one sentence renders, and the order of precedence is the rotation's,
+then the export's, then the unlock's**: breaking a run costs the whole run started again from the
+first record, breaking an export costs one press, and an unlock broken costs nothing the trip would
+not cost anyway, since the return locks the account. At most one sentence above the control at a
+time.
+
+**Busy is held off differently: it gets the in-flight treatment rather than a sentence above the
+control** — Export's rule that not ready is not busy, applied from the other side. The flow is doing
+work, so `aria-busy` is present and the line is an outcome of the press, which is what the region is
+for. It lasts only until the page leaves or `unavailable` answers.
+
+- **The three not-ready sentences sit immediately above the control as visible prose, outside the
+  region**, and the control names the one that renders with `aria-describedby` — never *only*
+  there, per the [Export section](#export-section).
+- **Change and Confirm have two predicates, not one.** Change's is: no walked run, no export in
+  flight, no unlock running, not on its way to Google, **and no Confirm press in flight** — the
+  last term holds although Change is not drawn in the waiting state, because the handler is what
+  refuses a press that reaches the flow by any path, including a render that has not caught up.
+  Confirm's is narrower: it is inert **only while its own press is in flight** — the challenge, the
+  ceremony and the changing request. Nothing else on the screen holds it off; the Change
+  control's four cases describe the moment before a trip, and Confirm exists only after one.
+- **Each gate is in its click handler as well as in its attribute, and each attribute and handler
+  pair reads one predicate with one owner.** Material's click-halt is applied to anchors only, so on
+  a `<button>` the press arrives whatever the attribute says; an ungated Change reloads the tab under
+  a running rotation, and an ungated Confirm sends a second changing request from one answer. The
+  drift two spellings produce is argued under the Unlock control and not again here.
+- **No other state holds Change off.** Not a locked account, and not a staged run.
+
+### The trip to Google
+
+- **The press leaves the whole page**, to Google, with its **account chooser requested explicitly
+  on every trip** (`prompt=select_account`) — never left to Google's own judgement, including for
+  somebody signed in to one Google account. The person is choosing an address, and a trip that
+  silently returned the account the browser already holds would ask them nothing.
+- **The return lands on `/app/settings`**, as a fresh page load. Everything on the screen is read
+  again, which is why the consequence block says the keys lock.
+- **Nothing is sent to Budgetoid on the return.** The screen reads what Google sent back and
+  either enters the waiting state or says why it cannot.
+- **The Google answer is held in memory only, for one page load, and taken exactly once.** It is
+  written to no `sessionStorage`, no `localStorage` and no IndexedDB, so a reload, a navigation to
+  another load or a closed tab ends it by construction; a second reader of the same load finds
+  nothing, because the first one took it. **It is read before the first route draws**, which is
+  what lets the first render already be the waiting state. **If that load's session check finds
+  nobody signed in, the answer is dropped before any route draws** — nothing reaches `/welcome` or
+  `/register` carrying it, where a Google answer reads as the start of a registration somebody never
+  asked for. Which class holds it and drops it is the business-logic doc's to name, not this
+  chapter's.
+
+### Confirm with your passkey
+
+The state the section is in after a return carrying a confirmed Google answer. **It replaces the
+Change control rather than joining it**, so the section draws exactly one of the two — the Rotate
+control's rule, for its reason: two controls would ask a person to choose between starting over and
+finishing, which is a choice with a wrong answer.
+
+- **A lead line naming the address**, `body`, with the address at weight 600 and
+  `overflow-wrap: anywhere` — the registration introduction's treatment of an asserted address:
+
+  > Google sent back **&lt;address&gt;**. Nothing changes until you confirm with your passkey.
+
+  It states what came back and makes no promise about the result: a refusal below can still turn
+  that address away, and a sentence saying the address *will* change would stand beside its own
+  refusal — the defect the registration introduction was changed to remove.
+- **One control**, **Outline**, visible label **Confirm with your passkey**, 48px target, naming the
+  lead line with `aria-describedby`. Not Destructive, for the Change control's reason; not Primary,
+  for Export's.
+- **The press runs, in this order**: the browser's ability is checked, a challenge is fetched from
+  the **re-authentication pool** (`POST /api/passkeys/reauthentication/options`) — never the
+  anonymous sign-in pool — the device is asked, and the one changing request is sent. **Nothing is
+  sent before this press, and nothing is posted until the passkey has answered** — the erasure
+  dialog's order, and it is what makes *nothing changed* a fact about this client rather than a
+  guess about the server. The Unlock chapter argues why the sign-in pool is the wrong one for an
+  authenticated act, and that argument is not repeated here.
+  While it runs the control takes `disabledInteractive` and `aria-busy="true"`, keeps its label, and
+  the region says what is happening.
+- **Abandoning it is leaving the screen.** There is no Cancel. Navigating away or reloading drops
+  the Google answer, posts nothing and changes nothing; the address is what it was, and the next
+  visit offers **Change email address** again. A passkey prompt open when the screen goes is
+  aborted, as the erasure dialog aborts its own.
+
+### The outcomes
+
+**One region, and it is the Account section's existing one.** It already carries the address row's
+load failure, and the section keeps one region rather than gaining a second beside it. Its place
+between the address row and the prose stays: every line below is about that row.
+
+| State | Copy | Where it renders |
+| --- | --- | --- |
+| At rest, or waiting for the press | *nothing* | The region carries no line from this flow |
+| Leaving | "Taking you to Google…" | Inside the region, `body` `--bud-text` |
+| Waiting for the device | "Waiting for your passkey." | Inside the region, `body` `--bud-text` |
+| Changing | "Changing your email address…" | Inside the region, `body` `--bud-text` |
+| `changed`, no other session ended | "Your email address is **&lt;address&gt;**." | Inside the region, `body` `--bud-text` |
+| `changed`, `1` | "Your email address is **&lt;address&gt;**, and 1 browser signed in with your old Google account is now signed out." | Inside the region, `body` `--bud-text` |
+| `changed`, `n` | "Your email address is **&lt;address&gt;**, and 3 browsers signed in with your old Google account are now signed out." | Inside the region, `body` `--bud-text` |
+| `changed`, the re-read failed | "Budgetoid took the new address but couldn’t load it back. Reload the page to see it." | Inside the region, `--bud-over`, before the address row's own load failure |
+| `unavailable` | "Budgetoid couldn’t reach Google, so nothing changed. Try again in a minute." | Inside the region, `--bud-over` |
+| `unconfirmed` | "Google didn’t send back a sign-in, so nothing changed. Try again whenever you’re ready." | Inside the region, `--bud-over` |
+| `unsupported` | "This browser can’t confirm with a passkey, so nothing changed. Start again in a different browser, or on a phone or laptop that can." | Inside the region, `--bud-over`; the confirm control is withdrawn |
+| `cancelled` | "The passkey check was cancelled or timed out. Try again whenever you’re ready — nothing changed." | Inside the region, `--bud-over` |
+| `no-prf`, `ceremony-failed` | "Your device couldn’t finish the passkey check. Try again, or choose another passkey — nothing changed." | Inside the region, `--bud-over` |
+| `unstarted` | "Budgetoid couldn’t start the passkey check. Try again in a minute — nothing changed." | Inside the region, `--bud-over` |
+| `provider-refused` | "That Google sign-in expired or wasn’t accepted, so nothing changed. Start again with Change email address." | Inside the region, `--bud-over` |
+| `unverified` | "Google hasn’t verified that address, so nothing changed. Start again and choose a different Google account." | Inside the region, `--bud-over` |
+| `assertion-refused` | "Budgetoid didn’t accept that passkey for this account. Try again with a passkey you made for it — nothing changed." | Inside the region, `--bud-over` |
+| `address-taken` | "That address already belongs to another Budgetoid account, so nothing changed. Start again and choose a different Google account." | Inside the region, `--bud-over` |
+| `google-account-taken` | "That Google account is already attached to another Budgetoid account, so nothing changed. Start again and choose a different Google account." | Inside the region, `--bud-over` |
+| `moved` | "Your email address was changed somewhere else while this was running, so this change wasn’t made." | Inside the region, `--bud-over` |
+| `failed` | "Budgetoid couldn’t accept this request, so nothing changed. Reload the page and try again." | Inside the region, `--bud-over` |
+| `undetermined` | "Budgetoid can’t tell whether your email address changed. Reload the page to find out." | Inside the region, `--bud-over`; the confirm control is withdrawn |
+
+The copy is the specification, not an example of it.
+
+**Every refusal says nothing changed, and only two lines can report a change** — `changed`, and
+`moved`, whose change happened somewhere else. `undetermined` is the one line that can say neither,
+and it says that. Every word reports what was observed; none names a cause the client did not see.
+
+**The success line states the result, never the act.** It names the address the re-read now shows
+and never says *changed*, so it waits for that read: until it answers, the region stays on
+*Changing your email address…*. Stated as a result, it is true in three cases a sentence about the
+act would get wrong. The person chose the **Google account already attached** — the address is what
+it was, and the line says so without claiming a change nobody made. A lost request **had in fact
+committed** and a later trip confirmed the same account — the line reports the account as it now
+stands. And the ordinary case. Choosing the already-attached account therefore lands on this line
+and on no refusal of its own.
+
+**The ceremony's four words and `assertion-refused` are the erasure dialog's, with its closing
+clause swapped** — `cancelled`, `no-prf` and `ceremony-failed` as one line, `unstarted`, and
+`assertion-refused` as erasure's `refused`. The borrowing is honest for the erasure dialog's reason:
+the four are raised before the changing request exists, and `assertion-refused` is the gate turning
+that request away before anything is written. The act-neutral half of each sentence is unchanged,
+so the product says one thing about a passkey check wherever it asks for one.
+
+**`unsupported` is not borrowed, and it follows registration rather than Unlock.** A browser that
+cannot run the ceremony cannot run it on the next press either, so offering Confirm again is a
+retry that does not admit to being one — registration's reason for its four dead ends. The confirm
+control leaves, the answer is dropped, Change stays, and the sentence names the one way forward: a
+different browser, where the trip starts again.
+
+**`changed` is three template branches and never a pipe**, for the recovery-code count's reason:
+nothing provides `LOCALE_ID`, so `I18nPluralPipe` would pin every count to `en-US` rules. The count
+is the 200 answer's `sessionsEnded` — sessions a federated sign-in opened in other browsers, which
+the change ends. It is a numeral in every branch, per [voice](voice.md), rendered as the number
+arrived, as the recovery-code count is: the book has no rule formatting a count to the reader's
+locale, and this chapter does not invent one. **Zero takes no clause**, and so does a 200 that reads
+but carries no count this bundle can read: the change happened, and the clause-free line claims
+nothing about other browsers. A 200 that does not read at all is `undetermined`, below. *Browser*
+and not *device*, because a session is a cookie in a browser, and two browsers on one laptop are two.
+
+**What each outcome leaves on the screen:**
+
+- **Stays waiting, confirm offered again**: the four ceremony words and `assertion-refused`. The
+  Google answer is still good, and another press is a genuinely different attempt — the
+  authenticator chooses which passkey answers.
+- **Ends the waiting state, Change offered again**: `unsupported`, `provider-refused`,
+  `unverified`, `address-taken`, `google-account-taken` and `failed`. The Google answer is dropped:
+  each of these is a verdict on it, on the request that carried it or on this browser, and pressing
+  confirm again would collect the same one. `unavailable` and `unconfirmed` never reach the waiting
+  state, and leave Change offered.
+- **Ends the waiting state and re-reads**: `changed` re-reads the address row and the credential
+  list, so the new address and the replaced **Google** row are what the screen shows; `moved`
+  re-reads the address row. Both reads follow [A value read from the
+  network](#a-value-read-from-the-network): the value clears when the read starts, and a failed
+  re-read says so in its own line beside this flow's — two requests, two lines, this flow's first.
+- **`undetermined` withdraws the confirm control and drops the answer.** One answer sends one
+  changing request, so the control leaves the DOM rather than going disabled, for the erasure
+  commit's reason. **Change email address** stays: pressing it leaves the page, and the return
+  re-reads the row, which is the reload the sentence names. If the lost request had committed, a
+  second trip ends on the success line, which is true of that account as it stands.
+
+**The words are read from machine-readable members of the API's problem body — never from the status
+alone, and never from the sentence beside them** — [voice](voice.md)'s rule that nothing branches
+on prose.
+
+| Member | Value | Word |
+| --- | --- | --- |
+| `refusal` | `provider_token` | `provider-refused` |
+| `refusal` | `email_unverified` | `unverified` |
+| `refusal` | `assertion` | `assertion-refused` |
+| `conflictKind` | `email_already_linked` | `address-taken` |
+| `conflictKind` | `provider_identity_in_use` | `google-account-taken` |
+| `conflictKind` | `account_identity_moved` | `moved` |
+
+**A judgement this bundle cannot name is `failed`, never `undetermined`.** Every `4xx` is the
+server having looked and refused, so any `4xx` whose member is missing or carries a value the table
+above does not hold reads `failed` — nothing changed, and the line says so. The one exception is
+the `401` that the session probe below finds to be an ended session. **`undetermined` is reserved
+for no judgement observed**: a `5xx`, a response that never arrived (status `0`), a timeout, and a
+`200` this bundle cannot read. **No retry is automatic**, in the flow or in any interceptor the
+request passes through.
+
+**A session that ended during the flow says nothing here.** The changing request is marked as
+expecting a `401`, and every `401` it collects is read only after one unmarked `GET /api/me` — the
+erasure dialog's shape, for its reason: unmarked, `sessionExpiryInterceptor` would read the gate's
+verdict as a session ending; unchecked, an ended session would be told its passkey was refused. A
+`401` on the probe is an ended session, which is the interceptor's, and it takes the tab to Welcome
+with nothing said here; anything else lets the member decide the word.
+
+**Lines landing on a return load land after the first render.** The region is in the DOM from first
+paint; a line present at that paint is announced unreliably, so `unconfirmed` on a return waits one
+render, as the erasure dialog's line does. Whether a screen reader hears it is unproven for the same
+reason it is unproven there.
+
+**Colour is never the message** — every line above reads the same with `--bud-over` removed.
+
+### Focus
+
+- **A return into the waiting state moves focus once, after the first render, directly to Confirm
+  with your passkey — never to Change first.** The answer is read before the first route draws, so
+  the first render is already the waiting state and there is no Change control for focus to visit on
+  the way. The load put focus at the top of the document, and the person's act is half done: the
+  next thing it needs is that press. This departs from the rename block's rule that arriving at a
+  screen with a block already drawn moves nothing, and the difference is the arrival — there the
+  person navigated for their own reasons; here the load is the second half of a press they made.
+- **A return ending on `unconfirmed` moves focus once to Change email address**, the press its
+  sentence offers.
+- **A word that keeps the waiting state moves nothing.** Focus stays on the confirm control, where
+  the next attempt starts — the erasure commit's rule.
+- **A word that ends the waiting state moves focus to Change email address**, because the control
+  focus stood on has left. `changed`, `unsupported` and `undetermined` are three of those.
+
+### What a writer will get wrong
+
+- **Adding a field for the address**, or an emailed code to "verify" it. The address is Google's
+  assertion and nothing else.
+- **Minting the challenge on the return**, to save a moment at the press. Nothing is sent before the
+  press, and a challenge fetched for somebody who then leaves is a nonce spent for nothing.
+- **Keeping the Google answer in web storage** so the waiting state survives a reload. It lives in
+  memory for one load and is taken once; a kept one is a provider token some other screen can find.
+- **Fetching the challenge from the sign-in pool** because that leg is already written.
+- **Branching on the status alone.** A `401` can be an ended session, a refused passkey or a
+  judgement this bundle cannot name, and only the probe and the members tell them apart.
+- **Reading an unknown `401` or `409` as `undetermined`.** The server judged; nothing changed.
+- **Writing the success line as an act** — *Your email address changed.* — which is false when the
+  attached account came back.
+- **Gating on Export's rotation term.** A staged run survives a reload; only a walked one does not.
+- **One predicate for both controls.** Confirm would go inert with Change's reasons, which describe
+  a moment it never exists in.
+- **Retrying the changing request on a timeout.** One answer sends one request.
+- **Pasting Export's not-ready sentence here, or this one there.** They name different states.
+- **Reading `moved` as a refusal.** It is the one refusal-coloured line that says something changed.
+
+### Accessibility
+
+Part of the Account section, so no heading of its own: the section's `h2` covers it, and no level is
+skipped. The section keeps **one** `role="status"` region, polite, in the DOM from first paint and
+never `assertive` — the person asked for every line in it. Both controls are 48px targets and keep
+their tab stops while held off or busy (`disabledInteractive`); `aria-busy` is present only while the
+flow works, and resolves to `null` otherwise. The not-ready sentences are visible prose before the
+control, named by it with `aria-describedby` while they render. The lead line is prose in reading
+order, named by the confirm control. Nothing is communicated by colour alone.
+
+### What ships today
+
+**None of this chapter is built.** The Account section renders the address row, its region and Sign
+out, and nothing on `/app/settings` offers a way to change the address. The **Google** row in Ways
+to sign in draws no Revoke on this chapter's premise that the federated credential is replaced
+rather than removed — a premise nothing on the screen can yet act on.
+
+**The day it ships, the welcome screen's provider line stops being true.** That line says Google is
+never asked again after an account starts, and this act asks it again. The two change in one
+commit, and the welcome chapter's three facts are re-read with them.
+
+**What this chapter needs of the rest of the product lands in the code commits, not here**: a
+session beginning may no longer discard a Google answer this flow is holding, the provider's token
+reaches a route beyond the two registration ones, Google returns to a second address, and the
+chapters that say the only provider exchange starts on `/register` say otherwise. Each is owned by
+the document that states the rule today.
+
 ## Credential list and row
 
 M3 base: **none** — a plain semantic list, `<ul role="list">` with one `<li>` per entry, for the
@@ -754,9 +1121,10 @@ list semantics — without it nobody hears "list, 2 items".
   button starts working. A control that will never be enabled makes the same promise and cannot keep
   it, which is the worse of the two lies — the reader waits for a release that is not coming. A
   recovery-code set is unrevocable by construction (below), and the **Google** row is unrevocable
-  because the federated credential is replaced by an email change rather than removed; neither row
-  draws the button. A row whose kind this bundle does not recognise draws none either, on a different
-  argument: unknown is undecided, revocation is the one unrecoverable act on this screen, and the
+  because the federated credential is replaced by an email change rather than removed — a change
+  [specified above](#changing-the-email-address) and not built yet; neither row draws the button.
+  A row whose kind this bundle does not recognise draws none either, on a different argument:
+  unknown is undecided, revocation is the one unrecoverable act on this screen, and the
   undecided answer to an unrecoverable act is no control at all. Revocability is a property carried
   **per kind**, beside that kind's word and caption, so a kind added without one fails to compile
   rather than inheriting an action by default — the half of a new kind that cannot be taken back once
@@ -1216,7 +1584,9 @@ measured against exactly what the two keys open — no wider and no narrower.
   serious one. It is refused twice, and each reason stands on its own. Export is this screen's
   one main action, and a screen with two is a screen with none; and to anybody not tracking lock
   state — which is everybody, since **on this screen only this section and the Export section** are
-  drawn differently when it flips, everything else that changes being on three other screens — a
+  drawn differently when it flips, plus the Account section while an unlock is running, where the
+  Change email address control's held-off sentence appears, and everything else that changes is on
+  three other screens — a
   Primary that comes and goes is just two Primary buttons on one screen. **The consequence is not
   a third reason, and it is not an argument for the Primary either** — a locked tab reads no
   name back, which makes a Primary here *honest* rather than right, and the two reasons above
