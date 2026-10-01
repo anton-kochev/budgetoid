@@ -28,8 +28,9 @@ public enum EmailChangeOutcome
     EmailTaken,
 
     /// <summary>
-    /// The credential the change would retire is no longer the account's, because a racing change
-    /// committed between this request's read and its save.
+    /// The replacement credential met another federated row of this account on
+    /// <c>IX_credentials_user_id_federated</c>: a racing change filed its own between this request's read
+    /// and its save.
     /// </summary>
     FederatedCredentialMoved,
 }

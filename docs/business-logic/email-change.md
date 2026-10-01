@@ -257,8 +257,9 @@ response body is a value in a log.
   the caller was told did not attach.
   - **EF sends the `DELETE` ahead of the `INSERT`, and that is measured.**
     `IX_credentials_user_id_federated` allows one federated row per account, so an insert first would
-    collide with the row about to go. A variant saving the insert ahead of the delete reddened seven
-    of the fourteen cases in `EmailChangeRepositoryTests`, six on a `23505`.
+    collide with the row about to go. EF's own command sort sends `DELETE`, then `UPDATE users`,
+    then `INSERT` in one batch whatever the tracker order — measured against PostgreSQL 17 in four
+    variants, and pinned by `ApplyAsync_WithANewSubject_SendsOneBatch_DeleteThenUpdateThenInsert`.
   - **The address goes through `UPDATE (email)`**, the one column grant on `users`. `users.email`
     has two writers: registration's insert, and this route's `UPDATE (email)` through
     `User.ChangeEmail`. The repository loads the user and moves its one property, so EF emits an `UPDATE`
@@ -373,9 +374,10 @@ response body is a value in a log.
     collided; after `SubjectTaken` it means this account's identity moved under the request. A
     `SubjectTaken` whose re-read finds nobody still answers `provider_identity_in_use` — the
     database refused on a committed row, and "moved" would claim something nobody observed.
-  - **`account_identity_moved` is reached three ways**: the retired row's `DELETE` matching nothing;
-    the filed row's `INSERT` meeting the winner's replacement on `IX_credentials_user_id_federated`
-    (measured); and a `SubjectTaken` whose re-read finds this account (measured).
+  - **`account_identity_moved` is reached two ways**: the filed row's `INSERT` meeting the winner's
+    replacement on `IX_credentials_user_id_federated`, and a `SubjectTaken` whose re-read finds this
+    account — both measured. **There is no concurrency catch, by decision**: no product race reaches
+    one, so a retired row's `DELETE` matching nothing escapes as a `500`, as an erasure does (below).
   - **Not an enumeration oracle.** Reaching the subject lookup takes a full session, a passkey
     assertion and a provider token for that exact subject, so a caller can only ask about a Google
     identity they already control.
@@ -392,7 +394,8 @@ response body is a value in a log.
     and `HandleAsync_WithASubjectInSurroundingWhitespace_PreChecksAndReReadsTheTrimmedSubject`.
   - In the repository: `ApplyAsync_WithASubjectAnotherAccountHolds_AnswersSubjectTaken_AndChangesNeitherAccount`,
     `ApplyAsync_ToAnAddressAnotherAccountHoldsInAnotherCase_AnswersEmailTaken`,
-    `ApplyAsync_WhenTheRetiredCredentialWasAlreadyDeleted_AnswersFederatedCredentialMoved`,
+    `ApplyAsync_WhenTheRetiredCredentialVanishedWithNoReplacement_LetsTheConcurrencyFailureEscape`,
+    `ApplyAsync_WhenTheAccountIsErasedUnderneathASubjectChange_LetsTheForeignKeyViolationEscape`,
     `ApplyAsync_WhenARacingChangeAlreadyReplacedTheRetiredCredential_AnswersFederatedCredentialMoved`,
     `ApplyAsync_WhenAnotherUniqueRuleIsBroken_LetsTheViolationEscape` and
     `ApplyAsync_AfterARefusedSave_LeavesTheTransactionUsable` for the savepoint.
@@ -766,8 +769,10 @@ ELSE open the transaction
         THEN 409 provider_identity_in_use
       ELSE
         THEN 409 email_already_linked
-    ELSE IF the retired credential was already gone, or another replacement stands
+    ELSE IF another replacement stands
       THEN 409 account_identity_moved
+    ELSE IF the retired credential or the account was already gone
+      THEN 500                                               ← no product race; an erasure lands here
     ELSE
       THEN 200 {"sessionsEnded": n}
 ```
@@ -841,18 +846,12 @@ rolls the sweep back.
   federated credential opened, and nothing opens a locked session yet — see
   [sessions.md](sessions.md). Every test that expects a non-zero count seeds the locked session
   through the database.
-- **The repository's concurrency catch is narrowed by a clause no test reaches.** The catch admits a
-  `DbUpdateConcurrencyException` only when a credential was retired **and** every conflicting entry
-  is that credential's delete. The first half is held by
-  `ApplyAsync_WhenTheAccountIsErasedUnderneathTheSave_LetsTheConcurrencyFailureEscape`. The entries
-  clause is not: cut it to "a credential was retired" and every case stays green, so the narrowing
-  to the retired credential, and `All` over `Any`, rest on the argument in `EmailChangeRepository`
-  alone.
-- **An erasure racing a subject change answers `409 account_identity_moved`.** [Guessing] Argued in
-  `EmailChangeRepository`, not run: the erasure's cascade takes the retired credential too, so its
-  `DELETE` is the first statement to fail and the catch reads it as a racing change. The person is
-  told another change landed, when the account is gone. An **address-only** change racing an erasure
-  escapes as a `500` instead, which is the tested case above.
+- **An erasure racing an email change answers `500`.** The account is gone either way, so no honest
+  `409` exists. A change that moves the Google identity fails on `23503 FK_credentials_users_user_id`
+  — the batch surfaces the `INSERT`'s foreign-key error before the `DELETE`'s row count — pinned by
+  `ApplyAsync_WhenTheAccountIsErasedUnderneathASubjectChange_LetsTheForeignKeyViolationEscape`. An
+  **address-only** change fails as a concurrency failure on `UPDATE users`, pinned by
+  `ApplyAsync_WhenTheAccountIsErasedUnderneathTheSave_LetsTheConcurrencyFailureEscape`.
 - **There is no rate limit.** Each attempt costs the caller a fresh passkey assertion and a valid
   provider token, but nothing counts attempts. The same accepted gap as the rest of the API —
   [passkeys.md](passkeys.md) records it for the anonymous options leg.

@@ -8,10 +8,9 @@ namespace UnitTests.Fakes;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>A refusal writes nothing here</b>, which is what the real save does: the unique index or the
-/// concurrency check refuses the whole <c>SaveChanges</c>, so no row moves. The handler's own writes
-/// before the save — the session sweep — are not this fake's to undo; a test that cares whether they
-/// committed asks the executor.
+/// <b>A refusal writes nothing here</b>, which is what the real save does: the unique index refuses the
+/// whole <c>SaveChanges</c>, so no row moves. The handler's own writes before the save — the session
+/// sweep — are not this fake's to undo; a test that cares whether they committed asks the executor.
 /// </para>
 /// <para>
 /// The shared call log, when one is handed in, is what lets a test order this fake's save against

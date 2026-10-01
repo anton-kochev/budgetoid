@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text.RegularExpressions;
 using Domain.Users;
 using Infrastructure.Persistence;
 using Infrastructure.Persistence.Configurations;
@@ -30,7 +31,7 @@ namespace IntegrationTests;
 /// paths it does in production.
 /// </para>
 /// </remarks>
-public sealed class EmailChangeRepositoryTests
+public sealed partial class EmailChangeRepositoryTests
 {
     private const string OwnSubject = "google-email-change-own";
 
@@ -60,6 +61,12 @@ public sealed class EmailChangeRepositoryTests
     /// PostgreSQL reports.
     /// </summary>
     private const string CredentialPrimaryKeyName = "PK_credentials";
+
+    /// <summary>
+    /// The foreign key from <c>credentials.user_id</c> to <c>users</c>, spelled out for the same reason as
+    /// <see cref="CredentialPrimaryKeyName" />: EF's convention names it and nothing declares a constant.
+    /// </summary>
+    private const string CredentialUserForeignKeyName = "FK_credentials_users_user_id";
 
     /// <summary>
     /// The instant <see cref="RepositoryTestHost" /> stamps every seeded row with, restated so the
@@ -178,6 +185,53 @@ public sealed class EmailChangeRepositoryTests
         User stored = await verify.Users.SingleAsync(user => user.Id == owner.UserId);
         await Assert.That(stored.Email.Value).IsEqualTo(NewEmail);
         await Assert.That(stored.CreatedAtUtc).IsEqualTo(SeedInstant);
+    }
+
+    /// <summary>
+    /// A new subject reaches PostgreSQL as one batch, in the order DELETE <c>credentials</c>, UPDATE
+    /// <c>users</c>, INSERT <c>credentials</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>A pin on EF's ordering, which the repository relies on and does not choose.</b>
+    /// <c>IX_credentials_user_id_federated</c> allows one federated row per account, so the INSERT has to
+    /// land after the DELETE. The success case above reds when the INSERT goes first, but with a
+    /// <c>23505</c> that names an index rather than an order; this one names the order, on the wire,
+    /// through <see cref="StatementRecorder" />.
+    /// </para>
+    /// <para>
+    /// One batch is asserted as well: a split save would put the swap and the address in two commands,
+    /// and the reason a refusal writes nothing is that they travel together.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task ApplyAsync_WithANewSubject_SendsOneBatch_DeleteThenUpdateThenInsert()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartHostAsync();
+        RepositoryTestHost.SeededOwner owner = await host.SeedOwnerAsync(OwnSubject, OwnEmail);
+
+        StatementRecorder recorder = new();
+        await using BudgetoidDbContext db = AppDb(host, owner.UserId, owner.BudgetId, recorder);
+        EmailChangeRepository repository = new(db);
+        FederatedIdentityChange change = await DecideLikeTheHandlerAsync(
+            db, repository, owner.UserId, NewSubject, NewEmail);
+
+        // Act
+        EmailChangeOutcome outcome = await repository.ApplyAsync(change, owner.UserId);
+
+        // Assert
+        await Assert.That(outcome).IsEqualTo(EmailChangeOutcome.Applied);
+
+        List<IReadOnlyList<string>> writingCommands =
+        [
+            .. recorder.Statements
+                .Select(WritesIn)
+                .Where(writes => writes.Count > 0),
+        ];
+        await Assert.That(writingCommands.Count).IsEqualTo(1);
+        await Assert.That(string.Join(" | ", writingCommands.SelectMany(writes => writes)))
+            .IsEqualTo("DELETE credentials | UPDATE users | INSERT credentials");
     }
 
     /// <summary>
@@ -385,17 +439,32 @@ public sealed class EmailChangeRepositoryTests
     }
 
     /// <summary>
-    /// A retired credential somebody else already deleted answers
-    /// <see cref="EmailChangeOutcome.FederatedCredentialMoved" /> rather than a 500, and files nothing.
+    /// A retired credential that vanished with no replacement and no erasure lets EF's concurrency failure
+    /// escape as a 500, and nothing lands.
     /// </summary>
     /// <remarks>
-    /// <see cref="ConcurrentDeleteInterceptor" /> commits the delete on its own superuser connection in
-    /// the window between the read and the save, so the repository's DELETE affects zero rows and EF
-    /// raises <see cref="DbUpdateConcurrencyException" />. <see cref="ConcurrentDeleteInterceptor.Deleted" />
-    /// is read so the arrangement cannot have been a no-op.
+    /// <para>
+    /// <b>No product path produces this state, and that is why it is a 500.</b> The repository has no
+    /// concurrency catch, by decision: the two races that reach this save surface as something else,
+    /// both measured. An erasure racing a subject change gives <c>23503</c> on
+    /// <c>FK_credentials_users_user_id</c> —
+    /// <c>ApplyAsync_WhenTheAccountIsErasedUnderneathASubjectChange_LetsTheForeignKeyViolationEscape</c>.
+    /// A racing change gives <c>23505</c> on <c>IX_credentials_user_id_federated</c> —
+    /// <c>ApplyAsync_WhenARacingChangeAlreadyReplacedTheRetiredCredential_AnswersFederatedCredentialMoved</c>.
+    /// What is left is a bare zero-row DELETE: the account still exists and holds no federated row. A
+    /// catch dressing that as <see cref="EmailChangeOutcome.FederatedCredentialMoved" /> would tell
+    /// somebody a change they never made won.
+    /// </para>
+    /// <para>
+    /// <see cref="ConcurrentDeleteInterceptor" /> commits the delete on its own superuser connection inside
+    /// <c>SavingChanges</c>, so the DELETE affects zero rows and EF raises
+    /// <see cref="DbUpdateConcurrencyException" />. <see cref="ConcurrentDeleteInterceptor.Deleted" /> is
+    /// read so the arrangement cannot have been a no-op. The entries are read off the escaping exception
+    /// because "something escaped" alone is also satisfied by an exception about another row.
+    /// </para>
     /// </remarks>
     [Test]
-    public async Task ApplyAsync_WhenTheRetiredCredentialWasAlreadyDeleted_AnswersFederatedCredentialMoved()
+    public async Task ApplyAsync_WhenTheRetiredCredentialVanishedWithNoReplacement_LetsTheConcurrencyFailureEscape()
     {
         // Arrange
         await using RepositoryTestHost host = await StartHostAsync();
@@ -408,13 +477,27 @@ public sealed class EmailChangeRepositoryTests
         EmailChangeRepository repository = new(db);
         FederatedIdentityChange change = await DecideLikeTheHandlerAsync(
             db, repository, owner.UserId, NewSubject, NewEmail);
+        EmailChangeOutcome? answered = null;
 
         // Act
-        EmailChangeOutcome outcome = await repository.ApplyAsync(change, owner.UserId);
+        Exception? escaped = await CaptureAsync(
+            async () => answered = await repository.ApplyAsync(change, owner.UserId));
 
         // Assert
         await Assert.That(racer.Deleted).IsEqualTo(1);
-        await Assert.That(outcome).IsEqualTo(EmailChangeOutcome.FederatedCredentialMoved);
+        await Assert.That(answered).IsNull();
+        await Assert.That(escaped).IsTypeOf<DbUpdateConcurrencyException>();
+
+        List<(string Entity, EntityState State, Guid? Id)> conflicting = escaped is DbUpdateConcurrencyException failure
+            ? [.. failure.Entries.Select(entry => (
+                entry.Entity.GetType().Name,
+                entry.State,
+                entry.Entity is Credential credential ? credential.Id : (Guid?)null))]
+            : [];
+        await Assert.That(conflicting.Count).IsEqualTo(1);
+        await Assert.That(conflicting[0].Entity).IsEqualTo(nameof(Credential));
+        await Assert.That(conflicting[0].State).IsEqualTo(EntityState.Deleted);
+        await Assert.That(conflicting[0].Id).IsEqualTo(ownFederatedId);
 
         await using BudgetoidDbContext verify = SuperuserDb(host);
         User stored = await verify.Users.SingleAsync(user => user.Id == owner.UserId);
@@ -423,21 +506,75 @@ public sealed class EmailChangeRepositoryTests
             .IsFalse();
     }
 
+    /// <summary>
+    /// An erasure of the account committing under a subject change escapes as the foreign-key violation
+    /// it is, instead of being answered as a moved credential.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>A pin on what the production race surfaces as, measured rather than assumed.</b> The erasure
+    /// cascades the retired credential away, so the save's DELETE matches nothing — but what reaches the
+    /// repository is the INSERT of the replacement meeting a <c>users</c> row that no longer exists:
+    /// <c>23503</c> on <c>FK_credentials_users_user_id</c>, not a concurrency failure. That is half of why
+    /// the repository holds no concurrency catch. A catch that mapped this <c>23503</c> to
+    /// <see cref="EmailChangeOutcome.FederatedCredentialMoved" /> would tell an erased account that another
+    /// change of its Google identity landed first.
+    /// </para>
+    /// <para>
+    /// <see cref="ConcurrentDeleteInterceptor" /> deletes the <c>users</c> row on its own superuser
+    /// connection inside <c>SavingChanges</c>. The constraint name is spelled out because no constant
+    /// declares it: EF's convention names it, and this file's subject is what PostgreSQL reports.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task ApplyAsync_WhenTheAccountIsErasedUnderneathASubjectChange_LetsTheForeignKeyViolationEscape()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartHostAsync();
+        RepositoryTestHost.SeededOwner owner = await host.SeedOwnerAsync(OwnSubject, OwnEmail);
+
+        ConcurrentDeleteInterceptor eraser = new(
+            host.ConnectionString, "delete from users where id = @id", owner.UserId);
+        await using BudgetoidDbContext db = AppDb(host, owner.UserId, owner.BudgetId, eraser);
+        EmailChangeRepository repository = new(db);
+        FederatedIdentityChange change = await DecideLikeTheHandlerAsync(
+            db, repository, owner.UserId, NewSubject, NewEmail);
+        EmailChangeOutcome? answered = null;
+
+        // Act
+        Exception? escaped = await CaptureAsync(
+            async () => answered = await repository.ApplyAsync(change, owner.UserId));
+
+        // Assert
+        await Assert.That(eraser.Deleted).IsEqualTo(1);
+        await Assert.That(answered).IsNull();
+        await Assert.That(escaped).IsTypeOf<DbUpdateException>();
+        await Assert.That(SqlStateOf(escaped)).IsEqualTo(PostgresErrorCodes.ForeignKeyViolation);
+        await Assert.That(ConstraintNameOf(escaped)).IsEqualTo(CredentialUserForeignKeyName);
+
+        await using BudgetoidDbContext verify = SuperuserDb(host);
+        await Assert.That(await verify.Users.AnyAsync(user => user.Id == owner.UserId)).IsFalse();
+        await Assert.That(await verify.Credentials.AnyAsync(credential => credential.Subject == NewSubject))
+            .IsFalse();
+    }
+
     private const string RacerSubject = "google-email-change-racer";
 
     /// <summary>
     /// The realistic race: another change of this account already retired the same credential <b>and
-    /// filed its own</b>. The answer is the same, and the winner's credential survives.
+    /// filed its own</b>. The answer is <see cref="EmailChangeOutcome.FederatedCredentialMoved" />, and
+    /// the winner's credential survives.
     /// </summary>
     /// <remarks>
     /// <para>
     /// Here the loser's DELETE affects zero rows <em>and</em> its INSERT meets the winner's row on
-    /// <c>IX_credentials_user_id_federated</c>. Both must read as
-    /// <see cref="EmailChangeOutcome.FederatedCredentialMoved" />. Measured against a scratch
-    /// implementation: what surfaces is the <c>23505</c> on that index, not the concurrency exception —
-    /// dropping only the index's catch reds this test and nothing else in the file. So this is the test
-    /// that holds the <c>IX_credentials_user_id_federated</c> mapping; the one above holds the
-    /// concurrency catch.
+    /// <c>IX_credentials_user_id_federated</c>. Measured against a scratch implementation: what surfaces
+    /// is the <c>23505</c> on that index, not the concurrency exception — dropping only the index's catch
+    /// reds this test and nothing else in the file. So this is the test that holds the
+    /// <c>IX_credentials_user_id_federated</c> mapping, and the only one that produces
+    /// <see cref="EmailChangeOutcome.FederatedCredentialMoved" />: a zero-row DELETE with no replacement
+    /// behind it escapes, held by
+    /// <c>ApplyAsync_WhenTheRetiredCredentialVanishedWithNoReplacement_LetsTheConcurrencyFailureEscape</c>.
     /// </para>
     /// <para>
     /// The racer's user id is written into the SQL as a literal because
@@ -723,13 +860,11 @@ public sealed class EmailChangeRepositoryTests
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <b>What it holds: the narrowing on the concurrency catch.</b> A
-    /// <see cref="DbUpdateConcurrencyException" /> carries no SQLSTATE and no constraint name, so the
-    /// catch has to narrow on what it can see: the change retires a credential, and every entry EF could
-    /// not account for is that credential. Widen it to a bare
-    /// <c>catch (DbUpdateConcurrencyException)</c> and an account erased mid-request is told another
-    /// change of its Google identity landed first. That is a sentence about a race that never happened,
-    /// and it swallows the real failure.
+    /// <b>What it holds: that there is no concurrency catch at all.</b> The repository answers nothing
+    /// for a <see cref="DbUpdateConcurrencyException" />, by decision — no product race reaches one on a
+    /// change that retires a credential. A catch added back, however narrowed, has to decline here or
+    /// tell an account erased mid-request that another change of its Google identity landed first: a
+    /// sentence about a race that never happened, swallowing the real failure.
     /// </para>
     /// <para>
     /// <b>Staged the way production reaches it: an erasure of the same account commits between this
@@ -739,15 +874,16 @@ public sealed class EmailChangeRepositoryTests
     /// is the <c>UPDATE users</c>. It matches nothing, and EF puts the shortfall on the <see cref="User" />
     /// entry. The entries are read off the escaping exception, the shape
     /// <c>KeyRotationRepositoryTests.PromoteAsync_WhenAStrangersRowLosesItsOwnRowCount_LetsTheFailureEscape</c>
-    /// uses. "Something escaped" alone is also satisfied by a deleted catch.
+    /// uses. "Something escaped" alone is also satisfied by an exception about another row.
     /// </para>
     /// <para>
-    /// <b>What it does not pin.</b> Because the change retires nothing, the predicate's "a credential was
-    /// retired" clause declines before its entries clause is read. An address-only change with the
-    /// entries check dropped therefore still escapes here. The entries clause, and <c>All</c> against
-    /// <c>Any</c>, would need a save that retires a credential and fails on another entity. Erasing the
-    /// account cannot stage that, because the cascade removes the retired credential too, so the DELETE
-    /// fails first and the conflict really is that credential.
+    /// <b>Its two siblings hold the rest.</b> The same erasure under a <em>subject</em> change surfaces as
+    /// <c>23503</c>, not as a concurrency failure —
+    /// <c>ApplyAsync_WhenTheAccountIsErasedUnderneathASubjectChange_LetsTheForeignKeyViolationEscape</c>.
+    /// A retired credential gone with the account still standing escapes too —
+    /// <c>ApplyAsync_WhenTheRetiredCredentialVanishedWithNoReplacement_LetsTheConcurrencyFailureEscape</c>,
+    /// which is the case a catch narrowed on the retired credential would swallow, and this one would not
+    /// see.
     /// </para>
     /// </remarks>
     [Test]
@@ -820,6 +956,24 @@ public sealed class EmailChangeRepositoryTests
         db.Credentials
             .Where(credential => credential.UserId == userId && credential.Type == CredentialType.Federated)
             .ToListAsync();
+
+    /// <summary>
+    /// The writes one recorded command carries, each as its verb and target table — <c>DELETE
+    /// credentials</c> — in the order the command text lists them. Reads are dropped.
+    /// </summary>
+    private static IReadOnlyList<string> WritesIn(string command) =>
+    [
+        .. command
+            .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(statement => WriteTarget().Match(statement))
+            .Where(match => match.Success)
+            .Select(match => $"{match.Groups["verb"].Value.ToUpperInvariant()} {match.Groups["table"].Value}"),
+    ];
+
+    [GeneratedRegex(
+        """^(?<verb>DELETE)\s+FROM\s+"?(?<table>\w+)"?|^(?<verb>UPDATE)\s+"?(?<table>\w+)"?|^(?<verb>INSERT)\s+INTO\s+"?(?<table>\w+)"?""",
+        RegexOptions.IgnoreCase)]
+    private static partial Regex WriteTarget();
 
     private static string? ConstraintNameOf(Exception? exception) =>
         exception is DbUpdateException { InnerException: PostgresException postgresException }

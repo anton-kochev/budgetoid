@@ -705,8 +705,8 @@ ELSE
     back.
 - **An email change in flight when the erasure commits does not answer truthfully.** The erasure
   wins, and nothing survives it. What the losing change *says* is the email change's problem and is
-  recorded there: an address-only change escapes as a `500`, and one that moves the Google identity
-  answers `409 account_identity_moved` [Guessing — argued, not run]. See
+  recorded there: both an address-only change and one that moves the Google identity escape as a
+  `500` (measured — the second on `23503 FK_credentials_users_user_id`). See
   [email-change.md](email-change.md).
 - **The request's own session row is deleted mid-request.** A request carrying the session cookie
   reads its `session_tokens` row and then its `sessions` row to authenticate at all, so this

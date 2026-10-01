@@ -225,8 +225,8 @@ public sealed class RepositoryAttributionCensusTests
     /// other one was deleted with the provisioning path; <c>RegistrationRepository</c>, which holds
     /// both halves on all four of its narrowings, the second half being <b>one</b> test rather than
     /// four; and <c>EmailChangeRepository</c>, whose three constraint-name filters share one control
-    /// the same way and whose concurrency catch has a control of its own, with a limit its entry
-    /// states. Two — <c>SessionRepository</c> and <c>SessionTokenRepository</c> — have nothing to
+    /// the same way and which holds no concurrency catch, by decision, with the races that would reach
+    /// one each pinned to the failure they really surface as. Two — <c>SessionRepository</c> and <c>SessionTokenRepository</c> — have nothing to
     /// attribute at all, which is a different statement and each says so in its own words: a
     /// <c>catch</c> narrowed by no constraint name, and no <c>catch</c> over a member that writes
     /// nothing. <c>NarrativeResealRepository</c> used to be a third, with no <c>catch</c> over a member
@@ -267,8 +267,8 @@ public sealed class RepositoryAttributionCensusTests
         new(
             nameof(EmailChangeRepository),
             "EmailChangeRepositoryTests",
-            "FOUR CATCHES ON ApplyAsync: THREE NARROWED ON A CONSTRAINT NAME AND ONE ON EF's ENTRIES, and "
-            + "all four are held at the repository layer, on the app role, in the one file. "
+            "THREE CATCHES ON ApplyAsync, ALL NARROWED ON A CONSTRAINT NAME; NO CONCURRENCY CATCH, BY "
+            + "DECISION. All three are held at the repository layer, on the app role, in the one file. "
             + "THE THREE NAMED FILTERS, each translated by its own test: IX_credentials_provider_subject "
             + "becomes SubjectTaken, held by "
             + "ApplyAsync_WithASubjectAnotherAccountHolds_AnswersSubjectTaken_AndChangesNeitherAccount; "
@@ -279,7 +279,7 @@ public sealed class RepositoryAttributionCensusTests
             + "by ApplyAsync_WhenARacingChangeAlreadyReplacedTheRetiredCredential_"
             + "AnswersFederatedCredentialMoved. That last one is the realistic lost race, where the winner "
             + "also filed its replacement, and it was measured to surface the 23505 on that index rather "
-            + "than the concurrency exception: against a scratch implementation with the same catch shape, "
+            + "than a concurrency exception: against a scratch implementation with the same catch shape, "
             + "dropping only that arm reddened that test and no other. "
             + "ONE CONTROL FOR ALL THREE, the shape RegistrationRepository's entry describes: "
             + "ApplyAsync_WhenAnotherUniqueRuleIsBroken_LetsTheViolationEscape stages PK_credentials by "
@@ -288,26 +288,22 @@ public sealed class RepositoryAttributionCensusTests
             + "type can be what refuses. It asserts a DbUpdateException with the unique-violation SQLSTATE "
             + "whose ConstraintName IS PK_credentials and is none of the three names, and that neither "
             + "account moved. Widening any one clause to the bare SQLSTATE swallows it; measured on the "
-            + "email clause, against a scratch implementation with the same catch shape. PK_credentials is the only other unique rule this save can reach, and in "
-            + "production only through a UUIDv7 collision. "
-            + "THE FOURTH CATCH is a DbUpdateConcurrencyException narrowed by IsRetiredCredentialGone: the "
-            + "change retires a credential, and every entry EF could not account for is that credential, "
-            + "Deleted, with the entry count tested first. Translated by "
-            + "ApplyAsync_WhenTheRetiredCredentialWasAlreadyDeleted_AnswersFederatedCredentialMoved, which "
-            + "deletes the retired row on another connection inside SavingChanges. Controlled by "
-            + "ApplyAsync_WhenTheAccountIsErasedUnderneathTheSave_LetsTheConcurrencyFailureEscape, which "
-            + "erases the account on another connection inside SavingChanges during an address-only "
-            + "change. That is reachable in production as an erasure racing an email change. It asserts "
-            + "that no outcome was answered, that a DbUpdateConcurrencyException escaped, and that EF "
-            + "attributed it to the User entry. Measured: with the catch widened to any concurrency "
-            + "exception, it fails answering FederatedCredentialMoved. "
-            + "WHAT THAT CONTROL DOES NOT PIN: its change retires nothing, so the predicate declines on "
-            + "that first clause and never reads the entries. Measured: a predicate cut down to 'a "
-            + "credential was retired' keeps every test green; All relaxed to Any would too, by reading "
-            + "rather than by a run, since the only entry here is the User. Staging it "
-            + "needs a save that retires a credential and fails on another entity. Erasing the account "
-            + "cannot do that, because the cascade takes the retired credential too and the DELETE fails "
-            + "first"),
+            + "email clause, against a scratch implementation with the same catch shape. PK_credentials is "
+            + "the only other unique rule this save can reach, and in production only through a UUIDv7 "
+            + "collision. "
+            + "NO CONCURRENCY CATCH: no product race reaches one. An erasure racing a subject change gives "
+            + "23503 FK_credentials_users_user_id, and a racing change gives 23505 "
+            + "IX_credentials_user_id_federated, both measured, so a zero-row DELETE escapes as a 500. "
+            + "Three tests hold that: "
+            + "ApplyAsync_WhenTheRetiredCredentialVanishedWithNoReplacement_LetsTheConcurrencyFailureEscape "
+            + "deletes the retired row on another connection inside SavingChanges and asserts no outcome, "
+            + "a DbUpdateConcurrencyException whose only entry is that Credential, Deleted, and nothing "
+            + "landed; ApplyAsync_WhenTheAccountIsErasedUnderneathASubjectChange_"
+            + "LetsTheForeignKeyViolationEscape erases the account mid-save during a new-subject change and "
+            + "asserts the 23503 on FK_credentials_users_user_id escapes; and "
+            + "ApplyAsync_WhenTheAccountIsErasedUnderneathTheSave_LetsTheConcurrencyFailureEscape erases "
+            + "it during an address-only change and asserts a DbUpdateConcurrencyException on the User "
+            + "entry escapes"),
         new(
             nameof(KeyRotationRepository),
             "KeyRotationBeginEndpointTests and KeyRotationRepositoryTests",

@@ -19,15 +19,27 @@ namespace Infrastructure.Repositories;
 /// account answers to a Google identity the caller is told did not attach.
 /// </para>
 /// <para>
-/// <b>EF sends the DELETE ahead of the INSERT here, and that is measured rather than assumed.</b>
+/// <b>EF sends the DELETE ahead of the INSERT here, and this class does not choose that.</b>
 /// <c>IX_credentials_user_id_federated</c> allows one federated row per account, so an INSERT sent first
-/// would collide with the row the DELETE is about to remove. Run against this schema, the one save lands
-/// with the index seeing at most one federated row. Measured: a variant saving the INSERT on its own ahead
-/// of the DELETE reddened seven of the fourteen cases in <c>EmailChangeRepositoryTests</c>, six of them on
-/// a <c>23505</c>. The most direct is
-/// <c>ApplyAsync_WithANewSubject_DeletesTheRetiredInsertsTheFiledAndUpdatesTheEmail_InOneSave</c>, the
-/// plain success path, which fails on <c>IX_credentials_user_id_federated</c> — the case that goes red if
-/// an EF upgrade reorders the batch.
+/// would collide with the row the DELETE is about to remove. EF's own command sort puts the DELETE, then
+/// the <c>UPDATE users</c>, then the INSERT into one batch whatever order the tracker holds them in —
+/// measured against postgres:17 in four variants. The pin is
+/// <c>ApplyAsync_WithANewSubject_SendsOneBatch_DeleteThenUpdateThenInsert</c> in
+/// <c>EmailChangeRepositoryTests</c>, which reads the order off the wire and goes red if an EF upgrade
+/// reorders the batch.
+/// </para>
+/// <para>
+/// <b>A lost race has one arm, and nothing else is translated.</b> A racing change of the same account
+/// that filed its replacement surfaces as <c>23505</c> on <c>IX_credentials_user_id_federated</c>. An
+/// erasure committing underneath surfaces as <c>23503</c> on <c>FK_credentials_users_user_id</c> under a
+/// subject change, or as a concurrency failure on the <c>UPDATE users</c> under an address-only change,
+/// and escapes as a 500 either way —
+/// <c>ApplyAsync_WhenTheAccountIsErasedUnderneathASubjectChange_LetsTheForeignKeyViolationEscape</c> and
+/// <c>ApplyAsync_WhenTheAccountIsErasedUnderneathTheSave_LetsTheConcurrencyFailureEscape</c>. There is no
+/// concurrency catch: a bare zero-row DELETE comes from no product path, so it escapes too —
+/// <c>ApplyAsync_WhenTheRetiredCredentialVanishedWithNoReplacement_LetsTheConcurrencyFailureEscape</c>.
+/// <c>PasskeyRepository</c> and <c>RecoveryCodeRepository</c> draw the same line: each catches the
+/// zero-row DELETE a double tap produces, and lets <c>Remove</c> raise on any other row that is not there.
 /// </para>
 /// </remarks>
 public sealed class EmailChangeRepository(BudgetoidDbContext dbContext) : IEmailChangeRepository
@@ -99,27 +111,6 @@ public sealed class EmailChangeRepository(BudgetoidDbContext dbContext) : IEmail
 
             return EmailChangeOutcome.Applied;
         }
-        // Ahead of the unique-violation arms because it is a DbUpdateException too. The retired row went
-        // out from under this request between the caller's read and this save — a racing change of the
-        // same account retired it first — so the DELETE matched nothing. Narrowed by the ENTRIES, the
-        // shape UserRepository.DeleteAsync uses: a concurrency conflict carries no SQLSTATE and no
-        // constraint name, so "the only conflicting row is the credential this call retired" is this
-        // catch's equivalent of the constraint-name filters below.
-        //
-        // WHAT IS PINNED, EXACTLY. The retired-null half: an address-only change retires nothing, so an
-        // erasure committing first fails the UPDATE users and escapes —
-        // ApplyAsync_WhenTheAccountIsErasedUnderneathTheSave_LetsTheConcurrencyFailureEscape. The entries
-        // clause is reached by NO test: cut the predicate to "a credential was retired" and every case
-        // stays green, so its narrowing to the retired credential, and All over Any, rest on this
-        // argument alone. Nor does it separate an erasure from a race when the change DOES retire a
-        // credential: the cascade takes that credential too, so its DELETE is the first to fail and the
-        // answer would be FederatedCredentialMoved — argued, not run.
-        catch (DbUpdateConcurrencyException exception) when (IsRetiredCredentialGone(exception, change))
-        {
-            Detach(change, user);
-
-            return EmailChangeOutcome.FederatedCredentialMoved;
-        }
         // THREE NAMED CONSTRAINTS AND NOT THE SQLSTATE ALONE, the filter
         // RepositoryConstraintAttributionTests requires of every translating repository in this folder:
         // SaveChangesAsync flushes the whole change tracker, so a 23505 says only that some rule broke.
@@ -142,10 +133,13 @@ public sealed class EmailChangeRepository(BudgetoidDbContext dbContext) : IEmail
 
             return EmailChangeOutcome.EmailTaken;
         }
-        // The same race as the concurrency arm, reached when the winner also FILED its replacement: this
-        // request's INSERT meets the winner's row on the one-per-account index. Measured, this is what
-        // surfaces in that race rather than the concurrency exception, so dropping this arm turns the
-        // realistic form of a lost race into a 500.
+        // THE ONLY LOST-RACE ARM. A racing change of the same account retired this request's credential
+        // and filed its own, so this request's INSERT meets the winner's row on the one-per-account index.
+        // Measured, that 23505 is what surfaces rather than the zero-row DELETE's concurrency failure, so
+        // dropping this arm turns a lost race into a 500 —
+        // ApplyAsync_WhenARacingChangeAlreadyReplacedTheRetiredCredential_AnswersFederatedCredentialMoved.
+        // A winner that retires without filing is not a product path, and an erasure arrives as 23503 on
+        // FK_credentials_users_user_id; both escape.
         catch (DbUpdateException exception) when (
             IsUniqueViolationOf(exception, CredentialConfiguration.FederatedPerUserIndexName))
         {
@@ -154,21 +148,6 @@ public sealed class EmailChangeRepository(BudgetoidDbContext dbContext) : IEmail
             return EmailChangeOutcome.FederatedCredentialMoved;
         }
     }
-
-    /// <summary>
-    /// True when the conflict is only about the credential this call retired. The count test is not
-    /// redundant: an exception EF could not attribute to any entry would otherwise satisfy the predicate
-    /// vacuously.
-    /// </summary>
-    private static bool IsRetiredCredentialGone(
-        DbUpdateConcurrencyException exception,
-        FederatedIdentityChange change) =>
-        change.Retired is { } retired
-        && exception.Entries.Count > 0
-        && exception.Entries.All(entry =>
-            entry.Entity is Credential credential
-            && credential.Id == retired.Id
-            && entry.State == EntityState.Deleted);
 
     /// <summary>
     /// Detaches every entity this call queued, so the refused change cannot ride along on a later save
