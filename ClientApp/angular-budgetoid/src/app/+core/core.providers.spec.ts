@@ -27,11 +27,11 @@ interface BootOptions {
   // step; the anonymous case names its own.
   readonly status?: SessionStatus;
   readonly readStagedRotation?: () => Promise<void>;
-  // Whether the browser landed on the address the identity provider redirects
-  // back to, carrying its answer. `false` is the default because it is every
-  // cold load but one: the provider is none of this initializer's business
-  // unless a registration is coming back from it.
-  readonly providerReturn?: boolean;
+  // Which trip, if any, the identity provider is redirecting back from, as
+  // `AuthService.providerReturn()` answers it. `null` is the default because
+  // it is every cold load but two: the provider is none of this initializer's
+  // business unless a registration or an email change is coming back from it.
+  readonly providerReturn?: 'registration' | 'email-change' | null;
   readonly initialize?: () => Promise<void>;
 }
 
@@ -53,7 +53,7 @@ function bootstrap(options: BootOptions = {}): Boot {
     probe = () => Promise.resolve(),
     status = 'authenticated',
     readStagedRotation = () => Promise.resolve(),
-    providerReturn = false,
+    providerReturn = null,
     initialize = () => Promise.resolve(),
   } = options;
 
@@ -68,13 +68,19 @@ function bootstrap(options: BootOptions = {}): Boot {
       return load();
     },
   };
-  const auth: Pick<AuthService, 'initialize' | 'isProviderReturn'> = {
+  const auth: Pick<
+    AuthService,
+    'initialize' | 'providerReturn' | 'dropEmailChangeReturn'
+  > = {
     initialize: () => {
       calls.push('auth.initialize');
 
       return initialize();
     },
-    isProviderReturn: () => providerReturn,
+    providerReturn: () => providerReturn,
+    dropEmailChangeReturn: () => {
+      calls.push('auth.dropEmailChangeReturn');
+    },
   };
   // The probe's answer as well as the probe, because the rotation read is
   // conditional on it. The status is a signal the way the real one is — the
@@ -298,7 +304,7 @@ describe('provideAppCore', () => {
       // Arrange
       const boot = bootstrap({
         status: 'anonymous',
-        providerReturn: true,
+        providerReturn: 'registration',
         initialize: () => new Promise<void>(() => undefined),
       });
 
@@ -319,7 +325,10 @@ describe('provideAppCore', () => {
     // will never see.
     it('is not contacted for a visitor the registration screen will turn away', async () => {
       // Arrange
-      const boot = bootstrap({ status: 'authenticated', providerReturn: true });
+      const boot = bootstrap({
+        status: 'authenticated',
+        providerReturn: 'registration',
+      });
 
       // Act
       await boot.initialized;
@@ -328,5 +337,102 @@ describe('provideAppCore', () => {
       expect(boot.calls).toContain('session.probe');
       expect(boot.calls).not.toContain('auth.initialize');
     });
+  });
+
+  // The email change comes back to a tab that holds a session, and the probe's
+  // authenticated arm discards the provider's tokens — nonce and marker with
+  // them. So the answer is read before the probe asks anything, and the
+  // hand-off is what survives the discard.
+  describe('an email change coming back from the provider', () => {
+    // T4. The order is the fix: the nonce the answer is checked against exists
+    // only until the probe's discard.
+    it('is read before the server is asked who the visitor is', async () => {
+      // Arrange
+      const boot = bootstrap({
+        status: 'authenticated',
+        providerReturn: 'email-change',
+      });
+
+      // Act
+      await boot.initialized;
+
+      // Assert
+      expect(boot.calls).toEqual([
+        'config.load',
+        'auth.initialize',
+        'session.probe',
+        'rotations.readStagedRotation',
+      ]);
+    });
+
+    // Awaited, not merely started first: a probe that runs while the answer is
+    // still being read discards the nonce under it.
+    it('holds the probe back until the answer has been read', async () => {
+      // Arrange
+      const boot = bootstrap({
+        status: 'authenticated',
+        providerReturn: 'email-change',
+        initialize: () => new Promise<void>(() => undefined),
+      });
+
+      // Act
+      await afterPendingWork();
+
+      // Assert
+      expect(boot.calls).toEqual(['config.load', 'auth.initialize']);
+      expect(TestBed.inject(ApplicationInitStatus).done).toBe(false);
+    });
+
+    it('is not read on a signed-in boot the provider is not answering', async () => {
+      // Arrange
+      const boot = bootstrap({ status: 'authenticated', providerReturn: null });
+
+      // Act
+      await boot.initialized;
+
+      // Assert — the control first, as above.
+      expect(boot.calls).toContain('session.probe');
+      expect(boot.calls).not.toContain('auth.initialize');
+    });
+
+    // T5. Nobody signed in means nobody to change an address for, and an
+    // answer carried on to `/welcome` or `/register` reads as a registration
+    // somebody never asked for.
+    it('is dropped once the probe finds nobody signed in', async () => {
+      // Arrange
+      const boot = bootstrap({
+        status: 'anonymous',
+        providerReturn: 'email-change',
+      });
+
+      // Act
+      await boot.initialized;
+
+      // Assert — one read, before the probe, and the drop after it.
+      expect(boot.calls).toEqual([
+        'config.load',
+        'auth.initialize',
+        'session.probe',
+        'auth.dropEmailChangeReturn',
+      ]);
+    });
+
+    // Only `anonymous` says nobody is signed in. A server that could not be
+    // reached, or an answer nobody has read, is not that.
+    it.each<SessionStatus>(['authenticated', 'unreachable', 'unknown'])(
+      'is kept when the probe answers %s',
+      async (status) => {
+        // Arrange
+        const boot = bootstrap({ status, providerReturn: 'email-change' });
+
+        // Act
+        await boot.initialized;
+
+        // Assert — the control first: an initializer that never read the
+        // answer has nothing to drop either.
+        expect(boot.calls).toContain('auth.initialize');
+        expect(boot.calls).not.toContain('auth.dropEmailChangeReturn');
+      },
+    );
   });
 });

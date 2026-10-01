@@ -261,8 +261,10 @@ because every one of these is something a reader will otherwise simplify away.
 Load-bearing rules. Each links the doc that argues it — **read that doc before changing the rule**.
 
 - **Two interceptors, one predicate.** `apiCredentialsInterceptor` answers "is this going to our
-  API?" once and attaches `withCredentials`, `X-Budgetoid-Client`, and — **on the two registration
-  routes only** — the provider's bearer. `sessionExpiryInterceptor` imports that same predicate,
+  API?" once and attaches `withCredentials`, `X-Budgetoid-Client`, and a provider bearer on **three
+  paths only**: the two registration routes read the stored token, and `EMAIL_CHANGE_PATH` takes
+  **only** the `PROVIDER_CREDENTIAL` on its own request context, never storage, matched exactly.
+  `sessionExpiryInterceptor` imports that same predicate,
   never restates it. It compares **origins**, not `startsWith`, and the bearer is narrowed by origin
   first and path second. Neither interceptor's own spec can see whether it is registered, so
   `app.config.spec.ts` carries one pin per interceptor.
@@ -276,7 +278,19 @@ Load-bearing rules. Each links the doc that argues it — **read that doc before
   **A session beginning discards the provider's tokens**, owned by `SessionService` on both arms
   that publish `authenticated` — `established()` and an authenticated probe — and **never** on an
   anonymous or unreachable probe, which would take the provider-return leg's nonce.
+  **An email-change return is read before the probe, not after it**: the initializer reads
+  `providerReturn()` once, and on `'email-change'` runs `initialize()` first — the authenticated
+  probe's discard would otherwise take the nonce — then drops the hand-off on an `anonymous` probe.
   [sessions.md](docs/business-logic/sessions.md)
+- **The email change's answer lives in memory, for one load, and is taken once.**
+  `AuthService.takeEmailChangeReturn()` hands `EmailChangeFlowService` the id token and the
+  validated `email` claim; nothing reaches web storage, and the flow clears the token on the `200`.
+  The flow, provided on `SettingsComponent`, reads every answer from `refusal` / `conflictKind`
+  members (an unnamed judged `4xx` is `failed`, no judgement is `undetermined`), probes once before
+  reading a `401`, never retries, and its Change and Confirm presses gate in their handlers on two
+  different predicates. The Google console must list `/app/settings`; no test can see it.
+  [email-change.md](docs/business-logic/email-change.md),
+  [components.md](docs/design/components.md)
 - **Nothing loads from another origin** — no CDN script, stylesheet, typeface, icon, image, or
   identity-provider picture. `src/no-external-origins.spec.ts` reads the production bundle, so
   `npm test` needs a `npm run build` first. **No script sets a cookie either**, and there is no

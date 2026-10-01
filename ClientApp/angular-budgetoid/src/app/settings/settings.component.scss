@@ -97,6 +97,15 @@
   min-height: 1lh;
 }
 
+// An address inside a sentence — the one Google sent back, or the one the row
+// now shows. The registration introduction's treatment of an asserted address:
+// weight so it is read character by character, and `anywhere`, because a long
+// address has nothing to break at and the screen is 320px wide at its narrowest.
+.s-address {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
 .s-outcome {
   display: grid;
   gap: var(--bud-space-2);

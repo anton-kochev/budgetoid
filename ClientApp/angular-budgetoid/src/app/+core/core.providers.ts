@@ -55,7 +55,37 @@ export const provideAppCore = (): EnvironmentProviders =>
           // outstanding, so no route activates against `'unknown'`. A
           // `void session.probe()` here still asks, and still leaves the first
           // guard reading a status nobody has answered yet.
+          //
+          // **Which trip the provider is answering, if any, is read once,
+          // here** — after the config, because the redirect addresses are in
+          // it, and before the probe, because the probe's authenticated arm
+          // discards the provider's tokens and the exchange marker with them.
+          // Both legs below decide from this one answer.
+          const returning = auth.providerReturn();
+
+          // **An email change is read before the probe, and awaited.** It comes
+          // back to a tab that holds a session, so the probe answers
+          // `authenticated` and its discard takes the library's nonce — the
+          // value the answer is checked against. Read after it, every email
+          // change would come back unconfirmed. `initialize()` hands the id
+          // token over in memory and discards the library's copy itself.
+          if (returning === 'email-change') {
+            await auth.initialize();
+          }
+
           await session.probe();
+
+          // **Dropped only when the probe found nobody signed in**: there is no
+          // account to change an address for, and an answer carried on to
+          // `/welcome` or `/register` would read as a registration nobody asked
+          // for. `unreachable` and `unknown` are not "nobody" — the four-valued
+          // status exists so that they are never collapsed into `anonymous`.
+          if (
+            returning === 'email-change' &&
+            session.status() === 'anonymous'
+          ) {
+            auth.dropEmailChangeReturn();
+          }
 
           // **Whether a key rotation is in flight, and it is asked here for the
           // same reason the probe is.** A run that lost its tab survives as
@@ -87,11 +117,13 @@ export const provideAppCore = (): EnvironmentProviders =>
           }
 
           // **The identity provider is contacted here only when it is
-          // redirecting a registration back to the tab that started it**
-          // (NFR-025). Every other cold load — anonymous or signed in, on any
-          // screen — makes no request to Google at all; the outbound leg prepares the client itself, on the
-          // press that starts it (`AuthService.signIn`). An unconditional call
-          // here told Google the address and time of every visit.
+          // redirecting a trip back to the tab that started it** (NFR-025) —
+          // a registration here, an email change above. Every other cold load —
+          // anonymous or signed in, on any screen — makes no request to Google
+          // at all; each outbound leg prepares the client itself, on the press
+          // that starts it (`AuthService.signIn`, `startEmailChange`). An
+          // unconditional call here told Google the address and time of every
+          // visit.
           //
           // **Here, and not in a resolver on `/register`, because the answer
           // has to be read before the router's first navigation.** The provider
@@ -107,8 +139,13 @@ export const provideAppCore = (): EnvironmentProviders =>
           // `guestGuard` turns a session away from `/register`, so completing
           // an exchange for them contacts the provider for a screen they will
           // never see. It is also why a browser that cannot reach Google still
-          // learns who its own server thinks it is.
-          if (session.status() !== 'authenticated' && auth.isProviderReturn()) {
+          // learns who its own server thinks it is. Decided from `returning`,
+          // not asked again, so an email-change boot can never reach
+          // `initialize()` a second time through this leg.
+          if (
+            returning === 'registration' &&
+            session.status() !== 'authenticated'
+          ) {
             await auth.initialize();
           }
         },

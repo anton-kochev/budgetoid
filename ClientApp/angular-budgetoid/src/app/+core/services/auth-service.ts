@@ -4,7 +4,7 @@ import { ConfigurationService } from './configuration.service';
 
 // The mark `signIn` leaves in this tab's `sessionStorage` immediately before
 // it sends the person to the provider, and the second half of what makes a
-// page load the provider coming back — see `isProviderReturn`. Its own key,
+// page load the provider coming back — see `providerReturn`. Its own key,
 // not the library's `nonce`: that one outlives the exchange it was written
 // for, and this one's lifetime is this service's to decide.
 //
@@ -12,22 +12,58 @@ import { ConfigurationService } from './configuration.service';
 // trip to the provider, which is exactly the span an exchange is outstanding.
 // Read through the global, not the injected document's window: every access
 // is guarded anyway, and a storage the browser refuses reads as no exchange.
+//
+// **The value says which trip this tab is on.** One key, because a tab is on
+// at most one trip at a time, and `'started'` still means registration so a
+// tab that left under the previous bundle comes back recognised.
 const EXCHANGE_MARKER = 'budgetoid-provider-exchange';
-const EXCHANGE_STARTED = 'started';
+const EXCHANGE_VALUES = {
+  registration: 'started',
+  'email-change': 'email-change',
+} as const satisfies Record<ProviderTrip, string>;
 
-function exchangeMarked(): boolean {
+/** Which of the two trips to the provider a page load is coming back from. */
+export type ProviderTrip = 'registration' | 'email-change';
+
+/**
+ * What an email-change return left for the settings screen: the id token the
+ * provider answered with, or the fact that the trip came back unconfirmed.
+ */
+export type EmailChangeReturn =
+  | {
+      readonly kind: 'answered';
+      readonly idToken: string;
+      readonly email: string;
+    }
+  | { readonly kind: 'unconfirmed' };
+
+// The `email` member of an id token's claims, or `null`. **Narrowed, never
+// asserted**: `getIdentityClaims()` is typed `object` and holds whatever the
+// provider put there. Present-but-blank folds to `null`, because a screen
+// naming it would name nobody. Reads that one member and no other.
+function assertedEmail(claims: unknown): string | null {
+  if (typeof claims !== 'object' || claims === null || !('email' in claims)) {
+    return null;
+  }
+
+  const email: unknown = claims.email;
+
+  return typeof email === 'string' && email.length > 0 ? email : null;
+}
+
+function exchangeMark(): string | null {
   try {
-    return sessionStorage.getItem(EXCHANGE_MARKER) !== null;
+    return sessionStorage.getItem(EXCHANGE_MARKER);
   } catch {
     // Unreadable storage is a tab that cannot show it started an exchange.
     // Asked from the `APP_INITIALIZER`, so a throw here is a blank page.
-    return false;
+    return null;
   }
 }
 
-function markExchange(): boolean {
+function markExchange(trip: ProviderTrip): boolean {
   try {
-    sessionStorage.setItem(EXCHANGE_MARKER, EXCHANGE_STARTED);
+    sessionStorage.setItem(EXCHANGE_MARKER, EXCHANGE_VALUES[trip]);
 
     return true;
   } catch {
@@ -42,7 +78,7 @@ function unmarkExchange(): void {
     // Swallowed: both callers — `initialize` on the `APP_INITIALIZER` and
     // `forgetProviderToken` on a session being published — must not fail
     // over a mark. A marker that survives costs what the residual in
-    // `isProviderReturn` already names.
+    // `providerReturn` already names.
   }
 }
 
@@ -61,9 +97,11 @@ export class AuthService {
   //
   // **Memoized here, and not at either caller, because this service is the
   // only thing both legs share.** The return leg asks from the
-  // `APP_INITIALIZER`, the outbound leg asks from a button press on the
-  // registration screen, and on a page that came back from the provider both
-  // happen — a person whose token lapsed presses **Continue with Google** again.
+  // `APP_INITIALIZER`, the outbound leg asks from a button press — on the
+  // registration screen or the settings screen — and on a page that came back
+  // from the provider both happen: a person whose token lapsed presses
+  // **Continue with Google** again, or one whose email change came back
+  // unconfirmed presses **Change email address** again.
   // A flag at either caller cannot see the other; this field sees both, so the
   // provider hears from this page load at most once.
   //
@@ -73,16 +111,23 @@ export class AuthService {
   // screen saying why a press does nothing.
   private ready: Promise<boolean> | null = null;
 
+  // What an email-change return left for the settings screen, taken once.
+  // **Memory only, and a `#` field**: the id token is a credential, and a copy
+  // in any storage would outlive the page load that read it — a reload would
+  // hand it over a second time. The library's own copy is discarded the moment
+  // this one is taken; see {@link initialize}.
+  #emailChangeReturn: EmailChangeReturn | null = null;
+
   /**
    * Configures the client from the loaded app config, fetches the provider's
    * discovery document and reads any answer the provider left on the URL.
    *
-   * **This is what contacts the identity provider, so it runs only where
-   * registration needs it** (NFR-025): from the `APP_INITIALIZER` when
-   * {@link isProviderReturn} says the provider is redirecting back, and from
-   * {@link signIn} before the exchange starts. Run on every cold load, it
-   * would tell Google the address and time of every visit to the product,
-   * anonymous or signed in.
+   * **This is what contacts the identity provider, so it runs only where a
+   * trip needs it** (NFR-025): from the `APP_INITIALIZER` when
+   * {@link providerReturn} says the provider is redirecting back, and from
+   * {@link signIn} and {@link startEmailChange} before a trip starts. Run on
+   * every cold load, it would tell Google the address and time of every visit
+   * to the product, anonymous or signed in.
    *
    * At most once per page load; see {@link ready}.
    *
@@ -92,12 +137,59 @@ export class AuthService {
    * reload of an answer-shaped address — a history entry, a bookmark — prepare
    * the client again on every load. Not removed any earlier: until preparation
    * settles, the page is still the one the provider answered.
+   *
+   * **On an email-change return it also hands the answer over and discards
+   * everything the library wrote for the trip.** The id token is kept in
+   * memory for {@link takeEmailChangeReturn} only if the library validated it
+   * — the token it stored is the one on this URL — and anything else is
+   * `unconfirmed`: a refusal, a nonce that does not match, a provider that
+   * could not be reached. Either way `logOut(true)` runs, because a nonce left
+   * behind by a failed return is exactly what a crafted answer would need.
+   *
+   * **The address is read from the claims the library decoded, after it
+   * validated the token and before `logOut(true)` discards them** — never
+   * from the raw fragment, which anybody can write. A validated answer
+   * asserting no non-empty address is `unconfirmed`: the settings screen names
+   * that address, and could confirm nothing without one. The token and the
+   * address are all that is kept; no other claim.
    */
   public async initialize(): Promise<void> {
+    // Asked before preparing: the library clears the fragment once it has
+    // read an answer, and the trip is judged by the page as it landed.
+    const trip = this.providerReturn();
+    const answered = trip === 'email-change' ? this.idTokenOnUrl() : null;
+
     try {
-      await this.whenReady();
+      const ready = await this.whenReady();
+
+      if (trip === 'email-change') {
+        const validated =
+          ready && answered !== null && this.oAuth.getIdToken() === answered;
+        const email = validated
+          ? assertedEmail(this.oAuth.getIdentityClaims())
+          : null;
+
+        this.#emailChangeReturn =
+          validated && email !== null
+            ? { kind: 'answered', idToken: answered, email }
+            : { kind: 'unconfirmed' };
+      }
     } finally {
+      if (trip === 'email-change') {
+        this.discardLibraryKeys();
+      }
       unmarkExchange();
+    }
+  }
+
+  // The local-discard overload; see {@link forgetProviderToken}. Swallowed,
+  // because the `APP_INITIALIZER` awaits the one caller.
+  private discardLibraryKeys(): void {
+    try {
+      this.oAuth.logOut(true);
+    } catch {
+      // Carried on past: the marker removal in `initialize` still follows,
+      // and without the marker a later load is not read as a return.
     }
   }
 
@@ -129,22 +221,26 @@ export class AuthService {
     // What a failure degrades to is a *working* application whose provider
     // exchange does not work: the first-party session cookie was already
     // probed, and every screen that does not need the identity provider renders
-    // as usual. Only registration is unavailable, and it was unavailable anyway
-    // — the provider it depends on is the thing that could not be reached.
+    // as usual. Only registration and the email change are unavailable, and
+    // they were unavailable anyway — the provider both depend on is the thing
+    // that could not be reached.
     //
-    // Nothing is re-thrown and nothing is published. This service holds no
-    // state a screen reads, and registration reads `providerEmail()`, which
-    // already answers `null` for a browser that never completed an exchange. The `false` this resolves to is for {@link signIn}
-    // alone, which must not send anybody to a login endpoint nobody has
-    // learned.
+    // Nothing is re-thrown and nothing is published. Registration reads
+    // `providerEmail()`, which already answers `null` for a browser that never
+    // completed an exchange; an email-change return reads the `false` in
+    // {@link initialize} and hands over `unconfirmed`. The `false` is otherwise
+    // for {@link signIn} and {@link startEmailChange}, which must not send
+    // anybody to a login endpoint nobody has learned.
     //
     // **Nothing schedules a silent refresh, and the omission is the rule.**
     // `setupAutomaticSilentRefresh()` used to sit on the next line; it plants a
     // hidden iframe pointed at `accounts.google.com` and re-runs it on a timer
-    // for as long as the tab is open. The provider token is now used **once**,
-    // on the registration screen, and discarded by `forgetProviderToken()`
-    // whenever `SessionService` publishes a session — every request after that
-    // authenticates from the first-party session cookie. Refreshing it would be
+    // for as long as the tab is open. A provider token is now used **once per
+    // trip**: registration's on the registration screen, discarded by
+    // `forgetProviderToken()` whenever `SessionService` publishes a session;
+    // the email change's handed over in memory by {@link initialize}, which
+    // discards the library's copy itself. Every other request authenticates
+    // from the first-party session cookie. Refreshing either would be
     // a third-party request on every page of the product, forever, to keep alive
     // a credential nothing reads. Adding it back is a change to what this
     // application loads from another origin, not a convenience.
@@ -168,18 +264,23 @@ export class AuthService {
   }
 
   /**
-   * Whether this page load is the provider redirecting back with its answer.
+   * Which trip this page load is the provider redirecting back from, or `null`.
    *
-   * **Two things, both required, and neither is enough alone:**
+   * **Three things, all required, and none is enough alone:**
    *
-   * - **This tab started an exchange.** {@link signIn} leaves a marker in
-   *   `sessionStorage` immediately before it leaves for the provider, and
-   *   {@link initialize} consumes it once preparation settles. An
+   * - **This tab started that trip.** {@link signIn} and
+   *   {@link startEmailChange} each leave a marker in `sessionStorage`
+   *   immediately before leaving for the provider, its value naming the trip,
+   *   and {@link initialize} consumes it once preparation settles. An
    *   answer-shaped address is something anybody can put in a link; only a
-   *   tab that pressed the provider button is waiting for one, so a crafted
+   *   tab that pressed a provider button is waiting for one, so a crafted
    *   link opened anywhere else costs no request to Google (NFR-025).
-   * - **The configured redirect address — origin and path — with an answer in
-   *   the fragment**, parsed by key and never matched as a substring: a
+   * - **That trip's redirect address — origin and path, compared for
+   *   equality** — `redirectUri` for registration, `emailChangeRedirectUri`
+   *   for the email change. A marker and an address from two different trips
+   *   are nobody's return.
+   * - **An answer in the fragment**, parsed by key and never matched as a
+   *   substring: a
    *   non-empty `access_token`, `id_token` and `state` together, or a
    *   non-empty `error` on its own. The refusal needs no `state` because
    *   Google's documented implicit-flow refusal, `#error=access_denied`, may
@@ -209,31 +310,15 @@ export class AuthService {
    *
    * A pure question: it reads the marker and never consumes it, so asking
    * twice answers the same. Storage the browser refuses to read answers
-   * `false` rather than throwing, because the `APP_INITIALIZER` asks this.
+   * `null` rather than throwing, because the `APP_INITIALIZER` asks this.
    *
    * Read from the document rather than the router: this is asked by the
    * `APP_INITIALIZER`, before the router has navigated anywhere — see
    * `core.providers.ts` for why it has to be that early.
    */
-  public isProviderReturn(): boolean {
-    const redirectUri = this.config.getConfig().auth.google?.redirectUri;
-
-    if (redirectUri === undefined || !URL.canParse(redirectUri)) {
-      return false;
-    }
-
-    const expected = new URL(redirectUri);
-    const landed = new URL(this.document.location.href);
-
-    if (
-      landed.origin !== expected.origin ||
-      landed.pathname !== expected.pathname
-    ) {
-      return false;
-    }
-
-    // `URLSearchParams` drops one leading `?` itself, but not a `#`.
-    const fragment = new URLSearchParams(landed.hash.slice(1));
+  public providerReturn(): ProviderTrip | null {
+    const google = this.config.getConfig().auth.google;
+    const fragment = this.fragment();
     const present = (key: string): boolean =>
       (fragment.get(key) ?? '').length > 0;
 
@@ -241,7 +326,56 @@ export class AuthService {
       (present('access_token') && present('id_token') && present('state')) ||
       present('error');
 
-    return answer && exchangeMarked();
+    if (!answer) {
+      return null;
+    }
+
+    const mark = exchangeMark();
+
+    if (
+      mark === EXCHANGE_VALUES['email-change'] &&
+      this.landedOn(google?.emailChangeRedirectUri)
+    ) {
+      return 'email-change';
+    }
+
+    if (
+      mark === EXCHANGE_VALUES.registration &&
+      this.landedOn(google?.redirectUri)
+    ) {
+      return 'registration';
+    }
+
+    return null;
+  }
+
+  // Whether the page sits at `address`'s origin and path, exactly. Origins,
+  // not a `startsWith`: `https://budgetoid.app.example` starts with
+  // `https://budgetoid.app`.
+  private landedOn(address: string | undefined): boolean {
+    if (address === undefined || !URL.canParse(address)) {
+      return false;
+    }
+
+    const expected = new URL(address);
+    const landed = new URL(this.document.location.href);
+
+    return (
+      landed.origin === expected.origin && landed.pathname === expected.pathname
+    );
+  }
+
+  private fragment(): URLSearchParams {
+    // `URLSearchParams` drops one leading `?` itself, but not a `#`.
+    return new URLSearchParams(
+      new URL(this.document.location.href).hash.slice(1),
+    );
+  }
+
+  private idTokenOnUrl(): string | null {
+    const idToken = this.fragment().get('id_token');
+
+    return idToken !== null && idToken.length > 0 ? idToken : null;
   }
 
   /**
@@ -295,15 +429,7 @@ export class AuthService {
       return null;
     }
 
-    const claims: unknown = this.oAuth.getIdentityClaims();
-
-    if (typeof claims !== 'object' || claims === null || !('email' in claims)) {
-      return null;
-    }
-
-    const email: unknown = claims.email;
-
-    return typeof email === 'string' && email.length > 0 ? email : null;
+    return assertedEmail(this.oAuth.getIdentityClaims());
   }
 
   /**
@@ -322,19 +448,84 @@ export class AuthService {
    * `initLoginFlow()` does without a login endpoint, minus the unhandled error.
    *
    * **Marks the tab as mid-exchange immediately before leaving, and only
-   * then** — see {@link isProviderReturn}. Not at the press: a press that
+   * then** — see {@link providerReturn}. Not at the press: a press that
    * could not reach the provider starts no round trip and must leave nothing
    * that makes a later load look like one coming back. A marker the browser
    * will not store means the answer would be refused on the way back, so the
    * trip is not started either: a press that does nothing beats a round trip
    * to Google that lands on a screen reading as if nothing happened.
+   *
+   * **Puts the registration redirect address back before leaving.** The
+   * address is a property on the one shared client, and
+   * {@link startEmailChange} writes its own there; without this, a
+   * registration press after it would come back to the settings screen.
    */
   public signIn(): void {
     void this.whenReady().then((ready) => {
-      if (ready && markExchange()) {
+      if (ready && markExchange('registration')) {
+        this.oAuth.redirectUri =
+          this.config.getConfig().auth.google?.redirectUri;
         this.oAuth.initLoginFlow();
       }
     });
+  }
+
+  /**
+   * Starts the email change's trip: a top-level navigation to the provider's
+   * account chooser, which redirects back to the settings screen.
+   *
+   * **The same client and the same preparation as {@link signIn}**, so a page
+   * load makes one discovery fetch however many trips it starts. The redirect
+   * address is written as a property after preparing, never through a second
+   * `configure()`: that call resets the login endpoint the discovery document
+   * taught the client, and preparing again runs `configure()` itself.
+   *
+   * **Marks the tab as on an email change only once the provider has been
+   * reached**, for {@link signIn}'s reason. Answers `'unavailable'` — and has
+   * contacted nobody when the address is not configured — whenever the page is
+   * not about to leave, so the caller can say so; it never rejects.
+   */
+  public async startEmailChange(): Promise<'leaving' | 'unavailable'> {
+    const redirectUri =
+      this.config.getConfig().auth.google?.emailChangeRedirectUri;
+
+    if (redirectUri === undefined) {
+      return 'unavailable';
+    }
+
+    if (!(await this.whenReady()) || !markExchange('email-change')) {
+      return 'unavailable';
+    }
+
+    this.oAuth.redirectUri = redirectUri;
+
+    try {
+      this.oAuth.initLoginFlow('', { prompt: 'select_account' });
+    } catch {
+      // The library refuses a login endpoint it will not use synchronously;
+      // the page is not leaving, so neither may the marker stay.
+      unmarkExchange();
+
+      return 'unavailable';
+    }
+
+    return 'leaving';
+  }
+
+  /**
+   * What the email-change return on this page load left, handed over once:
+   * a second call answers `null`.
+   */
+  public takeEmailChangeReturn(): EmailChangeReturn | null {
+    const handedOver = this.#emailChangeReturn;
+    this.#emailChangeReturn = null;
+
+    return handedOver;
+  }
+
+  /** Discards what an email-change return left, untaken. */
+  public dropEmailChangeReturn(): void {
+    this.#emailChangeReturn = null;
   }
 
   /**
@@ -351,11 +542,16 @@ export class AuthService {
    * Google session on their behalf is not something this application was asked
    * to do, and the redirect would also take them off a screen mid-flow.
    *
-   * **Never on an `anonymous` or `unreachable` probe.** On the provider-return
-   * leg the probe runs before {@link initialize} reads the answer off the URL,
-   * and a discard there takes the library's nonce with the tokens, so the
+   * **Never on an `anonymous` or `unreachable` probe.** On a registration
+   * return the probe runs before {@link initialize} reads the answer off the
+   * URL, and a discard there takes the library's nonce with the tokens, so the
    * answer no longer validates. The arm is chosen in `SessionService`; this
    * method only discards.
+   *
+   * On an email-change return the order is the other way round:
+   * {@link initialize} runs before the probe and has already run
+   * `logOut(true)` and removed the marker, so the authenticated arm's discard
+   * finds nothing left to take.
    *
    * **Not a sign-out.** A discard ends nothing the person can see; a sign-out
    * ends their visit, and it is first-party — the settings screen ends the
@@ -364,7 +560,8 @@ export class AuthService {
    * `logOut()` navigates to the provider's end-session endpoint whenever the
    * library knows one, and a contact with Google on a person's own action is
    * outside every moment NFR-025 permits — of its three, this product builds
-   * only the account-creation exchange. Google's discovery document publishes
+   * registration's exchange and the email change's trip, and neither is a
+   * sign-out. Google's discovery document publishes
    * no `end_session_endpoint` today, so against this configuration the two
    * overloads happen to behave alike; the `true` is what keeps this a discard
    * whatever the provider publishes next.
@@ -373,6 +570,10 @@ export class AuthService {
    * begun, so no exchange is outstanding in this tab; a marker left behind
    * would make an answer-shaped link opened here later cost a discovery fetch.
    * Removed first, so a library that throws cannot leave it behind.
+   *
+   * **Never touches the email-change hand-off.** That is this service's memory,
+   * not the library's storage, and a session being published is no reason for
+   * the settings screen to lose an answer it has not read yet.
    */
   public forgetProviderToken(): void {
     unmarkExchange();

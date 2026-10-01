@@ -147,10 +147,13 @@ type ProviderStub = Readonly<Record<string, Mock>>;
 function providerStub(): ProviderStub {
   return {
     initialize: vi.fn(),
-    isProviderReturn: vi.fn(),
     providerEmail: vi.fn(),
     signIn: vi.fn(),
     forgetProviderToken: vi.fn(),
+    providerReturn: vi.fn(),
+    startEmailChange: vi.fn(),
+    takeEmailChangeReturn: vi.fn(),
+    dropEmailChangeReturn: vi.fn(),
   };
 }
 

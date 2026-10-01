@@ -6,6 +6,7 @@ import {
 import { ApplicationInitStatus } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { RouterTestingHarness } from '@angular/router/testing';
+import { AuthService } from '@app-core/services/auth-service';
 import { OAuthService } from 'angular-oauth2-oidc';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { appConfig } from '../app.config';
@@ -52,7 +53,40 @@ const EXCHANGE_MARKER = 'budgetoid-provider-exchange';
 
 const PROVIDER_ANSWER_PATH = '/register#access_token=a&id_token=b&state=c';
 
+// The email change's marker value, and its answer landing on the settings
+// screen. The registration marker is `'started'`.
+const EMAIL_CHANGE_MARKER = 'email-change';
+const SETTINGS_ANSWER_PATH = '/app/settings#access_token=a&id_token=b&state=c';
+const KEY_SET_URL = 'https://www.googleapis.com/oauth2/v3/certs';
+
+// The keys angular-oauth2-oidc 17 writes to its storage for a trip or on an
+// implicit-flow return.
+const LIBRARY_KEYS = [
+  'access_token',
+  'id_token',
+  'refresh_token',
+  'nonce',
+  'PKCE_verifier',
+  'expires_at',
+  'id_token_claims_obj',
+  'id_token_expires_at',
+  'id_token_stored_at',
+  'access_token_stored_at',
+  'granted_scopes',
+  'session_state',
+] as const;
+
 type Visitor = 'anonymous' | 'authenticated';
+
+interface ColdBootOptions {
+  // Whether Google's discovery document and key set are answered. Off by
+  // default: every other case answers them as a network failure, which is
+  // what keeps a contact visible in the census without a round trip.
+  readonly answerProvider?: boolean;
+  // Runs once the initializer has settled and before the first route renders
+  // — the moment a screen would first read what the boot left.
+  readonly afterStart?: () => void;
+}
 
 interface ColdBoot {
   // Every request the boot and the first render made, absolute, in order.
@@ -77,8 +111,31 @@ function absolute(url: string): string {
   return new URL(url, document.baseURI).href;
 }
 
-function answer(request: TestRequest, visitor: Visitor): void {
+function answer(
+  request: TestRequest,
+  visitor: Visitor,
+  answerProvider: boolean,
+): void {
   const url = new URL(absolute(request.request.url));
+
+  if (answerProvider && url.href === DISCOVERY_URL) {
+    request.flush({
+      issuer: 'https://accounts.google.com',
+      // The provider's own spelling.
+      // eslint-disable-next-line @typescript-eslint/naming-convention
+      authorization_endpoint: 'https://accounts.google.com/o/oauth2/v2/auth',
+      // eslint-disable-next-line @typescript-eslint/naming-convention
+      jwks_uri: KEY_SET_URL,
+    });
+
+    return;
+  }
+
+  if (answerProvider && url.href === KEY_SET_URL) {
+    request.flush({ keys: [] });
+
+    return;
+  }
 
   if (
     url.origin === appOrigin() &&
@@ -90,6 +147,7 @@ function answer(request: TestRequest, visitor: Visitor): void {
         google: {
           clientId: 'budgetoid-client',
           redirectUri: `${appOrigin()}/register`,
+          emailChangeRedirectUri: `${appOrigin()}/app/settings`,
           scope: 'openid email',
         },
       },
@@ -128,6 +186,7 @@ async function answerUntilSettled(
   visitor: Visitor,
   requested: string[],
   settled: () => boolean,
+  answerProvider = false,
 ): Promise<void> {
   let quietRounds = 0;
   for (let round = 0; round < 100; round += 1) {
@@ -138,7 +197,7 @@ async function answerUntilSettled(
       // Asked and then dropped by its own caller while an earlier answer was
       // being delivered: still a request the boot made, so still counted.
       if (!request.cancelled) {
-        answer(request, visitor);
+        answer(request, visitor, answerProvider);
       }
     }
     quietRounds = open.length === 0 ? quietRounds + 1 : 0;
@@ -155,7 +214,11 @@ async function answerUntilSettled(
 // Loads the application at `path` the way a browser does: the address is set
 // before anything is built, the application's providers are finalized — which
 // runs the `APP_INITIALIZER` — and then the router renders the first route.
-async function coldBoot(visitor: Visitor, path: string): Promise<ColdBoot> {
+async function coldBoot(
+  visitor: Visitor,
+  path: string,
+  { answerProvider = false, afterStart }: ColdBootOptions = {},
+): Promise<ColdBoot> {
   history.replaceState(null, '', path);
 
   TestBed.configureTestingModule({
@@ -170,13 +233,26 @@ async function coldBoot(visitor: Visitor, path: string): Promise<ColdBoot> {
   const init = TestBed.inject(ApplicationInitStatus);
   const requested: string[] = [];
 
-  await answerUntilSettled(http, visitor, requested, () => init.done);
+  await answerUntilSettled(
+    http,
+    visitor,
+    requested,
+    () => init.done,
+    answerProvider,
+  );
+  afterStart?.();
 
   let rendered = false;
   const rendering = RouterTestingHarness.create(path).then(() => {
     rendered = true;
   });
-  await answerUntilSettled(http, visitor, requested, () => rendered);
+  await answerUntilSettled(
+    http,
+    visitor,
+    requested,
+    () => rendered,
+    answerProvider,
+  );
   await rendering;
 
   return { requested, heldValidProviderTokens };
@@ -354,5 +430,174 @@ describe('a cold load against the real provider client', () => {
     // Assert — the probe first, as above.
     expect(reload.requested).toContain(`${API_ORIGIN}/api/me`);
     expect(foreignRequests(reload)).toEqual([]);
+  });
+});
+
+function base64Url(value: object): string {
+  return btoa(JSON.stringify(value))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+}
+
+// An id token the library accepts under its default `NullValidationHandler`:
+// the claims it checks are right and the signature is not checked.
+function idTokenFor(nonce: string): string {
+  const now = Math.floor(Date.now() / 1000);
+
+  return [
+    base64Url({ alg: 'RS256', typ: 'JWT' }),
+    base64Url({
+      iss: 'https://accounts.google.com',
+      aud: 'budgetoid-client',
+      sub: 'subject-one',
+      email: 'moved.owner@budgetoid.test',
+      iat: now,
+      exp: now + 3600,
+      nonce,
+      // eslint-disable-next-line @typescript-eslint/naming-convention
+      at_hash: 'hash-one',
+    }),
+    'signature-one',
+  ].join('.');
+}
+
+// The email change comes back to a tab holding a session, so the probe's
+// authenticated arm — which discards the provider's tokens, nonce and marker
+// included — runs on the very boot that has to read the answer.
+describe('a cold load the provider answers an email change on', () => {
+  let originalHref: string;
+  let base: HTMLBaseElement;
+
+  beforeEach(() => {
+    originalHref = document.location.href;
+    sessionStorage.clear();
+    // `src/index.html` ships `<base href="/">`, which is what resolves the
+    // configuration file's `./assets/…` from a two-segment path like
+    // `/app/settings`. jsdom's page has none, so it would ask `/app/assets/…`.
+    base = document.createElement('base');
+    base.href = '/';
+    document.head.append(base);
+  });
+
+  afterEach(() => {
+    TestBed.resetTestingModule();
+    for (const frame of document.querySelectorAll('iframe')) {
+      frame.remove();
+    }
+    base.remove();
+    sessionStorage.clear();
+    history.replaceState(null, '', originalHref);
+  });
+
+  // T8's control: the census has to see this contact, or the negatives below
+  // are a census that sees nothing.
+  it('sees the discovery request when the provider redirects an email change back', async () => {
+    // Arrange
+    sessionStorage.setItem(EXCHANGE_MARKER, EMAIL_CHANGE_MARKER);
+
+    // Act
+    const boot = await coldBoot('authenticated', SETTINGS_ANSWER_PATH);
+
+    // Assert
+    expect(foreignRequests(boot)).toEqual([DISCOVERY_URL]);
+  });
+
+  it.each<{
+    readonly shape: string;
+    readonly visitor: Visitor;
+    readonly path: string;
+    readonly marker: string | null;
+  }>([
+    {
+      shape: 'a signed-in load of the settings screen',
+      visitor: 'authenticated',
+      path: '/app/settings',
+      marker: null,
+    },
+    {
+      shape: 'a settings answer in a tab that never pressed',
+      visitor: 'authenticated',
+      path: SETTINGS_ANSWER_PATH,
+      marker: null,
+    },
+    {
+      shape: 'a settings answer in a tab that pressed to register',
+      visitor: 'authenticated',
+      path: SETTINGS_ANSWER_PATH,
+      marker: 'started',
+    },
+    {
+      shape: 'a registration answer in a tab that pressed to change its email',
+      visitor: 'anonymous',
+      path: PROVIDER_ANSWER_PATH,
+      marker: EMAIL_CHANGE_MARKER,
+    },
+  ])('reaches no provider on $shape', async ({ visitor, path, marker }) => {
+    // Arrange
+    if (marker !== null) {
+      sessionStorage.setItem(EXCHANGE_MARKER, marker);
+    }
+
+    // Act
+    const boot = await coldBoot(visitor, path);
+
+    // Assert — the probe first: a boot that asked nothing would pass the census.
+    expect(boot.requested).toContain(`${API_ORIGIN}/api/me`);
+    expect(foreignRequests(boot)).toEqual([]);
+    expect(framesInDocument()).toEqual([]);
+  });
+
+  // The regression for the ordering bug: on a signed-in boot the answer has to
+  // be read while its nonce still exists, and handed over in memory before the
+  // first route draws.
+  it('hands a signed-in email change the id token the provider sent back', async () => {
+    // Arrange
+    sessionStorage.setItem('nonce', 'trip-nonce');
+    sessionStorage.setItem(EXCHANGE_MARKER, EMAIL_CHANGE_MARKER);
+    const token = idTokenFor('trip-nonce');
+    let handedOver: unknown = 'never read';
+
+    // Act
+    await coldBoot(
+      'authenticated',
+      `/app/settings#access_token=at&id_token=${token}&state=trip-nonce`,
+      {
+        answerProvider: true,
+        afterStart: () => {
+          handedOver = TestBed.inject(AuthService).takeEmailChangeReturn();
+        },
+      },
+    );
+
+    // Assert
+    expect(handedOver).toEqual({
+      kind: 'answered',
+      idToken: token,
+      email: 'moved.owner@budgetoid.test',
+    });
+  });
+
+  it('leaves no provider token or marker behind after an email-change boot', async () => {
+    // Arrange
+    sessionStorage.setItem('nonce', 'trip-nonce');
+    sessionStorage.setItem(EXCHANGE_MARKER, EMAIL_CHANGE_MARKER);
+    const token = idTokenFor('trip-nonce');
+
+    // Act
+    const boot = await coldBoot(
+      'authenticated',
+      `/app/settings#access_token=at&id_token=${token}&state=trip-nonce`,
+      { answerProvider: true },
+    );
+
+    // Assert — the control first: a boot that never read the answer leaves
+    // nothing behind either, because the probe's discard empties storage.
+    expect(foreignRequests(boot)).toEqual([DISCOVERY_URL, KEY_SET_URL]);
+    const left = LIBRARY_KEYS.filter(
+      (key) => sessionStorage.getItem(key) !== null,
+    );
+    expect(left).toEqual([]);
+    expect(sessionStorage.getItem(EXCHANGE_MARKER)).toBeNull();
   });
 });

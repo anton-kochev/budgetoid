@@ -92,10 +92,10 @@ function bootstrap(): Boot {
   // exercising the failure path without saying so.
   const auth: Pick<
     AuthService,
-    'initialize' | 'isProviderReturn' | 'forgetProviderToken'
+    'initialize' | 'providerReturn' | 'forgetProviderToken'
   > = {
     initialize: () => Promise.resolve(),
-    isProviderReturn: () => false,
+    providerReturn: () => null,
     forgetProviderToken: () => undefined,
   };
   const rotations: Pick<KeyRotationApiService, 'getRotationState'> = {

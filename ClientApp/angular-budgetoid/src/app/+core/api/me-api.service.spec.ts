@@ -6,6 +6,7 @@ import {
 } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
 import { EXPECTS_UNAUTHENTICATED } from '@app-core/interceptors/expects-unauthenticated.token';
+import { PROVIDER_CREDENTIAL } from '@app-core/interceptors/provider-credential.token';
 import type { PasskeyAssertionPayload } from '@app-core/security/webauthn-encoding';
 import { ConfigurationService } from '@app-core/services/configuration.service';
 import { readFileSync } from 'node:fs';
@@ -1239,6 +1240,150 @@ describe('MeApiService', () => {
       // `unrecognised` and `undetermined`; a service that caught it here and
       // completed would turn every refusal into an apparent success.
       expect(status).toBe(401);
+    });
+  });
+
+  // `POST /api/me/email-change`: a fresh passkey assertion in the body and the
+  // provider token the email-change return handed over on the request's
+  // context, where the credentials interceptor turns it into the bearer.
+  describe('changeEmail', () => {
+    const EMAIL_CHANGE_URL = 'https://api.test/api/me/email-change';
+    const PROVIDER_TOKEN = 'provider.token.one';
+
+    const ASSERTION: PasskeyAssertionPayload = {
+      credentialId: 'AQIDBAUGBwgJCgsMDQ4PEA',
+      clientDataJson: 'eyJ0eXBlIjoid2ViYXV0aG4uZ2V0In0',
+      authenticatorData: 'gIGCg4SFhoeIiYqLjI2Oj5CRkpOUlZaXmJmam5ydnp8',
+      signature: 'MEUCIQD-YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXowMTIzNA',
+      userHandle: 'EBESExQVFhcYGRobHB0eHw',
+    };
+
+    it('posts to the email-change route', () => {
+      // Act
+      api.changeEmail(PROVIDER_TOKEN, ASSERTION).subscribe();
+      const request = http.expectOne(EMAIL_CHANGE_URL);
+
+      // Assert
+      expect(request.request.method).toBe('POST');
+
+      request.flush({ sessionsEnded: 0 });
+    });
+
+    // The five assertion members and nothing else: no address and no subject,
+    // because the server reads both off the token, and above all not the token
+    // itself, which travels as the bearer.
+    it('sends the assertion and nothing else', () => {
+      // Arrange
+      const withExtra = {
+        ...ASSERTION,
+        keyEncryptionKey: {},
+      } as PasskeyAssertionPayload;
+
+      // Act
+      api.changeEmail(PROVIDER_TOKEN, withExtra).subscribe();
+      const request = http.expectOne(EMAIL_CHANGE_URL);
+
+      // Assert
+      const sent = sentJson(request);
+
+      expect(Object.keys(sent).sort()).toEqual(
+        [
+          'authenticatorData',
+          'clientDataJson',
+          'credentialId',
+          'signature',
+          'userHandle',
+        ].sort(),
+      );
+      expect(sent).toEqual(ASSERTION);
+      expect(request.request.serializeBody()).not.toContain(PROVIDER_TOKEN);
+
+      request.flush({ sessionsEnded: 0 });
+    });
+
+    it('sends an absent user handle as null rather than leaving it out', () => {
+      // Arrange
+      const withoutHandle: PasskeyAssertionPayload = {
+        ...ASSERTION,
+        userHandle: null,
+      };
+
+      // Act
+      api.changeEmail(PROVIDER_TOKEN, withoutHandle).subscribe();
+      const request = http.expectOne(EMAIL_CHANGE_URL);
+
+      // Assert
+      expect(sentJson(request)).toHaveProperty('userHandle', null);
+
+      request.flush({ sessionsEnded: 0 });
+    });
+
+    // The token is handed to the interceptor on the context, and the service
+    // writes no header itself: a header written here would skip the
+    // interceptor's origin check.
+    it('carries the provider token on the request context and writes no bearer itself', () => {
+      // Act
+      api.changeEmail(PROVIDER_TOKEN, ASSERTION).subscribe();
+      const request = http.expectOne(EMAIL_CHANGE_URL);
+
+      // Assert
+      expect(request.request.context.get(PROVIDER_CREDENTIAL)).toBe(
+        PROVIDER_TOKEN,
+      );
+      expect(request.request.headers.has('Authorization')).toBe(false);
+
+      request.flush({ sessionsEnded: 0 });
+    });
+
+    // A 401 here is the route's verdict on this request — a refused assertion
+    // or a refused provider token — and the screen says so. Unmarked,
+    // `sessionExpiryInterceptor` reads it as the session ending.
+    it('marks the request as one whose refusal is not a session ending', () => {
+      // Act
+      api.changeEmail(PROVIDER_TOKEN, ASSERTION).subscribe();
+      const request = http.expectOne(EMAIL_CHANGE_URL);
+
+      // Assert
+      expect(request.request.context.get(EXPECTS_UNAUTHENTICATED)).toBe(true);
+
+      request.flush({ sessionsEnded: 0 });
+    });
+
+    it('reads how many other sessions the change ended', () => {
+      // Arrange
+      let received: unknown;
+
+      // Act
+      api
+        .changeEmail(PROVIDER_TOKEN, ASSERTION)
+        .subscribe((value) => (received = value));
+      http.expectOne(EMAIL_CHANGE_URL).flush({ sessionsEnded: 3 });
+
+      // Assert
+      expect(received).toEqual({ sessionsEnded: 3 });
+    });
+
+    // A list is not the answer this route gives, whatever is in it: refused
+    // here, it reaches the flow as a 200 that does not read — `undetermined`.
+    it('refuses a 200 whose body is a list', () => {
+      // Arrange
+      let received: unknown;
+      let failure: unknown;
+
+      // Act
+      api.changeEmail(PROVIDER_TOKEN, ASSERTION).subscribe({
+        next: (value) => {
+          received = value;
+        },
+        error: (error: unknown) => {
+          failure = error;
+        },
+      });
+      http.expectOne(EMAIL_CHANGE_URL).flush([]);
+
+      // Assert
+      expect(failure).toBeInstanceOf(Error);
+      expect(received).toBeUndefined();
     });
   });
 });

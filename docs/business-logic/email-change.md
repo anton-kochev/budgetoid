@@ -19,11 +19,12 @@ and the one path in the product that writes `users.email` after the account exis
 `RegisterAccountHandler` is still the only code that brings one into existence, and nothing here
 inserts a `users` row.
 
-**The server half is built and the client half is not.** `POST /api/me/email-change` answers, and the
-integration suite drives it end to end. No settings control calls it, and the provider's redirect
-does not come back to `/app/settings`, so no browser reaches it today. Every rule below is about the
-route; what the screen will do is specified in [components.md](../design/components.md) and is not
-described here as built.
+**Both halves are built.** `POST /api/me/email-change` answers, and the integration suite drives it
+end to end. On `/app/settings`, **Change email address** sends the tab to Google's account chooser,
+Google redirects back to `/app/settings`, and **Confirm with your passkey** sends the one changing
+request. The rules run server first and client second: the client's start at *The trip to Google*
+under *Business Rules & Invariants*, each with the spec that holds it. What the screen looks like is
+the **Changing the email address** chapter of [components.md](../design/components.md).
 
 The act asks for **three proofs at once, and each has one owner**: a full session, a provider token
 judged beside it, and a fresh passkey assertion. The rules, the order they run in, and what each
@@ -421,6 +422,231 @@ response body is a value in a log.
   `HandleAsync_WhenTheAccountHoldsNoFederatedCredential_Throws`.
 - **Source**: `[SOURCE: discussion]`
 
+---
+
+The rules from here down are the web client's.
+
+- **Rule**: **The trip to Google.** A press of **Change email address** calls
+  `AuthService.startEmailChange`, which prepares the provider client, marks the tab, points the
+  client at `auth.google.emailChangeRedirectUri` and leaves the page through
+  `initLoginFlow('', { prompt: 'select_account' })`. The return is recognised by
+  `AuthService.providerReturn()`, and only when three things hold at once: the tab's marker names
+  this trip, the page sits at exactly that trip's redirect address — origin and path — and the
+  fragment carries an answer.
+- **Why**: each piece closes one way of being wrong about which trip came back.
+  - **One client, one preparation per page load.** `signIn` and `startEmailChange` share the memo
+    `AuthService` keeps, so a page that came back from a registration and then starts an email
+    change makes one discovery fetch, not two. The redirect address is written as a **property**
+    after preparing, never through a second `configure()`, which would reset the login endpoint the
+    discovery document taught the client. Because the property outlives the press, `signIn` writes
+    the registration address back before it leaves.
+  - **The marker carries the trip.** `budgetoid-provider-exchange` holds `email-change` for this
+    trip and `started` for registration — the value a tab that left under the previous bundle still
+    holds, which is why registration kept it. A marker from one trip beside the other trip's address
+    is nobody's return.
+  - **The marker is written only once the provider has been reached**, and removed again if the
+    library refuses the departure, so a press that goes nowhere leaves nothing that makes a later
+    load look like a return. With no redirect address configured the press answers `unavailable` and
+    contacts nobody.
+  - **The account chooser is asked for on every trip**, because the person is choosing an address.
+- **Enforced in**: `auth-service.spec.ts`:
+  - `startEmailChange leaves for the settings screen with the account chooser, marked as an email
+    change`;
+  - `signIn after startEmailChange on the same page load still returns to the registration screen`;
+  - `startEmailChange answers unavailable and leaves no marker when the departure throws`, and the
+    two siblings for no configured address and an unreachable provider;
+  - the `providerReturn reads $shape as $expected` table, which crosses every marker with every
+    address, including a longer path, an extended path and an extended host;
+  - against the real library, `startEmailChange after a read and discarded registration answer
+    leaves once, with a fresh nonce and no second fetch`.
+
+  The address itself is pinned by `src/email-change-redirect-uri.spec.ts` over the **emitted**
+  `app-config*.json`: declared, on `/app/settings`, on the registration address's origin, and never
+  equal to the registration address.
+- **Source**: `[SOURCE: user-story]`
+
+---
+
+- **Rule**: **The hand-off is memory only, taken once, and the address comes from claims the library
+  validated.** On an email-change return, `AuthService.initialize()` reads the `id_token` off the URL
+  before preparing, lets the library read the answer, and keeps an answer only when preparation
+  succeeded **and** the token the library stored is the one on the URL. The address is then read
+  from the claims the library decoded — the `email` member and nothing else, a non-empty string or
+  nothing — and the token and the address go into one `#` field. Anything else is `unconfirmed`: a
+  refusal, a nonce that does not match, an unreachable provider, a validated token asserting no
+  address. Whatever it concluded, `initialize()` then runs `logOut(true)` and removes the marker.
+  `takeEmailChangeReturn` hands the answer over once and a second call answers `null`;
+  `dropEmailChangeReturn` discards it untaken.
+- **Why**: the id token is a credential.
+  - **A copy in any storage would outlive the page load that read it**, and a reload would hand it
+    over a second time. Memory dies with the load, by construction.
+  - **The library's copy goes at once, nonce included.** A nonce left behind by a failed return is
+    exactly what a crafted answer would need, so the discard runs on every outcome, from a `finally`.
+  - **The validated claims, never the raw fragment**, because anybody can write a fragment. Today
+    the two readings name the same address — see the gotchas.
+  - **`forgetProviderToken()` never touches the hand-off.** It empties the library's storage; the
+    hand-off is this service's memory, and a session being published is no reason for the settings
+    screen to lose an answer it has not read yet.
+  - **`EmailChangeFlowService` takes it in its constructor**, not on a first read: the answer is read
+    before the first route draws, so the first render is already the waiting state, and a second
+    reader of the same load finds nothing.
+- **Enforced in**: `auth-service.spec.ts`, against the real library:
+  - `an email-change return hands the id token over once and leaves none of the library keys behind`;
+  - `an email-change return writes the id token and the address to no storage`;
+  - `an email-change return whose token carries $shape is unconfirmed` — no claim, a non-string, a
+    blank;
+  - the three `… is unconfirmed` cases for a nonce that does not match, a provider refusal and an
+    unreachable provider, each asserting the library's keys are gone;
+  - `an email-change return refused on its nonce is unconfirmed even beside an abandoned registration
+    token` — a validated token and its claims left in storage by an abandoned registration are not
+    answered out of;
+  - `a registration return hands nothing over to the email change`;
+  - `forgetProviderToken leaves a captured email-change answer in place`;
+  - `dropEmailChangeReturn leaves nothing for a later take`.
+
+  On the flow's side, `email-change-flow.service.spec.ts` holds `takes the hand-off once, when it is
+  built`, and its *web storage* block holds that neither the token nor the address reaches
+  `sessionStorage` or `localStorage` through a press that lands or a refusal that keeps waiting.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: **The bootstrap reads an email-change answer before it asks who the visitor is.** The
+  `APP_INITIALIZER` in `core.providers.ts` loads the config, asks `providerReturn()` **once**, and on
+  an email change awaits `initialize()`; only then does it run the session probe. After the probe it
+  drops the hand-off when, and only when, the probe answered `anonymous`. The registration leg
+  decides from the same one answer, after the probe, and only for a visitor the probe did not
+  recognise.
+- **Why**: the email change comes back to a tab that holds a session.
+  - **The probe's authenticated arm discards the provider's tokens**, through
+    `forgetProviderToken()`, and the nonce goes with them — the value the answer is checked against.
+    Read after the probe, every email change would come back `unconfirmed`. The registration leg is
+    the other way round, for the reason [sessions.md](sessions.md) gives.
+  - **Dropped on `anonymous` alone.** Nobody signed in means no account to change an address for,
+    and an answer carried on to `/welcome` or `/register` would read as a registration nobody asked
+    for. `unreachable` and `unknown` are not "nobody", which is what the four-valued status exists
+    to keep apart.
+  - **One read of `providerReturn()`**, so an email-change boot can never reach `initialize()` a
+    second time through the registration leg.
+- **Enforced in**: `core.providers.spec.ts`, in *an email change coming back from the provider*:
+  `is read before the server is asked who the visitor is`, `holds the probe back until the answer has
+  been read`, `is not read on a signed-in boot the provider is not answering`, `is dropped once the
+  probe finds nobody signed in` and `is kept when the probe answers %s`. Against the real library,
+  `core.providers.cold-boot.spec.ts` holds `hands a signed-in email change the id token the provider
+  sent back` — the regression for the ordering — and `leaves no provider token or marker behind after
+  an email-change boot`.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: **The bearer rides on the request, never out of storage.** `MeApiService.changeEmail`
+  puts the token on the `PROVIDER_CREDENTIAL` context token and marks the request
+  `EXPECTS_UNAUTHENTICATED`; it writes no header. `apiCredentialsInterceptor` attaches it only after
+  it has settled that the request is going to this API's origin, only on the exact path
+  `EMAIL_CHANGE_PATH`, and only from that context. An empty string is no credential.
+- **Why**: a signed-in browser holds nothing in the library's storage — the session's beginning
+  discarded it — so the stored token there would be whatever an abandoned registration left, sent on
+  a request that was handed none.
+  - **A header written in the service would reach the wire whatever origin the request went to.**
+    Handed to the interceptor, the token is subject to the same origin-first, path-second order the
+    registration bearer is, and a credential on the context of any other request is dropped.
+  - **The path is declared beside the interceptor and imported by the service**, the registration
+    paths' arrangement and for their reason: two spellings of one route fail silently in both
+    directions.
+  - **The body is the five assertion members, projected one by one**, for `eraseAccount`'s reason.
+  - **Two readings of a `200`, kept apart at the boundary.** A body that is not an object at all is
+    thrown, and the flow reads that as `undetermined`. An object carrying no readable count is a
+    change that happened, answered with `sessionsEnded: null`, which the screen renders with no
+    clause about other browsers.
+- **Enforced in**: `api-credentials.interceptor.spec.ts`, in *apiCredentialsInterceptor on the email
+  change*: the bearer from the context beside the cookie and the client header, no stored token when
+  the request carries none, a carried credential ignored on every other route, the registration
+  routes left to their own rule, nothing to the path on another origin, no bearer below, beside or
+  with a trailing slash on the path, and none for an empty credential. `me-api.service.spec.ts`
+  holds `carries the provider token on the request context and writes no bearer itself`, `marks the
+  request as one whose refusal is not a session ending` and `refuses a 200 whose body is a list`.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: **The flow is one attempt per screen, and its words are read from the problem body's
+  members.** `EmailChangeFlowService` is provided by `SettingsComponent`. Change and Confirm each read
+  one predicate in both the attribute and the handler: Change is pressable when no walked rotation,
+  no export in flight and no running unlock holds it off, the flow is not on its way to Google, and no
+  Confirm press is in flight; Confirm only while the flow is waiting. A Confirm press runs in this
+  order: the browser's ability, a challenge from the re-authentication pool, the passkey, and the one
+  changing request — nothing posted until the passkey has answered.
+- **Why**: every word raised before the changing request exists makes *nothing changed* a fact about
+  this client. How each answer reads:
+  - **The challenge.** It is unmarked, so a `401` is a session that really ended: the interceptor's,
+    and the flow says nothing. **Every other way it fails is `unstarted`** — a `5xx`, no answer, and
+    a `400` or `403` the server judged — and the Google answer stays, because nothing has been sent
+    that could change anything.
+  - **The ceremony.** `cancelled`, `no-prf`, `failed` and `duplicate` keep the answer;
+    `unsupported`, raised before the challenge or by the ceremony, drops it.
+  - **A `401` on the changing request** is read only after one unmarked `GET /api/me`: a `401` there
+    is an ended session and the flow says nothing; anything else lets `refusal` decide —
+    `provider_token`, `email_unverified`, `assertion` — and a member missing or unknown to this bundle
+    is `failed`.
+  - **A `409`** reads `conflictKind` the same way; `account_identity_moved` also re-reads the address
+    row, and only that row.
+  - **Any other `4xx` is `failed`. A `5xx`, status `0` and a `200` that does not read are
+    `undetermined`.** Every `4xx` is a judgement — nothing changed — and only silence leaves the
+    question open.
+  - **No retry, automatic or otherwise.** Every word but the five that keep waiting drops the token,
+    so nothing is left to send again.
+  - **A `200` clears the token and keeps the address** until the re-read ends the flow: Confirm is
+    still drawn while `changing` and its lead line names that address. The flow calls
+    `loadCredentials()` and then awaits `SettingsService.loadEmail()`, which settles with that
+    read's own outcome: `'loaded'` is `changed`, `'failed'` is `changed-unread`. Nothing is inferred
+    from the row: a read can answer before anybody sees it blank, and an older read landing late
+    would put the old address there. `loadEmail()` keeps one read in flight — a newer call cancels
+    the older, and the superseded caller settles with the newer read's outcome.
+  - **Nothing is published once the screen has gone**, the re-read's answer included: it is past the
+    press's abort, so the flow checks the teardown itself before it publishes.
+  - **The screen's teardown aborts a press that has not posted** — the device's prompt comes down
+    and nothing more is asked or sent. A request already out cannot be recalled.
+  - **A press of Change while an answer is held drops the answer**: a trip replaces whatever this
+    load held. Change is not drawn in the waiting state, so only a press reaching the handler by
+    another path meets this.
+- **Enforced in**: `email-change-flow.service.spec.ts`, case by case — among them `fetches the
+  challenge on the press, from the re-authentication pool, unmarked`, `posts nothing until the passkey
+  has answered`, `says unstarted and keeps waiting when the challenge cannot be fetched`, `asks once,
+  unmarked, whether the session is still there`, `reads $shape as failed, never undetermined`, `reads
+  a $status as undetermined, withdraws the confirm and keeps Change`, `never sends the changing
+  request a second time`, `keeps the address Google sent back while the re-read is outstanding`,
+  `says changed when the re-read answers at once`, `concludes nothing from an address that lands
+  before the re-read answers`, `says the re-read failed in its own word when the address row cannot
+  be read back`, `publishes nothing when the re-read answers after the screen went`, `sends no
+  changing request when the screen goes while the device is asked` and `drops a held answer when
+  Change is pressed`. The component's `keeps naming the address Google sent back until the re-read
+  lands` holds the lead line against the real flow. The challenge case drives a `503`; **no case drives a `400` or a `403` on
+  the challenge**, so that half of `unstarted` is held by the one branch in `challenge()` and by
+  review. `settings.component.spec.ts` holds the handler's gate against the real flow (`starts no trip
+  when pressed while an unlock is running`) and that the flow is provided on the component and
+  nowhere above it.
+- **Source**: `[SOURCE: user-story]`
+
+---
+
+- **Rule**: **A return moves focus once, after the first render; a word that ends the waiting state
+  moves it to Change; and every line from the flow waits for that first render.**
+  `SettingsComponent` sets `painted` in `afterNextRender` and the region renders nothing from the
+  flow until then. In the same callback it focuses Confirm when the return brought an answer, or
+  Change when it ended on `unconfirmed`. An `afterRenderEffect` watches Confirm leave the DOM and
+  focuses Change then.
+- **Why**: the load is the second half of a press the person made, so the next thing it needs is
+  Confirm. A word that ends the waiting state takes away the control focus stood on, and watching the
+  control leave rather than listing words means a word the flow grows lands on the right side by what
+  it does. A line present at the first paint is announced unreliably — the erasure dialog's reason.
+- **Enforced in**: `settings.component.spec.ts`, in *SettingsComponent changing the email address*:
+  the *focus* block — `moves to Confirm after the first render of a return into the waiting state`,
+  `moves to Change after a return ending on unconfirmed`, `moves nothing on a load that brought no
+  return`, `moves to Change when %s ends the waiting state` and `moves nothing when %s keeps the
+  waiting state` — and `says unconfirmed one render after the first paint, not at it`. Whether a
+  screen reader hears that line is unproven, for the reason the erasure dialog gives.
+- **Source**: `[SOURCE: discussion]`
+
 ## Workflows & State Transitions
 
 There is no state to move through. The account has one federated credential and one address before
@@ -458,6 +684,32 @@ sequenceDiagram
     D-->>D: cascade: the retired credential's sessions and tokens
     H->>D: COMMIT
     R-->>C: 200 {"sessionsEnded": n}
+```
+
+The client's half spans two page loads, and the second is a fresh one:
+
+```mermaid
+sequenceDiagram
+    participant S as /app/settings
+    participant A as AuthService
+    participant G as Google
+    participant B as APP_INITIALIZER
+    participant API as Budgetoid API
+
+    S->>A: Change email address — startEmailChange()
+    A->>G: discovery document and key set, once per page load
+    A->>A: marker "email-change", redirect address set as a property
+    A->>G: top-level navigation, prompt=select_account
+    G-->>B: a new page load on /app/settings, answer in the fragment
+    B->>A: providerReturn() — once
+    B->>A: initialize() — validate, keep token + address in memory, logOut(true), drop the marker
+    B->>API: GET /api/me — the probe, only now
+    Note over B: anonymous → dropEmailChangeReturn()
+    S->>A: takeEmailChangeReturn() — once, as the flow is built
+    Note over S: Confirm with your passkey, focused after the first render
+    S->>API: POST /api/passkeys/reauthentication/options — on the press
+    S->>API: POST /api/me/email-change — bearer from the request context
+    S->>API: GET /api/me and GET /api/me/credentials — the re-read
 ```
 
 ## Decision Trees
@@ -532,15 +784,45 @@ rolls the sweep back.
   to the log. `LogRedactionTests` drives the route on both hosts: on the main host a
   `409, 409, 401, 200` sequence covering both conflicts, the unverified address and a success, and on
   the real-bearer host a forged token (`401`) and a valid one (`200`).
-- **The web client** — not built. The client's `apiCredentialsInterceptor` attaches the provider's
-  bearer on the two registration routes only, and nothing calls this route, so no browser sends it a
-  token today. The screen is specified in [components.md](../design/components.md).
+- **The web client** — `EmailChangeFlowService` on `/app/settings` is the one caller, through
+  `MeApiService.changeEmail`, and `apiCredentialsInterceptor` attaches the bearer that request
+  carries on its context. The screen is the **Changing the email address** chapter of
+  [components.md](../design/components.md); the trip and the bootstrap order are the client rules
+  above.
+- **[No third-party origins](../engineering/no-third-party-origins.md)** — the trip is the second of
+  the two moments the browser contacts the identity provider, and that chapter names the specs that
+  hold when and from where.
 
 ## Edge Cases & Known Gotchas
 
-- **The client is not built.** No settings control posts here and the provider's redirect does not
-  return to `/app/settings`. Only the integration suite reaches the route. Nothing in this file
-  describes a screen as working.
+- **The Google Cloud console has to list `/app/settings` among the OAuth client's authorized
+  redirect URIs**, beside `/register`. Nothing in this repository can see that half: a mismatch is
+  refused by Google with `redirect_uri_mismatch` before a line of this application runs, the browser
+  never comes back, and the only thing that goes red is a person's browser.
+  `email-change-redirect-uri.spec.ts` says so at its head and holds only the config's half.
+- **The return is a page load, so it locks the account.** Custody holds the account's keys in memory
+  and nothing survives a load, so somebody who unlocked before pressing Change unlocks again after
+  coming back, and a rotation this tab was walking would stop where it is — which is why a walked run
+  holds Change off. The screen's consequence block says both. The session survives the trip.
+- **An email-change return contacts Google on the boot that reads it.** `initialize()` fetches the
+  discovery document and the key set before the probe runs, and on every such boot, signed in or not
+  — the cold-boot spec counts both requests. A crafted answer in a tab that never pressed contacts
+  nobody, for the marker's reason.
+- **Nothing forces the service to import the path rather than spell it.** `MeApiService.changeEmail`
+  posts to `EMAIL_CHANGE_PATH` today, and the interceptor spec pins that constant against the route
+  the server declares. A literal typed into the service instead compiles, passes the service's own
+  spec while the two agree, and loses the bearer silently the day the constant moves. Review holds it.
+- **The address is read from the validated claims, and today that equals the raw fragment.** The
+  hand-off is kept only when the token the library stored is the token on the URL, so the decoded
+  claims are that token's claims and its `email` is the fragment token's `email`. No test separates
+  the two readings; reading the claims is what keeps it true if validation ever stops implying that
+  equality. [Guessing] that the library decodes `id_token_claims_obj` from the same token it stores:
+  argued from the equality check, and consistent with the real-library cases, not read out of the
+  library's source.
+- **A field on `AuthService` holding more of the claims would be held by review alone.** The specs
+  compare the hand-off whole, so a third member on it reddens; a separate private field keeping the
+  decoded claims beside it would redden nothing, and `assertedEmail` reading one member is a property
+  of the code, not of a test.
 - **`sessionsEnded` is `0` on every real account today.** The sweep can only find sessions the
   federated credential opened, and nothing opens a locked session yet — see
   [sessions.md](sessions.md). Every test that expects a non-zero count seeds the locked session
@@ -569,8 +851,8 @@ rolls the sweep back.
   inside the transaction; the pre-check's `409` comes before the transaction and the save's `409`s
   inside it, and the nonce was consumed ahead of all of them. The person runs the ceremony again, as
   on every assertion-gated route.
-- **The response carries no address.** A client that wants to show the new address reads
-  `GET /api/me`, which is also the remedy `account_identity_moved` names.
+- **The response carries no address.** The web client reads `GET /api/me` after a `200`, and after
+  `account_identity_moved`, and the success line names what that read shows.
 - **Nothing records that a change happened**, beyond the replacement credential's `created_at_utc`
   (and, in the database's own write-ahead log and backups, that a row changed). An address-only
   change leaves no trace in any column. That is the product's no-audit-trail rule holding, not a

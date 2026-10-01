@@ -16,8 +16,9 @@ import {
 // reappears there as an inlined `fonts.gstatic.com` URL.
 //
 // It also holds the build-time half of NFR-025, that the identity provider is contacted
-// only while an account is being created. What a build can show is how the client is
-// able to address the provider — which origin it names, and which of the provider
+// on two acts and at no other time: creating an account, and changing its email address
+// (the press on `/app/settings`, or a marked return to it). What a build can show is how
+// the client is able to address the provider — which origin it names, and which of the provider
 // client's members it calls — not when it does. The when is held by four specs:
 // - `src/app/+core/core.providers.cold-boot.spec.ts` — the boot against the real
 //   library;

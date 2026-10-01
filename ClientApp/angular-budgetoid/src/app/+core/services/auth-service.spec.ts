@@ -6,12 +6,22 @@ import {
 import { DOCUMENT } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import {
+  type AuthConfig,
   OAuthEvent,
   OAuthService,
   provideOAuthClient,
 } from 'angular-oauth2-oidc';
 import { isObservable, Observable, Subject } from 'rxjs';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  type Mock,
+  type MockInstance,
+  vi,
+} from 'vitest';
 import { AuthService } from './auth-service';
 import { ConfigurationService } from './configuration.service';
 
@@ -119,16 +129,18 @@ describe('AuthService', () => {
     await expect(service.initialize()).resolves.toBeUndefined();
   });
 
-  // **Nothing schedules a background renewal of the provider token.** That
-  // token is used once, on the registration screen, and discarded the moment
-  // this tab learns it holds a session — `SessionService` owns the discard;
-  // every request after it authenticates from the first-party session cookie,
-  // so nothing reads it again. Scheduling a renewal — which is what
-  // `setupAutomaticSilentRefresh()` does — plants a hidden iframe pointed at
-  // `accounts.google.com` and re-runs it on a timer for as long as the tab is
-  // open: a third-party request on every page of the product, forever, to keep
-  // alive a credential nobody reads, in an application whose whole point is
-  // that the provider is contacted once in an account's life.
+  // **Nothing schedules a background renewal of the provider token.** A
+  // registration's token is used on the registration screen and discarded the
+  // moment this tab learns it holds a session — `SessionService` owns the
+  // discard; an email change's is handed over in memory and its stored copy
+  // discarded on the return. Every request after either authenticates from the
+  // first-party session cookie, so nothing reads a stored one again.
+  // Scheduling a renewal — which is what `setupAutomaticSilentRefresh()` does —
+  // plants a hidden iframe pointed at `accounts.google.com` and re-runs it on a
+  // timer for as long as the tab is open: a third-party request on every page
+  // of the product, forever, to keep alive a credential nobody reads, in an
+  // application that contacts the provider on two acts and at no other time —
+  // creating an account, and changing its email address.
   //
   // The assertion has to sit on the **success** path. On the failure path the
   // scheduling could never have run anyway — it followed the line that throws —
@@ -472,7 +484,7 @@ describe('AuthService', () => {
 
   // **The `APP_INITIALIZER` awaits this**, so a marker the browser refuses to
   // remove must not reject it: that is a blank page over a key whose survival
-  // costs only the residual `isProviderReturn` names. The removal runs after
+  // costs only the residual `providerReturn` names. The removal runs after
   // the preparation settles, so the spy stays in place until `initialize()`
   // has settled too.
   it('finishes initializing when the marker cannot be removed', async () => {
@@ -525,14 +537,17 @@ describe('AuthService', () => {
       shape: 'a refusal in the fragment without a state',
       href: 'https://budgetoid.app/register#error=access_denied',
     },
-  ])('recognises $shape as the provider coming back', ({ href }) => {
-    // Arrange
-    sessionStorage.setItem(EXCHANGE_MARKER, 'started');
-    const service = authServiceOver({}, { href });
+  ])(
+    'providerReturn recognises $shape as a registration coming back',
+    ({ href }) => {
+      // Arrange
+      sessionStorage.setItem(EXCHANGE_MARKER, 'started');
+      const service = authServiceOver({}, { href });
 
-    // Act & Assert
-    expect(service.isProviderReturn()).toBe(true);
-  });
+      // Act & Assert
+      expect(service.providerReturn()).toBe('registration');
+    },
+  );
 
   it.each([
     // Somebody opening the registration screen has not been to the provider
@@ -619,16 +634,19 @@ describe('AuthService', () => {
       shape: 'a fragment refusal naming no error',
       href: 'https://budgetoid.app/register#error=',
     },
-  ])('does not read $shape as the provider coming back', ({ href }) => {
-    // Arrange
-    sessionStorage.setItem(EXCHANGE_MARKER, 'started');
-    const service = authServiceOver({}, { href });
+  ])(
+    'providerReturn does not read $shape as the provider coming back',
+    ({ href }) => {
+      // Arrange
+      sessionStorage.setItem(EXCHANGE_MARKER, 'started');
+      const service = authServiceOver({}, { href });
 
-    // Act & Assert
-    expect(service.isProviderReturn()).toBe(false);
-  });
+      // Act & Assert
+      expect(service.providerReturn()).toBeNull();
+    },
+  );
 
-  it('reads nothing as the provider coming back when no redirect address is configured', () => {
+  it('providerReturn reads nothing as the provider coming back when no redirect address is configured', () => {
     // Arrange
     sessionStorage.setItem(EXCHANGE_MARKER, 'started');
     const service = authServiceOver(
@@ -640,36 +658,36 @@ describe('AuthService', () => {
     );
 
     // Act & Assert
-    expect(service.isProviderReturn()).toBe(false);
+    expect(service.providerReturn()).toBeNull();
   });
 
   // **An answer-shaped address is not enough on its own.** Anybody can craft
   // one into a link; only a tab that pressed the provider button is waiting
   // for an answer, and a crafted link opened anywhere else must cost no
   // request to Google.
-  it('does not read a full answer as the provider coming back in a tab that started no exchange', () => {
+  it('providerReturn does not read a full answer as the provider coming back in a tab that started no exchange', () => {
     // Arrange
     const service = authServiceOver({}, { href: PROVIDER_ANSWER });
 
     // Act & Assert
-    expect(service.isProviderReturn()).toBe(false);
+    expect(service.providerReturn()).toBeNull();
   });
 
   // The library writes its `nonce` before the trip too, but it is the
   // library's key and outlives the exchange it was written for. The marker is
   // this service's own, so its lifetime is this service's to decide.
-  it("does not take the library's nonce for the marker", () => {
+  it("providerReturn does not take the library's nonce for the marker", () => {
     // Arrange
     sessionStorage.setItem('nonce', 'library-nonce');
     const service = authServiceOver({}, { href: PROVIDER_ANSWER });
 
     // Act & Assert
-    expect(service.isProviderReturn()).toBe(false);
+    expect(service.providerReturn()).toBeNull();
   });
 
   // Storage a browser refuses to read is a tab that cannot show it started an
   // exchange. `APP_INITIALIZER` asks this, so a throw here is a blank page.
-  it('reads storage it cannot open as no exchange, without throwing', () => {
+  it('providerReturn reads storage it cannot open as no exchange, without throwing', () => {
     // Arrange
     sessionStorage.setItem(EXCHANGE_MARKER, 'started');
     const service = authServiceOver({}, { href: PROVIDER_ANSWER });
@@ -680,29 +698,29 @@ describe('AuthService', () => {
       });
 
     // Act
-    let answer: boolean | undefined;
+    let answer: ReturnType<AuthService['providerReturn']> | undefined;
     try {
-      answer = service.isProviderReturn();
+      answer = service.providerReturn();
     } finally {
       getItem.mockRestore();
     }
 
     // Assert
-    expect(answer).toBe(false);
+    expect(answer).toBeNull();
   });
 
   // A question, not a consumption: the initializer asks it and then prepares,
   // and the removal belongs to the preparation that settles.
-  it('answers the same when asked twice, and leaves the marker in place', () => {
+  it('providerReturn answers the same when asked twice, and leaves the marker in place', () => {
     // Arrange
     sessionStorage.setItem(EXCHANGE_MARKER, 'started');
     const service = authServiceOver({}, { href: PROVIDER_ANSWER });
 
     // Act
-    const answers = [service.isProviderReturn(), service.isProviderReturn()];
+    const answers = [service.providerReturn(), service.providerReturn()];
 
     // Assert
-    expect(answers).toEqual([true, true]);
+    expect(answers).toEqual(['registration', 'registration']);
     expect(sessionStorage.getItem(EXCHANGE_MARKER)).toBe('started');
   });
 
@@ -1003,5 +1021,806 @@ describe('AuthService against the real provider client', () => {
     // Assert
     expect(sessionStorage.getItem(EXCHANGE_MARKER)).toBeNull();
     expect(sessionStorage.getItem(FOREIGN_KEY)).toBe('kept');
+  });
+});
+
+// The email change's trip to the provider (`docs/design/components.md`,
+// "Changing the email address"). The same client, the same one discovery
+// fetch per page load, a second redirect address, and a marker whose value
+// says which trip this tab is on — `'started'` still means registration.
+
+const EMAIL_CHANGE_MARKER = 'email-change';
+
+// A stub of the provider client whose `configure` behaves like the library's
+// on the one point these cases turn on: it copies every key onto the client,
+// so `redirectUri` is a property a later write can change. Each departure
+// records what the client held at the moment the page would have left.
+interface Departure {
+  readonly redirectUri: unknown;
+  readonly marker: string | null;
+  readonly state: unknown;
+  readonly params: unknown;
+}
+
+function emailChangeServiceOver({
+  discovery = (): Promise<boolean> => Promise.resolve(true),
+  href = 'https://budgetoid.app/app/settings',
+  refuseDeparture = false,
+  emailChangeRedirectUri = 'https://budgetoid.app/app/settings',
+}: {
+  readonly discovery?: () => Promise<boolean>;
+  readonly href?: string;
+  readonly refuseDeparture?: boolean;
+  // `null` leaves the key out of the configuration altogether.
+  readonly emailChangeRedirectUri?: string | null;
+} = {}): {
+  readonly service: AuthService;
+  readonly departures: Departure[];
+  readonly loadDiscoveryDocumentAndTryLogin: Mock<() => Promise<boolean>>;
+} {
+  const departures: Departure[] = [];
+  const loadDiscoveryDocumentAndTryLogin = vi.fn(discovery);
+  const client: Record<string, unknown> = {
+    configure: vi.fn((config: object) => {
+      Object.assign(client, config);
+    }),
+    loadDiscoveryDocumentAndTryLogin,
+    initLoginFlow: vi.fn((state?: unknown, params?: unknown) => {
+      if (refuseDeparture) {
+        throw new Error('The login endpoint is refused.');
+      }
+      departures.push({
+        redirectUri: client['redirectUri'],
+        marker: sessionStorage.getItem(EXCHANGE_MARKER),
+        state,
+        params,
+      });
+    }),
+  };
+
+  TestBed.configureTestingModule({
+    providers: [
+      AuthService,
+      { provide: OAuthService, useValue: client },
+      {
+        provide: ConfigurationService,
+        useValue: {
+          getConfig: () => ({
+            apiBaseUrl: '',
+            auth: {
+              google: {
+                clientId: 'client',
+                redirectUri: 'https://budgetoid.app/register',
+                ...(emailChangeRedirectUri === null
+                  ? {}
+                  : { emailChangeRedirectUri }),
+                scope: 'openid email',
+              },
+            },
+          }),
+        },
+      },
+      { provide: DOCUMENT, useValue: { location: { href } } },
+    ],
+  });
+
+  return {
+    service: TestBed.inject(AuthService),
+    departures,
+    loadDiscoveryDocumentAndTryLogin,
+  };
+}
+
+describe('AuthService email change', () => {
+  beforeEach(() => {
+    sessionStorage.clear();
+  });
+
+  afterEach(() => {
+    sessionStorage.clear();
+  });
+
+  it('startEmailChange leaves for the settings screen with the account chooser, marked as an email change', async () => {
+    // Arrange
+    const { service, departures } = emailChangeServiceOver();
+
+    // Act
+    const outcome = await service.startEmailChange();
+
+    // Assert
+    expect(outcome).toBe('leaving');
+    expect(departures).toEqual([
+      {
+        redirectUri: 'https://budgetoid.app/app/settings',
+        marker: EMAIL_CHANGE_MARKER,
+        state: '',
+        params: { prompt: 'select_account' },
+      },
+    ]);
+  });
+
+  // T7. The redirect address is a property on one shared client, so the
+  // email change's write outlives its own trip unless something puts the
+  // registration address back. A registration press after it must still come
+  // back to `/register`, marked as a registration.
+  it('signIn after startEmailChange on the same page load still returns to the registration screen', async () => {
+    // Arrange
+    const { service, departures } = emailChangeServiceOver();
+    await service.startEmailChange();
+
+    // Act
+    service.signIn();
+    await afterPendingWork();
+
+    // Assert
+    expect(departures).toHaveLength(2);
+    expect(departures[1]?.redirectUri).toBe('https://budgetoid.app/register');
+    expect(departures[1]?.marker).toBe('started');
+  });
+
+  // A departure the library refuses synchronously leaves the page where it is,
+  // so the marker it was about to rely on must not stay behind.
+  it('startEmailChange answers unavailable and leaves no marker when the departure throws', async () => {
+    // Arrange
+    const { service } = emailChangeServiceOver({ refuseDeparture: true });
+
+    // Act
+    const [outcome] = await Promise.allSettled([service.startEmailChange()]);
+
+    // Assert
+    expect(outcome).toEqual({ status: 'fulfilled', value: 'unavailable' });
+    expect(sessionStorage.getItem(EXCHANGE_MARKER)).toBeNull();
+  });
+
+  // With nowhere to come back to there is no trip worth starting, and nobody
+  // to contact on the way to finding that out.
+  it('startEmailChange answers unavailable, contacts nobody and leaves no marker when no redirect address is configured', async () => {
+    // Arrange
+    const { service, departures, loadDiscoveryDocumentAndTryLogin } =
+      emailChangeServiceOver({ emailChangeRedirectUri: null });
+
+    // Act
+    const outcome = await service.startEmailChange();
+
+    // Assert
+    expect(outcome).toBe('unavailable');
+    expect(loadDiscoveryDocumentAndTryLogin).not.toHaveBeenCalled();
+    expect(departures).toEqual([]);
+    expect(sessionStorage.getItem(EXCHANGE_MARKER)).toBeNull();
+  });
+
+  it('startEmailChange answers unavailable and leaves no marker when the provider cannot be reached', async () => {
+    // Arrange
+    const { service, departures } = emailChangeServiceOver({
+      discovery: () =>
+        Promise.reject(new Error('The discovery document is unreachable.')),
+    });
+
+    // Act
+    const outcome = await service.startEmailChange();
+
+    // Assert
+    expect(outcome).toBe('unavailable');
+    expect(departures).toEqual([]);
+    expect(sessionStorage.getItem(EXCHANGE_MARKER)).toBeNull();
+  });
+
+  it('startEmailChange reuses the preparation a registration return already made', async () => {
+    // Arrange
+    const { service, loadDiscoveryDocumentAndTryLogin } =
+      emailChangeServiceOver();
+    await service.initialize();
+
+    // Act
+    await service.startEmailChange();
+
+    // Assert
+    expect(loadDiscoveryDocumentAndTryLogin).toHaveBeenCalledOnce();
+  });
+
+  // T6. The marker says which trip this tab is on, the address says where the
+  // provider landed, and a provider answer has to be there too. Every one of
+  // the three is required; a crossed pair is nobody's return.
+  it.each([
+    {
+      shape: 'an email-change marker and an answer on the settings screen',
+      marker: EMAIL_CHANGE_MARKER,
+      href: 'https://budgetoid.app/app/settings#access_token=a&id_token=b&state=c',
+      expected: 'email-change',
+    },
+    {
+      shape: 'an email-change marker and a refusal on the settings screen',
+      marker: EMAIL_CHANGE_MARKER,
+      href: 'https://budgetoid.app/app/settings#error=access_denied',
+      expected: 'email-change',
+    },
+    {
+      shape: 'a registration marker and an answer on the settings screen',
+      marker: 'started',
+      href: 'https://budgetoid.app/app/settings#access_token=a&id_token=b&state=c',
+      expected: null,
+    },
+    {
+      shape: 'an email-change marker and an answer on the registration screen',
+      marker: EMAIL_CHANGE_MARKER,
+      href: 'https://budgetoid.app/register#access_token=a&id_token=b&state=c',
+      expected: null,
+    },
+    {
+      shape: 'an email-change marker and a settings answer on another origin',
+      marker: EMAIL_CHANGE_MARKER,
+      href: 'https://budgetoid.example/app/settings#access_token=a&id_token=b&state=c',
+      expected: null,
+    },
+    {
+      shape:
+        'a registration marker and a registration answer on another origin',
+      marker: 'started',
+      href: 'https://budgetoid.example/register#access_token=a&id_token=b&state=c',
+      expected: null,
+    },
+    {
+      shape: 'an email-change marker and an answer under a longer path',
+      marker: EMAIL_CHANGE_MARKER,
+      href: 'https://budgetoid.app/x/app/settings#access_token=a&id_token=b&state=c',
+      expected: null,
+    },
+    {
+      shape: 'a registration marker and an answer under a longer path',
+      marker: 'started',
+      href: 'https://budgetoid.app/x/register#access_token=a&id_token=b&state=c',
+      expected: null,
+    },
+    {
+      shape: 'no marker and an answer on the settings screen',
+      marker: null,
+      href: 'https://budgetoid.app/app/settings#access_token=a&id_token=b&state=c',
+      expected: null,
+    },
+    {
+      shape: 'an email-change marker and the settings screen carrying nothing',
+      marker: EMAIL_CHANGE_MARKER,
+      href: 'https://budgetoid.app/app/settings',
+      expected: null,
+    },
+    {
+      shape:
+        'an email-change marker and an in-page anchor on the settings screen',
+      marker: EMAIL_CHANGE_MARKER,
+      href: 'https://budgetoid.app/app/settings#section',
+      expected: null,
+    },
+    {
+      shape:
+        'an email-change marker and a partial answer on the settings screen',
+      marker: EMAIL_CHANGE_MARKER,
+      href: 'https://budgetoid.app/app/settings#access_token=a&state=c',
+      expected: null,
+    },
+    // Equality, never a prefix: a sibling path after the real one and a host
+    // that extends the real one are both somewhere else.
+    {
+      shape: 'an email-change marker and an answer below the settings path',
+      marker: EMAIL_CHANGE_MARKER,
+      href: 'https://budgetoid.app/app/settings/x#access_token=a&id_token=b&state=c',
+      expected: null,
+    },
+    {
+      shape:
+        'an email-change marker and an answer on a path extending settings',
+      marker: EMAIL_CHANGE_MARKER,
+      href: 'https://budgetoid.app/app/settingsX#access_token=a&id_token=b&state=c',
+      expected: null,
+    },
+    {
+      shape:
+        'an email-change marker and an answer on a host extending the real one',
+      marker: EMAIL_CHANGE_MARKER,
+      href: 'https://budgetoid.app.example/app/settings#access_token=a&id_token=b&state=c',
+      expected: null,
+    },
+    {
+      shape: 'a registration marker and an answer on a path extending register',
+      marker: 'started',
+      href: 'https://budgetoid.app/registerX#access_token=a&id_token=b&state=c',
+      expected: null,
+    },
+    {
+      shape:
+        'a registration marker and an answer on a host extending the real one',
+      marker: 'started',
+      href: 'https://budgetoid.app.example/register#access_token=a&id_token=b&state=c',
+      expected: null,
+    },
+    {
+      shape: 'a registration marker and an answer on the registration screen',
+      marker: 'started',
+      href: 'https://budgetoid.app/register#access_token=a&id_token=b&state=c',
+      expected: 'registration',
+    },
+  ])(
+    'providerReturn reads $shape as $expected',
+    ({ marker, href, expected }) => {
+      // Arrange
+      if (marker !== null) {
+        sessionStorage.setItem(EXCHANGE_MARKER, marker);
+      }
+      const { service } = emailChangeServiceOver({ href });
+
+      // Act
+      const answer = service.providerReturn();
+
+      // Assert
+      expect(answer).toBe(expected);
+    },
+  );
+});
+
+// The same flow against the real library, because the premise under it is the
+// library's: that a client which has read an answer and discarded its tokens
+// can start a second trip on the same page load, and that what a return
+// leaves in storage is gone once the token is handed over.
+describe('AuthService email change against the real provider client', () => {
+  const DISCOVERY_URL =
+    'https://accounts.google.com/.well-known/openid-configuration';
+  const KEY_SET_URL = 'https://www.googleapis.com/oauth2/v3/certs';
+
+  // The keys angular-oauth2-oidc 17 writes to its storage on an implicit-flow
+  // return, or before a trip.
+  const LIBRARY_KEYS = [
+    'access_token',
+    'id_token',
+    'refresh_token',
+    'nonce',
+    'PKCE_verifier',
+    'expires_at',
+    'id_token_claims_obj',
+    'id_token_expires_at',
+    'id_token_stored_at',
+    'access_token_stored_at',
+    'granted_scopes',
+    'session_state',
+  ] as const;
+
+  interface RealClient {
+    readonly service: AuthService;
+    readonly http: HttpTestingController;
+    readonly configure: MockInstance<(config: AuthConfig) => void>;
+    readonly opened: string[];
+  }
+
+  // jsdom's own origin, because the library reads the answer off the
+  // runner's `window.location` and nothing else.
+  function realClient(): RealClient {
+    TestBed.configureTestingModule({
+      providers: [
+        AuthService,
+        provideOAuthClient(),
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        {
+          provide: ConfigurationService,
+          useValue: {
+            getConfig: () => ({
+              apiBaseUrl: '',
+              auth: {
+                google: {
+                  clientId: 'client',
+                  redirectUri: `${location.origin}/register`,
+                  emailChangeRedirectUri: `${location.origin}/app/settings`,
+                  scope: 'openid email',
+                },
+              },
+            }),
+          },
+        },
+      ],
+    });
+    const oAuth = TestBed.inject(OAuthService);
+    const opened: string[] = [];
+    // The departure is captured by adding `openUri` on the way into the real
+    // `configure`; the page itself cannot leave jsdom.
+    const original = oAuth.configure.bind(oAuth);
+    const configure = vi
+      .spyOn(oAuth, 'configure')
+      .mockImplementation((config: AuthConfig) => {
+        original({
+          ...config,
+          openUri: (uri: string) => {
+            opened.push(uri);
+          },
+        });
+      });
+
+    return {
+      service: TestBed.inject(AuthService),
+      http: TestBed.inject(HttpTestingController),
+      configure,
+      opened,
+    };
+  }
+
+  // Answers the one discovery fetch and the key-set fetch behind it.
+  async function answerDiscovery(http: HttpTestingController): Promise<void> {
+    await afterPendingWork();
+    http.expectOne(DISCOVERY_URL).flush({
+      issuer: 'https://accounts.google.com',
+      // The provider's own spelling.
+      // eslint-disable-next-line @typescript-eslint/naming-convention
+      authorization_endpoint: 'https://accounts.google.com/o/oauth2/v2/auth',
+      // eslint-disable-next-line @typescript-eslint/naming-convention
+      jwks_uri: KEY_SET_URL,
+    });
+    await afterPendingWork();
+    http.expectOne(KEY_SET_URL).flush({ keys: [] });
+  }
+
+  function base64Url(value: object): string {
+    return btoa(JSON.stringify(value))
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/, '');
+  }
+
+  // The address Google asserts for the account chosen at the provider.
+  const NEW_ADDRESS = 'moved.owner@budgetoid.test';
+
+  // An id token the library accepts under its default `NullValidationHandler`:
+  // the claims it checks are right and the signature is not checked. The
+  // address claim is `{ email: NEW_ADDRESS }` unless the case hands its own:
+  // spread as given, so `{}` mints a token with no `email` claim at all.
+  // An object and not an optional parameter, because a parameter's default
+  // also fills an explicit `undefined` — which silently put the claim back.
+  function idTokenFor(
+    nonce: string,
+    addressClaim: { readonly email?: unknown } = { email: NEW_ADDRESS },
+  ): string {
+    const now = Math.floor(Date.now() / 1000);
+
+    return [
+      base64Url({ alg: 'RS256', typ: 'JWT' }),
+      base64Url({
+        iss: 'https://accounts.google.com',
+        aud: 'client',
+        sub: 'subject-one',
+        iat: now,
+        exp: now + 3600,
+        nonce,
+        // eslint-disable-next-line @typescript-eslint/naming-convention
+        at_hash: 'hash-one',
+        ...addressClaim,
+      }),
+      'signature-one',
+    ].join('.');
+  }
+
+  function landOn(path: string): void {
+    history.replaceState(null, '', path);
+  }
+
+  beforeEach(() => {
+    sessionStorage.clear();
+    localStorage.clear();
+  });
+
+  afterEach(() => {
+    sessionStorage.clear();
+    localStorage.clear();
+    landOn('/');
+    vi.restoreAllMocks();
+  });
+
+  // T1. The page load that came back from a registration read the answer and
+  // then discarded the provider's tokens — nonce included. A press on that
+  // same load must start a whole new trip from the memoized preparation.
+  it('startEmailChange after a read and discarded registration answer leaves once, with a fresh nonce and no second fetch', async () => {
+    // Arrange
+    const { service, http, configure, opened } = realClient();
+    sessionStorage.setItem('nonce', 'earlier-nonce');
+    sessionStorage.setItem(EXCHANGE_MARKER, 'started');
+    const token = idTokenFor('earlier-nonce');
+    landOn(`/register#access_token=at&id_token=${token}&state=earlier-nonce`);
+    const initialized = service.initialize();
+    await answerDiscovery(http);
+    await initialized;
+    service.forgetProviderToken();
+
+    // Act
+    const outcome = await service.startEmailChange();
+    await afterPendingWork();
+
+    // Assert
+    expect(outcome).toBe('leaving');
+    expect(http.match(DISCOVERY_URL)).toEqual([]);
+    http.verify();
+    expect(configure).toHaveBeenCalledOnce();
+    expect(opened).toHaveLength(1);
+    const departure = new URL(opened[0] ?? 'https://nothing.invalid/');
+    expect(departure.searchParams.get('redirect_uri')).toBe(
+      `${location.origin}/app/settings`,
+    );
+    expect(departure.searchParams.get('prompt')).toBe('select_account');
+    const nonce = departure.searchParams.get('nonce');
+    expect(nonce).not.toBeNull();
+    expect(nonce).not.toBe('earlier-nonce');
+    expect(nonce).toBe(sessionStorage.getItem('nonce'));
+  });
+
+  // T2. The token is handed over in memory, once, and nothing the library
+  // wrote for the trip survives the hand-over.
+  it('an email-change return hands the id token over once and leaves none of the library keys behind', async () => {
+    // Arrange
+    const { service, http } = realClient();
+    sessionStorage.setItem('nonce', 'trip-nonce');
+    sessionStorage.setItem(EXCHANGE_MARKER, EMAIL_CHANGE_MARKER);
+    const token = idTokenFor('trip-nonce');
+    landOn(`/app/settings#access_token=at&id_token=${token}&state=trip-nonce`);
+    const initialized = service.initialize();
+    await answerDiscovery(http);
+    await initialized;
+
+    // Act
+    const first = service.takeEmailChangeReturn();
+    const second = service.takeEmailChangeReturn();
+
+    // Assert
+    expect(first).toEqual({
+      kind: 'answered',
+      idToken: token,
+      email: NEW_ADDRESS,
+    });
+    expect(second).toBeNull();
+    const left = LIBRARY_KEYS.filter(
+      (key) => sessionStorage.getItem(key) !== null,
+    );
+    expect(left).toEqual([]);
+    expect(sessionStorage.getItem(EXCHANGE_MARKER)).toBeNull();
+  });
+
+  // Memory only: neither the token nor the address it asserts may be parked
+  // anywhere a reload could read.
+  it('an email-change return writes the id token and the address to no storage', async () => {
+    // Arrange
+    const { service, http } = realClient();
+    sessionStorage.setItem('nonce', 'trip-nonce');
+    sessionStorage.setItem(EXCHANGE_MARKER, EMAIL_CHANGE_MARKER);
+    const token = idTokenFor('trip-nonce');
+    landOn(`/app/settings#access_token=at&id_token=${token}&state=trip-nonce`);
+
+    // Act
+    const initialized = service.initialize();
+    await answerDiscovery(http);
+    await initialized;
+
+    // Assert
+    const holding = [sessionStorage, localStorage].flatMap((storage) =>
+      Object.keys(storage).filter((key) => {
+        const value = storage.getItem(key) ?? '';
+
+        return value.includes(token) || value.includes(NEW_ADDRESS);
+      }),
+    );
+    expect(holding).toEqual([]);
+  });
+
+  // The waiting state names the address Google sent back, so a validated
+  // answer asserting no address is nothing the screen could confirm.
+  it.each([
+    { shape: 'no address claim', addressClaim: {} },
+    {
+      shape: 'an address claim that is not a string',
+      addressClaim: { email: 42 },
+    },
+    // Present but blank is not an address, as `providerEmail()` holds for
+    // registration: the waiting state would name nobody.
+    { shape: 'an empty address claim', addressClaim: { email: '' } },
+  ])(
+    'an email-change return whose token carries $shape is unconfirmed',
+    async ({ addressClaim }) => {
+      // Arrange
+      const { service, http } = realClient();
+      sessionStorage.setItem('nonce', 'trip-nonce');
+      sessionStorage.setItem(EXCHANGE_MARKER, EMAIL_CHANGE_MARKER);
+      const token = idTokenFor('trip-nonce', addressClaim);
+      landOn(
+        `/app/settings#access_token=at&id_token=${token}&state=trip-nonce`,
+      );
+      const initialized = service.initialize();
+      await answerDiscovery(http);
+      await initialized;
+
+      // Act
+      const handedOver = service.takeEmailChangeReturn();
+
+      // Assert
+      expect(handedOver).toEqual({ kind: 'unconfirmed' });
+      const left = LIBRARY_KEYS.filter(
+        (key) => sessionStorage.getItem(key) !== null,
+      );
+      expect(left).toEqual([]);
+    },
+  );
+
+  it('an email-change return whose nonce does not match is unconfirmed', async () => {
+    // Arrange
+    const { service, http } = realClient();
+    sessionStorage.setItem('nonce', 'stored-nonce');
+    sessionStorage.setItem(EXCHANGE_MARKER, EMAIL_CHANGE_MARKER);
+    const token = idTokenFor('forged-nonce');
+    landOn(
+      `/app/settings#access_token=at&id_token=${token}&state=forged-nonce`,
+    );
+    const initialized = service.initialize();
+    await answerDiscovery(http);
+    await initialized;
+
+    // Act
+    const handedOver = service.takeEmailChangeReturn();
+
+    // Assert
+    expect(handedOver).toEqual({ kind: 'unconfirmed' });
+    // The nonce above all: a nonce left by a failed return is what a crafted
+    // answer would need.
+    const left = LIBRARY_KEYS.filter(
+      (key) => sessionStorage.getItem(key) !== null,
+    );
+    expect(left).toEqual([]);
+    expect(sessionStorage.getItem(EXCHANGE_MARKER)).toBeNull();
+  });
+
+  // m1. A registration abandoned in this tab left a validated token and its
+  // claims in storage. An email-change return the library refuses must not be
+  // answered out of those: their address is somebody's old answer to another
+  // question, and handing it over would put it on the waiting state.
+  it('an email-change return refused on its nonce is unconfirmed even beside an abandoned registration token', async () => {
+    // Arrange
+    const { service, http } = realClient();
+    const abandoned = idTokenFor('abandoned-nonce', {
+      email: 'abandoned.owner@budgetoid.test',
+    });
+    sessionStorage.setItem('id_token', abandoned);
+    sessionStorage.setItem(
+      'id_token_claims_obj',
+      JSON.stringify({
+        iss: 'https://accounts.google.com',
+        aud: 'client',
+        sub: 'subject-one',
+        email: 'abandoned.owner@budgetoid.test',
+      }),
+    );
+    sessionStorage.setItem(
+      'id_token_expires_at',
+      String(Date.now() + 60 * 60 * 1000),
+    );
+    sessionStorage.setItem('id_token_stored_at', String(Date.now()));
+    sessionStorage.setItem('nonce', 'stored-nonce');
+    sessionStorage.setItem(EXCHANGE_MARKER, EMAIL_CHANGE_MARKER);
+    const token = idTokenFor('forged-nonce');
+    landOn(
+      `/app/settings#access_token=at&id_token=${token}&state=forged-nonce`,
+    );
+    const initialized = service.initialize();
+    await answerDiscovery(http);
+    await initialized;
+
+    // Act
+    const handedOver = service.takeEmailChangeReturn();
+
+    // Assert
+    expect(handedOver).toEqual({ kind: 'unconfirmed' });
+  });
+
+  it('an email-change return carrying a provider refusal is unconfirmed', async () => {
+    // Arrange
+    const { service, http } = realClient();
+    sessionStorage.setItem('nonce', 'trip-nonce');
+    sessionStorage.setItem(EXCHANGE_MARKER, EMAIL_CHANGE_MARKER);
+    landOn('/app/settings#error=access_denied&state=trip-nonce');
+    const initialized = service.initialize();
+    await answerDiscovery(http);
+    await initialized;
+
+    // Act
+    const handedOver = service.takeEmailChangeReturn();
+
+    // Assert
+    expect(handedOver).toEqual({ kind: 'unconfirmed' });
+    // The nonce above all: a nonce left by a failed return is what a crafted
+    // answer would need.
+    const left = LIBRARY_KEYS.filter(
+      (key) => sessionStorage.getItem(key) !== null,
+    );
+    expect(left).toEqual([]);
+  });
+
+  it('an email-change return on which the provider cannot be reached is unconfirmed', async () => {
+    // Arrange
+    const { service, http } = realClient();
+    sessionStorage.setItem('nonce', 'trip-nonce');
+    sessionStorage.setItem(EXCHANGE_MARKER, EMAIL_CHANGE_MARKER);
+    const token = idTokenFor('trip-nonce');
+    landOn(`/app/settings#access_token=at&id_token=${token}&state=trip-nonce`);
+    const initialized = service.initialize();
+    await afterPendingWork();
+    http
+      .expectOne(DISCOVERY_URL)
+      .error(new ProgressEvent('error'), { status: 0, statusText: '' });
+    await initialized;
+
+    // Act
+    const handedOver = service.takeEmailChangeReturn();
+
+    // Assert
+    expect(handedOver).toEqual({ kind: 'unconfirmed' });
+    // The nonce above all: a nonce left by a failed return is what a crafted
+    // answer would need.
+    const left = LIBRARY_KEYS.filter(
+      (key) => sessionStorage.getItem(key) !== null,
+    );
+    expect(left).toEqual([]);
+  });
+
+  // A registration return is read for the registration screen, which reads
+  // the token through `providerEmail()`; nothing about it is an email change.
+  it('a registration return hands nothing over to the email change', async () => {
+    // Arrange
+    const { service, http } = realClient();
+    sessionStorage.setItem('nonce', 'earlier-nonce');
+    sessionStorage.setItem(EXCHANGE_MARKER, 'started');
+    const token = idTokenFor('earlier-nonce');
+    landOn(`/register#access_token=at&id_token=${token}&state=earlier-nonce`);
+    const initialized = service.initialize();
+    await answerDiscovery(http);
+    await initialized;
+
+    // Act
+    const handedOver = service.takeEmailChangeReturn();
+
+    // Assert
+    expect(handedOver).toBeNull();
+  });
+
+  // T3. The discard is about the library's storage; the hand-off is this
+  // service's memory, and a session being published must not take it.
+  it('forgetProviderToken leaves a captured email-change answer in place', async () => {
+    // Arrange
+    const { service, http } = realClient();
+    sessionStorage.setItem('nonce', 'trip-nonce');
+    sessionStorage.setItem(EXCHANGE_MARKER, EMAIL_CHANGE_MARKER);
+    const token = idTokenFor('trip-nonce');
+    landOn(`/app/settings#access_token=at&id_token=${token}&state=trip-nonce`);
+    const initialized = service.initialize();
+    await answerDiscovery(http);
+    await initialized;
+
+    // Act
+    service.forgetProviderToken();
+
+    // Assert
+    expect(service.takeEmailChangeReturn()).toEqual({
+      kind: 'answered',
+      idToken: token,
+      email: NEW_ADDRESS,
+    });
+  });
+
+  // The drop is what the bootstrap calls when the probe finds nobody signed
+  // in: the answer must not reach `/welcome` or `/register`.
+  it('dropEmailChangeReturn leaves nothing for a later take', async () => {
+    // Arrange
+    const { service, http } = realClient();
+    sessionStorage.setItem('nonce', 'trip-nonce');
+    sessionStorage.setItem(EXCHANGE_MARKER, EMAIL_CHANGE_MARKER);
+    const token = idTokenFor('trip-nonce');
+    landOn(`/app/settings#access_token=at&id_token=${token}&state=trip-nonce`);
+    const initialized = service.initialize();
+    await answerDiscovery(http);
+    await initialized;
+
+    // Act
+    service.dropEmailChangeReturn();
+
+    // Assert
+    expect(service.takeEmailChangeReturn()).toBeNull();
   });
 });

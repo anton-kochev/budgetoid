@@ -105,11 +105,11 @@ const allowedConnectSources = new Map<string, string>([
   ],
   [
     'https://accounts.google.com',
-    'the OpenID discovery document for federated sign-in; removed with it',
+    'the OpenID discovery document, fetched on the two provider acts — creating an account and changing its email address; removed with them',
   ],
   [
     'https://www.googleapis.com',
-    'the JWKS the discovery document points at; removed with federated sign-in',
+    'the JWKS the discovery document points at; removed with the two provider acts',
   ],
 ]);
 

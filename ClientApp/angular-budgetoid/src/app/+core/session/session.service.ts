@@ -123,10 +123,12 @@ export class SessionService {
     // **Outside the `try`, and only on this arm.** Inside it, a discard that
     // threw would reach the `catch` above and rewrite a session the server just
     // confirmed as `unreachable`. And never on `anonymous` or `unreachable`:
-    // the provider-return leg runs this probe *before* `auth.initialize()`
+    // on a registration return this probe runs *before* `auth.initialize()`
     // reads the answer off the URL, and a discard there takes the library's
     // nonce with the tokens, so the answer no longer validates and
-    // registration cannot complete.
+    // registration cannot complete. On an email-change return the order is
+    // the other way round: `initialize()` runs before this probe and has
+    // already run `logOut(true)`, so the discard here finds nothing to take.
     this.forgetProviderToken();
   }
 

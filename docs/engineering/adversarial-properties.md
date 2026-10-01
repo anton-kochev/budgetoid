@@ -278,12 +278,16 @@ covers some of the following without saying the rows exist:
 **This product claims no anonymity.** An account cannot exist without a completed exchange with the
 registration provider, so the provider learns that the person registered, when, and from which
 address, and the product stores the address the provider asserted and the provider's subject
-identifier. The person's browser contacts the provider in two moments, both following the person's
-own press in that tab: when the registration screen starts the exchange, and when the provider
-redirects that exchange back to `/register` — recognised by a marker the press left in the tab and
-a fragment shaped like the answer. The one contact outside them is a tab that pressed, abandoned at
-the provider, and then opened an answer-shaped address somebody built, which costs one discovery
-and key-set fetch before the library refuses it. That is held by tests rather than by
+identifier. The person's browser contacts the provider on two trips, each in two moments and both
+following the person's own press in that tab: registration, when `/register` starts the exchange and
+when the provider redirects it back there; and the email change, when **Change email address** on
+`/app/settings` leaves for the account chooser and when Google redirects back there. Each return is
+recognised by a marker the press left in the tab naming that trip, the trip's own address and a
+fragment shaped like the answer. An email change shows the provider a further sign-in to this
+product's client, redirected to `/app/settings` — when, and from which network address — and the
+product stores the address and subject that sign-in asserts. The one contact outside them is a tab
+that pressed, abandoned at the provider, and then opened an answer-shaped address somebody built,
+which costs one discovery and key-set fetch before the library refuses it. That is held by tests rather than by
 construction — a cold load with the real library, a census resolved by the type checker of which
 files reach the provider client, and a scan of the shipped bundle — and
 [no-third-party-origins.md](no-third-party-origins.md) names each and what none of them sees: a
@@ -291,10 +295,9 @@ top-level navigation, a timer outlasting the boot, a subclass or an object sprea
 component template, and a `logOut` reached through an alias. Signing in is a passkey
 assertion against this product's own API and reaches no provider. The API itself fetches the
 provider's published signing keys to validate a provider token — registration's, and the email
-change's — which names no person. Of the three moments NFR-025 permits, the locked sign-in is not
-built. The email change is built on the server — `POST /api/me/email-change` validates a fresh
-provider token beside a session — and no screen calls it yet, so no browser contacts the provider
-for it today; see [email-change.md](../business-logic/email-change.md).
+change's — which names no person. Of the three moments NFR-025 permits, registration and the email
+change are built and the locked sign-in is not; see
+[email-change.md](../business-logic/email-change.md).
 
 ## Keeping this chapter true
 

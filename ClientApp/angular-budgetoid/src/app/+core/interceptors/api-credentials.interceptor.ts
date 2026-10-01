@@ -1,7 +1,8 @@
-import { HttpInterceptorFn } from '@angular/common/http';
+import type { HttpInterceptorFn, HttpRequest } from '@angular/common/http';
 import { inject } from '@angular/core';
 import { ConfigurationService } from '@app-core/services/configuration.service';
 import { OAuthService } from 'angular-oauth2-oidc';
+import { PROVIDER_CREDENTIAL } from './provider-credential.token';
 
 // The CSRF control. The server checks presence only, never the value — a
 // checked value would be a shared secret shipped to every browser — so this
@@ -32,6 +33,14 @@ const CLIENT_NAME = 'budgetoid-web';
 // `expects-unauthenticated.token.ts` now, which that file argues.
 export const REGISTRATION_OPTIONS_PATH = '/api/registration/options';
 export const REGISTRATION_PATH = '/api/registration';
+
+// The one route authenticated by the session cookie **and** a provider token:
+// the email change's confirmation. Declared here and imported by
+// `MeApiService` for the registration paths' reason. Its bearer is the
+// credential the request carries on `PROVIDER_CREDENTIAL`, never the stored
+// one — a signed-in browser holds nothing in the library's storage, and a
+// token read from there would be whatever an abandoned registration left.
+export const EMAIL_CHANGE_PATH = '/api/me/email-change';
 
 function originOf(url: string): string | null {
   try {
@@ -67,6 +76,31 @@ function pathnameOf(url: string): string | null {
 // has.
 function isProviderAuthenticatedPath(path: string): boolean {
   return path === REGISTRATION_OPTIONS_PATH || path === REGISTRATION_PATH;
+}
+
+// Which provider credential, if any, a request already known to be for our API
+// carries — and *where each route's comes from*, which is the rule. The
+// registration routes read the library's storage, because an anonymous browser
+// has nowhere else to hold it. The email change reads only what its own request
+// carries: a stored token there would be whatever an abandoned registration
+// left behind, sent on a request that was handed none. Every other route gets
+// nothing, whatever its context holds.
+//
+// Exact matches again, and an empty string is no credential: `Bearer ` with
+// nothing after it is a malformed header, not an absent one.
+function providerCredentialFor(
+  path: string,
+  request: HttpRequest<unknown>,
+): string | null {
+  if (isProviderAuthenticatedPath(path)) {
+    return inject(OAuthService).getIdToken() || null;
+  }
+
+  if (path === EMAIL_CHANGE_PATH) {
+    return request.context.get(PROVIDER_CREDENTIAL) || null;
+  }
+
+  return null;
 }
 
 // Not `url.startsWith(apiBaseUrl)`: with a base of `https://api.budgetoid.app`
@@ -105,10 +139,12 @@ export function isApiRequest(url: string, apiBaseUrl: string): boolean {
 // provider scheme and nothing else and always will be: an account may not exist
 // without a completed provider exchange, so there is no first-party credential
 // to present on the one call that creates the first-party account. Those two
-// routes are now the only requests in the product that carry it.
+// routes, and the email change, are now the only requests in the product that
+// carry a provider bearer — and the email change carries only the one its own
+// request was handed, never the stored one.
 //
 // Worth narrowing rather than leaving alone, even though nothing outside
-// registration reads the token: `SessionService` discards it whenever it
+// registration reads the stored token: `SessionService` discards it whenever it
 // publishes `authenticated`, but a browser that abandoned registration holds it
 // until then, and what that person usually does next is sign in with a
 // passkey — so both anonymous assertion legs, which run before that session
@@ -121,6 +157,8 @@ export function isApiRequest(url: string, apiBaseUrl: string): boolean {
 // then which route it is asking for. Reversed — or folded into one path test —
 // `https://api.budgetoid.app.attacker.example/api/registration` is a
 // registration request, and a host anybody can register is handed the token.
+// The email change's credential is decided behind the same guard, for the same
+// reason.
 export const apiCredentialsInterceptor: HttpInterceptorFn = (request, next) => {
   const { apiBaseUrl } = inject(ConfigurationService).getConfig();
 
@@ -128,23 +166,23 @@ export const apiCredentialsInterceptor: HttpInterceptorFn = (request, next) => {
     return next(request);
   }
 
-  const idToken = inject(OAuthService).getIdToken();
   const headers = request.headers.set(CLIENT_HEADER, CLIENT_NAME);
   const path = pathnameOf(request.url);
-  const authenticatesWithProvider =
-    path !== null && isProviderAuthenticatedPath(path);
+  const credential =
+    path === null ? null : providerCredentialFor(path, request);
 
   return next(
     request.clone({
       withCredentials: true,
-      // Two conditions, and never folded into the guard above. A browser holding
-      // a session and no id token is every browser after the provider drops out
-      // of sign-in, and one that folded them would send that browser neither the
-      // cookie nor the client header — a 403 on every route in the product.
+      // Decided apart from the guard above and never folded into it. A browser
+      // holding a session and no provider token is every browser after the
+      // provider drops out of sign-in, and one that folded them would send that
+      // browser neither the cookie nor the client header — a 403 on every route
+      // in the product.
       headers:
-        authenticatesWithProvider && idToken
-          ? headers.set('Authorization', `Bearer ${idToken}`)
-          : headers,
+        credential === null
+          ? headers
+          : headers.set('Authorization', `Bearer ${credential}`),
     }),
   );
 };

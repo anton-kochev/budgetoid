@@ -1,4 +1,5 @@
 import {
+  HttpContext,
   HttpHeaders,
   HttpParams,
   HttpRequest,
@@ -10,7 +11,11 @@ import { ConfigurationService } from '@app-core/services/configuration.service';
 import { OAuthService } from 'angular-oauth2-oidc';
 import { of } from 'rxjs';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { apiCredentialsInterceptor } from './api-credentials.interceptor';
+import {
+  apiCredentialsInterceptor,
+  EMAIL_CHANGE_PATH,
+} from './api-credentials.interceptor';
+import { PROVIDER_CREDENTIAL } from './provider-credential.token';
 
 // The origin the config file names. Written out rather than read from
 // `public/assets/app-config.json` on purpose: this spec is about the predicate,
@@ -401,5 +406,195 @@ describe('apiCredentialsInterceptor', () => {
     expect(request.withCredentials).toBe(false);
     expect(request.headers.has(CLIENT_HEADER)).toBe(false);
     expect(request.headers.has(AUTHORIZATION_HEADER)).toBe(false);
+  });
+});
+
+// The email change's request: the one route authenticated by the session
+// cookie **and** a provider token, which arrives through the request's own
+// context rather than out of the library's storage. The address is spelled out
+// here rather than built from `EMAIL_CHANGE_PATH`, so a constant that drifted
+// from the server's route cannot pass these cases by agreeing with itself.
+const EMAIL_CHANGE_URL = `${API_BASE_URL}/api/me/email-change`;
+
+// The token the settings screen was handed by the email-change return, and
+// deliberately not `ID_TOKEN`: the library still holds that one in these cases,
+// so a bearer equal to it means the interceptor read storage.
+const HANDED_CREDENTIAL = 'handed.provider.credential';
+
+function carrying(credential: string): HttpContext {
+  return new HttpContext().set(PROVIDER_CREDENTIAL, credential);
+}
+
+describe('apiCredentialsInterceptor on the email change', () => {
+  beforeEach(() => {
+    TestBed.resetTestingModule();
+  });
+
+  it('names the email-change route the server declares', () => {
+    // Act & Assert
+    expect(EMAIL_CHANGE_PATH).toBe('/api/me/email-change');
+  });
+
+  // T9. The credential rides on the request, so it is exactly the one this
+  // request was handed — never whatever the library happens to hold.
+  it('sends the credential the request carries as the bearer, beside the cookie and the client header', () => {
+    // Arrange
+    const request = new HttpRequest<unknown>(
+      'POST',
+      EMAIL_CHANGE_URL,
+      { credentialId: 'c' },
+      { context: carrying(HANDED_CREDENTIAL) },
+    );
+
+    // Act
+    const forwarded = forwardedRequest(request);
+
+    // Assert
+    expect(forwarded.headers.get(AUTHORIZATION_HEADER)).toBe(
+      `Bearer ${HANDED_CREDENTIAL}`,
+    );
+    expect(forwarded.withCredentials).toBe(true);
+    expect(forwarded.headers.has(CLIENT_HEADER)).toBe(true);
+  });
+
+  // The library's stored token is what the registration rule reads. On this
+  // route it is never read: a request that was handed nothing carries nothing.
+  it('sends no stored provider token to the email change when the request carries none', () => {
+    // Arrange
+    const request = new HttpRequest<unknown>('POST', EMAIL_CHANGE_URL, {
+      credentialId: 'c',
+    });
+
+    // Act
+    const forwarded = forwardedRequest(request, { idToken: ID_TOKEN });
+
+    // Assert
+    expect(forwarded.headers.has(AUTHORIZATION_HEADER)).toBe(false);
+    expect(forwarded.withCredentials).toBe(true);
+  });
+
+  // A credential on the context is not a licence to send it anywhere. Every
+  // other route ignores it — including another `/api/me/*` route, which is where
+  // a prefix rule would leak it first.
+  it('ignores a carried credential on every other route', () => {
+    // Arrange
+    const context = carrying(HANDED_CREDENTIAL);
+    const requests = [
+      new HttpRequest<unknown>('GET', API_URL, { context }),
+      new HttpRequest<unknown>(
+        'POST',
+        `${API_BASE_URL}/api/me/erasure`,
+        { credentialId: 'c' },
+        { context },
+      ),
+      new HttpRequest<unknown>('POST', ASSERTION_URL, { id: 'c' }, { context }),
+    ];
+
+    // Act
+    const forwarded = requests.map((request) => forwardedRequest(request));
+
+    // Assert
+    const carriers = forwarded
+      .filter((one) => one.headers.has(AUTHORIZATION_HEADER))
+      .map((one) => one.url);
+
+    expect(carriers).toEqual([]);
+  });
+
+  // The registration rule still decides the registration routes: the stored
+  // token, whatever the context carries.
+  it('leaves the registration routes to the registration rule when a credential is carried', () => {
+    // Arrange
+    const context = carrying(HANDED_CREDENTIAL);
+    const options = new HttpRequest<unknown>(
+      'POST',
+      REGISTRATION_OPTIONS_URL,
+      null,
+      { context },
+    );
+    const finish = new HttpRequest<unknown>(
+      'POST',
+      REGISTRATION_URL,
+      { factorId: 'f' },
+      { context },
+    );
+
+    // Act
+    const forwardedOptions = forwardedRequest(options);
+    const forwardedFinish = forwardedRequest(finish);
+    const withoutStoredToken = forwardedRequest(finish, { idToken: '' });
+
+    // Assert
+    expect(forwardedOptions.headers.get(AUTHORIZATION_HEADER)).toBe(
+      `Bearer ${ID_TOKEN}`,
+    );
+    expect(forwardedFinish.headers.get(AUTHORIZATION_HEADER)).toBe(
+      `Bearer ${ID_TOKEN}`,
+    );
+    expect(withoutStoredToken.headers.has(AUTHORIZATION_HEADER)).toBe(false);
+  });
+
+  // Origin first, path second — the order the file's header argues. A host
+  // that extends the API's is somebody else's, whatever path it asks for.
+  it('sends nothing to the email-change path on another origin', () => {
+    // Arrange
+    const request = new HttpRequest<unknown>(
+      'POST',
+      `${API_BASE_URL}.attacker.example/api/me/email-change`,
+      { credentialId: 'c' },
+      { context: carrying(HANDED_CREDENTIAL) },
+    );
+
+    // Act
+    const forwarded = forwardedRequest(request);
+
+    // Assert
+    expect(forwarded.withCredentials).toBe(false);
+    expect(forwarded.headers.has(CLIENT_HEADER)).toBe(false);
+    expect(forwarded.headers.has(AUTHORIZATION_HEADER)).toBe(false);
+  });
+
+  // Exact, never a prefix: a segment below the route and a path that merely
+  // starts with its spelling are both other routes.
+  it.each([
+    { shape: 'a segment below the route', path: '/api/me/email-change/x' },
+    { shape: 'a path extending its spelling', path: '/api/me/email-changeX' },
+    {
+      shape: 'the route with a bare trailing slash',
+      path: '/api/me/email-change/',
+    },
+  ])('sends no bearer to $shape', ({ path }) => {
+    // Arrange
+    const request = new HttpRequest<unknown>(
+      'POST',
+      `${API_BASE_URL}${path}`,
+      { credentialId: 'c' },
+      { context: carrying(HANDED_CREDENTIAL) },
+    );
+
+    // Act
+    const forwarded = forwardedRequest(request);
+
+    // Assert
+    expect(forwarded.headers.has(AUTHORIZATION_HEADER)).toBe(false);
+  });
+
+  // An empty credential is no credential: `Bearer ` with nothing after it is a
+  // malformed header the server answers with a refusal nothing on screen names.
+  it('sends no bearer when the carried credential is empty', () => {
+    // Arrange
+    const request = new HttpRequest<unknown>(
+      'POST',
+      EMAIL_CHANGE_URL,
+      { credentialId: 'c' },
+      { context: carrying('') },
+    );
+
+    // Act
+    const forwarded = forwardedRequest(request);
+
+    // Assert
+    expect(forwarded.headers.has(AUTHORIZATION_HEADER)).toBe(false);
+    expect(forwarded.withCredentials).toBe(true);
   });
 });

@@ -745,10 +745,12 @@ factor, and an account identifier derived from the challenge it just spent —
   on its own it was a check the served body could switch off; the four together are what a response
   somebody shaped has to get past. [account-keys.md](account-keys.md) owns them, and the order they
   run in is the security property. **The re-authentication ceremony runs on `/app/settings`**:
-  `RotationFlowService`, behind the Key rotation section, and `ErasureFlowService`, behind the
-  erasure dialog, each mint a challenge through `ReauthenticationApiService` and have the
-  authenticator sign it with `assertPasskey`; the assertion goes to the rotation begin through
-  `KeyRotationService`, and to `POST /api/me/erasure` through `MeApiService.eraseAccount`. The
+  `RotationFlowService`, behind the Key rotation section, `ErasureFlowService`, behind the erasure
+  dialog, and `EmailChangeFlowService`, behind **Confirm with your passkey**, each mint a challenge
+  through `ReauthenticationApiService` and have the authenticator sign it with `assertPasskey`; the
+  assertion goes to the rotation begin through `KeyRotationService`, to `POST /api/me/erasure`
+  through `MeApiService.eraseAccount`, and to `POST /api/me/email-change` through
+  `MeApiService.changeEmail`. The
   revocation and recovery-code-generation gates take the same assertion, and nothing in the browser
   calls either route yet; they, and the registration of a **further** passkey, are reached today
   only by the integration suite. **Account creation is gated on a passkey, on the only path there
@@ -759,8 +761,8 @@ factor, and an account identifier derived from the challenge it just spent —
   specified to have and nothing has built, which the screen says above the list. See
   [components.md](../design/components.md). Nothing **replaces** a passkey. The **federated**
   credential is replaced by `POST /api/me/email-change`, which retires it and files a new one in
-  one save when the Google identity moves, behind this file's re-authentication ceremony — a route
-  the server answers and no screen calls yet; see [email-change.md](email-change.md).
+  one save when the Google identity moves, behind this file's re-authentication ceremony, which the
+  settings screen runs for it; see [email-change.md](email-change.md).
   - **The browser runs one more ceremony than the server has pools for, and it spends none of
     them.** `deriveKeyFromLocalAssertion` on the same service is what the Account keys section of
     `/app/settings` runs to obtain a key-encryption key for an unlock: it mints its own 32-byte

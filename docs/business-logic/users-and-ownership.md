@@ -62,7 +62,8 @@ that reads as complete and is not is worse here than anywhere else in this file.
   person may **revoke a passkey**, proving presence with a fresh WebAuthn assertion, and an
   account's **last** passkey is refused. The **federated** credential is not revocable at all: it is
   **replaced** by the email change, which retires it and files a new one in one save when the Google
-  identity moves — a server route no screen calls yet; see [email-change.md](email-change.md). A
+  identity moves — reached from **Change email address** on `/app/settings`; see
+  [email-change.md](email-change.md). A
   recovery-code set has no revocation route either; it is **replaced** by issuing again.
 - **`CK_credentials_type_shape` does not discriminate between `passkey` and `recovery_codes`.** Its
   two arms are byte-identical — both require `provider is null and subject is null` — because both
@@ -422,9 +423,8 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
   third party, so there is no sign-in on which the provider has anything to say.
   - **Consequence, accepted**: the stored address goes stale until the person asks to move it.
     Moving it is its own operation — a full session, a fresh provider token and a passkey assertion
-    together — and the server half of it is built: `POST /api/me/email-change`. No screen calls it
-    yet, so today a stored address changes only through the integration suite. See
-    [email-change.md](email-change.md).
+    together — `POST /api/me/email-change`, which the settings screen's **Change email address**
+    reaches through a trip to Google and a passkey press. See [email-change.md](email-change.md).
   - **The federated credential is still the account's link to the provider**, filed under
     `(provider, subject)` and unique across the table, which is what makes a second registration
     from the same Google identity a `409` rather than a second account. After creation it is read by
@@ -980,27 +980,32 @@ The budget branch that runs after this, on every path, is in
 
 ## Integration Points
 
-- **Google OAuth / OIDC**: the browser contacts the provider from the registration screen alone
-  today, and the identity it vouches for reaches the account through a federated credential rather
-  than a column on the user. The API reads three claims and no others — `sub` and `email`, which are
-  stored, and `email_verified`, read and discarded — on the two registration routes and on
-  `POST /api/me/email-change`. The frontend attaches the **ID token** (not the access token) as the
-  `Authorization: Bearer` header on the **two registration routes and nowhere else**. Those are two
-  of the three routes that read one; the third, the email change, has no caller in this client yet,
-  so no browser sends it a token today. The client's own narrowing is not what makes a bearer useless
-  elsewhere; it is what stops a credential travelling further than the routes that can act on it.
-  The authorization request asks for `openid email` and nothing more, pinned by
-  `no-profile-scope.spec.ts`, which reads the built bundle.
-  - **The client reads exactly one claim, and only on the registration screen.** `providerEmail()`
-    reads `email` so the introduction step can show which account is about to be created; it reads
-    no other member — not `name`, and above all not `picture`, an image from another origin this
-    application does not load at all — and `auth-service.spec.ts` pins that through a proxy
-    recording every claim touched.
+- **Google OAuth / OIDC**: the browser contacts the provider from two screens — `/register`, to
+  create an account, and `/app/settings`, to change its address — and the identity it vouches for
+  reaches the account through a federated credential rather than a column on the user. The API
+  reads three claims and no others — `sub` and `email`, which are stored, and `email_verified`, read
+  and discarded — on the two registration routes and on `POST /api/me/email-change`. The frontend
+  attaches the **ID token** (not the access token) as the `Authorization: Bearer` header on those
+  **three routes and nowhere else**: on the registration routes the token the library stored, on the
+  email change only the token its own request carries on its context. The client's own narrowing is
+  not what makes a bearer useless elsewhere; it is what stops a credential travelling further than
+  the routes that can act on it. The authorization request asks for `openid email` and nothing more,
+  on both trips, pinned by `no-profile-scope.spec.ts`, which reads the built bundle.
+  - **The client reads exactly one claim, in two places.** `providerEmail()` reads `email` so the
+    registration introduction can show which account is about to be created, and an email-change
+    return reads the same member out of the claims the library validated, so the settings screen can
+    name the address Google sent back. Both go through one narrowing function and read no other
+    member — not `name`, and above all not `picture`, an image from another origin this application
+    does not load at all. `auth-service.spec.ts` pins the registration read through a proxy
+    recording every claim touched; on the email change, the specs compare the hand-off whole, so a
+    second claim kept there reddens, while one kept in a separate field would be held by review
+    alone — see [email-change.md](email-change.md).
   - **`GET /api/me` is the only source for the *account's* address.** The token asserts what the
     provider says today, while the account is reachable at what was stored — at registration, or at
-    the last email change. Do
-    not "optimize" the call away by decoding the token; the two values legitimately disagree, the
-    stored one is the answer, and after registration there is no token to decode.
+    the last email change. Do not "optimize" the call away by decoding the token; the two values
+    legitimately disagree and the stored one is the answer. The email change's lead line names the
+    token's address only as what Google sent back, and its success line names what the re-read of
+    `GET /api/me` shows.
 - **`GET /api/me`**: an authenticated read of the caller's own address. It needed no grant — the
   role already holds `SELECT` on `users`, so `AppRoleGrantMatrixTests` staying green *untouched* is
   the proof, and a `42501` here would be a query bug rather than a missing privilege.

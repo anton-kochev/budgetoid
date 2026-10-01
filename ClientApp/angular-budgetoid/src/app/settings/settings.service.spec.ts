@@ -927,7 +927,7 @@ describe('SettingsService', () => {
     api.getMe.mockReturnValue(of(meDto('owner@budgetoid.test')));
 
     // Act
-    service.loadEmail();
+    void service.loadEmail();
 
     // Assert
     expect(service.email()).toBe('owner@budgetoid.test');
@@ -940,7 +940,7 @@ describe('SettingsService', () => {
     );
 
     // Act
-    service.loadEmail();
+    void service.loadEmail();
 
     // Assert
     // Control for the test above, and the reason both halves are asserted:
@@ -954,13 +954,13 @@ describe('SettingsService', () => {
   it('drops the previous email while a new load is running', () => {
     // Arrange
     api.getMe.mockReturnValueOnce(of(meDto('first@budgetoid.test')));
-    service.loadEmail();
+    void service.loadEmail();
     expect(service.email()).toBe('first@budgetoid.test');
     const gate = new Subject<MeDto>();
     api.getMe.mockReturnValue(gate);
 
     // Act
-    service.loadEmail();
+    void service.loadEmail();
 
     // Assert
     // The address answers the read that is running, so it is absent while one
@@ -980,7 +980,7 @@ describe('SettingsService', () => {
   it('leaves no email behind when a reload fails', () => {
     // Arrange
     api.getMe.mockReturnValueOnce(of(meDto('owner@budgetoid.test')));
-    service.loadEmail();
+    void service.loadEmail();
     // The first load really did publish an address. Without this the assertion
     // below holds on a service that never publishes one.
     expect(service.email()).toBe('owner@budgetoid.test');
@@ -989,7 +989,7 @@ describe('SettingsService', () => {
     );
 
     // Act
-    service.loadEmail();
+    void service.loadEmail();
 
     // Assert
     // `null`, and deliberately not `''`: the screen reads `null` as "not
@@ -1000,6 +1000,74 @@ describe('SettingsService', () => {
     // cold start; this pins it after an address has been on screen.
     expect(service.emailFailed()).toBe(true);
     expect(service.email()).toBeNull();
+  });
+
+  // The re-read after an email change awaits this, so the promise is the
+  // read's own answer — never inferred from the row going blank and back.
+  it('resolves loaded when its read lands', async () => {
+    // Arrange
+    api.getMe.mockReturnValue(of(meDto('owner@budgetoid.test')));
+
+    // Act
+    const outcome = await service.loadEmail();
+
+    // Assert
+    expect(outcome).toBe('loaded');
+    expect(service.email()).toBe('owner@budgetoid.test');
+  });
+
+  it('resolves failed when its read fails', async () => {
+    // Arrange
+    api.getMe.mockReturnValue(
+      throwError(() => new HttpErrorResponse({ status: 500 })),
+    );
+
+    // Act
+    const outcome = await service.loadEmail();
+
+    // Assert
+    expect(outcome).toBe('failed');
+    expect(service.emailFailed()).toBe(true);
+  });
+
+  // **The newer read wins, and the older one's answer never lands.** Without
+  // that, a `GET /api/me` started before an email change and answered after
+  // the re-read began would publish the old address as the re-read's result.
+  //
+  // A superseded call is pinned to settle with the read that replaced it: its
+  // caller asked for the row to be loaded, and the newer read is what loads
+  // it. It never settles on the stale answer, and it is never left hanging.
+  it('drops the answer of a read a newer one replaced', async () => {
+    // Arrange
+    const first = new Subject<MeDto>();
+    const second = new Subject<MeDto>();
+    api.getMe.mockReturnValueOnce(first).mockReturnValueOnce(second);
+    const settled: string[] = [];
+    const firstOutcome = service.loadEmail().then((outcome) => {
+      settled.push(`first:${outcome}`);
+
+      return outcome;
+    });
+    const secondOutcome = service.loadEmail().then((outcome) => {
+      settled.push(`second:${outcome}`);
+
+      return outcome;
+    });
+
+    // Act
+    first.next(meDto('stale@budgetoid.test'));
+    first.complete();
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const afterStale = { email: service.email(), settled: [...settled] };
+    second.next(meDto('fresh@budgetoid.test'));
+    second.complete();
+
+    // Assert
+    expect(afterStale).toEqual({ email: null, settled: [] });
+    expect(await secondOutcome).toBe('loaded');
+    expect(await firstOutcome).toBe('loaded');
+    expect(service.email()).toBe('fresh@budgetoid.test');
   });
 
   it('publishes the credentials in the order the server sent them', () => {

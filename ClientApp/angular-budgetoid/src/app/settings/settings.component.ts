@@ -6,8 +6,11 @@ import {
   ElementRef,
   OnInit,
   ViewContainerRef,
+  afterNextRender,
+  afterRenderEffect,
   computed,
   inject,
+  signal,
   viewChild,
 } from '@angular/core';
 import type { DialogConfig } from '@angular/cdk/dialog';
@@ -28,6 +31,7 @@ import {
   ERASE_DIALOG_TITLE_ID,
   EraseDialogComponent,
 } from './erase-dialog.component';
+import { EmailChangeFlowService } from './email-change-flow.service';
 import { ErasureFlowService } from './erasure-flow.service';
 import { KeyRotationSectionComponent } from './key-rotation-section.component';
 import { RotationFlowService } from './rotation-flow.service';
@@ -69,11 +73,16 @@ const EXPANDED = '(min-width: 960px)';
   // the same reason.** The dialog is opened with this screen's view container,
   // so its content resolves this instance; an attempt abandoned on the screen
   // dies with it.
+  //
+  // **`EmailChangeFlowService` holds the Google answer a return brought back**,
+  // and it is provided here so that answer dies with the screen: nothing at the
+  // root holds one, and the screen's teardown aborts a press that has not posted.
   providers: [
     SettingsService,
     AccountUnlockService,
     RotationFlowService,
     ErasureFlowService,
+    EmailChangeFlowService,
   ],
   styleUrls: ['./settings.component.scss'],
   templateUrl: './settings.component.html',
@@ -123,6 +132,27 @@ export class SettingsComponent implements OnInit {
     },
   );
 
+  // The email change's attempt. Read by name, like `unlocking`: every
+  // predicate both controls bind is the flow's, and its handlers refuse what
+  // its predicates refuse, so the template composes no gate of its own.
+  protected readonly emailChange = inject(EmailChangeFlowService);
+
+  // Which of the two email-change controls is drawn — exactly one, always.
+  // Confirm from the moment a return holds an answer until a word drops it;
+  // Change at rest and on the way to Google. One owner, because the template
+  // draws from it and the focus rule below watches it leave.
+  protected readonly confirmDrawn = computed(() => {
+    const phase = this.emailChange.phase();
+
+    return phase === 'waiting' || phase === 'asserting' || phase === 'changing';
+  });
+
+  // Whether the screen has rendered once. The email change's lines wait for
+  // it, for the erasure dialog's reason: a line present at the first paint is
+  // announced unreliably, and `unconfirmed` arrives with the load. Protected
+  // and not a `#` field only because the template reads it.
+  protected readonly painted = signal(false);
+
   private readonly erasureFlow = inject(ErasureFlowService);
   private readonly dialog = inject(MatDialog);
   private readonly sheet = inject(MatBottomSheet);
@@ -136,6 +166,17 @@ export class SettingsComponent implements OnInit {
     string,
     ElementRef<HTMLButtonElement>
   >('erasureTrigger', { read: ElementRef });
+
+  // The two email-change controls, each present only while it is drawn.
+  // `read: ElementRef` for the reason the erasure trigger gives.
+  private readonly changeControl = viewChild<
+    string,
+    ElementRef<HTMLButtonElement>
+  >('changeControl', { read: ElementRef });
+  private readonly confirmControl = viewChild<
+    string,
+    ElementRef<HTMLButtonElement>
+  >('confirmControl', { read: ElementRef });
 
   // The erasure confirmation while it is open, whichever host it is in.
   private erasure:
@@ -166,6 +207,43 @@ export class SettingsComponent implements OnInit {
     // book gives the closing to this screen; this line is what keeps the rule
     // true if the opener or the CDK changes.
     inject(DestroyRef).onDestroy(() => this.closeErasure());
+
+    // **A return moves focus once, after the first render.** Into the waiting
+    // state, straight to Confirm: the load is the second half of a press the
+    // person made, and the next thing it needs is that one. Ending on
+    // `unconfirmed`, to Change, the press its sentence offers. A load that
+    // brought no return moves nothing.
+    afterNextRender(() => {
+      this.painted.set(true);
+
+      if (this.confirmDrawn()) {
+        this.confirmControl()?.nativeElement.focus();
+      } else if (this.emailChange.word() === 'unconfirmed') {
+        this.changeControl()?.nativeElement.focus();
+      }
+    });
+
+    // **A word that ends the waiting state moves focus to Change**, because
+    // Confirm, where focus stood, has left the DOM. Watched as Confirm leaving
+    // rather than as a list of words, so a word the flow grows lands on the
+    // right side by what it does to the section. A word that keeps the waiting
+    // state leaves Confirm drawn and moves nothing — focus stays wherever the
+    // person put it.
+    //
+    // A render effect and not an `effect()`: it touches the DOM, so it runs
+    // once the pass that drew Change is done, and Change is there to take
+    // focus.
+    let confirmWasDrawn: boolean | null = null;
+
+    afterRenderEffect(() => {
+      const drawn = this.confirmDrawn();
+
+      if (confirmWasDrawn === true && !drawn) {
+        this.changeControl()?.nativeElement.focus();
+      }
+
+      confirmWasDrawn = drawn;
+    });
   }
 
   /**
@@ -293,7 +371,7 @@ export class SettingsComponent implements OnInit {
   public ngOnInit(): void {
     // The only work the screen starts on its own. The export is never begun
     // here — it writes a file to the user's disk, so it waits for the click.
-    this.settings.loadEmail();
+    void this.settings.loadEmail();
     this.settings.loadCredentials();
     this.settings.loadRecoveryCodes();
   }

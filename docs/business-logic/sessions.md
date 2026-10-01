@@ -29,9 +29,10 @@ presenting it is authenticated from it, publishing the account and the ambient b
 `POST /api/me/session/revocation` ends it. **Two of the four have a screen**: `/register` runs its
 creation ceremony and `/welcome` runs the assertion. The other two are reached today only by the
 integration suite — nothing in the browser redeems a code or regenerates a set. Every request this
-app makes is authenticated from the cookie; the browser contacts the identity provider from the
-registration screen alone. The server's email-change route takes a provider token beside the cookie,
-and no screen calls it yet — see [email-change.md](email-change.md).
+app makes is authenticated from the cookie. The browser contacts the identity provider from two
+screens: `/register`, to create an account, and `/app/settings`, to change its address — and the
+email change's request carries a provider token **beside** the cookie, never in its place; see
+[email-change.md](email-change.md).
 
 ## Key Entities
 
@@ -415,9 +416,11 @@ required members. A third writer is a decision rather than a refactor.
 
 - **Rule**: The web client decides **once** whether a request is going to this product's API, and
   that one answer carries **three** effects: `withCredentials: true` and the `X-Budgetoid-Client`
-  header on every such request, and the `Authorization: Bearer` header on **two routes only** —
-  `POST /api/registration/options` and `POST /api/registration`. The decision compares **origins**,
-  never a string prefix, and the origin is settled **before** the route is looked at.
+  header on every such request, and the `Authorization: Bearer` header on **three routes and no
+  others**, from two sources: `POST /api/registration/options` and `POST /api/registration` take the
+  id token the library stored, and `POST /api/me/email-change` takes only the token its own request
+  carries on the `PROVIDER_CREDENTIAL` context token. The decision compares **origins**, never a
+  string prefix, and the origin is settled **before** the route is looked at.
 - **Why**: the three effects share a predicate because two predicates drift, and the drift is silent
   in both directions. Drop the cookie and every request arrives unauthenticated; drop the header and
   every request answers 403; widen the predicate and the browser hands this app's credentials to
@@ -430,18 +433,23 @@ required members. A third writer is a decision rather than a refactor.
   every browser after registration; and an empty `apiBaseUrl` classifies **nothing** as this API,
   because `''` is a prefix of every string on earth and failing open there hands credentials to
   every request the app makes.
-  - **The bearer is permanent on those two routes.** They authenticate on the provider's scheme and
-    nothing else, because an account may not exist without a completed provider exchange and there
-    is no first-party credential to present on the one call that creates the first-party account.
-  - **Narrowing to them was worth doing, and no route the client calls reads the token anywhere
-    else.** The server's `POST /api/me/email-change` does read one, beside a session, but nothing in
-    this client calls it yet, so the interceptor attaches no bearer there; the screen that does will
-    have to widen this rule and the one below, not work around them. Why narrow at all:
-    `SessionService` discards the token once the tab holds a session — see the provider-token rule
-    below — but a browser that abandoned registration still holds it when that person does what they
-    usually do next, a passkey sign-in, and the discard comes only after that sign-in answers. So both
-    anonymous assertion legs were being handed a provider credential they could not act on. Every
-    hop a credential makes is another log, proxy and error report it can be recorded in.
+  - **The bearer is permanent on the two registration routes.** They authenticate on the provider's
+    scheme and nothing else, because an account may not exist without a completed provider exchange
+    and there is no first-party credential to present on the one call that creates the first-party
+    account.
+  - **On the email change the bearer comes from the request, never from storage.** A signed-in
+    browser holds nothing in the library's storage — the provider-token rule below discarded it when
+    the session began — so a stored token there would be whatever an abandoned registration left,
+    sent on a request that was handed none. `MeApiService.changeEmail` puts the token the email
+    change's return handed over on the context and writes no header itself; the interceptor reads
+    that context on the exact path `EMAIL_CHANGE_PATH` and ignores it on every other route. An empty
+    string is no credential. See [email-change.md](email-change.md).
+  - **Narrowing was worth doing, and no route the client calls reads a provider token anywhere else.**
+    `SessionService` discards the stored token once the tab holds a session, but a browser that
+    abandoned registration still holds it when that person does what they usually do next, a
+    passkey sign-in, and the discard comes only after that sign-in answers. So both anonymous
+    assertion legs were being handed a provider credential they could not act on. Every hop a
+    credential makes is another log, proxy and error report it can be recorded in.
   - **The order of the two questions is the security property.** Origin first, route second.
     Reversed — or folded into one path test —
     `https://api.budgetoid.app.attacker.example/api/registration` is a registration request. The
@@ -454,7 +462,13 @@ required members. A third writer is a decision rather than a refactor.
   other, because the service already imports two paths from here, so the opposite edge would close a
   cycle directly. A second spelling of either path fails silently in both directions: corrected only
   in the service, the bearer is lost and the flow's first call meets a `401`; corrected only in the
-  interceptor, the provider's token goes to a route that has moved.
+  interceptor, the provider's token goes to a route that has moved. `EMAIL_CHANGE_PATH` is declared
+  there and imported by `MeApiService` for the same reason, and `PROVIDER_CREDENTIAL` lives in a
+  module of its own, `provider-credential.token.ts`, for `EXPECTS_UNAUTHENTICATED`'s reason below.
+  `api-credentials.interceptor.spec.ts` holds the email change's half in a block of its own: the
+  context's token as the bearer, no stored token when the request carries none, a carried token
+  ignored on every other route, nothing to the path on another origin, exact-path matching, and no
+  bearer for an empty string.
   - **`EXPECTS_UNAUTHENTICATED` is the same rule reached from the other side and answered
     differently**: it lives in `expects-unauthenticated.token.ts`, a module holding the token and
     nothing else, rather than in the interceptor that reads it. Three unrelated services set it and
@@ -584,8 +598,10 @@ required members. A third writer is a decision rather than a refactor.
   token, the decoded claims with the email among them, and the nonce. That storage is per tab and
   survives a reload, so without a discard a registration that was refused or abandoned leaves them
   sitting in the tab when the same person signs in there a minute later, and a signed-in visit
-  carries a provider credential and an email address it has no use for. Nothing reads them once the
-  session cookie has taken over: the token is read on `/register` and nowhere after.
+  carries a provider credential and an email address it has no use for. Nothing reads the stored
+  tokens once the session cookie has taken over: they are read on `/register` and nowhere after.
+  The email change reads a token on a signed-in tab, and it never reads one out of this storage —
+  see the bullet on its return below.
   - **The probe arm is not a duplicate of `established()`.** A cold load that finds a session runs
     no establishing flow and skips `auth.initialize()`, so `established()` never runs there. That
     is the tab that reloaded after a registration whose `201` was lost on the way back, or after the
@@ -598,9 +614,10 @@ required members. A third writer is a decision rather than a refactor.
     the screen saying why. `unreachable` is refused for the same reason: a blinked probe on that leg
     would cost the same.
   - **The same discard ends the exchange marker.** `forgetProviderToken()` also removes
-    `budgetoid-provider-exchange`, the key the press on **Continue with Google** leaves so the return
-    leg knows this tab started an exchange. A tab that pressed, abandoned at the provider and then
-    signed in by passkey — or came back on a probe that found a session, which skips
+    `budgetoid-provider-exchange`, the key a press on **Continue with Google** or **Change email
+    address** leaves so the return leg knows this tab started that trip. A tab that pressed,
+    abandoned at the provider and then signed in by passkey — or came back on a probe that found a
+    session, which skips
     `auth.initialize()` — would otherwise keep it, and an answer-shaped address opened there later
     would contact the provider. It rides the same two arms for the same ordering reason: removed on
     `anonymous` or `unreachable`, it would be gone before the return leg read it.
@@ -614,10 +631,19 @@ required members. A third writer is a decision rather than a refactor.
   - **The edge runs one way**: `SessionService` injects `AuthService`, and `AuthService` must never
     inject `SessionService`. Both are asked from the `APP_INITIALIZER`, and an edge back would be an
     import cycle between two things bootstrap awaits.
-  - **Correct only while no signed-in flow uses the provider.** A later screen that needs a provider
-    token while signed in breaks this rule, and the discard with it. The server already has one such
-    route, `POST /api/me/email-change`; no screen calls it yet, and the one that does has to re-argue
-    this rule in the same commit.
+  - **A signed-in flow that uses the provider reads its answer before the probe, and the discard
+    then finds nothing.** The email change comes back to a tab holding a session, so the probe
+    answers `authenticated` and its discard would take the nonce the answer is checked against. So
+    the `APP_INITIALIZER` reads an email-change return **before** the probe:
+    `AuthService.initialize()` validates the answer, keeps the token and the address in memory, runs
+    `logOut(true)` itself and removes the marker. By the time the authenticated arm runs, the
+    library's storage is already empty, and the discard leaves the in-memory hand-off alone. This
+    rule therefore still owns "a session beginning discards the provider's tokens" without
+    exception; what the email change adds is an ordering in front of it, held by
+    `core.providers.spec.ts` (`is read before the server is asked who the visitor is`) and by
+    `core.providers.cold-boot.spec.ts` (`hands a signed-in email change the id token the provider
+    sent back`). The next signed-in flow that needs the provider has to take the same position or
+    re-argue this rule. See [email-change.md](email-change.md).
   - The rule sits in the client because the client is the only layer that holds the tokens; the
     server cannot clear a browser's storage.
 - **Enforced in**: `session.service.spec.ts` — the discard happens on `established()` and on an
@@ -626,6 +652,8 @@ required members. A third writer is a decision rather than a refactor.
   does not unpublish the session. `auth-service.spec.ts` holds the discard itself: a local
   `logOut(true)` that removes the library's keys and no others and makes no request.
   `register.component.spec.ts` holds that one registration discards exactly once.
+  `auth-service.spec.ts` holds that the discard leaves an email-change hand-off in place
+  (`forgetProviderToken leaves a captured email-change answer in place`).
 - **Example**: somebody opens `/register`, comes back from Google, and is told an account already
   exists for that address. They go to `/welcome` and sign in with their passkey in the same tab;
   `established()` publishes the session and drops the tokens before the navigation to `/app`.
@@ -674,9 +702,11 @@ required members. A third writer is a decision rather than a refactor.
     without the sentence two files away being opened. So the rule carries it: a member sets the
     token when the `401` it may collect is **that route's verdict on that request** rather than a
     session ending. `RegistrationApiService` sets it on both legs, `SignInApiService` on both
-    assertion legs, and `MeApiService` on `getSessionOwner()`, `getAccountKeys()` and
-    `eraseAccount()`. `getMe()` is the counterexample — the same route as `getSessionOwner()`,
-    asked as somebody already signed in — and carries none; nor does `endSession()`, whose `401`
+    assertion legs, and `MeApiService` on `getSessionOwner()`, `getAccountKeys()`, `eraseAccount()`
+    and `changeEmail()` — the last on `eraseAccount()`'s terms, resolved the same way, by one
+    unmarked `GET /api/me` the email-change flow makes before it names a refusal. `getMe()` is the
+    counterexample — the same route as `getSessionOwner()`, asked as somebody already signed in —
+    and carries none; nor does `endSession()`, whose `401`
     means the session it presented had already ended. **The rule is about the member and not about
     who calls it**, which is what keeps it true now that `getSessionOwner()` has a second caller.
     Most of the members are the plain case: the browser holds no session to lose. The members a

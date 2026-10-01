@@ -11,7 +11,14 @@ import {
 import { KeyRotationService } from '@app-core/security/key-rotation.service';
 import { FileDownloadService } from '@app-core/services/file-download.service';
 import { SessionService } from '@app-core/session/session.service';
-import { EMPTY, catchError, finalize, from, switchMap } from 'rxjs';
+import {
+  EMPTY,
+  catchError,
+  finalize,
+  from,
+  switchMap,
+  type Subscription,
+} from 'rxjs';
 import {
   decodeExportDocument,
   openExportDocument,
@@ -39,6 +46,10 @@ export type ExportFailure = 'failed' | 'unrecognised' | 'locked' | 'unreadable';
 // Which sentence stands above an Export that is off. `null` beside it means
 // none: a ready control, and one that is off while custody is mid-ceremony.
 export type ExportBlock = 'rotating' | 'locked';
+
+// How one read of the address row ended: it published an address, or it
+// published the failure.
+export type EmailLoadOutcome = 'loaded' | 'failed';
 
 // What one export ends as, once the server has answered.
 type ExportOutcome = 'exported' | Exclude<ExportFailure, 'failed'>;
@@ -109,6 +120,14 @@ export class SettingsService {
   // is already on its way to.
   private readonly signingOutSignal = signal(false);
 
+  // The address read in flight, and every caller still waiting on the row.
+  // One read at a time: a newer call cancels the older one, so an answer
+  // started before an email change can never land after the re-read began.
+  // A superseded caller is not dropped — it waits on the read that replaced
+  // its own, which is what loads the row it asked for.
+  #emailRead: Subscription | null = null;
+  #emailWaiters: ((outcome: EmailLoadOutcome) => void)[] = [];
+
   public readonly email: Signal<string | null> = this.emailSignal.asReadonly();
   public readonly emailFailed: Signal<boolean> =
     this.emailFailedSignal.asReadonly();
@@ -171,7 +190,14 @@ export class SettingsService {
     return this.custody.status() === 'locked' ? 'locked' : null;
   });
 
-  public loadEmail(): void {
+  /**
+   * Reads the address row again, and settles when the row has its answer:
+   * `'loaded'` once an address is published, `'failed'` once the failure is.
+   * Settled by the read itself, never inferred from the row going blank and
+   * back — a read can answer before anybody sees the blank, and an older read
+   * can put an older address there.
+   */
+  public loadEmail(): Promise<EmailLoadOutcome> {
     this.emailFailedSignal.set(false);
     // Cleared when the read *starts*, for the reason `loadRecoveryCodes` gives
     // below at length: an address from a previous answer that survives a load
@@ -192,15 +218,39 @@ export class SettingsService {
     // arrived at by a different claim, and nothing downstream could tell the
     // two apart again.
     this.emailSignal.set(null);
-    this.api
-      .getMe()
-      .pipe(
-        catchError(() => {
-          this.emailFailedSignal.set(true);
-          return EMPTY;
-        }),
-      )
-      .subscribe((me) => this.emailSignal.set(me.email));
+
+    // The older read is cancelled before this one starts, so nothing it
+    // answers can be published over the answer this one brings.
+    this.#emailRead?.unsubscribe();
+
+    const outcome = new Promise<EmailLoadOutcome>((resolve) => {
+      this.#emailWaiters.push(resolve);
+    });
+
+    // A read that answers synchronously has settled before this assignment,
+    // which then holds a closed subscription — harmless to cancel later.
+    this.#emailRead = this.api.getMe().subscribe({
+      next: (me) => {
+        this.emailSignal.set(me.email);
+        this.settleEmailRead('loaded');
+      },
+      error: () => {
+        this.emailFailedSignal.set(true);
+        this.settleEmailRead('failed');
+      },
+    });
+
+    return outcome;
+  }
+
+  private settleEmailRead(outcome: EmailLoadOutcome): void {
+    const waiters = this.#emailWaiters;
+
+    this.#emailWaiters = [];
+
+    for (const settle of waiters) {
+      settle(outcome);
+    }
   }
 
   // Shaped after `loadEmail` rather than after `export`: this is a read the

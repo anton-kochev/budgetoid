@@ -823,6 +823,11 @@ for. It lasts only until the page leaves or `unavailable` answers.
   a running rotation, and an ungated Confirm sends a second changing request from one answer. The
   drift two spellings produce is argued under the Unlock control and not again here.
 - **No other state holds Change off.** Not a locked account, and not a staged run.
+- **A press of Change that reaches the flow while an answer is held drops the answer**, and the trip
+  starts as from rest: a trip replaces whatever answer this load held. Change is not drawn in the
+  waiting state, so only a press arriving by another path — a render that has not caught up — meets
+  this rule, and it is the rule rather than a refusal because no predicate term covers the waiting
+  state.
 
 ### The trip to Google
 
@@ -928,6 +933,14 @@ clause swapped** — `cancelled`, `no-prf` and `ceremony-failed` as one line, `u
 the four are raised before the changing request exists, and `assertion-refused` is the gate turning
 that request away before anything is written. The act-neutral half of each sentence is unchanged,
 so the product says one thing about a passkey check wherever it asks for one.
+
+**`unstarted` is every way the challenge request fails except a `401`, a refused one included.** A
+`5xx`, no answer, and a `400` or `403` the server judged all read `unstarted`, and the waiting state
+stays: nothing that could change anything has been sent, so *nothing changed* is a fact and the
+Google answer is still good. The erasure dialog reads a `400` or `403` as `unrecognised` and offers a
+reload; this chapter does not borrow that word, because here a reload costs the Google answer and
+sends the person back through the trip to get it again. A `401` on the challenge is an ended
+session, the interceptor's, and this flow says nothing over it.
 
 **`unsupported` is not borrowed, and it follows registration rather than Unlock.** A browser that
 cannot run the ceremony cannot run it on the next press either, so offering Confirm again is a
@@ -1050,20 +1063,26 @@ order, named by the confirm control. Nothing is communicated by colour alone.
 
 ### What ships today
 
-**None of this chapter is built.** The Account section renders the address row, its region and Sign
-out, and nothing on `/app/settings` offers a way to change the address. The **Google** row in Ways
-to sign in draws no Revoke on this chapter's premise that the federated credential is replaced
-rather than removed — a premise nothing on the screen can yet act on.
+**The chapter is built, and no departure is known.** `settings.component.html` renders both standing
+paragraphs, the three held-off sentences and the in-flight line, Change and Confirm as one or the
+other and never both, the lead line, and every outcome in the table in the region the address row's
+failure already used. `EmailChangeFlowService`, provided by the Settings component, owns the phase,
+the word, the address and the two predicates both controls bind; the trip, the hand-off and the
+bootstrap order are [email-change.md](../business-logic/email-change.md)'s, with the specs that hold
+each. `settings.component.spec.ts` pins every sentence above whole, the focus rules, the one-render
+delay and the handler's gate against the real flow.
 
-**The day it ships, the welcome screen's provider line stops being true.** That line says Google is
-never asked again after an account starts, and this act asks it again. The two change in one
-commit, and the welcome chapter's three facts are re-read with them.
+**The success line names the address the row's own re-read published**, and the flow waits on that
+read's outcome rather than watching the row, so an older read landing late cannot end it.
 
-**What this chapter needs of the rest of the product lands in the code commits, not here**: a
-session beginning may no longer discard a Google answer this flow is holding, the provider's token
-reaches a route beyond the two registration ones, Google returns to a second address, and the
-chapters that say the only provider exchange starts on `/register` say otherwise. Each is owned by
-the document that states the rule today.
+**What no spec here can see**: whether a screen reader hears a line that lands one render after the
+first paint — the erasure dialog's open gap — and the Google Cloud console's redirect list, which
+has to name `/app/settings` for the trip to come back at all.
+
+The **Google** row in Ways to sign in draws no Revoke, and this chapter is why: the federated
+credential is replaced by a change, never removed. The welcome screen's provider line names this
+act as the one exception to Google never being asked again — see
+[the welcome screen](#the-welcome-screen).
 
 ## Credential list and row
 
@@ -1121,8 +1140,8 @@ list semantics — without it nobody hears "list, 2 items".
   button starts working. A control that will never be enabled makes the same promise and cannot keep
   it, which is the worse of the two lies — the reader waits for a release that is not coming. A
   recovery-code set is unrevocable by construction (below), and the **Google** row is unrevocable
-  because the federated credential is replaced by an email change rather than removed — a change
-  [specified above](#changing-the-email-address) and not built yet; neither row draws the button.
+  because the federated credential is replaced by an email change rather than removed — the act
+  [specified above](#changing-the-email-address), on this same screen; neither row draws the button.
   A row whose kind this bundle does not recognise draws none either, on a different argument:
   unknown is undecided, revocation is the one unrecoverable act on this screen, and the
   undecided answer to an unrecoverable act is no control at all. Revocability is a property carried
@@ -3654,11 +3673,16 @@ and from the commit that gave it the second one, neither of them is the identity
   person. A refusal and an answer that never came are still different sentences: one says this
   passkey does not work here and points at another way in, the other says the server could not be
   reached and points at the same press a minute later.
-- **The provider line says what Google is for, in three facts and in this order**: an account starts
-  there, it happens once and only to check an address, and signing in afterwards never goes near it.
-  The order is the reassurance. The sentence it replaced — that the Google account is what signs you
-  in — stopped being true the moment the passkey control landed, and leaving it would have been worse
-  than leaving nothing: it is the sentence a cautious person reads before deciding whether to hand
+- **The provider line says what Google is for, in three facts and one exception, in this order**: an
+  account starts there, only to check an address, and signing in afterwards is the passkey's — and
+  Google is asked again only if the person changes that address, which is the one other trip to
+  Google the product makes. The order is the reassurance, and the exception is stated rather than
+  hidden: a line still promising that Google is never asked again would be false about the one
+  other moment the provider hears from this person. `welcome.component.spec.ts` carries the sentence
+  as `PROVIDER_ROLE`, its four load-bearing phrases as `PROVIDER_ROLE_PHRASES`, and the retired
+  promise as the negative `RETIRED_NEVER_AGAIN_CLAIM`. The sentence it replaced — that the Google
+  account is what signs you in — stopped being true the moment the passkey control landed, and
+  leaving it would have been worse than leaving nothing: it is the sentence a cautious person reads before deciding whether to hand
   over an address at all.
 - **The kinetic sentence is unchanged** and remains `aria-live="off"` decorative narrative
   ([motion](motion.md), [accessibility](accessibility.md)).

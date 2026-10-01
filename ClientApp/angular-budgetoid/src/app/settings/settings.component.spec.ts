@@ -76,6 +76,12 @@ import {
   ERASE_DIALOG_FIELD_ID,
 } from './erase-dialog.component';
 import {
+  EmailChangeFlowService,
+  type EmailChangeHold,
+  type EmailChangePhase,
+  type EmailChangeWord,
+} from './email-change-flow.service';
+import {
   ErasureFlowService,
   type ErasureFailure,
   type ErasurePhase,
@@ -603,7 +609,11 @@ class SettingsServiceStub {
   // at-rest state: region present and empty. The real service sets it inside
   // `loadRecoveryCodes`, which this stub deliberately does not do.
   public readonly recoveryLoading = signal(false);
-  public loadEmail = vi.fn();
+  // A read that has not answered, so a case that needs the re-read outstanding
+  // has it by default. The real one settles with this read's own outcome.
+  public loadEmail = vi.fn(
+    (): Promise<'loaded' | 'failed'> => new Promise(() => undefined),
+  );
   public loadCredentials = vi.fn();
   public loadRecoveryCodes = vi.fn();
   public export = vi.fn();
@@ -777,6 +787,29 @@ class ErasureFlowStub implements ErasureFlowSurface {
   public abandon = vi.fn();
 }
 
+// The email change's attempt, for every block that stubs the flows. Real
+// signals, each set on its own and none composed from another — the
+// `AccountUnlockStub` rule — so the screen is driven through the flow's public
+// readings and a template that reassembled a predicate for itself would part
+// company with the one it should read. `Pick` over the real class, so a member
+// the flow grows is a compile error here naming it.
+type EmailChangeFlowSurface = Pick<
+  EmailChangeFlowService,
+  keyof EmailChangeFlowService
+>;
+
+class EmailChangeFlowStub implements EmailChangeFlowSurface {
+  public readonly phase = signal<EmailChangePhase>('rest');
+  public readonly word = signal<EmailChangeWord | null>(null);
+  public readonly address = signal<string | null>(null);
+  public readonly sessionsEnded = signal<number | null>(null);
+  public readonly changeHold = signal<EmailChangeHold | null>(null);
+  public readonly changePressable = signal(true);
+  public readonly confirmPressable = signal(false);
+  public change = vi.fn();
+  public confirm = vi.fn();
+}
+
 // What the three blocks below need in order to mount the *shipped* component
 // rather than an overridden one.
 //
@@ -804,10 +837,19 @@ const ROTATION_SECTION_STUBS: readonly (Provider | EnvironmentProviders)[] = [
 // `provideOAuthClient()`. Nothing in the blocks that build the real session is
 // about the identity provider, so the one member it reaches is a spy. A factory
 // rather than one instance, so two blocks cannot share a spy.
+//
+// The screen's own email-change flow is real in those blocks, so the two members
+// it reaches are here too: it takes the page load's hand-off once when it is
+// built — there is none — and a press would start a trip nothing here makes.
 const PROVIDER_SERVICE_STUB: Provider = {
   provide: AuthService,
-  useFactory: (): Pick<AuthService, 'forgetProviderToken'> => ({
+  useFactory: (): Pick<
+    AuthService,
+    'forgetProviderToken' | 'takeEmailChangeReturn' | 'startEmailChange'
+  > => ({
     forgetProviderToken: vi.fn(),
+    takeEmailChangeReturn: vi.fn(() => null),
+    startEmailChange: vi.fn(() => Promise.resolve('unavailable' as const)),
   }),
 };
 
@@ -847,6 +889,10 @@ describe('SettingsComponent', () => {
         { provide: KeyRotationService, useValue: rotations },
         { provide: RotationFlowService, useValue: rotationFlow },
         { provide: ErasureFlowService, useValue: new ErasureFlowStub() },
+        {
+          provide: EmailChangeFlowService,
+          useValue: new EmailChangeFlowStub(),
+        },
       ],
     });
     // The stub is installed on the component, not on the module. A module-level
@@ -5667,7 +5713,7 @@ describe('SettingsComponent when the email is loaded twice', () => {
     expect(emailValue(host)).toBe(OWNER_EMAIL);
 
     // Act
-    fixture.debugElement.injector.get(SettingsService).loadEmail();
+    void fixture.debugElement.injector.get(SettingsService).loadEmail();
     fixture.detectChanges();
 
     // Assert
@@ -6088,3 +6134,880 @@ function generateIndexKey(): Promise<CryptoKey> {
     'sign',
   ]);
 }
+
+// ---------------------------------------------------------------------------
+// Changing the email address. See docs/design/components.md, "Changing the
+// email address" — the copy is the specification, so every sentence below is
+// that chapter's, word for word.
+// ---------------------------------------------------------------------------
+
+const CHANGE_EMAIL_BUTTON = 'Change email address';
+const CONFIRM_EMAIL_BUTTON = 'Confirm with your passkey';
+// The address Google sent back, and the one the re-read then shows.
+const NEW_ADDRESS = 'new.owner@budgetoid.test';
+
+const EMAIL_CHANGE_ACT_PARAGRAPH =
+  'Changing your email address takes you to Google to choose the account whose address you want, then brings you back here to confirm with a passkey. The new address is the one Google holds for that account — there’s nothing to type and no email to wait for.';
+const EMAIL_CHANGE_CONSEQUENCE_PARAGRAPH =
+  'Coming back reloads this page. That locks your account’s keys in this tab, so you’ll unlock again afterwards, and it would stop a key rotation running in this tab where it is.';
+
+// The three reasons Change is off, one sentence each and none shared with each
+// other or with Export's.
+const EMAIL_CHANGE_HOLDS: Readonly<Record<EmailChangeHold, string>> = {
+  rotating:
+    'Changing your email address is off while this tab gives your account new keys, because the trip to Google would stop the rotation. It comes back when the rotation finishes.',
+  exporting:
+    'Changing your email address is off while this tab writes your export, because the trip to Google would lose the file. It comes back when the export ends.',
+  unlocking:
+    'Changing your email address is off while this tab unlocks your account, because the trip to Google would cut the unlock short. It comes back when the unlock ends.',
+};
+
+const EMAIL_CHANGE_LEAD = `Google sent back ${NEW_ADDRESS}. Nothing changes until you confirm with your passkey.`;
+
+const EMAIL_CHANGE_LEAVING = 'Taking you to Google…';
+const EMAIL_CHANGE_ASSERTING = 'Waiting for your passkey.';
+const EMAIL_CHANGE_CHANGING = 'Changing your email address…';
+
+// Every word but `changed`, whose three branches are pinned on their own.
+const EMAIL_CHANGE_LINES: Readonly<
+  Record<Exclude<EmailChangeWord, 'changed'>, string>
+> = {
+  'changed-unread':
+    'Budgetoid took the new address but couldn’t load it back. Reload the page to see it.',
+  unavailable:
+    'Budgetoid couldn’t reach Google, so nothing changed. Try again in a minute.',
+  unconfirmed:
+    'Google didn’t send back a sign-in, so nothing changed. Try again whenever you’re ready.',
+  unsupported:
+    'This browser can’t confirm with a passkey, so nothing changed. Start again in a different browser, or on a phone or laptop that can.',
+  cancelled:
+    'The passkey check was cancelled or timed out. Try again whenever you’re ready — nothing changed.',
+  'no-prf':
+    'Your device couldn’t finish the passkey check. Try again, or choose another passkey — nothing changed.',
+  'ceremony-failed':
+    'Your device couldn’t finish the passkey check. Try again, or choose another passkey — nothing changed.',
+  unstarted:
+    'Budgetoid couldn’t start the passkey check. Try again in a minute — nothing changed.',
+  'provider-refused':
+    'That Google sign-in expired or wasn’t accepted, so nothing changed. Start again with Change email address.',
+  unverified:
+    'Google hasn’t verified that address, so nothing changed. Start again and choose a different Google account.',
+  'assertion-refused':
+    'Budgetoid didn’t accept that passkey for this account. Try again with a passkey you made for it — nothing changed.',
+  'address-taken':
+    'That address already belongs to another Budgetoid account, so nothing changed. Start again and choose a different Google account.',
+  'google-account-taken':
+    'That Google account is already attached to another Budgetoid account, so nothing changed. Start again and choose a different Google account.',
+  moved:
+    'Your email address was changed somewhere else while this was running, so this change wasn’t made.',
+  failed:
+    'Budgetoid couldn’t accept this request, so nothing changed. Reload the page and try again.',
+  undetermined:
+    'Budgetoid can’t tell whether your email address changed. Reload the page to find out.',
+};
+
+const EMAIL_CHANGED_NO_CLAUSE = `Your email address is ${NEW_ADDRESS}.`;
+const EMAIL_CHANGED_ONE = `Your email address is ${NEW_ADDRESS}, and 1 browser signed in with your old Google account is now signed out.`;
+const EMAIL_CHANGED_THREE = `Your email address is ${NEW_ADDRESS}, and 3 browsers signed in with your old Google account are now signed out.`;
+
+// The words that end the waiting state, and the ones that keep it: the design
+// book's two lists, which the focus rules follow.
+const ENDS_WAITING: readonly EmailChangeWord[] = [
+  'changed',
+  'unsupported',
+  'undetermined',
+  'provider-refused',
+  'unverified',
+  'address-taken',
+  'google-account-taken',
+  'moved',
+  'failed',
+];
+const KEEPS_WAITING: readonly EmailChangeWord[] = [
+  'cancelled',
+  'no-prf',
+  'ceremony-failed',
+  'unstarted',
+  'assertion-refused',
+];
+
+describe('SettingsComponent changing the email address', () => {
+  let service: SettingsServiceStub;
+  let flow: EmailChangeFlowStub;
+  let fixture: ComponentFixture<SettingsComponent>;
+  let host: HTMLElement;
+
+  // The screen with every flow stubbed, the email-change flow put in the state
+  // the case names **before** the component exists — which is where a return
+  // load puts it — and one first paint.
+  async function mount(
+    arrange: (stub: EmailChangeFlowStub) => void = () => undefined,
+  ): Promise<void> {
+    service = new SettingsServiceStub();
+    service.email.set(OWNER_EMAIL);
+    flow = new EmailChangeFlowStub();
+    arrange(flow);
+
+    TestBed.configureTestingModule({
+      imports: [SettingsComponent],
+      providers: [
+        provideNoopAnimations(),
+        {
+          provide: AccountKeyCustodyService,
+          useValue: new AccountKeyCustodyStub(),
+        },
+        { provide: AccountUnlockService, useValue: new AccountUnlockStub() },
+        { provide: KeyRotationService, useValue: new KeyRotationStub() },
+        { provide: RotationFlowService, useValue: new RotationFlowStub() },
+        { provide: ErasureFlowService, useValue: new ErasureFlowStub() },
+        // Module level, for the reason the main block gives: `set` below
+        // replaces the component's providers, so the lookup walks up to here.
+        { provide: EmailChangeFlowService, useValue: flow },
+      ],
+    });
+    TestBed.overrideComponent(SettingsComponent, {
+      set: { providers: [{ provide: SettingsService, useValue: service }] },
+    });
+    await TestBed.compileComponents();
+    fixture = TestBed.createComponent(SettingsComponent);
+    host = fixture.nativeElement as HTMLElement;
+    // The first paint, and only that.
+    fixture.detectChanges();
+  }
+
+  // One more render after the first, with the render hooks run — which is
+  // where "after the first render" work lands.
+  async function nextRender(): Promise<void> {
+    TestBed.tick();
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+  }
+
+  function account(): HTMLElement | null {
+    return sectionFor(host, 'account-heading');
+  }
+
+  function region(): Element | null {
+    return account()?.querySelector('[role="status"]') ?? null;
+  }
+
+  function change(): HTMLButtonElement | null {
+    return buttonNamed(host, CHANGE_EMAIL_BUTTON);
+  }
+
+  function confirm(): HTMLButtonElement | null {
+    return buttonNamed(host, CONFIRM_EMAIL_BUTTON);
+  }
+
+  describe('the control', () => {
+    // Beside the row it changes, and before Sign out, which is about the
+    // browser rather than about anything the account holds.
+    it('sits in the Account section after the address row and before Sign out', async () => {
+      // Arrange
+      await mount();
+      const section = account();
+      const control = change();
+
+      // Assert
+      expect(control).not.toBeNull();
+      expect(section?.contains(control)).toBe(true);
+      expect(precedes(section?.querySelector('dl') ?? null, control)).toBe(
+        true,
+      );
+      expect(precedes(control, buttonNamed(host, SIGN_OUT_BUTTON))).toBe(true);
+    });
+
+    it('is an Outline button with the touch-target class', async () => {
+      // Arrange
+      await mount();
+
+      // Assert
+      expect(change()?.classList.contains(OUTLINE_CLASS)).toBe(true);
+      expect(change()?.classList.contains(TOUCH_TARGET_CLASS)).toBe(true);
+    });
+
+    it('carries the two standing paragraphs before the control, word for word', async () => {
+      // Arrange
+      await mount();
+      const section = account();
+
+      // Act
+      const act = elementSaying(section, EMAIL_CHANGE_ACT_PARAGRAPH);
+      const consequence = elementSaying(
+        section,
+        EMAIL_CHANGE_CONSEQUENCE_PARAGRAPH,
+      );
+
+      // Assert
+      expect(
+        act,
+        sentenceMismatch(normalize(section), EMAIL_CHANGE_ACT_PARAGRAPH),
+      ).not.toBeNull();
+      expect(
+        consequence,
+        sentenceMismatch(
+          normalize(section),
+          EMAIL_CHANGE_CONSEQUENCE_PARAGRAPH,
+        ),
+      ).not.toBeNull();
+      expect(precedes(act, consequence)).toBe(true);
+      expect(precedes(consequence, change())).toBe(true);
+    });
+
+    // Both are standing prose, so both are true while the flow waits too.
+    it('keeps the two standing paragraphs while it waits for the passkey', async () => {
+      // Arrange
+      await mount((stub) => {
+        stub.phase.set('waiting');
+        stub.address.set(NEW_ADDRESS);
+        stub.confirmPressable.set(true);
+      });
+
+      // Assert
+      const text = normalize(account());
+      expect(text).toContain(EMAIL_CHANGE_ACT_PARAGRAPH);
+      expect(text).toContain(EMAIL_CHANGE_CONSEQUENCE_PARAGRAPH);
+    });
+
+    it('offers no field for an address, in any state', async () => {
+      // Arrange
+      await mount();
+      const fields = (): number =>
+        account()?.querySelectorAll('input, textarea, [contenteditable]')
+          .length ?? -1;
+      const atRest = fields();
+
+      // Act
+      flow.phase.set('waiting');
+      flow.address.set(NEW_ADDRESS);
+      flow.confirmPressable.set(true);
+      await nextRender();
+
+      // Assert
+      // The controls first: a section that drew neither state would have no
+      // field in it either.
+      expect(confirm()).not.toBeNull();
+      expect(atRest).toBe(0);
+      expect(fields()).toBe(0);
+    });
+
+    it('hands the press to the flow', async () => {
+      // Arrange
+      await mount();
+
+      // Act
+      change()?.click();
+
+      // Assert
+      expect(flow.change).toHaveBeenCalledOnce();
+    });
+  });
+
+  describe('held off', () => {
+    it.each(Object.entries(EMAIL_CHANGE_HOLDS) as [EmailChangeHold, string][])(
+      'says why when the reason is %s, above the control and named by it',
+      async (hold, sentence) => {
+        // Arrange
+        await mount((stub) => {
+          stub.changeHold.set(hold);
+          stub.changePressable.set(false);
+        });
+        const section = account();
+        const control = change();
+
+        // Act
+        const said = elementSaying(section, sentence);
+
+        // Assert
+        expect(
+          said,
+          sentenceMismatch(normalize(section), sentence),
+        ).not.toBeNull();
+        expect(precedes(said, control)).toBe(true);
+        // Outside the region: it says why a control is off, not what a press did.
+        expect(region()?.contains(said)).toBe(false);
+        expect(idText(control?.getAttribute('aria-describedby') ?? null)).toBe(
+          sentence,
+        );
+        // One sentence at a time.
+        const others = Object.values(EMAIL_CHANGE_HOLDS).filter(
+          (other) => other !== sentence,
+        );
+        for (const other of others) {
+          expect(normalize(section)).not.toContain(other);
+        }
+      },
+    );
+
+    it('names no sentence and describes nothing when nothing holds it off', async () => {
+      // Arrange
+      await mount();
+
+      // Assert
+      for (const sentence of Object.values(EMAIL_CHANGE_HOLDS)) {
+        expect(normalize(host)).not.toContain(sentence);
+      }
+      expect(change()?.getAttribute('aria-describedby')).toBeNull();
+    });
+
+    // Held with `disabledInteractive`, so it keeps its tab stop and the
+    // sentence it names is reachable.
+    it('stays in the tab order while it is off', async () => {
+      // Arrange
+      await mount((stub) => {
+        stub.changeHold.set('exporting');
+        stub.changePressable.set(false);
+      });
+      const control = change();
+
+      // Assert
+      expect(control?.getAttribute('aria-disabled')).toBe('true');
+      expect(control?.disabled).toBe(false);
+    });
+
+    // Busy gets the in-flight treatment rather than a sentence above the
+    // control: the line is an outcome of the press, so it is in the region.
+    it('says it is taking you to Google in the region while it leaves, and marks the control busy', async () => {
+      // Arrange
+      await mount((stub) => {
+        stub.phase.set('leaving');
+        stub.changePressable.set(false);
+      });
+      await nextRender();
+
+      // Assert
+      expect(normalize(region())).toContain(EMAIL_CHANGE_LEAVING);
+      expect(change()?.getAttribute('aria-busy')).toBe('true');
+      expect(change()?.getAttribute('aria-disabled')).toBe('true');
+      for (const sentence of Object.values(EMAIL_CHANGE_HOLDS)) {
+        expect(normalize(account())).not.toContain(sentence);
+      }
+    });
+
+    it('carries no aria-busy at rest', async () => {
+      // Arrange
+      await mount();
+
+      // Assert
+      expect(change()?.getAttribute('aria-busy')).toBeNull();
+    });
+  });
+
+  describe('waiting for the passkey', () => {
+    function waiting(stub: EmailChangeFlowStub): void {
+      stub.phase.set('waiting');
+      stub.address.set(NEW_ADDRESS);
+      stub.confirmPressable.set(true);
+    }
+
+    // It replaces Change rather than joining it: two controls would ask a
+    // person to choose between starting over and finishing.
+    it('draws Confirm in Change’s place, never both', async () => {
+      // Arrange
+      await mount(waiting);
+
+      // Assert
+      expect(confirm()).not.toBeNull();
+      expect(change()).toBeNull();
+    });
+
+    it('draws Change and no Confirm at rest', async () => {
+      // Arrange
+      await mount();
+
+      // Assert
+      expect(change()).not.toBeNull();
+      expect(confirm()).toBeNull();
+    });
+
+    it('names the address Google sent back in a lead line the control is described by', async () => {
+      // Arrange
+      await mount(waiting);
+      const section = account();
+
+      // Act
+      const lead = elementSaying(section, EMAIL_CHANGE_LEAD);
+
+      // Assert
+      expect(
+        lead,
+        sentenceMismatch(normalize(section), EMAIL_CHANGE_LEAD),
+      ).not.toBeNull();
+      expect(precedes(lead, confirm())).toBe(true);
+      expect(idText(confirm()?.getAttribute('aria-describedby') ?? null)).toBe(
+        EMAIL_CHANGE_LEAD,
+      );
+    });
+
+    // Confirm's predicate is its own: Change's reasons describe a moment
+    // before a trip, and Confirm exists only after one.
+    it('is not held off by a reason that holds Change off', async () => {
+      // Arrange
+      await mount((stub) => {
+        waiting(stub);
+        stub.changeHold.set('rotating');
+        stub.changePressable.set(false);
+      });
+
+      // Assert
+      expect(confirm()).not.toBeNull();
+      expect(confirm()?.getAttribute('aria-disabled')).not.toBe('true');
+    });
+
+    it('is an Outline button with the touch-target class', async () => {
+      // Arrange
+      await mount(waiting);
+
+      // Assert
+      expect(confirm()?.classList.contains(OUTLINE_CLASS)).toBe(true);
+      expect(confirm()?.classList.contains(TOUCH_TARGET_CLASS)).toBe(true);
+    });
+
+    it('hands the press to the flow', async () => {
+      // Arrange
+      await mount(waiting);
+
+      // Act
+      confirm()?.click();
+
+      // Assert
+      expect(flow.confirm).toHaveBeenCalledOnce();
+    });
+
+    it.each([
+      { phase: 'asserting' as const, line: EMAIL_CHANGE_ASSERTING },
+      { phase: 'changing' as const, line: EMAIL_CHANGE_CHANGING },
+    ])(
+      'keeps the control in place and busy while $phase, and says so in the region',
+      async ({ phase, line }) => {
+        // Arrange
+        await mount(waiting);
+
+        // Act
+        flow.phase.set(phase);
+        flow.confirmPressable.set(false);
+        await nextRender();
+
+        // Assert
+        expect(confirm()?.getAttribute('aria-busy')).toBe('true');
+        expect(confirm()?.getAttribute('aria-disabled')).toBe('true');
+        expect(change()).toBeNull();
+        expect(normalize(region())).toContain(line);
+      },
+    );
+  });
+
+  describe('the region', () => {
+    // The Account section keeps one region: this flow's lines join the address
+    // row's load failure there rather than getting a second one beside it.
+    it('is the Account section’s one status region, there from first paint and empty at rest', async () => {
+      // Arrange
+      await mount();
+
+      // Assert
+      expect(account()?.querySelectorAll('[role="status"]')).toHaveLength(1);
+      expect(normalize(region())).toBe('');
+    });
+
+    it.each(
+      Object.entries(EMAIL_CHANGE_LINES) as [
+        Exclude<EmailChangeWord, 'changed'>,
+        string,
+      ][],
+    )('says %s in its own sentence', async (word, sentence) => {
+      // Arrange
+      await mount();
+
+      // Act
+      flow.word.set(word);
+      await nextRender();
+
+      // Assert
+      const text = normalize(region());
+      expect(text, sentenceMismatch(text, sentence)).toContain(sentence);
+      expect(occurrencesOf(text, sentence)).toBe(1);
+    });
+
+    // Three branches and never a pipe; zero, and a count this bundle could not
+    // read, take no clause.
+    it.each([
+      { count: 0, sentence: EMAIL_CHANGED_NO_CLAUSE, clause: false },
+      { count: null, sentence: EMAIL_CHANGED_NO_CLAUSE, clause: false },
+      { count: 1, sentence: EMAIL_CHANGED_ONE, clause: true },
+      { count: 3, sentence: EMAIL_CHANGED_THREE, clause: true },
+    ])(
+      'states the result with the address the re-read shows when the count is $count',
+      async ({ count, sentence, clause }) => {
+        // Arrange
+        await mount();
+
+        // Act
+        service.email.set(NEW_ADDRESS);
+        flow.sessionsEnded.set(count);
+        flow.word.set('changed');
+        await nextRender();
+
+        // Assert
+        const text = normalize(region());
+        expect(text, sentenceMismatch(text, sentence)).toContain(sentence);
+        // `toContain` alone is satisfied by the clause-free sentence inside
+        // one that goes on to claim other browsers were signed out.
+        expect(text.includes('now signed out')).toBe(clause);
+      },
+    );
+
+    // Two requests, two lines, this flow's first.
+    it('puts the failed re-read line before the address row’s own failure', async () => {
+      // Arrange
+      await mount();
+
+      // Act
+      service.emailFailed.set(true);
+      flow.word.set('changed-unread');
+      await nextRender();
+
+      // Assert
+      const own = elementSaying(region(), EMAIL_CHANGE_LINES['changed-unread']);
+      const row = elementSaying(region(), EMAIL_FAILURE);
+      expect(own).not.toBeNull();
+      expect(row).not.toBeNull();
+      expect(precedes(own, row)).toBe(true);
+    });
+
+    // A line present at the first paint is announced unreliably, so a return
+    // ending on `unconfirmed` lands one render later.
+    it('says unconfirmed one render after the first paint, not at it', async () => {
+      // Arrange
+      await mount((stub) => {
+        stub.word.set('unconfirmed');
+      });
+      const atFirstPaint = normalize(region());
+
+      // Act
+      await nextRender();
+
+      // Assert
+      expect(atFirstPaint).not.toContain(EMAIL_CHANGE_LINES.unconfirmed);
+      expect(normalize(region())).toContain(EMAIL_CHANGE_LINES.unconfirmed);
+    });
+  });
+
+  describe('focus', () => {
+    // The load is the second half of a press the person made, so the next
+    // thing it needs is Confirm — once, after the first render.
+    it('moves to Confirm after the first render of a return into the waiting state', async () => {
+      // Arrange
+      await mount((stub) => {
+        stub.phase.set('waiting');
+        stub.address.set(NEW_ADDRESS);
+        stub.confirmPressable.set(true);
+      });
+
+      // Act
+      await nextRender();
+
+      // Assert
+      expect(document.activeElement).toBe(confirm());
+    });
+
+    it('moves to Change after a return ending on unconfirmed', async () => {
+      // Arrange
+      await mount((stub) => {
+        stub.word.set('unconfirmed');
+      });
+
+      // Act
+      await nextRender();
+
+      // Assert
+      expect(document.activeElement).toBe(change());
+    });
+
+    it('moves nothing on a load that brought no return', async () => {
+      // Arrange
+      await mount();
+
+      // Act
+      await nextRender();
+
+      // Assert
+      expect(change()).not.toBeNull();
+      expect(document.activeElement).not.toBe(change());
+    });
+
+    it.each(ENDS_WAITING)(
+      'moves to Change when %s ends the waiting state',
+      async (word) => {
+        // Arrange
+        await mount((stub) => {
+          stub.phase.set('waiting');
+          stub.address.set(NEW_ADDRESS);
+          stub.confirmPressable.set(true);
+        });
+        await nextRender();
+        service.email.set(NEW_ADDRESS);
+
+        // Act
+        flow.phase.set('rest');
+        flow.address.set(null);
+        flow.confirmPressable.set(false);
+        flow.word.set(word);
+        await nextRender();
+
+        // Assert
+        expect(change()).not.toBeNull();
+        expect(document.activeElement).toBe(change());
+      },
+    );
+
+    // A word that keeps the waiting state leaves focus where it is: on Confirm
+    // for the next attempt, or wherever the person has since put it.
+    it.each(KEEPS_WAITING)(
+      'moves nothing when %s keeps the waiting state',
+      async (word) => {
+        // Arrange
+        await mount((stub) => {
+          stub.phase.set('waiting');
+          stub.address.set(NEW_ADDRESS);
+          stub.confirmPressable.set(true);
+        });
+        await nextRender();
+        // The control: the return did put focus on Confirm, so "nothing moved"
+        // below is a statement about this word and not about a screen that
+        // never moves focus at all.
+        expect(document.activeElement).toBe(confirm());
+        const signOut = buttonNamed(host, SIGN_OUT_BUTTON);
+        signOut?.focus();
+        flow.phase.set('asserting');
+        flow.confirmPressable.set(false);
+        await nextRender();
+
+        // Act
+        flow.phase.set('waiting');
+        flow.confirmPressable.set(true);
+        flow.word.set(word);
+        await nextRender();
+
+        // Assert
+        expect(document.activeElement).toBe(signOut);
+      },
+    );
+  });
+});
+
+// The gate in the handler, against the real flow: Material halts the click on
+// anchors only, so a press on a `<button>` drawn off still arrives, and only the
+// flow's own method can refuse it.
+describe('SettingsComponent pressing Change email address while it is off', () => {
+  let startEmailChange: Mock<() => Promise<'leaving' | 'unavailable'>>;
+  let unlock: AccountUnlockStub;
+  let fixture: ComponentFixture<SettingsComponent>;
+
+  beforeEach(async () => {
+    startEmailChange = vi.fn(
+      () => new Promise<'leaving' | 'unavailable'>(() => undefined),
+    );
+    unlock = new AccountUnlockStub();
+    const service = new SettingsServiceStub();
+    service.email.set(OWNER_EMAIL);
+    const auth: Pick<
+      AuthService,
+      'takeEmailChangeReturn' | 'startEmailChange'
+    > = { takeEmailChangeReturn: () => null, startEmailChange };
+
+    TestBed.configureTestingModule({
+      imports: [SettingsComponent],
+      providers: [
+        provideNoopAnimations(),
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        CONFIGURATION_STUB,
+        { provide: AuthService, useValue: auth },
+        {
+          provide: AccountKeyCustodyService,
+          useValue: new AccountKeyCustodyStub(),
+        },
+        { provide: AccountUnlockService, useValue: unlock },
+        { provide: KeyRotationService, useValue: new KeyRotationStub() },
+        { provide: RotationFlowService, useValue: new RotationFlowStub() },
+        { provide: ErasureFlowService, useValue: new ErasureFlowStub() },
+      ],
+    });
+    // The real flow on the component, beside the settings stub it reads.
+    TestBed.overrideComponent(SettingsComponent, {
+      set: {
+        providers: [
+          { provide: SettingsService, useValue: service },
+          EmailChangeFlowService,
+        ],
+      },
+    });
+    await TestBed.compileComponents();
+    fixture = TestBed.createComponent(SettingsComponent);
+    fixture.detectChanges();
+  });
+
+  it('starts no trip when pressed while an unlock is running', () => {
+    // Arrange
+    unlock.working.set(true);
+    fixture.detectChanges();
+    const control = buttonNamed(
+      fixture.nativeElement as HTMLElement,
+      CHANGE_EMAIL_BUTTON,
+    );
+
+    // Act
+    control?.click();
+
+    // Assert
+    expect(control?.getAttribute('aria-disabled')).toBe('true');
+    expect(startEmailChange).not.toHaveBeenCalled();
+  });
+
+  // The control: the same press on a control that is on does start the trip.
+  it('starts the trip when pressed while nothing holds it off', () => {
+    // Act
+    buttonNamed(
+      fixture.nativeElement as HTMLElement,
+      CHANGE_EMAIL_BUTTON,
+    )?.click();
+
+    // Assert
+    expect(startEmailChange).toHaveBeenCalledOnce();
+  });
+});
+
+// The flow is the screen's attempt, so the screen provides it: an answer
+// abandoned on the screen dies with it, and nothing at the root holds one.
+describe('SettingsComponent providing the email-change flow', () => {
+  it('provides the flow on the component and nowhere above it', async () => {
+    // Arrange
+    const fixture = await visitWithApi({});
+
+    // Act
+    const onTheScreen = fixture.debugElement.injector.get(
+      EmailChangeFlowService,
+      null,
+    );
+    const aboveIt = TestBed.inject(EmailChangeFlowService, null);
+
+    // Assert
+    expect(onTheScreen).toBeInstanceOf(EmailChangeFlowService);
+    expect(aboveIt).toBeNull();
+  });
+});
+
+// The lead line while a change lands, against the real flow: the success line
+// waits for the re-read, and the address Google sent back is what the waiting
+// state names until then. A flow that let go of it early leaves the screen
+// reading "Google sent back ." over a request that is still landing.
+describe('SettingsComponent while an email change lands', () => {
+  const REAUTHENTICATION_OPTIONS_URL = `${API_ORIGIN}/api/passkeys/reauthentication/options`;
+  const EMAIL_CHANGE_URL = `${API_ORIGIN}/api/me/email-change`;
+
+  it('keeps naming the address Google sent back until the re-read lands', async () => {
+    // Arrange
+    const service = new SettingsServiceStub();
+    service.email.set(OWNER_EMAIL);
+    const auth: Pick<
+      AuthService,
+      'takeEmailChangeReturn' | 'startEmailChange'
+    > = {
+      takeEmailChangeReturn: () => ({
+        kind: 'answered',
+        idToken: 'eyJhbGciOiJSUzI1NiJ9.provider-token-body.sig',
+        email: NEW_ADDRESS,
+      }),
+      startEmailChange: vi.fn(() => Promise.resolve('unavailable' as const)),
+    };
+    const keyEncryptionKey = await generateContentKey();
+    const ceremony: Pick<
+      WebauthnCeremonyService,
+      'available' | 'assertPasskey'
+    > = {
+      available: () => true,
+      assertPasskey: () =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            payload: {
+              credentialId: 'Y3JlZGVudGlhbA',
+              clientDataJson: 'Y2xpZW50',
+              authenticatorData: 'YXV0aA',
+              signature: 'c2ln',
+              userHandle: 'dXNlcg',
+            },
+            keyEncryptionKey,
+          },
+        }),
+    };
+
+    TestBed.configureTestingModule({
+      imports: [SettingsComponent],
+      providers: [
+        provideNoopAnimations(),
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        CONFIGURATION_STUB,
+        { provide: AuthService, useValue: auth },
+        { provide: WebauthnCeremonyService, useValue: ceremony },
+        {
+          provide: AccountKeyCustodyService,
+          useValue: new AccountKeyCustodyStub(),
+        },
+        { provide: AccountUnlockService, useValue: new AccountUnlockStub() },
+        { provide: KeyRotationService, useValue: new KeyRotationStub() },
+        { provide: RotationFlowService, useValue: new RotationFlowStub() },
+        { provide: ErasureFlowService, useValue: new ErasureFlowStub() },
+      ],
+    });
+    TestBed.overrideComponent(SettingsComponent, {
+      set: {
+        providers: [
+          { provide: SettingsService, useValue: service },
+          EmailChangeFlowService,
+        ],
+      },
+    });
+    await TestBed.compileComponents();
+    const fixture = TestBed.createComponent(SettingsComponent);
+    const host = fixture.nativeElement as HTMLElement;
+    fixture.detectChanges();
+    const http = TestBed.inject(HttpTestingController);
+
+    // Act
+    buttonNamed(host, 'Confirm with your passkey')?.click();
+    (
+      await eventually(
+        () => http.match(REAUTHENTICATION_OPTIONS_URL)[0],
+        'the challenge request',
+      )
+    ).flush({
+      challenge: 'Y2hhbGxlbmdl',
+      rpId: 'budgetoid.app',
+      timeout: 60000,
+      userVerification: 'required',
+    });
+    (
+      await eventually(
+        () => http.match(EMAIL_CHANGE_URL)[0],
+        'the changing request',
+      )
+    ).flush({ sessionsEnded: 1 });
+    // `loadEmail` on the stub answers nothing, so the re-read stays outstanding.
+    await eventually(
+      () => (service.loadEmail.mock.calls.length > 0 ? true : null),
+      'the re-read to start',
+    );
+    fixture.detectChanges();
+
+    // Assert
+    const lead = `Google sent back ${NEW_ADDRESS}. Nothing changes until you confirm with your passkey.`;
+    const section = sectionFor(host, 'account-heading');
+    expect(
+      normalize(section),
+      sentenceMismatch(normalize(section), lead),
+    ).toContain(lead);
+  });
+});

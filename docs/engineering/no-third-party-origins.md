@@ -71,52 +71,62 @@ second as a `window` property name.
 
 ## Two gaps this test cannot close
 
-Creating an account still fetches `accounts.google.com/.well-known/openid-configuration` and, from
-the URL that document returns, `www.googleapis.com/oauth2/v3/certs`. Neither is a subresource,
-and the second appears in no bundle — the library learns the URL at runtime. Ending them means
-ending the dependency on a federated identity provider.
+Creating an account, and changing its address, fetch
+`accounts.google.com/.well-known/openid-configuration` and, from the URL that document returns,
+`www.googleapis.com/oauth2/v3/certs`. Neither is a subresource, and the second appears in no bundle
+— the library learns the URL at runtime. Ending them means ending the dependency on a federated
+identity provider.
 
-**Both fetches have narrowed to the one provider exchange an account is created through.** They are
-made in exactly two places, both on `/register`: when the person presses **Continue with Google**,
-because the login endpoint that press navigates to is learned from the discovery document; and on
-the page load the provider redirects back to, because the `APP_INITIALIZER` must read the provider's
-answer off the URL before the router's first navigation. `AuthService` prepares the client at most
-once per page load, so a press on the page that came back costs no second fetch. **Nothing else a
-person does contacts the provider**, with the one residual below: every other cold load — anonymous
-or signed in, on any screen, and a bare `/register` that carries no answer — makes no request to
-Google, signing in is a WebAuthn assertion against this product's own API, and every request after
-it authenticates from the first-party session cookie. So the page loads privately, *signing in*
-loads privately, and the two fetches above are reachable only from a tab in which somebody pressed
-**Continue with Google**. What used to be a standing cost of using the product is now a one-time
-cost of starting to.
+**Both fetches are made only on a trip a person starts, and there are two trips.** Each has two
+moments. **Registration**, on `/register`: the press on **Continue with Google**, because the login
+endpoint it navigates to is learned from the discovery document, and the page load the provider
+redirects back to, because the `APP_INITIALIZER` must read the answer off the URL before the
+router's first navigation. **The email change**, on `/app/settings`: the press on **Change email
+address**, and the page load Google redirects back to there, which the `APP_INITIALIZER` reads
+before the session probe. `AuthService` prepares the client at most once per page load, so a press
+on a page that came back costs no second fetch. **Nothing else a person does contacts the provider**,
+with the one residual below: every other cold load — anonymous or signed in, on any screen, and a
+bare `/register` or `/app/settings` that carries no answer — makes no request to Google, signing in
+is a WebAuthn assertion against this product's own API, and every request after it authenticates
+from the first-party session cookie. So the page loads privately, *signing in* loads privately, and
+the two fetches above are reachable only from a tab in which somebody pressed one of those two
+controls.
 
-**A page load counts as the provider redirecting back only when this tab started an exchange and
-the address carries an answer shaped like one.** The press leaves `budgetoid-provider-exchange` in
-`sessionStorage` just before it navigates away, and the return leg requires it beside a fragment
-naming a non-empty `access_token`, `id_token` and `state`, or a non-empty `error`. The query is not
-read: the library reads the implicit flow's answer from the fragment alone, and the code flow would
-need a `responseType` the pinned configuration refuses. So a campaign parameter or an in-page anchor
-on `/register` is a bare `/register`, and so is a whole answer-shaped address — a link somebody
-built and shared — opened in a tab where nobody pressed. `initialize()` removes the marker whatever
-it concluded, so a refused answer left on the address contacts nobody when the page is reloaded.
+**A page load counts as the provider redirecting back only when this tab started that trip and the
+address carries an answer shaped like one.** The press leaves `budgetoid-provider-exchange` in
+`sessionStorage` just before it navigates away, its value naming the trip, and
+`AuthService.providerReturn()` requires that value beside that trip's own redirect address — origin
+and path, compared for equality — and a fragment naming a non-empty `access_token`, `id_token` and
+`state`, or a non-empty `error`. The query is not read: the library reads the implicit flow's answer
+from the fragment alone, and the code flow would need a `responseType` the pinned configuration
+refuses. So a campaign parameter or an in-page anchor is somebody opening the screen, and so is a
+whole answer-shaped address — a link somebody built and shared — opened in a tab where nobody
+pressed, or in a tab that pressed for the other trip. `initialize()` removes the marker whatever it
+concluded, so a refused answer left on the address contacts nobody when the page is reloaded.
 
 The residual: a tab that pressed and then abandoned at the provider keeps the marker until it closes
 or publishes a session. An answer-shaped address opened in *that* tab costs one discovery and
 key-set fetch, which the library then refuses on its nonce. The provider learns one more time from a
 tab that contacted it minutes earlier; somebody who never pressed contacts nobody.
 
-Four specs hold *when* and *from where*, and each sees what the others cannot:
+Five specs hold *when* and *from where*, and each sees what the others cannot:
 
 - `core.providers.cold-boot.spec.ts` boots the application with the real OAuth library and counts
   every request a cold load makes — anonymous, signed in, on a bare `/register`, in a tab still
   holding an abandoned registration's tokens, on a crafted answer-shaped address in a tab that never
   pressed, and on a reload of a return already read — and fails on any to an origin other than the
-  application's and the API's, or on an `iframe`. Its control is the return leg, which must show
-  the discovery request.
+  application's and the API's, or on an `iframe`. Its second block does the same for the email
+  change: a signed-in load of `/app/settings`, a settings answer in a tab that never pressed or that
+  pressed to register, and a registration answer in a tab that pressed to change its email. Each
+  block's control is its return leg, which must show the discovery request.
 - `core.providers.spec.ts` holds the initializer's decision over a stubbed `AuthService`,
-  including the unreachable visitor the cold boot does not simulate.
-- `auth-service.spec.ts` holds the press, the once-per-page-load preparation, and what counts as a
-  return.
+  including the unreachable visitor the cold boot does not simulate, and the email change's read
+  before the probe.
+- `auth-service.spec.ts` holds both presses, the once-per-page-load preparation, and what counts as
+  a return for each trip.
+- `src/email-change-redirect-uri.spec.ts` holds where the second trip comes back: the emitted
+  configuration's `emailChangeRedirectUri`, on `/app/settings`, on the registration address's
+  origin, and never equal to it.
 - `src/identity-provider-callers.spec.ts` holds *who*: it fails on a program with type errors,
   resolves receivers with the type checker, and pins each file that reaches a member of
   `AuthService`, or of the library's client directly, to the member it reaches. Wherever a client
@@ -128,12 +138,13 @@ Four specs hold *when* and *from where*, and each sees what the others cannot:
 
 None of them sees a top-level navigation, a timer longer than the boot, what a screen does after
 someone presses something, a subclass or an object spread of the client, or a component template.
-The census keeps the calls in the files it lists; that those files render only on `/register` is a
-fact about the route table, which no spec reads.
+The census keeps the calls in the files it lists; that those files render only on `/register` and
+`/app/settings` is a fact about the route table, which no spec reads. Nor does anything here see
+the Google Cloud console, whose redirect list has to name both addresses.
 
 **What an allow-listed origin buys, and what it therefore cannot catch.**
 `accounts.google.com` is listed above as the issuer `auth-service.ts` configures, legitimately —
-the registration redirect is a top-level navigation to exactly that host. The consequence is that a
+both trips are top-level navigations to exactly that host. The consequence is that a
 change putting this application back in *repeated* contact with it adds no origin the bundle did not
 already carry, and the origin scan stays green. So the same spec pins the build-time half of the
 rule above, from two other angles. It requires the provider origin to appear in the emitted
@@ -158,12 +169,13 @@ policy cannot see a CDN URL that no browser has been asked to fetch yet.
 
 ## No cookie from a script, and nothing to consent to
 
-**The product loads nothing from another origin, except the provider exchange a person starts on
-`/register`, and sets no cookie but the session handle, so there is no tracker in it and nothing to
-ask anybody's consent for.** That exchange is the two fetches under the gaps above, made only
-because the person pressed **Continue with Google** or came back from it. That is why the web
-client presents no consent banner, no cookie notice and no tracking-preference surface. It is not
-an omission waiting on a review; it is what this chapter holding looks like from the screen, and a
+**The product loads nothing from another origin, except the two trips to the identity provider a
+person starts — creating an account on `/register` and changing its address on `/app/settings` —
+and sets no cookie but the session handle, so there is no tracker in it and nothing to ask
+anybody's consent for.** Those trips are the two fetches under the gaps above, made only because
+the person pressed **Continue with Google** or **Change email address**, or came back from one.
+That is why the web client presents no consent banner, no cookie notice and no tracking-preference
+surface. It is not an omission waiting on a review; it is what this chapter holding looks like from the screen, and a
 surface asking permission for something the product does not do would be a false sentence in front
 of everybody. [Patterns](../design/patterns.md#nothing-to-consent-to) states the design half.
 
@@ -212,9 +224,9 @@ column.
 | Key | Where | Holds | Why it is needed, and not a trail |
 | --- | --- | --- | --- |
 | `__Host-budgetoid-session` | cookie, set by the API, `HttpOnly` | the session handle | Serves the request. One per session; its expiry is the session's lifetime, not a record of an act. |
-| angular-oauth2-oidc's token entries | `sessionStorage`, this tab | `access_token`, `id_token`, `id_token_claims_obj` (the decoded claims, the email among them), `granted_scopes`, `session_state`, `nonce`, and stored-at and expiry entries | Serve the registration the person started, and nothing after it. `SessionService` discards them through `AuthService.forgetProviderToken()` whenever the tab learns it holds a session — the registration `201`, a sign-in, a start-up probe that finds one. A tab that abandons registration and never signs in keeps them until it closes. Nothing sends them anywhere else: the bearer is attached only on the two registration routes. The library writes the nonce and PKCE verifier to `localStorage` only on an old-IE user-agent branch no supported browser takes. |
+| angular-oauth2-oidc's token entries | `sessionStorage`, this tab | `access_token`, `id_token`, `id_token_claims_obj` (the decoded claims, the email among them), `granted_scopes`, `session_state`, `nonce`, and stored-at and expiry entries | Serve the trip the person started, and nothing after it. On a registration, `SessionService` discards them through `AuthService.forgetProviderToken()` whenever the tab learns it holds a session — the registration `201`, a sign-in, a start-up probe that finds one. On an email change, `AuthService.initialize()` discards them itself on the return, whatever it concluded, after moving the token and the address into memory. A tab that abandons registration and never signs in keeps them until it closes. Nothing sends the stored token anywhere but the two registration routes; the email change's bearer comes from the request, never from here. The library writes the nonce and PKCE verifier to `localStorage` only on an old-IE user-agent branch no supported browser takes. |
 | the library's availability probe | `localStorage` | a `test` key | Written and removed at once, on every cold load: `AuthService` is built at startup, and the library's service with it. |
-| `budgetoid-provider-exchange` | `sessionStorage`, this tab | a fixed value | Present from the press on **Continue with Google** until the return leg has been read, or until the tab publishes a session. It tells the return leg that this tab started an exchange, so an answer-shaped address nobody here asked for contacts nobody. One value, no time; `AuthService.initialize()` and `forgetProviderToken()` remove it. A tab that abandons at the provider keeps it until it closes or signs in. |
+| `budgetoid-provider-exchange` | `sessionStorage`, this tab | `started` or `email-change`, naming the trip | Present from the press on **Continue with Google** or **Change email address** until the return leg has been read, or until the tab publishes a session. It tells the return leg which trip this tab started, so an answer-shaped address nobody here asked for contacts nobody. One value, no time; `AuthService.initialize()` and `forgetProviderToken()` remove it. A tab that abandons at the provider keeps it until it closes or signs in. |
 | `budgetoid-theme` | `localStorage` | `system`, `light` or `dark` | One value, overwritten. A preference, not an observation. Nothing writes it today: neither `ThemeService.setMode` nor `toggle`, which calls it, is called from outside the service, so `theme-prepaint.js` and `ThemeService` only ever read it. |
 | `budgetoid-rotation-epoch:<budgetId>` | `localStorage` | one number per account this device has unlocked | Rises only. A rollback control — see [account keys](../business-logic/account-keys.md). |
 
@@ -228,6 +240,9 @@ fix: a device that forgets an account is in the first-visit state, where a rollb
 at all.
 
 Nothing is persisted beyond this table — the account's keys are held in memory per tab and never
-written anywhere, per [account keys](../business-logic/account-keys.md). **A new key must argue its
+written anywhere, per [account keys](../business-logic/account-keys.md), and so is the email
+change's hand-off, the Google token and address a return brought back, which
+[email-change.md](../business-logic/email-change.md) names with the specs that hold it out of both
+storages. **A new key must argue its
 row here, against the test above.** No spec compares this table with the code; only review keeps it
 honest.

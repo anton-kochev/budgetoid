@@ -1,6 +1,6 @@
 # ADR 0027 — Authenticate the email change on the session and a fresh provider token, side by side
 
-- **Status:** Accepted. The server route is implemented; no client calls it yet.
+- **Status:** Accepted. The server route is implemented, and the settings screen calls it.
 - **Date:** 2026-09-30
 - **Area:** API / Security (authentication schemes, route authorization, credential replacement)
 
@@ -140,8 +140,9 @@ above stands. Before the provider filter, every provider refusal would spend the
 - **Replacing the federated credential is delete plus insert in one save**, because `credentials`
   holds no `UPDATE`. `users.email` has two writers: registration's insert, and this route's
   `UPDATE (email)`. Both are argued in [email-change.md](../business-logic/email-change.md).
-- **The client has work to re-argue before it can call the route.** `apiCredentialsInterceptor`
-  attaches the provider's bearer on the two registration routes only, and `SessionService` discards
-  the provider's tokens once a session begins; both rules are stated as correct only while no
-  signed-in flow uses the provider. The screen that calls this route changes both, in the same
-  commit.
+- **The client reads the email change's answer before the session probe and carries the bearer on
+  the request.** `SessionService` still discards the provider's tokens once a session begins; the
+  return is read first, so that discard finds nothing, and `apiCredentialsInterceptor` attaches
+  this route's bearer from the request context rather than from storage.
+  [email-change.md](../business-logic/email-change.md) and
+  [sessions.md](../business-logic/sessions.md) state both.

@@ -706,9 +706,10 @@ the *set*, so it is authenticated once.
 
 - **Rule**: **The identity provider's redirect lands on `/register`, and the matching entry in the
   Google Cloud console's authorized redirect URIs is part of that change.**
-- **Why**: the registration screen is the only screen that does anything with a fresh provider token
-  — the email-change route takes one as well, and no screen calls it yet. It reads the asserted
-  address off the id token **while that token is still valid**, and
+- **Why**: the registration screen is the screen that does something with a fresh provider token in
+  a browser holding no session — the email change's return lands on `/app/settings` instead, on its
+  own redirect address. It reads the asserted address off the id token **while that token is still
+  valid**, and
   both legs authenticate as the provider scheme and nothing else. The validity clause is
   load-bearing: `AuthService.providerEmail` answers `null` for a token whose hour has run out, which
   is what puts the screen back on its **Continue with Google** arm instead of showing an address
@@ -716,10 +717,16 @@ the *set*, so it is authenticated once.
   it is the obvious one: the app reads that address as *somebody arriving with a session*, which a
   person consenting in order to **create** an account does not have.
   - **The answer is read in the `APP_INITIALIZER`, before the router's first navigation, and only
-    on that page load.** `AuthService.isProviderReturn()` recognises it only when this tab started
-    an exchange — the press leaves `budgetoid-provider-exchange` in `sessionStorage` just before it
-    navigates away — **and** the configured redirect address carries a fragment naming a non-empty
-    `access_token`, `id_token` and `state`, or a non-empty `error`. The query is not read: the
+    on that page load.** `AuthService.providerReturn()` answers which trip a page load is coming
+    back from, and answers `registration` only when this tab started a registration — the press
+    leaves `budgetoid-provider-exchange` in `sessionStorage` just before it navigates away, holding
+    the value `started` and nothing else — **and** the page sits at exactly the configured
+    `redirectUri`, origin and path, **and** the fragment names a non-empty `access_token`, `id_token`
+    and `state`, or a non-empty `error`. **The marker's value is the trip.** An email change leaves
+    `email-change` in the same key and returns to `/app/settings`; a marker from one trip beside the
+    other trip's address is nobody's return. `started` kept its spelling so a tab that left under
+    the previous bundle comes back recognised. The `APP_INITIALIZER` asks once and both return legs
+    decide from that one answer — see [email-change.md](email-change.md). The query is not read: the
     library reads the implicit flow's answer from the fragment alone, and the code flow would need a
     `responseType` the pinned configuration refuses. Anything else is somebody opening the screen —
     a campaign parameter, an in-page anchor, half an answer, or a whole one in a tab where nobody
@@ -741,10 +748,11 @@ the *set*, so it is authenticated once.
 - **Enforced in**: `auth.google.redirectUri` in the shipped `app-config.json`, pinned by
   `src/registration-redirect-uri.spec.ts`, which reads the **emitted build** rather than the source
   file and also fails when the key is renamed or dropped. The console entry is enforced by nothing
-  and is named here so it is read as part of the change rather than as a follow-up. That the return
-  leg alone contacts the provider at bootstrap is pinned twice: by `core.providers.spec.ts` over a
-  stubbed `AuthService`, and by `core.providers.cold-boot.spec.ts` against the real OAuth library,
-  which counts every request a cold load makes. What counts as a return is pinned by
+  and is named here so it is read as part of the change rather than as a follow-up. That only a
+  return leg — this one or the email change's — contacts the provider at bootstrap is pinned
+  twice: by `core.providers.spec.ts` over a stubbed `AuthService`, and by
+  `core.providers.cold-boot.spec.ts` against the real OAuth library, which counts every request a
+  cold load makes. What counts as a return is pinned by
   `auth-service.spec.ts`, and which files reach the provider client's members — and where a client
   value escapes to a type the census cannot follow — by `src/identity-provider-callers.spec.ts`.
 - **Source**: `[SOURCE: discussion]`

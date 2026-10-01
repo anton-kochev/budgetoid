@@ -14,14 +14,272 @@
        has to land inside a region that was already being watched; the region
        stays in the DOM while empty, because one inserted together with its text
        is announced by nothing. Polite, not assertive: assertive is reserved for
-       a failure to save something the person typed. -->
+       a failure to save something the person typed.
+
+       **The email change's lines join it here rather than in a second region
+       beside it**: every one of them is about the row above. Nothing from the
+       flow until the screen has painted once, so a word that arrived with the
+       load — `unconfirmed` — lands in a region that was already being watched.
+
+       One line from the flow at a time, and one chain: a running phase wins,
+       and a press clears the previous word as it starts, so the two never
+       compete. Every refusal says nothing changed; colour is never the message
+       — each reads the same with `--bud-over` removed. -->
+  @let phase = emailChange.phase();
   <div class="s-outcome" role="status">
+    @if (painted()) {
+      @if (phase === 'leaving') {
+        <p class="s-prose">Taking you to Google&hellip;</p>
+      } @else if (phase === 'asserting') {
+        <p class="s-prose">Waiting for your passkey.</p>
+      } @else if (phase === 'changing') {
+        <p class="s-prose">Changing your email address&hellip;</p>
+      } @else {
+        @switch (emailChange.word()) {
+          <!-- **The result, never the act**: the address the re-read shows,
+               from the row and not from the Google answer — the flow has
+               dropped that by now, and the row is what this line is true of.
+               Three branches and no pipe, for the recovery count's reason;
+               zero and a count this bundle could not read take no clause. -->
+          @case ('changed') {
+            @let ended = emailChange.sessionsEnded();
+            <p class="s-prose">
+              @if (ended === 1) {
+                Your email address is
+                <span class="s-address">{{ settings.email() }}</span
+                >, and 1 browser signed in with your old Google account is now
+                signed out.
+              } @else if (ended !== null && ended !== 0) {
+                Your email address is
+                <span class="s-address">{{ settings.email() }}</span
+                >, and {{ ended }} browsers signed in with your old Google
+                account are now signed out.
+              } @else {
+                Your email address is
+                <span class="s-address">{{ settings.email() }}</span
+                >.
+              }
+            </p>
+          }
+          <!-- Before the row's own failure line below: two requests, two
+               lines, this flow's first. -->
+          @case ('changed-unread') {
+            <p class="s-error">
+              Budgetoid took the new address but couldn&rsquo;t load it back.
+              Reload the page to see it.
+            </p>
+          }
+          @case ('unavailable') {
+            <p class="s-error">
+              Budgetoid couldn&rsquo;t reach Google, so nothing changed. Try
+              again in a minute.
+            </p>
+          }
+          @case ('unconfirmed') {
+            <p class="s-error">
+              Google didn&rsquo;t send back a sign-in, so nothing changed. Try
+              again whenever you&rsquo;re ready.
+            </p>
+          }
+          @case ('unsupported') {
+            <p class="s-error">
+              This browser can&rsquo;t confirm with a passkey, so nothing
+              changed. Start again in a different browser, or on a phone or
+              laptop that can.
+            </p>
+          }
+          @case ('cancelled') {
+            <p class="s-error">
+              The passkey check was cancelled or timed out. Try again whenever
+              you&rsquo;re ready &mdash; nothing changed.
+            </p>
+          }
+          @case ('no-prf') {
+            <p class="s-error">
+              Your device couldn&rsquo;t finish the passkey check. Try again, or
+              choose another passkey &mdash; nothing changed.
+            </p>
+          }
+          @case ('ceremony-failed') {
+            <p class="s-error">
+              Your device couldn&rsquo;t finish the passkey check. Try again, or
+              choose another passkey &mdash; nothing changed.
+            </p>
+          }
+          @case ('unstarted') {
+            <p class="s-error">
+              Budgetoid couldn&rsquo;t start the passkey check. Try again in a
+              minute &mdash; nothing changed.
+            </p>
+          }
+          @case ('provider-refused') {
+            <p class="s-error">
+              That Google sign-in expired or wasn&rsquo;t accepted, so nothing
+              changed. Start again with Change email address.
+            </p>
+          }
+          @case ('unverified') {
+            <p class="s-error">
+              Google hasn&rsquo;t verified that address, so nothing changed.
+              Start again and choose a different Google account.
+            </p>
+          }
+          @case ('assertion-refused') {
+            <p class="s-error">
+              Budgetoid didn&rsquo;t accept that passkey for this account. Try
+              again with a passkey you made for it &mdash; nothing changed.
+            </p>
+          }
+          @case ('address-taken') {
+            <p class="s-error">
+              That address already belongs to another Budgetoid account, so
+              nothing changed. Start again and choose a different Google
+              account.
+            </p>
+          }
+          @case ('google-account-taken') {
+            <p class="s-error">
+              That Google account is already attached to another Budgetoid
+              account, so nothing changed. Start again and choose a different
+              Google account.
+            </p>
+          }
+          <!-- Refusal-coloured, and the one such line that says something
+               changed — somewhere else. -->
+          @case ('moved') {
+            <p class="s-error">
+              Your email address was changed somewhere else while this was
+              running, so this change wasn&rsquo;t made.
+            </p>
+          }
+          @case ('failed') {
+            <p class="s-error">
+              Budgetoid couldn&rsquo;t accept this request, so nothing changed.
+              Reload the page and try again.
+            </p>
+          }
+          @case ('undetermined') {
+            <p class="s-error">
+              Budgetoid can&rsquo;t tell whether your email address changed.
+              Reload the page to find out.
+            </p>
+          }
+        }
+      }
+    }
+
     @if (settings.emailFailed()) {
       <p class="s-error">
         Couldn&rsquo;t load your email address. Reload the page.
       </p>
     }
   </div>
+
+  <!-- Standing prose, so both blocks are true at rest, held off, waiting for a
+       passkey and after an outcome: each says what the act *does*. Two blocks,
+       and the second is the consequence, for the Key rotation chapter's reason
+       — a cost folded into the sentence about the act is read once by somebody
+       who came for the act. Neither offers a field, a code or an email to wait
+       for, because there is none: the new address is Google's assertion. -->
+  <p class="s-prose">
+    Changing your email address takes you to Google to choose the account whose
+    address you want, then brings you back here to confirm with a passkey. The
+    new address is the one Google holds for that account &mdash; there&rsquo;s
+    nothing to type and no email to wait for.
+  </p>
+  <p class="s-prose">
+    Coming back reloads this page. That locks your account&rsquo;s keys in this
+    tab, so you&rsquo;ll unlock again afterwards, and it would stop a key
+    rotation running in this tab where it is.
+  </p>
+
+  <!-- **Exactly one of the two controls**, never both: Confirm replaces Change
+       while a return holds an answer, because two would ask a person to choose
+       between starting over and finishing. -->
+  @if (confirmDrawn()) {
+    <!-- States what came back and promises nothing about the result: a
+         refusal below can still turn that address away. Prose in reading
+         order, and what Confirm is described by. -->
+    <p class="s-prose" id="email-change-lead">
+      Google sent back
+      <span class="s-address">{{ emailChange.address() }}</span
+      >. Nothing changes until you confirm with your passkey.
+    </p>
+
+    <!-- Outline: not Destructive, for Change's reason, and not Primary, for
+         Export's. Inert only while its own press runs — Change's reasons
+         describe a moment before a trip, and this control exists only after
+         one. The gate is `confirmPressable`, read here and by `confirm()`,
+         because the press reaches a `<button>` whatever this attribute says. -->
+    <button
+      #confirmControl
+      class="s-button"
+      mat-stroked-button
+      type="button"
+      aria-describedby="email-change-lead"
+      [disabled]="!emailChange.confirmPressable()"
+      [disabledInteractive]="true"
+      [attr.aria-busy]="
+        phase === 'asserting' || phase === 'changing' ? 'true' : null
+      "
+      (click)="emailChange.confirm()"
+    >
+      Confirm with your passkey
+    </button>
+  } @else {
+    @let hold = emailChange.changeHold();
+    <!-- Why Change is off, one sentence per reason and none shared with
+         Export's: the rotation's, the export's, then the unlock's, and the
+         flow picks one. Visible prose above the control and outside the
+         region — it says why a control is off, not what a press did — and
+         named by the control with `aria-describedby` while it renders, never
+         only there. On its way to Google is busy, not held: that line is in
+         the region. -->
+    @if (hold === 'rotating') {
+      <p class="s-prose" id="email-change-hold">
+        Changing your email address is off while this tab gives your account new
+        keys, because the trip to Google would stop the rotation. It comes back
+        when the rotation finishes.
+      </p>
+    } @else if (hold === 'exporting') {
+      <p class="s-prose" id="email-change-hold">
+        Changing your email address is off while this tab writes your export,
+        because the trip to Google would lose the file. It comes back when the
+        export ends.
+      </p>
+    } @else if (hold === 'unlocking') {
+      <p class="s-prose" id="email-change-hold">
+        Changing your email address is off while this tab unlocks your account,
+        because the trip to Google would cut the unlock short. It comes back
+        when the unlock ends.
+      </p>
+    }
+
+    <!-- Outline: a secondary action of the section, beside Sign out at the
+         same weight. The label names its object, because a bare Change in a
+         list of buttons says nothing about what it changes. A button and not
+         a link: the press prepares Google's request before the page leaves.
+
+         `disabledInteractive`, so it keeps its tab stop while held off and the
+         sentence it names stays reachable. The gate is `changePressable`, one
+         predicate read here and by `change()` — Material halts the click on
+         anchors only, so an ungated handler would reload the tab under a
+         running rotation. `aria-busy` resolves to null except on the way to
+         Google, so the attribute is absent at rest. -->
+    <button
+      #changeControl
+      class="s-button"
+      mat-stroked-button
+      type="button"
+      [disabled]="!emailChange.changePressable()"
+      [disabledInteractive]="true"
+      [attr.aria-busy]="phase === 'leaving' ? 'true' : null"
+      [attr.aria-describedby]="hold !== null ? 'email-change-hold' : null"
+      (click)="emailChange.change()"
+    >
+      Change email address
+    </button>
+  }
 
   <!-- The one control on this screen that is never off, and it belongs under
        Account rather than under Ways to sign in: that section is about what is

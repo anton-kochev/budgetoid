@@ -1,4 +1,8 @@
-import { HttpClient, HttpErrorResponse } from '@angular/common/http';
+import {
+  HttpClient,
+  HttpContext,
+  HttpErrorResponse,
+} from '@angular/common/http';
 import {
   HttpTestingController,
   provideHttpClientTesting,
@@ -17,6 +21,7 @@ import {
   type KeyRotationStateDto,
 } from '@app-core/api/key-rotation-api.service';
 import { MeApiService } from '@app-core/api/me-api.service';
+import { PROVIDER_CREDENTIAL } from '@app-core/interceptors/provider-credential.token';
 import { FailureErrorHandler } from '@app-core/logging/failure-error-handler';
 import { FailureOAuthLogger } from '@app-core/logging/failure-oauth-logger';
 import type { FailureProjection } from '@app-core/logging/log-failure';
@@ -90,10 +95,10 @@ describe('appConfig', () => {
     // exercising the failure path without saying so.
     const auth: Pick<
       AuthService,
-      'initialize' | 'isProviderReturn' | 'forgetProviderToken'
+      'initialize' | 'providerReturn' | 'forgetProviderToken'
     > = {
       initialize: () => Promise.resolve(),
-      isProviderReturn: () => false,
+      providerReturn: () => null,
       forgetProviderToken: () => undefined,
     };
     const me: Pick<MeApiService, 'getSessionOwner'> = {
@@ -178,6 +183,32 @@ describe('appConfig', () => {
     // the very absence it is here to catch.
     expect(clientHeader).not.toBeNull();
     expect(clientHeader?.trim()).not.toBe('');
+  });
+
+  // The email change is the one request that carries a provider token beside
+  // the session, and it has to arrive with all three through the chain the
+  // application registers: the cookie and the client header like every API
+  // request, and the bearer it was handed on its own context. The interceptor's
+  // own spec calls the function directly and cannot see the chain.
+  it('sends the email change with the cookie, the client header and the credential it was handed', () => {
+    // Arrange
+    const client = TestBed.inject(HttpClient);
+    const emailChangeUrl = `${API_BASE_URL}/api/me/email-change`;
+    const context = new HttpContext().set(
+      PROVIDER_CREDENTIAL,
+      'handed.provider.credential',
+    );
+
+    // Act
+    client.post(emailChangeUrl, {}, { context }).subscribe();
+    const { request } = httpMock.expectOne(emailChangeUrl);
+
+    // Assert
+    expect(request.withCredentials).toBe(true);
+    expect(request.headers.get(CLIENT_HEADER)?.trim()).toBeTruthy();
+    expect(request.headers.get('Authorization')).toBe(
+      'Bearer handed.provider.credential',
+    );
   });
 
   // The other half of the same hole. Dropping `sessionExpiryInterceptor` from
@@ -302,10 +333,10 @@ describe('appConfig failure logging', () => {
     // exercising the failure path without saying so.
     const auth: Pick<
       AuthService,
-      'initialize' | 'isProviderReturn' | 'forgetProviderToken'
+      'initialize' | 'providerReturn' | 'forgetProviderToken'
     > = {
       initialize: () => Promise.resolve(),
-      isProviderReturn: () => false,
+      providerReturn: () => null,
       forgetProviderToken: () => undefined,
     };
     const me: Pick<MeApiService, 'getSessionOwner'> = {

@@ -122,9 +122,9 @@ lists, edits and deletes Transactions; lists Payees, creates one through a reque
 one by id and renames it; and reads global Currencies. The budget itself is not manageable — it
 arrives with the account, never configured. The same owner can download a complete copy of
 everything the server holds about them, can see the address the account is registered under, and can
-ask how many recovery codes are left; none of it is behind a support request. The server also lets
-them move the account to another Google identity and address, behind a fresh Google sign-in and a
-passkey assertion, through a route no screen calls yet — see [email-change.md](email-change.md).
+ask how many recovery codes are left; none of it is behind a support request. From the settings
+screen they can move the account to another Google identity and address, behind a fresh Google
+sign-in and a passkey assertion — see [email-change.md](email-change.md).
 They can also destroy the account outright, from the settings screen, behind a typed confirmation
 and a WebAuthn re-authentication made moments earlier — see [erasure.md](erasure.md). Issuing themselves a
 replacement set of recovery codes is gated on the same ceremony and is a route no screen reaches
@@ -203,8 +203,8 @@ references are additionally constrained by composite foreign keys to a row in th
   order it has to delete in.
 - [Email Change](email-change.md) — moving an account to another Google identity and address on a
   full session, a fresh provider token and a passkey assertion at once, and the one save that
-  retires the old federated credential and files the new one. The server route is built; no screen
-  calls it yet.
+  retires the old federated credential and files the new one, and the settings screen's trip to
+  Google and back that calls it.
 - [Export](export.md) — the complete copy of a person's own data, why it refuses rather than hands
   back the part it can reach, and how the browser opens it and saves the whole file or nothing.
 

@@ -107,8 +107,9 @@ Every new surface is designed and reviewed in both themes before shipping.
 ## Nothing to consent to
 
 The product shall present **no consent banner, no cookie notice and no tracking-preference
-surface**. It has nothing to ask consent for: it loads nothing from another origin except the
-provider exchange a person starts on `/register`, sets no cookie but the session handle, and keeps
+surface**. It has nothing to ask consent for: it loads nothing from another origin except the two
+trips to the identity provider a person starts — creating an account on `/register`, and changing
+its address on `/app/settings` — sets no cookie but the session handle, and keeps
 nothing on the device that is not strictly necessary for something the person asked for — never a
 trail of what they did —
 [no third-party origins](../engineering/no-third-party-origins.md#no-cookie-from-a-script-and-nothing-to-consent-to)
@@ -168,9 +169,13 @@ Below that list sits **Recovery codes**, which says how many are left and
 nothing more — no code, no part of one, no identifier, no date. It reads and never writes:
 its Generate control is present and **disabled**, with a sentence of its own naming the two
 surfaces it waits on — a confirmation, since replacing a set cannot be undone, and a place to show
-the new codes once. Generating a set **from here** and redeeming one are unbuilt, as is the
-email-change action. Showing a set once is built and lives elsewhere — the last step of
-registration, where the account's first set is issued.
+the new codes once. Generating a set **from here** and redeeming one are unbuilt. Showing a set
+once is built and lives elsewhere — the last step of registration, where the account's first set is
+issued.
+
+The Account section at the top of the screen carries **Change email address**, which is built: a trip to
+Google's account chooser and back, then **Confirm with your passkey** in its place, with the result
+stated in the section's one region. [components](components.md) owns its specification.
 
 Below Recovery codes sits **Account keys**, and it is **built**: one Outline
 **Unlock** running a passkey ceremony the browser mints and throws away, so that a person whose tab

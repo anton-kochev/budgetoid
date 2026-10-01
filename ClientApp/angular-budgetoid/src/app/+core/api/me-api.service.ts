@@ -1,6 +1,8 @@
 import { HttpContext } from '@angular/common/http';
 import { Injectable } from '@angular/core';
+import { EMAIL_CHANGE_PATH } from '@app-core/interceptors/api-credentials.interceptor';
 import { EXPECTS_UNAUTHENTICATED } from '@app-core/interceptors/expects-unauthenticated.token';
+import { PROVIDER_CREDENTIAL } from '@app-core/interceptors/provider-credential.token';
 import type { FactorKeypairEnvelopes } from '@app-core/security/factor-keypair';
 import type { PasskeyAssertionPayload } from '@app-core/security/webauthn-encoding';
 import { map, Observable } from 'rxjs';
@@ -82,6 +84,20 @@ function isRecoveryCodeCount(body: unknown): body is RecoveryCodeCountDto {
 // agrees with nothing on either side of the wire. A set is listed by
 // `GET /api/me/credentials` like any other way in, because redeeming a code
 // opens a full session.
+// What `POST /api/me/email-change` answered: the number of the account's other
+// sessions the change ended, or `null` when the body carried no count this
+// bundle can read. `null` is not `0` — zero is a count, and the screen's
+// clause-free line for it claims something `null`'s does not.
+export interface EmailChangeResultDto {
+  readonly sessionsEnded: number | null;
+}
+
+// A count of sessions: whole and not negative, for `isRecoveryCodeCount`'s
+// reason — `Number.isInteger` also refuses `NaN` and both infinities.
+function isSessionCount(count: unknown): count is number {
+  return typeof count === 'number' && Number.isInteger(count) && count >= 0;
+}
+
 export type CredentialKind = 'passkey' | 'federated' | 'recovery_codes';
 
 export interface CredentialSummary {
@@ -589,6 +605,61 @@ export class MeApiService extends BaseApiService {
         userHandle: assertion.userHandle ?? null,
       } satisfies PasskeyAssertionPayload,
       new HttpContext().set(EXPECTS_UNAUTHENTICATED, true),
+    );
+  }
+
+  // Moves the account to the address the provider token names, authorized by
+  // a fresh passkey assertion. The answer is how many *other* sessions the
+  // change ended; this one survives it.
+  //
+  // **The token rides on the context, and this method writes no header.** A
+  // header written here would reach the wire whatever origin the request went
+  // to; handed to `apiCredentialsInterceptor` on `PROVIDER_CREDENTIAL`, it is
+  // sent only once that interceptor has decided the request is ours and is for
+  // `EMAIL_CHANGE_PATH`. The path is imported from there rather than spelled
+  // again, so the two cannot drift apart; `slice(1)` drops its leading slash
+  // because `post` joins with one.
+  //
+  // The body is the five assertion members projected one by one, for
+  // `eraseAccount`'s reason — and the token is never among them. It carries
+  // `EXPECTS_UNAUTHENTICATED` for the same reason too: a 401 here is the route
+  // refusing the assertion or the token, which the screen has its own sentence
+  // for, not the session ending.
+  //
+  // **Two readings of a 200, told apart here and never collapsed.** A body that
+  // is not an object at all is refused with a throw: the change may or may not
+  // have landed, and the caller reads anything that is not an
+  // `HttpErrorResponse` as exactly that. A body that is an object but carries
+  // no readable count is a change that happened, answered with `null` — the
+  // screen's clause-free line then claims nothing about other browsers.
+  public changeEmail(
+    idToken: string,
+    assertion: PasskeyAssertionPayload,
+  ): Observable<EmailChangeResultDto> {
+    return this.post<unknown>(
+      EMAIL_CHANGE_PATH.slice(1),
+      {
+        credentialId: assertion.credentialId,
+        clientDataJson: assertion.clientDataJson,
+        authenticatorData: assertion.authenticatorData,
+        signature: assertion.signature,
+        userHandle: assertion.userHandle ?? null,
+      } satisfies PasskeyAssertionPayload,
+      new HttpContext()
+        .set(PROVIDER_CREDENTIAL, idToken)
+        .set(EXPECTS_UNAUTHENTICATED, true),
+    ).pipe(
+      map((body): EmailChangeResultDto => {
+        if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+          throw new Error(
+            'The email-change response did not arrive as an outcome.',
+          );
+        }
+
+        const count = 'sessionsEnded' in body ? body.sessionsEnded : undefined;
+
+        return { sessionsEnded: isSessionCount(count) ? count : null };
+      }),
     );
   }
 }

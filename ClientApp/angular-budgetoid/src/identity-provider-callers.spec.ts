@@ -3,9 +3,10 @@ import { join, relative, sep } from 'node:path';
 import type * as typescriptModule from 'typescript';
 import { describe, expect, it } from 'vitest';
 
-// NFR-025: the identity provider is contacted only while an account is being
-// created, "and at no other time". This census holds the call-site half of
-// that: which shipped file reaches which member of the provider client.
+// NFR-025: the identity provider is contacted on two acts and at no other
+// time — creating an account, and changing its email address (the press on
+// `/app/settings`, or a marked return to it). This census holds the call-site
+// half of that: which shipped file reaches which member of the provider client.
 //
 // The provider client is two classes. `AuthService`
 // (`src/app/+core/services/auth-service.ts`) is the only thing that talks to
@@ -309,14 +310,21 @@ function providerReaches(
 // Each allowed reach, with why that file may make it.
 const allowedReaches = new Map<string, string>([
   [
-    'src/app/+core/core.providers.ts: isProviderReturn',
-    'the return leg: the initializer asks whether this page load is the ' +
-      'provider redirecting back, which reads the address and the exchange ' +
-      "marker in this tab's sessionStorage, and contacts nothing",
+    'src/app/+core/core.providers.ts: providerReturn',
+    'the return legs: the initializer asks once which trip, if any, this ' +
+      'page load is the provider redirecting back from, which reads the ' +
+      "address and the exchange marker in this tab's sessionStorage, and " +
+      'contacts nothing',
   ],
   [
     'src/app/+core/core.providers.ts: initialize',
-    'the return leg: prepares the client only when the answer above is yes',
+    'the return legs: prepares the client only when the answer above names ' +
+      'a trip — an email change before the probe, a registration after it',
+  ],
+  [
+    'src/app/+core/core.providers.ts: dropEmailChangeReturn',
+    'drops the in-memory email-change answer when the probe finds nobody ' +
+      'signed in; contacts nothing',
   ],
   [
     'src/app/+core/session/session.service.ts: forgetProviderToken',
@@ -334,6 +342,17 @@ const allowedReaches = new Map<string, string>([
   [
     'src/app/register/steps/passkey-step.component.ts: signIn',
     'the press on /register that restarts the exchange for a lapsed token',
+  ],
+  [
+    'src/app/settings/email-change-flow.service.ts: startEmailChange',
+    'the press on /app/settings that starts the email change: a top-level ' +
+      'trip to the provider, and the only contact with it a signed-in ' +
+      'person asks for',
+  ],
+  [
+    'src/app/settings/email-change-flow.service.ts: takeEmailChangeReturn',
+    "takes the email change's answer out of memory once, when the " +
+      'settings screen is built; contacts nothing',
   ],
   [
     'src/app/+core/interceptors/api-credentials.interceptor.ts: getIdToken',
@@ -393,7 +412,8 @@ export class FixtureComponent {
     const narrowed: Pick<AuthService, 'providerEmail'> = this.auth;
     narrowed.providerEmail();
     const held = this.auth.forgetProviderToken;
-    const factory = (auth: AuthService): boolean => auth.isProviderReturn();
+    const factory = (auth: AuthService): boolean =>
+      auth.providerReturn() !== null;
     void [signIn, held, factory];
   }
 }
@@ -533,12 +553,12 @@ export class Holder {
 export const providers = makeEnvironmentProviders([
   {
     provide: APP_INITIALIZER,
-    useFactory: (auth: AuthService) => () => auth.isProviderReturn(),
+    useFactory: (auth: AuthService) => () => auth.providerReturn(),
     deps: [AuthService],
     multi: true,
   },
 ]);`,
-    'isProviderReturn',
+    'providerReturn',
   ],
   [
     'the library class, called directly',
@@ -666,7 +686,7 @@ describe('the identity provider client', () => {
     expect(errors).toEqual([]);
   }, 60_000);
 
-  it('is reached only from the sites registration needs', () => {
+  it('is reached only from the sites registration and the email change need', () => {
     // Arrange
     const allowed = [...allowedReaches.keys()].sort();
 
@@ -692,7 +712,7 @@ describe('the identity provider client', () => {
         `${fixtureFile}: {escaped}`,
         `${fixtureFile}: providerEmail`,
         `${fixtureFile}: forgetProviderToken`,
-        `${fixtureFile}: isProviderReturn`,
+        `${fixtureFile}: providerReturn`,
       ].sort(),
     );
   });

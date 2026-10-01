@@ -8,6 +8,55 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-10-01 — The web client reads an email change's answer before the session probe, holds it in memory, and sends it on the request
+
+**Context:** the email change's server route needs a fresh Google id token beside the session. The
+client had two rules that assumed no signed-in flow uses the provider: a session beginning discards
+the provider's tokens, and the bearer is attached on the two registration routes only. The return
+from Google lands on a tab that already holds a session, so the start-up probe's authenticated arm
+would discard the nonce the answer is checked against before anything read it.
+
+**Decision:**
+- **The answer is read before the probe.** The `APP_INITIALIZER` asks `providerReturn()` once and,
+  on an email change, awaits `AuthService.initialize()` ahead of `session.probe()`; the hand-off is
+  dropped only when the probe answers `anonymous`.
+- **The hand-off is memory only and taken once.** The token and the address sit in one `#` field on
+  `AuthService`; the library's copy and the marker are discarded on the return whatever it
+  concluded; the address is read from the claims the library validated, never from the raw
+  fragment.
+- **The bearer is carried by the request.** `MeApiService.changeEmail` puts the token on the
+  `PROVIDER_CREDENTIAL` context token; the interceptor reads it only on `EMAIL_CHANGE_PATH`, after
+  the origin check, and never reads storage for that route.
+- **The Confirm press doubles as the passkey gate.** One press fetches the re-authentication
+  challenge, runs the ceremony and sends the changing request; there is no separate passkey step.
+- **The welcome screen's provider line gains an exception**: Google is asked again only if the
+  person changes their address, where it used to say Google is never asked again.
+
+[email-change.md](email-change.md) owns the client rules and the specs that hold them.
+
+**Alternatives considered:**
+- **Read the answer after the probe, and stop the authenticated arm discarding**: rejected. It
+  makes the discard conditional on a trip in flight, and a session beginning stops being the single
+  owner of the discard.
+- **Keep the answer in `sessionStorage` so the waiting state survives a reload**: rejected. A
+  provider token in storage outlives the load and is found by whatever reads that storage next.
+- **Attach the bearer from the library's storage, as registration does**: rejected. A signed-in tab
+  holds nothing there, and what it might hold is an abandoned registration's token.
+- **A separate "verify with your passkey" step before Confirm**: rejected. Two presses for one act,
+  and a challenge fetched before the person commits is a nonce spent for nothing.
+- **Leave the welcome line as it was**: rejected. It would be false about the one other moment the
+  provider hears from the person.
+
+**Consequences:** an email-change return contacts Google on the boot that reads it, before the
+probe, signed in or not. The return is a page load, so it locks the account's keys in that tab. The
+Google Cloud console has to list `/app/settings` among the OAuth client's redirect URIs, which
+nothing in the repository can check.
+
+**Affected areas:** [email-change.md](email-change.md), [sessions.md](sessions.md),
+[registration.md](registration.md), [users-and-ownership.md](users-and-ownership.md).
+
+---
+
 ## 2026-09-30 — The email change asks for a passkey as well as a fresh Google sign-in
 
 **Context:** the story asks that moving an account to another Google identity and address take a

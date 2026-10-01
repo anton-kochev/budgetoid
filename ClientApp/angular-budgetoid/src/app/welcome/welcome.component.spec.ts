@@ -88,11 +88,12 @@ const PROVIDER_LINE_TODAY = 'Your Google account is used only to sign you in.';
 // in the system that is still selling.
 //
 // Three facts, in this order, because the order is the reassurance: an account
-// starts at Google, it happens once and only to check an address, and signing
-// in afterwards never goes near it.
+// starts at Google, only to check an address, and signing in afterwards is the
+// passkey's — and one exception, stated rather than hidden: changing that
+// address asks Google again.
 const PROVIDER_ROLE =
-  'Creating an account starts with Google once, to check your email address. ' +
-  'After that you sign in with your passkey, and Google is never asked again.';
+  'Creating an account starts with Google, to check your email address. ' +
+  'After that you sign in with your passkey; Google is asked again only if you change that address.';
 
 // The load-bearing halves of it, and not every word: the wording above is a
 // starting point somebody may improve, but a version that drops any of these
@@ -101,11 +102,16 @@ const PROVIDER_ROLE =
 // matched against what the browser renders rather than against what the file
 // happens to contain.
 const PROVIDER_ROLE_PHRASES = [
-  'Creating an account starts with Google once',
+  'Creating an account starts with Google',
   'to check your email address',
   'sign in with your passkey',
-  'Google is never asked again',
+  'Google is asked again only if you change that address',
 ] as const;
+
+// The promise the email change broke, kept only as a negative: a screen that
+// still said it would be telling a cautious person something false about the
+// one other moment the provider hears from them.
+const RETIRED_NEVER_AGAIN_CLAIM = 'Google is never asked again';
 
 // The word this screen once said after an erasure, named only so its absence
 // can be asserted.
@@ -673,7 +679,7 @@ describe('WelcomeComponent, as the way into an account', () => {
     }
   });
 
-  it('says the provider is used once, at creation', () => {
+  it('says the provider starts an account and is asked again only for an address change', () => {
     // Arrange
     render();
 
@@ -690,11 +696,18 @@ describe('WelcomeComponent, as the way into an account', () => {
       'the welcome screen still says the Google account is what signs you in.',
     ).toBe(false);
 
-    // What replaces it says three things: the account starts at Google, that
-    // happens once and only to check an address, and signing in afterwards
-    // never goes near it. Phrases rather than the whole sentence, so the wording
-    // can be improved without this test standing in the way — but a version that
-    // drops one of these is making a different promise.
+    // And the promise the email change retired.
+    expect(
+      shown.includes(RETIRED_NEVER_AGAIN_CLAIM),
+      'the welcome screen still says Google is never asked again.',
+    ).toBe(false);
+
+    // What replaces it says three things and one exception: the account starts
+    // at Google, only to check an address, signing in afterwards is the
+    // passkey's, and changing that address asks Google again. Phrases rather
+    // than the whole sentence, so the wording can be improved without this test
+    // standing in the way — but a version that drops one of these is making a
+    // different promise.
     for (const phrase of PROVIDER_ROLE_PHRASES) {
       expect(
         shown.includes(phrase),
