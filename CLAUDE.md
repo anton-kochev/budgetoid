@@ -288,7 +288,14 @@ Load-bearing rules. Each links the doc that argues it — **read that doc before
   The flow, provided on `SettingsComponent`, reads every answer from `refusal` / `conflictKind`
   members (an unnamed judged `4xx` is `failed`, no judgement is `undetermined`), probes once before
   reading a `401`, never retries, and its Change and Confirm presses gate in their handlers on two
-  different predicates. The Google console must list `/app/settings`; no test can see it.
+  different predicates. **The provider's answer never outlives bootstrap in the address bar**:
+  `initialize()` removes it with `history.replaceState` on every outcome (the library is told not
+  to, because its own removal pushes a history entry), `discardUnreadAnswer()` clears an unclaimed
+  one, and an outbound press never reads one. `ProviderDepartureService` is the one owner of "this
+  page is leaving for Google"; a back-forward-cache restore settles it. **Holds run both ways**:
+  departing and Confirm's passkey check hold Export, Unlock, Rotate and the Erase trigger, and
+  Confirm is held only by the unlock's or a rotation's passkey check. The Google console must list
+  `/app/settings`; no test can see it.
   [email-change.md](docs/business-logic/email-change.md),
   [components.md](docs/design/components.md)
 - **Nothing loads from another origin** — no CDN script, stylesheet, typeface, icon, image, or
@@ -402,8 +409,9 @@ Load-bearing rules. Each links the doc that argues it — **read that doc before
   is held by the two `…UsesNumeric14Scale4` catalog pins, which go red in CI and gate nothing, and
   the client's scale tripwire is an early canary that misses some 7- and 8-decimal values. The file
   is **whole or absent** — `locked` wins over `unreadable`, and nothing is saved on either. Export
-  is pressable only while custody is `unlocked` and no rotation run this tab knows of is in flight,
-  one `pressable` read by both the attribute and the handler; and the save is refused unless
+  is pressable only while custody is `unlocked`, no rotation run this tab knows of is in flight, and
+  the page is not departing for Google (`ProviderDepartureService`), one `pressable` read by both
+  the attribute and the handler; and the save is refused unless
   `custody.holding()` is still the token captured at the press — for an account with nothing to
   open, that comparison is the only thing between a signed-out account and a saved file. The opened
   document never lands in a signal or a field.

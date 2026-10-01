@@ -93,13 +93,19 @@ describe('appConfig', () => {
     // token when the probe finds a session; absent, that call would throw a
     // `TypeError` the session's own `catch` absorbs, and this fixture would be
     // exercising the failure path without saying so.
+    // `discardUnreadAnswer` because the initializer's last step calls it on
+    // every boot; absent, that call would reject the initializer.
     const auth: Pick<
       AuthService,
-      'initialize' | 'providerReturn' | 'forgetProviderToken'
+      | 'initialize'
+      | 'providerReturn'
+      | 'forgetProviderToken'
+      | 'discardUnreadAnswer'
     > = {
       initialize: () => Promise.resolve(),
       providerReturn: () => null,
       forgetProviderToken: () => undefined,
+      discardUnreadAnswer: () => undefined,
     };
     const me: Pick<MeApiService, 'getSessionOwner'> = {
       getSessionOwner: () =>
@@ -331,13 +337,19 @@ describe('appConfig failure logging', () => {
     // token when the probe finds a session; absent, that call would throw a
     // `TypeError` the session's own `catch` absorbs, and this fixture would be
     // exercising the failure path without saying so.
+    // `discardUnreadAnswer` because the initializer's last step calls it on
+    // every boot; absent, that call would reject the initializer.
     const auth: Pick<
       AuthService,
-      'initialize' | 'providerReturn' | 'forgetProviderToken'
+      | 'initialize'
+      | 'providerReturn'
+      | 'forgetProviderToken'
+      | 'discardUnreadAnswer'
     > = {
       initialize: () => Promise.resolve(),
       providerReturn: () => null,
       forgetProviderToken: () => undefined,
+      discardUnreadAnswer: () => undefined,
     };
     const me: Pick<MeApiService, 'getSessionOwner'> = {
       getSessionOwner: () =>

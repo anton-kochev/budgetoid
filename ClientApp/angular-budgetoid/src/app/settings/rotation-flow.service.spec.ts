@@ -19,7 +19,7 @@ import {
   HttpTestingController,
   provideHttpClientTesting,
 } from '@angular/common/http/testing';
-import { signal } from '@angular/core';
+import { isSignal, signal, type Signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import {
   KeyRotationService,
@@ -499,6 +499,146 @@ describe('RotationFlowService', () => {
       expect(flow.working()).toBe(false);
       expect(rotations.resume).not.toHaveBeenCalled();
       expect(rotations.begin).not.toHaveBeenCalled();
+    });
+  });
+
+  // **The hold runs the other way too.** The flow publishes its passkey check —
+  // the challenge and the ceremony of any of the three presses, and not the
+  // walk after them — as a reading of its own, `asking`, and the email change's
+  // Confirm is held off while it is true: the browser runs one passkey check at
+  // a time. It is narrower than `working` on purpose — a walk asks the device
+  // for nothing, and Confirm does not leave the page. See
+  // docs/design/components.md, "Rotating held off by the email change".
+  //
+  // Read by name rather than as `flow.asking`, so a flow that does not publish
+  // it yet fails these cases on an assertion naming the member instead of
+  // failing the whole file on a compile error.
+  describe('its passkey check', () => {
+    const OPTIONS_URL = `${API_ORIGIN}/api/passkeys/reauthentication/options`;
+
+    function asking(): Signal<boolean> {
+      const member = (flow as unknown as Record<string, unknown>)['asking'];
+
+      expect(
+        typeof member === 'function' && isSignal(member),
+        'RotationFlowService publishes no "asking" signal, so the email change’s Confirm has nothing to read for "a rotation’s passkey check is running".',
+      ).toBe(true);
+
+      return member as Signal<boolean>;
+    }
+
+    // A ceremony the case releases by hand, so "while the device is asked" is
+    // an arrangement rather than a race.
+    function holdTheCeremony(): () => void {
+      let release: () => void = () => undefined;
+
+      ceremony.assertPasskey.mockImplementation(
+        () =>
+          new Promise<PasskeyCeremonyResult<PasskeyAssertionCeremony>>(
+            (resolve) => {
+              release = (): void => resolve(ceremony.answer);
+            },
+          ),
+      );
+
+      return () => release();
+    }
+
+    it('is not asking at rest', () => {
+      // Assert
+      expect(asking()()).toBe(false);
+    });
+
+    it('is asking while the challenge is being fetched', () => {
+      // Act
+      flow.rotate();
+
+      // Assert
+      // The challenge is half of the check: a Confirm press made now would
+      // fetch its own and raise a sheet over this one's.
+      expect(asking()()).toBe(true);
+      http.expectOne(OPTIONS_URL);
+    });
+
+    it('is asking while the device is asked', async () => {
+      // Arrange
+      holdTheCeremony();
+
+      // Act
+      flow.rotate();
+      await answerTheOptionsLeg();
+
+      // Assert
+      // Standing in the window, established rather than assumed.
+      expect(ceremony.assertPasskey).toHaveBeenCalledOnce();
+      expect(rotations.begin).not.toHaveBeenCalled();
+      expect(asking()()).toBe(true);
+    });
+
+    it('is asking while the device is asked for Rename and finish', async () => {
+      // Arrange
+      holdTheCeremony();
+
+      // Act
+      flow.renameAndFinish(TYPED_NAME);
+      await answerTheOptionsLeg();
+
+      // Assert
+      expect(ceremony.assertPasskey).toHaveBeenCalledOnce();
+      expect(asking()()).toBe(true);
+    });
+
+    it('is not asking while the driver walks the run the ceremony began', async () => {
+      // Arrange
+      // The driver takes the ceremony and walks, and the walk does not end
+      // here: that is the window being judged.
+      rotations.begin.mockImplementation(() => {
+        rotations.walking.set(true);
+        rotations.running.set(true);
+
+        return new Promise<void>(() => undefined);
+      });
+
+      // Act
+      flow.rotate();
+      await answerTheOptionsLeg();
+
+      // Assert
+      // In flight — the control stays busy — and asking nothing of the device.
+      // A reading as wide as `working` here holds Confirm off for the length of
+      // a whole run, for a reason that does not reach it.
+      expect(rotations.begin).toHaveBeenCalledOnce();
+      expect(flow.working()).toBe(true);
+      expect(asking()()).toBe(false);
+    });
+
+    it('is not asking once the device has refused', async () => {
+      // Arrange
+      ceremony.answer = { ok: false, failure: 'cancelled' };
+
+      // Act
+      flow.rotate();
+      await answerTheOptionsLeg();
+
+      // Assert
+      expect(flow.failure()).toBe('cancelled');
+      expect(asking()()).toBe(false);
+    });
+
+    it('is not asking once the challenge never arrives', async () => {
+      // Arrange
+      flow.rotate();
+
+      // Act
+      http
+        .expectOne(OPTIONS_URL)
+        .error(new ProgressEvent('error'), { status: 0, statusText: '' });
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // Assert
+      expect(flow.failure()).toBe('unknown');
+      expect(asking()()).toBe(false);
     });
   });
 });

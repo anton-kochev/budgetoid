@@ -159,6 +159,25 @@
        working.
 
        Material renders its own 48px target element, so nothing here sizes it. -->
+  <!-- Why the control is off while the email change holds it, one sentence
+       for each state and departing's when both are true. **Above the
+       checkbox, not between it and the control**, so the gate is still what
+       sits immediately above the press. Outside the region, and named by the
+       control while it renders. -->
+  @let emailHeld = emailHold();
+  @if (emailHeld === 'departing') {
+    <p class="k-prose" id="key-rotation-hold">
+      Rotating keys is off while this tab goes to Google, because leaving the
+      page would stop the rotation before it got going.
+    </p>
+  } @else if (emailHeld === 'asking') {
+    <p class="k-prose" id="key-rotation-hold">
+      Rotating keys is off while this tab asks your passkey to confirm your
+      email change, because your browser runs one passkey check at a time. It
+      comes back when that check ends.
+    </p>
+  }
+
   <mat-checkbox
     class="k-acknowledgement"
     [checked]="acknowledged()"
@@ -207,8 +226,8 @@
        as busy.
 
        `disabled` binds `held()`, the same computed the handler refuses on: in
-       flight, unticked, or a rename whose field holds no name a press may
-       carry. -->
+       flight, held by the email change, unticked, or a rename whose field
+       holds no name a press may carry. -->
   @if (collision === null && staged !== null) {
     <p class="k-started">{{ startedOn() }}</p>
   }
@@ -221,6 +240,7 @@
     [disabled]="held()"
     [disabledInteractive]="true"
     [attr.aria-busy]="working ? 'true' : null"
+    [attr.aria-describedby]="emailHeld !== null ? 'key-rotation-hold' : null"
     (click)="press()"
   >
     @if (collision !== null) {

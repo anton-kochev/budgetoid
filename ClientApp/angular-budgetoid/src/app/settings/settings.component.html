@@ -65,8 +65,9 @@
                lines, this flow's first. -->
           @case ('changed-unread') {
             <p class="s-error">
-              Budgetoid took the new address but couldn&rsquo;t load it back.
-              Reload the page to see it.
+              Budgetoid accepted your confirmation but couldn&rsquo;t load your
+              email address back. Reload the page to see which address the
+              account has.
             </p>
           }
           @case ('unavailable') {
@@ -206,17 +207,41 @@
       >. Nothing changes until you confirm with your passkey.
     </p>
 
+    @let confirmHold = emailChange.confirmHold();
+    <!-- Why Confirm is off while another passkey check on this screen runs —
+         the browser runs one at a time. The flow picks one, the rotation's
+         first. Above the control, outside the region, and named by it beside
+         the lead line while it renders. -->
+    @if (confirmHold === 'rotation') {
+      <p class="s-prose" id="email-confirm-hold">
+        Confirming is off while this tab asks your passkey for the key rotation,
+        because your browser runs one passkey check at a time. It comes back
+        when that check ends.
+      </p>
+    } @else if (confirmHold === 'unlock') {
+      <p class="s-prose" id="email-confirm-hold">
+        Confirming is off while this tab unlocks your account, because your
+        browser runs one passkey check at a time. It comes back when that check
+        ends.
+      </p>
+    }
+
     <!-- Outline: not Destructive, for Change's reason, and not Primary, for
-         Export's. Inert only while its own press runs — Change's reasons
-         describe a moment before a trip, and this control exists only after
-         one. The gate is `confirmPressable`, read here and by `confirm()`,
-         because the press reaches a `<button>` whatever this attribute says. -->
+         Export's. Inert while its own press runs and while another passkey
+         check does — Change's reasons describe a moment before a trip, and
+         this control exists only after one. The gate is `confirmPressable`,
+         read here and by `confirm()`, because the press reaches a `<button>`
+         whatever this attribute says. -->
     <button
       #confirmControl
       class="s-button"
       mat-stroked-button
       type="button"
-      aria-describedby="email-change-lead"
+      [attr.aria-describedby]="
+        confirmHold === null
+          ? 'email-change-lead'
+          : 'email-change-lead email-confirm-hold'
+      "
       [disabled]="!emailChange.confirmPressable()"
       [disabledInteractive]="true"
       [attr.aria-busy]="
@@ -908,9 +933,13 @@
        Destructive either: nothing is lost whichever way this goes.
 
        No composed accessible name: it is the only Unlock on the screen, so there
-       is nothing to tell it apart from. No sentence beside it saying what it
-       waits on, because it waits on nothing — the "not built yet" pattern its
-       disabled neighbours use is for a control that refuses a press.
+       is nothing to tell it apart from. No sentence beside it at rest, because
+       at rest it waits on nothing — the "not built yet" pattern its disabled
+       neighbours use is for a control that refuses a press. Two states of the
+       email change do refuse one, and each gets a sentence of its own above
+       it, inside this block so an unlocked account hears neither: departing's
+       first, because it ends the screen, then asking's. Its own busy state
+       gets none; the region already says what is happening.
 
        `disabledInteractive` rather than a plain `disabled`, for the Export
        control's reason: a button that goes truly disabled under the finger drops
@@ -919,21 +948,38 @@
        `aria-busy` resolves to null at rest so the attribute is absent instead of
        asserting that no work is happening.
 
-       The guard is in `AccountUnlockService.unlock()` as well as in this
-       attribute, and that is not redundancy: Material's click-halt is applied to
-       anchors only, so on a `<button>` the DOM `disabled` property stays false
-       and the press arrives whatever this attribute says. The handler is what
-       refuses it, and it refuses it by reading the same `working` bound here —
-       so the two can never cover different halves of an attempt again. -->
+       The guard is in the screen's `unlock()` as well as in this attribute, and
+       that is not redundancy: Material's click-halt is applied to anchors only,
+       so on a `<button>` the DOM `disabled` property stays false and the press
+       arrives whatever this attribute says. The handler is what refuses it, and
+       it refuses it by reading the same `unlockHeld` bound here — so the two
+       can never cover different halves of an attempt again. `aria-busy` reads
+       `working` alone: the email change's terms are not work this control is
+       doing. -->
   @if (keys !== 'unlocked') {
+    @let unlockHold = emailHold();
+    @if (unlockHold === 'departing') {
+      <p class="s-prose" id="unlock-hold">
+        Unlock is off while this tab goes to Google, because coming back reloads
+        the page and would lock your account again.
+      </p>
+    } @else if (unlockHold === 'asking') {
+      <p class="s-prose" id="unlock-hold">
+        Unlock is off while this tab asks your passkey to confirm your email
+        change, because your browser runs one passkey check at a time. It comes
+        back when that check ends.
+      </p>
+    }
+
     <button
       class="s-button"
       mat-stroked-button
       type="button"
-      [disabled]="working"
+      [disabled]="unlockHeld()"
       [disabledInteractive]="true"
       [attr.aria-busy]="working ? 'true' : null"
-      (click)="unlocking.unlock()"
+      [attr.aria-describedby]="unlockHold !== null ? 'unlock-hold' : null"
+      (click)="unlock()"
     >
       Unlock
     </button>
@@ -987,8 +1033,16 @@
        did. The control keeps its tab stop, so it also names this sentence with
        `aria-describedby` while it renders — never *only* there. No line box is
        reserved: on an unlock it leaves with the Unlock control, which has
-       already moved everything beneath Account keys. -->
-  @if (block === 'rotating') {
+       already moved everything beneath Account keys.
+
+       Departing's wins over both: it ends the screen and every sentence on
+       it, and it can meet a locked account and a staged run alike. -->
+  @if (block === 'departing') {
+    <p class="s-prose" id="export-block">
+      Export is off while this tab goes to Google to change your email address,
+      because leaving the page would lose the file.
+    </p>
+  } @else if (block === 'rotating') {
     <p class="s-prose" id="export-block">
       Export is off while Budgetoid gives this account new keys. It comes back
       when the key rotation above finishes.
@@ -1115,8 +1169,14 @@
        retention figure is said here and only here, because a second copy in the
        dialog is a second place for a number another project decides to drift.
 
-       **No sentence beside it**, Sign out's position for Sign out's reason: it
-       refuses no press, so the "not built yet" pattern has nothing to say.
+       **No sentence beside it at rest**, Sign out's position for Sign out's
+       reason: at rest it refuses no press. The email change's two states do,
+       and each gets a sentence of its own above it — departing's first. The
+       trigger takes `disabledInteractive` without `aria-busy` while either
+       holds, and `openErasure()` refuses on the same `erasureHeld`, because
+       the press reaches a `<button>` whatever the attribute says. The
+       dialog's commit takes neither term: the trigger is held before a dialog
+       can open.
 
        **Outline, not Destructive.** The fill promises that a confirmation
        follows and that there is no way back, and this press keeps neither: it
@@ -1130,12 +1190,29 @@
 
        `aria-haspopup="dialog"`, so a screen reader says what the press opens
        before it is made. -->
+  @let erasureHold = emailHold();
+  @if (erasureHold === 'departing') {
+    <p class="s-prose" id="erase-hold">
+      Erasing is off while this tab goes to Google, because if the page left
+      part-way through an erasure, nothing could tell you whether it happened.
+    </p>
+  } @else if (erasureHold === 'asking') {
+    <p class="s-prose" id="erase-hold">
+      Erasing is off while this tab asks your passkey to confirm your email
+      change, because your browser runs one passkey check at a time. It comes
+      back when that check ends.
+    </p>
+  }
+
   <button
     #erasureTrigger
     class="s-button"
     mat-stroked-button
     type="button"
     aria-haspopup="dialog"
+    [disabled]="erasureHeld()"
+    [disabledInteractive]="true"
+    [attr.aria-describedby]="erasureHold !== null ? 'erase-hold' : null"
     (click)="openErasure()"
   >
     Erase everything

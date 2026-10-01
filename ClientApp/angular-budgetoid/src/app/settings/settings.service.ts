@@ -10,6 +10,7 @@ import {
 } from '@app-core/security/account-key-custody.service';
 import { KeyRotationService } from '@app-core/security/key-rotation.service';
 import { FileDownloadService } from '@app-core/services/file-download.service';
+import { ProviderDepartureService } from '@app-core/services/provider-departure.service';
 import { SessionService } from '@app-core/session/session.service';
 import {
   EMPTY,
@@ -45,7 +46,7 @@ export type ExportFailure = 'failed' | 'unrecognised' | 'locked' | 'unreadable';
 
 // Which sentence stands above an Export that is off. `null` beside it means
 // none: a ready control, and one that is off while custody is mid-ceremony.
-export type ExportBlock = 'rotating' | 'locked';
+export type ExportBlock = 'rotating' | 'locked' | 'departing';
 
 // How one read of the address row ended: it published an address, or it
 // published the failure.
@@ -77,6 +78,10 @@ export class SettingsService {
   // `running` and `staged` — a run this tab knows is staged — and nothing else.
   private readonly custody = inject(AccountKeyCustodyService);
   private readonly rotations = inject(KeyRotationService);
+  // Read for `departing` alone. The email change flow is what raises it, but
+  // that flow injects this service, so reading the flow here would be a cycle;
+  // the departure owner is root-provided and injects neither.
+  private readonly departure = inject(ProviderDepartureService);
 
   private readonly emailSignal = signal<string | null>(null);
   private readonly emailFailedSignal = signal(false);
@@ -168,11 +173,15 @@ export class SettingsService {
   // nothing. The run term is not caution: a staged run has re-sealed part of
   // the account under keys custody does not hold, so an export over it would
   // end `unreadable` for a reason that has a remedy.
+  //
+  // Departing is not a kind of not ready: the keys may be held, and what stops
+  // the press is the page about to leave, which would lose the file.
   public readonly pressable: Signal<boolean> = computed(
     () =>
       this.custody.status() === 'unlocked' &&
       !this.rotating() &&
-      !this.exportingSignal(),
+      !this.exportingSignal() &&
+      !this.departure.departing(),
   );
 
   // The sentence above an Export that is off, on the notice's terms rather than
@@ -182,7 +191,15 @@ export class SettingsService {
   // `unlocking` is off and silent, because the Account keys region is already
   // saying so and the locked sentence would tell somebody to press a button
   // they are holding down. Busy is not a reason either; the region says that.
+  //
+  // Departing wins over both, because it ends the screen and every sentence on
+  // it. It can meet a locked account and a staged run alike: Change is offered
+  // over both.
   public readonly exportBlock: Signal<ExportBlock | null> = computed(() => {
+    if (this.departure.departing()) {
+      return 'departing';
+    }
+
     if (this.rotating()) {
       return 'rotating';
     }

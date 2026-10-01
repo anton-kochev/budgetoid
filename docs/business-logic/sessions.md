@@ -437,10 +437,12 @@ required members. A third writer is a decision rather than a refactor.
     scheme and nothing else, because an account may not exist without a completed provider exchange
     and there is no first-party credential to present on the one call that creates the first-party
     account.
-  - **On the email change the bearer comes from the request, never from storage.** A signed-in
-    browser holds nothing in the library's storage — the provider-token rule below discarded it when
-    the session began — so a stored token there would be whatever an abandoned registration left,
-    sent on a request that was handed none. `MeApiService.changeEmail` puts the token the email
+  - **On the email change the bearer comes from the request, never from storage.** The library's
+    storage is either empty — the provider-token rule below cleared it when the session began — or
+    holds a token an abandoned registration left before that clear ran. It never holds the token
+    this change was handed, which the return took into memory and discarded from storage. So a
+    stored token is at best somebody's old answer to another question, sent on a request that was
+    handed none. `MeApiService.changeEmail` puts the token the email
     change's return handed over on the context and writes no header itself; the interceptor reads
     that context on the exact path `EMAIL_CHANGE_PATH` and ignores it on every other route. An empty
     string is no credential. See [email-change.md](email-change.md).
@@ -1018,8 +1020,8 @@ ELSE                                                    ← an unenumerated futu
   one.** `JwtBearer` stays registered and is reached two ways: by exactly **one** policy — the
   registration group's — and by `ProviderAuthorizationGate`, a filter on `POST /api/me/email-change`
   that authenticates the bearer **beside** a full session and never as the request's identity. A
-  bearer presented anywhere else authenticates nothing and gets the same `401` an anonymous request
-  does; a bearer presented to the email change with no cookie gets that same `401` too
+  bearer presented anywhere else authenticates nothing; a bearer presented to the email change with
+  no cookie gets the fallback's own `401`
   (`EmailChange_WithAProviderTokenAndNoSession_IsRefused401_AndChangesNothing`). A policy scheme that
   chose a handler per request would put a second way to authenticate an ordinary route back on the
   table.

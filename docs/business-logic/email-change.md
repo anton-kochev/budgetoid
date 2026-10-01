@@ -163,8 +163,9 @@ response body is a value in a log.
 ---
 
 - **Rule**: Which routes reach the provider scheme is readable off the route table, through a marker.
-  `RequireProviderAuthorization()` adds `RequiresProviderAuthorizationMetadata` and the gate as one
-  act, and the marker's constructor is `internal`, so nothing outside `Api` can add it alone.
+  The marker means nothing without the filter, so `RequireProviderAuthorization()` is the one place
+  that adds both — `RequiresProviderAuthorizationMetadata` and the gate, as one act. Review and the
+  route census hold that.
 - **Why**: an endpoint filter is a delegate, not metadata. A dump of the email change's
   `RouteEndpoint.Metadata` shows the handler's method, binding and response metadata and the marker,
   and no trace of the filter type (measured, as `RegistrationRouteTests` records). Without the
@@ -236,13 +237,17 @@ response body is a value in a log.
 
 - **Rule**: The provider token is judged **before** the passkey. A refused token spends no
   challenge.
-- **Why**: the passkey gate consumes its nonce whatever happens next. A person told their Google
-  sign-in lapsed has to be able to sign in again and retry with the assertion they already made. The
-  reverse order would spend it on every provider refusal and make them run the ceremony twice.
+- **Why**: a filter runs before the delegate, so a provider refusal writes nothing and leaves the
+  nonce unspent. That is the property, and it is the server's alone. **No client reuses the unspent
+  nonce**: the shipped flow drops the Google answer on `provider-refused`, the way back is a new trip,
+  and the return is a fresh page load whose Confirm press fetches a new challenge. The unspent nonce
+  expires. The order is kept for the server property, not for a retry the client never makes.
 - **Enforced in**: the pipeline order itself — an endpoint filter runs before the route delegate,
   and the passkey gate is inside the handler the delegate calls.
-  `EmailChange_RefusedForItsProviderToken_LeavesThePasskeyChallengeUnspent` sends one assertion
-  twice: refused `401 provider_token` with no token, then `200` with a valid one.
+  `EmailChange_RefusedForItsProviderToken_LeavesThePasskeyChallengeUnspent` proves the server
+  property: one assertion, refused `401 provider_token` with no token, then `200` with a valid one.
+  On the client, `provider-refused` is not among the words that keep waiting
+  (`EmailChangeFlowService`), so the answer and its token go.
   - **The cost**: a filter runs after model binding, so a malformed body is a framework `400` before
     the token is looked at — the same accepted cost `RegistrationClaimGate` argues.
 - **Source**: `[SOURCE: discussion]`
@@ -465,7 +470,8 @@ The rules from here down are the web client's.
 - **Enforced in**: `auth-service.spec.ts`:
   - `startEmailChange leaves for the settings screen with the account chooser, marked as an email
     change`;
-  - `signIn after startEmailChange on the same page load still returns to the registration screen`;
+  - `lets signIn after startEmailChange return to the registration screen`, under *a restore from
+    the back-forward cache*;
   - `startEmailChange answers unavailable and leaves no marker when the departure throws`, and the
     two siblings for no configured address and an unreachable provider;
   - the `providerReturn reads $shape as $expected` table, which crosses every marker with every
@@ -487,12 +493,16 @@ The rules from here down are the web client's.
   from the claims the library decoded — the `email` member and nothing else, a non-empty string or
   nothing — and the token and the address go into one `#` field. Anything else is `unconfirmed`: a
   refusal, a nonce that does not match, an unreachable provider, a validated token asserting no
-  address. Whatever it concluded, `initialize()` then runs `logOut(true)` and removes the marker.
+  address. Whatever it concluded, `initialize()` then runs `logOut(true)`, removes the marker and
+  removes the fragment.
   `takeEmailChangeReturn` hands the answer over once and a second call answers `null`;
   `dropEmailChangeReturn` discards it untaken.
 - **Why**: the id token is a credential.
   - **A copy in any storage would outlive the page load that read it**, and a reload would hand it
-    over a second time. Memory dies with the load, by construction.
+    over a second time. Memory dies with the load, and that is by construction only because the
+    address dies with it too: `initialize()` removes the answer from the address bar on every
+    outcome (*The answer leaves the address* below), so no reload, history entry or copied link
+    carries the token back to a page.
   - **The library's copy goes at once, nonce included.** A nonce left behind by a failed return is
     exactly what a crafted answer would need, so the discard runs on every outcome, from a `finally`.
   - **The validated claims, never the raw fragment**, because anybody can write a fragment. Today
@@ -552,14 +562,171 @@ The rules from here down are the web client's.
 
 ---
 
+- **Rule**: **The answer leaves the address, in place, on every outcome.** `initialize()` lets the
+  library read the answer with `preventClearHashAfterLogin: true`, then removes the fragment itself
+  in a `finally`, through `history.replaceState(history.state, '', origin + pathname + search)`.
+  The query stays. The `APP_INITIALIZER`'s last step, `AuthService.discardUnreadAnswer()`, removes an
+  answer-shaped fragment that no leg read.
+- **Why**: a token in the address is a token in every reload, bookmark, copied link and history
+  entry.
+  - **The library is told not to clear it**, because its `clearLocationHash` assigns
+    `location.hash`, which adds a history entry and leaves the token-bearing one behind for Back.
+    On a nonce it refuses, it clears nothing at all. `replaceState` rewrites the entry the page is
+    on and adds none.
+  - **The entry's state is carried over**, because the router keeps its navigation id there. An
+    entry rewritten with `null` loses it.
+  - **In `finally`**, because a refusal and an unreachable provider leave the answer standing just
+    as a success would. A registration return takes the same removal.
+  - **`discardUnreadAnswer` covers the answers no leg reads**: a registration answer reaching a
+    signed-in visitor, whose leg is skipped, and an answer in a tab that started no trip. It asks
+    the same `answerShaped` predicate `providerReturn()` asks, so an in-page anchor survives. It
+    runs **last**: moved above a leg, it removes the answer that leg was about to read.
+  - **A throw is swallowed.** The `APP_INITIALIZER` awaits both callers, and a rejected initializer
+    is a blank page; the answer then stays where it was.
+- **Enforced in**: `auth-service.spec.ts`, against the real library, over four ways a return ends
+  — validated, refused on its nonce, refused by the provider, unreachable:
+  - `an email-change return $outcome removes the answer from the address without adding a history
+    entry`, and the same case for a registration return — each lands with a query and asserts it
+    survives;
+  - `an email-change return $outcome keeps the history entry’s state when it removes the answer`.
+    No case holds the state on a registration return; both share one `removeFragment`;
+  - `reads the answer with the fragment left for the service to remove` holds the option.
+
+  `core.providers.spec.ts` holds `is discarded as the last step, once, when the provider is
+  answering $providerReturn and the visitor is $status`. `core.providers.cold-boot.spec.ts`, in *a
+  cold load whose address carries an answer nobody reads*, holds `an answer nobody claimed is gone
+  before the first route`, `a refusal nobody claimed is gone before the first route`, `a
+  registration answer reaching a signed-in visitor is gone` and `an in-page anchor survives boot`.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: **An outbound press never reads an answer.** The memoized preparation loads the
+  discovery document and nothing else; `tryLogin` is called from `initialize()` alone.
+- **Why**: a press that read the fragment again would meet an answer the library had already
+  refused once, refuse it the same way, and answer `unavailable` on every press until a reload — a
+  dead Change, and a dead **Continue with Google** on registration. A refused answer is not a
+  failure to prepare either, so the discovery document is kept and the next press costs no fetch.
+- **Enforced in**: `auth-service.spec.ts`: `reads no answer off the address on a press that starts
+  the exchange`, `startEmailChange reads no answer off the address` and `keeps the discovery
+  document when the answer is refused`. Against the real library: `a press after a return refused on
+  its nonce leaves for Google, with one discovery fetch`, `a press on a cold load carrying a stale
+  answer and no marker leaves for Google` and `signIn after a refused registration return leaves for
+  Google`.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: **`ProviderDepartureService` is the one owner of "this page is leaving for Google".** It
+  holds `departing`, and only `AuthService` writes it: a press raises it with `begin()` before its
+  first await, the provider client's `openUri` is `depart()`, which raises it and assigns the
+  address, and `settle()` lowers it when a press does not leave or the page comes back from the
+  back-forward cache. `EmailChangeFlowService.phase` reads `leaving` off it and holds no copy.
+- **Why**: a copy is a second fact that the restore never reaches, so a screen holding one would
+  go on saying it is leaving on a page that came back.
+  - **Raised before the first await**, so Change goes off in the turn it was pressed, and a second
+    press in that turn finds it off.
+  - **Its own class, not a signal on `AuthService`**, so a screen reads it without injecting
+    `AuthService` — which would make the screen an identity-provider caller in
+    `identity-provider-callers.spec.ts`. `SettingsService` reads it for the same kind of reason: the
+    flow injects `SettingsService`, so reading the flow there would be a cycle.
+- **Enforced in**: `auth-service.spec.ts`: `hands the address the client opens to the departure
+  service, unchanged`, `startEmailChange says the page is departing before it has asked anybody
+  anything`, `startEmailChange is still departing once the page is on its way`, `startEmailChange
+  is not departing once it answers unavailable because $shape` and `signIn is not departing once it
+  could not reach the provider`. The service's own behaviour is in
+  `provider-departure.service.spec.ts`.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: **A press that has not left within one macrotask is abandoned and answers
+  `unavailable`.** `AuthService` counts the client's `openUri` calls across `initLoginFlow` and one
+  macrotask. No new call means the press did not leave. A missing redirect address or scope answers
+  `unavailable` before `departing` is raised and before anything is fetched. Every press that does
+  not leave goes through `abandonTrip`, which removes the marker, resets the library's flow
+  (`resetImplicitFlow`) and lowers `departing`, in that order.
+- **Why**: `initLoginFlow` returning says nothing. On the implicit flow it builds the address
+  through a chain of promises and drops a press two ways without throwing: a rejection in the chain
+  — storage refusing the library's `nonce`, a missing scope — which it only prints, and a flow it
+  believes is already running, which returns before building anything. A press read as leaving on
+  either sits in *Taking you to Google…* for good.
+  - **One macrotask is the deadline** because the chain is promises over synchronous work, and
+    every microtask queued before the deadline runs first. The code flow's PKCE digest is real
+    asynchronous work that could miss it — one more reason that flow stays off.
+  - **All three are put back** because each alone leaves a defect: the marker makes a later
+    answer-shaped link read as a return, the running flow drops the next press, and `departing`
+    holds the screen. `departing` goes last, so the screen never offers a press the other two would
+    still drop.
+  - **The scope is checked first** because without one the library builds the address with
+    `scope.match(…)` inside a promise, rejects, and prints the rejection past `logFailure`.
+- **Enforced in**: `auth-service.spec.ts`, against the real library: *a departure whose address
+  could not be built* — `answers unavailable`, `leaves no marker`, `is not departing` and `lets a
+  second press open Google`; `a press the client silently drops answers unavailable, and the next
+  press leaves`; and `a missing scope answers unavailable and nothing prints`. Against a stub,
+  `startEmailChange answers unavailable, contacts nobody and leaves no marker when no redirect
+  address is configured`.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: **A page restored from the back-forward cache is a trip abandoned.** `AuthService`
+  listens for `pageshow` on the document's window, and on a `persisted` one runs `abandonTrip`. A
+  `pageshow` that restored nothing is ignored. The listener goes with the injector.
+- **Why**: Back from Google brings the page back with its memory as it left. The library still
+  believes an implicit flow is running and silently drops the next `initLoginFlow`, the marker still
+  says a trip is out, and `departing` still holds the screen in *Taking you to Google…*. A
+  `persisted` `pageshow` is the one moment the page learns the trip was abandoned. A first load, or
+  a page the cache did not keep, has nothing stale in memory, and a trip just started is not
+  abandoned.
+- **Enforced in**: `auth-service.spec.ts`, against the real library, in *a restore from the
+  back-forward cache*: `lets a second press leave for Google`, `removes the marker`, `reads
+  departing as false`, `is not what a pageshow that restored nothing is`, `is not heard by an
+  AuthService that has been destroyed` and `lets signIn after startEmailChange return to the
+  registration screen`.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: **The holds run both ways.** Change is held off by other work on the screen —
+  `EmailChangeFlowService.changeHold`: a rotation the flow is working, an export in flight, an
+  unlock working. The flow holds other controls in turn, through two readings:
+  - **departing** — `ProviderDepartureService.departing`;
+  - **asking** — `EmailChangeFlowService.asking`, the `asserting` phase: the challenge and the
+    ceremony, never the changing request after them.
+
+  Unlock reads `SettingsComponent.unlockHeld` (its `working`, departing, asking), the erasure trigger
+  reads `erasureHeld` (departing, asking), the rotation control reads
+  `KeyRotationSectionComponent.held` (both terms beside its own), and Export reads departing alone,
+  through `SettingsService.pressable` and `exportBlock`'s `'departing'`. **Confirm is held only by
+  passkey checks**: `confirmHold` reads `RotationFlowService.asking`, then `AccountUnlockService.asking`
+  — each that flow's own ceremony flag, never its `working`.
+- **Why**: departing holds what the page leaving would cut short; asking holds every other passkey
+  check, because the browser runs one at a time. Confirm does not leave the page, so a walked
+  rotation and the account-key read after an unlock — which ask the device for nothing — do not
+  hold it. Sign out takes neither term, and the erasure dialog's commit takes neither because its
+  trigger is held before a dialog can open. Each control's attribute and handler read the one
+  predicate. The sentences are the **Holds in both directions** section of
+  [components.md](../design/components.md).
+- **Enforced in**: `email-change-flow.service.spec.ts` for `changeHold`, `asking` and
+  `confirmHold`; `settings.component.spec.ts` for Unlock, the erasure trigger, Export's sentence and
+  Confirm's; `key-rotation-section.component.spec.ts` for the rotation control; and
+  `settings.service.spec.ts` for `pressable` and `exportBlock`. This rule names the files, not their
+  cases.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
 - **Rule**: **The bearer rides on the request, never out of storage.** `MeApiService.changeEmail`
   puts the token on the `PROVIDER_CREDENTIAL` context token and marks the request
   `EXPECTS_UNAUTHENTICATED`; it writes no header. `apiCredentialsInterceptor` attaches it only after
   it has settled that the request is going to this API's origin, only on the exact path
   `EMAIL_CHANGE_PATH`, and only from that context. An empty string is no credential.
-- **Why**: a signed-in browser holds nothing in the library's storage — the session's beginning
-  discarded it — so the stored token there would be whatever an abandoned registration left, sent on
-  a request that was handed none.
+- **Why**: the library's storage is either empty — the session's start cleared it — or holds a
+  token an abandoned registration left before that clear ran. It never holds the token this change
+  was handed, which `initialize()` took into memory and discarded from storage on the return. So a
+  stored token is at best somebody's old answer to another question, sent on a request that was
+  handed none.
   - **A header written in the service would reach the wire whatever origin the request went to.**
     Handed to the interceptor, the token is subject to the same origin-first, path-second order the
     registration bearer is, and a credential on the context of any other request is dropped.
@@ -586,7 +753,8 @@ The rules from here down are the web client's.
   members.** `EmailChangeFlowService` is provided by `SettingsComponent`. Change and Confirm each read
   one predicate in both the attribute and the handler: Change is pressable when no walked rotation,
   no export in flight and no running unlock holds it off, the flow is not on its way to Google, and no
-  Confirm press is in flight; Confirm only while the flow is waiting. A Confirm press runs in this
+  Confirm press is in flight; Confirm only while the flow is waiting and `confirmHold` names no
+  other passkey check (the two-way holds below). A Confirm press runs in this
   order: the browser's ability, a challenge from the re-authentication pool, the passkey, and the one
   changing request — nothing posted until the passkey has answered.
 - **Why**: every word raised before the changing request exists makes *nothing changed* a fact about
@@ -716,8 +884,10 @@ sequenceDiagram
     G-->>B: a new page load on /app/settings, answer in the fragment
     B->>A: providerReturn() — once
     B->>A: initialize() — validate, keep token + address in memory, logOut(true), drop the marker
+    Note over A: replaceState — the fragment leaves the address, on every outcome
     B->>API: GET /api/me — the probe, only now
     Note over B: anonymous → dropEmailChangeReturn()
+    B->>A: discardUnreadAnswer() — last, finds nothing here
     S->>A: takeEmailChangeReturn() — once, as the flow is built
     Note over S: Confirm with your passkey, focused after the first render
     S->>API: POST /api/passkeys/reauthentication/options — on the press
@@ -835,9 +1005,10 @@ rolls the sweep back.
   hand-off is kept only when the token the library stored is the token on the URL, so the decoded
   claims are that token's claims and its `email` is the fragment token's `email`. No test separates
   the two readings; reading the claims is what keeps it true if validation ever stops implying that
-  equality. [Guessing] that the library decodes `id_token_claims_obj` from the same token it stores:
-  argued from the equality check, and consistent with the real-library cases, not read out of the
-  library's source.
+  equality. The pairing is read out of the library's source, angular-oauth2-oidc 17.0.2's
+  `fesm2022` build: `processIdToken` decodes the claims from the token it was handed and returns
+  both in one result, and `storeIdToken` writes `id_token` and `id_token_claims_obj` from that one
+  result, together. A throw between the two writes rejects `tryLogin`, which is `unconfirmed`.
 - **A field on `AuthService` holding more of the claims would be held by review alone.** The specs
   compare the hand-off whole, so a third member on it reddens; a separate private field keeping the
   decoded claims beside it would redden nothing, and `assertedEmail` reading one member is a property

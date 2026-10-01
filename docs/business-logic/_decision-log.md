@@ -8,6 +8,60 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-10-01 — The email change keeps the provider token ahead of the passkey for the server property alone, and its client review fixes
+
+**Context:** the 2026-09-30 entry rejected *the passkey before the provider token* because a lapsed
+Google sign-in "would cost the person a second ceremony". That reason assumed a client that retries
+the changing request with the assertion it already made. The shipped client makes no such retry: on
+`provider-refused` it drops the Google answer, the way back is a new trip, and the return is a fresh
+page load whose Confirm press fetches a new challenge. The review of the client also found the answer
+left in the address bar, a screen that could stay "leaving" on a page the browser restored, controls
+on the settings screen that held the email change off while nothing held them off in return, and a
+concurrency catch on the server that no race reaches.
+
+**Decision:**
+- **The order stands, for the server property alone.** A filter runs before the route delegate, so
+  a provider refusal writes nothing and leaves an unspent nonce, which expires.
+  `EmailChange_RefusedForItsProviderToken_LeavesThePasskeyChallengeUnspent` proves it. The earlier
+  entry's "second ceremony" reason is withdrawn; this entry corrects it rather than editing it.
+- **The answer leaves the address on every outcome.** `AuthService.initialize()` tells the library
+  not to clear the fragment and removes it with `history.replaceState`, keeping the entry's state;
+  `discardUnreadAnswer()` is the boot's last step and removes an answer-shaped fragment no leg read.
+- **`ProviderDepartureService` owns "this page is leaving for Google".** Only `AuthService` writes
+  it; a `pageshow` that restored the page lowers it, removes the marker and resets the library's
+  flow; a press that has not left within one macrotask is abandoned and answers `unavailable`.
+- **The holds run both ways.** Departing and Confirm's passkey check hold Unlock, the rotation
+  control and the erasure trigger; departing holds Export. Confirm is held only by the other passkey
+  checks on the screen — the unlock's and a rotation's — never by their whole `working`.
+- **No concurrency catch on the email-change save.** No product race reaches one, so a retired
+  row's `DELETE` matching nothing escapes as a `500`, as an erasure does.
+- **A `SubjectTaken` save re-reads the subject**, because the credential holding it can be this
+  account's own: this account now is `account_identity_moved`, anyone else or nobody is
+  `provider_identity_in_use`.
+
+[email-change.md](email-change.md) owns the rules and the specs that hold them; the sentences are
+the **Changing the email address** chapter of [components.md](../design/components.md).
+
+**Alternatives considered:**
+- **Keep the "second ceremony" reason, since a future client might retry**: rejected. A reason no
+  shipped client exercises is a claim nobody can check, and the order needs no help from it.
+- **Let the library clear the fragment**: rejected. It assigns `location.hash`, which adds a
+  history entry and leaves the token-bearing one behind for Back, and it clears nothing on a nonce
+  it refuses.
+- **A `departing` signal on `AuthService`**: rejected. A screen reading it would have to inject
+  `AuthService` and would become an identity-provider caller.
+- **Hold Confirm on the other flows' whole `working`**: rejected. A walked rotation and the
+  account-key read after an unlock ask the device for nothing, and Confirm does not leave the page.
+
+**Consequences:** the unspent nonce a provider refusal leaves is never redeemed; it expires. Back
+from Google restores a page with Change offered and no line. Export, Unlock, the rotation control
+and the erasure trigger each carry a sentence for the email change's holds.
+
+**Affected areas:** [email-change.md](email-change.md), [registration.md](registration.md),
+[sessions.md](sessions.md), [export.md](export.md).
+
+---
+
 ## 2026-10-01 — The web client reads an email change's answer before the session probe, holds it in memory, and sends it on the request
 
 **Context:** the email change's server route needs a fresh Google id token beside the session. The

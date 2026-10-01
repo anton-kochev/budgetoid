@@ -20,6 +20,7 @@ import type { NarrativeFieldBinding } from '@app-core/security/narrative-cipher'
 import type { NarrativeText } from '@app-core/security/narrative-text';
 import { AuthService } from '@app-core/services/auth-service';
 import { FileDownloadService } from '@app-core/services/file-download.service';
+import { ProviderDepartureService } from '@app-core/services/provider-departure.service';
 import { NEVER, Observable, Subject, of, throwError } from 'rxjs';
 import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { SettingsService } from './settings.service';
@@ -565,6 +566,115 @@ describe('SettingsService', () => {
       // the button they are already holding down.
       expect(service.pressable()).toBe(false);
       expect(service.exportBlock()).toBeNull();
+    });
+  });
+
+  // **Departing holds Export off too**: while the email change's page is
+  // leaving for Google, a press would start a file the page leaves before it is
+  // saved. It is not a kind of not ready — the tab may hold the keys — and it
+  // joins `pressable`, the one predicate the control's `disabled` and
+  // `export()`'s guard both read. Departing is the root-provided
+  // `ProviderDepartureService`'s reading, because this service may not inject
+  // the email flow: the flow injects this service, and the edge back would be
+  // a cycle. See docs/design/components.md, "Ready, and a reason of its own".
+  describe('while the page leaves for Google', () => {
+    let departure: ProviderDepartureService;
+
+    beforeEach(() => {
+      departure = TestBed.inject(ProviderDepartureService);
+    });
+
+    it('is not pressable while departing, on a tab that is otherwise ready', () => {
+      // Arrange
+      // Ready, established rather than assumed: a service that was not ready
+      // for another reason would pass the assertion below for that reason.
+      expect(service.pressable()).toBe(true);
+
+      // Act
+      departure.begin();
+
+      // Assert
+      expect(service.pressable()).toBe(false);
+    });
+
+    it('is pressable again once the trip settles without leaving', () => {
+      // Arrange
+      // Control for the case above: a predicate that latched on the first
+      // departure would hold Export off for the rest of a page that came back.
+      departure.begin();
+
+      // Act
+      departure.settle();
+
+      // Assert
+      expect(service.pressable()).toBe(true);
+      expect(service.exportBlock()).toBeNull();
+    });
+
+    it('does not request the export while departing', async () => {
+      // Arrange
+      departure.begin();
+
+      // Act
+      service.export();
+      await exportSettled(service);
+
+      // Assert
+      // The handler's gate, not the attribute's: `disabledInteractive` leaves
+      // the DOM `disabled` property false and Material halts the click on
+      // anchors only, so a press on the control drawn off still arrives here.
+      expect(api.getExport).not.toHaveBeenCalled();
+      expect(download.save).not.toHaveBeenCalled();
+      expect(service.exporting()).toBe(false);
+      expect(service.exportFailure()).toBeNull();
+    });
+
+    it('names departing as the reason Export is off on a ready tab', () => {
+      // Act
+      departure.begin();
+
+      // Assert
+      expect(service.exportBlock()).toBe('departing');
+    });
+
+    // **Departing wins over every other row**, because it ends the screen and
+    // every sentence on it. It can meet Locked and a staged run, because
+    // Change is offered over both.
+    it.each([
+      {
+        name: 'a locked account',
+        arrange: (
+          stub: KeyRotationStub,
+          held: AccountKeyCustodyService,
+        ): void => held.lock(),
+      },
+      {
+        name: 'a staged run',
+        arrange: (stub: KeyRotationStub): void =>
+          stub.setStaged({ startedAtUtc: '2026-07-01T08:00:00Z' }),
+      },
+      {
+        name: 'a staged run on a locked account',
+        arrange: (
+          stub: KeyRotationStub,
+          held: AccountKeyCustodyService,
+        ): void => {
+          held.lock();
+          stub.setStaged({ startedAtUtc: '2026-07-01T08:00:00Z' });
+        },
+      },
+    ])('names departing rather than the reason $name gives', ({ arrange }) => {
+      // Arrange
+      arrange(rotations, custody);
+      // The other reason, established: without it this case is the ready one
+      // above under another name.
+      expect(service.exportBlock()).not.toBeNull();
+
+      // Act
+      departure.begin();
+
+      // Assert
+      expect(service.exportBlock()).toBe('departing');
     });
   });
 

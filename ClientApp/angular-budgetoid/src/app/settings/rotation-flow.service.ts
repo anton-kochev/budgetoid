@@ -129,6 +129,20 @@ export class RotationFlowService {
   );
 
   /**
+   * Whether this service's passkey check is running — the challenge and the
+   * ceremony, on any of the three presses — and not the walk after them. The
+   * email change's Confirm is held off by it, because the browser runs one
+   * passkey check at a time.
+   *
+   * **Narrower than {@link working} on purpose.** A walk asks the device for
+   * nothing, and Confirm does not leave the page, so the reason Change reads a
+   * walked run does not reach Confirm. It reads the same flag as {@link busy}
+   * and is published apart from it for the reason the unlock flow gives: `busy`
+   * picks this section's sentence, and this is a hold another flow reads.
+   */
+  public readonly asking: Signal<boolean> = this.busySignal.asReadonly();
+
+  /**
    * Runs the ceremony and hands what it produced to the driver — beginning a
    * rotation, or finishing the one this account has staged.
    *

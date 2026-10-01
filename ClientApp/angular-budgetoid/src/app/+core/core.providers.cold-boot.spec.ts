@@ -601,3 +601,109 @@ describe('a cold load the provider answers an email change on', () => {
     expect(sessionStorage.getItem(EXCHANGE_MARKER)).toBeNull();
   });
 });
+
+// **A provider answer leaves the address bar before the first route draws,
+// whatever became of it** (docs/design/components.md, "Changing the email
+// address"). A return leg removes the one it reads; the initializer's last
+// step removes one nobody read — a registration answer reaching a signed-in
+// visitor, whose leg is skipped, or an answer in a tab that started no trip.
+// Read at `afterStart`, which is the moment the router is about to draw.
+//
+// Removed in place: a removal that pushed a new entry would leave the
+// token-bearing one behind for Back to return to.
+describe('a cold load whose address carries an answer nobody reads', () => {
+  let originalHref: string;
+  let base: HTMLBaseElement;
+
+  beforeEach(() => {
+    originalHref = document.location.href;
+    sessionStorage.clear();
+    // `/app/settings` is two segments deep; see the describe above.
+    base = document.createElement('base');
+    base.href = '/';
+    document.head.append(base);
+  });
+
+  afterEach(() => {
+    TestBed.resetTestingModule();
+    for (const frame of document.querySelectorAll('iframe')) {
+      frame.remove();
+    }
+    base.remove();
+    sessionStorage.clear();
+    history.replaceState(null, '', originalHref);
+  });
+
+  it('an answer nobody claimed is gone before the first route', async () => {
+    // Arrange
+    const entries = history.length;
+    let atFirstRoute: { hash: string; entries: number } | null = null;
+
+    // Act
+    const boot = await coldBoot('authenticated', SETTINGS_ANSWER_PATH, {
+      afterStart: () => {
+        atFirstRoute = { hash: location.hash, entries: history.length };
+      },
+    });
+
+    // Assert — the census first: an unclaimed answer is still no contact.
+    expect(foreignRequests(boot)).toEqual([]);
+    expect(atFirstRoute).toEqual({ hash: '', entries });
+  });
+
+  // The refusal is an answer too — the same shape the return legs recognise
+  // — so a removal keyed on the tokens alone would leave it standing.
+  it('a refusal nobody claimed is gone before the first route', async () => {
+    // Arrange
+    const entries = history.length;
+    let atFirstRoute: { hash: string; entries: number } | null = null;
+
+    // Act
+    await coldBoot('authenticated', '/app/settings#error=access_denied', {
+      afterStart: () => {
+        atFirstRoute = { hash: location.hash, entries: history.length };
+      },
+    });
+
+    // Assert
+    expect(atFirstRoute).toEqual({ hash: '', entries });
+  });
+
+  // A registration answer in the tab that pressed, reaching a visitor who
+  // signed in meanwhile: `guestGuard` turns them away from `/register`, so the
+  // leg that would read it is skipped and the answer would stay.
+  it('a registration answer reaching a signed-in visitor is gone', async () => {
+    // Arrange
+    sessionStorage.setItem(EXCHANGE_MARKER, 'started');
+    const entries = history.length;
+    let atFirstRoute: { hash: string; entries: number } | null = null;
+
+    // Act
+    const boot = await coldBoot('authenticated', PROVIDER_ANSWER_PATH, {
+      afterStart: () => {
+        atFirstRoute = { hash: location.hash, entries: history.length };
+      },
+    });
+
+    // Assert
+    expect(foreignRequests(boot)).toEqual([]);
+    expect(atFirstRoute).toEqual({ hash: '', entries });
+  });
+
+  // Only an answer-shaped fragment is removed — the same shape the return
+  // legs recognise. An in-page anchor is somebody's link.
+  it('an in-page anchor survives boot', async () => {
+    // Arrange
+    let atFirstRoute: string | null = null;
+
+    // Act
+    await coldBoot('anonymous', '/register#section', {
+      afterStart: () => {
+        atFirstRoute = location.hash;
+      },
+    });
+
+    // Assert
+    expect(atFirstRoute).toBe('#section');
+  });
+});

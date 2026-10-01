@@ -100,7 +100,13 @@ const SESSION_OWNER: MeDto = {
 // reddened `injects exactly two collaborators` the moment it was written. An
 // eighth will do the same, and the answer is to think about it and then extend
 // the list, never to derive it.
+//
+// **`asking` is on it for the same reason, the day the email change's Confirm
+// needed it**: "the system sheet is open" as a reading another flow can take,
+// narrower than `working`. See `publishes whether its passkey check is running`
+// below.
 const OWN_PROPERTIES = [
+  'asking',
   'busy',
   'busySignal',
   'ceremony',
@@ -1089,6 +1095,84 @@ describe('AccountUnlockService', () => {
       running(),
       'the service still reports work in flight after both halves have finished, so the control never comes back.',
     ).toBe(false);
+  });
+
+  // **The hold runs the other way too.** The email change's Confirm is held off
+  // while this flow's passkey check is running, because the browser runs one
+  // passkey check at a time. The reading is *asking*: true only while the
+  // system sheet is open, and **not** the whole of `working` — the account-key
+  // read after the sheet runs no passkey check and holds nothing. See
+  // docs/design/components.md, "Held off by the email change".
+  //
+  // Read by name, for the reason `memberNamed` gives: a service that does not
+  // publish it yet fails here on an assertion naming the member, rather than
+  // taking the file down with a compile error.
+  it('publishes whether its passkey check is running, and nothing wider', async () => {
+    // Arrange
+    ceremonyGate = gate();
+
+    const published = memberNamed(service, 'asking');
+
+    expect(
+      typeof published === 'function' && isSignal(published),
+      'AccountUnlockService publishes no "asking" signal, so the email change’s Confirm has nothing to read for "the unlock’s passkey check is running".',
+    ).toBe(true);
+
+    const asking = published as Signal<boolean>;
+
+    // Assert
+    expect(
+      asking(),
+      'the service reports a passkey check before anything was pressed.',
+    ).toBe(false);
+
+    // Act
+    // The system sheet is up and the device has not answered.
+    service.unlock();
+
+    // Assert
+    expect(
+      asking(),
+      'the service reports no passkey check while the system sheet is open.',
+    ).toBe(true);
+
+    // Act
+    // The device answered, the key changed hands, and custody is reading the
+    // account keys — no passkey check runs now.
+    ceremonyGate.release();
+
+    await eventually(
+      () => (service.busy() ? null : true),
+      'the ceremony to finish',
+    );
+
+    // Assert
+    // The window, established rather than assumed: still working, sheet gone.
+    expect(custody.status()).toBe('unlocking');
+    expect(service.working()).toBe(true);
+    expect(
+      asking(),
+      'the service reports a passkey check while custody reads the account keys — a reading as wide as `working` holds the email change’s Confirm off for a check that is not running.',
+    ).toBe(false);
+  });
+
+  it('stops asking when the device refuses', async () => {
+    // Arrange
+    ceremonyOutcome = { ok: false, failure: 'cancelled' };
+
+    const published = memberNamed(service, 'asking');
+
+    expect(
+      typeof published === 'function' && isSignal(published),
+      'AccountUnlockService publishes no "asking" signal.',
+    ).toBe(true);
+
+    // Act
+    await press();
+
+    // Assert
+    expect(service.failure()).toBe('cancelled');
+    expect((published as Signal<boolean>)()).toBe(false);
   });
 
   // Cleared when the act *starts*, which is the rule every act in this client

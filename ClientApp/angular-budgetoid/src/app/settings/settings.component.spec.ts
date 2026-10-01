@@ -50,13 +50,14 @@ import type {
 import { AuthService } from '@app-core/services/auth-service';
 import { ConfigurationService } from '@app-core/services/configuration.service';
 import { FileDownloadService } from '@app-core/services/file-download.service';
+import { ProviderDepartureService } from '@app-core/services/provider-departure.service';
 import {
   SessionService,
   type SessionStatus,
 } from '@app-core/session/session.service';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { of, throwError, type Observable } from 'rxjs';
+import { NEVER, of, throwError, type Observable } from 'rxjs';
 import {
   afterEach,
   beforeEach,
@@ -592,7 +593,10 @@ class SettingsServiceStub {
   // so that setting `exporting` alone moves it the way the real one moves.
   public readonly pressable = computed(() => this.ready() && !this.exporting());
   // Which sentence stands above an Export that is off, or `null` for none.
-  public readonly exportBlock = signal<'rotating' | 'locked' | null>(null);
+  // `departing` is the email change's: the page is leaving for Google.
+  public readonly exportBlock = signal<
+    'rotating' | 'locked' | 'departing' | null
+  >(null);
   // Starts `null`, like the real service: "not asked yet" is a third state
   // beside "here they are" and "you have none", and a stub seeded with `[]`
   // would put the screen's first paint in a state the real one never reaches.
@@ -617,6 +621,9 @@ class SettingsServiceStub {
   public loadCredentials = vi.fn();
   public loadRecoveryCodes = vi.fn();
   public export = vi.fn();
+  // Never reached by the cases that predate it; here so a case can press Sign
+  // out and see the press arrive.
+  public signOut = vi.fn();
 }
 
 // The account's keys, as the screen reads them. Real signals for the same reason
@@ -725,6 +732,9 @@ class AccountUnlockStub implements AccountUnlockSurface {
   // real flow would publish for it, or the fixture is telling the screen
   // something no running product would.
   public readonly working = signal(false);
+  // The system sheet is open: the narrow reading the email change's Confirm is
+  // held by. Its own signal, for `working`'s reason.
+  public readonly asking = signal(false);
   public unlock = vi.fn();
 }
 
@@ -765,6 +775,8 @@ class RotationFlowStub implements RotationFlowSurface {
   public readonly busy = signal(false);
   public readonly failure = signal<RotationCeremonyFailure | null>(null);
   public readonly working = signal(false);
+  // Its challenge and ceremony, and not the walk: what Confirm is held by.
+  public readonly asking = signal(false);
   public rotate = vi.fn();
   public renameAndFinish = vi.fn();
 }
@@ -806,6 +818,12 @@ class EmailChangeFlowStub implements EmailChangeFlowSurface {
   public readonly changeHold = signal<EmailChangeHold | null>(null);
   public readonly changePressable = signal(true);
   public readonly confirmPressable = signal(false);
+  // Confirm's passkey check is running — the `asserting` phase, read from
+  // outside the flow. Its own signal, set beside the phase it stands for.
+  public readonly asking = signal(false);
+  // Which other passkey check holds Confirm off, or `null`; the rotation's
+  // wins when both run.
+  public readonly confirmHold = signal<'rotation' | 'unlock' | null>(null);
   public change = vi.fn();
   public confirm = vi.fn();
 }
@@ -5838,6 +5856,38 @@ describe('SettingsComponent pressing Export on a tab that is not ready', () => {
     // Assert
     expect(getExport).toHaveBeenCalledOnce();
   });
+
+  // **Departing holds it off too**, on a tab that holds the keys: a press
+  // would start a file the page leaves before it is saved. One predicate,
+  // `SettingsService.pressable`, read by the attribute and by `export()`.
+  // Against the shipped service, because the stub's `pressable` is a knob and
+  // would agree with any template.
+  it('is off and starts nothing while the page leaves for Google, on an unlocked account', async () => {
+    // Arrange
+    TestBed.inject(AccountKeyCustodyService).adopt(
+      await generateContentKey(),
+      await generateIndexKey(),
+    );
+    fixture.detectChanges();
+    // Live, established: without it this case is the locked one above.
+    expect(
+      buttonNamed(host, EXPORT_BUTTON)?.getAttribute('aria-disabled'),
+    ).not.toBe('true');
+    TestBed.inject(ProviderDepartureService).begin();
+    fixture.detectChanges();
+    const exportButton = buttonNamed(host, EXPORT_BUTTON);
+
+    // Act
+    exportButton?.click();
+    fixture.detectChanges();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // Assert
+    expect(exportButton?.getAttribute('aria-disabled')).toBe('true');
+    expect(exportButton?.disabled).toBe(false);
+    expect(exportButton?.hasAttribute('aria-busy')).toBe(false);
+    expect(getExport).not.toHaveBeenCalled();
+  });
 });
 
 // A second press after a first that succeeded, against the **shipped**
@@ -6173,7 +6223,7 @@ const EMAIL_CHANGE_LINES: Readonly<
   Record<Exclude<EmailChangeWord, 'changed'>, string>
 > = {
   'changed-unread':
-    'Budgetoid took the new address but couldn’t load it back. Reload the page to see it.',
+    'Budgetoid accepted your confirmation but couldn’t load your email address back. Reload the page to see which address the account has.',
   unavailable:
     'Budgetoid couldn’t reach Google, so nothing changed. Try again in a minute.',
   unconfirmed:
@@ -7009,5 +7059,460 @@ describe('SettingsComponent while an email change lands', () => {
       normalize(section),
       sentenceMismatch(normalize(section), lead),
     ).toContain(lead);
+  });
+});
+
+// **The email change holds other controls on this screen as well as being held
+// by them** (docs/design/components.md, "Holds in both directions"). Two terms:
+//
+// - **Departing** — this page is leaving for Google, read off the root
+//   `ProviderDepartureService`, which is real in this block and raised the way
+//   a Change press raises it. The stubbed flow is put in `leaving` beside it,
+//   which is what the real one publishes then.
+// - **Asking** — Confirm's passkey check is running, the flow's `asserting`
+//   phase, published as `EmailChangeFlowService.asking`.
+//
+// Each control's sentence is pinned as the book's copy, word for word, and
+// each control's attribute and handler are pinned separately: Material halts
+// the click on anchors only, so a term written into the attribute alone holds
+// nothing.
+const EXPORT_OFF_DEPARTING =
+  'Export is off while this tab goes to Google to change your email address, because leaving the page would lose the file.';
+const UNLOCK_OFF_DEPARTING =
+  'Unlock is off while this tab goes to Google, because coming back reloads the page and would lock your account again.';
+const UNLOCK_OFF_ASKING =
+  'Unlock is off while this tab asks your passkey to confirm your email change, because your browser runs one passkey check at a time. It comes back when that check ends.';
+const ERASE_OFF_DEPARTING =
+  'Erasing is off while this tab goes to Google, because if the page left part-way through an erasure, nothing could tell you whether it happened.';
+const ERASE_OFF_ASKING =
+  'Erasing is off while this tab asks your passkey to confirm your email change, because your browser runs one passkey check at a time. It comes back when that check ends.';
+const CONFIRM_OFF_ROTATION =
+  'Confirming is off while this tab asks your passkey for the key rotation, because your browser runs one passkey check at a time. It comes back when that check ends.';
+const CONFIRM_OFF_UNLOCK =
+  'Confirming is off while this tab unlocks your account, because your browser runs one passkey check at a time. It comes back when that check ends.';
+
+describe('SettingsComponent held off by the email change', () => {
+  let service: SettingsServiceStub;
+  let custody: AccountKeyCustodyStub;
+  let unlock: AccountUnlockStub;
+  let erasure: ErasureFlowStub;
+  let flow: EmailChangeFlowStub;
+  let fixture: ComponentFixture<SettingsComponent>;
+  let host: HTMLElement;
+
+  beforeEach(async () => {
+    service = new SettingsServiceStub();
+    service.email.set(OWNER_EMAIL);
+    custody = new AccountKeyCustodyStub();
+    unlock = new AccountUnlockStub();
+    erasure = new ErasureFlowStub();
+    flow = new EmailChangeFlowStub();
+
+    TestBed.configureTestingModule({
+      imports: [SettingsComponent],
+      providers: [
+        provideNoopAnimations(),
+        { provide: AccountKeyCustodyService, useValue: custody },
+        { provide: AccountUnlockService, useValue: unlock },
+        { provide: KeyRotationService, useValue: new KeyRotationStub() },
+        { provide: RotationFlowService, useValue: new RotationFlowStub() },
+        { provide: ErasureFlowService, useValue: erasure },
+        // Module level, for the reason the main block gives: `set` below
+        // replaces the component's providers, so the lookup walks up to here.
+        { provide: EmailChangeFlowService, useValue: flow },
+      ],
+    });
+    TestBed.overrideComponent(SettingsComponent, {
+      set: { providers: [{ provide: SettingsService, useValue: service }] },
+    });
+    await TestBed.compileComponents();
+    fixture = TestBed.createComponent(SettingsComponent);
+    host = fixture.nativeElement as HTMLElement;
+    fixture.detectChanges();
+  });
+
+  // The page is leaving for Google, as a Change press leaves it.
+  function depart(): void {
+    TestBed.inject(ProviderDepartureService).begin();
+    flow.phase.set('leaving');
+    flow.changePressable.set(false);
+    fixture.detectChanges();
+  }
+
+  // Confirm's passkey check is running.
+  function ask(): void {
+    flow.address.set(NEW_ADDRESS);
+    flow.phase.set('asserting');
+    flow.confirmPressable.set(false);
+    flow.asking.set(true);
+    fixture.detectChanges();
+  }
+
+  const HOLDS = [
+    { term: 'departing', hold: depart },
+    { term: 'asking', hold: ask },
+  ] as const;
+
+  function unlockControl(): HTMLButtonElement | null {
+    return buttonNamed(host, UNLOCK_BUTTON);
+  }
+
+  function eraseTrigger(): HTMLButtonElement | null {
+    return buttonNamed(host, ERASE_BUTTON);
+  }
+
+  // The element whose own text is `sentence`, and the mismatch as the failure
+  // message when there is none.
+  function expectSaid(root: Element | null, sentence: string): Element | null {
+    const said = elementSaying(root, sentence);
+
+    expect(said, sentenceMismatch(normalize(root), sentence)).not.toBeNull();
+
+    return said;
+  }
+
+  // Every text an IDREF list names, one entry per id.
+  function namedBy(control: Element | null): string[] {
+    return (control?.getAttribute('aria-describedby') ?? '')
+      .split(/\s+/)
+      .filter((id) => id !== '')
+      .map((id) => normalize(document.getElementById(id)));
+  }
+
+  describe('Export', () => {
+    it('says why while departing, above the control and named by it', () => {
+      // Arrange
+      // The service owns the predicate and the word; `settings.service.spec.ts`
+      // holds that departing wins over every other row. This is the render.
+      service.ready.set(false);
+      service.exportBlock.set('departing');
+
+      // Act
+      fixture.detectChanges();
+      const section = sectionFor(host, 'export-heading');
+      const control = buttonNamed(host, EXPORT_BUTTON);
+      const said = expectSaid(section, EXPORT_OFF_DEPARTING);
+
+      // Assert
+      expect(precedes(said, control)).toBe(true);
+      expect(
+        section?.querySelector('[role="status"]')?.contains(said) ?? false,
+      ).toBe(false);
+      expect(namedBy(control)).toEqual([EXPORT_OFF_DEPARTING]);
+      expect(control?.getAttribute('aria-disabled')).toBe('true');
+      // One sentence at a time.
+      expect(normalize(section)).not.toContain(EXPORT_OFF_LOCKED);
+      expect(normalize(section)).not.toContain(EXPORT_OFF_ROTATING);
+    });
+  });
+
+  describe('Unlock', () => {
+    it('is live at rest on a locked account, with no sentence above it', () => {
+      // Assert
+      // Control for every case below: an Unlock already held for another
+      // reason would pass all of them.
+      expect(custody.status()).toBe('locked');
+      expect(unlockControl()?.getAttribute('aria-disabled')).not.toBe('true');
+      expect(unlockControl()?.hasAttribute('aria-describedby')).toBe(false);
+      expect(normalize(host)).not.toContain(UNLOCK_OFF_DEPARTING);
+      expect(normalize(host)).not.toContain(UNLOCK_OFF_ASKING);
+    });
+
+    it.each(HOLDS)(
+      'takes disabledInteractive without aria-busy while $term',
+      ({ hold }) => {
+        // Act
+        hold();
+
+        // Assert
+        // `aria-busy` reads the unlock's own `working` alone: the email
+        // change's terms are not work this control is doing.
+        expect(unlockControl()?.getAttribute('aria-disabled')).toBe('true');
+        expect(unlockControl()?.disabled).toBe(false);
+        expect(unlockControl()?.hasAttribute('aria-busy')).toBe(false);
+      },
+    );
+
+    it.each(HOLDS)('runs no ceremony when pressed while $term', ({ hold }) => {
+      // Arrange
+      hold();
+
+      // Act
+      unlockControl()?.click();
+
+      // Assert
+      // The screen owns the predicate — the unlock service sees nothing of the
+      // email flow — so the screen's handler is what refuses the press.
+      expect(unlock.unlock).not.toHaveBeenCalled();
+    });
+
+    it('hands the press to the unlock at rest', () => {
+      // Act
+      unlockControl()?.click();
+
+      // Assert
+      // Control for the case above: a handler that refused every press passes
+      // it and never unlocks anything.
+      expect(unlock.unlock).toHaveBeenCalledOnce();
+    });
+
+    it.each([
+      { term: 'departing', hold: depart, sentence: UNLOCK_OFF_DEPARTING },
+      { term: 'asking', hold: ask, sentence: UNLOCK_OFF_ASKING },
+    ])(
+      'says why while $term, above the control and named by it',
+      ({ hold, sentence }) => {
+        // Act
+        hold();
+        const section = sectionFor(host, 'account-keys-heading');
+        const said = expectSaid(section, sentence);
+
+        // Assert
+        expect(precedes(said, unlockControl())).toBe(true);
+        expect(
+          section?.querySelector('[role="status"]')?.contains(said) ?? false,
+        ).toBe(false);
+        expect(namedBy(unlockControl())).toEqual([sentence]);
+      },
+    );
+
+    it('says departing’s sentence and only that one when both hold', () => {
+      // Act
+      depart();
+      flow.asking.set(true);
+      fixture.detectChanges();
+
+      // Assert
+      // Departing ends the screen and every other sentence with it.
+      expect(normalize(host)).toContain(UNLOCK_OFF_DEPARTING);
+      expect(normalize(host)).not.toContain(UNLOCK_OFF_ASKING);
+      expect(namedBy(unlockControl())).toEqual([UNLOCK_OFF_DEPARTING]);
+    });
+
+    // Confirm is held by the unlock's *asking*, not its *working*, so Confirm
+    // can be pressed during the account-key read — and then Unlock is held by
+    // asking while its own read is still running. Both treatments at once:
+    // asking's sentence, and the busy attribute its own work earns.
+    it('says asking’s sentence during its own account-key read, and stays busy', () => {
+      // Arrange
+      custody.status.set('unlocking');
+      unlock.working.set(true);
+      fixture.detectChanges();
+
+      // Act
+      ask();
+
+      // Assert
+      expect(normalize(host)).toContain(UNLOCK_OFF_ASKING);
+      expect(namedBy(unlockControl())).toEqual([UNLOCK_OFF_ASKING]);
+      expect(unlockControl()?.getAttribute('aria-busy')).toBe('true');
+      expect(unlockControl()?.getAttribute('aria-disabled')).toBe('true');
+    });
+
+    // The control is not drawn once the keys are held, and neither is a
+    // sentence about it.
+    it('says nothing about Unlock while departing on an unlocked account', () => {
+      // Arrange
+      custody.status.set('unlocked');
+      fixture.detectChanges();
+
+      // Act
+      depart();
+
+      // Assert
+      expect(unlockControl()).toBeNull();
+      expect(normalize(host)).not.toContain(UNLOCK_OFF_DEPARTING);
+    });
+  });
+
+  describe('Erase everything', () => {
+    // Both hosts, spied rather than opened: what is judged is whether the
+    // press reached an open at all, and a real overlay over the stubbed flow
+    // is beside the point. Each answers a ref the screen can close on teardown.
+    function spyOnOpens(): { readonly opens: () => number } {
+      const dialog = vi
+        .spyOn(TestBed.inject(MatDialog), 'open')
+        .mockImplementation(
+          () =>
+            ({
+              afterClosed: () => NEVER,
+              close: vi.fn(),
+            }) as unknown as MatDialogRef<unknown>,
+        );
+      const sheet = vi
+        .spyOn(TestBed.inject(MatBottomSheet), 'open')
+        .mockImplementation(
+          () =>
+            ({
+              afterDismissed: () => NEVER,
+              dismiss: vi.fn(),
+            }) as unknown as MatBottomSheetRef<unknown>,
+        );
+
+      return {
+        opens: () => dialog.mock.calls.length + sheet.mock.calls.length,
+      };
+    }
+
+    it('opens the confirmation at rest', () => {
+      // Arrange
+      const { opens } = spyOnOpens();
+
+      // Act
+      eraseTrigger()?.click();
+
+      // Assert
+      // Control for the case below: the spies see an open when there is one.
+      expect(opens()).toBe(1);
+      expect(erasure.reset).toHaveBeenCalledOnce();
+      expect(eraseTrigger()?.getAttribute('aria-disabled')).not.toBe('true');
+    });
+
+    it.each(HOLDS)(
+      'takes disabledInteractive without aria-busy while $term',
+      ({ hold }) => {
+        // Act
+        hold();
+
+        // Assert
+        expect(eraseTrigger()?.getAttribute('aria-disabled')).toBe('true');
+        expect(eraseTrigger()?.disabled).toBe(false);
+        expect(eraseTrigger()?.hasAttribute('aria-busy')).toBe(false);
+      },
+    );
+
+    it.each(HOLDS)(
+      'opens nothing and asks nothing when pressed while $term',
+      ({ hold }) => {
+        // Arrange
+        const { opens } = spyOnOpens();
+        hold();
+
+        // Act
+        // An ungated press opens the dialog under a page about to leave or a
+        // passkey check already running.
+        eraseTrigger()?.click();
+
+        // Assert
+        expect(opens()).toBe(0);
+        expect(erasure.reset).not.toHaveBeenCalled();
+        expect(erasure.erase).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([
+      { term: 'departing', hold: depart, sentence: ERASE_OFF_DEPARTING },
+      { term: 'asking', hold: ask, sentence: ERASE_OFF_ASKING },
+    ])(
+      'says why while $term, above the trigger and named by it',
+      ({ hold, sentence }) => {
+        // Act
+        hold();
+        const section = sectionFor(host, 'erase-heading');
+        const said = expectSaid(section, sentence);
+
+        // Assert
+        expect(precedes(said, eraseTrigger())).toBe(true);
+        expect(namedBy(eraseTrigger())).toEqual([sentence]);
+      },
+    );
+
+    it('says departing’s sentence and only that one when both hold', () => {
+      // Act
+      depart();
+      flow.asking.set(true);
+      fixture.detectChanges();
+
+      // Assert
+      expect(normalize(host)).toContain(ERASE_OFF_DEPARTING);
+      expect(normalize(host)).not.toContain(ERASE_OFF_ASKING);
+      expect(namedBy(eraseTrigger())).toEqual([ERASE_OFF_DEPARTING]);
+    });
+
+    it('describes nothing at rest', () => {
+      // Assert
+      expect(eraseTrigger()?.hasAttribute('aria-describedby')).toBe(false);
+      expect(normalize(host)).not.toContain(ERASE_OFF_DEPARTING);
+      expect(normalize(host)).not.toContain(ERASE_OFF_ASKING);
+    });
+  });
+
+  // The flow owns which of the two renders (`email-change-flow.service.spec.ts`
+  // holds the rotation's winning); this is the render of each.
+  describe('Confirm with your passkey', () => {
+    function waitWith(hold: 'rotation' | 'unlock' | null): void {
+      flow.address.set(NEW_ADDRESS);
+      flow.phase.set('waiting');
+      flow.confirmPressable.set(hold === null);
+      flow.confirmHold.set(hold);
+      fixture.detectChanges();
+    }
+
+    it.each([
+      { hold: 'rotation' as const, sentence: CONFIRM_OFF_ROTATION },
+      { hold: 'unlock' as const, sentence: CONFIRM_OFF_UNLOCK },
+    ])(
+      'says why while the $hold passkey check runs, above the control and named by it beside the lead line',
+      ({ hold, sentence }) => {
+        // Act
+        waitWith(hold);
+        const section = sectionFor(host, 'account-heading');
+        const control = buttonNamed(host, CONFIRM_EMAIL_BUTTON);
+        const said = expectSaid(section, sentence);
+
+        // Assert
+        expect(precedes(said, control)).toBe(true);
+        expect(
+          section?.querySelector('[role="status"]')?.contains(said) ?? false,
+        ).toBe(false);
+        expect(control?.getAttribute('aria-disabled')).toBe('true');
+        // Named beside the lead line, never instead of it.
+        const named = namedBy(control);
+        expect(named).toContain(sentence);
+        expect(named).toContain(
+          `Google sent back ${NEW_ADDRESS}. Nothing changes until you confirm with your passkey.`,
+        );
+        // One sentence at a time.
+        const other =
+          sentence === CONFIRM_OFF_ROTATION
+            ? CONFIRM_OFF_UNLOCK
+            : CONFIRM_OFF_ROTATION;
+        expect(normalize(section)).not.toContain(other);
+      },
+    );
+
+    it('names only the lead line when nothing holds it', () => {
+      // Act
+      waitWith(null);
+      const control = buttonNamed(host, CONFIRM_EMAIL_BUTTON);
+
+      // Assert
+      expect(namedBy(control)).toEqual([
+        `Google sent back ${NEW_ADDRESS}. Nothing changes until you confirm with your passkey.`,
+      ]);
+      expect(normalize(host)).not.toContain(CONFIRM_OFF_ROTATION);
+      expect(normalize(host)).not.toContain(CONFIRM_OFF_UNLOCK);
+    });
+  });
+
+  // **Sign out takes neither term and is never held.** It is the way out.
+  describe('Sign out', () => {
+    it.each(HOLDS)(
+      'is live and reaches its handler while $term',
+      ({ hold }) => {
+        // Arrange
+        hold();
+        const control = buttonNamed(host, SIGN_OUT_BUTTON);
+
+        // Act
+        control?.click();
+
+        // Assert
+        expect(control?.getAttribute('aria-disabled')).not.toBe('true');
+        expect(control?.disabled).toBe(false);
+        expect(control?.hasAttribute('aria-describedby')).toBe(false);
+        expect(service.signOut).toHaveBeenCalledOnce();
+      },
+    );
   });
 });

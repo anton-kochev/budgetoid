@@ -22,6 +22,7 @@ import {
 import { MatButtonModule } from '@angular/material/button';
 import { MatDialog, type MatDialogRef } from '@angular/material/dialog';
 import { AccountKeyCustodyService } from '@app-core/security/account-key-custody.service';
+import { ProviderDepartureService } from '@app-core/services/provider-departure.service';
 import { AccountUnlockService } from './account-unlock.service';
 import { toCredentialRow, type CredentialRow } from './credential-row';
 import {
@@ -31,7 +32,10 @@ import {
   ERASE_DIALOG_TITLE_ID,
   EraseDialogComponent,
 } from './erase-dialog.component';
-import { EmailChangeFlowService } from './email-change-flow.service';
+import {
+  EmailChangeFlowService,
+  type EmailChangeOuterHold,
+} from './email-change-flow.service';
 import { ErasureFlowService } from './erasure-flow.service';
 import { KeyRotationSectionComponent } from './key-rotation-section.component';
 import { RotationFlowService } from './rotation-flow.service';
@@ -136,6 +140,33 @@ export class SettingsComponent implements OnInit {
   // predicate both controls bind is the flow's, and its handlers refuse what
   // its predicates refuse, so the template composes no gate of its own.
   protected readonly emailChange = inject(EmailChangeFlowService);
+  private readonly departure = inject(ProviderDepartureService);
+
+  // **The email change holds controls on this screen as well as being held by
+  // them.** Which of its two terms holds Unlock and the erasure trigger off,
+  // departing first because it ends the screen and every sentence on it.
+  // Departing is read off its owner rather than as the flow's `leaving` phase:
+  // that phase is a projection of the same reading, and a projection is one
+  // more place for the two to part company.
+  protected readonly emailHold = computed<EmailChangeOuterHold | null>(() => {
+    if (this.departure.departing()) {
+      return 'departing';
+    }
+
+    return this.emailChange.asking() ? 'asking' : null;
+  });
+
+  // **Unlock's one predicate**, read by its `disabled` and by `unlock()`. The
+  // screen owns it because the email flow is provided here and
+  // `AccountUnlockService` sees nothing of it. `aria-busy` stays on `working`
+  // alone: the email change's terms are not work this control is doing.
+  protected readonly unlockHeld = computed(
+    () => this.unlocking.working() || this.emailHold() !== null,
+  );
+
+  // The erasure trigger's one predicate, read by its `disabled` and by
+  // `openErasure()`.
+  protected readonly erasureHeld = computed(() => this.emailHold() !== null);
 
   // Which of the two email-change controls is drawn — exactly one, always.
   // Confirm from the moment a return holds an answer until a word drops it;
@@ -247,6 +278,22 @@ export class SettingsComponent implements OnInit {
   }
 
   /**
+   * Runs an unlock, unless the control is held.
+   *
+   * The gate is here as well as in the attribute: Material's click-halt is
+   * applied to anchors only, so on a `<button>` the press arrives whatever the
+   * attribute says. `AccountUnlockService.unlock()` still guards on `working`
+   * at its own entry, and this reads the wider predicate the screen draws.
+   */
+  protected unlock(): void {
+    if (this.unlockHeld()) {
+      return;
+    }
+
+    this.unlocking.unlock();
+  }
+
+  /**
    * Opens the erasure confirmation, and asks the server for nothing.
    *
    * **The host is the shell's split, chosen once, here.** Compact is a bottom
@@ -264,7 +311,11 @@ export class SettingsComponent implements OnInit {
    * challenge nobody asked for.
    */
   protected openErasure(): void {
-    if (this.erasure !== null) {
+    // Held first: the trigger's `disabled` reads the same predicate, and the
+    // press arrives on a `<button>` whatever that attribute says. Ungated, it
+    // opens the dialog under a page about to leave or a passkey check already
+    // running.
+    if (this.erasureHeld() || this.erasure !== null) {
       return;
     }
 

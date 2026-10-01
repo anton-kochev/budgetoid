@@ -10,7 +10,7 @@
 // compiler's own census of what a template can reach: a member added to either
 // service is a compile error naming it, rather than a `TypeError` during change
 // detection that kills every test in the file on one message.
-import { afterNextRender, signal } from '@angular/core';
+import { afterNextRender, signal, type WritableSignal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { provideNoopAnimations } from '@angular/platform-browser/animations';
 import {
@@ -23,8 +23,10 @@ import {
   type StagedRotation,
 } from '@app-core/security/key-rotation.service';
 import type { NameArm } from '@app-core/security/rotation-name-collision';
+import { ProviderDepartureService } from '@app-core/services/provider-departure.service';
 import { NARRATIVE_NAME_CHARACTERS } from '@app-shared/narrative-field-caps';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { EmailChangeFlowService } from './email-change-flow.service';
 import { KeyRotationSectionComponent } from './key-rotation-section.component';
 import {
   RotationFlowService,
@@ -48,6 +50,17 @@ const CONSEQUENCE =
   'starts over from the first record.';
 
 const ACKNOWLEDGEMENT = 'I’ll leave this tab open until it finishes.';
+
+// The two sentences the email change puts above the checkbox, from the
+// chapter's "Rotating held off by the email change" table. Departing's renders
+// when both hold.
+const ROTATE_OFF_DEPARTING =
+  'Rotating keys is off while this tab goes to Google, because leaving the ' +
+  'page would stop the rotation before it got going.';
+const ROTATE_OFF_ASKING =
+  'Rotating keys is off while this tab asks your passkey to confirm your ' +
+  'email change, because your browser runs one passkey check at a time. It ' +
+  'comes back when that check ends.';
 
 const ROTATE = 'Rotate keys';
 const FINISH = 'Finish rotating';
@@ -150,8 +163,20 @@ class RotationFlowStub implements RotationFlowSurface {
   public readonly busy = signal(false);
   public readonly failure = signal<RotationCeremonyFailure | null>(null);
   public readonly working = signal(false);
+  // The flow's passkey check, which the email change's Confirm is held by.
+  // Nothing in this section reads it.
+  public readonly asking = signal(false);
   public rotate = vi.fn();
   public renameAndFinish = vi.fn();
+}
+
+// The email change's one reading this section takes: *asking*, Confirm's
+// passkey check. Not a `Pick` of the real class, so this file compiles while
+// the flow does not publish it yet; the cases that need it fail on behaviour.
+// The settings screen provides the real flow, and the section reaches it from
+// there.
+interface EmailChangeAskingStub {
+  readonly asking: WritableSignal<boolean>;
 }
 
 // Collapses the whitespace a template's line wrapping introduces, so a pinned
@@ -172,6 +197,7 @@ function buttonNamed(host: HTMLElement, label: string): HTMLElement | null {
 describe('KeyRotationSectionComponent', () => {
   let rotations: KeyRotationStub;
   let flow: RotationFlowStub;
+  let emailFlow: EmailChangeAskingStub;
   let fixture: ComponentFixture<KeyRotationSectionComponent>;
   let host: HTMLElement;
 
@@ -196,12 +222,14 @@ describe('KeyRotationSectionComponent', () => {
   beforeEach(async () => {
     rotations = new KeyRotationStub();
     flow = new RotationFlowStub();
+    emailFlow = { asking: signal(false) };
     TestBed.configureTestingModule({
       imports: [KeyRotationSectionComponent],
       providers: [
         provideNoopAnimations(),
         { provide: KeyRotationService, useValue: rotations },
         { provide: RotationFlowService, useValue: flow },
+        { provide: EmailChangeFlowService, useValue: emailFlow },
       ],
     });
     await TestBed.compileComponents();
@@ -1157,6 +1185,195 @@ describe('KeyRotationSectionComponent', () => {
       expect(said).not.toContain('groceries');
     });
   });
+
+  // **The email change holds it off twice**, whichever of the three labels the
+  // control carries (docs/design/components.md, "Rotating held off by the
+  // email change"). *Departing* — the page is leaving for Google, and leaving
+  // would stop the rotation before it got going — is the root-provided
+  // `ProviderDepartureService`'s reading. *Asking* — the email change's
+  // Confirm is asking the passkey — is `EmailChangeFlowService.asking`, the
+  // flow the settings screen provides and this section reaches from there.
+  //
+  // Every case acknowledges first, so the email change's term is the only
+  // thing holding the control.
+  describe('held off by the email change', () => {
+    const departingSentence = (): Element | null =>
+      elementSaying(ROTATE_OFF_DEPARTING);
+    const askingSentence = (): Element | null =>
+      elementSaying(ROTATE_OFF_ASKING);
+
+    const depart = (): void => {
+      TestBed.inject(ProviderDepartureService).begin();
+      tick();
+    };
+
+    const ask = (): void => {
+      emailFlow.asking.set(true);
+      tick();
+    };
+
+    beforeEach(() => {
+      acknowledge();
+    });
+
+    it('is live at rest once acknowledged, with no sentence above it', () => {
+      // Assert
+      // Control for every case below: a section that held the control for
+      // another reason would pass all of them.
+      expect(control()?.getAttribute('aria-disabled')).not.toBe('true');
+      expect(departingSentence()).toBeNull();
+      expect(askingSentence()).toBeNull();
+      expect(control()?.hasAttribute('aria-describedby')).toBe(false);
+    });
+
+    it.each([
+      { term: 'departing', hold: (): void => depart() },
+      { term: 'asking', hold: (): void => ask() },
+    ])(
+      'takes disabledInteractive without aria-busy while $term',
+      ({ hold }) => {
+        // Act
+        hold();
+
+        // Assert
+        // The Buttons chapter's fourth case: off, keeping its tab stop, and not
+        // claiming work this control is doing.
+        expect(control()?.getAttribute('aria-disabled')).toBe('true');
+        expect((control() as HTMLButtonElement | null)?.disabled).toBe(false);
+        expect(control()?.hasAttribute('aria-busy')).toBe(false);
+      },
+    );
+
+    it.each([
+      { term: 'departing', hold: (): void => depart() },
+      { term: 'asking', hold: (): void => ask() },
+    ])('refuses a press made while $term', ({ hold }) => {
+      // Arrange
+      hold();
+
+      // Act
+      // Material halts the click on anchors only, so on a `<button>` the press
+      // arrives whatever the attribute says; the handler reads the same `held`.
+      buttonNamed(host, ROTATE)?.click();
+
+      // Assert
+      expect(flow.rotate).not.toHaveBeenCalled();
+      expect(flow.renameAndFinish).not.toHaveBeenCalled();
+    });
+
+    it('refuses a press of Finish rotating made while departing', () => {
+      // Arrange
+      rotations.staged.set({ startedAtUtc: '2026-07-14T09:30:00Z' });
+      tick();
+      depart();
+
+      // Act
+      buttonNamed(host, FINISH)?.click();
+
+      // Assert
+      expect(buttonNamed(host, FINISH)).not.toBeNull();
+      expect(flow.rotate).not.toHaveBeenCalled();
+    });
+
+    it('refuses a press of Rename and finish made while asking', () => {
+      // Arrange
+      // A pair standing and a name typed for it, so the rename block's own
+      // terms are satisfied and asking is the only thing holding the press.
+      rotations.failure.set('same-name');
+      rotations.collision.set(pair('payees', 'Groceries', 'groceries'));
+      tick();
+      const field = host.querySelector<HTMLInputElement>(
+        'input:not([type="checkbox"])',
+      );
+      if (field === null) {
+        throw new Error('the section drew no name field');
+      }
+      field.value = TYPED_NAME;
+      field.dispatchEvent(new Event('input'));
+      tick();
+      ask();
+
+      // Act
+      buttonNamed(host, RENAME)?.click();
+
+      // Assert
+      expect(buttonNamed(host, RENAME)).not.toBeNull();
+      expect(flow.renameAndFinish).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      {
+        term: 'departing',
+        hold: (): void => depart(),
+        sentence: ROTATE_OFF_DEPARTING,
+      },
+      { term: 'asking', hold: (): void => ask(), sentence: ROTATE_OFF_ASKING },
+    ])(
+      'says why while $term, above the checkbox and named by the control',
+      ({ hold, sentence }) => {
+        // Act
+        hold();
+        const said = elementSaying(sentence);
+
+        // Assert
+        // Word for word: the copy is the specification, not an example of it.
+        expect(said, `the section does not say: ${sentence}`).not.toBeNull();
+        // Above the checkbox, not between it and the control, so the gate is
+        // still what sits immediately above the press.
+        expect(isBefore(said, checkbox())).toBe(true);
+        // Outside the region: it says why a control is off, not what a press
+        // did.
+        expect(region()?.contains(said)).toBe(false);
+        expect(describedBy(control())).toContain(sentence);
+      },
+    );
+
+    it('says departing’s sentence and only that one when both hold', () => {
+      // Act
+      depart();
+      ask();
+
+      // Assert
+      // Departing ends the screen and every sentence on it.
+      expect(departingSentence()).not.toBeNull();
+      expect(askingSentence()).toBeNull();
+      expect(describedBy(control())).toEqual([ROTATE_OFF_DEPARTING]);
+    });
+
+    // Confirm is held by a rotation's *asking*, not its whole run, so Confirm
+    // can be pressed while a run walks — and then this control is held by
+    // asking over a run in flight. Asking's sentence renders, because a run in
+    // flight gets none of its own, and the busy attribute stays the run's.
+    it('says asking’s sentence over a run in flight, and stays busy', () => {
+      // Arrange
+      flow.working.set(true);
+      rotations.running.set(true);
+      tick();
+
+      // Act
+      ask();
+
+      // Assert
+      expect(askingSentence()).not.toBeNull();
+      expect(describedBy(control())).toEqual([ROTATE_OFF_ASKING]);
+      expect(control()?.getAttribute('aria-busy')).toBe('true');
+      expect(control()?.getAttribute('aria-disabled')).toBe('true');
+    });
+
+    it('names nothing once the hold ends', () => {
+      // Arrange
+      ask();
+
+      // Act
+      emailFlow.asking.set(false);
+      tick();
+
+      // Assert
+      expect(askingSentence()).toBeNull();
+      expect(control()?.hasAttribute('aria-describedby')).toBe(false);
+      expect(control()?.getAttribute('aria-disabled')).not.toBe('true');
+    });
+  });
 });
 
 // A pair as the driver publishes it: the record that keeps its name and the one
@@ -1174,7 +1391,7 @@ function pair(
 }
 
 // The texts of every element an input's `aria-describedby` names.
-function describedBy(input: HTMLInputElement | null): string[] {
+function describedBy(input: Element | null): string[] {
   const ids = (input?.getAttribute('aria-describedby') ?? '')
     .split(/\s+/)
     .filter((id) => id !== '');

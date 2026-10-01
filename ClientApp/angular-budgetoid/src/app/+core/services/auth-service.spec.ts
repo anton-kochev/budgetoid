@@ -3,7 +3,7 @@ import {
   HttpTestingController,
   provideHttpClientTesting,
 } from '@angular/common/http/testing';
-import { DOCUMENT } from '@angular/core';
+import { DOCUMENT, signal, type WritableSignal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import {
   type AuthConfig,
@@ -22,8 +22,13 @@ import {
   type MockInstance,
   vi,
 } from 'vitest';
+import {
+  expectSilenceExcept,
+  spyOnEveryConsoleMethod,
+} from '../../../testing/console-spies';
 import { AuthService } from './auth-service';
 import { ConfigurationService } from './configuration.service';
+import { ProviderDepartureService } from './provider-departure.service';
 
 // FR-086: no image supplied by the identity provider is displayed. This pins something
 // stronger than dropping the picture claim — the app reads no ID-token claim at all. A
@@ -41,6 +46,85 @@ const EXCHANGE_MARKER = 'budgetoid-provider-exchange';
 
 const PROVIDER_ANSWER =
   'https://budgetoid.app/register#access_token=a&id_token=b&state=c';
+
+// Where the stubbed clients below say the page went. Any address will do: the
+// stub never builds one, and nothing in these cases reads it.
+const STUB_LOGIN_URL = 'https://accounts.google.com/o/oauth2/v2/auth?stub';
+
+// A stand-in for `ProviderDepartureService`, so a departure is recorded rather
+// than taken: jsdom cannot leave its own origin. `departing` behaves like the
+// real one — `begin` and `depart` raise it, `settle` lowers it — and every
+// member is a fresh spy per call, because spies persist across cases here.
+interface FakeDeparture {
+  readonly service: Pick<
+    ProviderDepartureService,
+    'departing' | 'begin' | 'depart' | 'settle'
+  >;
+  readonly departing: WritableSignal<boolean>;
+  readonly opened: string[];
+  readonly depart: Mock<(uri: string) => void>;
+  readonly settle: Mock<() => void>;
+}
+
+function fakeDeparture(): FakeDeparture {
+  const departing = signal(false);
+  const opened: string[] = [];
+  const depart = vi.fn((uri: string): void => {
+    departing.set(true);
+    opened.push(uri);
+  });
+  const settle = vi.fn((): void => {
+    departing.set(false);
+  });
+
+  return {
+    service: {
+      departing: departing.asReadonly(),
+      begin: vi.fn((): void => {
+        departing.set(true);
+      }),
+      depart,
+      settle,
+    },
+    departing,
+    opened,
+    depart,
+    settle,
+  };
+}
+
+// A stubbed provider client that leaves the way the library does: once
+// `initLoginFlow` has run, the `openUri` handed to `configure` is called on a
+// later microtask — the implicit flow builds its address through promises —
+// with whatever the case's own `initLoginFlow` throwing first. Also answers
+// `tryLogin` and `resetImplicitFlow` unless the case brings its own, so a case
+// written about one member does not fail over another it never mentions.
+function departingClient(
+  oAuth: Partial<Record<keyof OAuthService, unknown>>,
+): Record<string, unknown> {
+  let openUri: ((uri: string) => void) | undefined;
+  const client: Record<string, unknown> = {
+    tryLogin: vi.fn(() => Promise.resolve(false)),
+    resetImplicitFlow: vi.fn(),
+    ...oAuth,
+  };
+  const configure = oAuth.configure;
+  if (typeof configure === 'function') {
+    client['configure'] = (config: AuthConfig): void => {
+      openUri = config.openUri;
+      (configure as (config: AuthConfig) => void)(config);
+    };
+  }
+  const initLoginFlow = oAuth.initLoginFlow;
+  if (typeof initLoginFlow === 'function') {
+    client['initLoginFlow'] = (...args: unknown[]): void => {
+      (initLoginFlow as (...args: unknown[]) => void)(...args);
+      void Promise.resolve().then(() => openUri?.(STUB_LOGIN_URL));
+    };
+  }
+
+  return client;
+}
 
 function exposedObservables(service: AuthService): Observable<unknown>[] {
   const members = service as unknown as Record<string, unknown>;
@@ -108,7 +192,7 @@ describe('AuthService', () => {
     // Arrange
     const oAuth = {
       configure: vi.fn(),
-      loadDiscoveryDocumentAndTryLogin: vi.fn(() =>
+      loadDiscoveryDocument: vi.fn(() =>
         Promise.reject(new Error('The discovery document is unreachable.')),
       ),
     } as unknown as OAuthService;
@@ -154,11 +238,12 @@ describe('AuthService', () => {
   // path that used to make the call, against a stub.
   it('schedules no background renewal of the provider token', async () => {
     // Arrange
-    const loadDiscoveryDocumentAndTryLogin = vi.fn(() => Promise.resolve(true));
+    const loadDiscoveryDocument = vi.fn(() => Promise.resolve(true));
     const setupAutomaticSilentRefresh = vi.fn();
     const oAuth = {
       configure: vi.fn(),
-      loadDiscoveryDocumentAndTryLogin,
+      loadDiscoveryDocument,
+      tryLogin: vi.fn(() => Promise.resolve(false)),
       setupAutomaticSilentRefresh,
     } as unknown as OAuthService;
 
@@ -180,7 +265,7 @@ describe('AuthService', () => {
     // Assert
     // The first expectation is not decoration: without it an `initialize()`
     // that had been emptied out entirely would satisfy the second one.
-    expect(loadDiscoveryDocumentAndTryLogin).toHaveBeenCalledOnce();
+    expect(loadDiscoveryDocument).toHaveBeenCalledOnce();
     expect(setupAutomaticSilentRefresh).not.toHaveBeenCalled();
   });
 
@@ -195,7 +280,7 @@ describe('AuthService', () => {
     const configure = vi.fn();
     const service = authServiceOver({
       configure,
-      loadDiscoveryDocumentAndTryLogin: vi.fn(() => Promise.resolve(true)),
+      loadDiscoveryDocument: vi.fn(() => Promise.resolve(true)),
     });
 
     // Act
@@ -210,18 +295,25 @@ describe('AuthService', () => {
   // could make on its own is switched on by a key, and the ones that matter are
   // not the ones anybody would think to refuse by name. `sessionChecksEnabled`
   // plants an iframe polling the provider's session endpoint, `useSilentRefresh`
-  // and `silentRefreshRedirectUri` arm the hidden-iframe renewal, `openUri`
-  // replaces how the client leaves the page, `responseType` swaps the flow for
-  // one that posts to the token endpoint. Equality refuses any key passed to
-  // `configure` beyond these, named here or not. It cannot see a library
-  // default that turns a contact on with no key passed, nor a direct property
-  // write on `OAuthService` that bypasses `configure`.
+  // and `silentRefreshRedirectUri` arm the hidden-iframe renewal,
+  // `responseType` swaps the flow for one that posts to the token endpoint.
+  // Equality refuses any key passed to `configure` beyond these, named here or
+  // not. It cannot see a library default that turns a contact on with no key
+  // passed, nor a direct property write on `OAuthService` that bypasses
+  // `configure`.
+  //
+  // **`openUri` is in the set, and it is the one key here that replaces how the
+  // client leaves the page.** It hands the departure to
+  // `ProviderDepartureService`, which says the page is departing and then
+  // assigns the address — the same top-level navigation the library's default
+  // makes, and nothing besides. The case after this one holds that it hands
+  // the address on and does nothing else with it.
   it('configures the client with exactly the keys it needs', async () => {
     // Arrange
     const configure = vi.fn();
     const service = authServiceOver({
       configure,
-      loadDiscoveryDocumentAndTryLogin: vi.fn(() => Promise.resolve(true)),
+      loadDiscoveryDocument: vi.fn(() => Promise.resolve(true)),
     });
 
     // Act
@@ -235,10 +327,126 @@ describe('AuthService', () => {
     expect(keys).toEqual([
       'clientId',
       'issuer',
+      'openUri',
       'redirectUri',
       'scope',
       'strictDiscoveryDocumentValidation',
     ]);
+  });
+
+  // The departure is the departure service's, so a press that reaches the
+  // provider is a press that says so — and a restore from the back-forward
+  // cache has one flag to put back. The address goes through unchanged.
+  it('hands the address the client opens to the departure service, unchanged', async () => {
+    // Arrange
+    const configure = vi.fn();
+    const departure = fakeDeparture();
+    const service = authServiceOver(
+      {
+        configure,
+        loadDiscoveryDocument: vi.fn(() => Promise.resolve(true)),
+      },
+      { departure },
+    );
+    await service.initialize();
+    const config = configure.mock.calls[0]?.[0] as AuthConfig | undefined;
+
+    // Act
+    config?.openUri?.('https://accounts.google.com/o/oauth2/v2/auth?x=1');
+
+    // Assert
+    expect(departure.depart).toHaveBeenCalledOnce();
+    expect(departure.depart).toHaveBeenCalledWith(
+      'https://accounts.google.com/o/oauth2/v2/auth?x=1',
+    );
+  });
+
+  // **The return leg reads the answer and the outbound leg never does.** A
+  // press that read the fragment again would meet a stale answer the library
+  // refused once, refuse it again, and answer unavailable on every press until
+  // a reload — the dead Change the real-client cases below reproduce.
+  it('reads no answer off the address on a press that starts the exchange', async () => {
+    // Arrange
+    const tryLogin = vi.fn(() => Promise.resolve(false));
+    const service = authServiceOver({
+      configure: vi.fn(),
+      loadDiscoveryDocument: vi.fn(() => Promise.resolve(true)),
+      tryLogin,
+      initLoginFlow: vi.fn(),
+    });
+
+    // Act
+    service.signIn();
+    await afterPendingWork();
+
+    // Assert — the control first: a press that never reached the client
+    // would read nothing either.
+    expect(sessionStorage.getItem(EXCHANGE_MARKER)).toBe('started');
+    expect(tryLogin).not.toHaveBeenCalled();
+  });
+
+  // The library clears the fragment itself by assigning `location.hash`,
+  // which pushes a history entry still holding the token. The service removes
+  // the fragment itself, in place, so the library is told not to.
+  it('reads the answer with the fragment left for the service to remove', async () => {
+    // Arrange
+    const tryLogin = vi.fn((options?: unknown) => {
+      void options;
+
+      return Promise.resolve(false);
+    });
+    const service = authServiceOver({
+      configure: vi.fn(),
+      loadDiscoveryDocument: vi.fn(() => Promise.resolve(true)),
+      tryLogin,
+    });
+
+    // Act
+    await service.initialize();
+
+    // Assert
+    expect(tryLogin).toHaveBeenCalledOnce();
+    expect(tryLogin.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({ preventClearHashAfterLogin: true }),
+    );
+  });
+
+  // A refused answer says nothing about the discovery document, which loaded.
+  // Forgetting it would cost the next press a second fetch (NFR-025).
+  it('keeps the discovery document when the answer is refused', async () => {
+    // Arrange
+    const loadDiscoveryDocument = vi.fn(() => Promise.resolve(true));
+    const service = authServiceOver({
+      configure: vi.fn(),
+      loadDiscoveryDocument,
+      tryLogin: vi.fn(() =>
+        Promise.reject(new Error('Validating access_token failed.')),
+      ),
+      initLoginFlow: vi.fn(),
+    });
+    await service.initialize();
+
+    // Act
+    service.signIn();
+    await afterPendingWork();
+
+    // Assert
+    expect(loadDiscoveryDocument).toHaveBeenCalledOnce();
+  });
+
+  // The `APP_INITIALIZER` awaits this, so a refusal is not a blank page.
+  it('finishes initializing when the answer is refused', async () => {
+    // Arrange
+    const service = authServiceOver({
+      configure: vi.fn(),
+      loadDiscoveryDocument: vi.fn(() => Promise.resolve(true)),
+      tryLogin: vi.fn(() =>
+        Promise.reject(new Error('Validating access_token failed.')),
+      ),
+    });
+
+    // Act & Assert
+    await expect(service.initialize()).resolves.toBeUndefined();
   });
 
   // NFR-025 is about how often the provider hears from this browser, so a second
@@ -246,10 +454,10 @@ describe('AuthService', () => {
   // on the same page, or two presses — must not be a second discovery fetch.
   it('fetches the discovery document once however many times it is asked', async () => {
     // Arrange
-    const loadDiscoveryDocumentAndTryLogin = vi.fn(() => Promise.resolve(true));
+    const loadDiscoveryDocument = vi.fn(() => Promise.resolve(true));
     const service = authServiceOver({
       configure: vi.fn(),
-      loadDiscoveryDocumentAndTryLogin,
+      loadDiscoveryDocument,
     });
 
     // Act
@@ -257,7 +465,7 @@ describe('AuthService', () => {
     await service.initialize();
 
     // Assert
-    expect(loadDiscoveryDocumentAndTryLogin).toHaveBeenCalledOnce();
+    expect(loadDiscoveryDocument).toHaveBeenCalledOnce();
   });
 
   // The memo holds a success, never a failure. Held, one unreachable moment
@@ -265,7 +473,7 @@ describe('AuthService', () => {
   // screen saying why a press does nothing.
   it('asks the provider again after it could not be reached', async () => {
     // Arrange
-    const loadDiscoveryDocumentAndTryLogin = vi
+    const loadDiscoveryDocument = vi
       .fn<() => Promise<boolean>>()
       .mockRejectedValueOnce(
         new Error('The discovery document is unreachable.'),
@@ -273,7 +481,7 @@ describe('AuthService', () => {
       .mockResolvedValueOnce(true);
     const service = authServiceOver({
       configure: vi.fn(),
-      loadDiscoveryDocumentAndTryLogin,
+      loadDiscoveryDocument,
     });
     await service.initialize();
 
@@ -281,7 +489,7 @@ describe('AuthService', () => {
     await service.initialize();
 
     // Assert
-    expect(loadDiscoveryDocumentAndTryLogin).toHaveBeenCalledTimes(2);
+    expect(loadDiscoveryDocument).toHaveBeenCalledTimes(2);
   });
 
   // Nothing configures the client at bootstrap any more, so the press that
@@ -292,8 +500,8 @@ describe('AuthService', () => {
     const reached: string[] = [];
     const service = authServiceOver({
       configure: vi.fn(),
-      loadDiscoveryDocumentAndTryLogin: vi.fn(() => {
-        reached.push('loadDiscoveryDocumentAndTryLogin');
+      loadDiscoveryDocument: vi.fn(() => {
+        reached.push('loadDiscoveryDocument');
 
         return Promise.resolve(true);
       }),
@@ -307,19 +515,16 @@ describe('AuthService', () => {
     await afterPendingWork();
 
     // Assert
-    expect(reached).toEqual([
-      'loadDiscoveryDocumentAndTryLogin',
-      'initLoginFlow',
-    ]);
+    expect(reached).toEqual(['loadDiscoveryDocument', 'initLoginFlow']);
   });
 
   it('starts the exchange without a second fetch once the client is prepared', async () => {
     // Arrange
-    const loadDiscoveryDocumentAndTryLogin = vi.fn(() => Promise.resolve(true));
+    const loadDiscoveryDocument = vi.fn(() => Promise.resolve(true));
     const initLoginFlow = vi.fn();
     const service = authServiceOver({
       configure: vi.fn(),
-      loadDiscoveryDocumentAndTryLogin,
+      loadDiscoveryDocument,
       initLoginFlow,
     });
     await service.initialize();
@@ -330,7 +535,7 @@ describe('AuthService', () => {
 
     // Assert
     expect(initLoginFlow).toHaveBeenCalledOnce();
-    expect(loadDiscoveryDocumentAndTryLogin).toHaveBeenCalledOnce();
+    expect(loadDiscoveryDocument).toHaveBeenCalledOnce();
   });
 
   // With no discovery document there is no login endpoint to send anybody to;
@@ -340,7 +545,7 @@ describe('AuthService', () => {
     const initLoginFlow = vi.fn();
     const service = authServiceOver({
       configure: vi.fn(),
-      loadDiscoveryDocumentAndTryLogin: vi.fn(() =>
+      loadDiscoveryDocument: vi.fn(() =>
         Promise.reject(new Error('The discovery document is unreachable.')),
       ),
       initLoginFlow,
@@ -362,7 +567,7 @@ describe('AuthService', () => {
     const markerAtDeparture: (string | null)[] = [];
     const service = authServiceOver({
       configure: vi.fn(),
-      loadDiscoveryDocumentAndTryLogin: vi.fn(() => Promise.resolve(true)),
+      loadDiscoveryDocument: vi.fn(() => Promise.resolve(true)),
       initLoginFlow: vi.fn(() => {
         markerAtDeparture.push(sessionStorage.getItem(EXCHANGE_MARKER));
       }),
@@ -383,7 +588,7 @@ describe('AuthService', () => {
     // Arrange
     const service = authServiceOver({
       configure: vi.fn(),
-      loadDiscoveryDocumentAndTryLogin: vi.fn(() =>
+      loadDiscoveryDocument: vi.fn(() =>
         Promise.reject(new Error('The discovery document is unreachable.')),
       ),
       initLoginFlow: vi.fn(),
@@ -404,7 +609,7 @@ describe('AuthService', () => {
     // Arrange
     const service = authServiceOver({
       configure: vi.fn(),
-      loadDiscoveryDocumentAndTryLogin: vi.fn(() => Promise.resolve(true)),
+      loadDiscoveryDocument: vi.fn(() => Promise.resolve(true)),
       initLoginFlow: vi.fn(),
     });
     await service.initialize();
@@ -425,7 +630,7 @@ describe('AuthService', () => {
     const initLoginFlow = vi.fn();
     const service = authServiceOver({
       configure: vi.fn(),
-      loadDiscoveryDocumentAndTryLogin: vi.fn(() => Promise.resolve(true)),
+      loadDiscoveryDocument: vi.fn(() => Promise.resolve(true)),
       initLoginFlow,
     });
     const setItem = vi
@@ -454,7 +659,7 @@ describe('AuthService', () => {
     // Arrange
     const service = authServiceOver({
       configure: vi.fn(),
-      loadDiscoveryDocumentAndTryLogin: vi.fn(() => Promise.resolve(true)),
+      loadDiscoveryDocument: vi.fn(() => Promise.resolve(true)),
     });
     sessionStorage.setItem(EXCHANGE_MARKER, 'started');
 
@@ -469,7 +674,7 @@ describe('AuthService', () => {
     // Arrange
     const service = authServiceOver({
       configure: vi.fn(),
-      loadDiscoveryDocumentAndTryLogin: vi.fn(() =>
+      loadDiscoveryDocument: vi.fn(() =>
         Promise.reject(new Error('The discovery document is unreachable.')),
       ),
     });
@@ -491,7 +696,7 @@ describe('AuthService', () => {
     // Arrange
     const service = authServiceOver({
       configure: vi.fn(),
-      loadDiscoveryDocumentAndTryLogin: vi.fn(() => Promise.resolve(true)),
+      loadDiscoveryDocument: vi.fn(() => Promise.resolve(true)),
     });
     sessionStorage.setItem(EXCHANGE_MARKER, 'started');
     const removeItem = vi
@@ -867,13 +1072,19 @@ function afterPendingWork(): Promise<void> {
 // One `AuthService` over a stubbed provider, configured with the production
 // redirect address and sitting at whatever address the case names. The
 // document is a stub rather than the runner's, because the address is the
-// input under test and jsdom's cannot leave its own origin.
+// input under test and jsdom's cannot leave its own origin. The client leaves
+// the way the library does — see `departingClient` — into a fake departure.
 function authServiceOver(
   oAuth: Partial<Record<keyof OAuthService, unknown>>,
   {
     href = 'https://budgetoid.app/welcome',
     redirectUri = 'https://budgetoid.app/register',
-  }: { readonly href?: string; readonly redirectUri?: string | null } = {},
+    departure = fakeDeparture(),
+  }: {
+    readonly href?: string;
+    readonly redirectUri?: string | null;
+    readonly departure?: FakeDeparture;
+  } = {},
 ): AuthService {
   const google =
     redirectUri === null
@@ -883,7 +1094,8 @@ function authServiceOver(
   TestBed.configureTestingModule({
     providers: [
       AuthService,
-      { provide: OAuthService, useValue: oAuth },
+      { provide: OAuthService, useValue: departingClient(oAuth) },
+      { provide: ProviderDepartureService, useValue: departure.service },
       {
         provide: ConfigurationService,
         useValue: { getConfig: () => ({ apiBaseUrl: '', auth: { google } }) },
@@ -1056,15 +1268,23 @@ function emailChangeServiceOver({
 } = {}): {
   readonly service: AuthService;
   readonly departures: Departure[];
-  readonly loadDiscoveryDocumentAndTryLogin: Mock<() => Promise<boolean>>;
+  readonly loadDiscoveryDocument: Mock<() => Promise<boolean>>;
+  readonly tryLogin: Mock<() => Promise<boolean>>;
+  readonly departure: FakeDeparture;
 } {
   const departures: Departure[] = [];
-  const loadDiscoveryDocumentAndTryLogin = vi.fn(discovery);
+  const loadDiscoveryDocument = vi.fn(discovery);
+  const tryLogin = vi.fn(() => Promise.resolve(false));
+  const departure = fakeDeparture();
   const client: Record<string, unknown> = {
     configure: vi.fn((config: object) => {
       Object.assign(client, config);
     }),
-    loadDiscoveryDocumentAndTryLogin,
+    loadDiscoveryDocument,
+    tryLogin,
+    resetImplicitFlow: vi.fn(),
+    // Leaves the way the library does: the address is opened through the
+    // configured `openUri` on a later microtask, never inside this call.
     initLoginFlow: vi.fn((state?: unknown, params?: unknown) => {
       if (refuseDeparture) {
         throw new Error('The login endpoint is refused.');
@@ -1075,6 +1295,12 @@ function emailChangeServiceOver({
         state,
         params,
       });
+      const openUri = client['openUri'];
+      void Promise.resolve().then(() => {
+        if (typeof openUri === 'function') {
+          (openUri as (uri: string) => void)(STUB_LOGIN_URL);
+        }
+      });
     }),
   };
 
@@ -1082,6 +1308,7 @@ function emailChangeServiceOver({
     providers: [
       AuthService,
       { provide: OAuthService, useValue: client },
+      { provide: ProviderDepartureService, useValue: departure.service },
       {
         provide: ConfigurationService,
         useValue: {
@@ -1107,7 +1334,9 @@ function emailChangeServiceOver({
   return {
     service: TestBed.inject(AuthService),
     departures,
-    loadDiscoveryDocumentAndTryLogin,
+    loadDiscoveryDocument,
+    tryLogin,
+    departure,
   };
 }
 
@@ -1139,25 +1368,6 @@ describe('AuthService email change', () => {
     ]);
   });
 
-  // T7. The redirect address is a property on one shared client, so the
-  // email change's write outlives its own trip unless something puts the
-  // registration address back. A registration press after it must still come
-  // back to `/register`, marked as a registration.
-  it('signIn after startEmailChange on the same page load still returns to the registration screen', async () => {
-    // Arrange
-    const { service, departures } = emailChangeServiceOver();
-    await service.startEmailChange();
-
-    // Act
-    service.signIn();
-    await afterPendingWork();
-
-    // Assert
-    expect(departures).toHaveLength(2);
-    expect(departures[1]?.redirectUri).toBe('https://budgetoid.app/register');
-    expect(departures[1]?.marker).toBe('started');
-  });
-
   // A departure the library refuses synchronously leaves the page where it is,
   // so the marker it was about to rely on must not stay behind.
   it('startEmailChange answers unavailable and leaves no marker when the departure throws', async () => {
@@ -1176,7 +1386,7 @@ describe('AuthService email change', () => {
   // to contact on the way to finding that out.
   it('startEmailChange answers unavailable, contacts nobody and leaves no marker when no redirect address is configured', async () => {
     // Arrange
-    const { service, departures, loadDiscoveryDocumentAndTryLogin } =
+    const { service, departures, loadDiscoveryDocument } =
       emailChangeServiceOver({ emailChangeRedirectUri: null });
 
     // Act
@@ -1184,7 +1394,7 @@ describe('AuthService email change', () => {
 
     // Assert
     expect(outcome).toBe('unavailable');
-    expect(loadDiscoveryDocumentAndTryLogin).not.toHaveBeenCalled();
+    expect(loadDiscoveryDocument).not.toHaveBeenCalled();
     expect(departures).toEqual([]);
     expect(sessionStorage.getItem(EXCHANGE_MARKER)).toBeNull();
   });
@@ -1207,15 +1417,105 @@ describe('AuthService email change', () => {
 
   it('startEmailChange reuses the preparation a registration return already made', async () => {
     // Arrange
-    const { service, loadDiscoveryDocumentAndTryLogin } =
-      emailChangeServiceOver();
+    const { service, loadDiscoveryDocument } = emailChangeServiceOver();
     await service.initialize();
 
     // Act
     await service.startEmailChange();
 
     // Assert
-    expect(loadDiscoveryDocumentAndTryLogin).toHaveBeenCalledOnce();
+    expect(loadDiscoveryDocument).toHaveBeenCalledOnce();
+  });
+
+  it('startEmailChange reads no answer off the address', async () => {
+    // Arrange
+    const { service, tryLogin } = emailChangeServiceOver();
+
+    // Act
+    const outcome = await service.startEmailChange();
+
+    // Assert — the control first: a press that went nowhere reads nothing.
+    expect(outcome).toBe('leaving');
+    expect(tryLogin).not.toHaveBeenCalled();
+  });
+
+  // **Departing is raised by the press, before anything is awaited**, so the
+  // settings screen's Change goes off in the same turn it was pressed, and a
+  // second press in that turn finds it off.
+  it('startEmailChange says the page is departing before it has asked anybody anything', () => {
+    // Arrange
+    const { service, departure } = emailChangeServiceOver({
+      discovery: () => new Promise<boolean>(() => undefined),
+    });
+
+    // Act
+    void service.startEmailChange();
+
+    // Assert
+    expect(departure.departing()).toBe(true);
+  });
+
+  it('startEmailChange is still departing once the page is on its way', async () => {
+    // Arrange
+    const { service, departure } = emailChangeServiceOver();
+
+    // Act
+    const outcome = await service.startEmailChange();
+
+    // Assert
+    expect(outcome).toBe('leaving');
+    expect(departure.opened).toEqual([STUB_LOGIN_URL]);
+    expect(departure.departing()).toBe(true);
+    expect(departure.settle).not.toHaveBeenCalled();
+  });
+
+  // Every press that does not leave puts the flag back, or the screen's
+  // controls stay held off by a departure that never happened.
+  it.each([
+    {
+      shape: 'no redirect address is configured',
+      options: { emailChangeRedirectUri: null },
+    },
+    {
+      shape: 'the provider cannot be reached',
+      options: {
+        discovery: (): Promise<boolean> =>
+          Promise.reject(new Error('The discovery document is unreachable.')),
+      },
+    },
+    {
+      shape: 'the departure throws',
+      options: { refuseDeparture: true },
+    },
+  ])(
+    'startEmailChange is not departing once it answers unavailable because $shape',
+    async ({ options }) => {
+      // Arrange
+      const { service, departure } = emailChangeServiceOver(options);
+
+      // Act
+      const outcome = await service.startEmailChange();
+
+      // Assert
+      expect(outcome).toBe('unavailable');
+      expect(departure.departing()).toBe(false);
+    },
+  );
+
+  it('signIn is not departing once it could not reach the provider', async () => {
+    // Arrange
+    const { service, departure } = emailChangeServiceOver({
+      discovery: () =>
+        Promise.reject(new Error('The discovery document is unreachable.')),
+    });
+
+    // Act
+    service.signIn();
+    await afterPendingWork();
+
+    // Assert
+    expect(departure.opened).toEqual([]);
+    expect(departure.departing()).toBe(false);
   });
 
   // T6. The marker says which trip this tab is on, the address says where the
@@ -1387,17 +1687,28 @@ describe('AuthService email change against the real provider client', () => {
     readonly http: HttpTestingController;
     readonly configure: MockInstance<(config: AuthConfig) => void>;
     readonly opened: string[];
+    readonly departure: FakeDeparture;
   }
 
   // jsdom's own origin, because the library reads the answer off the
   // runner's `window.location` and nothing else.
-  function realClient(): RealClient {
+  //
+  // **The departure is a fake `ProviderDepartureService`**, not an `openUri`
+  // slipped into the real `configure`: the service hands the library its own
+  // `openUri`, and these cases are about what that hand-off does. The page
+  // itself cannot leave jsdom, so the fake records the address instead.
+  // `configure` is spied and passed through untouched.
+  function realClient({
+    scope = 'openid email',
+  }: { readonly scope?: string | null } = {}): RealClient {
+    const departure = fakeDeparture();
     TestBed.configureTestingModule({
       providers: [
         AuthService,
         provideOAuthClient(),
         provideHttpClient(),
         provideHttpClientTesting(),
+        { provide: ProviderDepartureService, useValue: departure.service },
         {
           provide: ConfigurationService,
           useValue: {
@@ -1408,7 +1719,7 @@ describe('AuthService email change against the real provider client', () => {
                   clientId: 'client',
                   redirectUri: `${location.origin}/register`,
                   emailChangeRedirectUri: `${location.origin}/app/settings`,
-                  scope: 'openid email',
+                  ...(scope === null ? {} : { scope }),
                 },
               },
             }),
@@ -1416,28 +1727,56 @@ describe('AuthService email change against the real provider client', () => {
         },
       ],
     });
-    const oAuth = TestBed.inject(OAuthService);
-    const opened: string[] = [];
-    // The departure is captured by adding `openUri` on the way into the real
-    // `configure`; the page itself cannot leave jsdom.
-    const original = oAuth.configure.bind(oAuth);
-    const configure = vi
-      .spyOn(oAuth, 'configure')
-      .mockImplementation((config: AuthConfig) => {
-        original({
-          ...config,
-          openUri: (uri: string) => {
-            opened.push(uri);
-          },
-        });
-      });
+    const configure = vi.spyOn(TestBed.inject(OAuthService), 'configure');
 
     return {
       service: TestBed.inject(AuthService),
       http: TestBed.inject(HttpTestingController),
       configure,
-      opened,
+      opened: departure.opened,
+      departure,
     };
+  }
+
+  // Answers every discovery fetch the press made, and the key-set fetch
+  // behind each, until a round finds none; returns how many there were. For a
+  // press whose discovery count is the question: an implementation that
+  // fetched again must still settle, so the case goes red on the count rather
+  // than timing out on a request nobody answered.
+  async function answerAnyDiscovery(
+    http: HttpTestingController,
+  ): Promise<number> {
+    let fetched = 0;
+    for (let round = 0; round < 10; round += 1) {
+      await afterPendingWork();
+      const discovery = http.match(DISCOVERY_URL);
+      const keySet = http.match(KEY_SET_URL);
+      for (const request of discovery) {
+        fetched += 1;
+        request.flush({
+          issuer: 'https://accounts.google.com',
+          // eslint-disable-next-line @typescript-eslint/naming-convention
+          authorization_endpoint:
+            'https://accounts.google.com/o/oauth2/v2/auth',
+          // eslint-disable-next-line @typescript-eslint/naming-convention
+          jwks_uri: KEY_SET_URL,
+        });
+      }
+      for (const request of keySet) {
+        request.flush({ keys: [] });
+      }
+      if (round > 1 && discovery.length === 0 && keySet.length === 0) {
+        break;
+      }
+    }
+
+    return fetched;
+  }
+
+  // The event a browser fires on a page it restores from the back-forward
+  // cache — `persisted: true` — or shows afresh — `persisted: false`.
+  function pageShow(persisted: boolean): void {
+    window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted }));
   }
 
   // Answers the one discovery fetch and the key-set fetch behind it.
@@ -1822,5 +2161,463 @@ describe('AuthService email change against the real provider client', () => {
 
     // Assert
     expect(service.takeEmailChangeReturn()).toBeNull();
+  });
+
+  // **A refused return must not cost the page its next trip.** The library
+  // rejects a nonce it did not store without clearing the fragment, so a
+  // press that prepared the client again would re-read that same stale answer,
+  // be refused again, and answer unavailable on every press until a reload.
+  // One discovery fetch for the page load, whatever the return became.
+  it('a press after a return refused on its nonce leaves for Google, with one discovery fetch', async () => {
+    // Arrange
+    const { service, http, opened } = realClient();
+    sessionStorage.setItem('nonce', 'stored-nonce');
+    sessionStorage.setItem(EXCHANGE_MARKER, EMAIL_CHANGE_MARKER);
+    const token = idTokenFor('forged-nonce');
+    landOn(
+      `/app/settings#access_token=at&id_token=${token}&state=forged-nonce`,
+    );
+    const initialized = service.initialize();
+    await answerDiscovery(http);
+    await initialized;
+    const returned = service.takeEmailChangeReturn();
+
+    // Act
+    const pressed = service.startEmailChange();
+    const fetchedAgain = await answerAnyDiscovery(http);
+    const outcome = await pressed;
+    await afterPendingWork();
+
+    // Assert — the control first: a return that had been accepted would
+    // prove nothing about a refused one.
+    expect(returned).toEqual({ kind: 'unconfirmed' });
+    expect(outcome).toBe('leaving');
+    expect(fetchedAgain).toBe(0);
+    expect(opened).toHaveLength(1);
+    expect(
+      new URL(opened[0] ?? 'https://nothing.invalid/').searchParams.get(
+        'redirect_uri',
+      ),
+    ).toBe(`${location.origin}/app/settings`);
+  });
+
+  // The same dead press without any return leg at all: a reload of an old
+  // answer-shaped address in a tab holding no marker. Nothing read the
+  // fragment at boot, so the press must not read it either.
+  it('a press on a cold load carrying a stale answer and no marker leaves for Google', async () => {
+    // Arrange
+    const { service, http, opened } = realClient();
+    const token = idTokenFor('stale-nonce');
+    landOn(`/app/settings#access_token=at&id_token=${token}&state=stale-nonce`);
+
+    // Act
+    const pressed = service.startEmailChange();
+    await answerAnyDiscovery(http);
+    const outcome = await pressed;
+    await afterPendingWork();
+
+    // Assert
+    expect(outcome).toBe('leaving');
+    expect(opened).toHaveLength(1);
+  });
+
+  // Registration shares the client and the preparation, so it shared the
+  // defect: Continue with Google after a refused return did nothing at all.
+  it('signIn after a refused registration return leaves for Google', async () => {
+    // Arrange
+    const { service, http, opened } = realClient();
+    sessionStorage.setItem('nonce', 'stored-nonce');
+    sessionStorage.setItem(EXCHANGE_MARKER, 'started');
+    const token = idTokenFor('forged-nonce');
+    landOn(`/register#access_token=at&id_token=${token}&state=forged-nonce`);
+    const initialized = service.initialize();
+    await answerDiscovery(http);
+    await initialized;
+
+    // Act
+    service.signIn();
+    const fetchedAgain = await answerAnyDiscovery(http);
+    await afterPendingWork();
+
+    // Assert
+    expect(fetchedAgain).toBe(0);
+    expect(opened).toHaveLength(1);
+    expect(
+      new URL(opened[0] ?? 'https://nothing.invalid/').searchParams.get(
+        'redirect_uri',
+      ),
+    ).toBe(`${location.origin}/register`);
+  });
+
+  // The four ways a return can end. Each lands with a query the provider did
+  // not write, so a removal that dropped more than the fragment is seen.
+  interface ReturnOutcome {
+    readonly outcome: string;
+    readonly storedNonce: string;
+    readonly fragment: () => string;
+    readonly reachable: boolean;
+  }
+
+  const RETURN_OUTCOMES: readonly ReturnOutcome[] = [
+    {
+      outcome: 'validated',
+      storedNonce: 'trip-nonce',
+      fragment: () =>
+        `access_token=at&id_token=${idTokenFor('trip-nonce')}&state=trip-nonce`,
+      reachable: true,
+    },
+    {
+      outcome: 'refused on its nonce',
+      storedNonce: 'stored-nonce',
+      fragment: () =>
+        `access_token=at&id_token=${idTokenFor('forged-nonce')}&state=forged-nonce`,
+      reachable: true,
+    },
+    {
+      outcome: 'refused by the provider',
+      storedNonce: 'trip-nonce',
+      fragment: () => 'error=access_denied&state=trip-nonce',
+      reachable: true,
+    },
+    {
+      outcome: 'unreachable',
+      storedNonce: 'trip-nonce',
+      fragment: () =>
+        `access_token=at&id_token=${idTokenFor('trip-nonce')}&state=trip-nonce`,
+      reachable: false,
+    },
+  ];
+
+  async function readReturn(
+    { service, http }: RealClient,
+    reachable: boolean,
+  ): Promise<void> {
+    const initialized = service.initialize();
+    if (reachable) {
+      await answerDiscovery(http);
+    } else {
+      await afterPendingWork();
+      http
+        .expectOne(DISCOVERY_URL)
+        .error(new ProgressEvent('error'), { status: 0, statusText: '' });
+    }
+    await initialized;
+  }
+
+  // **The token leaves the address bar in place, whatever the return became**
+  // (docs/design/components.md, "Changing the email address"). The library's
+  // own clearing assigns `location.hash`, which pushes a new entry and leaves
+  // the token-bearing one behind for Back to return to; and on a refused nonce
+  // or an unreachable provider it clears nothing at all.
+  it.each(RETURN_OUTCOMES)(
+    'an email-change return $outcome removes the answer from the address without adding a history entry',
+    async ({ storedNonce, fragment, reachable }) => {
+      // Arrange
+      const client = realClient();
+      sessionStorage.setItem('nonce', storedNonce);
+      sessionStorage.setItem(EXCHANGE_MARKER, EMAIL_CHANGE_MARKER);
+      landOn(`/app/settings?from=test#${fragment()}`);
+      const entries = history.length;
+
+      // Act
+      await readReturn(client, reachable);
+
+      // Assert
+      expect(location.hash).toBe('');
+      expect(location.pathname + location.search).toBe(
+        '/app/settings?from=test',
+      );
+      expect(history.length).toBe(entries);
+    },
+  );
+
+  it.each(RETURN_OUTCOMES)(
+    'a registration return $outcome removes the answer from the address without adding a history entry',
+    async ({ storedNonce, fragment, reachable }) => {
+      // Arrange
+      const client = realClient();
+      sessionStorage.setItem('nonce', storedNonce);
+      sessionStorage.setItem(EXCHANGE_MARKER, 'started');
+      landOn(`/register?from=test#${fragment()}`);
+      const entries = history.length;
+
+      // Act
+      await readReturn(client, reachable);
+
+      // Assert
+      expect(location.hash).toBe('');
+      expect(location.pathname + location.search).toBe('/register?from=test');
+      expect(history.length).toBe(entries);
+    },
+  );
+
+  // **The entry's state is carried over, because the router keeps its
+  // navigation id there.** The removal rewrites the entry the page is on; one
+  // rewritten with `null` loses the id, and the router's next popstate on that
+  // entry reads as a navigation it never made. Held for every way a return can
+  // end, because the removal runs on every one of them.
+  it.each(RETURN_OUTCOMES)(
+    'an email-change return $outcome keeps the history entry’s state when it removes the answer',
+    async ({ storedNonce, fragment, reachable }) => {
+      // Arrange
+      const client = realClient();
+      sessionStorage.setItem('nonce', storedNonce);
+      sessionStorage.setItem(EXCHANGE_MARKER, EMAIL_CHANGE_MARKER);
+      const routerState = { navigationId: 7 };
+      history.replaceState(routerState, '', `/app/settings#${fragment()}`);
+
+      // Act
+      await readReturn(client, reachable);
+
+      // Assert
+      // The removal ran — without it the state survives by default and this
+      // case pins nothing.
+      expect(location.hash).toBe('');
+      expect(history.state).toEqual(routerState);
+    },
+  );
+
+  // A page left for Google by an email-change press, settled.
+  async function leftForGoogle(client: RealClient): Promise<void> {
+    landOn('/app/settings');
+    const pressed = client.service.startEmailChange();
+    await answerDiscovery(client.http);
+    expect(await pressed).toBe('leaving');
+    await afterPendingWork();
+  }
+
+  // **Back from Google restores this page from the back-forward cache**, with
+  // its memory intact: the library still believes a flow is running and
+  // refuses to start another, the marker still says a trip is out, and the
+  // screen still says it is leaving. The restore is the one moment this page
+  // learns the trip was abandoned.
+  describe('a restore from the back-forward cache', () => {
+    it('lets a second press leave for Google', async () => {
+      // Arrange
+      const client = realClient();
+      await leftForGoogle(client);
+      pageShow(true);
+
+      // Act
+      const outcome = await client.service.startEmailChange();
+      await afterPendingWork();
+
+      // Assert
+      expect(outcome).toBe('leaving');
+      expect(client.opened).toHaveLength(2);
+    });
+
+    it('removes the marker', async () => {
+      // Arrange
+      const client = realClient();
+      await leftForGoogle(client);
+      const before = sessionStorage.getItem(EXCHANGE_MARKER);
+
+      // Act
+      pageShow(true);
+
+      // Assert — the control first: a press that left no marker proves
+      // nothing about its removal.
+      expect(before).toBe(EMAIL_CHANGE_MARKER);
+      expect(sessionStorage.getItem(EXCHANGE_MARKER)).toBeNull();
+    });
+
+    it('reads departing as false', async () => {
+      // Arrange
+      const client = realClient();
+      await leftForGoogle(client);
+      const before = client.departure.departing();
+
+      // Act
+      pageShow(true);
+
+      // Assert
+      expect(before).toBe(true);
+      expect(client.departure.departing()).toBe(false);
+    });
+
+    // A page shown afresh — the first load, or one the cache did not keep —
+    // has nothing stale to put back, and a trip just started is not abandoned.
+    it('is not what a pageshow that restored nothing is', async () => {
+      // Arrange
+      const client = realClient();
+      await leftForGoogle(client);
+
+      // Act
+      pageShow(false);
+
+      // Assert
+      expect(sessionStorage.getItem(EXCHANGE_MARKER)).toBe(EMAIL_CHANGE_MARKER);
+      expect(client.departure.departing()).toBe(true);
+      expect(client.departure.settle).not.toHaveBeenCalled();
+    });
+
+    // The listener goes with the service, so a torn-down injector cannot
+    // reach into a later page's storage.
+    it('is not heard by an AuthService that has been destroyed', () => {
+      // Arrange
+      const client = realClient();
+      sessionStorage.setItem(EXCHANGE_MARKER, EMAIL_CHANGE_MARKER);
+      TestBed.resetTestingModule();
+
+      // Act
+      pageShow(true);
+
+      // Assert — the service was built, so a listener could have been added.
+      expect(client.service).toBeInstanceOf(AuthService);
+      expect(sessionStorage.getItem(EXCHANGE_MARKER)).toBe(EMAIL_CHANGE_MARKER);
+      expect(client.departure.settle).not.toHaveBeenCalled();
+    });
+
+    // T7, against the real client. The redirect address is a property on one
+    // shared client, so the email change's write outlives its own trip unless
+    // something puts the registration address back — and after a restore the
+    // library will only start the second trip at all if the first was reset.
+    it('lets signIn after startEmailChange return to the registration screen', async () => {
+      // Arrange
+      const client = realClient();
+      await leftForGoogle(client);
+      pageShow(true);
+
+      // Act
+      client.service.signIn();
+      await afterPendingWork();
+
+      // Assert
+      expect(client.opened).toHaveLength(2);
+      expect(
+        new URL(
+          client.opened[1] ?? 'https://nothing.invalid/',
+        ).searchParams.get('redirect_uri'),
+      ).toBe(`${location.origin}/register`);
+      expect(sessionStorage.getItem(EXCHANGE_MARKER)).toBe('started');
+    });
+  });
+
+  // **A departure the library drops without saying so.** On the implicit
+  // flow `initLoginFlow` returns at once and builds the address through
+  // promises; a rejection there is only printed by the library, and the
+  // address is never opened. Storage refusing the library's `nonce` is one
+  // such rejection.
+  describe('a departure whose address could not be built', () => {
+    function refuseTheNonce(): void {
+      const setItem = Storage.prototype.setItem;
+      vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (
+        this: Storage,
+        key: string,
+        value: string,
+      ): void {
+        if (key === 'nonce') {
+          throw new DOMException('The quota has been exceeded.');
+        }
+        setItem.call(this, key, value);
+      });
+    }
+
+    async function pressRefused(client: RealClient): Promise<string> {
+      landOn('/app/settings');
+      // The library prints the rejection itself; silenced, not asserted.
+      spyOnEveryConsoleMethod();
+      refuseTheNonce();
+      const pressed = client.service.startEmailChange();
+      await answerDiscovery(client.http);
+      const outcome = await pressed;
+      await afterPendingWork();
+
+      return outcome;
+    }
+
+    it('answers unavailable', async () => {
+      // Arrange
+      const client = realClient();
+
+      // Act
+      const outcome = await pressRefused(client);
+
+      // Assert
+      expect(client.opened).toEqual([]);
+      expect(outcome).toBe('unavailable');
+    });
+
+    it('leaves no marker', async () => {
+      // Arrange
+      const client = realClient();
+
+      // Act
+      await pressRefused(client);
+
+      // Assert
+      expect(sessionStorage.getItem(EXCHANGE_MARKER)).toBeNull();
+    });
+
+    it('is not departing', async () => {
+      // Arrange
+      const client = realClient();
+
+      // Act
+      await pressRefused(client);
+
+      // Assert
+      expect(client.departure.departing()).toBe(false);
+    });
+
+    it('lets a second press open Google', async () => {
+      // Arrange
+      const client = realClient();
+      await pressRefused(client);
+      vi.restoreAllMocks();
+
+      // Act
+      const outcome = await client.service.startEmailChange();
+      await afterPendingWork();
+
+      // Assert
+      expect(outcome).toBe('leaving');
+      expect(client.opened).toHaveLength(1);
+    });
+  });
+
+  // The library's other silent drop: a flow it believes is already running —
+  // a restore it was never told about — makes `initLoginFlow` return without
+  // opening anything. The press that meets it must say so and reset the flow,
+  // or every later press meets it too.
+  it('a press the client silently drops answers unavailable, and the next press leaves', async () => {
+    // Arrange
+    const client = realClient();
+    await leftForGoogle(client);
+
+    // Act
+    const dropped = await client.service.startEmailChange();
+    await afterPendingWork();
+    const next = await client.service.startEmailChange();
+    await afterPendingWork();
+
+    // Assert
+    expect(dropped).toBe('unavailable');
+    expect(next).toBe('leaving');
+    expect(client.opened).toHaveLength(2);
+  });
+
+  // The library builds the address with `scope.match(…)` inside a promise, so
+  // a configuration without a scope is a rejection it prints and a press that
+  // goes nowhere. Asked before the trip, like the redirect address.
+  it('a missing scope answers unavailable and nothing prints', async () => {
+    // Arrange
+    const client = realClient({ scope: null });
+    landOn('/app/settings');
+    const consoleSpies = spyOnEveryConsoleMethod();
+
+    // Act
+    const pressed = client.service.startEmailChange();
+    await answerAnyDiscovery(client.http);
+    const outcome = await pressed;
+    await afterPendingWork();
+
+    // Assert
+    expect(outcome).toBe('unavailable');
+    expect(client.opened).toEqual([]);
+    expect(sessionStorage.getItem(EXCHANGE_MARKER)).toBeNull();
+    expect(client.departure.departing()).toBe(false);
+    expectSilenceExcept(consoleSpies);
   });
 });

@@ -7,6 +7,10 @@
 // marked, what the changing request carries, and that nothing is sent before
 // the press. The seams replaced are the ones that are not this flow's:
 // - `AuthService`, whose hand-off and trip to Google are pinned in its own spec;
+// - `ProviderDepartureService`, whose `departing` is what `leaving` is read
+//   from — raised by the trip the way the real `AuthService` raises it, before
+//   its first await, and lowered when the trip answers `unavailable` or the
+//   page comes back from the back-forward cache;
 // - `WebauthnCeremonyService`, which reaches `navigator.credentials`;
 // - the three screen flows the Change gate reads, each reduced to the one
 //   signal the design book names;
@@ -24,7 +28,9 @@ import {
 import {
   EnvironmentInjector,
   createEnvironmentInjector,
+  isSignal,
   signal,
+  type Signal,
   type WritableSignal,
 } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
@@ -43,6 +49,7 @@ import type {
 } from '@app-core/security/webauthn-encoding';
 import { AuthService } from '@app-core/services/auth-service';
 import { ConfigurationService } from '@app-core/services/configuration.service';
+import { ProviderDepartureService } from '@app-core/services/provider-departure.service';
 import {
   afterEach,
   beforeEach,
@@ -204,6 +211,11 @@ interface Screen {
   readonly rotating: WritableSignal<boolean>;
   readonly exporting: WritableSignal<boolean>;
   readonly unlocking: WritableSignal<boolean>;
+  // The two passkey checks that hold Confirm, each the narrow reading its own
+  // flow publishes — never the flow's whole `working`, which the three above
+  // stand for.
+  readonly unlockAsking: WritableSignal<boolean>;
+  readonly rotationAsking: WritableSignal<boolean>;
   readonly email: WritableSignal<string | null>;
   readonly emailFailed: WritableSignal<boolean>;
   readonly loadEmail: Mock<() => Promise<'loaded' | 'failed'>>;
@@ -241,6 +253,7 @@ describe('EmailChangeFlowService', () => {
   let ceremony: CeremonyStub;
   let takeEmailChangeReturn: Mock<() => HandOff>;
   let startEmailChange: Mock<() => Promise<Trip>>;
+  let departing: WritableSignal<boolean>;
   let screen: Screen;
 
   beforeEach(async () => {
@@ -255,6 +268,7 @@ describe('EmailChangeFlowService', () => {
     startEmailChange = vi.fn<() => Promise<Trip>>(() =>
       Promise.resolve('leaving'),
     );
+    departing = signal(false);
 
     const email = signal<string | null>(ME.email);
     let pendingRead: ((outcome: 'loaded' | 'failed') => void) | null = null;
@@ -264,6 +278,8 @@ describe('EmailChangeFlowService', () => {
       rotating: signal(false),
       exporting: signal(false),
       unlocking: signal(false),
+      unlockAsking: signal(false),
+      rotationAsking: signal(false),
       email,
       emailFailed,
       // Shaped like the real read: the row clears when the read starts, and
@@ -318,10 +334,34 @@ describe('EmailChangeFlowService', () => {
   function configureScreen(handOff: HandOff): void {
     takeEmailChangeReturn.mockReturnValue(handOff);
 
+    const departure: Pick<
+      ProviderDepartureService,
+      'departing' | 'begin' | 'depart' | 'settle'
+    > = {
+      departing: departing.asReadonly(),
+      begin: () => departing.set(true),
+      depart: () => departing.set(true),
+      settle: () => departing.set(false),
+    };
+    // The trip as the real `AuthService` runs it around the answer a case
+    // chooses: departing is raised before the first await, and lowered by the
+    // trip itself when it answers `unavailable`. A rejection — outside the
+    // contract — lowers nothing; the flow is what puts Change back then.
     const auth: Pick<
       AuthService,
       'takeEmailChangeReturn' | 'startEmailChange'
-    > = { takeEmailChangeReturn, startEmailChange };
+    > = {
+      takeEmailChangeReturn,
+      startEmailChange: async (): Promise<Trip> => {
+        departure.begin();
+        const trip = await startEmailChange();
+        if (trip === 'unavailable') {
+          departure.settle();
+        }
+
+        return trip;
+      },
+    };
     const settings: Pick<
       SettingsService,
       'exporting' | 'email' | 'emailFailed' | 'loadEmail' | 'loadCredentials'
@@ -332,11 +372,21 @@ describe('EmailChangeFlowService', () => {
       loadEmail: screen.loadEmail,
       loadCredentials: screen.loadCredentials,
     };
-    const unlock: Pick<AccountUnlockService, 'working'> = {
+    // `asking` beside `working`, each a signal of its own and neither composed
+    // from the other, so a flow reading the wrong one parts company with the
+    // case. Typed as an intersection rather than a `Pick` of `asking`, so this
+    // file still compiles while the flows do not publish it yet.
+    const unlock: Pick<AccountUnlockService, 'working'> & {
+      readonly asking: Signal<boolean>;
+    } = {
       working: screen.unlocking,
+      asking: screen.unlockAsking,
     };
-    const rotation: Pick<RotationFlowService, 'working'> = {
+    const rotation: Pick<RotationFlowService, 'working'> & {
+      readonly asking: Signal<boolean>;
+    } = {
       working: screen.rotating,
+      asking: screen.rotationAsking,
     };
 
     TestBed.configureTestingModule({
@@ -348,6 +398,7 @@ describe('EmailChangeFlowService', () => {
           useValue: { getConfig: () => ({ apiBaseUrl: API_ORIGIN, auth: {} }) },
         },
         { provide: AuthService, useValue: auth },
+        { provide: ProviderDepartureService, useValue: departure },
         { provide: WebauthnCeremonyService, useValue: ceremony },
         { provide: SettingsService, useValue: settings },
         { provide: AccountUnlockService, useValue: unlock },
@@ -1194,6 +1245,58 @@ describe('EmailChangeFlowService', () => {
       expect(flow.phase()).toBe('leaving');
     });
 
+    // **Back from Google restores this page from the back-forward cache**,
+    // still saying it is leaving. `AuthService` hears the restore and lowers
+    // `departing`; the flow reads `leaving` from that one flag, so Change
+    // comes back with it — and with no line, because nothing failed.
+    it('a restore from the cache puts Change back with no line', async () => {
+      // Arrange
+      const flow = flowWith(null);
+      flow.change();
+      await settle();
+      const before = flow.phase();
+
+      // Act
+      departing.set(false);
+
+      // Assert — the control first: a press that never left proves nothing.
+      expect(before).toBe('leaving');
+      expect(flow.phase()).toBe('rest');
+      expect(flow.changePressable()).toBe(true);
+      expect(flow.word()).toBeNull();
+    });
+
+    // The press dropped the answer the page held, so the restore cannot bring
+    // back the waiting state: Confirm would be drawn over no token at all.
+    it('a restore from the cache after a press that dropped an answer puts Change back, not Confirm', async () => {
+      // Arrange
+      const flow = flowWith(ANSWERED);
+      flow.change();
+      await settle();
+
+      // Act
+      departing.set(false);
+
+      // Assert
+      expect(flow.phase()).toBe('rest');
+      expect(flow.confirmPressable()).toBe(false);
+      expect(flow.address()).toBeNull();
+    });
+
+    // One flag, read rather than copied: a page departing for Google by any
+    // press is a page on its way there, and Change says so.
+    it('reads leaving from the departure, not from a copy of its own', () => {
+      // Arrange
+      const flow = flowWith(null);
+
+      // Act
+      departing.set(true);
+
+      // Assert
+      expect(flow.phase()).toBe('leaving');
+      expect(flow.changePressable()).toBe(false);
+    });
+
     it('asks for one trip however often it is pressed while leaving', async () => {
       // Arrange
       startEmailChange.mockReturnValue(new Promise<Trip>(() => undefined));
@@ -1226,6 +1329,9 @@ describe('EmailChangeFlowService', () => {
       expect(flow.phase()).toBe('leaving');
     });
 
+    // A rejection is outside the trip's contract, so nothing promises the
+    // trip lowered `departing` on its way out. The page has not left, which
+    // the flow knows, so the flow settles the departure itself.
     it('says unavailable when the trip rejects, and offers Change again', async () => {
       // Arrange
       startEmailChange.mockRejectedValueOnce(new Error('The trip threw.'));
@@ -1238,6 +1344,8 @@ describe('EmailChangeFlowService', () => {
       // Assert
       expect(flow.word()).toBe('unavailable');
       expect(flow.phase()).toBe('rest');
+      expect(flow.changePressable()).toBe(true);
+      expect(departing()).toBe(false);
     });
 
     // A held answer is for this load's trip; starting another one replaces it.
@@ -1348,6 +1456,251 @@ describe('EmailChangeFlowService', () => {
       // Assert
       expect(flow.changePressable()).toBe(false);
       expect(flow.changeHold()).toBeNull();
+    });
+  });
+
+  // **The flow holds other controls as well as being held by them**
+  // (docs/design/components.md, "Holds in both directions"). Two readings go
+  // out — departing, which `ProviderDepartureService` already publishes, and
+  // *asking*, Confirm's passkey check — and two come in: Confirm is held off by
+  // the unlock's passkey check and by a rotation's, because the browser runs
+  // one passkey check at a time. Both are passkey checks and nothing wider.
+  //
+  // `asking` and `confirmHold` are read by name, so a flow that does not
+  // publish them yet fails on an assertion naming the member rather than
+  // taking the file down with a compile error.
+  describe('holds in both directions', () => {
+    function readingOf<T>(
+      flow: EmailChangeFlowService,
+      name: string,
+    ): Signal<T> {
+      const member = (flow as unknown as Record<string, unknown>)[name];
+
+      expect(
+        typeof member === 'function' && isSignal(member),
+        `EmailChangeFlowService publishes no "${name}" signal.`,
+      ).toBe(true);
+
+      return member as Signal<T>;
+    }
+
+    describe('asking', () => {
+      it('is not asking at rest', () => {
+        // Act
+        const flow = flowWith(null);
+
+        // Assert
+        expect(flow.phase()).toBe('rest');
+        expect(readingOf<boolean>(flow, 'asking')()).toBe(false);
+      });
+
+      it('is not asking while it waits for the press', async () => {
+        // Act
+        const flow = flowWith(ANSWERED);
+        await settle();
+
+        // Assert
+        expect(flow.phase()).toBe('waiting');
+        expect(readingOf<boolean>(flow, 'asking')()).toBe(false);
+      });
+
+      it('is asking while the challenge is fetched', async () => {
+        // Arrange
+        const flow = flowWith(ANSWERED);
+
+        // Act
+        flow.confirm();
+        await requestTo(OPTIONS_URL);
+
+        // Assert
+        expect(flow.phase()).toBe('asserting');
+        expect(readingOf<boolean>(flow, 'asking')()).toBe(true);
+      });
+
+      it('is asking while the device is asked', async () => {
+        // Arrange
+        const flow = flowWith(ANSWERED);
+        ceremony.held = true;
+
+        // Act
+        flow.confirm();
+        (await requestTo(OPTIONS_URL)).flush(OPTIONS);
+        await settle();
+
+        // Assert
+        expect(ceremony.assertPasskey).toHaveBeenCalledOnce();
+        expect(readingOf<boolean>(flow, 'asking')()).toBe(true);
+
+        ceremony.settle();
+        (await requestTo(EMAIL_CHANGE_URL)).flush({ sessionsEnded: 0 });
+      });
+
+      // The changing request after the check is not part of it: the device is
+      // asked nothing while it is out.
+      it('is not asking while the changing request is out', async () => {
+        // Arrange
+        const flow = flowWith(ANSWERED);
+
+        // Act
+        const changing = await reachTheChangingRequest(flow);
+
+        // Assert
+        expect(flow.phase()).toBe('changing');
+        expect(readingOf<boolean>(flow, 'asking')()).toBe(false);
+
+        changing.flush({ sessionsEnded: 0 });
+      });
+
+      // Departing is the other reading, and it is not this one.
+      it('is not asking while the page leaves for Google', () => {
+        // Arrange
+        startEmailChange.mockReturnValue(new Promise<Trip>(() => undefined));
+        const flow = flowWith(null);
+
+        // Act
+        flow.change();
+
+        // Assert
+        expect(flow.phase()).toBe('leaving');
+        expect(readingOf<boolean>(flow, 'asking')()).toBe(false);
+      });
+    });
+
+    describe('Confirm held by another passkey check', () => {
+      const CHECKS = [
+        { check: 'the unlock’s passkey check', term: 'unlockAsking' as const },
+        {
+          check: 'a rotation’s passkey check',
+          term: 'rotationAsking' as const,
+        },
+      ];
+
+      it.each(CHECKS)(
+        'is not pressable while $check runs',
+        async ({ term }) => {
+          // Arrange
+          const flow = flowWith(ANSWERED);
+          await settle();
+          // Waiting, established: the only other thing that holds Confirm off.
+          expect(flow.phase()).toBe('waiting');
+
+          // Act
+          screen[term].set(true);
+
+          // Assert
+          expect(flow.confirmPressable()).toBe(false);
+        },
+      );
+
+      it.each(CHECKS)(
+        'fetches no challenge and asks the device nothing when pressed while $check runs',
+        async ({ term }) => {
+          // Arrange
+          const flow = flowWith(ANSWERED);
+          await settle();
+          screen[term].set(true);
+
+          // Act
+          // The handler's gate: Material halts the click on anchors only, so
+          // a press on a Confirm drawn off still arrives — and an ungated one
+          // raises a second system sheet over the first, which the browser
+          // refuses or uses to cut the first one off.
+          flow.confirm();
+          await settle();
+
+          // Assert
+          expect(http.match(OPTIONS_URL)).toEqual([]);
+          expect(ceremony.assertPasskey).not.toHaveBeenCalled();
+          expect(flow.phase()).toBe('waiting');
+          expect(flow.address()).toBe(NEW_ADDRESS);
+          expect(flow.word()).toBeNull();
+        },
+      );
+
+      it.each(CHECKS)(
+        'is pressable again, and its press runs, once $check ends',
+        async ({ term }) => {
+          // Arrange
+          // Control for the two cases above: a hold that latched would pass
+          // both and never let a held answer be confirmed.
+          const flow = flowWith(ANSWERED);
+          await settle();
+          screen[term].set(true);
+          flow.confirm();
+          await settle();
+
+          // Act
+          screen[term].set(false);
+          flow.confirm();
+
+          // Assert
+          expect(flow.confirmPressable()).toBe(false);
+          expect(flow.phase()).toBe('asserting');
+          await requestTo(OPTIONS_URL);
+        },
+      );
+
+      // Narrower than `working`, on both sides: the unlock's account-key read
+      // and a rotation's walk ask the device for nothing. The existing
+      // `is not held off by $reason` cases hold the same width from the
+      // `working` side; these hold it with `asking` false beside it.
+      it.each([
+        {
+          reason: 'the unlock’s account-key read',
+          term: 'unlocking' as const,
+        },
+        { reason: 'a rotation’s walk', term: 'rotating' as const },
+      ])('is not held by $reason', async ({ term }) => {
+        // Arrange
+        const flow = flowWith(ANSWERED);
+        await settle();
+
+        // Act
+        screen[term].set(true);
+
+        // Assert
+        expect(flow.confirmPressable()).toBe(true);
+        expect(readingOf<string | null>(flow, 'confirmHold')()).toBeNull();
+      });
+
+      // One sentence at a time. **When both are true the rotation's renders**,
+      // the order Change's table uses, so the screen ranks the two the same way
+      // wherever both are read.
+      it.each([
+        { unlock: false, rotation: false, hold: null },
+        { unlock: true, rotation: false, hold: 'unlock' },
+        { unlock: false, rotation: true, hold: 'rotation' },
+        { unlock: true, rotation: true, hold: 'rotation' },
+      ])(
+        'names $hold as the reason Confirm is off (unlock $unlock, rotation $rotation)',
+        async ({ unlock, rotation, hold }) => {
+          // Arrange
+          const flow = flowWith(ANSWERED);
+          await settle();
+
+          // Act
+          screen.unlockAsking.set(unlock);
+          screen.rotationAsking.set(rotation);
+
+          // Assert
+          expect(readingOf<string | null>(flow, 'confirmHold')()).toBe(hold);
+        },
+      );
+
+      // Its own press is busy, not held: the region says that, and a sentence
+      // above the control would say the same thing twice.
+      it('names no reason while its own press runs', async () => {
+        // Arrange
+        const flow = flowWith(ANSWERED);
+
+        // Act
+        flow.confirm();
+        await requestTo(OPTIONS_URL);
+
+        // Assert
+        expect(flow.confirmPressable()).toBe(false);
+        expect(readingOf<string | null>(flow, 'confirmHold')()).toBeNull();
+      });
     });
   });
 

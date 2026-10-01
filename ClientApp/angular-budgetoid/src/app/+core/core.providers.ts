@@ -127,13 +127,13 @@ export const provideAppCore = (): EnvironmentProviders =>
           //
           // **Here, and not in a resolver on `/register`, because the answer
           // has to be read before the router's first navigation.** The provider
-          // puts its tokens in the fragment and the library clears the fragment
-          // once it has read them — but a resolver runs inside a navigation
-          // whose target already holds that fragment, and the router writes its
-          // target back to the address bar *after* resolvers have run, so the
-          // tokens would come straight back. Awaited for the same reason the
-          // probe is: `/register` renders the address off the token this reads,
-          // and must not render before it.
+          // puts its tokens in the fragment and `initialize()` removes the
+          // fragment once the library has read them — but a resolver runs
+          // inside a navigation whose target already holds that fragment, and
+          // the router writes its target back to the address bar *after*
+          // resolvers have run, so the tokens would come straight back.
+          // Awaited for the same reason the probe is: `/register` renders the
+          // address off the token this reads, and must not render before it.
           //
           // After the probe, and skipped for a visitor it recognised:
           // `guestGuard` turns a session away from `/register`, so completing
@@ -148,6 +148,19 @@ export const provideAppCore = (): EnvironmentProviders =>
           ) {
             await auth.initialize();
           }
+
+          // **An answer nobody read leaves the address bar before the first
+          // route draws**, for the reason a read one does: a reload, a bookmark
+          // or a copied link would carry it on. Each leg above removes the
+          // answer it read; this takes the ones no leg read — a registration
+          // answer reaching a signed-in visitor, whose leg is skipped, or an
+          // answer in a tab that started no trip, where `returning` is `null`.
+          // Answer-shaped fragments only, so an in-page anchor survives.
+          //
+          // **Last, after every leg that might read the answer.** Moved above
+          // any of them, it removes the answer that leg was about to read. The
+          // router's first navigation then reads the address as this leaves it.
+          auth.discardUnreadAnswer();
         },
       deps: [
         ConfigurationService,

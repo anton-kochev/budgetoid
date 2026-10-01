@@ -1,6 +1,7 @@
-import { DOCUMENT, inject, Injectable } from '@angular/core';
+import { DestroyRef, DOCUMENT, inject, Injectable } from '@angular/core';
 import { OAuthService } from 'angular-oauth2-oidc';
 import { ConfigurationService } from './configuration.service';
+import { ProviderDepartureService } from './provider-departure.service';
 
 // The mark `signIn` leaves in this tab's `sessionStorage` immediately before
 // it sends the person to the provider, and the second half of what makes a
@@ -51,6 +52,29 @@ function assertedEmail(claims: unknown): string | null {
   return typeof email === 'string' && email.length > 0 ? email : null;
 }
 
+// Whether a fragment is shaped like a provider answer: a non-empty
+// `access_token`, `id_token` and `state` together, or a non-empty `error` on
+// its own. **Defined once**, because two questions ask it and must agree:
+// `providerReturn` — is the provider answering this page load? — and
+// `discardUnreadAnswer` — is there an answer on the address nobody read? A
+// second spelling that drifted would either leave an answer standing that the
+// return legs recognise, or take an in-page anchor that is somebody's link.
+function answerShaped(fragment: URLSearchParams): boolean {
+  const present = (key: string): boolean =>
+    (fragment.get(key) ?? '').length > 0;
+
+  return (
+    (present('access_token') && present('id_token') && present('state')) ||
+    present('error')
+  );
+}
+
+// Resolves on the next macrotask, by which time every microtask queued before
+// it has run. See `AuthService.leave` for why that is the right deadline.
+function nextMacrotask(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 function exchangeMark(): string | null {
   try {
     return sessionStorage.getItem(EXCHANGE_MARKER);
@@ -75,10 +99,11 @@ function unmarkExchange(): void {
   try {
     sessionStorage.removeItem(EXCHANGE_MARKER);
   } catch {
-    // Swallowed: both callers — `initialize` on the `APP_INITIALIZER` and
-    // `forgetProviderToken` on a session being published — must not fail
-    // over a mark. A marker that survives costs what the residual in
-    // `providerReturn` already names.
+    // Swallowed: no caller may fail over a mark — `initialize` on the
+    // `APP_INITIALIZER`, `forgetProviderToken` on a session being published,
+    // and a trip being abandoned, which still has to put `departing` back. A
+    // marker that survives costs what the residual in `providerReturn` already
+    // names.
   }
 }
 
@@ -89,11 +114,18 @@ export class AuthService {
   private readonly config = inject(ConfigurationService);
   private readonly oAuth = inject(OAuthService);
   private readonly document = inject(DOCUMENT);
+  private readonly departure = inject(ProviderDepartureService);
 
   // The one preparation of the client this page load makes, shared by every
-  // caller. Resolves `true` once the discovery document has loaded and any
-  // answer on the URL has been read, `false` when the provider could not be
-  // reached.
+  // caller. Resolves `true` once the discovery document has loaded, `false`
+  // when the provider could not be reached.
+  //
+  // **It loads the discovery document and reads no answer.** Reading the
+  // answer is the return leg's alone — {@link initialize} calls `tryLogin`
+  // after this resolves. Folded in here, every press would read the fragment
+  // again: on a page whose answer was refused once, a press meets the same
+  // stale answer, the library refuses it the same way, and Change answers
+  // unavailable on every press until a reload.
   //
   // **Memoized here, and not at either caller, because this service is the
   // only thing both legs share.** The return leg asks from the
@@ -108,8 +140,15 @@ export class AuthService {
   // **A success is held and a failure is not.** The field is cleared when the
   // load rejects, so the next press asks again. Held, one unreachable moment
   // would leave the provider button dead until a reload, with nothing on the
-  // screen saying why a press does nothing.
+  // screen saying why a press does nothing. **A refused answer is not a
+  // failure to prepare**: the document loaded, and forgetting it would cost the
+  // next press a second fetch (NFR-025).
   private ready: Promise<boolean> | null = null;
+
+  // How many times the client has opened an address, counted by the `openUri`
+  // handed to `configure`. {@link leave} compares it across a press to tell a
+  // departure from a press the library dropped without saying so.
+  #departures = 0;
 
   // What an email-change return left for the settings screen, taken once.
   // **Memory only, and a `#` field**: the id token is a credential, and a copy
@@ -117,6 +156,38 @@ export class AuthService {
   // hand it over a second time. The library's own copy is discarded the moment
   // this one is taken; see {@link initialize}.
   #emailChangeReturn: EmailChangeReturn | null = null;
+
+  // **A page restored from the back-forward cache is a trip abandoned, and
+  // `pageshow` with `persisted` is the one moment this page learns it.** Back
+  // from Google brings the page back with its memory as it left: the library
+  // still believes an implicit flow is running and silently drops the next
+  // `initLoginFlow`, the marker still says a trip is out, and `departing`
+  // still holds the screen in "Taking you to Google…". All three are put back
+  // by {@link abandonTrip}. A `pageshow` that restored nothing — a first load,
+  // or a page the cache did not keep — has nothing stale in memory, and a trip
+  // just started is not abandoned, so it is ignored.
+  //
+  // On the injected document's window, and only when it has one: a document
+  // without a view has no page to restore. Removed with the injector, so a
+  // torn-down one cannot reach into a later page's storage.
+  constructor() {
+    const view: Window | null | undefined = this.document.defaultView;
+
+    if (view === null || view === undefined) {
+      return;
+    }
+
+    const restored = (event: PageTransitionEvent): void => {
+      if (event.persisted) {
+        this.abandonTrip();
+      }
+    };
+
+    view.addEventListener('pageshow', restored);
+    inject(DestroyRef).onDestroy(() => {
+      view.removeEventListener('pageshow', restored);
+    });
+  }
 
   /**
    * Configures the client from the loaded app config, fetches the provider's
@@ -129,10 +200,22 @@ export class AuthService {
    * every cold load, it would tell Google the address and time of every visit
    * to the product, anonymous or signed in.
    *
-   * At most once per page load; see {@link ready}.
+   * The discovery fetch is made at most once per page load; see
+   * {@link ready}. **Only this method reads the answer** — `tryLogin`, after
+   * preparing — and a refusal there is the answer refused, never the provider
+   * unreachable, so it leaves the prepared client in place.
+   *
+   * **Removes the answer from the address bar on every outcome, in place.**
+   * The library is told not to clear it (`preventClearHashAfterLogin`),
+   * because it clears by assigning `location.hash`, which pushes a history
+   * entry and leaves the token-bearing one behind for Back to return to.
+   * `history.replaceState` rewrites the entry the page is on, so a reload, a
+   * bookmark or a copied link never carries a provider token. In `finally`,
+   * because a refusal and an unreachable provider leave the answer standing
+   * just as a success would.
    *
    * **Consumes the exchange marker once preparation has settled, whatever it
-   * settled as.** By then the library has read any answer off the URL, so no
+   * settled as.** By then any answer on the URL has been read, so no
    * exchange is outstanding in this tab. Left behind, the marker would make a
    * reload of an answer-shaped address — a history entry, a bookmark — prepare
    * the client again on every load. Not removed any earlier: until preparation
@@ -142,8 +225,8 @@ export class AuthService {
    * everything the library wrote for the trip.** The id token is kept in
    * memory for {@link takeEmailChangeReturn} only if the library validated it
    * — the token it stored is the one on this URL — and anything else is
-   * `unconfirmed`: a refusal, a nonce that does not match, a provider that
-   * could not be reached. Either way `logOut(true)` runs, because a nonce left
+   * `unconfirmed`: a refusal, a nonce that does not match, an answer
+   * `tryLogin` rejected, a provider that could not be reached. Either way `logOut(true)` runs, because a nonce left
    * behind by a failed return is exactly what a crafted answer would need.
    *
    * **The address is read from the claims the library decoded, after it
@@ -154,17 +237,17 @@ export class AuthService {
    * address are all that is kept; no other claim.
    */
   public async initialize(): Promise<void> {
-    // Asked before preparing: the library clears the fragment once it has
-    // read an answer, and the trip is judged by the page as it landed.
+    // Asked before anything is read: the `finally` below removes the fragment,
+    // and the trip is judged by the page as it landed.
     const trip = this.providerReturn();
     const answered = trip === 'email-change' ? this.idTokenOnUrl() : null;
 
     try {
-      const ready = await this.whenReady();
+      const read = (await this.whenReady()) && (await this.readAnswer());
 
       if (trip === 'email-change') {
         const validated =
-          ready && answered !== null && this.oAuth.getIdToken() === answered;
+          read && answered !== null && this.oAuth.getIdToken() === answered;
         const email = validated
           ? assertedEmail(this.oAuth.getIdentityClaims())
           : null;
@@ -179,6 +262,74 @@ export class AuthService {
         this.discardLibraryKeys();
       }
       unmarkExchange();
+      this.removeFragment();
+    }
+  }
+
+  // Whether the library read the answer on the address without refusing it.
+  // A rejection — a nonce that does not match, a token that does not validate —
+  // is swallowed, because the `APP_INITIALIZER` awaits {@link initialize}, and
+  // is not written into {@link ready}: the discovery document still loaded.
+  private async readAnswer(): Promise<boolean> {
+    try {
+      // The library leaves the fragment alone; see {@link initialize}.
+      await this.oAuth.tryLogin({ preventClearHashAfterLogin: true });
+
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Removes a provider answer nobody read from the address bar, and leaves any
+   * other fragment where it is.
+   *
+   * The `APP_INITIALIZER`'s last step, after every leg that might have read the
+   * answer: a registration answer reaching a signed-in visitor, whose leg is
+   * skipped, or an answer in a tab that started no trip. Each would otherwise
+   * stay in the address bar, and a reload, a
+   * bookmark or a copied link would carry it on. A leg that did read the answer
+   * has already removed it, so this finds nothing.
+   *
+   * **Answer-shaped only — the same predicate {@link providerReturn} asks.** An
+   * in-page anchor is somebody's link, not a credential.
+   */
+  public discardUnreadAnswer(): void {
+    if (answerShaped(this.fragment())) {
+      this.removeFragment();
+    }
+  }
+
+  // Rewrites the current history entry to the same address without its
+  // fragment. **`replaceState`, never `pushState` or a `location.hash` write**:
+  // both of those add an entry and leave the one holding the token behind for
+  // Back. The entry's existing state is carried over, because the router keeps
+  // its navigation id there.
+  //
+  // **Guarded on the document's view, and swallowed.** A document without a
+  // view has no history to rewrite. A throw — browsers throttle a page that
+  // calls `replaceState` too often, and it refuses an address on another
+  // origin, which only a document whose location is not its view's could build
+  // — must not reject the `APP_INITIALIZER`, which awaits both callers.
+  private removeFragment(): void {
+    const view: Window | null | undefined = this.document.defaultView;
+
+    if (view === null || view === undefined) {
+      return;
+    }
+
+    const { origin, pathname, search } = this.document.location;
+
+    try {
+      view.history.replaceState(
+        view.history.state,
+        '',
+        origin + pathname + search,
+      );
+    } catch {
+      // Swallowed; see above. The answer stays on the address, which is where
+      // it was before this ran.
     }
   }
 
@@ -208,6 +359,15 @@ export class AuthService {
       redirectUri: auth.google?.redirectUri,
       strictDiscoveryDocumentValidation: false,
       scope: auth.google?.scope,
+      // **How the client leaves the page, handed to the departure service.**
+      // It raises `departing` and assigns the address — the same top-level
+      // navigation the library's default makes — so the screen and a restore
+      // from the back-forward cache share one flag. Counted on the way, for
+      // {@link leave}. An arrow, because the library calls it unbound.
+      openUri: (uri: string): void => {
+        this.#departures += 1;
+        this.departure.depart(uri);
+      },
     });
     // **Guarded, because the `APP_INITIALIZER` awaits this method** on a page
     // load the provider redirected back to. The discovery document lives on
@@ -251,7 +411,7 @@ export class AuthService {
     // creating an account, which is what turned an unreachable Google from a
     // degraded sign-in into a blank page. Read it as argued, not as a drive-by.
     try {
-      await this.oAuth.loadDiscoveryDocumentAndTryLogin();
+      await this.oAuth.loadDiscoveryDocument();
 
       return true;
     } catch {
@@ -318,15 +478,8 @@ export class AuthService {
    */
   public providerReturn(): ProviderTrip | null {
     const google = this.config.getConfig().auth.google;
-    const fragment = this.fragment();
-    const present = (key: string): boolean =>
-      (fragment.get(key) ?? '').length > 0;
 
-    const answer =
-      (present('access_token') && present('id_token') && present('state')) ||
-      present('error');
-
-    if (!answer) {
+    if (!answerShaped(this.fragment())) {
       return null;
     }
 
@@ -459,14 +612,16 @@ export class AuthService {
    * address is a property on the one shared client, and
    * {@link startEmailChange} writes its own there; without this, a
    * registration press after it would come back to the settings screen.
+   *
+   * Raises and lowers `departing` exactly as {@link startEmailChange} does —
+   * see {@link startTrip}. Nothing on the registration screen reads it today;
+   * it is raised here because this service is its one writer, and a writer
+   * that raised it for one trip and not the other would leave the flag
+   * meaning "an email change is leaving" under a name that says otherwise.
    */
   public signIn(): void {
-    void this.whenReady().then((ready) => {
-      if (ready && markExchange('registration')) {
-        this.oAuth.redirectUri =
-          this.config.getConfig().auth.google?.redirectUri;
-        this.oAuth.initLoginFlow();
-      }
+    void this.startTrip('registration', () => {
+      this.oAuth.initLoginFlow();
     });
   }
 
@@ -482,34 +637,106 @@ export class AuthService {
    *
    * **Marks the tab as on an email change only once the provider has been
    * reached**, for {@link signIn}'s reason. Answers `'unavailable'` — and has
-   * contacted nobody when the address is not configured — whenever the page is
-   * not about to leave, so the caller can say so; it never rejects.
+   * contacted nobody when the address or the scope is not configured —
+   * whenever the page is not about to leave, so the caller can say so; it never
+   * rejects. **`'leaving'` means the client opened the address**, not that it
+   * was asked to; see {@link leave}.
    */
-  public async startEmailChange(): Promise<'leaving' | 'unavailable'> {
+  public startEmailChange(): Promise<'leaving' | 'unavailable'> {
+    return this.startTrip('email-change', () => {
+      this.oAuth.initLoginFlow('', { prompt: 'select_account' });
+    });
+  }
+
+  // The one way a press leaves for the provider, for both trips.
+  //
+  // **The configuration is checked before anything else, and before
+  // `departing` is raised.** Without a redirect address there is nowhere to
+  // come back to, and without a scope the library builds the address with
+  // `scope.match(…)` inside a promise, rejects, and prints the rejection to the
+  // console itself — past `logFailure` — on a press that goes nowhere. Neither
+  // is worth a discovery fetch to find out.
+  //
+  // **`departing` is raised before the first await**, so the screen's control
+  // goes off in the same turn it was pressed and a second press in that turn
+  // finds it off. From there every way out that does not leave goes through
+  // {@link abandonTrip}, which lowers it again — or the screen stays held off
+  // by a departure that never happened.
+  //
+  // The `catch` is for `start` throwing synchronously — the library refuses a
+  // login endpoint it will not use — and for nothing else that can fail here:
+  // {@link whenReady} and the mark never reject.
+  private async startTrip(
+    trip: ProviderTrip,
+    start: () => void,
+  ): Promise<'leaving' | 'unavailable'> {
+    const google = this.config.getConfig().auth.google;
     const redirectUri =
-      this.config.getConfig().auth.google?.emailChangeRedirectUri;
+      trip === 'registration'
+        ? google?.redirectUri
+        : google?.emailChangeRedirectUri;
 
-    if (redirectUri === undefined) {
+    if (redirectUri === undefined || google?.scope === undefined) {
       return 'unavailable';
     }
 
-    if (!(await this.whenReady()) || !markExchange('email-change')) {
-      return 'unavailable';
-    }
-
-    this.oAuth.redirectUri = redirectUri;
+    this.departure.begin();
 
     try {
-      this.oAuth.initLoginFlow('', { prompt: 'select_account' });
-    } catch {
-      // The library refuses a login endpoint it will not use synchronously;
-      // the page is not leaving, so neither may the marker stay.
-      unmarkExchange();
+      if ((await this.whenReady()) && markExchange(trip)) {
+        this.oAuth.redirectUri = redirectUri;
 
-      return 'unavailable';
+        if (await this.leave(start)) {
+          return 'leaving';
+        }
+      }
+    } catch {
+      // Abandoned below, like every other press that did not leave.
     }
 
-    return 'leaving';
+    this.abandonTrip();
+
+    return 'unavailable';
+  }
+
+  // Whether `start` made the client open an address.
+  //
+  // **Asked, because `initLoginFlow` returning says nothing.** On the implicit
+  // flow it returns at once and builds the address through a chain of
+  // promises, calling `openUri` at the end of it, and it drops a press two ways
+  // without throwing: a rejection anywhere in that chain — storage refusing
+  // the library's nonce, a missing scope — which it only prints; and a flow it
+  // believes is already running, which returns before building anything. A
+  // press read as leaving on either sits in "Taking you to Google…" forever.
+  //
+  // **One macrotask is the deadline**, because every microtask queued before
+  // it runs first, and the chain is promises over synchronous work —
+  // `createNonce` draws from `crypto.getRandomValues`. The code flow's PKCE
+  // digest is real asynchronous work that could miss it, which is one more
+  // reason that flow stays off; the configure key-set pin in
+  // `auth-service.spec.ts` refuses its `responseType`.
+  //
+  // A count rather than a one-shot hook: a hook a later press replaced would
+  // read the earlier press's departure as its own, and abandon a trip that left.
+  private async leave(start: () => void): Promise<boolean> {
+    const before = this.#departures;
+
+    start();
+    await nextMacrotask();
+
+    return this.#departures !== before;
+  }
+
+  // Puts back everything a trip that did not leave — or a page restored from
+  // the back-forward cache — would otherwise leave standing. **All three, on
+  // every such path**: the marker, or a later answer-shaped link reads as a
+  // return; the library's running flow, or it silently drops the next press;
+  // and `departing`, or the screen stays held off. Lowered last, so the screen
+  // never offers a press the first two would still drop.
+  private abandonTrip(): void {
+    unmarkExchange();
+    this.oAuth.resetImplicitFlow();
+    this.departure.settle();
   }
 
   /**

@@ -841,8 +841,9 @@ back-forward cache, when Change comes back with no line.
 stops a trip starting under other work. The reverse is two states of this flow, each a term on
 other controls' predicates:
 
-- **Departing** — this page is leaving for Google: from the Change press until the page leaves or
-  the press fails. It is the busy state above, read from outside the flow.
+- **Departing** — this page is leaving for Google: from the Change press until the page leaves,
+  the press fails, or the browser restores the page from its back-forward cache. It is the busy
+  state above, read from outside the flow, and `ProviderDepartureService` is its one owner.
 - **Asking** — Confirm's passkey check is running: the flow's `asserting` phase, which is the
   challenge and the ceremony. The changing request after it is not part of it.
 
@@ -866,8 +867,8 @@ a second press would fail or cut the first one off.
   sentence renders above it: departing's, because it ends the screen and every other sentence with
   it; then asking's; then the control's existing terms, in the order its own section gives.
 - **Each control's attribute and handler read one predicate**: its existing one, with the new terms
-  joined. The flow publishes departing and asking as readings and every control reads them rather
-  than restating them. Material's click-halt is applied to anchors only, so a term written into the
+  joined. `ProviderDepartureService` publishes departing and the flow publishes asking, and every
+  control reads them rather than restating them. Material's click-halt is applied to anchors only, so a term written into the
   attribute alone holds nothing.
 - **Each sentence renders above its control as visible prose, outside any region**, and the
   control names it with `aria-describedby` while it renders — Export's not-ready treatment.
@@ -1137,19 +1138,26 @@ order, named by the confirm control. Nothing is communicated by colour alone.
 
 ### What ships today
 
-**These parts of the chapter are specified and being built, and are not shipped:**
+**No departure from this chapter is known.** Every outcome line renders the table's sentence,
+`changed-unread` included.
 
-- **The holds in both directions.** Nothing holds Export, Unlock, Rotate keys or the Erase
-  everything trigger while this flow departs or asks, and nothing holds Confirm while the unlock's
-  or a rotation's passkey check runs. Every sentence in
-  [Holds in both directions](#holds-in-both-directions) and in the sections it links is
-  unrendered.
-- **The fragment removal.** The Google answer is not yet removed from the address bar with
-  `history.replaceState`.
-- **The back-forward-cache reset.** A page the browser restores from its back-forward cache can
-  still show *Taking you to Google…* with Change held busy.
-- **The `changed-unread` sentence.** What renders is the earlier copy, which said Budgetoid *took
-  the new address* — an act, false when the already-attached account came back.
+**The holds in both directions ship.** `ProviderDepartureService` publishes *departing* and
+`EmailChangeFlowService.asking` publishes *asking*; the Settings component joins both into
+`unlockHeld` and `erasureHeld`, `KeyRotationSectionComponent.held` joins them into the rotation
+control's predicate, and `SettingsService.exportBlock` answers `'departing'`. Confirm reads
+`confirmHold`, built from `AccountUnlockService.asking` and `RotationFlowService.asking`, the
+rotation's first. Every sentence in [Holds in both directions](#holds-in-both-directions) and in the
+sections it links renders above its control, named by `aria-describedby`.
+
+**The fragment removal ships.** `AuthService` removes the answer with `history.replaceState`,
+keeping the entry's state, on every way a return can end, and the boot's last step removes an
+answer-shaped fragment no leg read. `auth-service.spec.ts` holds the first ("…removes the answer
+from the address without adding a history entry", per outcome); `core.providers.cold-boot.spec.ts`
+holds the second ("an answer nobody claimed is gone before the first route").
+
+**The back-forward-cache reset ships.** A `pageshow` that restored the page lowers *departing*,
+removes the exchange marker and resets the library's flow, so Change comes back with no line and the
+next press leaves. `auth-service.spec.ts` holds it under "a restore from the back-forward cache".
 
 **The rest of the chapter is built, and no other departure is known.**
 `settings.component.html` renders both standing paragraphs, the three held-off sentences and the
@@ -2075,14 +2083,13 @@ renders, beside the visible line.
 
 ### What ships today
 
-**[Held off by the email change](#held-off-by-the-email-change) is specified and being built, and
-is not shipped**: nothing holds Unlock while the email change departs or asks, the two sentences
-are unrendered, the control's `disabled` and handler still read `working` directly rather than
-the screen's predicate, and the service publishes no *asking* reading for Confirm to read.
+**[Held off by the email change](#held-off-by-the-email-change) ships.** The control's `disabled`
+and the screen's `unlock()` both read `SettingsComponent.unlockHeld` — `working`, or the email
+change departing or asking — and `aria-busy` reads `working` alone. The two sentences render above
+the control, departing's first. `AccountUnlockService.asking` is published, and Confirm reads it.
 
-**Apart from that, the section is on `/app/settings`, above the Export/Erase pair as the placement
-rule requires and with Key rotation now between it and Export, and everything above renders as
-written** — the three
+**The section is on `/app/settings`, above the Export/Erase pair as the placement rule requires and
+with Key rotation now between it and Export, and everything above renders as written** — the three
 blocks, the thirteen lines, the one
 `role="status"` region and the control that leaves when the keys are held.
 `AccountKeyCustodyService` holds the account's keys and publishes the five failure words;
@@ -2622,18 +2629,17 @@ arrives unticked on every construction including over a staged run, and no path 
 anywhere else.
 
 **The gate is in the click handler as well as in the attribute**, and the handler is as wide as the
-attribute it backstops: the control is drawn unpressable on `working || !acknowledged()` and
-`rotate()` refuses on exactly that pair. Removing either half of it reddens exactly one case and the
-attribute assertions stay green, which is the measurement this rule exists for. **The email
-change's two terms are specified and being built, and are not in that pair yet**: nothing holds the
-control while the email change departs or asks, and
-[Rotating held off by the email change](#rotating-held-off-by-the-email-change) is unrendered.
+attribute it backstops: both read `KeyRotationSectionComponent.held` — a run in flight, the email
+change departing or asking, an unticked box, or a standing pair with no name in the field.
+**[Rotating held off by the email change](#rotating-held-off-by-the-email-change) ships**: its two
+sentences render above the checkbox, departing's first, and the control names the one that renders
+with `aria-describedby`. `RotationFlowService.asking` is published, and Confirm reads it.
 
-**"A run is in flight" has one owner.** `RotationFlowService.working` is `busy || rotations.running()`,
-and the control's `disabled`, its `aria-busy`, the component's handler and the flow's own entry point
-all read it. That last reader is what closes the gap named below this chapter's control section:
-`KeyRotationService.begin()` still has no re-entrancy guard of its own, and the flow is where the
-second press is refused.
+**"A run is in flight" has one owner.** `RotationFlowService.working` is `busy`, the driver's
+`walking` or its `running`. The control's `aria-busy` reads it, `held` reads it, and so does the
+flow's own entry point. That last reader is what closes the gap named below this chapter's control
+section: `KeyRotationService.begin()` still has no re-entrancy guard of its own, and the flow is
+where the second press is refused.
 
 **The flow is a fourth producer of a key-encryption key in this client**, and the first that spends a
 server-minted challenge for one. `ReauthenticationApiService` posts
@@ -2969,9 +2975,10 @@ for, refused:
 - **Departing holds it off too.** While the email change's page is leaving for Google, a press
   would start a file the page leaves before it is saved. The term and its sentence are below.
 - **The gate is in the handler as well as in the attribute, and both read one predicate with one
-  owner.** The service running the export publishes *pressable* — ready and not busy — and the
-  Settings screen joins it with the email change's *departing* into the control's one predicate,
-  because the email flow is provided on the screen and the service sees nothing of it. The
+  owner.** The service running the export publishes *pressable* — ready, not busy and not
+  departing — and that is the control's one predicate. *Departing* has a root owner,
+  `ProviderDepartureService`, that injects neither the service nor the email flow, so the service
+  reads it directly with no cycle; a join on the screen would only add a second spelling. The
   control's `disabled` and the handler's guard both read that predicate; `aria-busy` and the
   region's in-flight line read *busy* alone. Material's click-halt is applied to anchors only, so on
   a `<button>` the press arrives whatever the attribute says. The drift two spellings produce, and the defect it
@@ -3121,17 +3128,15 @@ communicated by colour alone.
 
 ### What ships today
 
-**One departure: the departing hold is specified and being built, and is not shipped.** Nothing
-holds Export while the email change's page leaves for Google, its sentence is unrendered, and the
-control reads the service's predicate directly rather than the screen's. **Apart from that, the
-section renders as this chapter specifies.** Both paragraphs are the copy above character for
-character. The control is Primary, `disabledInteractive`, and reads
-`SettingsService.pressable` — custody `unlocked`, no run in flight, not already exporting — in its
-`disabled` binding and in `export()`'s guard alike; `aria-busy` reads `exporting` alone and
-resolves to `null` at rest. The not-ready sentence renders from `exportBlock`, the run's winning
-over the locked one and nothing while unlocking, and the control names it with `aria-describedby`
-only while it renders. The region carries the in-flight line, **Exported.** and all four failure
-words in the table's copy.
+**The section renders as this chapter specifies.** `SettingsService.pressable` reads *departing*
+off `ProviderDepartureService`, so the service answers custody `unlocked`, no run in flight, not
+already exporting, and not departing. Both paragraphs are the copy
+above character for character. The control is Primary, `disabledInteractive`, and reads
+`SettingsService.pressable` in its `disabled` binding and in `export()`'s guard alike; `aria-busy`
+reads `exporting` alone and resolves to `null` at rest. The held-off sentence renders from
+`exportBlock` — departing's first, then the run's over the locked one, and nothing while
+unlocking — and the control names it with `aria-describedby` only while it renders. The region
+carries the in-flight line, **Exported.** and all four failure words in the table's copy.
 
 **The file is the opened one.** The service fetches the document as text, hands it to the strict
 decoder in `export-document.ts`, opens every name and note in one batch through custody's opener,

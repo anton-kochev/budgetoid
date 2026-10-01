@@ -154,6 +154,7 @@ function providerStub(): ProviderStub {
     startEmailChange: vi.fn(),
     takeEmailChangeReturn: vi.fn(),
     dropEmailChangeReturn: vi.fn(),
+    discardUnreadAnswer: vi.fn(),
   };
 }
 

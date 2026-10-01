@@ -102,12 +102,21 @@ from the fragment alone, and the code flow would need a `responseType` the pinne
 refuses. So a campaign parameter or an in-page anchor is somebody opening the screen, and so is a
 whole answer-shaped address — a link somebody built and shared — opened in a tab where nobody
 pressed, or in a tab that pressed for the other trip. `initialize()` removes the marker whatever it
-concluded, so a refused answer left on the address contacts nobody when the page is reloaded.
+concluded, so a reload of an answer-shaped address contacts nobody.
 
-The residual: a tab that pressed and then abandoned at the provider keeps the marker until it closes
-or publishes a session. An answer-shaped address opened in *that* tab costs one discovery and
-key-set fetch, which the library then refuses on its nonce. The provider learns one more time from a
-tab that contacted it minutes earlier; somebody who never pressed contacts nobody.
+**The answer never stays in session history.** `initialize()` removes it from the address with
+`history.replaceState`, on every outcome, keeping the entry's state and adding no entry; the boot's
+last step, `discardUnreadAnswer()`, removes one no leg read. A reload, a bookmark or Back therefore
+never carries a provider token to a page. [email-change.md](../business-logic/email-change.md) owns
+the rule and names the specs.
+
+The residual: a tab that pressed and then abandoned at the provider can keep the marker. An
+anonymous tab keeps it until it closes or publishes a session; a signed-in tab keeps it only until
+its next cold load, where the authenticated probe's `forgetProviderToken()` removes it; and a
+back-forward-cache restore removes it in either. An answer-shaped address opened in such a tab
+meanwhile costs one discovery and key-set fetch, which the library then refuses on its nonce. The
+provider learns one more time from a tab that contacted it minutes earlier; somebody who never
+pressed contacts nobody.
 
 Five specs hold *when* and *from where*, and each sees what the others cannot:
 
@@ -226,7 +235,7 @@ column.
 | `__Host-budgetoid-session` | cookie, set by the API, `HttpOnly` | the session handle | Serves the request. One per session; its expiry is the session's lifetime, not a record of an act. |
 | angular-oauth2-oidc's token entries | `sessionStorage`, this tab | `access_token`, `id_token`, `id_token_claims_obj` (the decoded claims, the email among them), `granted_scopes`, `session_state`, `nonce`, and stored-at and expiry entries | Serve the trip the person started, and nothing after it. On a registration, `SessionService` discards them through `AuthService.forgetProviderToken()` whenever the tab learns it holds a session — the registration `201`, a sign-in, a start-up probe that finds one. On an email change, `AuthService.initialize()` discards them itself on the return, whatever it concluded, after moving the token and the address into memory. A tab that abandons registration and never signs in keeps them until it closes. Nothing sends the stored token anywhere but the two registration routes; the email change's bearer comes from the request, never from here. The library writes the nonce and PKCE verifier to `localStorage` only on an old-IE user-agent branch no supported browser takes. |
 | the library's availability probe | `localStorage` | a `test` key | Written and removed at once, on every cold load: `AuthService` is built at startup, and the library's service with it. |
-| `budgetoid-provider-exchange` | `sessionStorage`, this tab | `started` or `email-change`, naming the trip | Present from the press on **Continue with Google** or **Change email address** until the return leg has been read, or until the tab publishes a session. It tells the return leg which trip this tab started, so an answer-shaped address nobody here asked for contacts nobody. One value, no time; `AuthService.initialize()` and `forgetProviderToken()` remove it. A tab that abandons at the provider keeps it until it closes or signs in. |
+| `budgetoid-provider-exchange` | `sessionStorage`, this tab | `started` or `email-change`, naming the trip | Present from the press on **Continue with Google** or **Change email address** until the return leg has been read, or until the tab publishes a session. It tells the return leg which trip this tab started, so an answer-shaped address nobody here asked for contacts nobody. One value, no time; `AuthService.initialize()`, `forgetProviderToken()`, a press that did not leave, and a back-forward-cache restore remove it. A signed-in tab keeps it only until its next cold load, where the authenticated probe's `forgetProviderToken()` removes it; an anonymous tab that abandons at the provider keeps it until it closes or signs in. |
 | `budgetoid-theme` | `localStorage` | `system`, `light` or `dark` | One value, overwritten. A preference, not an observation. Nothing writes it today: neither `ThemeService.setMode` nor `toggle`, which calls it, is called from outside the service, so `theme-prepaint.js` and `ThemeService` only ever read it. |
 | `budgetoid-rotation-epoch:<budgetId>` | `localStorage` | one number per account this device has unlocked | Rises only. A rollback control — see [account keys](../business-logic/account-keys.md). |
 

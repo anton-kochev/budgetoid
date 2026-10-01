@@ -110,6 +110,19 @@ export class AccountUnlockService {
   );
 
   /**
+   * Whether this service's passkey check is running: true only while the
+   * system sheet is open. The email change's Confirm is held off by it,
+   * because the browser runs one passkey check at a time.
+   *
+   * **Narrower than {@link working} on purpose.** The account-key read after
+   * the sheet asks the device for nothing, so it holds nothing. It reads the
+   * same flag as {@link busy} today and is published apart from it, because
+   * the two answer different questions: `busy` picks a sentence for this
+   * screen's region, and this is a hold another flow reads.
+   */
+  public readonly asking: Signal<boolean> = this.busySignal.asReadonly();
+
+  /**
    * Runs the ceremony and hands what it derived to custody.
    *
    * The guard is in this method as well as in the screen's

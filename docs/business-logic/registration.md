@@ -731,14 +731,21 @@ the *set*, so it is authenticated once.
     `responseType` the pinned configuration refuses. Anything else is somebody opening the screen —
     a campaign parameter, an in-page anchor, half an answer, or a whole one in a tab where nobody
     pressed — and preparing the client for it would contact the provider for nothing.
-    `initialize()` removes the marker whatever it concluded, so a refused answer left on the
-    address contacts nobody on reload. For a visitor the probe did not recognise, the initializer
-    then awaits `AuthService.initialize()`, which fetches the discovery document and reads the
-    tokens off the URL. A resolver on `/register` is the obvious home and the wrong one: the library
-    clears the fragment once it has read it, but the router writes its navigation's target —
+    `initialize()` removes the marker whatever it concluded, so a reload of an answer-shaped
+    address — a bookmark, an older entry — contacts nobody. For a visitor the probe did not
+    recognise, the initializer then awaits `AuthService.initialize()`, which fetches the discovery
+    document and reads the tokens off the URL. **The app removes the fragment, on every outcome, and
+    the library is told not to** (`preventClearHashAfterLogin`): `initialize()` removes it in a
+    `finally` with `history.replaceState`, keeping the entry's state, so no history entry is added
+    and none is left holding a token — the rule is [email-change.md](email-change.md)'s, *The answer
+    leaves the address*. A registration answer reaching a signed-in visitor, whose leg is skipped,
+    is removed by the boot's last step, `discardUnreadAnswer()`. A resolver on `/register` is the
+    obvious home for the read and the wrong one: the router writes its navigation's target —
     fragment included — back to the address bar *after* resolvers run, so the tokens would come
     straight back. A bare `/register` contacts nobody; the press that starts the exchange prepares
-    the client itself, and `AuthService` prepares it at most once per page load.
+    the client itself and **reads no answer** — `tryLogin` belongs to `initialize()` alone, so a
+    press after a refused return meets no stale answer — and `AuthService` prepares it at most once
+    per page load.
     See [no third-party origins](../engineering/no-third-party-origins.md).
   - **No test in this repository can see the other half.** A mismatch is refused by Google with
     `redirect_uri_mismatch` before a single line of this application runs: the browser never comes

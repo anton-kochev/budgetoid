@@ -45,7 +45,7 @@ const ASSERTION_OPTIONS_URL = `${API_BASE_URL}/api/passkeys/assertion/options`;
 const ASSERTION_URL = `${API_BASE_URL}/api/passkeys/assertion`;
 
 // A real other-origin request this app actually makes. `AuthService.initialize`
-// calls `loadDiscoveryDocumentAndTryLogin`, which fetches exactly this URL
+// calls `loadDiscoveryDocument`, which fetches exactly this URL
 // through the same `HttpClient` the interceptor sits in front of. A contrived
 // `https://example.com` would test the same branch while hiding what is at
 // stake: `withCredentials` here attaches Google's cookies to a request this app

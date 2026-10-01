@@ -70,7 +70,10 @@ function bootstrap(options: BootOptions = {}): Boot {
   };
   const auth: Pick<
     AuthService,
-    'initialize' | 'providerReturn' | 'dropEmailChangeReturn'
+    | 'initialize'
+    | 'providerReturn'
+    | 'dropEmailChangeReturn'
+    | 'discardUnreadAnswer'
   > = {
     initialize: () => {
       calls.push('auth.initialize');
@@ -80,6 +83,9 @@ function bootstrap(options: BootOptions = {}): Boot {
     providerReturn: () => providerReturn,
     dropEmailChangeReturn: () => {
       calls.push('auth.dropEmailChangeReturn');
+    },
+    discardUnreadAnswer: () => {
+      calls.push('auth.discardUnreadAnswer');
     },
   };
   // The probe's answer as well as the probe, because the rotation read is
@@ -210,6 +216,7 @@ describe('provideAppCore', () => {
         'config.load',
         'session.probe',
         'rotations.readStagedRotation',
+        'auth.discardUnreadAnswer',
       ]);
     });
 
@@ -296,7 +303,9 @@ describe('provideAppCore', () => {
 
     // The provider redirects back to `/register` with its answer on the URL,
     // and the answer has to be read **before the router's first navigation**.
-    // The library clears the fragment once it has read it; a route resolver
+    // The application removes the fragment in place with `replaceState` once
+    // the answer is read — the library is told not to clear it
+    // (`preventClearHashAfterLogin`). A route resolver
     // doing the same work runs inside a navigation whose target already holds
     // that fragment, and the router writes its target back to the address bar
     // after resolvers have run — so the tokens would come straight back.
@@ -362,6 +371,7 @@ describe('provideAppCore', () => {
         'auth.initialize',
         'session.probe',
         'rotations.readStagedRotation',
+        'auth.discardUnreadAnswer',
       ]);
     });
 
@@ -414,6 +424,7 @@ describe('provideAppCore', () => {
         'auth.initialize',
         'session.probe',
         'auth.dropEmailChangeReturn',
+        'auth.discardUnreadAnswer',
       ]);
     });
 
@@ -432,6 +443,42 @@ describe('provideAppCore', () => {
         // answer has nothing to drop either.
         expect(boot.calls).toContain('auth.initialize');
         expect(boot.calls).not.toContain('auth.dropEmailChangeReturn');
+      },
+    );
+  });
+
+  // **An answer nobody read leaves the address bar before the first route
+  // draws** (docs/design/components.md, "Changing the email address"): a
+  // registration answer reaching a signed-in visitor, an answer in a tab that
+  // started no trip, a return whose leg was skipped. Last, after every leg
+  // that might read it — run any earlier and it removes the answer a leg was
+  // about to read.
+  describe('an answer nobody read', () => {
+    it.each<{
+      readonly providerReturn: 'registration' | 'email-change' | null;
+      readonly status: SessionStatus;
+    }>([
+      { providerReturn: null, status: 'anonymous' },
+      { providerReturn: null, status: 'authenticated' },
+      { providerReturn: null, status: 'unreachable' },
+      { providerReturn: 'registration', status: 'anonymous' },
+      { providerReturn: 'registration', status: 'authenticated' },
+      { providerReturn: 'email-change', status: 'authenticated' },
+      { providerReturn: 'email-change', status: 'anonymous' },
+    ])(
+      'is discarded as the last step, once, when the provider is answering $providerReturn and the visitor is $status',
+      async ({ providerReturn, status }) => {
+        // Arrange
+        const boot = bootstrap({ providerReturn, status });
+
+        // Act
+        await boot.initialized;
+
+        // Assert
+        expect(boot.calls.at(-1)).toBe('auth.discardUnreadAnswer');
+        expect(
+          boot.calls.filter((call) => call === 'auth.discardUnreadAnswer'),
+        ).toHaveLength(1);
       },
     );
   });

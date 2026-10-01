@@ -136,8 +136,8 @@ this list has to earn its place.
   downloads folder years later. → the whole-file rule below.
 - **Refuse any document shape it does not declare, member for member** — a column the server starts
   shipping is a column nobody has decided whether to open. → the decoder rule below.
-- **Offer Export only while this tab can open what the file is written from.** → the pressable rule
-  below.
+- **Offer Export only while this tab can open what the file is written from, and not while the page
+  departs for Google.** → the pressable rule below.
 
 ### The web client MUST NOT
 
@@ -539,8 +539,9 @@ this list has to earn its place.
 - **Rule**: **Export is pressable only while the tab can open what the file is written from**:
   custody says `unlocked`, no key rotation is in flight — a run this tab is walking, or one it
   knows is staged, read at start-up and when the rotation section loads, with a failed read
-  reading as none — and no export is already running. One signal, `SettingsService.pressable`,
-  is read by the control's `disabled` and by `export()`'s guard.
+  reading as none — and no export is already running. **It is also held while the page departs
+  for Google**: `ProviderDepartureService.departing` is a term of the same predicate. One signal,
+  `SettingsService.pressable`, is read by the control's `disabled` and by `export()`'s guard.
 - **Why**: the file is written with the opened names, so a tab holding no keys can only end
   `locked`, and a request made for that answer costs the server a whole-document build for nothing.
   The run term is not caution: a staged run has re-sealed part of the account under keys custody does
@@ -552,9 +553,16 @@ this list has to earn its place.
     `disabledInteractive` and Material halts the click on anchors only: on a `<button>` the press
     arrives whatever the attribute says. One predicate for both keeps them the same width. Its busy
     half is what stops a double press costing the server two builds.
+  - **Departing is not a kind of not ready.** The tab may hold the keys; what stops the press is the
+    page about to leave for Google on an email change, which would lose the file. So
+    `SettingsService.exportBlock` answers `'departing'` ahead of the run and the lock, and the
+    screen says *Export is off while this tab goes to Google to change your email address, because
+    leaving the page would lose the file.* `SettingsService` reads the flag off its root owner
+    rather than off the email-change flow, which injects `SettingsService` — the other edge would be
+    a cycle. See [email-change.md](email-change.md).
 - **Enforced in**: `SettingsService.pressable` and `export()`'s first line; `settings.service.spec.ts`
-  and `settings.component.spec.ts`. The screen's sentences for the two blocked states are specified
-  in the [Export section](../design/components.md#export-section) of the design book.
+  and `settings.component.spec.ts`. The screen's sentences for the three blocked states are
+  specified in the [Export section](../design/components.md#export-section) of the design book.
 - **Example**: a reloaded tab. Custody is `locked`, the control is drawn off, and the sentence above
   it names Unlock.
 - **Counterexample**: a gate on `exporting` alone. A locked tab presses Export, the server builds the
@@ -574,7 +582,7 @@ sequenceDiagram
     participant R as ExportReadService
     participant D as export-document.ts
     participant K as AccountKeyCustodyService
-    Note over S: pressable — custody unlocked, no run in flight, not exporting
+    Note over S: pressable — custody unlocked, no run in flight, not exporting, not departing
     S->>K: holding() — the token taken at the press
     S->>M: GET /api/me/export (responseType text)
     M-->>S: 401 (no cookie, or one naming no live session)
@@ -623,7 +631,8 @@ How the web client turns a press into a file — every arm but the last saves no
 
 ```
 IF Export is not pressable                                  ← custody not unlocked, a run in
-  THEN no request is made                                      flight, or an export already running
+  THEN no request is made                                      flight, an export already running,
+                                                               or the page departing for Google
 ELSE IF the request fails, or anything throws after it      ← a 401 is sessionExpiryInterceptor's,
   THEN failed                                                  which has already left the screen
 ELSE IF the text does not decode                            ← before any cipher runs

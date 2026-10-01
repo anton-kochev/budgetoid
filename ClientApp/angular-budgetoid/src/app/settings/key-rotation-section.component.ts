@@ -53,8 +53,13 @@ import {
   type KeyRotationRenameRefusal,
 } from '@app-core/security/key-rotation.service';
 import type { NameArm } from '@app-core/security/rotation-name-collision';
+import { ProviderDepartureService } from '@app-core/services/provider-departure.service';
 import { NARRATIVE_NAME_CHARACTERS } from '@app-shared/narrative-field-caps';
 import { credentialRegistrationDate } from './credential-registration-date';
+import {
+  EmailChangeFlowService,
+  type EmailChangeOuterHold,
+} from './email-change-flow.service';
 import { RotationFlowService } from './rotation-flow.service';
 
 /** How the rename block's copy speaks of one list. */
@@ -122,6 +127,26 @@ export class KeyRotationSectionComponent implements OnInit {
   // Screen-provided by `SettingsComponent`, so an abandoned press dies with the
   // screen it was made on.
   protected readonly flow = inject(RotationFlowService);
+  // The email change, read for its two holds and nothing else: Confirm's
+  // passkey check off the flow, which `SettingsComponent` provides, and the
+  // page leaving for Google off its root owner.
+  private readonly emailChange = inject(EmailChangeFlowService);
+  private readonly departure = inject(ProviderDepartureService);
+
+  /**
+   * Which of the email change's two states holds the control off, whichever
+   * of its three labels it carries — departing first, because it ends the
+   * screen. Each gets a sentence above the checkbox; a run in flight and an
+   * unticked box get none, because the region and the checkbox already say
+   * what the control waits on.
+   */
+  protected readonly emailHold = computed<EmailChangeOuterHold | null>(() => {
+    if (this.departure.departing()) {
+      return 'departing';
+    }
+
+    return this.emailChange.asking() ? 'asking' : null;
+  });
 
   /**
    * Whether the person has said they will leave the tab open.
@@ -203,13 +228,15 @@ export class KeyRotationSectionComponent implements OnInit {
    * refuses on.
    *
    * **One computed for the attribute and the handler**, so the two are the
-   * same width by construction: in flight, unticked, or — while the rename
-   * block stands — a field holding no name a press may carry. "In flight" is
-   * still the flow's one predicate, read here rather than restated.
+   * same width by construction: in flight, held by the email change, unticked,
+   * or — while the rename block stands — a field holding no name a press may
+   * carry. "In flight" is still the flow's one predicate, read here rather
+   * than restated.
    */
   protected readonly held = computed(
     () =>
       this.flow.working() ||
+      this.emailHold() !== null ||
       !this.acknowledged() ||
       (this.rotations.collision() !== null && !this.nameGiven()),
   );
@@ -397,7 +424,8 @@ export class KeyRotationSectionComponent implements OnInit {
    * **And the in-flight half is here too, because a guard backstopping an
    * attribute has to be at least as wide as that attribute.** The control is
    * drawn unpressable on {@link held}, and this line refuses on that same
-   * computed — in flight, unticked, or a rename with no name to carry — so a
+   * computed — in flight, held by the email change, unticked, or a rename with
+   * no name to carry — so a
    * handler narrower than what the screen promised is a state this pair has no
    * version of. That is not a second definition of "a run is in flight" —
    * there is exactly one, and it is `RotationFlowService.working`, which

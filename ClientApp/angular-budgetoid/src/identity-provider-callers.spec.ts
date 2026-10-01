@@ -322,6 +322,11 @@ const allowedReaches = new Map<string, string>([
       'a trip — an email change before the probe, a registration after it',
   ],
   [
+    'src/app/+core/core.providers.ts: discardUnreadAnswer',
+    "the initializer's last step: removes an answer-shaped fragment no " +
+      'return leg read from the address bar, in place; contacts nothing',
+  ],
+  [
     'src/app/+core/core.providers.ts: dropEmailChangeReturn',
     'drops the in-memory email-change answer when the probe finds nobody ' +
       'signed in; contacts nothing',

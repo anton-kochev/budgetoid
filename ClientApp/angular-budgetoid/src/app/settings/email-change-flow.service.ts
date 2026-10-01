@@ -42,6 +42,7 @@ import {
 } from '@app-core/security/webauthn-ceremony.service';
 import type { PasskeyRequestOptionsJson } from '@app-core/security/webauthn-encoding';
 import { AuthService } from '@app-core/services/auth-service';
+import { ProviderDepartureService } from '@app-core/services/provider-departure.service';
 import { firstValueFrom } from 'rxjs';
 import { AccountUnlockService } from './account-unlock.service';
 import { RotationFlowService } from './rotation-flow.service';
@@ -52,8 +53,10 @@ import { SettingsService } from './settings.service';
  *
  * * `rest` — no answer from Google is held and nothing is running. Change is
  *   drawn.
- * * `leaving` — the page is on its way to Google. Terminal unless Google cannot
- *   be reached.
+ * * `leaving` — the page is on its way to Google. Read from
+ *   `ProviderDepartureService.departing`, never held here, so it ends when the
+ *   trip cannot start or a restore from the back-forward cache brings the page
+ *   back.
  * * `waiting` — this load brought a confirmed answer back, and Confirm is drawn
  *   in Change's place.
  * * `asserting` — the challenge is being fetched or the device is being asked.
@@ -95,6 +98,22 @@ export type EmailChangeWord =
 
 /** Why Change is off, one sentence each, in the order a reload would cost. */
 export type EmailChangeHold = 'rotating' | 'exporting' | 'unlocking';
+
+/** Which other passkey check holds Confirm off, one sentence each. */
+export type EmailConfirmHold = 'rotation' | 'unlock';
+
+/**
+ * Which of this flow's two states holds another control on the screen off,
+ * departing first whenever both are true. `departing` is
+ * `ProviderDepartureService.departing` and `asking` is
+ * {@link EmailChangeFlowService.asking}; each control reads the two itself and
+ * renders its own sentence for each.
+ */
+export type EmailChangeOuterHold = 'departing' | 'asking';
+
+// The phases this flow holds itself. `leaving` is not one of them: a copy
+// here would be a second fact the back-forward-cache restore never lowers.
+type HeldPhase = Exclude<EmailChangePhase, 'leaving'>;
 
 // How the challenge leg ended: with the server's options, or with the word the
 // press ends on — `null` when the flow has nothing to say.
@@ -142,9 +161,10 @@ export class EmailChangeFlowService {
   private readonly settings = inject(SettingsService);
   private readonly unlock = inject(AccountUnlockService);
   private readonly rotation = inject(RotationFlowService);
+  private readonly departure = inject(ProviderDepartureService);
 
-  private readonly phaseSignal: WritableSignal<EmailChangePhase> =
-    signal<EmailChangePhase>('rest');
+  private readonly phaseSignal: WritableSignal<HeldPhase> =
+    signal<HeldPhase>('rest');
   private readonly wordSignal: WritableSignal<EmailChangeWord | null> =
     signal<EmailChangeWord | null>(null);
   private readonly addressSignal: WritableSignal<string | null> = signal<
@@ -164,8 +184,9 @@ export class EmailChangeFlowService {
   // abort reaches the attempt that is running and never a later one.
   #press: AbortController | null = null;
 
-  public readonly phase: Signal<EmailChangePhase> =
-    this.phaseSignal.asReadonly();
+  public readonly phase: Signal<EmailChangePhase> = computed(() =>
+    this.departure.departing() ? 'leaving' : this.phaseSignal(),
+  );
   public readonly word: Signal<EmailChangeWord | null> =
     this.wordSignal.asReadonly();
   /** The address Google asserted, while its answer is held. */
@@ -195,7 +216,7 @@ export class EmailChangeFlowService {
   // A Confirm press is running: the challenge, the ceremony or the changing
   // request, including the re-read after its `200`.
   private readonly confirming: Signal<boolean> = computed(() => {
-    const phase = this.phaseSignal();
+    const phase = this.phase();
 
     return phase === 'asserting' || phase === 'changing';
   });
@@ -208,17 +229,43 @@ export class EmailChangeFlowService {
   public readonly changePressable: Signal<boolean> = computed(
     () =>
       this.changeHold() === null &&
-      this.phaseSignal() !== 'leaving' &&
+      this.phase() !== 'leaving' &&
       !this.confirming(),
   );
 
   /**
-   * Confirm's predicate, read by its attribute and by {@link confirm}. Narrower
-   * than Change's: only its own press holds it off, because Change's reasons
-   * describe a moment before a trip and Confirm exists only after one.
+   * Confirm's passkey check is running — the challenge and the ceremony, and
+   * not the changing request after them. Other controls on the screen read it
+   * as a hold, because the browser runs one passkey check at a time.
+   */
+  public readonly asking: Signal<boolean> = computed(
+    () => this.phase() === 'asserting',
+  );
+
+  /**
+   * The one sentence above an off Confirm, or `null`: another passkey check on
+   * this screen. The rotation's first, the order {@link changeHold} ranks the
+   * two in. Each is the flow's own `asking`, never its `working` — a walk and
+   * an account-key read ask the device for nothing.
+   */
+  public readonly confirmHold: Signal<EmailConfirmHold | null> = computed(
+    () => {
+      if (this.rotation.asking()) {
+        return 'rotation';
+      }
+
+      return this.unlock.asking() ? 'unlock' : null;
+    },
+  );
+
+  /**
+   * Confirm's predicate, read by its attribute and by {@link confirm}. Not
+   * Change's: its own press holds it off, and so does another passkey check,
+   * but Change's reasons describe a moment before a trip and Confirm exists
+   * only after one.
    */
   public readonly confirmPressable: Signal<boolean> = computed(
-    () => this.phaseSignal() === 'waiting',
+    () => this.phase() === 'waiting' && this.confirmHold() === null,
   );
 
   constructor() {
@@ -252,11 +299,14 @@ export class EmailChangeFlowService {
       return;
     }
 
-    // A trip replaces whatever answer this load held.
+    // A trip replaces whatever answer this load held. The held phase goes back
+    // to `rest` with it, so a restore from the back-forward cache, which lowers
+    // `departing`, shows Change — never a Confirm over the dropped token.
+    // `leaving` itself is raised by the trip, before its first await.
     this.dropAnswer();
     this.wordSignal.set(null);
     this.sessionsEndedSignal.set(null);
-    this.phaseSignal.set('leaving');
+    this.phaseSignal.set('rest');
 
     void this.leave();
   }
@@ -300,12 +350,14 @@ export class EmailChangeFlowService {
       trip = await this.auth.startEmailChange();
     } catch (error: unknown) {
       // Its contract is never to reject. A throw has not left the page, so it
-      // reads as the press it is.
+      // reads as the press it is — and nothing promises the trip lowered
+      // `departing` on its way out, so the flow does.
       logFailure('Email change trip could not start', error);
+      this.departure.settle();
       trip = 'unavailable';
     }
 
-    // `leaving` stays until the page goes.
+    // On `leaving`, `departing` stays up until the page goes or comes back.
     if (trip === 'unavailable') {
       this.end('unavailable');
     }

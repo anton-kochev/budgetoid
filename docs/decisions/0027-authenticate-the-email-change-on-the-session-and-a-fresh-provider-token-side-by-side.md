@@ -56,8 +56,8 @@ assertion is required as well.**
    as one act.** An endpoint filter is a delegate and leaves no trace in a route's metadata — a dump
    of the email change's `RouteEndpoint.Metadata` shows the marker and no filter type (measured).
    The marker is what lets a census read, off the route table, which routes reach the provider
-   scheme this way. Its constructor is `internal`, so a route cannot carry the marker without the
-   filter from outside `Api`.
+   scheme this way. The marker means nothing without the filter, so `RequireProviderAuthorization()`
+   is the one place that adds both; review and the route census hold that.
    `RegistrationRouteTests.TheProviderScheme_IsReachedByExactlyTheRegistrationRoutesAndTheEmailChange`
    pins both halves against written-out sets: the routes whose policy names the scheme, and the
    routes carrying the marker.
@@ -70,9 +70,11 @@ assertion is required as well.**
    the caller controls the Google account they chose, and neither says the caller owns the account.
 
 6. **The provider token is judged before the passkey.** A filter runs before the route delegate,
-   and the passkey gate is inside the handler the delegate calls. The passkey gate consumes its
-   nonce whatever happens next, so this order is what lets somebody whose Google sign-in lapsed
-   sign in again and retry with the assertion they already made.
+   and the passkey gate is inside the handler the delegate calls, so a provider refusal writes
+   nothing and leaves the nonce unspent. The order is kept for that server property alone. No
+   client reuses the unspent nonce: the shipped flow drops the Google answer on a provider refusal,
+   the way back is a new trip and a new challenge, and the unspent nonce expires.
+   `EmailChange_RefusedForItsProviderToken_LeavesThePasskeyChallengeUnspent` proves the property.
 
 7. **Every passkey refusal in the product carries `refusal: "assertion"`**, written once by
    `PasskeyVerificationExceptionHandler`. It is a constant — it names the proof, never the check —
