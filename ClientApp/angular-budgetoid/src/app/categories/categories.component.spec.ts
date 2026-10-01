@@ -1,117 +1,2050 @@
+// The categories screen, driven against two hand-written stubs.
+//
+// **Custody is stubbed for its `status` alone, and the stub's status is its own
+// settable signal.** The real service reaches `locked` only by never having
+// been unlocked or by a failed ceremony, neither of which this runner can
+// stage; and a stub that *derived* the reading from something else would be a
+// second copy of the predicate, pinning nothing about which object the screen
+// asked.
+//
+// **`implements Pick<S, keyof S>` on both stubs** is the compiler's own census
+// of what each service publishes — `keyof` over a class yields the public
+// surface only — so a member the screen starts reaching for is an error here
+// rather than an `is not a function` during change detection.
+//
+// **This screen carries two forms and two lists, so every rule is asked twice.**
+// That is not padding: the two halves are written separately in the component
+// and a screen that got one right and the other wrong is exactly what shipped
+// last time somebody copied a form.
+//
+// **`unlocking` gets its own two cases, because it is where the two predicates
+// disagree.** The form follows "anything but `unlocked`" and the notice follows
+// `locked` exactly, so a screen written with one predicate passes half of what
+// is here and fails the other half whichever way it was written.
 import { CdkDragDrop } from '@angular/cdk/drag-drop';
-import { signal } from '@angular/core';
-import { TestBed } from '@angular/core/testing';
+import { signal, type Signal } from '@angular/core';
+import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { FormGroup, type AbstractControl } from '@angular/forms';
 import { provideNoopAnimations } from '@angular/platform-browser/animations';
-import { CategoryGroupDto } from '@app-core/api/category-groups-api.service';
-import { CategoryDto } from '@app-core/api/categories-api.service';
+import { provideRouter } from '@angular/router';
+import type { WriteOutcome } from '@app-core/api/write-outcome';
+import {
+  AccountKeyCustodyService,
+  type AccountKeyStatus,
+  type UnlockFailure,
+} from '@app-core/security/account-key-custody.service';
+import {
+  KeyRotationService,
+  type KeyRotationFailure,
+  type KeyRotationNameCollision,
+  type KeyRotationRenameRefusal,
+  type KeyRotationPhase,
+  type KeyRotationProgress,
+  type StagedRotation,
+} from '@app-core/security/key-rotation.service';
+import {
+  NARRATIVE_DESCRIPTION_CHARACTERS,
+  NARRATIVE_NAME_CHARACTERS,
+} from '@app-shared/narrative-field-caps';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { CategoryGroupView } from './category-group-view';
+import type { CategoryView } from './category-view';
 import { CategoriesComponent } from './categories.component';
 import { CategoriesService } from './categories.service';
 
-const essentials: CategoryGroupDto = {
-  id: 'group-1',
-  name: 'Essentials',
-  description: null,
-  position: 0,
-};
-const lifestyle: CategoryGroupDto = {
-  id: 'group-2',
-  name: 'Lifestyle',
-  description: null,
-  position: 1,
-};
-const groceries: CategoryDto = {
-  id: 'category-1',
-  name: 'Groceries',
-  description: null,
-  categoryGroupId: essentials.id,
-  categoryGroupName: essentials.name,
+const GROUP_ID = '0199c3d4-5f6a-7b8c-9d0e-000000000001';
+const OTHER_GROUP_ID = '0199c3d4-5f6a-7b8c-9d0e-000000000002';
+const CATEGORY_ID = '0199c3d4-5f6a-7b8c-9d0e-000000000003';
+
+const essentials: CategoryGroupView = {
+  description: { state: 'text', value: 'The bills' },
+  id: GROUP_ID,
+  name: { state: 'text', value: 'Essentials' },
   position: 0,
 };
 
-class CategoriesServiceStub {
-  public readonly groups = signal([essentials, lifestyle]).asReadonly();
-  public readonly categories = signal([groceries]).asReadonly();
-  public readonly loading = signal(false).asReadonly();
+const lifestyle: CategoryGroupView = {
+  description: null,
+  id: OTHER_GROUP_ID,
+  name: { state: 'text', value: 'Lifestyle' },
+  position: 1,
+};
+
+const groceries: CategoryView = {
+  categoryGroupId: GROUP_ID,
+  categoryGroupName: { state: 'text', value: 'Essentials' },
+  description: { state: 'text', value: 'Food and drink' },
+  id: CATEGORY_ID,
+  name: { state: 'text', value: 'Groceries' },
+  position: 0,
+};
+
+// What a missing `maxlength` most likely means, said in the failure rather than
+// left for the next person to rediscover. The caps reach the templates through
+// class fields initialised from another module's constants, and that shape has
+// already been measured in this repository reading `undefined` under the test
+// builder's chunking — `[attr.maxlength]="undefined"` renders no attribute at
+// all, so the typing limit silently is not there.
+// `TransactionsComponent.recordingSentence` is the same hazard, found earlier and
+// fixed by reading the value at render time.
+const CAP_ABSENT =
+  'a field states no maxlength: a cap reaching the template through a class ' +
+  'field initialised from another module’s constant reads undefined under the ' +
+  'test builder’s chunking — read it at render time instead';
+
+class CategoriesServiceStub
+  implements Pick<CategoriesService, keyof CategoriesService>
+{
+  public readonly groupsSignal = signal<readonly CategoryGroupView[] | null>([
+    essentials,
+    lifestyle,
+  ]);
+  public readonly categoriesSignal = signal<readonly CategoryView[] | null>([
+    groceries,
+  ]);
+  public readonly loadingSignal = signal(false);
+  public readonly failedSignal = signal(false);
+
+  public readonly groups = this.groupsSignal.asReadonly();
+  public readonly categories = this.categoriesSignal.asReadonly();
+  public readonly loading = this.loadingSignal.asReadonly();
+  public readonly failed = this.failedSignal.asReadonly();
+
   public load = vi.fn();
-  public addGroup = vi.fn();
-  public updateGroup = vi.fn();
-  public moveGroup = vi.fn();
-  public removeGroup = vi.fn();
-  public addCategory = vi.fn();
-  public updateCategory = vi.fn();
-  public placeCategory = vi.fn();
-  public removeCategory = vi.fn();
-  public categoriesForGroup = vi.fn((groupId: string) =>
-    groupId === essentials.id ? [groceries] : [],
+  // The four writes answer `recorded` by default, because that is the path a
+  // case saying nothing about the outcome means.
+  public addGroup = vi.fn(
+    (): Promise<WriteOutcome> => Promise.resolve({ state: 'recorded' }),
+  );
+  public updateGroup = vi.fn(
+    (): Promise<WriteOutcome> => Promise.resolve({ state: 'recorded' }),
+  );
+  public moveGroup = vi.fn(
+    (): Promise<WriteOutcome> => Promise.resolve({ state: 'recorded' }),
+  );
+  public removeGroup = vi.fn(
+    (): Promise<WriteOutcome> => Promise.resolve({ state: 'recorded' }),
+  );
+  public addCategory = vi.fn(
+    (): Promise<WriteOutcome> => Promise.resolve({ state: 'recorded' }),
+  );
+  public updateCategory = vi.fn(
+    (): Promise<WriteOutcome> => Promise.resolve({ state: 'recorded' }),
+  );
+  public placeCategory = vi.fn(
+    (): Promise<WriteOutcome> => Promise.resolve({ state: 'recorded' }),
+  );
+  public removeCategory = vi.fn(
+    (): Promise<WriteOutcome> => Promise.resolve({ state: 'recorded' }),
+  );
+  public categoriesForGroup = vi.fn(
+    (categoryGroupId: string): readonly CategoryView[] =>
+      (this.categoriesSignal() ?? []).filter(
+        (category) => category.categoryGroupId === categoryGroupId,
+      ),
   );
 }
 
+class CustodyStub
+  implements Pick<AccountKeyCustodyService, keyof AccountKeyCustodyService>
+{
+  readonly #status = signal<AccountKeyStatus>('unlocked');
+
+  public readonly status: Signal<AccountKeyStatus> = this.#status.asReadonly();
+  public readonly unlockFailure: Signal<UnlockFailure | null> =
+    signal<UnlockFailure | null>(null).asReadonly();
+
+  public setStatus(status: AccountKeyStatus): void {
+    this.#status.set(status);
+  }
+
+  public unlock(): void {
+    throw new Error('the categories screen may not unlock the account');
+  }
+
+  public adopt(): void {
+    throw new Error('the categories screen may not adopt account keys');
+  }
+
+  public adoptRotated(): void {
+    throw new Error('the categories screen may not take custody of a rotation');
+  }
+
+  public lock(): void {
+    throw new Error('the categories screen may not lock the account');
+  }
+
+  public sealField(): never {
+    throw new Error('the categories screen may not seal — the service does');
+  }
+
+  public openField(): never {
+    throw new Error('the categories screen may not open — the mapper does');
+  }
+
+  public blindIndex(): never {
+    throw new Error('the categories screen may not index — the service does');
+  }
+
+  public holding(): never {
+    throw new Error(
+      'the categories screen may not read the holding — nothing it hands over outlives a press',
+    );
+  }
+}
+
+// The screen's own members are `protected`, which is right for a template and
+// leaves a spec nothing to hold. One cast, in one place, so the reach is
+// visible rather than scattered.
+interface Exposed {
+  groupForm: FormGroup;
+  categoryForm: FormGroup;
+  // The two per-form message lookups. Reached for by one case, and only
+  // because the claim it makes — that a delete is filed under **neither**
+  // form — renders identically to the wrong answer: a delete's report carries
+  // no fields, so both spellings put nothing on screen.
+  groupMessages: () => ReadonlyMap<string, readonly string[]> | null;
+  categoryMessages: () => ReadonlyMap<string, readonly string[]> | null;
+  // The two modes. Reached for because nothing in the DOM says which row an
+  // edit is bound to: a form cleared but still in edit mode renders exactly
+  // like a create until somebody presses Save on it.
+  editingGroupId: Signal<string | null>;
+  editingCategoryId: Signal<string | null>;
+  saveGroup: () => void;
+  saveCategory: () => void;
+  editGroup: (group: CategoryGroupView) => void;
+  editCategory: (category: CategoryView) => void;
+  cancelCategoryEdit: () => void;
+  dropGroup: (event: CdkDragDrop<readonly CategoryGroupView[]>) => void;
+  dropCategory: (
+    event: CdkDragDrop<readonly CategoryView[]>,
+    categoryGroupId: string,
+  ) => void;
+}
+
+function exposed(component: CategoriesComponent): Exposed {
+  return component as unknown as Exposed;
+}
+
+// The driver, stubbed for the two signals this screen reads and refusing
+// everything a screen has no business calling.
+//
+// **Two settable facts and not one**, because "a run is in flight" is two
+// different observations: `running` is a run this tab is walking, and `staged`
+// is a run on file — one begun in another tab, or one that survived this
+// browser's reload and was read back by the application initializer.
+class KeyRotationStub
+  implements Pick<KeyRotationService, keyof KeyRotationService>
+{
+  readonly #running = signal(false);
+  readonly #walking = signal(false);
+  readonly #staged = signal<StagedRotation | null>(null);
+
+  public readonly running: Signal<boolean> = this.#running.asReadonly();
+  // The driver's raw "a run is walking", whoever's it is. No content screen
+  // may read it: a run walking for another account says nothing about this
+  // one's rows.
+  public readonly walking: Signal<boolean> = this.#walking.asReadonly();
+  public readonly staged: Signal<StagedRotation | null> =
+    this.#staged.asReadonly();
+  public readonly phase: Signal<KeyRotationPhase> =
+    signal<KeyRotationPhase>('idle').asReadonly();
+  public readonly progress: Signal<KeyRotationProgress> =
+    signal<KeyRotationProgress>({ records: 0, resealed: 0 }).asReadonly();
+  public readonly failure: Signal<KeyRotationFailure | null> =
+    signal<KeyRotationFailure | null>(null).asReadonly();
+  // No screen but the settings section draws a rename block, so these stay
+  // at rest.
+  public readonly collision: Signal<KeyRotationNameCollision | null> =
+    signal<KeyRotationNameCollision | null>(null).asReadonly();
+  public readonly renameRefusal: Signal<KeyRotationRenameRefusal | null> =
+    signal<KeyRotationRenameRefusal | null>(null).asReadonly();
+
+  public setRunning(running: boolean): void {
+    this.#running.set(running);
+  }
+
+  public setWalking(walking: boolean): void {
+    this.#walking.set(walking);
+  }
+
+  public setStaged(staged: StagedRotation | null): void {
+    this.#staged.set(staged);
+  }
+
+  public begin(): never {
+    throw new Error('the categories screen may not begin a rotation');
+  }
+
+  public resume(): never {
+    throw new Error('the categories screen may not resume a rotation');
+  }
+
+  public readStagedRotation(): never {
+    throw new Error(
+      'the categories screen may not read the staged rotation — the application initializer does',
+    );
+  }
+}
+
 describe('CategoriesComponent', () => {
-  let service: CategoriesServiceStub;
-  let component: CategoriesComponent;
+  let categories: CategoriesServiceStub;
+  let custody: CustodyStub;
+  let rotations: KeyRotationStub;
+  let fixture: ComponentFixture<CategoriesComponent>;
+
+  function host(): HTMLElement {
+    return fixture.nativeElement as HTMLElement;
+  }
+
+  function screen(): Exposed {
+    return exposed(fixture.componentInstance);
+  }
+
+  // Controls found by their label rather than by a class, so a stylesheet
+  // change cannot silently empty these lists.
+  function buttonsLabelled(
+    selector: string,
+    label: string,
+  ): HTMLButtonElement[] {
+    return Array.from(
+      host().querySelectorAll<HTMLButtonElement>(selector),
+    ).filter((button) => (button.textContent ?? '').trim() === label);
+  }
+
+  function nameInputs(): HTMLInputElement[] {
+    return Array.from(
+      host().querySelectorAll<HTMLInputElement>(
+        'input[formcontrolname="name"]',
+      ),
+    );
+  }
+
+  // The two note fields, which are `<textarea>` rather than `<input>` on this
+  // screen. Read as their own list so that a cap case can compare the pair
+  // against the description cap while the pair above is compared against the
+  // name one — the crossing is the mistake, and one list holding all four
+  // controls could not see it.
+  function noteInputs(): HTMLTextAreaElement[] {
+    return Array.from(
+      host().querySelectorAll<HTMLTextAreaElement>(
+        'textarea[formcontrolname="description"]',
+      ),
+    );
+  }
+
+  // Everything inside the two forms, and nothing from the hierarchy below
+  // them. The locked notice replaces the hierarchy, so a whole-host text search
+  // would pass for a screen that still had an opened name sitting on a dead
+  // control in the form.
+  function editorsText(): string {
+    return host().querySelector('.editors')?.textContent ?? '';
+  }
+
+  function submitButtons(): HTMLButtonElement[] {
+    return Array.from(
+      host().querySelectorAll<HTMLButtonElement>('button[type="submit"]'),
+    );
+  }
 
   beforeEach(async () => {
-    service = new CategoriesServiceStub();
+    categories = new CategoriesServiceStub();
+    custody = new CustodyStub();
+    rotations = new KeyRotationStub();
     await TestBed.configureTestingModule({
       imports: [CategoriesComponent],
       providers: [
         provideNoopAnimations(),
-        { provide: CategoriesService, useValue: service },
+        provideRouter([]),
+        { provide: CategoriesService, useValue: categories },
+        { provide: AccountKeyCustodyService, useValue: custody },
+        { provide: KeyRotationService, useValue: rotations },
       ],
     }).compileComponents();
-    const fixture = TestBed.createComponent(CategoriesComponent);
-    component = fixture.componentInstance;
+    fixture = TestBed.createComponent(CategoriesComponent);
     fixture.detectChanges();
   });
 
   it('loads the hierarchy on initialization', () => {
     // Assert
-    expect(service.load).toHaveBeenCalledOnce();
+    expect(categories.load).toHaveBeenCalledOnce();
   });
 
+  // Both of these used to supply `currentIndex: 0` and expect position `0`,
+  // which is the one value a hard-coded literal also produces: replacing
+  // `event.currentIndex` with `0` passed the pair. The index below is non-zero
+  // for that reason and no other.
   it('persists group drag-and-drop position', () => {
     // Arrange
     const event = {
       item: { data: lifestyle },
-      previousIndex: 1,
-      currentIndex: 0,
-    } as unknown as CdkDragDrop<CategoryGroupDto[]>;
+      previousIndex: 0,
+      currentIndex: 2,
+    } as unknown as CdkDragDrop<readonly CategoryGroupView[]>;
 
     // Act
-    invoke(component, 'dropGroup', event);
+    screen().dropGroup(event);
 
     // Assert
-    expect(service.moveGroup).toHaveBeenCalledWith(lifestyle.id, 0);
+    expect(categories.moveGroup).toHaveBeenCalledWith(OTHER_GROUP_ID, 2);
   });
 
   it('persists category drag-and-drop placement', () => {
     // Arrange
     const event = {
       item: { data: groceries },
-      currentIndex: 0,
-    } as unknown as CdkDragDrop<CategoryDto[]>;
+      previousIndex: 0,
+      currentIndex: 3,
+    } as unknown as CdkDragDrop<readonly CategoryView[]>;
 
     // Act
-    invoke(component, 'dropCategory', event, lifestyle.id);
+    screen().dropCategory(event, OTHER_GROUP_ID);
 
     // Assert
-    expect(service.placeCategory).toHaveBeenCalledWith(
-      groceries.id,
-      lifestyle.id,
-      0,
+    expect(categories.placeCategory).toHaveBeenCalledWith(
+      CATEGORY_ID,
+      OTHER_GROUP_ID,
+      3,
     );
   });
-});
 
-function invoke(
-  component: CategoriesComponent,
-  method: 'dropGroup' | 'dropCategory',
-  ...args: unknown[]
-): void {
-  const callable = component as unknown as Record<
-    'dropGroup' | 'dropCategory',
-    (...methodArgs: unknown[]) => void
-  >;
-  callable[method](...args);
-}
+  describe('what a form may send', () => {
+    it('refuses a whitespace-only name on both forms', () => {
+      // Arrange — `Validators.required` admits this, and the `.trim()` that used
+      // to swallow it is gone: the client may not alter what it seals. On a
+      // blind-indexed column it is worse than untidy — the index normalizes by
+      // trimming, so `'   '` keys to the index of the **empty** name.
+      screen().groupForm.setValue({ name: '   ', description: '' });
+      screen().categoryForm.setValue({
+        name: '   ',
+        description: '',
+        categoryGroupId: GROUP_ID,
+      });
+
+      // Act
+      screen().saveGroup();
+      screen().saveCategory();
+
+      // Assert
+      expect(screen().groupForm.invalid).toBe(true);
+      expect(screen().categoryForm.invalid).toBe(true);
+      expect(categories.addGroup).not.toHaveBeenCalled();
+      expect(categories.addCategory).not.toHaveBeenCalled();
+    });
+
+    it('accepts a name that holds text and hands it over untrimmed', () => {
+      // Arrange — the positive control: a refusal test alone passes just as
+      // well against a form nothing can ever satisfy.
+      screen().groupForm.setValue({
+        name: '  Essentials  ',
+        description: '',
+      });
+
+      // Act
+      screen().saveGroup();
+
+      // Assert — untrimmed on the way past, because the service seals exactly
+      // what was typed and indexes the same string.
+      expect(categories.addGroup).toHaveBeenCalledWith({
+        name: '  Essentials  ',
+        description: '',
+      });
+    });
+
+    it('hands a whitespace-only note over as typed', () => {
+      // Arrange — the removed `normalizeDescription` folded this onto `null`,
+      // and re-importing that fold one layer up is the mistake this case
+      // exists to catch. `''` is how the screen says "no note"; `'   '` is a
+      // note somebody typed, and the client may not alter what it seals. Note
+      // there is deliberately **no** non-blank validator on this control: the
+      // note is indexed by nothing, so it collides with nothing.
+      screen().groupForm.setValue({ name: 'Essentials', description: '   ' });
+
+      // Act
+      screen().saveGroup();
+
+      // Assert
+      expect(categories.addGroup).toHaveBeenCalledWith({
+        name: 'Essentials',
+        description: '   ',
+      });
+    });
+
+    it('sends a category’s group and text on a create and only the text on a rename', () => {
+      // Arrange — a rename binds three members and the group is not one of
+      // them; the picker is disabled during an edit and a category moves group
+      // by being dragged.
+      screen().categoryForm.setValue({
+        name: 'Groceries',
+        description: 'Food and drink',
+        categoryGroupId: GROUP_ID,
+      });
+
+      // Act
+      screen().saveCategory();
+      screen().editCategory(groceries);
+      screen().saveCategory();
+
+      // Assert
+      expect(categories.addCategory).toHaveBeenCalledWith({
+        name: 'Groceries',
+        description: 'Food and drink',
+        categoryGroupId: GROUP_ID,
+      });
+      expect(categories.updateCategory).toHaveBeenCalledWith(CATEGORY_ID, {
+        name: 'Groceries',
+        description: 'Food and drink',
+      });
+    });
+
+    // What a value longer than its column can hold does, and the two
+    // mechanisms that stop it.
+    //
+    // **The validator and the attribute are held apart on purpose, because
+    // nothing else holds either.** `+shared/narrative-field-caps.spec.ts`
+    // reads the source tree and reports a `matInput` stating no cap at all —
+    // markup, and it says so about itself: it cannot see
+    // `Validators.maxLength`, which is behaviour. Measured by a reviewer
+    // before these cases existed: delete every `Validators.maxLength(…)` and
+    // every `[attr.maxlength]` from this screen and the whole suite stayed
+    // green. What that costs is not a tidy error message — a name of the cap
+    // in a three-byte script seals past `NameBytes`, so the refusal arrives as
+    // a 400 from a server the form said nothing about, and only for people
+    // writing in some languages.
+    //
+    // **Both caps are asked twice, once per form**, which is this screen's own
+    // rule everywhere else in this file: the two forms are written separately
+    // in the component, and a screen that got one right and the other wrong is
+    // what shipped last time somebody copied a form.
+    //
+    // **The caps are imported and never typed.** A number written here would
+    // say nothing about the byte cap it protects, and the day the Domain's
+    // constant moves this file would go on asserting the old one.
+    it('refuses a name one unit past the cap on both forms', () => {
+      // Arrange — one unit over, which is the only length that tells a cap of
+      // `NARRATIVE_NAME_CHARACTERS` from a cap of anything larger.
+      const tooLong = 'e'.repeat(NARRATIVE_NAME_CHARACTERS + 1);
+
+      screen().groupForm.setValue({ name: tooLong, description: '' });
+      screen().categoryForm.setValue({
+        name: tooLong,
+        description: '',
+        categoryGroupId: GROUP_ID,
+      });
+
+      // Act
+      screen().saveGroup();
+      screen().saveCategory();
+
+      // Assert — the error key as well as the refusal, because `nonBlank` and
+      // `required` also make these forms invalid and a case reading `invalid`
+      // alone would go green with the length rule deleted.
+      expect(screen().groupForm.get('name')?.hasError('maxlength')).toBe(true);
+      expect(screen().categoryForm.get('name')?.hasError('maxlength')).toBe(
+        true,
+      );
+      expect(categories.addGroup).not.toHaveBeenCalled();
+      expect(categories.addCategory).not.toHaveBeenCalled();
+    });
+
+    it('accepts a name of exactly the cap on both forms', () => {
+      // Arrange — the other side of the boundary, and it is not decoration: a
+      // case testing the long value alone passes against `maxLength(0)`,
+      // against a validator that refuses everything, and against a form nobody
+      // can satisfy.
+      const atTheCap = 'e'.repeat(NARRATIVE_NAME_CHARACTERS);
+
+      screen().groupForm.setValue({ name: atTheCap, description: '' });
+      screen().categoryForm.setValue({
+        name: atTheCap,
+        description: '',
+        categoryGroupId: GROUP_ID,
+      });
+
+      // Act
+      screen().saveGroup();
+      screen().saveCategory();
+
+      // Assert
+      expect(screen().groupForm.get('name')?.hasError('maxlength')).toBe(false);
+      expect(screen().categoryForm.get('name')?.hasError('maxlength')).toBe(
+        false,
+      );
+      expect(categories.addGroup).toHaveBeenCalledOnce();
+      expect(categories.addCategory).toHaveBeenCalledOnce();
+    });
+
+    it('refuses a note one unit past the cap on both forms', () => {
+      // Arrange — the description cap and not the name one. These were the
+      // first sealed free-text columns in the product and they are a wider
+      // field *class*, so a note held to the name cap would refuse four fifths
+      // of what `DescriptionBytes` was widened to carry — silently, and only
+      // to the person typing.
+      const tooLong = 'e'.repeat(NARRATIVE_DESCRIPTION_CHARACTERS + 1);
+
+      screen().groupForm.setValue({ name: 'Essentials', description: tooLong });
+      screen().categoryForm.setValue({
+        name: 'Groceries',
+        description: tooLong,
+        categoryGroupId: GROUP_ID,
+      });
+
+      // Act
+      screen().saveGroup();
+      screen().saveCategory();
+
+      // Assert — the note carries no `required` and no `nonBlank`, so the
+      // length rule is the **only** thing that can make either form invalid
+      // here, and its key is named all the same: a form invalid for some other
+      // reason is not this rule working.
+      expect(screen().groupForm.get('description')?.hasError('maxlength')).toBe(
+        true,
+      );
+      expect(
+        screen().categoryForm.get('description')?.hasError('maxlength'),
+      ).toBe(true);
+      expect(categories.addGroup).not.toHaveBeenCalled();
+      expect(categories.addCategory).not.toHaveBeenCalled();
+    });
+
+    it('accepts a note of exactly the cap on both forms', () => {
+      // Arrange — the boundary's other side again, and here it is the case
+      // that catches a note wired to the *name* cap: 500 units is over that
+      // one and under this one, so the crossed constant reddens here rather
+      // than in a browser somebody is typing into.
+      const atTheCap = 'e'.repeat(NARRATIVE_DESCRIPTION_CHARACTERS);
+
+      screen().groupForm.setValue({
+        name: 'Essentials',
+        description: atTheCap,
+      });
+      screen().categoryForm.setValue({
+        name: 'Groceries',
+        description: atTheCap,
+        categoryGroupId: GROUP_ID,
+      });
+
+      // Act
+      screen().saveGroup();
+      screen().saveCategory();
+
+      // Assert
+      expect(screen().groupForm.get('description')?.hasError('maxlength')).toBe(
+        false,
+      );
+      expect(
+        screen().categoryForm.get('description')?.hasError('maxlength'),
+      ).toBe(false);
+      expect(categories.addGroup).toHaveBeenCalledOnce();
+      expect(categories.addCategory).toHaveBeenCalledOnce();
+    });
+
+    it('binds both name fields’ maxlength to the name cap', () => {
+      // Arrange — the second mechanism, and the one a person meets first: the
+      // attribute is what stops the typing before there is anything to refuse.
+
+      // Act
+      fixture.detectChanges();
+
+      // Assert — the **value**, never merely the presence, and both fields
+      // rather than the first one found. The sibling census asks only whether
+      // a cap is stated at all, so a name bound to the description cap passes
+      // it while letting somebody fill a name field with two and a half times
+      // what the column can carry.
+      expect(nameInputs()).toHaveLength(2);
+      expect(
+        nameInputs().map((input) => input.getAttribute('maxlength')),
+        CAP_ABSENT,
+      ).toEqual([
+        String(NARRATIVE_NAME_CHARACTERS),
+        String(NARRATIVE_NAME_CHARACTERS),
+      ]);
+    });
+
+    it('binds both note fields’ maxlength to the description cap', () => {
+      // Arrange — the pair the case above cannot see. The two constants are
+      // declared four lines apart in the component and both are in scope in
+      // both templates, so a note bound to `nameCharacters` renders a cap, is
+      // reported clean by the census, and quietly refuses three fifths of a
+      // legal note.
+
+      // Act
+      fixture.detectChanges();
+
+      // Assert
+      expect(noteInputs()).toHaveLength(2);
+      expect(
+        noteInputs().map((input) => input.getAttribute('maxlength')),
+        CAP_ABSENT,
+      ).toEqual([
+        String(NARRATIVE_DESCRIPTION_CHARACTERS),
+        String(NARRATIVE_DESCRIPTION_CHARACTERS),
+      ]);
+    });
+  });
+
+  describe('the locked account', () => {
+    it('disables both forms with a reason while the account is locked', () => {
+      // Arrange
+      custody.setStatus('locked');
+
+      // Act
+      fixture.detectChanges();
+
+      // Assert — disabled in the DOM, not merely dimmed: an enabled form
+      // submits, the service refuses because it cannot seal, and nothing
+      // happens, which reads as a failure rather than as a limitation.
+      const reasons = Array.from(host().querySelectorAll('form p.reason')).map(
+        (element) => element.textContent ?? '',
+      );
+
+      expect(nameInputs()).toHaveLength(2);
+      expect(nameInputs().every((input) => input.disabled)).toBe(true);
+      expect(reasons).toHaveLength(2);
+      expect(reasons.every((reason) => reason.includes('Unlock'))).toBe(true);
+      expect(reasons.every((reason) => reason.includes('Settings'))).toBe(true);
+    });
+
+    it('keeps both submit buttons disabled while the account is locked', () => {
+      // Arrange — the trap this case exists for: a disabled form's status is
+      // `DISABLED`, which excludes it from validation and makes `form.invalid`
+      // answer **false**, so `[disabled]="form.invalid"` alone *enables* the
+      // button the moment the form is switched off. The lock has to be named
+      // again on the control.
+      custody.setStatus('locked');
+
+      // Act
+      fixture.detectChanges();
+
+      // Assert
+      expect(submitButtons()).toHaveLength(2);
+      expect(submitButtons().every((button) => button.disabled)).toBe(true);
+    });
+
+    it('refuses a submit that reaches the handler while the account is locked', () => {
+      // Arrange — the third naming of the lock. Material's click-halt is
+      // applied to anchors only, so a `<button>` still receives the press that
+      // arrives here, and the form is valid because it is disabled.
+      screen().groupForm.setValue({ name: 'Essentials', description: '' });
+      custody.setStatus('locked');
+      fixture.detectChanges();
+
+      // Act
+      screen().saveGroup();
+      screen().saveCategory();
+
+      // Assert
+      expect(categories.addGroup).not.toHaveBeenCalled();
+      expect(categories.addCategory).not.toHaveBeenCalled();
+    });
+
+    it('leaves both forms enabled while the account is unlocked', () => {
+      // Arrange — the control for the cases above.
+
+      // Act
+      fixture.detectChanges();
+
+      // Assert — `some` and never `every`. `.every(disabled) === false` is
+      // satisfied by **either** form being live, which is exactly the state
+      // this screen shipped once, and the locked case next door is written
+      // correctly (`every` plus a length) so the pair looked symmetrical while
+      // only one half held. `.some(disabled) === false` says every input is
+      // live, and the length says there are two of them to be live.
+      expect(nameInputs()).toHaveLength(2);
+      expect(nameInputs().some((input) => input.disabled)).toBe(false);
+      expect(host().querySelector('form p.reason')).toBeNull();
+    });
+
+    it('renders the locked notice in place of the hierarchy while locked', () => {
+      // Arrange — rows are present, so this is the notice replacing a list
+      // rather than filling an empty one.
+      custody.setStatus('locked');
+
+      // Act
+      fixture.detectChanges();
+
+      // Assert
+      expect(host().querySelector('app-locked-account-notice')).not.toBeNull();
+      expect(host().querySelector('.category-groups')).toBeNull();
+    });
+
+    it('renders the hierarchy and no notice while the account is unlocked', () => {
+      // Arrange — the control for the case above.
+
+      // Act
+      fixture.detectChanges();
+
+      // Assert — the names are rendered through `narrative-value`, so what
+      // lands in the DOM is text rather than `[object Object]`.
+      expect(host().querySelector('app-locked-account-notice')).toBeNull();
+      expect(host().querySelector('.category-groups')).not.toBeNull();
+      expect(host().textContent ?? '').toContain('Essentials');
+      expect(host().textContent ?? '').toContain('The bills');
+      expect(host().textContent ?? '').toContain('Groceries');
+      expect(host().textContent ?? '').not.toContain('[object Object]');
+    });
+
+    it('disables both forms while the account is unlocking', () => {
+      // Arrange — the third word. A predicate written `!== 'locked'` leaves the
+      // forms live for the whole ceremony, and every save made in that window
+      // is refused by a service that cannot seal — silently, where nobody is
+      // looking. The rule is that a form is usable only when the status is
+      // `unlocked`.
+      custody.setStatus('unlocking');
+
+      // Act
+      fixture.detectChanges();
+
+      // Assert
+      expect(nameInputs().every((input) => input.disabled)).toBe(true);
+      expect(submitButtons().every((button) => button.disabled)).toBe(true);
+    });
+
+    it('takes the group picker out of the DOM while the account is locked', () => {
+      // Arrange — the picker sits in the **category form**, which is outside
+      // the `@if (locked())` that replaces the hierarchy, so a group name this
+      // browser opened went on being rendered beside a notice saying this tab
+      // cannot read the account.
+      //
+      // **Emptying the option list is not enough, and that was measured in
+      // round one:** a `mat-select` goes on displaying the option it had
+      // selected after the option is gone. The control has to leave the DOM,
+      // and the assertion below is written so that the weaker fix fails it —
+      // it reads the text on screen, not the length of an option list.
+      screen().categoryForm.patchValue({ categoryGroupId: GROUP_ID });
+      fixture.detectChanges();
+      expect(editorsText()).toContain('Essentials');
+
+      // Act
+      custody.setStatus('locked');
+      fixture.detectChanges();
+
+      // Assert
+      expect(editorsText()).not.toContain('Essentials');
+      expect(
+        host().querySelector('mat-select[formcontrolname="categoryGroupId"]'),
+      ).toBeNull();
+    });
+
+    it('keeps the hierarchy on screen while the account is unlocking', () => {
+      // Arrange — the notice follows `locked` alone, where the forms follow
+      // "anything but unlocked". Two questions, two predicates: the notice's
+      // sentence tells somebody to go and press Unlock, and that advice is
+      // already wrong for a person whose unlock is running.
+      custody.setStatus('unlocking');
+
+      // Act
+      fixture.detectChanges();
+
+      // Assert
+      expect(host().querySelector('app-locked-account-notice')).toBeNull();
+      expect(host().querySelector('.category-groups')).not.toBeNull();
+    });
+
+    // The term a key rotation adds to both predicates. Every case here holds
+    // custody at `unlocked`: the tab is holding a perfectly good content key,
+    // and the rows it would draw are the ones a chunk has already re-sealed
+    // under the generation replacing it — so a hierarchy drawn here is part
+    // names and part em dashes, and gets worse as the run succeeds.
+    describe('a key rotation in flight', () => {
+      it('leaves the hierarchy and both forms live while a run walks for another account', () => {
+        // Arrange — the tab changed accounts under a run it is still walking,
+        // so the driver's raw flag is up while `running`, read for this
+        // account, is down. No run is touching these rows.
+        rotations.setRunning(false);
+        rotations.setWalking(true);
+
+        // Act
+        fixture.detectChanges();
+
+        // Assert
+        expect(host().querySelector('app-locked-account-notice')).toBeNull();
+        expect(host().querySelector('.category-groups')).not.toBeNull();
+        expect(nameInputs()).toHaveLength(2);
+        expect(nameInputs().every((input) => !input.disabled)).toBe(true);
+      });
+
+      it('replaces the hierarchy with the run’s notice while custody is unlocked', () => {
+        // Arrange
+        rotations.setRunning(true);
+
+        // Act
+        fixture.detectChanges();
+
+        // Assert
+        expect(
+          host().querySelector('app-locked-account-notice'),
+        ).not.toBeNull();
+        expect(host().querySelector('.category-groups')).toBeNull();
+        expect((host().textContent ?? '').replace(/\s+/g, ' ')).toContain(
+          'Budgetoid is giving this account new keys. Your records come back ' +
+            'when it finishes — watch it in Settings.',
+        );
+      });
+
+      it('disables both forms and gives the run as the reason', () => {
+        // Arrange — a row created after a run has collected is a row the run
+        // will never visit, and the completion refuses until it does.
+        rotations.setRunning(true);
+
+        // Act
+        fixture.detectChanges();
+
+        // Assert — and neither sentence names Unlock: pressing it mid-run hands
+        // back the generation that is on its way out.
+        const reasons = Array.from(
+          host().querySelectorAll('form p.reason'),
+        ).map((element) =>
+          (element.textContent ?? '').replace(/\s+/g, ' ').trim(),
+        );
+
+        expect(nameInputs()).toHaveLength(2);
+        expect(nameInputs().every((input) => input.disabled)).toBe(true);
+        expect(submitButtons().every((button) => button.disabled)).toBe(true);
+        expect(reasons).toEqual([
+          'Adding and editing are off while Budgetoid gives this account new ' +
+            'keys. They come back when it finishes.',
+          'Adding and editing are off while Budgetoid gives this account new ' +
+            'keys. They come back when it finishes.',
+        ]);
+      });
+
+      it('takes the group picker out of the DOM while a run is in flight', () => {
+        // Arrange — the picker is the one control on this screen rendering a
+        // value somebody opened, and it sits in a form, outside the branch that
+        // replaces the hierarchy. A `mat-select` goes on displaying the option
+        // it had selected after the option is gone, so it has to leave.
+        screen().categoryForm.patchValue({ categoryGroupId: GROUP_ID });
+        fixture.detectChanges();
+        expect(editorsText()).toContain('Essentials');
+
+        // Act
+        rotations.setRunning(true);
+        fixture.detectChanges();
+
+        // Assert
+        expect(editorsText()).not.toContain('Essentials');
+        expect(
+          host().querySelector('mat-select[formcontrolname="categoryGroupId"]'),
+        ).toBeNull();
+      });
+
+      it('carries the run’s sentence when the account is locked as well', () => {
+        // Arrange — somebody who arrived locked and pressed Rotate is going to
+        // be able to read their records when it finishes.
+        custody.setStatus('locked');
+        rotations.setRunning(true);
+
+        // Act
+        fixture.detectChanges();
+
+        // Assert
+        const copy = (host().textContent ?? '').replace(/\s+/g, ' ');
+
+        expect(copy).toContain('Budgetoid is giving this account new keys.');
+        expect(copy).not.toContain('This tab can’t read your account yet.');
+      });
+
+      it('takes a run this browser never began from what the server staged', () => {
+        // Arrange — a rotation that lost its tab survives as server state
+        // alone, and the application initializer is what reads it back.
+        rotations.setStaged({ startedAtUtc: '2026-02-03T04:05:06Z' });
+
+        // Act
+        fixture.detectChanges();
+
+        // Assert
+        expect(
+          host().querySelector('app-locked-account-notice'),
+        ).not.toBeNull();
+        expect(host().querySelector('.category-groups')).toBeNull();
+      });
+    });
+  });
+
+  // Three places used to set this one control's enabled state — the form-wide
+  // effect, `editCategory` and `cancelCategoryEdit` — and each of the two cases
+  // below is one pair of them disagreeing. Both symptoms are silent, which is
+  // why the fix is that the effect owns the state and derives it, rather than a
+  // fourth call put somewhere to compensate.
+  describe('who owns the group picker’s enabled state', () => {
+    function picker(): AbstractControl | null {
+      return screen().categoryForm.get('categoryGroupId');
+    }
+
+    it('turns the picker off for an edit and on again for the next create', () => {
+      // Arrange — a rename binds three members and the group is not one of
+      // them; a category moves group by being dragged, so the picker is off
+      // while an edit is running. This is the control for the two cases below:
+      // an owner that never enabled anything would pass them both.
+
+      // Act
+      screen().editCategory(groceries);
+      fixture.detectChanges();
+      const duringEdit = picker()?.disabled;
+
+      screen().cancelCategoryEdit();
+      fixture.detectChanges();
+
+      // Assert
+      expect(duringEdit).toBe(true);
+      expect(picker()?.disabled).toBe(false);
+    });
+
+    it('keeps the picker off through an unlocking and an unlock during an edit', () => {
+      // Arrange — the first silent symptom. The form-wide effect calls
+      // `enable()` on the **group**, which enables every child including this
+      // one, so a form disabled and re-enabled mid-edit hands the picker back
+      // live. Somebody then changes the group, presses Save, and the edit
+      // branch sends `{description, name}` — the API answers 204 and the
+      // category has not moved.
+      //
+      // **Staged through `unlocking` rather than through `locked`, and that is
+      // the point of it rather than a detail of it.** Both words disable the
+      // forms, and `unlocking` is now the only one an edit survives: a lock
+      // ends the edit, so the same two calls over `locked` leave a *create*
+      // behind, where a live picker is correct and this assertion would be
+      // asking for the wrong answer. The pair of them is the whole hazard —
+      // one form-wide `disable()` and one form-wide `enable()` with an edit
+      // still running across both.
+      screen().editCategory(groceries);
+      fixture.detectChanges();
+      expect(picker()?.disabled).toBe(true);
+
+      // Act
+      custody.setStatus('unlocking');
+      fixture.detectChanges();
+      custody.setStatus('unlocked');
+      fixture.detectChanges();
+
+      // Assert — still an edit, and still no picker.
+      expect(screen().editingCategoryId()).toBe(CATEGORY_ID);
+      expect(picker()?.disabled).toBe(true);
+    });
+
+    it('leaves the whole category form disabled when an edit is cancelled while locked', () => {
+      // Arrange — the second. Cancel is a plain `<button>`, unaffected by the
+      // FormGroup's disabled state, so the press arrives; `cancelCategoryEdit`
+      // then enabled this control unconditionally. A group is `DISABLED` only
+      // while **every** child is, so one live control flips the whole form's
+      // status back — on a screen whose whole point is that it cannot write.
+      screen().editCategory(groceries);
+      fixture.detectChanges();
+      custody.setStatus('locked');
+      fixture.detectChanges();
+
+      // Act
+      screen().cancelCategoryEdit();
+      fixture.detectChanges();
+
+      // Assert
+      expect(picker()?.disabled).toBe(true);
+      expect(screen().categoryForm.disabled).toBe(true);
+    });
+  });
+
+  // **The hierarchy is not the only place this screen renders opened values.**
+  // Both `editGroup` and `editCategory` prefill a form from a row, so a lock
+  // landing mid-edit left a name **and a note** this browser decrypted sitting
+  // on dead controls beside a notice saying this tab cannot read the account.
+  // The picker's own case above is the third value in that form and the only
+  // one that was ever dealt with, because it is the only one a `mat-select`
+  // made visible in the host's text.
+  //
+  // **The clear follows `locked` exactly, like the notice and like the
+  // picker, and the `unlocking` case below is the whole of what holds that.** A
+  // prefill is opened plaintext of the same class as a row in the hierarchy,
+  // and the hierarchy deliberately stays up through a ceremony that resolves
+  // back into keys. `writable`'s "disable when unsure" reasoning does not reach
+  // here: that is about a capability, where leaving it on is silent, and this
+  // is a destructive act, where the fail-safe direction is not to act.
+  //
+  // **What comes down is what an edit put there.** Text typed into a create was
+  // never read out of this account, and `accounts.component.spec.ts` argues
+  // that boundary at its own copy.
+  describe('an edit in flight when the account locks', () => {
+    // Both forms are always rendered, group first, so these two indices are the
+    // template's order rather than a guess. Values and not text: an `<input>`'s
+    // value never reaches `textContent`, and a `<textarea>`'s stops matching it
+    // the moment a value accessor writes one — which is exactly the state a
+    // prefill leaves behind, and why `editorsText()` cannot see this defect.
+    function groupFields(): { name: string; note: string } {
+      return {
+        name: nameInputs().at(0)?.value ?? '',
+        note: noteInputs().at(0)?.value ?? '',
+      };
+    }
+
+    function categoryFields(): { name: string; note: string } {
+      return {
+        name: nameInputs().at(1)?.value ?? '',
+        note: noteInputs().at(1)?.value ?? '',
+      };
+    }
+
+    // Puts both forms into an edit and asserts the four opened values are on
+    // screen, so no case below can pass by clearing nothing.
+    function editBoth(): void {
+      screen().editGroup(essentials);
+      screen().editCategory(groceries);
+      fixture.detectChanges();
+
+      expect(groupFields()).toEqual({ name: 'Essentials', note: 'The bills' });
+      expect(categoryFields()).toEqual({
+        name: 'Groceries',
+        note: 'Food and drink',
+      });
+    }
+
+    it('takes a group’s name and note out of the form', () => {
+      // Arrange
+      editBoth();
+
+      // Act
+      custody.setStatus('locked');
+      fixture.detectChanges();
+
+      // Assert
+      expect(groupFields()).toEqual({ name: '', note: '' });
+      expect(screen().editingGroupId()).toBeNull();
+    });
+
+    it('takes a category’s name and note out of the form', () => {
+      // Arrange — asked twice because the two halves are written separately in
+      // the component, and a screen that got one right and the other wrong is
+      // what shipped the last time somebody copied a form.
+      editBoth();
+
+      // Act
+      custody.setStatus('locked');
+      fixture.detectChanges();
+
+      // Assert
+      expect(categoryFields()).toEqual({ name: '', note: '' });
+      expect(screen().editingCategoryId()).toBeNull();
+    });
+
+    it('ends both edits, so what is left is two creates', () => {
+      // Arrange — clearing the values while staying in edit mode leaves the
+      // screen offering to save rows it is no longer holding: an unlock hands
+      // the forms back live, and Save then writes a blank name over a name
+      // still sitting in the column, which is the shape both rename gates
+      // already refuse one row at a time.
+      editBoth();
+
+      // Act
+      custody.setStatus('locked');
+      fixture.detectChanges();
+
+      // Assert — the DOM's own statement of the mode: both headings and both
+      // submit labels are written off the two editing signals.
+      expect(editorsText()).toContain('Add category group');
+      expect(editorsText()).toContain('Add category');
+      expect(editorsText()).not.toContain('Edit category');
+      expect(buttonsLabelled('form button', 'Cancel')).toHaveLength(0);
+    });
+
+    it('keeps both edits while the account is unlocking', () => {
+      // Arrange — the negative control for the predicate, and the only thing
+      // that stops `locked` being "simplified" into `!== 'unlocked'` later.
+      // The ceremony ends in keys; taking two half-finished edits away while it
+      // runs is a cost paid for a state that is about to resolve.
+      editBoth();
+
+      // Act
+      custody.setStatus('unlocking');
+      fixture.detectChanges();
+
+      // Assert
+      expect(groupFields()).toEqual({ name: 'Essentials', note: 'The bills' });
+      expect(categoryFields()).toEqual({
+        name: 'Groceries',
+        note: 'Food and drink',
+      });
+      expect(screen().editingGroupId()).toBe(GROUP_ID);
+      expect(screen().editingCategoryId()).toBe(CATEGORY_ID);
+    });
+
+    it('leaves text typed into a create alone', () => {
+      // Arrange — the boundary. This text was never read out of the account:
+      // nobody opened it, and a lock is not a refusal of anything somebody
+      // pressed, so the screen's own rule that a write which does not happen
+      // never costs a keystroke is what applies to it.
+      screen().groupForm.setValue({ description: '', name: 'Travel' });
+      screen().categoryForm.setValue({
+        categoryGroupId: GROUP_ID,
+        description: 'Trains and buses',
+        name: 'Fares',
+      });
+      fixture.detectChanges();
+
+      // Act
+      custody.setStatus('locked');
+      fixture.detectChanges();
+
+      // Assert
+      expect(groupFields()).toEqual({ name: 'Travel', note: '' });
+      expect(categoryFields()).toEqual({
+        name: 'Fares',
+        note: 'Trains and buses',
+      });
+    });
+  });
+
+  describe('a row that cannot be read cannot be renamed', () => {
+    it('refuses to edit a group whose name did not open', () => {
+      // Arrange
+      categories.groupsSignal.set([
+        { ...essentials, name: { state: 'unreadable' } },
+      ]);
+
+      // Act
+      fixture.detectChanges();
+      screen().editGroup({ ...essentials, name: { state: 'unreadable' } });
+
+      // Assert — disabled in the DOM, with the reason in the row, and the gate
+      // repeated in the handler because Material's click-halt is anchors only.
+      expect(
+        buttonsLabelled('.group-heading button', 'Edit').at(0)?.disabled,
+      ).toBe(true);
+      expect(host().textContent ?? '').toContain('can’t be renamed');
+      expect(screen().groupForm.getRawValue()).toMatchObject({ name: '' });
+    });
+
+    it('refuses to edit a group whose note did not open even though its name did', () => {
+      // Arrange — the half the accounts screen never had. The `PUT` carries the
+      // note beside the name, so an edit started here prefills the note field
+      // empty and the save posts `null` — clearing a note still sitting in the
+      // column, over a name that rendered perfectly, with a 204 and a legal row
+      // and nothing anywhere to see.
+      const damagedNote: CategoryGroupView = {
+        ...essentials,
+        description: { state: 'unreadable' },
+      };
+
+      categories.groupsSignal.set([damagedNote]);
+
+      // Act
+      fixture.detectChanges();
+      screen().editGroup(damagedNote);
+
+      // Assert
+      expect(
+        buttonsLabelled('.group-heading button', 'Edit').at(0)?.disabled,
+      ).toBe(true);
+      expect(screen().groupForm.getRawValue()).toMatchObject({ name: '' });
+    });
+
+    it('leaves Delete available on a row it will not rename', () => {
+      // Arrange — the asymmetry is the point: somebody looking at a row they
+      // cannot read may still decide it should not exist, and removing a row is
+      // not rewriting its contents.
+      categories.groupsSignal.set([
+        { ...essentials, name: { state: 'locked' } },
+      ]);
+
+      // Act
+      fixture.detectChanges();
+      buttonsLabelled('.group-heading button', 'Delete').at(0)?.click();
+
+      // Assert
+      expect(categories.removeGroup).toHaveBeenCalledWith(GROUP_ID);
+    });
+
+    it('allows editing a group whose name and note both opened', () => {
+      // Arrange — the control for the cases above.
+
+      // Act
+      fixture.detectChanges();
+      screen().editGroup(essentials);
+
+      // Assert
+      expect(
+        buttonsLabelled('.group-heading button', 'Edit').at(0)?.disabled,
+      ).toBe(false);
+      expect(screen().groupForm.getRawValue()).toMatchObject({
+        description: 'The bills',
+        name: 'Essentials',
+      });
+    });
+
+    it('allows editing a group that holds no note at all', () => {
+      // Arrange — `null` is a column nobody filled in, not a value that failed
+      // to open. Refusing it would strand every group without a description.
+
+      // Act
+      fixture.detectChanges();
+      screen().editGroup(lifestyle);
+
+      // Assert
+      expect(screen().groupForm.getRawValue()).toMatchObject({
+        description: '',
+        name: 'Lifestyle',
+      });
+    });
+
+    it('refuses to edit a category whose note did not open', () => {
+      // Arrange
+      const damagedNote: CategoryView = {
+        ...groceries,
+        description: { state: 'unreadable' },
+      };
+
+      categories.categoriesSignal.set([damagedNote]);
+
+      // Act
+      fixture.detectChanges();
+      screen().editCategory(damagedNote);
+
+      // Assert
+      expect(
+        buttonsLabelled('.category-row button', 'Edit').at(0)?.disabled,
+      ).toBe(true);
+      expect(screen().categoryForm.getRawValue()).toMatchObject({ name: '' });
+    });
+
+    it('allows editing a category whose group name did not open', () => {
+      // Arrange — the case that keeps this gate about the row's **own** words.
+      // `categoryGroupName` is the group's column denormalized onto this row,
+      // and `PUT /api/categories/{id}` cannot touch it, so refusing here would
+      // strand every category in a group whose name is damaged over a write
+      // that could never have made things worse.
+      const damagedGroupName: CategoryView = {
+        ...groceries,
+        categoryGroupName: { state: 'unreadable' },
+      };
+
+      categories.categoriesSignal.set([damagedGroupName]);
+
+      // Act
+      fixture.detectChanges();
+      screen().editCategory(damagedGroupName);
+
+      // Assert
+      expect(
+        buttonsLabelled('.category-row button', 'Edit').at(0)?.disabled,
+      ).toBe(false);
+      expect(screen().categoryForm.getRawValue()).toMatchObject({
+        name: 'Groceries',
+      });
+    });
+  });
+
+  describe('a list with no answer', () => {
+    it('says it is reading while a load is in flight', () => {
+      // Arrange — the list is null at rest, in flight and after a failure, so
+      // the loading line is read off the published running state rather than
+      // off the absent value.
+      categories.groupsSignal.set(null);
+      categories.loadingSignal.set(true);
+
+      // Act
+      fixture.detectChanges();
+
+      // Assert
+      expect(host().textContent ?? '').toContain('Reading your categories');
+      expect(host().textContent ?? '').not.toContain('No category groups yet');
+    });
+
+    it('says there are none only once a server has answered', () => {
+      // Arrange — `[]` is the sentence *you have no category groups*, which is
+      // a claim only a server that answered may make.
+      categories.groupsSignal.set([]);
+      categories.loadingSignal.set(false);
+
+      // Act
+      fixture.detectChanges();
+
+      // Assert
+      expect(host().textContent ?? '').toContain('No category groups yet');
+    });
+
+    it('says the read failed rather than rendering nothing', () => {
+      // Arrange — a failed load leaves the list `null` and `loading` false, and
+      // the previous answer is not restored. This case used to assert that the
+      // screen said **nothing**, which is what it did: two forms on top and
+      // silence beneath them, indistinguishable from an account with no
+      // categories in it. A read that failed and an empty account are two
+      // different next steps for a person — the distinction `SessionService`
+      // keeps between `anonymous` and `unreachable` — and a screen that renders
+      // neither sentence has collapsed them into a blank.
+      categories.groupsSignal.set(null);
+      categories.loadingSignal.set(false);
+      categories.failedSignal.set(true);
+
+      // Act
+      fixture.detectChanges();
+
+      // Assert
+      expect(host().textContent ?? '').toContain('couldn’t read your');
+      expect(host().textContent ?? '').not.toContain('Reading your categories');
+      expect(host().textContent ?? '').not.toContain('No category groups yet');
+    });
+
+    it('draws neither the hierarchy nor a failure while the read is running', () => {
+      // Arrange — the control for the case above, and for the branch order: a
+      // failure that outranked the running line would put the sentence on
+      // screen during every reload after one failed read.
+      categories.groupsSignal.set(null);
+      categories.loadingSignal.set(true);
+      categories.failedSignal.set(false);
+
+      // Act
+      fixture.detectChanges();
+
+      // Assert
+      expect(host().textContent ?? '').toContain('Reading your categories');
+      expect(host().textContent ?? '').not.toContain('couldn’t read your');
+    });
+
+    // **Where the two lines land is a property the four cases above cannot
+    // see.** Every one of them asserts the text is somewhere in the host, and
+    // a screen that draws each sentence in a `role="status"` created at the
+    // moment it gains content passes all four while announcing nothing:
+    // assistive technology has to have been watching the node *before* the
+    // text arrived. So the node is taken while it is still empty and the later
+    // text is asserted to arrive **in that same node** — `docs/design/
+    // components.md`, "A value read from the network".
+    function statusRegion(): HTMLElement | null {
+      return host().querySelector<HTMLElement>('[role="status"]');
+    }
+
+    it('holds an empty status region from first paint', () => {
+      // Arrange — the fixture's own default: lists that answered, nothing
+      // running and nothing failed, so there is deliberately nothing to say.
+
+      // Act
+      fixture.detectChanges();
+
+      // Assert — present and silent. `status` and never `assertive`, which is
+      // reserved for a failure to save something a person typed.
+      expect(statusRegion()).not.toBeNull();
+      expect((statusRegion()?.textContent ?? '').trim()).toBe('');
+      expect(
+        host().querySelector('[role="alert"], [aria-live="assertive"]'),
+      ).toBeNull();
+    });
+
+    it('carries exactly one status region in every state it renders', () => {
+      // Arrange — the **count**, which no case above can see.
+      // `querySelector` takes the first match in document order, so a second
+      // region added after this one leaves every one of them green while the
+      // screen announces its reads twice — and which of the two a person hears
+      // is then decided by the order the template happens to be written in.
+      // Counted in each state the section renders, because a region added
+      // inside a branch is invisible from any other one; **where** the region
+      // sits is deliberately not asserted, that being a layout decision
+      // `docs/design/components.md` owns. This screen carries two forms and
+      // two lists, so it is also the one where a second region is easiest to
+      // add by copying a half.
+      const states = [
+        { apply: () => undefined, name: 'a hierarchy on screen' },
+        {
+          apply: () => {
+            categories.groupsSignal.set(null);
+            categories.categoriesSignal.set(null);
+            categories.loadingSignal.set(true);
+          },
+          name: 'a read in flight',
+        },
+        {
+          apply: () => {
+            categories.groupsSignal.set(null);
+            categories.categoriesSignal.set(null);
+            categories.loadingSignal.set(false);
+            categories.failedSignal.set(true);
+          },
+          name: 'a read that failed',
+        },
+        {
+          apply: () => {
+            categories.groupsSignal.set(null);
+            categories.categoriesSignal.set(null);
+            custody.setStatus('locked');
+          },
+          name: 'a locked account',
+        },
+      ];
+
+      for (const state of states) {
+        // Act
+        state.apply();
+        fixture.detectChanges();
+
+        // Assert — wrapped with the state's name so a failure says which one
+        // grew the second region.
+        expect({
+          regions: host().querySelectorAll('[role="status"]').length,
+          state: state.name,
+        }).toEqual({ regions: 1, state: state.name });
+      }
+    });
+
+    it('announces the loading line from the region that was already there', () => {
+      // Arrange — taken while it is still empty, which is the whole point of
+      // taking it here rather than after the act.
+      const region = statusRegion();
+
+      // Act
+      categories.groupsSignal.set(null);
+      categories.loadingSignal.set(true);
+      fixture.detectChanges();
+
+      // Assert — the same element, not a second one that arrived with its
+      // text.
+      expect(statusRegion()).toBe(region);
+      expect(region?.textContent ?? '').toContain('Reading your categories');
+    });
+
+    it('announces the failure sentence from that same region', () => {
+      // Arrange
+      const region = statusRegion();
+
+      // Act
+      categories.groupsSignal.set(null);
+      categories.loadingSignal.set(false);
+      categories.failedSignal.set(true);
+      fixture.detectChanges();
+
+      // Assert
+      expect(statusRegion()).toBe(region);
+      expect(region?.textContent ?? '').toContain('couldn’t read your');
+    });
+
+    it('says nothing at all while the account is locked', () => {
+      // Arrange — the state a lock actually leaves behind: `CategoriesService`
+      // destroys both lists and clears `failed`, and it does **not** clear the
+      // running flag, so a region reading the load alone tells somebody a read
+      // is in flight beside a notice saying this tab cannot read the account.
+      // The chain this region replaced answered that by putting `locked`
+      // first, and the predicate has to keep doing it.
+      categories.groupsSignal.set(null);
+      categories.loadingSignal.set(true);
+      custody.setStatus('locked');
+
+      // Act
+      fixture.detectChanges();
+
+      // Assert — still in the DOM, with nothing to say. The notice is what
+      // speaks for this state.
+      expect(statusRegion()).not.toBeNull();
+      expect((statusRegion()?.textContent ?? '').trim()).toBe('');
+    });
+
+    it('says it is reading, not that it failed, when both flags are up', () => {
+      // Arrange — reachable, and not by contrivance: only `load()` clears
+      // `failed`, so a failed read followed by a press on either Add leaves
+      // both lists null, `failed` true and the running flag true at once.
+      // Ordered the other way the screen tells somebody to check their
+      // connection while a request of theirs is in flight. The four text cases
+      // above each set one flag, so none of them can see this.
+      categories.groupsSignal.set(null);
+      categories.failedSignal.set(true);
+      categories.loadingSignal.set(true);
+
+      // Act
+      fixture.detectChanges();
+
+      // Assert
+      expect(statusRegion()?.textContent ?? '').toContain(
+        'Reading your categories',
+      );
+      expect(statusRegion()?.textContent ?? '').not.toContain(
+        'couldn’t read your',
+      );
+    });
+
+    it('says nothing while a write runs over a hierarchy already on screen', () => {
+      // Arrange — `loading` is set by every **write** as well as by the read,
+      // and the hierarchy stays up throughout one. The chain this region
+      // replaced put the groups ahead of the loading line, so a save never
+      // drew "Reading your categories…" under them; a region reading the
+      // running flag alone brings that back, and the rule is the book's — a
+      // section renders at most one of the value, the loading line and the
+      // failure.
+      categories.loadingSignal.set(true);
+
+      // Act
+      fixture.detectChanges();
+
+      // Assert — the value is on screen, so the region has nothing to add.
+      expect(host().querySelector('.category-groups')).not.toBeNull();
+      expect((statusRegion()?.textContent ?? '').trim()).toBe('');
+    });
+  });
+
+  // A write that does not happen — `docs/design/components.md`.
+  //
+  // **`accounts.component.spec.ts` holds the shared rules and this file holds
+  // what two writing surfaces add to them.** Both forms carry a control called
+  // `name`, so the one thing that can only go wrong here is a server sentence
+  // about a group appearing under the category form's field — a message about
+  // text nobody submitted, standing exactly where somebody would try to correct
+  // it. And the region is shared between the two, so a second write replaces
+  // the first whichever form it came from.
+  describe('a write that does not happen', () => {
+    function region(): HTMLElement | null {
+      return host().querySelector<HTMLElement>('[role="status"]');
+    }
+
+    function regionText(): string {
+      return region()?.textContent ?? '';
+    }
+
+    function errorsUnder(surface: 'group' | 'category'): string[] {
+      return Array.from(
+        host().querySelectorAll(`[data-surface="${surface}"] mat-error`),
+      ).map((error) => (error.textContent ?? '').trim());
+    }
+
+    function fillGroup(name = 'Essentials'): void {
+      screen().groupForm.setValue({ name, description: '' });
+    }
+
+    function fillCategory(name = 'Groceries'): void {
+      screen().categoryForm.setValue({
+        name,
+        description: '',
+        categoryGroupId: GROUP_ID,
+      });
+    }
+
+    function pressGroup(): Promise<void> {
+      return (
+        fixture.componentInstance as unknown as {
+          saveGroup: () => Promise<void>;
+        }
+      ).saveGroup();
+    }
+
+    function pressCategory(): Promise<void> {
+      return (
+        fixture.componentInstance as unknown as {
+          saveCategory: () => Promise<void>;
+        }
+      ).saveCategory();
+    }
+
+    it('keeps what was typed on either form when the write is refused', async () => {
+      // Arrange — the clear used to run on the line after each call, so the
+      // text was gone before the outcome existed. Both handlers are separate
+      // code, and a screen that got one right and the other wrong is what
+      // shipped last time somebody copied a form.
+      categories.addGroup.mockResolvedValue({ state: 'unreachable' });
+      categories.addCategory.mockResolvedValue({ state: 'unreadable' });
+      fillGroup();
+      fillCategory();
+
+      // Act
+      await pressGroup();
+      await pressCategory();
+      fixture.detectChanges();
+
+      // Assert
+      expect(screen().groupForm.getRawValue()).toMatchObject({
+        name: 'Essentials',
+      });
+      expect(screen().categoryForm.getRawValue()).toMatchObject({
+        name: 'Groceries',
+      });
+    });
+
+    it('empties each form once its own write has landed', async () => {
+      // Arrange — the positive control for the pair above.
+      fillGroup();
+      fillCategory();
+
+      // Act
+      await pressGroup();
+      await pressCategory();
+      fixture.detectChanges();
+
+      // Assert
+      expect(screen().groupForm.getRawValue()).toMatchObject({ name: '' });
+      expect(screen().categoryForm.getRawValue()).toMatchObject({ name: '' });
+    });
+
+    it('stays in edit mode when a rename is refused', async () => {
+      // Arrange — nothing navigates and nothing collapses: a refused write
+      // leaves the form exactly as the press found it.
+      categories.updateGroup.mockResolvedValue({ state: 'unreachable' });
+      screen().editGroup(essentials);
+      fixture.detectChanges();
+
+      // Act
+      await pressGroup();
+      fixture.detectChanges();
+
+      // Assert
+      expect(screen().groupForm.getRawValue()).toMatchObject({
+        name: 'Essentials',
+      });
+      expect(
+        buttonsLabelled('[data-surface="group"] button', 'Cancel'),
+      ).toHaveLength(1);
+    });
+
+    it('puts a group’s sentence under the group form and nowhere else', async () => {
+      // Arrange — the case this screen exists to carry. Both forms hold a
+      // control called `name`, so a report keyed on the control alone paints
+      // one server sentence under two fields.
+      categories.addGroup.mockResolvedValue({
+        errors: new Map([['Name', ['Category group name must be unique.']]]),
+        state: 'invalid',
+      });
+      fillGroup();
+
+      // Act
+      await pressGroup();
+      fixture.detectChanges();
+
+      // Assert
+      expect(errorsUnder('group')).toEqual([
+        'Category group name must be unique.',
+      ]);
+      expect(errorsUnder('category')).toEqual([]);
+    });
+
+    it('keeps a group’s sentence off a category field that is already red', async () => {
+      // Arrange — **the case that makes the surface check load-bearing, and
+      // without it the two cases either side of this one pass with the check
+      // deleted.** Measured: the messages of a refused *group* write reach the
+      // category form's `mat-error` list either way, and Material simply does
+      // not display it while that control reports no error of its own. Give
+      // the category name an error of its own — empty and touched, which is
+      // what a person leaves behind by tabbing through it — and the list is
+      // displayed, so a report keyed on the control alone prints the group's
+      // sentence under a field about a different row.
+      screen().categoryForm.controls['name']?.setValue('');
+      screen().categoryForm.controls['name']?.markAsTouched();
+      categories.addGroup.mockResolvedValue({
+        errors: new Map([['Name', ['Category group name must be unique.']]]),
+        state: 'invalid',
+      });
+      fillGroup();
+
+      // Act
+      await pressGroup();
+      fixture.detectChanges();
+
+      // Assert
+      expect(errorsUnder('group')).toEqual([
+        'Category group name must be unique.',
+      ]);
+      expect(errorsUnder('category')).toEqual([]);
+    });
+
+    it('puts a category’s sentence under the category form and nowhere else', async () => {
+      // Arrange — the same claim the other way round, because a screen that
+      // hard-coded one surface would pass the case above.
+      categories.addCategory.mockResolvedValue({
+        errors: new Map([['Name', ['Category name must be unique.']]]),
+        state: 'invalid',
+      });
+      fillCategory();
+
+      // Act
+      await pressCategory();
+      fixture.detectChanges();
+
+      // Assert
+      expect(errorsUnder('category')).toEqual([
+        'Category name must be unique.',
+      ]);
+      expect(errorsUnder('group')).toEqual([]);
+    });
+
+    it('shows one account of one write in the one region', async () => {
+      // Arrange — the region is shared between the two forms and counted once
+      // per state. A second write replaces the first whichever form it came
+      // from: a screen never shows two accounts of what happened.
+      categories.addGroup.mockResolvedValue({ state: 'unreachable' });
+      categories.addCategory.mockResolvedValue({ state: 'unreadable' });
+      fillGroup();
+      fillCategory();
+
+      // Act
+      await pressGroup();
+      fixture.detectChanges();
+      const afterGroup = regionText();
+
+      await pressCategory();
+      fixture.detectChanges();
+
+      // Assert
+      expect(afterGroup).toContain('couldn’t reach the server');
+      expect(regionText()).toContain('copy it, then reload the page');
+      expect(regionText()).not.toContain('couldn’t reach the server');
+      expect(host().querySelectorAll('[role="status"]')).toHaveLength(1);
+      expect(
+        host().querySelector('[role="alert"], [aria-live="assertive"]'),
+      ).toBeNull();
+    });
+
+    it('takes the other form’s field message and its error state down together', async () => {
+      // Arrange — one report, so both `mat-error` sets go with it.
+      //
+      // **The message and the control's error *state* are two claims and only
+      // the second is load-bearing here.** The message goes on its own the
+      // moment the report names the other surface — measured: with the clear
+      // deleted, an assertion over the rendered text alone still passes. What
+      // is left behind is a control still reporting an error with nothing to
+      // say, which is a red border and no words: colour as the message, which
+      // the design book refuses in as many words. So `aria-invalid` is what
+      // this case reads, and it is also the half a screen reader hears.
+      //
+      // The pair only meets on **this** screen: on a one-form screen the next
+      // write cannot start until the field is edited, and the edit re-runs the
+      // validators and takes the marker off by itself.
+      function groupNameIsInvalid(): string | null {
+        return (
+          host()
+            .querySelector(
+              '[data-surface="group"] input[formcontrolname="name"]',
+            )
+            ?.getAttribute('aria-invalid') ?? null
+        );
+      }
+
+      categories.addGroup.mockResolvedValue({
+        errors: new Map([['Name', ['Taken.']]]),
+        state: 'invalid',
+      });
+      fillGroup();
+      await pressGroup();
+      fixture.detectChanges();
+      expect(errorsUnder('group')).toEqual(['Taken.']);
+      expect(groupNameIsInvalid()).toBe('true');
+
+      // Act
+      categories.addCategory.mockImplementation(
+        () => new Promise(() => undefined),
+      );
+      fillCategory();
+      void pressCategory();
+      fixture.detectChanges();
+
+      // Assert
+      expect(errorsUnder('group')).toEqual([]);
+      expect(groupNameIsInvalid()).toBe('false');
+      expect(regionText().trim()).toBe('');
+    });
+
+    it('says nothing at all when the write never left the browser', async () => {
+      // Arrange — `locked` has no row in the chapter's table: the locked
+      // notice is already the account of it.
+      categories.addGroup.mockResolvedValue({ state: 'locked' });
+      fillGroup();
+
+      // Act
+      await pressGroup();
+      fixture.detectChanges();
+
+      // Assert
+      expect(regionText().trim()).toBe('');
+      expect(errorsUnder('group')).toEqual([]);
+    });
+
+    // The four writes the design book left with a classification and nowhere to
+    // put it: a group's move, a group's delete, a category's placement and a
+    // category's delete.
+    //
+    // **Four separate handlers over two sentences, and each is silent when
+    // broken.** A refusal used to reach a console: the row stayed where it was,
+    // nothing said why, and the reading available to the person at the keyboard
+    // was that the press did not register — so they drag it again. One case per
+    // handler, because this screen has already shipped a difference between two
+    // arms of one shape that nothing else could see.
+    //
+    // The copy is written out rather than read back off the module, for the
+    // reason `write-outcome-report.spec.ts` gives at its own copies.
+    describe('a delete or a move that does not happen', () => {
+      // A macrotask boundary, for the presses this spec makes through the DOM
+      // and cannot hold a promise for.
+      function settle(): Promise<void> {
+        return new Promise((resolve) => {
+          setTimeout(resolve, 0);
+        });
+      }
+
+      async function pressDelete(selector: string): Promise<void> {
+        buttonsLabelled(selector, 'Delete').at(0)?.click();
+        await settle();
+        fixture.detectChanges();
+      }
+
+      // The two drag handlers, as the promises they now are. The `Exposed`
+      // interface declares them `void` so that the cases which only assert the
+      // call stay free of a floating promise; these two have an answer to wait
+      // for.
+      function dropGroupTo(position: number): Promise<void> {
+        return (
+          fixture.componentInstance as unknown as {
+            dropGroup: (
+              event: CdkDragDrop<readonly CategoryGroupView[]>,
+            ) => Promise<void>;
+          }
+        ).dropGroup({
+          item: { data: lifestyle },
+          previousIndex: 0,
+          currentIndex: position,
+        } as unknown as CdkDragDrop<readonly CategoryGroupView[]>);
+      }
+
+      function dropCategoryInto(categoryGroupId: string): Promise<void> {
+        return (
+          fixture.componentInstance as unknown as {
+            dropCategory: (
+              event: CdkDragDrop<readonly CategoryView[]>,
+              categoryGroupId: string,
+            ) => Promise<void>;
+          }
+        ).dropCategory(
+          {
+            item: { data: groceries },
+            previousIndex: 0,
+            currentIndex: 1,
+          } as unknown as CdkDragDrop<readonly CategoryView[]>,
+          categoryGroupId,
+        );
+      }
+
+      it('says the server was not reached, and that nothing was deleted', async () => {
+        // Arrange — the form's reassurance clause replaced: *nothing you typed
+        // has been lost* is about a form, and a delete holds nothing anybody
+        // typed. What is true and useful is that the row is still theirs.
+        categories.removeGroup.mockResolvedValue({ state: 'unreachable' });
+
+        // Act
+        await pressDelete('.group-heading button');
+
+        // Assert
+        expect(regionText()).toContain('couldn’t reach the server');
+        expect(regionText()).toContain('Nothing has been deleted');
+        expect(regionText()).toContain('try again in a minute');
+      });
+
+      it('says the row is still here when a category delete was judged', async () => {
+        // Arrange — the second delete handler, and the asymmetry against the
+        // form's unreadable sentence: no retry, because the server judged, and
+        // no *copy it, then reload*, because nothing was typed.
+        categories.removeCategory.mockResolvedValue({ state: 'unreadable' });
+
+        // Act
+        await pressDelete('.category-row button');
+
+        // Assert
+        expect(regionText()).toContain('The row is still here');
+        expect(regionText()).not.toContain('try again');
+        expect(regionText()).not.toContain('copy it');
+      });
+
+      it('says nothing has moved when a group move is refused', async () => {
+        // Arrange — a move's own sentence, and it is true because the service
+        // reorders the list inside its `tap`: the group is where the drag
+        // started.
+        const node = region();
+
+        categories.moveGroup.mockResolvedValue({ state: 'unreachable' });
+
+        // Act
+        await dropGroupTo(1);
+        fixture.detectChanges();
+
+        // Assert — announced from the region that was already there, taken
+        // above while it was still empty.
+        expect(region()).toBe(node);
+        expect(regionText()).toContain('Nothing has moved');
+        expect(host().querySelectorAll('[role="status"]')).toHaveLength(1);
+      });
+
+      it('says everything is where it was when a placement was judged', async () => {
+        // Arrange — the fourth handler. A category dragged into a group it
+        // cannot join is a judgement, and a minute changes nothing about one.
+        categories.placeCategory.mockResolvedValue({ state: 'unreadable' });
+
+        // Act
+        await dropCategoryInto(OTHER_GROUP_ID);
+        fixture.detectChanges();
+
+        // Assert
+        expect(regionText()).toContain('Everything is where it was');
+        expect(regionText()).not.toContain('try again');
+      });
+
+      it('puts a keyed sentence in the region rather than under either form', async () => {
+        // Arrange — `Name` is a key **both** forms place under a control. This
+        // press was a Delete on a row, so there is no field anybody could
+        // correct: a `mat-error` here would redden a name nobody submitted, on
+        // one form or on both.
+        categories.removeGroup.mockResolvedValue({
+          errors: new Map([['Name', ['Something about this row.']]]),
+          state: 'invalid',
+        });
+
+        // Act
+        await pressDelete('.group-heading button');
+
+        // Assert
+        expect(errorsUnder('group')).toEqual([]);
+        expect(errorsUnder('category')).toEqual([]);
+        expect(regionText()).toContain('Something about this row.');
+      });
+
+      it('files a delete under neither form', async () => {
+        // Arrange — **the one claim on this screen that the DOM cannot show**,
+        // and it is asserted on the component's own state for that reason. A
+        // delete's report carries no fields on any word, so filing it under
+        // `group` renders exactly as filing it under nothing: both forms show
+        // no `mat-error` either way, and the case above would pass with the
+        // surface set to a form nobody submitted. What the `null` says is about
+        // the **press** rather than about this particular answer — the day a
+        // report for a formless act does carry a field, the wrong spelling
+        // paints it under a form.
+        categories.removeGroup.mockResolvedValue({ state: 'unreadable' });
+
+        // Act
+        await pressDelete('.group-heading button');
+
+        // Assert
+        expect(screen().groupMessages()).toBeNull();
+        expect(screen().categoryMessages()).toBeNull();
+        expect(regionText()).toContain('The row is still here');
+      });
+
+      it('says nothing at all when the delete lands', async () => {
+        // Arrange — the positive control the cases above need. A screen that
+        // spoke on every word would pass all of them and leave a refusal
+        // sentence up after every successful delete.
+
+        // Act
+        await pressDelete('.group-heading button');
+
+        // Assert
+        expect(regionText().trim()).toBe('');
+        expect(errorsUnder('group')).toEqual([]);
+      });
+
+      it('clears a form’s refusal when a delete starts', async () => {
+        // Arrange — the start of the next write is the one thing that takes a
+        // write's account of itself down, and a delete is a write. Left
+        // standing, a form's sentence sits beside a delete's own answer and the
+        // one region carries two accounts of two presses.
+        categories.addGroup.mockResolvedValue({ state: 'unreachable' });
+        fillGroup();
+        await pressGroup();
+        fixture.detectChanges();
+        expect(regionText()).toContain('couldn’t reach the server');
+
+        // Act — a delete that has not answered yet.
+        categories.removeGroup.mockImplementation(
+          () => new Promise(() => undefined),
+        );
+        await pressDelete('.group-heading button');
+
+        // Assert
+        expect(regionText().trim()).toBe('');
+      });
+    });
+  });
+});

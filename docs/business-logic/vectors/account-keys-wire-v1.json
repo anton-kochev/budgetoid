@@ -1,0 +1,176 @@
+{
+  "_what": [
+    "The member names and the byte widths of the four messages that carry an account's key custody across the wire, frozen in one file that both suites read.",
+    "Names are given in the spelling that crosses the wire — camelCase — because that is the only spelling the two sides share. The server writes PascalCase records and camel-cases them at the serializer; the client declares the wire spelling directly. A test on either side compares against the list here after converting its own side's names, never against the other side's source."
+  ],
+  "_whyItExists": [
+    "Nothing in this repository binds the two sides. There is no OpenAPI artifact, no generated client and no captured fixture, so the shape of a request is asserted twice — once by a record and once by an interface — and the two assertions never meet.",
+    "That is not a theoretical gap. The backend moved a factor from its own copy of the account's keys to an ECDH keypair, both suites stayed green, and the client went on sending members no route bound. Every test on both sides passed throughout, because each side was checking itself.",
+    "`factor-keypair-v1.json` already closes half of the same seam: both suites read it and reproduce the widths, so a value of the wrong size is caught on whichever side produced it. What nothing held was the NAMES. This file holds those, and restates the widths beside them so a reader binding a member also learns what it is allowed to be."
+  ],
+  "_theDesignProperty": [
+    "It can only be greened by editing a file BOTH suites read.",
+    "That is the whole point and it is worth stating as a property rather than as a convention. A contract test whose expectation lives in the suite that also produces the value can be satisfied by pasting the actual over the expected, and the paste is invisible in review because the diff looks like a test being updated alongside the code it tests. Here, the same paste moves the other suite's expectation too — so renaming a member on one side and 'fixing the test' reddens the other side, which is the reddening the acceptance criteria asked for."
+  ],
+  "_whatThisCannotHold": [
+    "It binds NAMES and WIDTHS, and nothing else. It is not a check of semantics.",
+    "It would not catch the server changing what it DOES with a member: a `wrappedPrivateKey` written to the wrong column, an `encapsulatedAccountKeys` judged by the other suite's decoder, a `manifest` stored without its epoch. Every one of those keeps the name, keeps the width, and is wrong.",
+    "That limit is accepted rather than worked around, because what actually broke here was names and widths and nothing else — both sides compiled clean straight through the change. A file that tried to hold semantics as well would be a second, weaker copy of what the entity types and the decoders already refuse, and the copy is the one that drifts."
+  ],
+  "_bothReadersExist": [
+    "Two readers were owed and both are here: a Vitest spec asserting the client's own request and response types against these sets, and a TUnit test reflecting over the server's request and response records and camel-casing their property names before comparing.",
+    "It took both to make this a gate rather than a document. One reader alone pins one side to a list and leaves the other side free to rename, which is exactly the arrangement that let the last change through — so neither may be deleted on the grounds that the other covers the contract."
+  ],
+  "_setEqualityInBothDirections": [
+    "Each list below is the WHOLE set of members, and a reader is expected to compare it as a set in both directions rather than as a subset.",
+    "A missing-member check alone passes on a side that has grown a member the other does not bind, which is a live failure mode here rather than a tidiness rule: `accountKeyEntry` is specified never to grow a fourth member, and a subset comparison is precisely what would not notice one arriving."
+  ],
+  "messages": {
+    "registrationRequest": {
+      "_what": [
+        "The body of `POST /api/registration/`, sent by a caller holding a provider token and no session of this product's. It creates the account, its passkey, its card of ten recovery codes, every factor's share of the account keys and the account's first manifest, in one act.",
+        "`RegistrationEndpoints.RegistrationRequest` on the server. On the client it is `RegistrationRequestBody`, composed rather than written out: the first three members arrive from `PasskeyRegistrationPayload`, the two envelopes from `FactorKeypairEnvelopes`, and three are declared in place."
+      ],
+      "_noRotationEpochDeliberately": [
+        "There is no `rotationEpoch` member and a reader will try to add one for symmetry. It is refused.",
+        "This route FILES the account's first manifest: there is no stored generation for one to move, and the server derives the first epoch itself from the floor the entity owns. A member here would be a client naming a generation nothing on the other side could disagree with.",
+        "The three routes that PROMOTE a manifest each carry one, because each moves a generation and the server refuses any number but the stored one plus one. Symmetry with those three is the wrong symmetry: what they have in common is the promotion, which this route does not perform."
+      ],
+      "_noSubAndNoEmail": [
+        "There is no `sub` and no `email`, and neither may ever be added. Both are read off the principal the request authenticated as, at the endpoint, and never bound from a body.",
+        "A subject a caller could type is an account filed under somebody else's provider identity. An address a caller could type makes the verified-email gate worthless. Both are refused on the server record and neither exists on the client type, so the absence is currently held twice and by nothing that compares the two — which is what a reader of this list supplies."
+      ],
+      "_theSetMemberIsCodes": [
+        "The member is `codes`. `recoveryCodes` is NOT a synonym for it and is not an acceptable rename.",
+        "The server's request-surface census admits the token `recovery_code` only directly in front of `hash`, on purpose, so that any member able to hold key material has to be looked at by a person. `recoveryCodes` is what renaming the property would camel-case to, and the census refuses it outright; answering that with a serializer attribute on a differently-named property is the evasion the census exists to catch.",
+        "It is also the name the sibling write path uses for the same set, so one spelling here is one wire contract for both."
+      ],
+      "route": "POST /api/registration/",
+      "direction": "request",
+      "members": [
+        "clientDataJson",
+        "attestationObject",
+        "clientExtensionResults",
+        "factorId",
+        "wrappedPrivateKey",
+        "encapsulatedAccountKeys",
+        "codes",
+        "manifest"
+      ]
+    },
+    "recoveryCodeSubmission": {
+      "_what": [
+        "One recovery code's whole share of the account, as it crosses the wire. It appears ten times inside `registrationRequest.codes`, and again on the route that replaces a card of codes.",
+        "`RecoveryCodeSubmission` on the server — one record shared by both write paths rather than a wire type per route, so the two cannot disagree about which spellings a caller may send. `RecoveryCodeSubmissionBody` on the client, which extends `FactorKeypairEnvelopes` for the same reason: a local copy of the two envelope members could be renamed while the minting code went on emitting the old spelling."
+      ],
+      "_theCodeIsNotAMember": [
+        "Four members and no fifth, and the code itself is not one of them. What the server learns about a code is the verifier derived from it on one HKDF branch; the key-encryption key that wrapped this factor's private key comes off the same code on an independent branch and never leaves the browser.",
+        "There is deliberately no member a code could travel in. A fifth member is therefore not merely unneeded — the absence is the rule."
+      ],
+      "_oneSubmissionPerCode": [
+        "The unit is one code, not one set. Ten codes are ten key-encryption keys, ten keypairs and ten copies of the account's keys, so `factorId`, `wrappedPrivateKey` and `encapsulatedAccountKeys` differ for every entry.",
+        "One factor for a whole set would put the account behind whichever code that keypair belonged to: the person redeems any one of the ten, is handed a session, and nine times out of ten unlocks nothing."
+      ],
+      "route": "inside POST /api/registration/ and POST /api/me/recovery-codes",
+      "direction": "request",
+      "members": [
+        "verifier",
+        "factorId",
+        "wrappedPrivateKey",
+        "encapsulatedAccountKeys"
+      ]
+    },
+    "accountKeysResponse": {
+      "_what": [
+        "The whole answer of `GET /api/me/account-keys`: the account's manifest, the generation that manifest is in, and one entry per recovery factor.",
+        "`AccountKeyEndpoints.AccountKeysResponse` on the server, `AccountKeyCustodyDto` on the client."
+      ],
+      "_itCarriesTheAccountLevelFacts": [
+        "A manifest names the whole factor set and an epoch numbers the generation of that set. Both are true ONCE PER ACCOUNT however many factors it holds, so both live at the top level.",
+        "The rejected alternative is the one a reader reaches for when the response is only an array: repeat them on every row. That is eleven copies of one value on an ordinary account, kept consistent by nobody, and it invites a client to read the first row's copy and call it the account's — reading a per-account fact off whichever row the sort happened to put first.",
+        "The body used to be the bare array `factors` now holds. The wrapper is what gave the account's own facts a place to live, and it is the reason `accountKeyEntry` can stay at three members rather than permission to widen it."
+      ],
+      "_twoAbsencesWithOneSpelling": [
+        "`manifest` is bytes or null, never the empty string. An empty string is a legal base64url rendering of zero bytes, so spelling an absent manifest that way makes 'there is no manifest' indistinguishable from 'there is one and it names nobody' — and the two have different answers. The server skips its encoder rather than feeding it an empty span, and the client refuses the spelling the server refuses to emit.",
+        "`rotationEpoch` is 0 when there is no manifest row. A stored generation starts at 1 and the column's check refuses anything lower, so 0 is a number no row can hold — which is what lets one integer say 'there is nothing stored' with no second member to disambiguate it.",
+        "`factors` may be empty, and an empty list is an ordinary 200 rather than a 404."
+      ],
+      "route": "GET /api/me/account-keys",
+      "direction": "response",
+      "members": [
+        "manifest",
+        "rotationEpoch",
+        "factors"
+      ]
+    },
+    "accountKeyEntry": {
+      "_what": [
+        "One factor's row of `wrapped_account_keys` as it crosses the wire, one level down inside `accountKeysResponse.factors`.",
+        "`AccountKeyEndpoints.AccountKeyEntry` on the server, `AccountKeyEntry` on the client — the latter an intersection of `FactorKeypairEnvelopes` and one declared member."
+      ],
+      "_threeMembersAndNoFourth": [
+        "Three members, and no fourth may be added. The boundary a proposed member has to cross is stated rather than left to taste: a value that is the same on all eleven rows of an ordinary account is an account-level fact and belongs one level up; a value that differs per factor belongs here; a value that is neither is refused.",
+        "A per-row public key in particular is refused, and it is the candidate that looks most useful. What must be unforgeable is the SET of a factor's public keys, so every point an account holds is named in one authenticated blob — the `manifest` — and there is deliberately no per-row column for one. A member here would be a point the server could add a row for, and a row-level slice of an authenticated set is a fragment nothing can verify.",
+        "`credentialId` is refused as a capability handed over for no use — a client locates its own pair by trying each entry in turn, so an id buys nothing and gives away a join. `userId` is the value every policy in the database is keyed on and may never reach a browser's network panel. `createdAtUtc` is refused for the dullest reason of the three: the caller is already holding it, from the credential list the same session reads."
+      ],
+      "_theTwoNamesAreTheContract": [
+        "`wrappedPrivateKey` and `encapsulatedAccountKeys` name two different verbs and are not interchangeable labels. WRAPPED UNDER names a key over another key; ENCAPSULATED TO names a public key.",
+        "A client reading `wrappedPrivateKey` knows to unwrap it with the key-encryption key it has just derived; a client reading `encapsulatedAccountKeys` knows to decapsulate with the private half that unwrapping produced. Renaming either to the other verb, or to a neutral one covering both, would describe two steps as one — and a client running them in the wrong order gets an authentication failure naming nothing."
+      ],
+      "_factorIdSpelling": [
+        "`factorId` is the canonical lower-case 36-character hyphenated spelling, with no surrounding whitespace, in both directions. It IS the associated data both envelopes were bound with, so it travels beside them and is never normalised, re-cased or prettified on the way past.",
+        "That is a fact about the value rather than about the member name, and this file pins the name. A client that rebuilds the bytes from a different rendering of the same UUID unwraps nothing, permanently, for that factor, with no error naming the cause."
+      ],
+      "route": "inside GET /api/me/account-keys",
+      "direction": "response",
+      "members": [
+        "factorId",
+        "wrappedPrivateKey",
+        "encapsulatedAccountKeys"
+      ]
+    }
+  },
+  "widths": {
+    "_what": [
+      "Byte widths of the values these members carry, decoded from unpadded base64url. The wire member is text; the width is of the bytes it decodes to, never of the string.",
+      "Restated here rather than pointed at, because a test binding a member name and a test binding that member's width are the same test — a reader who has just learned that `wrappedPrivateKey` is the name should learn in the same breath that 167 is the only length it may be. The authoritative known answers, and the messages and keys they were computed from, are in `factor-keypair-v1.json`; this file carries no vector values of its own and must never grow one."
+    ],
+    "_exactlyNeverAtLeast": [
+      "The four `exactBytes` entries below are widths and not floors: a value of any other length is a different thing, not a shorter reading of the same thing. `manifest` is the band beside them and has its own note.",
+      "WHO refuses it is narrower than that, and the claim is narrowed to the two members it is true of. `wrappedPrivateKey` and `encapsulatedAccountKeys` are refused at both bounds ON BOTH SIDES, before either reaches a column fixed at that width. The other two below are not, and cannot be: `factorPublicKey` never crosses the wire on its own, and `accountKeysPlaintext` never crosses it at all — the server has no check on either, because neither is a value it is ever handed.",
+      "`encapsulatedAccountKeys` is SMALLER than `wrappedPrivateKey` beside it despite carrying a 65-byte ephemeral point, which is worth noticing before somebody 'corrects' one of the two."
+    ],
+    "_theManifestIsABandAndThatIsWhy": [
+      "`manifest` takes a band rather than a width because its plaintext grows with the number of factors it names: a count, then one identifier and one public key per factor. 29 is the AEAD framing's floor — a manifest naming nobody — and 4096 is the column's ceiling.",
+      "The server enforces presence, framing and epoch, and never contents. The manifest is sealed under a key this server does not hold, so a manifest naming nobody stores and reads back; what the named set says is the client's half to keep true."
+    ],
+    "wrappedPrivateKey": {
+      "exactBytes": 167
+    },
+    "encapsulatedAccountKeys": {
+      "exactBytes": 158
+    },
+    "factorPublicKey": {
+      "exactBytes": 65,
+      "_note": [
+        "Not a member of any message above, and that is the point of listing it: it is the value the manifest names and the one thing a factor holds that never crosses the wire on its own.",
+        "An uncompressed SEC1 point — the 0x04 prefix and two coordinates. The uncompressed encoding is the only one this scheme accepts."
+      ]
+    },
+    "accountKeysPlaintext": {
+      "exactBytes": 64,
+      "_note": [
+        "Not a member of any message above, and not a value that crosses the wire in any form: it is the plaintext INSIDE `encapsulatedAccountKeys` — the content key and the index key as one value, CONTENT KEY FIRST, with no separator between them. It is listed for the same reason `factorPublicKey` is, and the same caveat applies: nothing here pins a member name, because there is no member.",
+        "What DOES bind the width is arithmetic, and it is pinned on the server. `EncapsulatedValueEnvelopeTests` writes the encapsulation framing's floor out as a literal 94 — a version byte, a 65-byte ephemeral point, a 12-byte nonce and a 16-byte tag, with no ciphertext between them — and AES-GCM ciphertext is exactly the length of its plaintext. So this file's own 158 minus that 94 is 64, and a plaintext of any other width would make one of the two numbers wrong. Do not read this row as a width nothing holds.",
+        "The ORDER is the half that is held by no server-side check and never can be. A reversed pair is the right width, carries the right version, stores, reads back and opens — and yields an index key used to seal narrative text and a content key used to compute blind indexes. This file pins the width; nothing anywhere pins the order but a known answer whose two halves differ."
+      ]
+    },
+    "manifest": {
+      "minimumBytes": 29,
+      "maximumBytes": 4096,
+      "_note": [
+        "Inclusive at both ends."
+      ]
+    }
+  }
+}

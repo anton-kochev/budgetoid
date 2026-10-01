@@ -56,6 +56,15 @@ public sealed class NonSuperuserDeploymentProvisioningTests
     /// </summary>
     private const string PlaceholderParameter = "app.current_budget_id";
 
+    /// <summary>
+    /// A role holding <c>ALL WITH GRANT OPTION</c> on schema <c>public</c> and on the database, and
+    /// owning neither — the part <c>azure_pg_admin</c> plays for the deploy principal on Azure.
+    /// </summary>
+    private const string GrantHolderRole = "grant_holder";
+
+    /// <summary>A second holder of the same grant option, for the two-holder refusal.</summary>
+    private const string SecondGrantHolderRole = "second_holder";
+
     [Test]
     public async Task ProvisionAsync_AsANonSuperuserCreateroleAdmin_ProvisionsTheDatabase()
     {
@@ -104,9 +113,39 @@ public sealed class NonSuperuserDeploymentProvisioningTests
         string? knownParameterSqlState = await TrySetRoleDefaultAsync(
             deployAdmin, "statement_timeout = '5s'");
 
+        // Taken back at once: a stored session default is itself a widening the reach verifier
+        // refuses, and the counter-control has already said what it came to say.
+        await ExecuteAsync(
+            deployAdmin, $"alter role {DatabaseProvisioning.AppRoleName} reset statement_timeout");
+
+        // The membership this principal holds IN the application role because it created it.
+        // PostgreSQL grants it only to a creator that is not a superuser (measured on
+        // postgres:17.10: a superuser-created role has no pg_auth_members row, a CREATEROLE
+        // creator's has one, with ADMIN OPTION). It widens the creator, not the role, which is why
+        // the reach rule reads pg_auth_members.member and never roleid. Asserted present so the
+        // verifier's acceptance below is not vacuous: this is the one row a rule reading the wrong
+        // column would refuse.
+        bool creatorIsMemberOfAppRole =
+            await CreatorMembershipExistsAsync(admin, DeployAdminRole);
+
+        // The reach verifier, called on its own as this principal. ProvisionAsync above already ran
+        // it as its last step; calling it again here keeps this line red or green by itself, so a
+        // refusal reads as the verifier's rather than as one more way provisioning can fail.
+        Exception? reachFailure = null;
+        try
+        {
+            await DeploymentDatabaseProvisioning.VerifyAppRoleReachAsync(deployAdminConnectionString);
+        }
+        catch (Exception exception)
+        {
+            reachFailure = exception;
+        }
+
         // Assert — the failure first and as the exception rather than a boolean, so a regression
         // reports the SQLSTATE and the statement that produced it instead of "expected true".
         await Assert.That(provisioningFailure).IsNull();
+        await Assert.That(creatorIsMemberOfAppRole).IsTrue();
+        await Assert.That(reachFailure).IsNull();
 
         await Assert.That(deployAdminIsSuperuser).IsFalse();
         await Assert.That(placeholderDefaultSqlState)
@@ -121,20 +160,218 @@ public sealed class NonSuperuserDeploymentProvisioningTests
         await Assert.That(hasNoPassword).IsTrue();
     }
 
+    [Test]
+    public async Task ProvisionAsync_AsAPrincipalInheritingTheOneSchemaGrantOptionHolder_ProvisionsTheDatabase()
+    {
+        // Arrange — the Azure shape. The container superuser keeps the database, as the platform
+        // keeps it on Azure; the deploy principal owns nothing and reaches schema public and the
+        // database only by inheriting a role that holds ALL WITH GRANT OPTION on both, as a member
+        // of azure_pg_admin does. Every GRANT USAGE the script sends is then recorded with that
+        // role, not the schema's owner, as its grantor — and it is the grant the script means to
+        // make.
+        //
+        // The owner takes TEMPORARY from PUBLIC here because the script cannot: a REVOKE sent by a
+        // grant-option holder takes back only that holder's own entries, and PUBLIC's TEMPORARY is
+        // the owner's. That refusal is correct and is the database rule's to report; leaving it in
+        // would make this test red for a reason it is not about.
+        await using PostgreSqlContainer container = await StartBareContainerAsync();
+        await using (NpgsqlConnection superuser = await OpenSuperuserAsync(container))
+        {
+            await ExecuteAsync(superuser, $"create role {GrantHolderRole} nologin");
+            await ExecuteAsync(
+                superuser, $"grant all on schema public to {GrantHolderRole} with grant option");
+            await ExecuteAsync(
+                superuser, $"grant all on database budgetoid to {GrantHolderRole} with grant option");
+            await ExecuteAsync(
+                superuser,
+                $"create role {DeployAdminRole} with login createrole "
+                + $"password '{DeployAdminPassword}'");
+            await ExecuteAsync(
+                superuser, $"grant {GrantHolderRole} to {DeployAdminRole} with inherit true");
+            await ExecuteAsync(superuser, "revoke temporary on database budgetoid from public");
+        }
+
+        string deployAdminConnectionString = BuildDeployAdminConnectionString(container);
+
+        // Act
+        Exception? provisioningFailure = null;
+        try
+        {
+            await DeploymentDatabaseProvisioning.ProvisionAsync(deployAdminConnectionString);
+        }
+        catch (Exception exception)
+        {
+            provisioningFailure = exception;
+        }
+
+        await using NpgsqlConnection admin = await OpenSuperuserAsync(container);
+        IReadOnlyList<string> usageGrantors = await ReadSchemaPublicUsageGrantorsAsync(admin);
+
+        // Assert — the script's own GRANT USAGE landed with the holder as its grantor, which is the
+        // shape under test; then the deploy went through.
+        await Assert.That(usageGrantors).IsEquivalentTo(new[] { GrantHolderRole });
+        await Assert.That(provisioningFailure).IsNull();
+    }
+
+    [Test]
+    public async Task VerifyAppRoleReachAsync_GrantMadeThroughASetOnlyMembership_ThrowsNamingTheGrantor()
+    {
+        // Arrange — the same holder, but the principal is a member it may SET ROLE to and does not
+        // inherit from. Such a member's own GRANT USAGE on the schema grants nothing (measured on
+        // postgres:17.10: WARNING "no privileges were granted"), so a USAGE entry naming the holder
+        // was made by somebody who switched to it on purpose, and the principal's REVOKE does not
+        // reach it. Provisioned as the superuser, then the holder's grant made by hand, then
+        // verified as the principal.
+        await using PostgreSqlContainer container = await StartBareContainerAsync();
+        await using (NpgsqlConnection superuser = await OpenSuperuserAsync(container))
+        {
+            await ExecuteAsync(superuser, $"create role {GrantHolderRole} nologin");
+            await ExecuteAsync(
+                superuser, $"grant all on schema public to {GrantHolderRole} with grant option");
+            await ExecuteAsync(
+                superuser, $"grant all on database budgetoid to {GrantHolderRole} with grant option");
+            await ExecuteAsync(
+                superuser,
+                $"create role {DeployAdminRole} with login createrole "
+                + $"password '{DeployAdminPassword}'");
+            await ExecuteAsync(
+                superuser,
+                $"grant {GrantHolderRole} to {DeployAdminRole} with inherit false, set true");
+            await ExecuteAsync(superuser, "revoke temporary on database budgetoid from public");
+        }
+
+        await DeploymentDatabaseProvisioning.ProvisionAsync(container.GetConnectionString());
+
+        await using NpgsqlConnection admin = await OpenSuperuserAsync(container);
+        await ExecuteAsync(
+            admin,
+            $"set role {GrantHolderRole}; "
+            + $"grant usage on schema public to {DatabaseProvisioning.AppRoleName}; reset role");
+        IReadOnlyList<string> usageGrantors = await ReadSchemaPublicUsageGrantorsAsync(admin);
+        bool principalInheritsHolder =
+            await HasRoleAsync(admin, DeployAdminRole, GrantHolderRole, "USAGE");
+        bool principalIsMemberOfHolder =
+            await HasRoleAsync(admin, DeployAdminRole, GrantHolderRole, "MEMBER");
+
+        // Act
+        Exception? reachFailure = null;
+        try
+        {
+            await DeploymentDatabaseProvisioning.VerifyAppRoleReachAsync(
+                BuildDeployAdminConnectionString(container));
+        }
+        catch (Exception exception)
+        {
+            reachFailure = exception;
+        }
+
+        // Assert — the holder's entry is there beside the owner's, the membership is SET-only, and
+        // the non-owner sentence names the holder.
+        await Assert.That(usageGrantors).Contains(GrantHolderRole);
+        await Assert.That(principalInheritsHolder).IsFalse();
+        await Assert.That(principalIsMemberOfHolder).IsTrue();
+        await Assert.That(reachFailure).IsTypeOf<AppRoleReachException>();
+        await Assert.That(
+                ProblemsWhere(
+                    reachFailure,
+                    problem => problem.Contains("Schema public", StringComparison.Ordinal)
+                        && problem.Contains("USAGE", StringComparison.Ordinal)
+                        && problem.Contains(
+                            $"with {GrantHolderRole} as the grantor rather than its owner",
+                            StringComparison.Ordinal)))
+            .IsNotEmpty();
+    }
+
+    [Test]
+    public async Task ProvisionAsync_AsAPrincipalInheritingTwoSchemaGrantOptionHolders_RefusesTheDeploy()
+    {
+        // Arrange — the principal inherits two roles that each hold the grant option on schema
+        // public. PostgreSQL records one of them as the grantor of the script's GRANT USAGE, and
+        // its documentation for GRANT leaves which one unspecified, so the principal's own REVOKE cannot be relied on to reach the
+        // entry the other left. Only a single inherited holder makes the grantor something the
+        // principal's statements decide.
+        await using PostgreSqlContainer container = await StartBareContainerAsync();
+        await using (NpgsqlConnection superuser = await OpenSuperuserAsync(container))
+        {
+            await ExecuteAsync(superuser, $"create role {GrantHolderRole} nologin");
+            await ExecuteAsync(superuser, $"create role {SecondGrantHolderRole} nologin");
+            await ExecuteAsync(
+                superuser, $"grant all on schema public to {GrantHolderRole} with grant option");
+            await ExecuteAsync(
+                superuser,
+                $"grant all on schema public to {SecondGrantHolderRole} with grant option");
+            await ExecuteAsync(
+                superuser, $"grant all on database budgetoid to {GrantHolderRole} with grant option");
+            await ExecuteAsync(
+                superuser,
+                $"create role {DeployAdminRole} with login createrole "
+                + $"password '{DeployAdminPassword}'");
+            await ExecuteAsync(
+                superuser, $"grant {GrantHolderRole} to {DeployAdminRole} with inherit true");
+            await ExecuteAsync(
+                superuser, $"grant {SecondGrantHolderRole} to {DeployAdminRole} with inherit true");
+            await ExecuteAsync(superuser, "revoke temporary on database budgetoid from public");
+        }
+
+        // Act
+        Exception? provisioningFailure = null;
+        try
+        {
+            await DeploymentDatabaseProvisioning.ProvisionAsync(
+                BuildDeployAdminConnectionString(container));
+        }
+        catch (Exception exception)
+        {
+            provisioningFailure = exception;
+        }
+
+        await using NpgsqlConnection admin = await OpenSuperuserAsync(container);
+        IReadOnlyList<string> usageGrantors = await ReadSchemaPublicUsageGrantorsAsync(admin);
+        long inheritedHolders = await ScalarLongAsync(
+            admin,
+            "select count(*) from pg_namespace n, aclexplode(n.nspacl) a "
+            + "where n.nspname = 'public' and a.is_grantable and a.privilege_type = 'USAGE' "
+            + $"and pg_has_role('{DeployAdminRole}', a.grantee, 'USAGE')");
+
+        // Assert — two holders reach the principal, one of them is the recorded grantor, and the
+        // deploy is refused with the non-owner sentence naming whichever it was.
+        await Assert.That(inheritedHolders).IsEqualTo(2L);
+        await Assert.That(usageGrantors.Count).IsEqualTo(1);
+        await Assert.That(new[] { GrantHolderRole, SecondGrantHolderRole }).Contains(usageGrantors[0]);
+        await Assert.That(provisioningFailure).IsTypeOf<AppRoleReachException>();
+        await Assert.That(
+                ProblemsWhere(
+                    provisioningFailure,
+                    problem => problem.Contains("Schema public", StringComparison.Ordinal)
+                        && problem.Contains("USAGE", StringComparison.Ordinal)
+                        && problem.Contains(
+                            $"with {usageGrantors[0]} as the grantor rather than its owner",
+                            StringComparison.Ordinal)))
+            .IsNotEmpty();
+    }
+
     /// <summary>
     /// Starts an empty PostgreSQL container. Same builder as the test hosts, so this runs against the
     /// same server version as the rest of the suite; what is missing is everything they do afterwards.
     /// </summary>
-    private static async Task<PostgreSqlContainer> StartBareContainerAsync()
-    {
-        PostgreSqlContainer container = new PostgreSqlBuilder("postgres:17")
-            .WithDatabase("budgetoid")
-            .WithUsername("postgres")
-            .WithPassword("postgres")
-            .Build();
-        await container.StartAsync();
-        return container;
-    }
+    /// <remarks>
+    /// The start goes through <see cref="StartGuard" />, which is a leak guard: the call site binds its
+    /// <c>await using</c> variable only after this method returns, so a throw here would leave a
+    /// container Docker has already started with nothing left to dispose it, and each such leak makes
+    /// the next start likelier to time out. The reasoning lives on <see cref="StartGuard" /> rather
+    /// than being restated here — this class and <see cref="DeploymentProvisioningTests" /> are the two
+    /// that deliberately keep containers of their own, and the guard used to be written out in both,
+    /// which is a guard that can be corrected once. Guarded by shape-match to a documented failure
+    /// mode, not because a failure was captured here.
+    /// </remarks>
+    private static Task<PostgreSqlContainer> StartBareContainerAsync() =>
+        StartGuard.StartAsync(
+            new PostgreSqlBuilder("postgres:17")
+                .WithDatabase("budgetoid")
+                .WithUsername("postgres")
+                .WithPassword("postgres")
+                .Build(),
+            container => container.StartAsync());
 
     /// <summary>
     /// Opens a connection as the container account, which is a superuser. Used only to build the
@@ -218,6 +455,92 @@ public sealed class NonSuperuserDeploymentProvisioningTests
 
         return (true, reader.GetBoolean(0), reader.GetBoolean(1));
     }
+
+    /// <summary>
+    /// Reports whether <c>pg_auth_members</c> holds the row in which <paramref name="creator"/> is a
+    /// member of the application role (<c>roleid</c> = the application role,
+    /// <c>member</c> = the creator).
+    /// </summary>
+    private static async Task<bool> CreatorMembershipExistsAsync(
+        NpgsqlConnection connection,
+        string creator)
+    {
+        await using NpgsqlCommand command = new(
+            """
+            select exists (
+                select 1
+                from pg_auth_members m
+                join pg_roles granted on granted.oid = m.roleid
+                join pg_roles holder on holder.oid = m.member
+                where granted.rolname = @appRole and holder.rolname = @creator)
+            """,
+            connection);
+        command.Parameters.AddWithValue("appRole", DatabaseProvisioning.AppRoleName);
+        command.Parameters.AddWithValue("creator", creator);
+        return (bool)(await command.ExecuteScalarAsync())!;
+    }
+
+    /// <summary>
+    /// The recorded grantor of every <c>USAGE</c> entry on schema <c>public</c> whose grantee is the
+    /// application role, raw from <c>nspacl</c>.
+    /// </summary>
+    private static async Task<IReadOnlyList<string>> ReadSchemaPublicUsageGrantorsAsync(
+        NpgsqlConnection connection)
+    {
+        await using NpgsqlCommand command = new(
+            """
+            select pg_get_userbyid(a.grantor)
+            from pg_namespace n
+            cross join lateral aclexplode(n.nspacl) a
+            where n.nspname = 'public'
+              and a.privilege_type = 'USAGE'
+              and a.grantee = (select oid from pg_roles where rolname = @role)
+            order by 1
+            """,
+            connection);
+        command.Parameters.AddWithValue("role", DatabaseProvisioning.AppRoleName);
+
+        List<string> grantors = [];
+        await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            grantors.Add(reader.GetString(0));
+        }
+
+        return grantors;
+    }
+
+    /// <summary>
+    /// <c>pg_has_role(member, role, mode)</c>: <c>USAGE</c> asks whether the member inherits the
+    /// role's privileges, <c>MEMBER</c> whether it belongs to it at all.
+    /// </summary>
+    private static async Task<bool> HasRoleAsync(
+        NpgsqlConnection connection,
+        string member,
+        string role,
+        string mode)
+    {
+        await using NpgsqlCommand command = new("select pg_has_role(@member, @role, @mode)", connection);
+        command.Parameters.AddWithValue("member", member);
+        command.Parameters.AddWithValue("role", role);
+        command.Parameters.AddWithValue("mode", mode);
+        return (bool)(await command.ExecuteScalarAsync())!;
+    }
+
+    /// <summary>Runs a query returning one <c>bigint</c>. The SQL is built from constants.</summary>
+    private static async Task<long> ScalarLongAsync(NpgsqlConnection connection, string sql)
+    {
+        await using NpgsqlCommand command = new(sql, connection);
+        return (long)(await command.ExecuteScalarAsync())!;
+    }
+
+    /// <summary>
+    /// The problems of a caught <see cref="AppRoleReachException" /> that satisfy
+    /// <paramref name="predicate" />; empty when nothing was caught or it was another type. A
+    /// collection, because TUnit truncates string assertions.
+    /// </summary>
+    private static List<string> ProblemsWhere(Exception? caught, Func<string, bool> predicate) =>
+        (caught as AppRoleReachException)?.Problems.Where(predicate).ToList() ?? [];
 
     /// <summary>
     /// Sends one statement that is expected to succeed. Used only for setup, where the SQL is built

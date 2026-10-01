@@ -2,7 +2,9 @@ using Application.Accounts.UpdateAccount;
 using Application.Currencies;
 using Domain.Accounts;
 using Domain.Common;
+using Domain.Security;
 using Microsoft.Extensions.Time.Testing;
+using TestSupport;
 using UnitTests.Fakes;
 
 namespace UnitTests;
@@ -17,12 +19,98 @@ public sealed class UpdateAccountHandlerTests
         Account account = await repository.CreateAsync("Checking");
         var handler = new UpdateAccountHandler(repository, new InMemoryCurrencyReadService());
 
-        await handler.HandleAsync(new UpdateAccountCommand(account.Id, "  Savings  ", AccountType.Savings, 25m));
+        await handler.HandleAsync(Command(account.Id, "Savings", AccountType.Savings, 25m));
 
+        // BOTH HALVES MOVED, and the index is asserted to be the new one rather than merely to exist.
+        // The handler builds one IndexedName from two decoded members; a version that passed only the
+        // envelope down would satisfy the name assertion and leave the row's index describing
+        // "Checking" — a uniqueness value that disagrees with the row's own content, which no
+        // constraint on this side can see and no read can report.
+        //
+        // The name used to be asserted as the string "Savings", trimmed from "  Savings  ". The value
+        // and the trim both left with the column.
         await Assert.That(repository.UpdateCallCount).IsEqualTo(1);
-        await Assert.That(account.Name).IsEqualTo("Savings");
+        await Assert.That(account.Name.Envelope.ToArray())
+            .IsEquivalentTo(SealedNarrative.Name("Savings").Envelope.ToArray());
+        await Assert.That(account.NameKey.ToArray())
+            .IsEquivalentTo(SealedNarrative.BlindIndex("Savings").ToArray());
+        await Assert.That(account.NameKey.ToArray())
+            .IsNotEquivalentTo(SealedNarrative.BlindIndex("Checking").ToArray());
         await Assert.That(account.Type).IsEqualTo(AccountType.Savings);
         await Assert.That(account.OpeningBalance).IsEqualTo(25m);
+    }
+
+    [Test]
+    public async Task HandleAsync_WithBothOpaqueMembersMalformed_ReportsBothAtOnce()
+    {
+        // Arrange — THE HANDLER CLAIMS BOTH MEMBERS ARE ATTEMPTED AND BOTH FAILURES REPORTED, and this
+        // is the only case that can tell that apart from fail-fast. The pair is produced by one piece of
+        // client code, so a caller that got both wrong would otherwise learn about the second only after
+        // fixing the first and sending the whole body again.
+        var budgetId = Guid.CreateVersion7();
+        var repository = new InMemoryAccountRepository(budgetId, new FakeTimeProvider(UtcNowOffset()));
+        Account account = await repository.CreateAsync("Checking");
+        var handler = new UpdateAccountHandler(repository, new InMemoryCurrencyReadService());
+
+        // Act
+        ValidationException exception = await ThrowsValidationExceptionAsync(() => handler.HandleAsync(
+            new UpdateAccountCommand(
+                account.Id, "not an envelope", "not an index", AccountType.Savings, 25m)));
+
+        // Assert — both keys, in one refusal, and nothing written. The COUNT is what makes this case
+        // impossible for a fail-fast handler to pass: it would carry exactly one key, satisfy whichever
+        // ContainsKey happened to name it, and be caught by nothing else in this file.
+        await Assert.That(exception.Errors.Count).IsEqualTo(2);
+        await Assert.That(exception.Errors.ContainsKey("Name")).IsTrue();
+        await Assert.That(exception.Errors.ContainsKey("NameKey")).IsTrue();
+        await Assert.That(repository.UpdateCallCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task HandleAsync_WithAMalformedName_LeavesBothHalvesOfTheStoredNameAlone()
+    {
+        // Arrange — a refused update must change nothing. The name is the half that matters here:
+        // Account.Update validates before it assigns, so a version that assigned first would leave a
+        // row holding the new ciphertext and the old everything else.
+        var budgetId = Guid.CreateVersion7();
+        var repository = new InMemoryAccountRepository(budgetId, new FakeTimeProvider(UtcNowOffset()));
+        Account account = await repository.CreateAsync("Checking");
+        var handler = new UpdateAccountHandler(repository, new InMemoryCurrencyReadService());
+
+        // Act
+        ValidationException exception = await ThrowsValidationExceptionAsync(() => handler.HandleAsync(
+            new UpdateAccountCommand(
+                account.Id, "not an envelope", EncodedIndex("Savings"), AccountType.Savings, 25m)));
+
+        // Assert
+        await Assert.That(exception.Errors.ContainsKey("Name")).IsTrue();
+        await Assert.That(account.Name.Envelope.ToArray())
+            .IsEquivalentTo(SealedNarrative.Name("Checking").Envelope.ToArray());
+        await Assert.That(account.NameKey.ToArray())
+            .IsEquivalentTo(SealedNarrative.BlindIndex("Checking").ToArray());
+        await Assert.That(repository.UpdateCallCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task HandleAsync_WithAnIndexOfTheWrongWidth_ThrowsValidationExceptionKeyedOnTheIndex()
+    {
+        // Arrange — the width is the only shape check this side can make on an index: it is a keyed
+        // digest with no framing, taken under a key that lives in a browser. Thirty-one bytes of
+        // perfectly good base64url is the value that proves the check is a width and not a decode.
+        var budgetId = Guid.CreateVersion7();
+        var repository = new InMemoryAccountRepository(budgetId, new FakeTimeProvider(UtcNowOffset()));
+        Account account = await repository.CreateAsync("Checking");
+        var handler = new UpdateAccountHandler(repository, new InMemoryCurrencyReadService());
+        string tooShort = Base64UrlText.Encode(new byte[IndexedName.BlindIndexLength - 1]);
+
+        // Act
+        ValidationException exception = await ThrowsValidationExceptionAsync(() => handler.HandleAsync(
+            new UpdateAccountCommand(
+                account.Id, EncodedName("Savings"), tooShort, AccountType.Savings, 25m)));
+
+        // Assert
+        await Assert.That(exception.Errors.ContainsKey("NameKey")).IsTrue();
+        await Assert.That(repository.UpdateCallCount).IsEqualTo(0);
     }
 
     [Test]
@@ -33,7 +121,7 @@ public sealed class UpdateAccountHandlerTests
 
         try
         {
-            await handler.HandleAsync(new UpdateAccountCommand(Guid.CreateVersion7(), "Savings", AccountType.Savings, 25m));
+            await handler.HandleAsync(Command(Guid.CreateVersion7(), "Savings", AccountType.Savings, 25m));
         }
         catch (NotFoundException)
         {
@@ -60,7 +148,7 @@ public sealed class UpdateAccountHandlerTests
 
         // Act
         ValidationException exception = await ThrowsValidationExceptionAsync(() =>
-            handler.HandleAsync(new UpdateAccountCommand(account.Id, "Cash", AccountType.Checking, 25.5m)));
+            handler.HandleAsync(Command(account.Id, "Cash", AccountType.Checking, 25.5m)));
 
         // Assert
         await Assert.That(exception.Errors.ContainsKey("OpeningBalance")).IsTrue();
@@ -81,7 +169,7 @@ public sealed class UpdateAccountHandlerTests
         var handler = new UpdateAccountHandler(repository, currencies);
 
         // Act
-        await handler.HandleAsync(new UpdateAccountCommand(account.Id, "Cash", AccountType.Checking, 2500m));
+        await handler.HandleAsync(Command(account.Id, "Cash", AccountType.Checking, 2500m));
 
         // Assert
         await Assert.That(repository.UpdateCallCount).IsEqualTo(1);
@@ -103,7 +191,7 @@ public sealed class UpdateAccountHandlerTests
         InvalidOperationException? caught = null;
         try
         {
-            await handler.HandleAsync(new UpdateAccountCommand(account.Id, "Checking", AccountType.Checking, 25m));
+            await handler.HandleAsync(Command(account.Id, "Checking", AccountType.Checking, 25m));
         }
         catch (InvalidOperationException exception)
         {
@@ -116,6 +204,25 @@ public sealed class UpdateAccountHandlerTests
         await Assert.That(caught!.Message).Contains("ZZZ");
         await Assert.That(repository.UpdateCallCount).IsEqualTo(0);
     }
+
+    /// <summary>
+    /// A well-formed body: both halves of the name derived from one label, the way a client derives
+    /// them from one text. No identifier among the opaque members — the route parameter stays a
+    /// <see cref="Guid" /> here, because a rename re-seals against the row's existing id rather than
+    /// against the text somebody put in the URL.
+    /// </summary>
+    private static UpdateAccountCommand Command(
+        Guid id,
+        string label,
+        AccountType type,
+        decimal openingBalance) =>
+        new(id, EncodedName(label), EncodedIndex(label), type, openingBalance);
+
+    private static string EncodedName(string label) =>
+        Base64UrlText.Encode(SealedNarrative.Name(label).Envelope.Span);
+
+    private static string EncodedIndex(string label) =>
+        Base64UrlText.Encode(SealedNarrative.BlindIndex(label).Span);
 
     private static DateTimeOffset UtcNowOffset() => new(2026, 6, 25, 13, 14, 15, TimeSpan.Zero);
 

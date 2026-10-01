@@ -6,6 +6,7 @@ using Domain.Transactions;
 using Infrastructure.Persistence;
 using Infrastructure.Repositories;
 using Microsoft.EntityFrameworkCore;
+using TestSupport;
 
 namespace IntegrationTests;
 
@@ -28,16 +29,18 @@ public sealed class CategoryRepositoryTests
         await using (BudgetoidDbContext db = new(options, new TestBudgetContext(budgetId)))
         {
             CategoryGroup categoryGroup = CategoryGroup.Create(
+                Guid.CreateVersion7(),
                 budgetId,
-                "Essentials",
+                SealedNarrative.Indexed("Essentials"),
                 null,
                 0,
                 UtcNow());
             db.CategoryGroups.Add(categoryGroup);
             db.Categories.Add(Category.Create(
+                Guid.CreateVersion7(),
                 budgetId,
                 categoryGroup.Id,
-                "Groceries",
+                SealedNarrative.Indexed("Groceries"),
                 null,
                 0,
                 UtcNow()));
@@ -67,35 +70,39 @@ public sealed class CategoryRepositoryTests
         await using (BudgetoidDbContext db = new(options, new TestBudgetContext(budgetId)))
         {
             Account account = Account.Create(
+                Guid.CreateVersion7(),
                 budgetId,
-                "Checking",
+                SealedNarrative.Indexed("Checking"),
                 AccountType.Checking,
                 0m,
                 "USD",
                 UsdMinorUnit,
                 UtcNow());
             CategoryGroup categoryGroup = CategoryGroup.Create(
+                Guid.CreateVersion7(),
                 budgetId,
-                "Essentials",
+                SealedNarrative.Indexed("Essentials"),
                 null,
                 0,
                 UtcNow());
             Category category = Category.Create(
+                Guid.CreateVersion7(),
                 budgetId,
                 categoryGroup.Id,
-                "Groceries",
+                SealedNarrative.Indexed("Groceries"),
                 null,
                 0,
                 UtcNow());
             db.AddRange(account, categoryGroup, category);
             await db.SaveChangesAsync();
             Transaction transaction = Transaction.Create(
+                Guid.CreateVersion7(),
                 budgetId,
                 account.Id,
                 -10m,
                 UsdMinorUnit,
                 new DateOnly(2026, 7, 14),
-                "Food",
+                SealedNarrative.Description("Food"),
                 UtcNow());
             transaction.AssignCategory(category.Id);
             db.Transactions.Add(transaction);

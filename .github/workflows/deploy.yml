@@ -28,10 +28,15 @@ jobs:
       AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
       AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
-      # azd reads infra parameters from these env vars (config store is empty in CI);
-      # they map to infra.parameters.frontend_origin / .google_client_id in the AppHost.
+      # azd reads infra parameters from these env vars (config store is empty in CI); they map to
+      # infra.parameters.frontend_origin / .google_client_id / .passkey_relying_party_id in the
+      # AppHost. The API refuses to boot without any of them, so an unset variable here is a
+      # crash-looping revision rather than a degraded one.
       AZURE_FRONTEND_ORIGIN: ${{ vars.AZURE_FRONTEND_ORIGIN }}
       AZURE_GOOGLE_CLIENT_ID: ${{ vars.AZURE_GOOGLE_CLIENT_ID }}
+      # The registrable domain of AZURE_FRONTEND_ORIGIN, and permanent: every registered passkey is
+      # bound to it, so changing this value invalidates all of them rather than moving them.
+      AZURE_PASSKEY_RELYING_PARTY_ID: ${{ vars.AZURE_PASSKEY_RELYING_PARTY_ID }}
       # This workflow's own service principal, which the AppHost registers as a Microsoft Entra
       # administrator of the Postgres server (infra.parameters.pipeline_principal_id / _name).
       # Entra-only auth means the *only* identity that can migrate the schema and bind the
@@ -53,6 +58,11 @@ jobs:
       # into the administrators resource, whose name IS the object id — ARM rejects an empty resource
       # name with a message about the resource, not about the missing input. Named failure here beats
       # decoding that one.
+      #
+      # The application settings are checked in the same step and for the same reason, one failure
+      # mode later: the API refuses to boot without any of them, so an unset variable produces a
+      # revision that crash-loops after a deploy this workflow reported as successful. Naming the
+      # missing variable before anything is provisioned costs a second.
       - name: Require the pipeline principal identifiers
         run: |
           if [ -z "$AZURE_PIPELINE_PRINCIPAL_ID" ] || [ -z "$AZURE_PIPELINE_PRINCIPAL_NAME" ]; then
@@ -60,6 +70,19 @@ jobs:
             echo "as repository variables. They register this workflow's service principal as a" >&2
             echo "Microsoft Entra administrator of the Postgres server, which is the only identity" >&2
             echo "that can migrate the schema under Entra-only auth. See DEPLOYMENT.md." >&2
+            exit 1
+          fi
+          missing=""
+          for name in AZURE_FRONTEND_ORIGIN AZURE_GOOGLE_CLIENT_ID AZURE_PASSKEY_RELYING_PARTY_ID; do
+            if [ -z "${!name}" ]; then missing="$missing $name"; fi
+          done
+          if [ -n "$missing" ]; then
+            echo "These repository variables must be set:$missing" >&2
+            echo "They become the API's frontend origin, Google client id and passkey relying party" >&2
+            echo "id. The API refuses to boot without them, so an unset one deploys a crash-looping" >&2
+            echo "revision. AZURE_FRONTEND_ORIGIN is a serialized origin (https://host, no trailing" >&2
+            echo "slash) whose host must be AZURE_PASSKEY_RELYING_PARTY_ID or a subdomain of it — the" >&2
+            echo "API refuses the pair at boot otherwise. See DEPLOYMENT.md." >&2
             exit 1
           fi
 

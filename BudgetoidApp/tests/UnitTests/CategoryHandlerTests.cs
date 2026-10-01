@@ -5,6 +5,7 @@ using Application.Categories.GetCategory;
 using Application.Categories.PlaceCategory;
 using Domain.Common;
 using Microsoft.Extensions.Time.Testing;
+using TestSupport;
 using UnitTests.Fakes;
 
 namespace UnitTests;
@@ -22,20 +23,28 @@ public sealed class CategoryHandlerTests
             new StubBudgetContext(fixture.BudgetId),
             fixture.TimeProvider);
 
-        // Act
+        // Act — the id is minted HERE and threaded in, because the command carries one now: it is the
+        // associated data both narrative members were sealed against. It travels as a string in the
+        // canonical spelling, because binding it as a Guid would fold the spellings before any handler
+        // saw text. The name and the index are the SEALED pair over the label, not the label.
         var first = await handler.HandleAsync(new CreateCategoryCommand(
-            "Groceries",
+            Guid.CreateVersion7().ToString("D"),
+            SealedNarrative.EncodedName("Groceries"),
+            SealedNarrative.EncodedIndex("Groceries"),
             null,
             fixture.SourceGroupId));
         var second = await handler.HandleAsync(new CreateCategoryCommand(
-            "Utilities",
+            Guid.CreateVersion7().ToString("D"),
+            SealedNarrative.EncodedName("Utilities"),
+            SealedNarrative.EncodedIndex("Utilities"),
             null,
             fixture.SourceGroupId));
 
         // Assert
         await Assert.That(first.Position).IsEqualTo(0);
         await Assert.That(second.Position).IsEqualTo(1);
-        await Assert.That(second.CategoryGroupName).IsEqualTo("Essentials");
+        await Assert.That(second.CategoryGroupName)
+            .IsEqualTo(SealedNarrative.EncodedName("Essential Obligations"));
     }
 
     [Test]
@@ -52,7 +61,9 @@ public sealed class CategoryHandlerTests
         // Act
         ValidationException exception = await ThrowsValidationExceptionAsync(() =>
             handler.HandleAsync(new CreateCategoryCommand(
-                "Groceries",
+                Guid.CreateVersion7().ToString("D"),
+                SealedNarrative.EncodedName("Groceries"),
+                SealedNarrative.EncodedIndex("Groceries"),
                 null,
                 Guid.CreateVersion7())));
 
@@ -161,8 +172,13 @@ public sealed class CategoryHandlerTests
         // Assert
         await Assert.That(dto).IsNotNull();
         await Assert.That(dto!.Id).IsEqualTo(category.Id);
-        await Assert.That(dto.Name).IsEqualTo("Groceries");
-        await Assert.That(dto.CategoryGroupName).IsEqualTo("Essentials");
+
+        // The category's own name crosses this DTO as the base64url envelope its column holds, not as
+        // text. "Groceries" is measured to spell DIFFERENTLY under padded standard base64 and unpadded
+        // base64url, so this line still catches a read path reaching for the wrong encoder.
+        await Assert.That(dto.Name).IsEqualTo(SealedNarrative.EncodedName("Groceries"));
+        await Assert.That(dto.CategoryGroupName)
+            .IsEqualTo(SealedNarrative.EncodedName("Essential Obligations"));
     }
 
     [Test]
@@ -207,8 +223,14 @@ public sealed class CategoryHandlerTests
             var timeProvider = new FakeTimeProvider(
                 new DateTimeOffset(2026, 7, 14, 10, 0, 0, TimeSpan.Zero));
             var categoryGroups = new InMemoryCategoryGroupRepository(budgetId, timeProvider);
-            var source = await categoryGroups.CreateAsync("Essentials");
-            var destination = await categoryGroups.CreateAsync("Lifestyle");
+            // "Essential Obligations" rather than "Essentials", and that is not cosmetic: the two
+            // CategoryGroupName assertions in this file are the only ones outside the category-group
+            // suite that read a name off CategoryGroupDto.FromCategoryGroup, and a 39-byte envelope —
+            // which is exactly what "Essentials" seals to — spells identically in padded standard
+            // base64 and in unpadded base64url, so a DTO encoding through the wrong one passes.
+            var source = await categoryGroups.CreateAsync(
+                SealedNarrative.Indexed("Essential Obligations"));
+            var destination = await categoryGroups.CreateAsync(SealedNarrative.Indexed("Lifestyle"));
             var categories = new InMemoryCategoryRepository(budgetId, timeProvider, categoryGroups);
             return new Fixture(
                 budgetId,

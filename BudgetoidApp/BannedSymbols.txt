@@ -1,46 +1,46 @@
-// EF Core APIs forbidden on the budget-scoped data path (TECH_DEBT.md, "Data isolation
-// invariant"). Each of these bypasses the BudgetIsolation query filters; since RLS the result is
-// a wrong empty answer rather than a leak, which is exactly the kind of silent failure this file
-// turns into a compile error (RS0030). Referenced as AdditionalFiles by Application,
-// Infrastructure, and Api; tests are exempt because they probe the raw-SQL paths deliberately.
-// Entries are documentation-comment ID strings, one per overload.
+// EF Core APIs forbidden on the budget-scoped data path (docs/engineering/data-isolation.md).
+// Each of these bypasses the BudgetIsolation query filters; since RLS the result is a wrong
+// empty answer rather than a leak, which is exactly the kind of silent failure this file turns
+// into a compile error (RS0030). Referenced as AdditionalFiles by Infrastructure and Api —
+// Application never references EF Core; tests are exempt because they probe the raw-SQL paths
+// deliberately. Entries are documentation-comment ID strings, one per overload.
 
 // IgnoreQueryFilters — disables the BudgetIsolation filters wholesale.
-M:Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions.IgnoreQueryFilters``1(System.Linq.IQueryable{``0});Bypasses the BudgetIsolation query filters (TECH_DEBT.md, data isolation invariant)
-M:Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions.IgnoreQueryFilters``1(System.Linq.IQueryable{``0},System.Collections.Generic.IReadOnlyCollection{System.String});Bypasses the BudgetIsolation query filters (TECH_DEBT.md, data isolation invariant)
+M:Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions.IgnoreQueryFilters``1(System.Linq.IQueryable{``0});Bypasses the BudgetIsolation query filters (docs/engineering/data-isolation.md)
+M:Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions.IgnoreQueryFilters``1(System.Linq.IQueryable{``0},System.Collections.Generic.IReadOnlyCollection{System.String});Bypasses the BudgetIsolation query filters (docs/engineering/data-isolation.md)
 
 // ExecuteUpdate / ExecuteDelete — set-based writes that skip the domain and the change tracker.
-M:Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions.ExecuteDelete``1(System.Linq.IQueryable{``0});Set-based write skips the domain; load through the filtered set and mutate (TECH_DEBT.md)
-M:Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions.ExecuteDeleteAsync``1(System.Linq.IQueryable{``0},System.Threading.CancellationToken);Set-based write skips the domain; load through the filtered set and mutate (TECH_DEBT.md)
-M:Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions.ExecuteUpdate``1(System.Linq.IQueryable{``0},System.Action{Microsoft.EntityFrameworkCore.Query.UpdateSettersBuilder{``0}});Set-based write skips the domain; load through the filtered set and mutate (TECH_DEBT.md)
-M:Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions.ExecuteUpdateAsync``1(System.Linq.IQueryable{``0},System.Action{Microsoft.EntityFrameworkCore.Query.UpdateSettersBuilder{``0}},System.Threading.CancellationToken);Set-based write skips the domain; load through the filtered set and mutate (TECH_DEBT.md)
+M:Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions.ExecuteDelete``1(System.Linq.IQueryable{``0});Set-based write skips the domain; load through the filtered set and mutate (docs/engineering/data-isolation.md)
+M:Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions.ExecuteDeleteAsync``1(System.Linq.IQueryable{``0},System.Threading.CancellationToken);Set-based write skips the domain; load through the filtered set and mutate (docs/engineering/data-isolation.md)
+M:Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions.ExecuteUpdate``1(System.Linq.IQueryable{``0},System.Action{Microsoft.EntityFrameworkCore.Query.UpdateSettersBuilder{``0}});Set-based write skips the domain; load through the filtered set and mutate (docs/engineering/data-isolation.md)
+M:Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions.ExecuteUpdateAsync``1(System.Linq.IQueryable{``0},System.Action{Microsoft.EntityFrameworkCore.Query.UpdateSettersBuilder{``0}},System.Threading.CancellationToken);Set-based write skips the domain; load through the filtered set and mutate (docs/engineering/data-isolation.md)
 
 // FromSql* — raw SQL queries bypass the query filters.
-M:Microsoft.EntityFrameworkCore.RelationalQueryableExtensions.FromSql``1(Microsoft.EntityFrameworkCore.DbSet{``0},System.FormattableString);Raw SQL bypasses the BudgetIsolation filters (TECH_DEBT.md, data isolation invariant)
-M:Microsoft.EntityFrameworkCore.RelationalQueryableExtensions.FromSqlRaw``1(Microsoft.EntityFrameworkCore.DbSet{``0},System.String,System.Object[]);Raw SQL bypasses the BudgetIsolation filters (TECH_DEBT.md, data isolation invariant)
-M:Microsoft.EntityFrameworkCore.RelationalQueryableExtensions.FromSqlInterpolated``1(Microsoft.EntityFrameworkCore.DbSet{``0},System.FormattableString);Raw SQL bypasses the BudgetIsolation filters (TECH_DEBT.md, data isolation invariant)
+M:Microsoft.EntityFrameworkCore.RelationalQueryableExtensions.FromSql``1(Microsoft.EntityFrameworkCore.DbSet{``0},System.FormattableString);Raw SQL bypasses the BudgetIsolation filters (docs/engineering/data-isolation.md)
+M:Microsoft.EntityFrameworkCore.RelationalQueryableExtensions.FromSqlRaw``1(Microsoft.EntityFrameworkCore.DbSet{``0},System.String,System.Object[]);Raw SQL bypasses the BudgetIsolation filters (docs/engineering/data-isolation.md)
+M:Microsoft.EntityFrameworkCore.RelationalQueryableExtensions.FromSqlInterpolated``1(Microsoft.EntityFrameworkCore.DbSet{``0},System.FormattableString);Raw SQL bypasses the BudgetIsolation filters (docs/engineering/data-isolation.md)
 
 // ExecuteSql* / SqlQuery* on the database facade — raw SQL with no filter at all.
-M:Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.ExecuteSql(Microsoft.EntityFrameworkCore.Infrastructure.DatabaseFacade,System.FormattableString);Raw SQL bypasses the BudgetIsolation filters (TECH_DEBT.md, data isolation invariant)
-M:Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.ExecuteSqlAsync(Microsoft.EntityFrameworkCore.Infrastructure.DatabaseFacade,System.FormattableString,System.Threading.CancellationToken);Raw SQL bypasses the BudgetIsolation filters (TECH_DEBT.md, data isolation invariant)
-M:Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.ExecuteSqlRaw(Microsoft.EntityFrameworkCore.Infrastructure.DatabaseFacade,System.String,System.Object[]);Raw SQL bypasses the BudgetIsolation filters (TECH_DEBT.md, data isolation invariant)
-M:Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.ExecuteSqlRaw(Microsoft.EntityFrameworkCore.Infrastructure.DatabaseFacade,System.String,System.Collections.Generic.IEnumerable{System.Object});Raw SQL bypasses the BudgetIsolation filters (TECH_DEBT.md, data isolation invariant)
-M:Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.ExecuteSqlRawAsync(Microsoft.EntityFrameworkCore.Infrastructure.DatabaseFacade,System.String,System.Threading.CancellationToken);Raw SQL bypasses the BudgetIsolation filters (TECH_DEBT.md, data isolation invariant)
-M:Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.ExecuteSqlRawAsync(Microsoft.EntityFrameworkCore.Infrastructure.DatabaseFacade,System.String,System.Object[]);Raw SQL bypasses the BudgetIsolation filters (TECH_DEBT.md, data isolation invariant)
-M:Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.ExecuteSqlRawAsync(Microsoft.EntityFrameworkCore.Infrastructure.DatabaseFacade,System.String,System.Collections.Generic.IEnumerable{System.Object},System.Threading.CancellationToken);Raw SQL bypasses the BudgetIsolation filters (TECH_DEBT.md, data isolation invariant)
-M:Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.ExecuteSqlInterpolated(Microsoft.EntityFrameworkCore.Infrastructure.DatabaseFacade,System.FormattableString);Raw SQL bypasses the BudgetIsolation filters (TECH_DEBT.md, data isolation invariant)
-M:Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.ExecuteSqlInterpolatedAsync(Microsoft.EntityFrameworkCore.Infrastructure.DatabaseFacade,System.FormattableString,System.Threading.CancellationToken);Raw SQL bypasses the BudgetIsolation filters (TECH_DEBT.md, data isolation invariant)
-M:Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.SqlQuery``1(Microsoft.EntityFrameworkCore.Infrastructure.DatabaseFacade,System.FormattableString);Raw SQL bypasses the BudgetIsolation filters (TECH_DEBT.md, data isolation invariant)
-M:Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.SqlQueryRaw``1(Microsoft.EntityFrameworkCore.Infrastructure.DatabaseFacade,System.String,System.Object[]);Raw SQL bypasses the BudgetIsolation filters (TECH_DEBT.md, data isolation invariant)
+M:Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.ExecuteSql(Microsoft.EntityFrameworkCore.Infrastructure.DatabaseFacade,System.FormattableString);Raw SQL bypasses the BudgetIsolation filters (docs/engineering/data-isolation.md)
+M:Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.ExecuteSqlAsync(Microsoft.EntityFrameworkCore.Infrastructure.DatabaseFacade,System.FormattableString,System.Threading.CancellationToken);Raw SQL bypasses the BudgetIsolation filters (docs/engineering/data-isolation.md)
+M:Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.ExecuteSqlRaw(Microsoft.EntityFrameworkCore.Infrastructure.DatabaseFacade,System.String,System.Object[]);Raw SQL bypasses the BudgetIsolation filters (docs/engineering/data-isolation.md)
+M:Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.ExecuteSqlRaw(Microsoft.EntityFrameworkCore.Infrastructure.DatabaseFacade,System.String,System.Collections.Generic.IEnumerable{System.Object});Raw SQL bypasses the BudgetIsolation filters (docs/engineering/data-isolation.md)
+M:Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.ExecuteSqlRawAsync(Microsoft.EntityFrameworkCore.Infrastructure.DatabaseFacade,System.String,System.Threading.CancellationToken);Raw SQL bypasses the BudgetIsolation filters (docs/engineering/data-isolation.md)
+M:Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.ExecuteSqlRawAsync(Microsoft.EntityFrameworkCore.Infrastructure.DatabaseFacade,System.String,System.Object[]);Raw SQL bypasses the BudgetIsolation filters (docs/engineering/data-isolation.md)
+M:Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.ExecuteSqlRawAsync(Microsoft.EntityFrameworkCore.Infrastructure.DatabaseFacade,System.String,System.Collections.Generic.IEnumerable{System.Object},System.Threading.CancellationToken);Raw SQL bypasses the BudgetIsolation filters (docs/engineering/data-isolation.md)
+M:Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.ExecuteSqlInterpolated(Microsoft.EntityFrameworkCore.Infrastructure.DatabaseFacade,System.FormattableString);Raw SQL bypasses the BudgetIsolation filters (docs/engineering/data-isolation.md)
+M:Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.ExecuteSqlInterpolatedAsync(Microsoft.EntityFrameworkCore.Infrastructure.DatabaseFacade,System.FormattableString,System.Threading.CancellationToken);Raw SQL bypasses the BudgetIsolation filters (docs/engineering/data-isolation.md)
+M:Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.SqlQuery``1(Microsoft.EntityFrameworkCore.Infrastructure.DatabaseFacade,System.FormattableString);Raw SQL bypasses the BudgetIsolation filters (docs/engineering/data-isolation.md)
+M:Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.SqlQueryRaw``1(Microsoft.EntityFrameworkCore.Infrastructure.DatabaseFacade,System.String,System.Object[]);Raw SQL bypasses the BudgetIsolation filters (docs/engineering/data-isolation.md)
 
 // Find / FindAsync — by-key loads bypass the filters and can return an already-tracked
 // other-budget entity with no SQL at all. Use a filtered LINQ lookup instead.
-M:Microsoft.EntityFrameworkCore.DbSet`1.Find(System.Object[]);By-key load bypasses the BudgetIsolation filters; use FirstOrDefaultAsync on the filtered set (TECH_DEBT.md)
-M:Microsoft.EntityFrameworkCore.DbSet`1.FindAsync(System.Object[]);By-key load bypasses the BudgetIsolation filters; use FirstOrDefaultAsync on the filtered set (TECH_DEBT.md)
-M:Microsoft.EntityFrameworkCore.DbSet`1.FindAsync(System.Object[],System.Threading.CancellationToken);By-key load bypasses the BudgetIsolation filters; use FirstOrDefaultAsync on the filtered set (TECH_DEBT.md)
-M:Microsoft.EntityFrameworkCore.DbContext.Find(System.Type,System.Object[]);By-key load bypasses the BudgetIsolation filters; use FirstOrDefaultAsync on the filtered set (TECH_DEBT.md)
-M:Microsoft.EntityFrameworkCore.DbContext.Find``1(System.Object[]);By-key load bypasses the BudgetIsolation filters; use FirstOrDefaultAsync on the filtered set (TECH_DEBT.md)
-M:Microsoft.EntityFrameworkCore.DbContext.FindAsync(System.Type,System.Object[]);By-key load bypasses the BudgetIsolation filters; use FirstOrDefaultAsync on the filtered set (TECH_DEBT.md)
-M:Microsoft.EntityFrameworkCore.DbContext.FindAsync(System.Type,System.Object[],System.Threading.CancellationToken);By-key load bypasses the BudgetIsolation filters; use FirstOrDefaultAsync on the filtered set (TECH_DEBT.md)
-M:Microsoft.EntityFrameworkCore.DbContext.FindAsync``1(System.Object[]);By-key load bypasses the BudgetIsolation filters; use FirstOrDefaultAsync on the filtered set (TECH_DEBT.md)
-M:Microsoft.EntityFrameworkCore.DbContext.FindAsync``1(System.Object[],System.Threading.CancellationToken);By-key load bypasses the BudgetIsolation filters; use FirstOrDefaultAsync on the filtered set (TECH_DEBT.md)
+M:Microsoft.EntityFrameworkCore.DbSet`1.Find(System.Object[]);By-key load bypasses the BudgetIsolation filters; use FirstOrDefaultAsync on the filtered set (docs/engineering/data-isolation.md)
+M:Microsoft.EntityFrameworkCore.DbSet`1.FindAsync(System.Object[]);By-key load bypasses the BudgetIsolation filters; use FirstOrDefaultAsync on the filtered set (docs/engineering/data-isolation.md)
+M:Microsoft.EntityFrameworkCore.DbSet`1.FindAsync(System.Object[],System.Threading.CancellationToken);By-key load bypasses the BudgetIsolation filters; use FirstOrDefaultAsync on the filtered set (docs/engineering/data-isolation.md)
+M:Microsoft.EntityFrameworkCore.DbContext.Find(System.Type,System.Object[]);By-key load bypasses the BudgetIsolation filters; use FirstOrDefaultAsync on the filtered set (docs/engineering/data-isolation.md)
+M:Microsoft.EntityFrameworkCore.DbContext.Find``1(System.Object[]);By-key load bypasses the BudgetIsolation filters; use FirstOrDefaultAsync on the filtered set (docs/engineering/data-isolation.md)
+M:Microsoft.EntityFrameworkCore.DbContext.FindAsync(System.Type,System.Object[]);By-key load bypasses the BudgetIsolation filters; use FirstOrDefaultAsync on the filtered set (docs/engineering/data-isolation.md)
+M:Microsoft.EntityFrameworkCore.DbContext.FindAsync(System.Type,System.Object[],System.Threading.CancellationToken);By-key load bypasses the BudgetIsolation filters; use FirstOrDefaultAsync on the filtered set (docs/engineering/data-isolation.md)
+M:Microsoft.EntityFrameworkCore.DbContext.FindAsync``1(System.Object[]);By-key load bypasses the BudgetIsolation filters; use FirstOrDefaultAsync on the filtered set (docs/engineering/data-isolation.md)
+M:Microsoft.EntityFrameworkCore.DbContext.FindAsync``1(System.Object[],System.Threading.CancellationToken);By-key load bypasses the BudgetIsolation filters; use FirstOrDefaultAsync on the filtered set (docs/engineering/data-isolation.md)

@@ -1,0 +1,171 @@
+<!-- The caption belongs to the step and not to the shell, so it sits inside the
+     step's own inset. One `h1` here, as on every other step: the shell renders
+     one step at a time and each of them titles itself. -->
+<div class="r-heading">
+  <p class="r-step">Step 1 of 3</p>
+  <h1 class="r-title">Create your Budgetoid account</h1>
+</div>
+
+@if (register.email(); as email) {
+  <!-- The address the provider asserted, shown back before anything is spent.
+       A person with a personal Google account and a work one has no other way
+       to find out which of them this browser is still signed in to, and the
+       cost of guessing wrong is not a wasted click: the next step asks an
+       authenticator for a passkey, and the account that results is bound to
+       whichever address was asserted.
+
+       **Two leads, and the second exists because the first is a promise.**
+       Once the server has answered that this address already holds an account,
+       "your account will be created under it" is false — and a promise standing
+       beside its own refusal is the defect this step was changed to remove, one
+       screen earlier than it used to be read. The address itself stays on the
+       screen in both, because the refusal below says *this Google address* and
+       a sentence pointing at nothing is worse than the promise was. -->
+  @if (promiseHolds()) {
+    <p class="r-lead">
+      Your account will be created under
+      <span class="r-email">{{ email }}</span
+      >.
+    </p>
+
+    <p class="r-prose">
+      Next, your device makes a passkey. After that, Budgetoid shows ten
+      recovery codes to write down &mdash; they&rsquo;re the only other way in,
+      and they&rsquo;re shown once.
+    </p>
+  } @else {
+    <p class="r-lead">
+      This browser is signed in to Google as
+      <span class="r-email">{{ email }}</span
+      >.
+    </p>
+  }
+
+  <!-- The one live region on this step, in the DOM from first paint and empty
+       at rest, holding the busy line and the refusal alike so the second
+       replaces the first instead of stacking under it. `status` and never
+       `alert`: nothing is typed on this screen. The passkey step's own region
+       argues each of those at length and none of it is restated here.
+
+       The line is this step's own, though. "Waiting for your device." is the
+       passkey step's sentence and is false here: no authenticator has been
+       asked for anything, and what this press is waiting on is the server. -->
+  <div class="r-outcome" role="status">
+    @if (register.busy()) {
+      <p class="r-prose">Checking your account.</p>
+    } @else if (refusal(); as shown) {
+      <!-- Colour is never the message: the line reads as a sentence with the
+           colour removed. -->
+      <p class="r-error">{{ shown.sentence }}</p>
+    }
+  </div>
+
+  <!-- One control, under one of four names.
+
+       `busy` keeps the Primary exactly where it was with `disabledInteractive`
+       — the *busy* case in the buttons chapter, not the acknowledgement case.
+       A control that goes truly `disabled` under the finger drops focus to
+       `<body>`, and the live region above is what says why it cannot be
+       pressed.
+
+       `sign-in` replaces `Continue` rather than sitting beside it, because the
+       account already exists and another press can only spend a request to be
+       told so again. `/welcome` is the one address in this application that
+       runs a passkey assertion, which is exactly what the sentence above tells
+       the reader to go and do — and `/register` has no navigation of its own,
+       the app shell being a bare `<router-outlet />`, so a screen without this
+       control is a dead end whatever the copy says.
+
+       A button and not an `<a routerLink>`, for the reason the passkey step and
+       the shell both give at theirs: what a link buys is opening the address
+       somewhere else, and doing that from here leaves this dead end standing in
+       the old tab. -->
+  @switch (control()) {
+    @case ('continue') {
+      <button
+        class="r-button"
+        mat-flat-button
+        type="button"
+        (click)="register.begin()"
+      >
+        Continue
+      </button>
+    }
+    @case ('busy') {
+      <button
+        class="r-button"
+        mat-flat-button
+        type="button"
+        [disabled]="true"
+        [disabledInteractive]="true"
+      >
+        Continue
+      </button>
+    }
+    @case ('retry') {
+      <button
+        class="r-button"
+        mat-flat-button
+        type="button"
+        (click)="register.begin()"
+      >
+        Try again
+      </button>
+    }
+    @case ('sign-in') {
+      <button
+        class="r-button"
+        mat-flat-button
+        type="button"
+        (click)="goToSignIn()"
+      >
+        Go to sign in
+      </button>
+    }
+    @case ('provider') {
+      <!-- The only control on this screen that can change the answer. The token
+           this browser is holding was refused, so every press that attaches it
+           again reaches the same 401 — including one calling itself `Try again`,
+           which is the shape this refusal arrived under until now. The exchange
+           is what mints a token the two registration legs will accept, and it
+           comes back here.
+
+           Outline, and the same name and treatment the `@else` arm below offers
+           a browser holding no token at all: the two states differ in how the
+           browser got here and in nothing the person has to do about it. -->
+      <button
+        class="r-button"
+        mat-stroked-button
+        type="button"
+        (click)="signIn()"
+      >
+        Continue with Google
+      </button>
+    }
+  }
+} @else {
+  <!-- No token means no `sub`, no asserted address, and nothing for either
+       registration leg to authenticate as — both are declared on the provider
+       scheme and nothing else. A `Continue` from here would reach a 401 and a
+       screen with nothing useful to say about why, so the way on is the
+       provider itself. A browser arrives in this state routinely: a bookmarked
+       address, a reload an hour later, an exchange that never completed. -->
+  <p class="r-lead">
+    Budgetoid creates your account under a Google address, and this browser
+    isn&rsquo;t holding one right now.
+  </p>
+
+  <p class="r-prose">
+    Continue with Google and you&rsquo;ll come straight back to this page.
+  </p>
+
+  <!-- Outline, which is the treatment the book gives the Google sign-in
+       control wherever it appears. -->
+  <button class="r-button" mat-stroked-button type="button" (click)="signIn()">
+    Continue with Google
+  </button>
+}
+
+<!-- The standing line, on this step as on the other two. It is what removes the
+     reason to be afraid of leaving, so no dialog has to ask on the way out. -->
+<p class="r-prose">Nothing is saved until the last step.</p>

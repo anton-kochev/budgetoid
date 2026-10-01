@@ -5,6 +5,7 @@ using Domain.Categories;
 using Domain.CategoryGroups;
 using Domain.Currencies;
 using Domain.Payees;
+using Domain.Sessions;
 using Domain.Transactions;
 using Domain.Users;
 using Microsoft.EntityFrameworkCore;
@@ -15,8 +16,46 @@ public sealed class BudgetoidDbContext(
     DbContextOptions<BudgetoidDbContext> options,
     IBudgetContext? budgetContext = null) : DbContext(options)
 {
-    // Budget deliberately has no global query filter: the provisioning lookup runs before a budget
-    // id exists, so every query over this set must scope by owner explicitly.
+    // Budgets, Users, Credentials and Sessions deliberately carry no BudgetIsolation query filter:
+    // they are what registration writes and what authentication reads before an ambient budget exists,
+    // and a credential is
+    // keyed on the user it lets in rather than on a budget at all. A session's reason is its own: it
+    // belongs to a person and names no budget, so there is no budget to filter it by — one person's
+    // session is established before any budget is ambient and outlives whichever budget was. It is
+    // isolated on user_id by the user_isolation policy in the database instead. Every query over these
+    // sets must therefore scope by owner explicitly.
+    //
+    // The three passkey sets are unfiltered too, and their reasons differ from each other. A public key
+    // and a signature counter belong to a credential, and through it to a person; neither names a
+    // budget, and both are read while authenticating — before any budget could be ambient. They are
+    // isolated on user_id by user_isolation, exactly as sessions are. A challenge is the odd one: it
+    // names nobody at all, because the authentication ceremony issues it before anybody has said who
+    // they are, so there is no owner for a filter or a policy to key on. See
+    // WebAuthnChallengeConfiguration for what stands in for isolation there.
+    //
+    // Recovery code hashes are unfiltered for a reason of their own, and it is the strictest of the
+    // lot. The row is found by the SHA-256 of the verifier on an ANONYMOUS redemption request, before
+    // anybody has said who they are, so there is no budget to filter by and no identity a policy could
+    // be keyed on either — which is why the table is written down in
+    // RowLevelSecurityCoverage.Exemptions rather than policed. Nothing beneath this set scopes it: any
+    // read or write of it other than the discovery lookup itself must carry its own user_id filter.
+    //
+    // Session tokens are unfiltered for the strictest reason of all, and it is recovery_code_hashes'
+    // one arriving on the path every authenticated request takes. The row is found by the SHA-256 of
+    // the token a cookie presented, before anybody has said who they are — that lookup is what
+    // establishes the identity — so there is no budget to filter by and no identity a policy could be
+    // keyed on either, which is why the table is written down in
+    // RowLevelSecurityCoverage.Exemptions rather than policed. Nothing beneath this set scopes it, and
+    // the discovery lookup is the only read it has; a second one would owe its own user_id filter.
+    //
+    // Wrapped account keys are unfiltered for the reason the passkey material is, and the reason is not
+    // that a budget filter would be inconvenient: these envelopes belong to a recovery factor, and
+    // through it to a person. They name no budget and could not — the content key they wrap is the
+    // account's, so a copy keyed on one budget would be a claim that some of an account's data is
+    // encrypted under a different key than the rest. They are also read while authenticating, before any
+    // budget could be ambient. Isolation on user_id comes from the user_isolation policy, which this
+    // table is subject to rather than exempt from: nothing about it is read before the request has an
+    // identity, so every read must both carry its own user_id filter and stay policed.
     public DbSet<Budget> Budgets => Set<Budget>();
     public DbSet<Transaction> Transactions => Set<Transaction>();
     public DbSet<Account> Accounts => Set<Account>();
@@ -25,6 +64,79 @@ public sealed class BudgetoidDbContext(
     public DbSet<CategoryGroup> CategoryGroups => Set<CategoryGroup>();
     public DbSet<Category> Categories => Set<Category>();
     public DbSet<User> Users => Set<User>();
+    public DbSet<Credential> Credentials => Set<Credential>();
+    public DbSet<Session> Sessions => Set<Session>();
+    public DbSet<SessionToken> SessionTokens => Set<SessionToken>();
+    public DbSet<PasskeyPublicKey> PasskeyPublicKeys => Set<PasskeyPublicKey>();
+    public DbSet<PasskeySignatureCounter> PasskeySignatureCounters => Set<PasskeySignatureCounter>();
+    public DbSet<RecoveryCodeHash> RecoveryCodeHashes => Set<RecoveryCodeHash>();
+    public DbSet<WrappedAccountKeys> WrappedAccountKeys => Set<WrappedAccountKeys>();
+
+    // Key rotations are unfiltered for exactly the reason the wrapped keys above them are. A staging row
+    // holds the NEXT generation of an account's two wrapped keys; the content key it wraps is the
+    // account's, so a copy keyed on one budget would claim that some of an account's data is sealed
+    // under a different key than the rest. It names no budget and could not. Isolation on user_id comes
+    // from the user_isolation policy, which this table is subject to rather than exempt from: nothing
+    // about it is read before the request has an identity — a rotation is begun under a passkey
+    // assertion that has already verified — so every read must both carry its own user_id filter and
+    // stay policed.
+    public DbSet<KeyRotation> KeyRotations => Set<KeyRotation>();
+
+    // Rotation seals are unfiltered for exactly the reason the staging row above them is. A seal holds
+    // the NEXT generation of the account's two keys, encapsulated to one factor's public key; a factor
+    // lets a person back into their ACCOUNT rather than into one budget, so a copy keyed on a budget
+    // would claim that some of an account's factors belong to part of it. It names no budget and could
+    // not. Isolation on user_id comes from the user_isolation policy, which this table is subject to
+    // rather than exempt from: nothing about it is read before the request has an identity — a run is
+    // begun under a passkey assertion that has already verified — so every read must both carry its own
+    // user_id filter and stay policed.
+    public DbSet<KeyRotationSeal> KeyRotationSeals => Set<KeyRotationSeal>();
+
+    // Factor manifests are unfiltered for the reason the two sets above them are, and the reason is
+    // one step stronger here. This row is the sole authenticated carrier of every recovery factor's
+    // public key, and a factor lets a person back into their ACCOUNT rather than into one budget — so a
+    // copy keyed on a budget would be a claim that some of an account's factors belong to part of it.
+    // It names no budget and could not. Isolation on user_id comes from the user_isolation policy,
+    // which this table is subject to rather than exempt from: nothing about it is read before the
+    // request has an identity — a client asks what to encapsulate to once it already knows whose
+    // account it is — so every read must both carry its own user_id filter and stay policed.
+    public DbSet<FactorManifest> FactorManifests => Set<FactorManifest>();
+
+    // Internal rather than public, following its row type: nothing outside this assembly has a reason
+    // to read a protocol nonce, and a public set would be the first step towards one.
+    internal DbSet<WebAuthnChallengeRow> WebAuthnChallenges => Set<WebAuthnChallengeRow>();
+
+    /// <summary>
+    /// The budget every filtered set below is scoped to — the same value the <c>BudgetIsolation</c>
+    /// filters read, exposed so that a read whose question is about an <b>account</b> can say whether
+    /// its own reach covers it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>It exists for one caller and the caller is a refusal, not a query.</b>
+    /// <c>RotationCompletenessReadService</c> asks a question about every narrative row an account
+    /// owns, while five of its six sets are scoped here; when the account owns a budget other than this
+    /// one the honest answer is not <see langword="false" /> but "this read cannot see enough to
+    /// answer", and it needs this value to know that. Nothing else may use it to <em>scope</em>
+    /// anything: the filters and the two isolation policies own scoping, and a hand-written
+    /// <c>budget_id = </c> predicate built from this property would be a third copy that can disagree
+    /// with both.
+    /// </para>
+    /// <para>
+    /// <b><see langword="internal" />, and it stays that way.</b> Public, it becomes the easy way for a
+    /// handler in the Application ring to learn a tenant id off a persistence object rather than from
+    /// <c>IBudgetContext</c>, which is the abstraction that owns it.
+    /// </para>
+    /// <para>
+    /// The throw is not a new failure mode. A context built without an <c>IBudgetContext</c> cannot run
+    /// a query over any filtered set either — the filter dereferences the same field — so this reports
+    /// the state it is already in, with a sentence instead of a <see cref="NullReferenceException" />.
+    /// </para>
+    /// </remarks>
+    internal Guid AmbientBudgetId => budgetContext?.BudgetId
+        ?? throw new InvalidOperationException(
+            "This context was built with no IBudgetContext, so it has no ambient budget — and no "
+            + "budget-isolated set on it can be queried either.");
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

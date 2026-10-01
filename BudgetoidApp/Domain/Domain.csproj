@@ -5,4 +5,36 @@
     <Nullable>enable</Nullable>
     <RootNamespace>Domain</RootNamespace>
   </PropertyGroup>
+  <!--
+    THE FIRST InternalsVisibleTo IN THIS SOLUTION'S HISTORY, and it is granted to exactly one assembly
+    for exactly one member.
+
+    NarrativeField.FromStore rebuilds a sealed value from bytes a column already holds, without judging
+    them. Materialising a narrative column needs it and nothing else does. It is internal because a
+    public door that skips the rule IS the hole the type was built to close: a way to put unjudged bytes
+    into a narrative column, on a call site that reads like bookkeeping. The alternative to this grant is
+    making that member public — a member every ring could reach so that one of them could — and the
+    mistake it would let through is the invisible kind, since a row holding plaintext is a well-formed
+    row that reads back, violates nothing and simply hands the operator the ledger.
+
+    The grant is narrower than the outward edge a reader will fear: it names Infrastructure alone, so
+    Application, Api and both test projects still cannot call FromStore. Nothing about it inverts the
+    Dependency Rule — Domain still references nothing, and Infrastructure already references Domain
+    transitively. What travels is visibility, not a dependency.
+
+    A GUARD SEES IT NOW, AND IT IS STILL WORTH REVIEWING. ProjectReferenceGraphTests was taught this
+    item type: the renderer emits one row per grant — "Domain: internals Infrastructure" — and that row
+    is in the pinned edge set, so a second InternalsVisibleTo beside this one reddens the pin by name
+    rather than arriving with nothing red. One row per grant and never a count or a flag, because
+    "Domain grants its internals to somebody" would stay true while the somebody changed.
+
+    What the guard holds is the SET of grants, not the wisdom of any of them. It cannot tell that
+    Infrastructure is the right assembly, that FromStore is the right member, or that a future grant is
+    a mistake — a reviewer widening the pinned set in the same commit passes it. So the argument above
+    is what decides whether a grant belongs here, and this file is still where that argument is read.
+    The guard's job is only to make sure nobody has to notice the line to be told it moved.
+  -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="Infrastructure" />
+  </ItemGroup>
 </Project>

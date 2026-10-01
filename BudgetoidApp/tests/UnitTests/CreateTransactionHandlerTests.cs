@@ -4,7 +4,9 @@ using Domain.Accounts;
 using Domain.Categories;
 using Domain.CategoryGroups;
 using Domain.Common;
+using Domain.Payees;
 using Microsoft.Extensions.Time.Testing;
+using TestSupport;
 using UnitTests.Fakes;
 
 namespace UnitTests;
@@ -18,9 +20,17 @@ public sealed class CreateTransactionHandlerTests
         Fixture fixture = await Fixture.CreateAsync();
         var date = new DateOnly(2026, 6, 12);
 
-        // Act
-        var dto = await fixture.Handler.HandleAsync(
-            new CreateTransactionCommand(-42.50m, date, fixture.Account.Id, "Groceries"));
+        // Act — the id is minted HERE and threaded in, because the command carries one now: it is the
+        // associated data the note was sealed against, so a handler that ignored it and minted its own
+        // would write a row whose note nobody can ever open. It travels as a STRING in the canonical
+        // spelling, because binding it as a Guid would fold the spellings before any handler saw text.
+        // The description is the SEALED envelope over the label, not the label.
+        var dto = await fixture.Handler.HandleAsync(new CreateTransactionCommand(
+            Guid.CreateVersion7().ToString("D"),
+            -42.50m,
+            date,
+            fixture.Account.Id,
+            SealedNarrative.EncodedDescription("Groceries")));
         var stored = (await fixture.Transactions.GetAllAsync()).Single();
 
         // Assert
@@ -28,7 +38,11 @@ public sealed class CreateTransactionHandlerTests
         await Assert.That(stored.BudgetId).IsEqualTo(fixture.BudgetId);
         await Assert.That(dto.Id).IsEqualTo(stored.Id);
         await Assert.That(dto.AccountId).IsEqualTo(fixture.Account.Id);
-        await Assert.That(dto.AccountName).IsEqualTo("Checking");
+        // The account's name crosses this DTO as the base64url envelope the accounts column holds, not
+        // as text — the enrichment still reaches the right account, which is what this line is for, but
+        // it can no longer say what that account is called.
+        await Assert.That(dto.AccountName)
+            .IsEqualTo(Base64UrlText.Encode(SealedNarrative.Name("Checking").Envelope.Span));
         await Assert.That(dto.CurrencyCode).IsEqualTo("USD");
         await Assert.That(dto.CurrencySymbol).IsEqualTo("$");
         await Assert.That(dto.CategoryId).IsNull();
@@ -38,46 +52,117 @@ public sealed class CreateTransactionHandlerTests
     }
 
     [Test]
-    public async Task HandleAsync_WithUnknownAccount_RejectsBeforeCreatingPayeeOrTransaction()
+    public async Task HandleAsync_WithUnknownAccount_RejectsOnTheAccountBeforeReachingThePayee()
     {
-        // Arrange
+        // Arrange — BOTH identifiers name nothing, which is what makes the order of the two checks
+        // visible. With only the account wrong, a handler that resolved the payee first would still
+        // report the account and this case would prove nothing about which ran.
+        //
+        // It used to assert that no payee had been CREATED before the account check. That subject is
+        // gone with find-or-create: this handler writes no payee, it reads one. What is left to hold is
+        // the order in which a caller is told about two bad identifiers.
         Fixture fixture = await Fixture.CreateAsync();
 
         // Act
         ValidationException exception = await ThrowsValidationExceptionAsync(() =>
             fixture.Handler.HandleAsync(new CreateTransactionCommand(
+                Guid.CreateVersion7().ToString("D"),
                 -4.50m,
                 new DateOnly(2026, 6, 12),
                 Guid.CreateVersion7(),
-                "Coffee",
-                "Starbucks")));
+                SealedNarrative.EncodedDescription("Coffee"),
+                PayeeId: Guid.CreateVersion7())));
 
         // Assert
         await Assert.That(exception.Errors.ContainsKey("AccountId")).IsTrue();
+        await Assert.That(exception.Errors.ContainsKey("PayeeId")).IsFalse();
         await Assert.That(fixture.Transactions.AddCallCount).IsEqualTo(0);
-        await Assert.That(fixture.Payees.GetOrCreateCallCount).IsEqualTo(0);
     }
 
     [Test]
-    public async Task HandleAsync_WithPayee_CreatesAndLinksPayee()
+    public async Task HandleAsync_WithAPayeeId_LinksThatPayeeAndReturnsItsSealedName()
     {
-        // Arrange
+        // Arrange — the payee is SEEDED rather than named, which is the whole of what this slice
+        // changed. The handler used to take a name and create the row; it now takes the id of a row
+        // POST /api/payees already wrote, because payees.name is an envelope drawn under a fresh nonce
+        // and no lookup by name is a question this side can answer.
         Fixture fixture = await Fixture.CreateAsync();
+        Payee payee = await fixture.Payees.CreateAsync("Starbucks");
 
         // Act
         var dto = await fixture.Handler.HandleAsync(new CreateTransactionCommand(
+            Guid.CreateVersion7().ToString("D"),
             -4.50m,
             new DateOnly(2026, 6, 12),
             fixture.Account.Id,
-            "Coffee",
-            "  Starbucks  "));
+            SealedNarrative.EncodedDescription("Coffee"),
+            PayeeId: payee.Id));
         var stored = (await fixture.Transactions.GetAllAsync()).Single();
-        var payee = (await fixture.Payees.GetAllAsync()).Single();
 
-        // Assert
+        // Assert — the name crosses the DTO as the base64url envelope the payees column holds, not as
+        // text. It used to be asserted as "Starbucks", trimmed from "  Starbucks  "; both the value and
+        // the trim are gone with the column.
+        //
+        // The envelope is bound to the PAYEE's row id and not to this transaction's, so a client
+        // rebuilding the transaction's own binding gets an authentication failure rather than garbage.
+        // Nothing on this side can see that, which is why the assertion is against the fixture that
+        // sealed it.
         await Assert.That(stored.PayeeId).IsEqualTo(payee.Id);
         await Assert.That(dto.PayeeId).IsEqualTo(payee.Id);
-        await Assert.That(dto.PayeeName).IsEqualTo("Starbucks");
+        await Assert.That(dto.PayeeName)
+            .IsEqualTo(Base64UrlText.Encode(SealedNarrative.Name("Starbucks").Envelope.Span));
+    }
+
+    [Test]
+    public async Task HandleAsync_WithAnUnknownPayeeId_ThrowsValidationExceptionAndDoesNotPersist()
+    {
+        // Arrange — the guard this case exists for is a filtered READ, and deleting it compiles. The id
+        // would then reach the database as a foreign key nothing satisfies: a 23503, which
+        // TransactionRepository.AddAsync does not catch at all, so it surfaces through
+        // GlobalExceptionHandler as a 500 — a defect report for what is a bad request.
+        //
+        // The fake holds one budget's rows and cannot model another budget's payee, so the cross-budget
+        // half of this — where the same read returns null because of the BudgetIsolation query filter —
+        // is closed over HTTP in the integration suite and not here.
+        Fixture fixture = await Fixture.CreateAsync();
+
+        // Act
+        ValidationException exception = await ThrowsValidationExceptionAsync(() =>
+            fixture.Handler.HandleAsync(new CreateTransactionCommand(
+                Guid.CreateVersion7().ToString("D"),
+                -4.50m,
+                new DateOnly(2026, 6, 12),
+                fixture.Account.Id,
+                SealedNarrative.EncodedDescription("Coffee"),
+                PayeeId: Guid.CreateVersion7())));
+
+        // Assert
+        await Assert.That(exception.Errors.ContainsKey("PayeeId")).IsTrue();
+        await Assert.That(fixture.Transactions.AddCallCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task HandleAsync_WithNoPayeeId_AttachesNoPayee()
+    {
+        // Arrange — the default of the member is absent, and absent must mean no payee rather than an
+        // empty id reaching Transaction.AssignPayee, which treats Guid.Empty as a programmer error.
+        Fixture fixture = await Fixture.CreateAsync();
+        await fixture.Payees.CreateAsync("Starbucks");
+
+        // Act
+        var dto = await fixture.Handler.HandleAsync(new CreateTransactionCommand(
+            Guid.CreateVersion7().ToString("D"),
+            -4.50m,
+            new DateOnly(2026, 6, 12),
+            fixture.Account.Id,
+            SealedNarrative.EncodedDescription("Coffee")));
+        var stored = (await fixture.Transactions.GetAllAsync()).Single();
+
+        // Assert — a payee exists in the budget and is not attached, which is what separates "none was
+        // asked for" from "none was available".
+        await Assert.That(stored.PayeeId).IsNull();
+        await Assert.That(dto.PayeeId).IsNull();
+        await Assert.That(dto.PayeeName).IsNull();
     }
 
     [Test]
@@ -85,67 +170,78 @@ public sealed class CreateTransactionHandlerTests
     {
         // Arrange
         Fixture fixture = await Fixture.CreateAsync();
-        CategoryGroup categoryGroup = await fixture.CategoryGroups.CreateAsync("Essential Obligations");
+        CategoryGroup categoryGroup =
+            await fixture.CategoryGroups.CreateAsync(SealedNarrative.Indexed("Essential Obligations"));
         Category category = await fixture.Categories.CreateAsync(categoryGroup.Id, "Groceries");
 
         // Act
         var dto = await fixture.Handler.HandleAsync(new CreateTransactionCommand(
+            Guid.CreateVersion7().ToString("D"),
             -4.50m,
             new DateOnly(2026, 6, 12),
             fixture.Account.Id,
-            "Food",
+            SealedNarrative.EncodedDescription("Food"),
             CategoryId: category.Id));
         var stored = (await fixture.Transactions.GetAllAsync()).Single();
 
         // Assert
         await Assert.That(stored.CategoryId).IsEqualTo(category.Id);
         await Assert.That(dto.CategoryId).IsEqualTo(category.Id);
-        await Assert.That(dto.CategoryName).IsEqualTo("Groceries");
+
+        // The category's name crosses the DTO as the base64url envelope its column holds, not as text.
+        // It is the fourth name member on this record to make that move and the one that finally makes
+        // the rule uniform — the DTO's own remarks used to carve it out.
+        await Assert.That(dto.CategoryName).IsEqualTo(SealedNarrative.EncodedName("Groceries"));
         await Assert.That(dto.CategoryGroupId).IsEqualTo(categoryGroup.Id);
-        await Assert.That(dto.CategoryGroupName).IsEqualTo("Essential Obligations");
+        await Assert.That(dto.CategoryGroupName)
+            .IsEqualTo(SealedNarrative.EncodedName("Essential Obligations"));
     }
 
     [Test]
     public async Task HandleAsync_WithUnknownCategory_RejectsWithoutPersisting()
     {
-        // Arrange
+        // Arrange — a good payee beside the bad category, so the refusal is unambiguously the
+        // category's. It used to assert that no payee had been created; the handler creates none now,
+        // and what remains is that nothing is written.
         Fixture fixture = await Fixture.CreateAsync();
+        Payee payee = await fixture.Payees.CreateAsync("Starbucks");
 
         // Act
         ValidationException exception = await ThrowsValidationExceptionAsync(() =>
             fixture.Handler.HandleAsync(new CreateTransactionCommand(
+                Guid.CreateVersion7().ToString("D"),
                 -4.50m,
                 new DateOnly(2026, 6, 12),
                 fixture.Account.Id,
-                "Coffee",
-                PayeeName: "Starbucks",
+                SealedNarrative.EncodedDescription("Coffee"),
+                PayeeId: payee.Id,
                 CategoryId: Guid.CreateVersion7())));
 
         // Assert
         await Assert.That(exception.Errors.ContainsKey("CategoryId")).IsTrue();
         await Assert.That(fixture.Transactions.AddCallCount).IsEqualTo(0);
-        await Assert.That(fixture.Payees.GetOrCreateCallCount).IsEqualTo(0);
     }
 
     [Test]
-    public async Task HandleAsync_WithInvalidTransaction_DoesNotCreatePayeeOrPersist()
+    public async Task HandleAsync_WithInvalidTransaction_DoesNotPersist()
     {
         // Arrange — the invalid amount is one with too many decimal places for the account's USD.
         // A zero amount used to serve here and no longer can: zero is a legitimate ledger entry.
         Fixture fixture = await Fixture.CreateAsync();
+        Payee payee = await fixture.Payees.CreateAsync("Starbucks");
 
         // Act
         _ = await ThrowsValidationExceptionAsync(() =>
             fixture.Handler.HandleAsync(new CreateTransactionCommand(
+                Guid.CreateVersion7().ToString("D"),
                 1.234m,
                 new DateOnly(2026, 6, 12),
                 fixture.Account.Id,
-                "Invalid",
-                "Starbucks")));
+                SealedNarrative.EncodedDescription("Invalid"),
+                PayeeId: payee.Id)));
 
         // Assert
         await Assert.That(fixture.Transactions.AddCallCount).IsEqualTo(0);
-        await Assert.That(fixture.Payees.GetOrCreateCallCount).IsEqualTo(0);
     }
 
     [Test]
@@ -157,10 +253,11 @@ public sealed class CreateTransactionHandlerTests
 
         // Act
         var dto = await fixture.Handler.HandleAsync(new CreateTransactionCommand(
+            Guid.CreateVersion7().ToString("D"),
             0m,
             new DateOnly(2026, 6, 12),
             fixture.Account.Id,
-            "Fully discounted"));
+            SealedNarrative.EncodedDescription("Fully discounted")));
         var stored = (await fixture.Transactions.GetAllAsync()).Single();
 
         // Assert
@@ -182,10 +279,11 @@ public sealed class CreateTransactionHandlerTests
         // Act
         ValidationException exception = await ThrowsValidationExceptionAsync(() =>
             fixture.Handler.HandleAsync(new CreateTransactionCommand(
+                Guid.CreateVersion7().ToString("D"),
                 -42.50m,
                 new DateOnly(2026, 6, 12),
                 yenAccount.Id,
-                "Ramen")));
+                SealedNarrative.EncodedDescription("Ramen"))));
 
         // Assert
         await Assert.That(exception.Errors.ContainsKey("Amount")).IsTrue();
@@ -241,9 +339,13 @@ public sealed class CreateTransactionHandlerTests
                 payees,
                 categories,
                 categoryGroups,
+                // NO ITransactionalExecutor, AND THE ABSENT ARGUMENT IS THE ASSERTION. The handler
+                // used to commit two rows — a payee it created from a name and the transaction that
+                // needed it — and wrapped them so a failure between the two committed neither. One
+                // write is left, so the boundary went with the second. Re-adding the parameter is a
+                // compile break here rather than a silently passing test, which is the intended shape.
                 new StubBudgetContext(budgetId),
-                timeProvider,
-                new InMemoryTransactionalExecutor());
+                timeProvider);
 
             return new Fixture
             {

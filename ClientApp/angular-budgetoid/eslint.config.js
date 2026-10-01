@@ -2,6 +2,7 @@
 const eslint = require('@eslint/js');
 const tseslint = require('typescript-eslint');
 const angular = require('angular-eslint');
+const globals = require('globals');
 
 module.exports = tseslint.config(
   {
@@ -108,6 +109,57 @@ module.exports = tseslint.config(
       '@typescript-eslint/no-unused-vars': ['error', { args: 'none' }],
       '@typescript-eslint/prefer-readonly': 'error',
       '@typescript-eslint/unbound-method': ['error', { ignoreStatic: true }],
+
+      // No log record may carry an email, a credential subject or a narrative
+      // value, so every line goes through `logFailure`, which prints a literal
+      // reason and a closed projection of the cause. Three rules because each
+      // misses a spelling: `no-console` sees `console.x`, the global rule sees
+      // `console` passed or destructured, and the property rule sees it reached
+      // through a global object.
+      'no-console': 'error',
+      'no-restricted-globals': [
+        'error',
+        {
+          name: 'console',
+          message: 'Log through logFailure in @app-core/logging/log-failure.',
+        },
+      ],
+      'no-restricted-properties': [
+        'error',
+        ...['globalThis', 'window', 'self'].map((object) => ({
+          object,
+          property: 'console',
+          message: 'Log through logFailure in @app-core/logging/log-failure.',
+        })),
+      ],
+    },
+  },
+  {
+    // The funnel itself, and the specs and helper that spy on `console` to
+    // hold it. Nothing else.
+    files: [
+      'src/app/+core/logging/log-failure.ts',
+      'src/testing/console-spies.ts',
+      '**/*.spec.ts',
+    ],
+    rules: {
+      'no-console': 'off',
+      'no-restricted-globals': 'off',
+      'no-restricted-properties': 'off',
+    },
+  },
+  {
+    // Scripts the builder copies into the bundle as written. Each is loaded
+    // by a plain `<script>` tag, so it runs as a classic script in the page,
+    // before the application and outside its funnel.
+    files: ['public/**/*.js'],
+    extends: [eslint.configs.recommended],
+    languageOptions: {
+      sourceType: 'script',
+      globals: globals.browser,
+    },
+    rules: {
+      'no-console': 'error',
     },
   },
   {

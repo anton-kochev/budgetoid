@@ -44,16 +44,23 @@ namespace Infrastructure.Persistence.Migrations
                         .HasColumnType("character varying(3)")
                         .HasColumnName("currency_code");
 
-                    b.Property<string>("Name")
+                    b.Property<byte[]>("Name")
                         .IsRequired()
-                        .HasMaxLength(200)
-                        .HasColumnType("character varying(200)")
-                        .HasColumnName("name")
-                        .UseCollation("case_insensitive");
+                        .HasColumnType("bytea")
+                        .HasColumnName("name");
+
+                    b.Property<byte[]>("NameKey")
+                        .IsRequired()
+                        .HasColumnType("bytea")
+                        .HasColumnName("name_key");
 
                     b.Property<decimal>("OpeningBalance")
                         .HasColumnType("numeric(14,4)")
                         .HasColumnName("opening_balance");
+
+                    b.Property<Guid?>("RotationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("rotation_id");
 
                     b.Property<string>("Type")
                         .IsRequired()
@@ -61,15 +68,23 @@ namespace Infrastructure.Persistence.Migrations
                         .HasColumnType("character varying(20)")
                         .HasColumnName("type");
 
-                    b.HasKey("Id");
+                    b.HasKey("Id")
+                        .HasName("PK_accounts");
 
                     b.HasIndex("CurrencyCode");
 
-                    b.HasIndex("BudgetId", "Name")
-                        .IsUnique();
+                    b.HasIndex("BudgetId", "NameKey")
+                        .IsUnique()
+                        .HasDatabaseName("IX_accounts_budget_id_name_key");
 
                     b.ToTable("accounts", null, t =>
                         {
+                            t.HasCheckConstraint("CK_accounts_name_key_length", "length(name_key) = 32");
+
+                            t.HasCheckConstraint("CK_accounts_name_length", "length(name) between 29 and 1024");
+
+                            t.HasCheckConstraint("CK_accounts_name_version", "substring(name from 1 for 1) = '\\x01'::bytea");
+
                             t.HasCheckConstraint("CK_accounts_opening_balance", "abs(opening_balance) <= 1000000000");
 
                             t.HasCheckConstraint("CK_accounts_type", "type in ('Checking', 'Savings', 'Cash', 'CreditCard')");
@@ -92,11 +107,13 @@ namespace Infrastructure.Persistence.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
-                    b.Property<string>("Name")
-                        .HasMaxLength(200)
-                        .HasColumnType("character varying(200)")
-                        .HasColumnName("name")
-                        .UseCollation("case_insensitive");
+                    b.Property<byte[]>("Name")
+                        .HasColumnType("bytea")
+                        .HasColumnName("name");
+
+                    b.Property<Guid?>("RotationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("rotation_id");
 
                     b.Property<Guid>("UserId")
                         .HasColumnType("uuid")
@@ -107,11 +124,17 @@ namespace Infrastructure.Persistence.Migrations
                     b.HasIndex("BaseCurrencyCode");
 
                     b.HasIndex("UserId", "Name")
-                        .IsUnique();
+                        .IsUnique()
+                        .HasDatabaseName("IX_budgets_user_id_name");
 
                     NpgsqlIndexBuilderExtensions.AreNullsDistinct(b.HasIndex("UserId", "Name"), false);
 
-                    b.ToTable("budgets", (string)null);
+                    b.ToTable("budgets", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_budgets_name_length", "length(name) between 29 and 1024");
+
+                            t.HasCheckConstraint("CK_budgets_name_version", "substring(name from 1 for 1) = '\\x01'::bytea");
+                        });
                 });
 
             modelBuilder.Entity("Domain.Categories.Category", b =>
@@ -133,26 +156,34 @@ namespace Infrastructure.Persistence.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
-                    b.Property<string>("Description")
-                        .HasMaxLength(500)
-                        .HasColumnType("character varying(500)")
+                    b.Property<byte[]>("Description")
+                        .HasColumnType("bytea")
                         .HasColumnName("description");
 
-                    b.Property<string>("Name")
+                    b.Property<byte[]>("Name")
                         .IsRequired()
-                        .HasMaxLength(200)
-                        .HasColumnType("character varying(200)")
-                        .HasColumnName("name")
-                        .UseCollation("case_insensitive");
+                        .HasColumnType("bytea")
+                        .HasColumnName("name");
+
+                    b.Property<byte[]>("NameKey")
+                        .IsRequired()
+                        .HasColumnType("bytea")
+                        .HasColumnName("name_key");
 
                     b.Property<int>("Position")
                         .HasColumnType("integer")
                         .HasColumnName("position");
 
-                    b.HasKey("Id");
+                    b.Property<Guid?>("RotationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("rotation_id");
 
-                    b.HasIndex("BudgetId", "Name")
-                        .IsUnique();
+                    b.HasKey("Id")
+                        .HasName("PK_categories");
+
+                    b.HasIndex("BudgetId", "NameKey")
+                        .IsUnique()
+                        .HasDatabaseName("IX_categories_budget_id_name_key");
 
                     b.HasIndex("CategoryGroupId", "BudgetId");
 
@@ -160,6 +191,16 @@ namespace Infrastructure.Persistence.Migrations
 
                     b.ToTable("categories", null, t =>
                         {
+                            t.HasCheckConstraint("CK_categories_description_length", "length(description) between 29 and 2560");
+
+                            t.HasCheckConstraint("CK_categories_description_version", "substring(description from 1 for 1) = '\\x01'::bytea");
+
+                            t.HasCheckConstraint("CK_categories_name_key_length", "length(name_key) = 32");
+
+                            t.HasCheckConstraint("CK_categories_name_length", "length(name) between 29 and 1024");
+
+                            t.HasCheckConstraint("CK_categories_name_version", "substring(name from 1 for 1) = '\\x01'::bytea");
+
                             t.HasCheckConstraint("CK_categories_position", "position >= 0");
                         });
                 });
@@ -179,31 +220,49 @@ namespace Infrastructure.Persistence.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
-                    b.Property<string>("Description")
-                        .HasMaxLength(500)
-                        .HasColumnType("character varying(500)")
+                    b.Property<byte[]>("Description")
+                        .HasColumnType("bytea")
                         .HasColumnName("description");
 
-                    b.Property<string>("Name")
+                    b.Property<byte[]>("Name")
                         .IsRequired()
-                        .HasMaxLength(200)
-                        .HasColumnType("character varying(200)")
-                        .HasColumnName("name")
-                        .UseCollation("case_insensitive");
+                        .HasColumnType("bytea")
+                        .HasColumnName("name");
+
+                    b.Property<byte[]>("NameKey")
+                        .IsRequired()
+                        .HasColumnType("bytea")
+                        .HasColumnName("name_key");
 
                     b.Property<int>("Position")
                         .HasColumnType("integer")
                         .HasColumnName("position");
 
-                    b.HasKey("Id");
+                    b.Property<Guid?>("RotationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("rotation_id");
 
-                    b.HasIndex("BudgetId", "Name")
-                        .IsUnique();
+                    b.HasKey("Id")
+                        .HasName("PK_category_groups");
+
+                    b.HasIndex("BudgetId", "NameKey")
+                        .IsUnique()
+                        .HasDatabaseName("IX_category_groups_budget_id_name_key");
 
                     b.HasIndex("BudgetId", "Position");
 
                     b.ToTable("category_groups", null, t =>
                         {
+                            t.HasCheckConstraint("CK_category_groups_description_length", "length(description) between 29 and 2560");
+
+                            t.HasCheckConstraint("CK_category_groups_description_version", "substring(description from 1 for 1) = '\\x01'::bytea");
+
+                            t.HasCheckConstraint("CK_category_groups_name_key_length", "length(name_key) = 32");
+
+                            t.HasCheckConstraint("CK_category_groups_name_length", "length(name) between 29 and 1024");
+
+                            t.HasCheckConstraint("CK_category_groups_name_version", "substring(name from 1 for 1) = '\\x01'::bytea");
+
                             t.HasCheckConstraint("CK_category_groups_position", "position >= 0");
                         });
                 });
@@ -349,19 +408,121 @@ namespace Infrastructure.Persistence.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
-                    b.Property<string>("Name")
+                    b.Property<byte[]>("Name")
                         .IsRequired()
-                        .HasMaxLength(200)
-                        .HasColumnType("character varying(200)")
-                        .HasColumnName("name")
-                        .UseCollation("case_insensitive");
+                        .HasColumnType("bytea")
+                        .HasColumnName("name");
+
+                    b.Property<byte[]>("NameKey")
+                        .IsRequired()
+                        .HasColumnType("bytea")
+                        .HasColumnName("name_key");
+
+                    b.Property<Guid?>("RotationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("rotation_id");
+
+                    b.HasKey("Id")
+                        .HasName("PK_payees");
+
+                    b.HasIndex("BudgetId", "NameKey")
+                        .IsUnique()
+                        .HasDatabaseName("IX_payees_budget_id_name_key");
+
+                    b.ToTable("payees", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_payees_name_key_length", "length(name_key) = 32");
+
+                            t.HasCheckConstraint("CK_payees_name_length", "length(name) between 29 and 1024");
+
+                            t.HasCheckConstraint("CK_payees_name_version", "substring(name from 1 for 1) = '\\x01'::bytea");
+                        });
+                });
+
+            modelBuilder.Entity("Domain.Sessions.Session", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<Guid>("CredentialId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("credential_id");
+
+                    b.Property<string>("CredentialType")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("credential_type");
+
+                    b.Property<DateTime>("ExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expires_at_utc");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("kind");
+
+                    b.Property<DateTime?>("RevokedAtUtc")
+                        .IsConcurrencyToken()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("revoked_at_utc");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
 
                     b.HasKey("Id");
 
-                    b.HasIndex("BudgetId", "Name")
-                        .IsUnique();
+                    b.HasAlternateKey("Id", "UserId")
+                        .HasName("AK_sessions_id_user_id");
 
-                    b.ToTable("payees", (string)null);
+                    b.HasIndex("CredentialId", "UserId", "CredentialType")
+                        .HasDatabaseName("IX_sessions_credential_id_user_id_credential_type");
+
+                    b.HasIndex(new[] { "UserId" }, "IX_sessions_user_id")
+                        .HasDatabaseName("IX_sessions_user_id");
+
+                    b.ToTable("sessions", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_sessions_kind", "kind in ('full', 'locked')");
+
+                            t.HasCheckConstraint("CK_sessions_kind_matches_credential", "(kind = 'full') = (credential_type in ('passkey', 'recovery_codes'))");
+
+                            t.HasCheckConstraint("CK_sessions_lifetime", "expires_at_utc > created_at_utc");
+                        });
+                });
+
+            modelBuilder.Entity("Domain.Sessions.SessionToken", b =>
+                {
+                    b.Property<byte[]>("TokenHash")
+                        .HasColumnType("bytea")
+                        .HasColumnName("token_hash");
+
+                    b.Property<Guid>("SessionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("session_id");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("TokenHash");
+
+                    b.HasIndex("SessionId", "UserId")
+                        .HasDatabaseName("IX_session_tokens_session_id_user_id");
+
+                    b.ToTable("session_tokens", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_session_tokens_token_hash_length", "length(token_hash) = 32");
+                        });
                 });
 
             modelBuilder.Entity("Domain.Transactions.Transaction", b =>
@@ -395,16 +556,20 @@ namespace Infrastructure.Persistence.Migrations
                         .HasColumnType("date")
                         .HasColumnName("date");
 
-                    b.Property<string>("Description")
-                        .HasMaxLength(500)
-                        .HasColumnType("character varying(500)")
+                    b.Property<byte[]>("Description")
+                        .HasColumnType("bytea")
                         .HasColumnName("description");
 
                     b.Property<Guid?>("PayeeId")
                         .HasColumnType("uuid")
                         .HasColumnName("payee_id");
 
-                    b.HasKey("Id");
+                    b.Property<Guid?>("RotationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("rotation_id");
+
+                    b.HasKey("Id")
+                        .HasName("PK_transactions");
 
                     b.HasIndex("AccountId", "BudgetId");
 
@@ -418,6 +583,286 @@ namespace Infrastructure.Persistence.Migrations
                     b.ToTable("transactions", null, t =>
                         {
                             t.HasCheckConstraint("CK_transactions_amount", "abs(amount) <= 1000000000");
+
+                            t.HasCheckConstraint("CK_transactions_description_length", "length(description) between 29 and 2560");
+
+                            t.HasCheckConstraint("CK_transactions_description_version", "substring(description from 1 for 1) = '\\x01'::bytea");
+                        });
+                });
+
+            modelBuilder.Entity("Domain.Users.Credential", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<string>("Provider")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("provider");
+
+                    b.Property<string>("Subject")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("subject");
+
+                    b.Property<string>("Type")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("type");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasAlternateKey("Id", "UserId", "Type")
+                        .HasName("AK_credentials_id_user_id_type");
+
+                    b.HasIndex("Provider", "Subject")
+                        .IsUnique()
+                        .HasDatabaseName("IX_credentials_provider_subject")
+                        .HasFilter("type = 'federated'");
+
+                    b.HasIndex(new[] { "UserId" }, "IX_credentials_user_id")
+                        .HasDatabaseName("IX_credentials_user_id");
+
+                    b.HasIndex(new[] { "UserId" }, "IX_credentials_user_id_federated")
+                        .IsUnique()
+                        .HasDatabaseName("IX_credentials_user_id_federated")
+                        .HasFilter("type = 'federated'");
+
+                    b.HasIndex(new[] { "UserId" }, "IX_credentials_user_id_recovery_codes")
+                        .IsUnique()
+                        .HasDatabaseName("IX_credentials_user_id_recovery_codes")
+                        .HasFilter("type = 'recovery_codes'");
+
+                    b.ToTable("credentials", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_credentials_provider", "provider is null or provider in ('google')");
+
+                            t.HasCheckConstraint("CK_credentials_type", "type in ('passkey', 'federated', 'recovery_codes')");
+
+                            t.HasCheckConstraint("CK_credentials_type_shape", "(type = 'federated' and provider is not null and subject is not null and length(subject) > 0) or (type = 'passkey' and provider is null and subject is null) or (type = 'recovery_codes' and provider is null and subject is null)");
+                        });
+                });
+
+            modelBuilder.Entity("Domain.Users.FactorManifest", b =>
+                {
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.Property<byte[]>("Manifest")
+                        .IsRequired()
+                        .HasColumnType("bytea")
+                        .HasColumnName("manifest");
+
+                    b.Property<int>("RotationEpoch")
+                        .HasColumnType("integer")
+                        .HasColumnName("rotation_epoch");
+
+                    b.HasKey("UserId")
+                        .HasName("PK_factor_manifests");
+
+                    b.ToTable("factor_manifests", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_factor_manifests_manifest_length", "length(manifest) between 1 and 4096");
+
+                            t.HasCheckConstraint("CK_factor_manifests_rotation_epoch", "rotation_epoch >= 1");
+                        });
+                });
+
+            modelBuilder.Entity("Domain.Users.KeyRotation", b =>
+                {
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.Property<Guid>("RotationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("rotation_id");
+
+                    b.Property<byte[]>("StagedManifest")
+                        .IsRequired()
+                        .HasColumnType("bytea")
+                        .HasColumnName("staged_manifest");
+
+                    b.Property<int>("StagedRotationEpoch")
+                        .HasColumnType("integer")
+                        .HasColumnName("staged_rotation_epoch");
+
+                    b.Property<DateTime>("StartedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("started_at_utc");
+
+                    b.HasKey("UserId")
+                        .HasName("PK_key_rotations");
+
+                    b.ToTable("key_rotations", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_key_rotations_staged_manifest_length", "length(staged_manifest) between 1 and 4096");
+
+                            t.HasCheckConstraint("CK_key_rotations_staged_rotation_epoch", "staged_rotation_epoch >= 1");
+                        });
+                });
+
+            modelBuilder.Entity("Domain.Users.KeyRotationSeal", b =>
+                {
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.Property<Guid>("FactorId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("factor_id");
+
+                    b.Property<byte[]>("EncapsulatedAccountKeys")
+                        .IsRequired()
+                        .HasColumnType("bytea")
+                        .HasColumnName("encapsulated_account_keys");
+
+                    b.HasKey("UserId", "FactorId")
+                        .HasName("PK_key_rotation_seals");
+
+                    b.HasIndex("FactorId", "UserId");
+
+                    b.ToTable("key_rotation_seals", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_key_rotation_seals_encapsulated_account_keys_length", "length(encapsulated_account_keys) = 158");
+
+                            t.HasCheckConstraint("CK_key_rotation_seals_encapsulated_account_keys_version", "get_byte(encapsulated_account_keys, 0) = 1");
+                        });
+                });
+
+            modelBuilder.Entity("Domain.Users.PasskeyPublicKey", b =>
+                {
+                    b.Property<Guid>("CredentialId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("credential_id");
+
+                    b.Property<int>("Algorithm")
+                        .HasColumnType("integer")
+                        .HasColumnName("cose_algorithm");
+
+                    b.Property<byte[]>("CoseKey")
+                        .IsRequired()
+                        .HasColumnType("bytea")
+                        .HasColumnName("public_key_cose");
+
+                    b.Property<string>("CredentialType")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("credential_type");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.Property<byte[]>("WebAuthnCredentialId")
+                        .IsRequired()
+                        .HasColumnType("bytea")
+                        .HasColumnName("webauthn_credential_id");
+
+                    b.HasKey("CredentialId");
+
+                    b.HasIndex("WebAuthnCredentialId")
+                        .IsUnique()
+                        .HasDatabaseName("IX_passkey_public_keys_webauthn_credential_id");
+
+                    b.HasIndex("CredentialId", "UserId", "CredentialType")
+                        .HasDatabaseName("IX_passkey_public_keys_credential_id_user_id_credential_type");
+
+                    b.ToTable("passkey_public_keys", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_passkey_public_keys_cose_algorithm", "cose_algorithm in (-7, -257)");
+
+                            t.HasCheckConstraint("CK_passkey_public_keys_credential_type", "credential_type = 'passkey'");
+
+                            t.HasCheckConstraint("CK_passkey_public_keys_public_key_length", "length(public_key_cose) between 1 and 1024");
+
+                            t.HasCheckConstraint("CK_passkey_public_keys_webauthn_credential_id_length", "length(webauthn_credential_id) between 16 and 1023");
+                        });
+                });
+
+            modelBuilder.Entity("Domain.Users.PasskeySignatureCounter", b =>
+                {
+                    b.Property<Guid>("CredentialId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("credential_id");
+
+                    b.Property<string>("CredentialType")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("credential_type");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.Property<long>("Value")
+                        .HasColumnType("bigint")
+                        .HasColumnName("signature_counter");
+
+                    b.HasKey("CredentialId");
+
+                    b.HasIndex("CredentialId", "UserId", "CredentialType")
+                        .HasDatabaseName("IX_passkey_signature_counters_credential_id_user_id_credential_type");
+
+                    b.HasIndex(new[] { "UserId" }, "IX_passkey_signature_counters_user_id")
+                        .HasDatabaseName("IX_passkey_signature_counters_user_id");
+
+                    b.ToTable("passkey_signature_counters", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_passkey_signature_counters_credential_type", "credential_type = 'passkey'");
+
+                            t.HasCheckConstraint("CK_passkey_signature_counters_value", "signature_counter >= 0 and signature_counter <= 4294967295");
+                        });
+                });
+
+            modelBuilder.Entity("Domain.Users.RecoveryCodeHash", b =>
+                {
+                    b.Property<byte[]>("VerifierHash")
+                        .HasColumnType("bytea")
+                        .HasColumnName("verifier_hash");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<Guid>("CredentialId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("credential_id");
+
+                    b.Property<string>("CredentialType")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("credential_type");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("VerifierHash");
+
+                    b.HasIndex("CredentialId", "UserId", "CredentialType")
+                        .HasDatabaseName("IX_recovery_code_hashes_credential_id_user_id_credential_type");
+
+                    b.ToTable("recovery_code_hashes", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_recovery_code_hashes_credential_type", "credential_type = 'recovery_codes'");
+
+                            t.HasCheckConstraint("CK_recovery_code_hashes_verifier_hash_length", "length(verifier_hash) = 32");
                         });
                 });
 
@@ -432,11 +877,6 @@ namespace Infrastructure.Persistence.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
-                    b.Property<string>("DisplayName")
-                        .HasMaxLength(200)
-                        .HasColumnType("character varying(200)")
-                        .HasColumnName("display_name");
-
                     b.Property<string>("Email")
                         .IsRequired()
                         .HasMaxLength(254)
@@ -444,23 +884,119 @@ namespace Infrastructure.Persistence.Migrations
                         .HasColumnName("email")
                         .UseCollation("case_insensitive");
 
-                    b.Property<string>("GoogleSubject")
-                        .IsRequired()
-                        .HasMaxLength(255)
-                        .HasColumnType("character varying(255)")
-                        .HasColumnName("google_subject");
-
                     b.HasKey("Id");
 
                     b.HasIndex("Email")
                         .IsUnique()
                         .HasDatabaseName("IX_users_email");
 
-                    b.HasIndex("GoogleSubject")
-                        .IsUnique()
-                        .HasDatabaseName("IX_users_google_subject");
-
                     b.ToTable("users", (string)null);
+                });
+
+            modelBuilder.Entity("Domain.Users.WrappedAccountKeys", b =>
+                {
+                    b.Property<Guid>("FactorId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("factor_id");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<Guid>("CredentialId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("credential_id");
+
+                    b.Property<string>("CredentialType")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("credential_type");
+
+                    b.Property<byte[]>("EncapsulatedAccountKeys")
+                        .IsRequired()
+                        .HasColumnType("bytea")
+                        .HasColumnName("encapsulated_account_keys");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.Property<byte[]>("WrappedPrivateKey")
+                        .IsRequired()
+                        .HasColumnType("bytea")
+                        .HasColumnName("wrapped_private_key");
+
+                    b.HasKey("FactorId")
+                        .HasName("PK_wrapped_account_keys");
+
+                    b.HasAlternateKey("FactorId", "UserId")
+                        .HasName("AK_wrapped_account_keys_factor_id_user_id");
+
+                    b.HasIndex("CredentialId", "UserId", "CredentialType")
+                        .HasDatabaseName("IX_wrapped_account_keys_credential_id_user_id_credential_type");
+
+                    b.HasIndex(new[] { "UserId" }, "IX_wrapped_account_keys_user_id")
+                        .HasDatabaseName("IX_wrapped_account_keys_user_id");
+
+                    b.ToTable("wrapped_account_keys", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_wrapped_account_keys_credential_type", "credential_type in ('passkey', 'recovery_codes')");
+
+                            t.HasCheckConstraint("CK_wrapped_account_keys_encapsulated_account_keys_length", "length(encapsulated_account_keys) = 158");
+
+                            t.HasCheckConstraint("CK_wrapped_account_keys_encapsulated_account_keys_version", "get_byte(encapsulated_account_keys, 0) = 1");
+
+                            t.HasCheckConstraint("CK_wrapped_account_keys_wrapped_private_key_length", "length(wrapped_private_key) = 167");
+
+                            t.HasCheckConstraint("CK_wrapped_account_keys_wrapped_private_key_version", "get_byte(wrapped_private_key, 0) = 1");
+                        });
+                });
+
+            modelBuilder.Entity("Infrastructure.Persistence.WebAuthnChallengeRow", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Ceremony")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("ceremony");
+
+                    b.Property<byte[]>("Challenge")
+                        .IsRequired()
+                        .HasColumnType("bytea")
+                        .HasColumnName("challenge");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<DateTime>("ExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expires_at_utc");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Challenge")
+                        .IsUnique()
+                        .HasDatabaseName("IX_webauthn_challenges_challenge");
+
+                    b.HasIndex("ExpiresAtUtc")
+                        .HasDatabaseName("IX_webauthn_challenges_expires_at_utc");
+
+                    b.ToTable("webauthn_challenges", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_webauthn_challenges_ceremony", "ceremony in ('registration', 'authentication', 'reauthentication', 'account_registration')");
+
+                            t.HasCheckConstraint("CK_webauthn_challenges_length", "length(challenge) = 32");
+
+                            t.HasCheckConstraint("CK_webauthn_challenges_lifetime", "expires_at_utc > created_at_utc");
+                        });
                 });
 
             modelBuilder.Entity("Domain.Accounts.Account", b =>
@@ -505,7 +1041,8 @@ namespace Infrastructure.Persistence.Migrations
                         .HasForeignKey("CategoryGroupId", "BudgetId")
                         .HasPrincipalKey("Id", "BudgetId")
                         .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
+                        .IsRequired()
+                        .HasConstraintName("FK_categories_category_groups_category_group_id_budget_id");
                 });
 
             modelBuilder.Entity("Domain.CategoryGroups.CategoryGroup", b =>
@@ -526,6 +1063,27 @@ namespace Infrastructure.Persistence.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("Domain.Sessions.Session", b =>
+                {
+                    b.HasOne("Domain.Users.Credential", null)
+                        .WithMany()
+                        .HasForeignKey("CredentialId", "UserId", "CredentialType")
+                        .HasPrincipalKey("Id", "UserId", "Type")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Domain.Sessions.SessionToken", b =>
+                {
+                    b.HasOne("Domain.Sessions.Session", null)
+                        .WithMany()
+                        .HasForeignKey("SessionId", "UserId")
+                        .HasPrincipalKey("Id", "UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("FK_session_tokens_sessions");
+                });
+
             modelBuilder.Entity("Domain.Transactions.Transaction", b =>
                 {
                     b.HasOne("Domain.Budgets.Budget", null)
@@ -539,19 +1097,112 @@ namespace Infrastructure.Persistence.Migrations
                         .HasForeignKey("AccountId", "BudgetId")
                         .HasPrincipalKey("Id", "BudgetId")
                         .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
+                        .IsRequired()
+                        .HasConstraintName("FK_transactions_accounts_account_id_budget_id");
 
                     b.HasOne("Domain.Categories.Category", null)
                         .WithMany()
                         .HasForeignKey("CategoryId", "BudgetId")
                         .HasPrincipalKey("Id", "BudgetId")
-                        .OnDelete(DeleteBehavior.Restrict);
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("FK_transactions_categories_category_id_budget_id");
 
                     b.HasOne("Domain.Payees.Payee", null)
                         .WithMany()
                         .HasForeignKey("PayeeId", "BudgetId")
                         .HasPrincipalKey("Id", "BudgetId")
                         .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("Domain.Users.Credential", b =>
+                {
+                    b.HasOne("Domain.Users.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Domain.Users.FactorManifest", b =>
+                {
+                    b.HasOne("Domain.Users.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("FK_factor_manifests_users");
+                });
+
+            modelBuilder.Entity("Domain.Users.KeyRotation", b =>
+                {
+                    b.HasOne("Domain.Users.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("FK_key_rotations_users");
+                });
+
+            modelBuilder.Entity("Domain.Users.KeyRotationSeal", b =>
+                {
+                    b.HasOne("Domain.Users.KeyRotation", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("FK_key_rotation_seals_key_rotations");
+
+                    b.HasOne("Domain.Users.WrappedAccountKeys", null)
+                        .WithMany()
+                        .HasForeignKey("FactorId", "UserId")
+                        .HasPrincipalKey("FactorId", "UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("FK_key_rotation_seals_wrapped_account_keys");
+                });
+
+            modelBuilder.Entity("Domain.Users.PasskeyPublicKey", b =>
+                {
+                    b.HasOne("Domain.Users.Credential", null)
+                        .WithMany()
+                        .HasForeignKey("CredentialId", "UserId", "CredentialType")
+                        .HasPrincipalKey("Id", "UserId", "Type")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("FK_passkey_public_keys_credentials");
+                });
+
+            modelBuilder.Entity("Domain.Users.PasskeySignatureCounter", b =>
+                {
+                    b.HasOne("Domain.Users.Credential", null)
+                        .WithMany()
+                        .HasForeignKey("CredentialId", "UserId", "CredentialType")
+                        .HasPrincipalKey("Id", "UserId", "Type")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("FK_passkey_signature_counters_credentials");
+                });
+
+            modelBuilder.Entity("Domain.Users.RecoveryCodeHash", b =>
+                {
+                    b.HasOne("Domain.Users.Credential", null)
+                        .WithMany()
+                        .HasForeignKey("CredentialId", "UserId", "CredentialType")
+                        .HasPrincipalKey("Id", "UserId", "Type")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("FK_recovery_code_hashes_credentials");
+                });
+
+            modelBuilder.Entity("Domain.Users.WrappedAccountKeys", b =>
+                {
+                    b.HasOne("Domain.Users.Credential", null)
+                        .WithMany()
+                        .HasForeignKey("CredentialId", "UserId", "CredentialType")
+                        .HasPrincipalKey("Id", "UserId", "Type")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("FK_wrapped_account_keys_credentials");
                 });
 #pragma warning restore 612, 618
         }

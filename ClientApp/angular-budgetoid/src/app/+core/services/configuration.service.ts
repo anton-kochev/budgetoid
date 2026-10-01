@@ -10,6 +10,10 @@ interface Configuration {
 interface GoogleAuthConfig {
   clientId: string;
   redirectUri: string;
+  // Where the email change's trip to the provider comes back. Optional, and
+  // not required by `validateConfiguration`: a deployment without it has no
+  // email change, and registration must not fail to boot over it.
+  emailChangeRedirectUri?: string;
   scope: string;
 }
 

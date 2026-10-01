@@ -1,6 +1,7 @@
 using Application.Accounts;
 using Application.Currencies;
 using Domain.Accounts;
+using TestSupport;
 
 namespace UnitTests.Fakes;
 
@@ -48,8 +49,14 @@ public sealed class InMemoryAccountRepository(Guid budgetId, TimeProvider timePr
 
     public Task<IReadOnlyList<AccountDto>> GetAllAsync(CancellationToken cancellationToken = default)
     {
+        // The creation instant, then the id — AccountReadService's order and no longer the name's.
+        // `OrderBy(account => account.Name)` was here and could not stay: NarrativeField implements no
+        // comparison, so it would have thrown at run time rather than failed to build. And there is
+        // nothing to replace it with — ordering a bytea name orders by the first differing byte, which
+        // after the version is the nonce, redrawn on every seal.
         IReadOnlyList<AccountDto> accounts = _accounts
-            .OrderBy(account => account.Name)
+            .OrderBy(account => account.CreatedAtUtc)
+            .ThenBy(account => account.Id)
             .Select(account => AccountDto.FromAccount(account, CurrencyFor(account.CurrencyCode)))
             .ToList();
 
@@ -69,13 +76,26 @@ public sealed class InMemoryAccountRepository(Guid budgetId, TimeProvider timePr
         return Task.FromResult(dto);
     }
 
-    public async Task<Account> CreateAsync(string name = "Checking", AccountType type = AccountType.Checking, decimal openingBalance = 0m, string currencyCode = "USD")
+    /// <summary>
+    /// Seeds an account whose name is sealed and indexed from <paramref name="label" />.
+    /// </summary>
+    /// <param name="label">
+    /// What distinguishes this row from the next one. It is NOT the account's name and is never read
+    /// back as one — the column holds an envelope this side has no key for. It survives as the seed
+    /// both halves of the name are derived from, so a caller that wants two rows to hold "the same
+    /// name" passes one label twice.
+    /// </param>
+    public async Task<Account> CreateAsync(string label = "Checking", AccountType type = AccountType.Checking, decimal openingBalance = 0m, string currencyCode = "USD")
     {
         // The minor unit comes from the same lookup the read projection uses, so a JPY account
         // seeded here is validated as a zero-decimal currency rather than silently as USD.
+        //
+        // The id is minted HERE and threaded in, because Account.Create no longer mints one: it is the
+        // associated data the name was sealed against, so the factory takes it and never invents it.
         Account account = Account.Create(
+            Guid.CreateVersion7(),
             budgetId,
-            name,
+            SealedNarrative.Indexed(label),
             type,
             openingBalance,
             currencyCode,

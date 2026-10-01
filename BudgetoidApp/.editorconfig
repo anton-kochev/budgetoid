@@ -128,3 +128,16 @@ csharp_space_between_square_brackets = false
 csharp_preserve_single_line_blocks = true
 csharp_preserve_single_line_statements = false
 
+
+# A pin asserts a constant on purpose, and TUnitAssertions0005 cannot tell one from a mistake.
+# The envelope formats declare their widths as const so they can be read in [Arguments(...)] and in
+# default parameter values, and the tests transcribe those numbers as literals rather than deriving
+# them — a test that computed the sum from the parts would agree with any four numbers. Both sides
+# of the comparison are therefore compile-time constants, which is exactly the shape this analyzer
+# reports. Scoped to tests because that is the only place a pin lives; in production code the
+# warning would be reporting a real mistake.
+#
+# suggestion rather than none, so the build stays quiet and an editor still offers the report on a
+# test that compares two literals by accident — the one case here that is a genuine defect.
+[tests/**/*.cs]
+dotnet_diagnostic.TUnitAssertions0005.severity = suggestion
