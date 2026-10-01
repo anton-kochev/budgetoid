@@ -82,6 +82,11 @@ public sealed class InMemoryUserRepository(InMemoryTransactionRepository transac
         _credentials.Add(credential);
     }
 
+    /// <summary>
+    /// Files one more credential for a user already here — <see cref="Seed"/> would add the user twice.
+    /// </summary>
+    public void SeedCredential(Credential credential) => _credentials.Add(credential);
+
     public Task<Guid?> FindUserIdByFederatedCredentialAsync(
         string provider,
         string subject,

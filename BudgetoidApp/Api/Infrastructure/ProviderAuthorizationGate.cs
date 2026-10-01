@@ -27,10 +27,9 @@ namespace Api.Infrastructure;
 /// through one policy, registration's, and through this filter.
 /// </para>
 /// <para>
-/// <b>A filter, so it runs before the handler and after model binding.</b> Before the handler is what
-/// keeps a refused token from spending the passkey challenge: the gate inside the handler consumes its
-/// nonce whatever happens next, and a person told their Google sign-in lapsed must be able to retry with
-/// the same assertion. After model binding is the accepted cost <see cref="RegistrationClaimGate" />
+/// <b>A filter, so it runs before the handler and after model binding.</b> Before the handler means a
+/// provider refusal writes nothing: the gate inside the handler, which consumes the passkey challenge's
+/// nonce, is never reached, so the nonce is left unspent and expires. After model binding is the accepted cost <see cref="RegistrationClaimGate" />
 /// argues — a malformed body is a framework 400 before the token is looked at.
 /// </para>
 /// <para>

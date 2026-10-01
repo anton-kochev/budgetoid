@@ -333,7 +333,7 @@ public sealed class ChangeEmailHandlerTests
 
     /// <summary>
     /// The subject is trimmed before the discovery lookup is asked about it, on the pre-check and on
-    /// the <see cref="EmailChangeOutcome.EmailTaken" /> re-read alike.
+    /// the re-read after a refused save alike — whichever index refused it.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -343,17 +343,22 @@ public sealed class ChangeEmailHandlerTests
     /// — or, on the re-read, answers "the address alone collided" for a Google identity in use.
     /// </para>
     /// <para>
-    /// One test and one assertion over the recorded list, because the two lookups fail for the same
-    /// reason and the list in call order names which of the two forgot. The save answers
-    /// <see cref="EmailChangeOutcome.EmailTaken" /> so that the re-read is reached at all.
+    /// One assertion over the recorded list, because the two lookups fail for the same reason and the
+    /// list in call order names which of the two forgot. Run once per refusal that re-reads:
+    /// <see cref="EmailChangeOutcome.EmailTaken" /> and <see cref="EmailChangeOutcome.SubjectTaken" />
+    /// each reach a re-read of their own, and an untrimmed one on the second answers "another account"
+    /// for a subject this account now holds.
     /// </para>
     /// </remarks>
     [Test]
-    public async Task HandleAsync_WithASubjectInSurroundingWhitespace_PreChecksAndReReadsTheTrimmedSubject()
+    [Arguments(EmailChangeOutcome.EmailTaken)]
+    [Arguments(EmailChangeOutcome.SubjectTaken)]
+    public async Task HandleAsync_WithASubjectInSurroundingWhitespace_PreChecksAndReReadsTheTrimmedSubject(
+        EmailChangeOutcome refusal)
     {
         // Arrange
         Fixture fixture = Fixture.Build();
-        fixture.EmailChanges.Outcome = EmailChangeOutcome.EmailTaken;
+        fixture.EmailChanges.Outcome = refusal;
 
         // Act
         await ThrowsAsync<ConflictException>(
@@ -365,8 +370,62 @@ public sealed class ChangeEmailHandlerTests
     }
 
     /// <summary>
-    /// A save refused on the credential's <c>(provider, subject)</c> index is a Google identity another
-    /// account holds, and the sweep before it does not commit.
+    /// A save refused on the credential's <c>(provider, subject)</c> index, with a re-read that finds
+    /// nobody on the subject, keeps the pre-check's answer — and the sweep before it does not commit.
+    /// </summary>
+    /// <remarks>
+    /// Nobody holds the subject by the re-read, so there is no account to name either way; the answer
+    /// stays the one the save's refusal always gave.
+    /// </remarks>
+    [Test]
+    public async Task HandleAsync_OnSubjectTaken_WithTheSubjectNowHeldByNobody_AnswersProviderIdentityInUse()
+    {
+        // Arrange
+        Fixture fixture = Fixture.Build();
+        await fixture.SeedLiveSessionsAsync(fixture.Federated, count: 1);
+        fixture.EmailChanges.Outcome = EmailChangeOutcome.SubjectTaken;
+
+        // Act
+        ConflictException conflict = await ThrowsAsync<ConflictException>(
+            () => fixture.Handler.HandleAsync(fixture.CommandFor(NewSubject, NewAddress)));
+
+        // Assert — and the sweep that ran before the refused save was not committed with it.
+        await Assert.That(conflict.Kind).IsEqualTo(ConflictKind.ProviderIdentityInUse);
+        await Assert.That(fixture.Executor.Committed).IsEqualTo(0);
+    }
+
+    /// <summary>
+    /// A save refused on the subject index by THIS account's own credential is a change of this
+    /// account that landed first, never a Google identity attached to another account.
+    /// </summary>
+    /// <remarks>
+    /// Two confirms of one account to one new subject: the winner retired the old credential and filed
+    /// one on the new subject, and the loser's insert meets it on <c>IX_credentials_provider_subject</c>
+    /// first, because PostgreSQL checks that index ahead of the others. "Attached to another Budgetoid
+    /// account" would be false, so the handler re-reads who holds the subject.
+    /// </remarks>
+    [Test]
+    public async Task HandleAsync_OnSubjectTaken_WithTheSubjectNowHeldByThisAccount_AnswersAccountIdentityMoved()
+    {
+        // Arrange — the winning change files this account's own credential on the new subject.
+        Fixture fixture = Fixture.Build();
+        await fixture.SeedLiveSessionsAsync(fixture.Federated, count: 1);
+        fixture.EmailChanges.Outcome = EmailChangeOutcome.SubjectTaken;
+        fixture.EmailChanges.OnApply = () => fixture.Users.SeedCredential(
+            Credential.CreateFederated(fixture.User.Id, Credential.GoogleProvider, NewSubject, UtcNow));
+
+        // Act
+        ConflictException conflict = await ThrowsAsync<ConflictException>(
+            () => fixture.Handler.HandleAsync(fixture.CommandFor(NewSubject, NewAddress)));
+
+        // Assert — and the sweep that ran before the refused save was not committed with it.
+        await Assert.That(conflict.Kind).IsEqualTo(ConflictKind.AccountIdentityMoved);
+        await Assert.That(fixture.Executor.Committed).IsEqualTo(0);
+    }
+
+    /// <summary>
+    /// A save refused on the subject index by another account's credential is a Google identity in
+    /// use, and the sweep before it does not commit.
     /// </summary>
     /// <remarks>
     /// The pre-check found nobody, so this is the race it cannot close: another account filed the
@@ -374,12 +433,16 @@ public sealed class ChangeEmailHandlerTests
     /// the same one reached later.
     /// </remarks>
     [Test]
-    public async Task HandleAsync_WhenApplyAnswersSubjectTaken_AnswersProviderIdentityInUse()
+    public async Task HandleAsync_OnSubjectTaken_WithTheSubjectNowHeldByAnotherAccount_AnswersProviderIdentityInUse()
     {
-        // Arrange
+        // Arrange — a rival account files the subject the moment the save is entered.
         Fixture fixture = Fixture.Build();
         await fixture.SeedLiveSessionsAsync(fixture.Federated, count: 1);
+        User rival = User.CreateWithId(Guid.CreateVersion7(), "rival@example.com", UtcNow);
         fixture.EmailChanges.Outcome = EmailChangeOutcome.SubjectTaken;
+        fixture.EmailChanges.OnApply = () => fixture.Users.Seed(
+            rival,
+            Credential.CreateFederated(rival.Id, Credential.GoogleProvider, NewSubject, UtcNow));
 
         // Act
         ConflictException conflict = await ThrowsAsync<ConflictException>(

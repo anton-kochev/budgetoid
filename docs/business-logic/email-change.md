@@ -316,7 +316,7 @@ response body is a value in a log.
     not.
 - **Enforced in**: `ChangeEmailHandler`, with the argument on the class and at the throw.
   `HandleAsync_OnEmailTaken_WithTheSubjectNowHeldElsewhere_AnswersProviderIdentityInUse`,
-  `HandleAsync_WhenApplyAnswersSubjectTaken_AnswersProviderIdentityInUse` and
+  `HandleAsync_OnSubjectTaken_WithTheSubjectNowHeldByNobody_AnswersProviderIdentityInUse` and
   `HandleAsync_OnFederatedCredentialMoved_AnswersAccountIdentityMoved` each assert the executor
   committed nothing. `EmailChange_RefusedAfterTheSweepWouldRun_LeavesTheRetiredCredentialsSessionsLive`
   holds it end to end: a locked session on the retired credential, a taken address, a `409`, and the
@@ -359,16 +359,23 @@ response body is a value in a log.
   address back, and change it again only if it is not the one chosen. `ConflictKind` carries the
   argument for each.
   - **`provider_identity_in_use` is reached three ways**: a pre-check before any transaction opens,
-    so the common case needs no sweep to roll back; the save refused on
-    `IX_credentials_provider_subject`, when another account filed the subject after the pre-check;
-    and an `EmailTaken` save whose re-read finds another account on the subject.
-  - **`EmailTaken` is ambiguous and a re-read settles it**, as registration's is: one save can breach
-    the subject and the address at once, and PostgreSQL names one. The re-read runs inside the
+    so the common case needs no sweep to roll back; a `SubjectTaken` save whose re-read finds another
+    account on the subject, or nobody; and an `EmailTaken` save whose re-read finds another account.
+  - **`SubjectTaken` and `EmailTaken` are both ambiguous, and a re-read of the subject settles
+    each.** `EmailTaken` is ambiguous as registration's is: one save can breach the subject and the
+    address at once, and PostgreSQL names one. `SubjectTaken` is ambiguous because the credential
+    holding the subject can be this account's own: two confirms for the same new subject race, and
+    the loser's `INSERT` meets `IX_credentials_provider_subject` before the other indexes (measured
+    against PostgreSQL 17; that the order is the indexes' creation order is [Guessing]). The re-read
+    runs inside the
     delegate, which works because EF takes a savepoint before a save inside an open transaction. The
-    account's **own** id is not "another account" — it means the address alone collided.
-  - **`account_identity_moved` is reached two ways**: the retired row's `DELETE` matching nothing,
-    and — the realistic race, measured — the filed row's `INSERT` meeting the winner's replacement on
-    `IX_credentials_user_id_federated`.
+    account's **own** id is never "another account": after `EmailTaken` it means the address alone
+    collided; after `SubjectTaken` it means this account's identity moved under the request. A
+    `SubjectTaken` whose re-read finds nobody still answers `provider_identity_in_use` — the
+    database refused on a committed row, and "moved" would claim something nobody observed.
+  - **`account_identity_moved` is reached three ways**: the retired row's `DELETE` matching nothing;
+    the filed row's `INSERT` meeting the winner's replacement on `IX_credentials_user_id_federated`
+    (measured); and a `SubjectTaken` whose re-read finds this account (measured).
   - **Not an enumeration oracle.** Reaching the subject lookup takes a full session, a passkey
     assertion and a provider token for that exact subject, so a caller can only ask about a Google
     identity they already control.
@@ -377,6 +384,9 @@ response body is a value in a log.
   - End to end: `EmailChange_WithASubjectAnotherAccountIsFiledUnder_IsRefused409ProviderIdentityInUse_AndChangesNeitherAccount`
     and `EmailChange_ToAnAddressAnotherAccountHolds_IsRefused409EmailAlreadyLinked_AndChangesNeitherAccount`
     (exact and re-cased), each asserting the body names neither value.
+    `EmailChange_WhenTheSameChangeOfThisAccountCommitsFirst_IsRefused409AccountIdentityMoved` commits
+    a racing change of the same account mid-save and reads `account_identity_moved`, not
+    `provider_identity_in_use`.
   - In the handler: `HandleAsync_WhenTheSubjectBelongsToAnotherAccount_RefusesBeforeTheTransaction`,
     the three kind tests above, `HandleAsync_OnEmailTaken_WithTheSubjectHeldByNobodyElse_AnswersEmailAlreadyLinked`
     and `HandleAsync_WithASubjectInSurroundingWhitespace_PreChecksAndReReadsTheTrimmedSubject`.
@@ -745,7 +755,11 @@ ELSE open the transaction
       revoke the retired credential's sessions, discard the tracker
     save once
     IF the save lost on the provider subject
-      THEN 409 provider_identity_in_use
+      re-read the subject                                    ← it may be this account's own
+      IF this account holds it now
+        THEN 409 account_identity_moved
+      ELSE
+        THEN 409 provider_identity_in_use
     ELSE IF it lost on the address
       re-read the subject                                    ← the name alone cannot separate them
       IF another account holds it now

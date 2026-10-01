@@ -247,6 +247,7 @@ public sealed partial class ConflictKindDispositionCensusTests
             "Application/Users/ChangeEmail/ChangeEmailHandler.cs",
             [
                 nameof(ConflictKind.ProviderIdentityInUse),
+                nameof(ConflictKind.AccountIdentityMoved),
                 nameof(ConflictKind.ProviderIdentityInUse),
                 nameof(ConflictKind.ProviderIdentityInUse),
                 nameof(ConflictKind.EmailAlreadyLinked),
@@ -254,15 +255,22 @@ public sealed partial class ConflictKindDispositionCensusTests
             ],
             "The pre-check before the transaction, then RefusalFor one arm per EmailChangeOutcome, and "
             + "THE ORDER IS THE POINT ON THIS ROW. First: the subject the person chose at Google already "
-            + "holds another account, answered before any sweep. Second: the save refused the subject — "
-            + "the same fact, reached by a request that raced past the pre-check. Third and fourth are the "
-            + "two branches of the EmailTaken ternary: the re-read finding ANOTHER account on the subject "
-            + "means the Google identity is in use; finding nobody, or this account itself, means the "
-            + "address alone collided (EmailAlreadyLinked — registration's member for the same fact, and "
-            + "the remedy is the same: another address or another Google account). Swapping those two "
-            + "leaves every per-member count identical. Fifth: the account's own credential moved between "
-            + "the read and the save, which is a change that DID happen somewhere else — deliberately not "
-            + "FactorSetMoved, whose remedy is to rebuild a manifest this route never sends"),
+            + "holds another account, answered before any sweep. Second and third are the two branches of "
+            + "the SubjectTaken ternary, written holder == this account ? AccountIdentityMoved : "
+            + "ProviderIdentityInUse: the save refused the subject, and the re-read finding THIS account "
+            + "on it means a change of this account to the same Google identity committed first (the "
+            + "subject index is checked ahead of the one-per-account index, so that race surfaces here); "
+            + "finding another account, or nobody, is the pre-check's fact reached by a request that raced "
+            + "past it. Swapping those two leaves every per-member count identical and tells somebody "
+            + "whose own change landed that their Google account belongs to a stranger. Fourth and fifth "
+            + "are the two branches of the EmailTaken ternary: the re-read finding ANOTHER account on the "
+            + "subject means the Google identity is in use; finding nobody, or this account itself, means "
+            + "the address alone collided (EmailAlreadyLinked — registration's member for the same fact, "
+            + "and the remedy is the same: another address or another Google account). Swapping those "
+            + "two leaves every per-member count identical too. Sixth: the account's own credential moved "
+            + "between the read and the save, which is a change that DID happen somewhere else — "
+            + "deliberately not FactorSetMoved, whose remedy is to rebuild a manifest this route never "
+            + "sends"),
         new(
             SpellingTablePath,
             [

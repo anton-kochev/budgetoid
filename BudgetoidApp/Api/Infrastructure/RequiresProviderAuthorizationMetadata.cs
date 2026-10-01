@@ -10,7 +10,9 @@ namespace Api.Infrastructure;
 /// reading the policy alone. It is added together with the filter by
 /// <see cref="ProviderAuthorizationEndpointExtensions.RequireProviderAuthorization{TBuilder}" /> and has
 /// no behaviour of its own: a route carrying the marker without the filter would be a route that lies
-/// about its gate, which is why there is no other way to add it.
+/// about its gate. <c>WithMetadata</c> could still add it alone from anywhere in Api, where every route
+/// lives, so <c>RequireProviderAuthorization()</c> is the one place that adds both, and review and the
+/// route census hold that.
 /// </remarks>
 public sealed class RequiresProviderAuthorizationMetadata
 {

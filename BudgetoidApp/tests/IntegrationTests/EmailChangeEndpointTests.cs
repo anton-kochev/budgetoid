@@ -442,6 +442,54 @@ public sealed class EmailChangeEndpointTests
         await Assert.That(await StateOfAsync(host, stranger.UserId)).IsEqualTo(strangerBefore);
     }
 
+    /// <summary>
+    /// Two changes of ONE account to ONE new Google identity: the one that loses is told the account's
+    /// identity moved, never that the identity belongs to another account.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The loser's save refuses on <c>IX_credentials_provider_subject</c> before any other rule, because
+    /// PostgreSQL checks a relation's indexes in OID order, so the repository answers
+    /// <c>SubjectTaken</c>. Mapped straight through, that is <c>provider_identity_in_use</c> — "attached
+    /// to another Budgetoid account", which is false: the holder is this account. The handler has to
+    /// re-read who holds the subject before it chooses a sentence.
+    /// </para>
+    /// <para>
+    /// <see cref="RacingIdentityChangeInterceptor" /> commits the winner on its own connection in front of
+    /// the save that retires a credential, so the race lands on every run. It is armed after the
+    /// sign-in, whose own saves come first.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task EmailChange_WhenTheSameChangeOfThisAccountCommitsFirst_IsRefused409AccountIdentityMoved()
+    {
+        // Arrange
+        await using PostgresTestHost host = await StartProviderHeaderHostAsync();
+        RacingIdentityChangeInterceptor racer = new(host.ConnectionString);
+        await using ApiFactory factory = host.CreateFactory(configureServices: services =>
+            services.ConfigureDbContext<BudgetoidDbContext>(options => options.AddInterceptors(racer)));
+        Account account = await SignInWithAPasskeyAsync(factory, Subject, Email);
+        FederatedCredential original = (await FederatedCredentialsOfAsync(host, account.UserId)).Single();
+        AssertionResult assertion = await ReauthenticateAsync(account);
+        racer.Arm(account.UserId, original.Id, NewSubject, NewEmail);
+
+        // Act
+        HttpResponseMessage response = await PostEmailChangeAsync(
+            account.Client, BodyOf(assertion), new Provider.Headers(NewSubject, NewEmail));
+
+        // Assert — the race really ran: one credential retired, one filed, one address moved.
+        await Assert.That(racer.Affected).IsEqualTo(3);
+
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Conflict);
+        await Assert.That(await ConflictKindOfAsync(response)).IsEqualTo("account_identity_moved");
+        await AssertBodyNamesNeitherAsync(response, NewEmail, NewSubject);
+
+        // And the winner's credential is the account's one federated row.
+        IReadOnlyList<FederatedCredential> after = await FederatedCredentialsOfAsync(host, account.UserId);
+        await Assert.That(after.Count).IsEqualTo(1);
+        await Assert.That(after[0].Id).IsEqualTo(racer.RacerCredentialId);
+    }
+
     [Test]
     public async Task EmailChange_ForTheSameSubjectWithANewAddress_KeepsTheCredentialAndUpdatesTheAddress()
     {

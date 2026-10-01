@@ -44,9 +44,9 @@ public sealed class ChangeEmailHandler(
     /// account.
     /// </summary>
     /// <remarks>
-    /// One sentence for the pre-check, for a save refused on the credential index and for an ambiguous
-    /// address collision the re-read settles the same way, because all three are one fact reached at
-    /// three moments. The wording is the design book's <c>google-account-taken</c> line, and it says
+    /// One sentence for the pre-check, for a save refused on the credential index whose re-read does not
+    /// find this account on the subject, and for an ambiguous address collision the re-read settles the
+    /// same way, because all three are one fact reached at three moments. The wording is the design book's <c>google-account-taken</c> line, and it says
     /// which remedy helps without saying whose account it is.
     /// </remarks>
     private const string ProviderIdentityInUseMessage =
@@ -68,6 +68,11 @@ public sealed class ChangeEmailHandler(
     /// <summary>
     /// What a caller is told when another change of this account's Google identity landed first.
     /// </summary>
+    /// <remarks>
+    /// Reached two ways: the credential this change would retire is no longer the account's, or the
+    /// save was refused on the credential index and the re-read finds this account itself holding the
+    /// subject — a racing change to the same Google identity committed first.
+    /// </remarks>
     private const string AccountIdentityMovedMessage =
         "The Google account attached to this account was changed by another request while this one was "
         + "running, so this change was not made. Read the address back, and change it again if it is not "
@@ -178,15 +183,17 @@ public sealed class ChangeEmailHandler(
     }
 
     /// <summary>
-    /// Turns a refused save into the conflict the caller can act on, resolving the one outcome the
+    /// Turns a refused save into the conflict the caller can act on, resolving the two outcomes the
     /// repository cannot.
     /// </summary>
     /// <remarks>
-    /// <b><see cref="EmailChangeOutcome.EmailTaken"/> is ambiguous and this is where it is settled</b>,
-    /// the way <c>RegisterAccountHandler</c> settles <see cref="RegistrationOutcome.EmailTaken"/>: one save
-    /// can breach the subject and the address at once and PostgreSQL names only one. A reported unique
-    /// violation means the conflicting transaction committed, so a winning credential on this subject is
-    /// visible to a re-read by now. The re-read runs inside the delegate: EF takes a savepoint before a
+    /// <b><see cref="EmailChangeOutcome.EmailTaken"/> and <see cref="EmailChangeOutcome.SubjectTaken"/>
+    /// are both ambiguous and this is where they are settled</b>, by re-reading who holds the subject.
+    /// The first the way <c>RegisterAccountHandler</c> settles <see cref="RegistrationOutcome.EmailTaken"/>:
+    /// one save can breach the subject and the address at once and PostgreSQL names only one. The second
+    /// because the credential holding the subject may be this account's own, filed by a racing change.
+    /// A reported unique violation means the conflicting transaction committed, so a winning credential
+    /// on this subject is visible to a re-read by now. The re-read runs inside the delegate: EF takes a savepoint before a
     /// save inside an open transaction, so the refused save leaves the transaction usable, and
     /// <c>credentials</c> is exempt from row-level security.
     /// </remarks>
@@ -199,7 +206,14 @@ public sealed class ChangeEmailHandler(
         switch (outcome)
         {
             case EmailChangeOutcome.SubjectTaken:
-                return new ConflictException(ProviderIdentityInUseMessage, ConflictKind.ProviderIdentityInUse);
+                // This account's OWN id means a change of this account to the same Google identity
+                // committed first: its insert met the winner's credential on the subject index, which
+                // PostgreSQL checks ahead of the one-per-account index. Another account's id is the
+                // pre-check's fact reached late. Nobody means the holder left again — nothing observed
+                // says this account moved, so the answer stays the one the refusal always gave.
+                return await FindHolderAsync(subject, cancellationToken) == userId
+                    ? new ConflictException(AccountIdentityMovedMessage, ConflictKind.AccountIdentityMoved)
+                    : new ConflictException(ProviderIdentityInUseMessage, ConflictKind.ProviderIdentityInUse);
 
             case EmailChangeOutcome.EmailTaken:
                 // The account's OWN id is an answer too — the subject did not change, or this account
@@ -231,13 +245,13 @@ public sealed class ChangeEmailHandler(
     private async Task<bool> IsHeldByAnotherAccountAsync(
         string subject,
         Guid userId,
-        CancellationToken cancellationToken)
-    {
-        Guid? holderId = await users.FindUserIdByFederatedCredentialAsync(
-            Credential.GoogleProvider,
-            subject,
-            cancellationToken);
+        CancellationToken cancellationToken) =>
+        await FindHolderAsync(subject, cancellationToken) is { } id && id != userId;
 
-        return holderId is { } id && id != userId;
-    }
+    /// <summary>
+    /// The account the Google identity <paramref name="subject"/> names is attached to now, or
+    /// <see langword="null"/> when no account holds it.
+    /// </summary>
+    private Task<Guid?> FindHolderAsync(string subject, CancellationToken cancellationToken) =>
+        users.FindUserIdByFederatedCredentialAsync(Credential.GoogleProvider, subject, cancellationToken);
 }

@@ -11,7 +11,10 @@ namespace Domain.Users;
 /// </remarks>
 public enum EmailChangeOutcome
 {
-    /// <summary>Another account's credential already holds the replacement's provider subject.</summary>
+    /// <summary>
+    /// A credential already holds the replacement's provider subject. <b>Ambiguous, and the caller
+    /// resolves it</b> — another account's, or this account's own when a racing change filed it first.
+    /// </summary>
     SubjectTaken = 0,
 
     /// <summary>Every write of the change landed.</summary>
