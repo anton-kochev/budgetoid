@@ -749,8 +749,9 @@ Four sentences a writer reaches for, refused:
 - **Outline** (`mat-stroked-button`), 48px target, visible label **Change email address**.
 - **Not Primary.** Export is the screen's one main action, and a screen with two is a screen with
   none — Sign out's reason, unchanged.
-- **Not Destructive.** Nothing is lost that the same act cannot restore: the previous address comes
-  back by choosing the previous Google account. The fill promises there is no way back, and there
+- **Not Destructive.** Nothing the account holds is lost: the previous address comes back by
+  choosing the previous Google account. The browsers the change signs out stay signed out; they
+  sign in again with a passkey. The fill promises there is no way back, and for the account there
   is one.
 - **Not Ghost**, though the Buttons table names Ghost for inline actions and this control sits
   beside a row. The row is a `<dl>` and is not a target; the control is its own element after it,
@@ -787,8 +788,9 @@ The copy is the specification, not an example of it.
 not. Export says nothing while an unlock runs because its locked sentence would tell somebody to
 press a button they are already holding down — *do not advise when unsure*. This sentence advises
 nothing: it names the act in progress and says the control returns when it ends. *An unlock running*
-is `AccountUnlockService`'s *working* reading, the one its own control and handler bind — the system
-sheet and the account-key read after it alike — and nothing narrower.
+is `AccountUnlockService`'s *working* reading — the system sheet and the account-key read after it
+alike — and nothing narrower. It is the reading the screen's Unlock predicate is built on, per the
+[Account keys section](#the-unlock-control).
 
 **The rotation term is narrower than Export's, and the difference is the reason.** Export's *a run
 is in flight* includes a run this tab only knows is staged, because a staged run has re-sealed rows
@@ -805,7 +807,9 @@ time.
 **Busy is held off differently: it gets the in-flight treatment rather than a sentence above the
 control** — Export's rule that not ready is not busy, applied from the other side. The flow is doing
 work, so `aria-busy` is present and the line is an outcome of the press, which is what the region is
-for. It lasts only until the page leaves or `unavailable` answers.
+for. It lasts until the page leaves; until `unavailable` answers, including when the address for
+Google cannot be built after the press; or until the browser restores this page from its
+back-forward cache, when Change comes back with no line.
 
 - **The three not-ready sentences sit immediately above the control as visible prose, outside the
   region**, and the control names the one that renders with `aria-describedby` — never *only*
@@ -814,9 +818,11 @@ for. It lasts only until the page leaves or `unavailable` answers.
   flight, no unlock running, not on its way to Google, **and no Confirm press in flight** — the
   last term holds although Change is not drawn in the waiting state, because the handler is what
   refuses a press that reaches the flow by any path, including a render that has not caught up.
-  Confirm's is narrower: it is inert **only while its own press is in flight** — the challenge, the
-  ceremony and the changing request. Nothing else on the screen holds it off; the Change
-  control's four cases describe the moment before a trip, and Confirm exists only after one.
+  Confirm's is different, not narrower or wider: it is inert while its own press is in flight — the
+  challenge, the ceremony and the changing request — and while another passkey check on this
+  screen is running, per [Holds in both directions](#holds-in-both-directions) below. The Change
+  control's four cases describe the moment before a trip, and Confirm exists only after one, so
+  none of them reaches it.
 - **Each gate is in its click handler as well as in its attribute, and each attribute and handler
   pair reads one predicate with one owner.** Material's click-halt is applied to anchors only, so on
   a `<button>` the press arrives whatever the attribute says; an ungated Change reloads the tab under
@@ -829,6 +835,65 @@ for. It lasts only until the page leaves or `unavailable` answers.
   this rule, and it is the rule rather than a refusal because no predicate term covers the waiting
   state.
 
+### Holds in both directions
+
+**The flow holds other controls on this screen as well as being held by them.** The table above
+stops a trip starting under other work. The reverse is two states of this flow, each a term on
+other controls' predicates:
+
+- **Departing** — this page is leaving for Google: from the Change press until the page leaves or
+  the press fails. It is the busy state above, read from outside the flow.
+- **Asking** — Confirm's passkey check is running: the flow's `asserting` phase, which is the
+  challenge and the ceremony. The changing request after it is not part of it.
+
+| Control | Also held off by | Its sentences |
+| --- | --- | --- |
+| Export | departing | [Export](#ready-and-a-reason-of-its-own) |
+| Unlock | departing, asking | [Account keys](#held-off-by-the-email-change) |
+| Rotate keys, Finish rotating, Rename and finish | departing, asking | [Key rotation](#rotating-held-off-by-the-email-change) |
+| Erase everything, the section's trigger | departing, asking | [Erase everything](#the-trigger-held-off-by-the-email-change) |
+| Confirm with your passkey | the unlock's passkey check; a rotation's passkey check | Below |
+
+**Departing holds what the page leaving would cut short, and asking holds every other passkey
+check.** Each control's sentence names its own cost of the first. The second has one reason
+wherever it holds, and so do Confirm's two terms: the browser runs one passkey check at a time, so
+a second press would fail or cut the first one off.
+
+- **Sign out takes neither term and is never held.** It is the way out, per [Sign out](#sign-out).
+- **The erasure dialog's commit takes neither.** Its trigger is held before a dialog can open, and
+  an open dialog is modal, so Confirm cannot be pressed under it.
+- **One sentence at a time, and departing first.** When several terms hold one control, one
+  sentence renders above it: departing's, because it ends the screen and every other sentence with
+  it; then asking's; then the control's existing terms, in the order its own section gives.
+- **Each control's attribute and handler read one predicate**: its existing one, with the new terms
+  joined. The flow publishes departing and asking as readings and every control reads them rather
+  than restating them. Material's click-halt is applied to anchors only, so a term written into the
+  attribute alone holds nothing.
+- **Each sentence renders above its control as visible prose, outside any region**, and the
+  control names it with `aria-describedby` while it renders — Export's not-ready treatment.
+
+**Confirm's two terms, and why each is the width it is.** Both are passkey checks and nothing
+wider. *The unlock's passkey check* is an *asking* reading the unlock publishes: true while its
+system sheet is open, and **not** the whole of `AccountUnlockService`'s *working*. The account-key
+read after the sheet holds nothing, because no passkey check runs then. *A rotation's passkey
+check* is the rotation flow's challenge and ceremony, on any of its three presses, and **not its
+whole walk**. A walk asks the device for nothing, and Confirm does not leave the page, so the reason
+Change reads a walked run does not reach Confirm. Change reads the unlock's whole *working* for the
+same kind of reason: a reload cuts the read short, and a passkey check does not.
+
+| Held off by | Copy | Where it renders |
+| --- | --- | --- |
+| A rotation's passkey check | "Confirming is off while this tab asks your passkey for the key rotation, because your browser runs one passkey check at a time. It comes back when that check ends." | Above the control, `body` `--bud-text` |
+| The unlock's passkey check | "Confirming is off while this tab unlocks your account, because your browser runs one passkey check at a time. It comes back when that check ends." | Above the control, `body` `--bud-text` |
+
+The copy is the specification, not an example of it. **When both are true the rotation's renders**,
+the order Change's table uses, so the screen ranks the two the same way wherever both are read.
+
+**Several sentences on this screen give the same reason, and that is the specification rather than
+a paste.** One passkey check at a time is the real reason for each, and each sentence differs by
+naming its own control. Inventing a second reason to keep them apart would make one of them false,
+which is worse than two sentences that agree. [voice](voice.md) states the rule.
+
 ### The trip to Google
 
 - **The press leaves the whole page**, to Google, with its **account chooser requested explicitly
@@ -837,17 +902,23 @@ for. It lasts only until the page leaves or `unavailable` answers.
   silently returned the account the browser already holds would ask them nothing.
 - **The return lands on `/app/settings`**, as a fresh page load. Everything on the screen is read
   again, which is why the consequence block says the keys lock.
-- **Nothing is sent to Budgetoid on the return.** The screen reads what Google sent back and
-  either enters the waiting state or says why it cannot.
-- **The Google answer is held in memory only, for one page load, and taken exactly once.** It is
-  written to no `sessionStorage`, no `localStorage` and no IndexedDB, so a reload, a navigation to
-  another load or a closed tab ends it by construction; a second reader of the same load finds
-  nothing, because the first one took it. **It is read before the first route draws**, which is
-  what lets the first render already be the waiting state. **If that load's session check finds
-  nobody signed in, the answer is dropped before any route draws** — nothing reaches `/welcome` or
-  `/register` carrying it, where a Google answer reads as the start of a registration somebody never
-  asked for. Which class holds it and drops it is the business-logic doc's to name, not this
-  chapter's.
+- **No changing request is sent on the return.** The load asks the server who you are, as every
+  load does; only Confirm sends the change. The screen reads what Google sent back and either
+  enters the waiting state or says why it cannot.
+- **The Google answer is held in memory only, for one page load, and taken exactly once.** This
+  client keeps it in no storage of its own — no `sessionStorage`, no `localStorage`, no IndexedDB.
+  The OAuth library writes the id token to `sessionStorage` between validating it and discarding
+  it, in the same call; nothing outlives that call. So a reload, a navigation to another load or a
+  closed tab ends the answer by construction, and a second reader of the same load finds nothing,
+  because the first one took it. **It is read before the first route draws**, which is what lets
+  the first render already be the waiting state. **If that load's session check finds nobody signed
+  in, the answer is dropped before any route draws** — nothing reaches `/welcome` or `/register`
+  carrying it, where a Google answer reads as the start of a registration somebody never asked for.
+  Which class holds it and drops it is the business-logic doc's to name, not this chapter's.
+- **The answer leaves the address bar before the first route draws, whatever the outcome.** It
+  arrives in the URL fragment, and `history.replaceState` removes it — on the waiting state, on a
+  refusal, and on a load that drops it alike. A reload, a bookmark or a copied link therefore never
+  carries a provider token, and Back never returns to an address that holds one.
 
 ### Confirm with your passkey
 
@@ -865,8 +936,9 @@ finishing, which is a choice with a wrong answer.
   that address away, and a sentence saying the address *will* change would stand beside its own
   refusal — the defect the registration introduction was changed to remove.
 - **One control**, **Outline**, visible label **Confirm with your passkey**, 48px target, naming the
-  lead line with `aria-describedby`. Not Destructive, for the Change control's reason; not Primary,
-  for Export's.
+  lead line with `aria-describedby` — and, while one renders, its held-off sentence from
+  [Holds in both directions](#holds-in-both-directions). Not Destructive, for the Change control's
+  reason; not Primary, for Export's.
 - **The press runs, in this order**: the browser's ability is checked, a challenge is fetched from
   the **re-authentication pool** (`POST /api/passkeys/reauthentication/options`) — never the
   anonymous sign-in pool — the device is asked, and the one changing request is sent. **Nothing is
@@ -896,7 +968,7 @@ between the address row and the prose stays: every line below is about that row.
 | `changed`, no other session ended | "Your email address is **&lt;address&gt;**." | Inside the region, `body` `--bud-text` |
 | `changed`, `1` | "Your email address is **&lt;address&gt;**, and 1 browser signed in with your old Google account is now signed out." | Inside the region, `body` `--bud-text` |
 | `changed`, `n` | "Your email address is **&lt;address&gt;**, and 3 browsers signed in with your old Google account are now signed out." | Inside the region, `body` `--bud-text` |
-| `changed`, the re-read failed | "Budgetoid took the new address but couldn’t load it back. Reload the page to see it." | Inside the region, `--bud-over`, before the address row's own load failure |
+| `changed-unread`: accepted, and the re-read failed | "Budgetoid accepted your confirmation but couldn’t load your email address back. Reload the page to see which address the account has." | Inside the region, `--bud-over`, before the address row's own load failure |
 | `unavailable` | "Budgetoid couldn’t reach Google, so nothing changed. Try again in a minute." | Inside the region, `--bud-over` |
 | `unconfirmed` | "Google didn’t send back a sign-in, so nothing changed. Try again whenever you’re ready." | Inside the region, `--bud-over` |
 | `unsupported` | "This browser can’t confirm with a passkey, so nothing changed. Start again in a different browser, or on a phone or laptop that can." | Inside the region, `--bud-over`; the confirm control is withdrawn |
@@ -914,9 +986,11 @@ between the address row and the prose stays: every line below is about that row.
 
 The copy is the specification, not an example of it.
 
-**Every refusal says nothing changed, and only two lines can report a change** — `changed`, and
-`moved`, whose change happened somewhere else. `undetermined` is the one line that can say neither,
-and it says that. Every word reports what was observed; none names a cause the client did not see.
+**Every refusal says nothing changed, and three lines are not refusals.** `changed` names the
+address the re-read shows. `changed-unread` says the request was accepted and claims no change,
+because the account that came back may be the one already attached. `moved`'s change happened
+somewhere else. `undetermined` can say neither that something changed nor that nothing did, and it
+says that. Every word reports what was observed; none names a cause the client did not see.
 
 **The success line states the result, never the act.** It names the address the re-read now shows
 and never says *changed*, so it waits for that read: until it answers, the region stays on
@@ -1063,13 +1137,28 @@ order, named by the confirm control. Nothing is communicated by colour alone.
 
 ### What ships today
 
-**The chapter is built, and no departure is known.** `settings.component.html` renders both standing
-paragraphs, the three held-off sentences and the in-flight line, Change and Confirm as one or the
-other and never both, the lead line, and every outcome in the table in the region the address row's
-failure already used. `EmailChangeFlowService`, provided by the Settings component, owns the phase,
+**These parts of the chapter are specified and being built, and are not shipped:**
+
+- **The holds in both directions.** Nothing holds Export, Unlock, Rotate keys or the Erase
+  everything trigger while this flow departs or asks, and nothing holds Confirm while the unlock's
+  or a rotation's passkey check runs. Every sentence in
+  [Holds in both directions](#holds-in-both-directions) and in the sections it links is
+  unrendered.
+- **The fragment removal.** The Google answer is not yet removed from the address bar with
+  `history.replaceState`.
+- **The back-forward-cache reset.** A page the browser restores from its back-forward cache can
+  still show *Taking you to Google…* with Change held busy.
+- **The `changed-unread` sentence.** What renders is the earlier copy, which said Budgetoid *took
+  the new address* — an act, false when the already-attached account came back.
+
+**The rest of the chapter is built, and no other departure is known.**
+`settings.component.html` renders both standing paragraphs, the three held-off sentences and the
+in-flight line, Change and Confirm as one or the other and never both, the lead line, and every
+other outcome in the table in the region the address row's failure already used.
+`EmailChangeFlowService`, provided by the Settings component, owns the phase,
 the word, the address and the two predicates both controls bind; the trip, the hand-off and the
 bootstrap order are [email-change.md](../business-logic/email-change.md)'s, with the specs that hold
-each. `settings.component.spec.ts` pins every sentence above whole, the focus rules, the one-render
+each. `settings.component.spec.ts` pins every shipped sentence whole, the focus rules, the one-render
 delay and the handler's gate against the real flow.
 
 **The success line names the address the row's own re-read published**, and the flow waits on that
@@ -1616,9 +1705,11 @@ measured against exactly what the two keys open — no wider and no narrower.
 - **No composed accessible name.** It is the only Unlock on the screen, so there is nothing to tell
   it apart from — the credential list composes its Revoke names precisely because there is one per
   row.
-- **No sentence beside it saying what it waits on**, because it waits on nothing. The inert
-  controls above it are off and explain themselves; this one is live, and the "not built yet"
-  pattern is for a control that refuses a press.
+- **No sentence beside it at rest**, because at rest it waits on nothing. The inert controls above
+  it are off and explain themselves; this one is live, and the "not built yet" pattern is for a
+  control that refuses a press. Two states of the email change on this screen do refuse one, and
+  each gets a sentence of its own — [Held off by the email change](#held-off-by-the-email-change)
+  below.
 - **While either half is running it takes `disabledInteractive` and `aria-busy="true"`** — the
   Export control's treatment and the Export control's reason: a button that goes truly `disabled`
   under the finger drops focus to `<body>`, and somebody who pressed Unlock from the keyboard loses
@@ -1635,14 +1726,40 @@ measured against exactly what the two keys open — no wider and no narrower.
   drawn as impossible. It raised a second system sheet over an unlock already finished and made
   custody discard the read the first press was about to complete — the account closing by a button
   that looked disabled.
-- **So the attribute and the guard read one predicate with one owner.** `AccountUnlockService`
-  publishes "either half of an attempt is running" as a computed; the control's `disabled` and
-  `aria-busy` bind it and the handler guards on it. Two spellings of one fact drift, and the drift
+- **So the attribute and the guard read one predicate with one owner, and the owner is the
+  screen.** `AccountUnlockService` publishes "either half of an attempt is running" as a computed,
+  `working`. The Settings screen joins it with the email change's *departing* and *asking* into
+  the control's one predicate, and the control's `disabled` and the handler's guard both read that.
+  The screen owns it because the email flow is provided there and the unlock service sees nothing
+  of it. `aria-busy` reads `working` alone: the email change's terms are not work this control is
+  doing. Two spellings of one fact drift, and the drift
   is silent in both directions — a template that narrows draws a live control over an attempt
   already running, and a handler that narrows accepts the press behind it. It is the rule
   `apiCredentialsInterceptor` keeps about "is this our API?": one definition, and the second reader
   imports it rather than restating it.
 - **It is not rendered at all once the keys are held.** That is the next rule, not a tidy-up.
+
+### Held off by the email change
+
+The two terms are defined in [Holds in both directions](#holds-in-both-directions). While either
+holds, the control takes `disabledInteractive` without `aria-busy` — the [Buttons](#buttons)
+chapter's fourth case — and one sentence renders above it.
+
+| Held off by | Copy | Where it renders |
+| --- | --- | --- |
+| Departing | "Unlock is off while this tab goes to Google, because coming back reloads the page and would lock your account again." | Above the control, `body` `--bud-text` |
+| Asking | "Unlock is off while this tab asks your passkey to confirm your email change, because your browser runs one passkey check at a time. It comes back when that check ends." | Above the control, `body` `--bud-text` |
+
+The copy is the specification, not an example of it. **Departing's renders when both are true**,
+because it ends the screen. The control's own busy state gets no sentence here: the region already
+says what is happening. Each sentence sits outside the region, because it says why a control is
+off rather than reporting an outcome, and the control names it with `aria-describedby` while it
+renders — Export's not-ready treatment.
+
+**The hold runs the other way too.** `AccountUnlockService` publishes an *asking* reading, true only
+while its system sheet is open, and the email change's Confirm is held off while it is true. It is
+narrower than *working*: the account-key read after the sheet runs no passkey check and holds
+nothing.
 
 ### The control leaves when there is nothing to unlock
 
@@ -1696,14 +1813,15 @@ do is wait, and the thing that can go wrong is the network.
 
 **One signal drives the busy *treatment*, and it says less than either sentence does.** That
 signal is `AccountUnlockService`'s `working` — true while the ceremony is up and true while custody
-is reading — and the control's `disabled`, its `aria-busy` and the handler's guard are the three
-things bound to it, per the gate rule above. It is a coarser reading laid over the two moments and
+is reading. The control's `aria-busy` binds it directly, and its `disabled` and the handler's guard
+read it through the screen's predicate, per the gate rule above. It is a coarser reading laid over
+the two moments and
 never a merge of them, and the nesting is what keeps it from becoming one: which *block* renders is
 decided there, and inside the `locked` block this same signal is what chooses the waiting sentence
 — where it can only mean the ceremony's half, because custody is not reading. So one predicate
 decides whether the control is pressable everywhere, and names a moment only in the one place there
-is a single moment it could name. A screen that assembles that predicate for itself instead of
-reading it is the drift the gate rule names.
+is a single moment it could name. A screen that rebuilds *working* out of the two in-flight states
+instead of reading it is the drift the gate rule names.
 
 | State | Copy | Where it renders |
 | --- | --- | --- |
@@ -1947,16 +2065,24 @@ this one may not grow into any of them.
 Heading level `h2` under the screen's one `h1`; no level skipped. One `role="status"` region,
 polite, in the DOM from first paint and empty at rest, never `assertive`. The Unlock control is a
 48px target, keeps its place in the tab order while busy (`disabledInteractive` with
-`aria-busy="true"`, the Buttons chapter's busy case), and its visible label is the whole of its
+`aria-busy="true"`, the Buttons chapter's busy case) and while the email change holds it off
+(`disabledInteractive` alone), and its visible label is the whole of its
 accessible name. Nothing is communicated by colour alone — every refusal in the table reads the
-same with `--bud-over` removed. No line in this section is hung on the control by a `title`, a
-tooltip or an `aria-describedby`: the prose is prose, in reading order, above the control it
-belongs to.
+same with `--bud-over` removed. No line in this section is hung on the control by a `title` or a
+tooltip, and none *only* by an `aria-describedby`: the prose is prose, in reading order, above the
+control it belongs to. The one `aria-describedby` is the held-off sentence's, named while it
+renders, beside the visible line.
 
 ### What ships today
 
-**The section is on `/app/settings`, above the Export/Erase pair as the placement rule requires and
-with Key rotation now between it and Export, and everything above renders as written** — the three
+**[Held off by the email change](#held-off-by-the-email-change) is specified and being built, and
+is not shipped**: nothing holds Unlock while the email change departs or asks, the two sentences
+are unrendered, the control's `disabled` and handler still read `working` directly rather than
+the screen's predicate, and the service publishes no *asking* reading for Confirm to read.
+
+**Apart from that, the section is on `/app/settings`, above the Export/Erase pair as the placement
+rule requires and with Key rotation now between it and Export, and everything above renders as
+written** — the three
 blocks, the thirteen lines, the one
 `role="status"` region and the control that leaves when the keys are held.
 `AccountKeyCustodyService` holds the account's keys and publishes the five failure words;
@@ -2101,15 +2227,41 @@ rotating *does*, rather than as what is about to happen, every sentence survives
 - **While a run is in flight it takes `disabledInteractive` and `aria-busy="true"`** — the Unlock
   control's treatment and the Unlock control's reason, which is not restated here.
 - **The attribute and the handler's guard read one predicate with one owner.** The flow service
-  publishes "a run is in flight" and the control's `disabled`, its `aria-busy` and the handler all
-  bind that one signal. The drift this prevents, and the defect it already caused once on the Unlock
-  control, are argued there and not argued again.
+  publishes "a run is in flight", and the email change publishes *departing* and *asking*; the
+  control's `disabled` and the handler both read one predicate joining the three with the
+  acknowledgement, and `aria-busy` reads the run alone. The drift this prevents, and the defect it
+  already caused once on the Unlock control, are argued there and not argued again.
+- **The email change holds it off twice**, with a sentence for each —
+  [Rotating held off by the email change](#rotating-held-off-by-the-email-change) below.
 - **It is replaced, not joined, when there is a run to finish.** The resume read answers either "no
   rotation" or one rotation, so the section draws exactly one control: **Rotate keys**, **Finish
   rotating** with the date the run started in the line above it, or **Rename and finish** when the
   last run stopped on `same-name`. The last wins over the other two, because that run cannot finish
   until a name changes. Two controls would ask a person to choose between starting over and
   continuing, which is a choice with a wrong answer.
+
+### Rotating held off by the email change
+
+The two terms are defined in [Holds in both directions](#holds-in-both-directions), and they hold
+whichever of the three labels the control carries. While either holds, the control takes
+`disabledInteractive` without `aria-busy` and one sentence renders.
+
+| Held off by | Copy | Where it renders |
+| --- | --- | --- |
+| Departing | "Rotating keys is off while this tab goes to Google, because leaving the page would stop the rotation before it got going." | Above the checkbox, `body` `--bud-text` |
+| Asking | "Rotating keys is off while this tab asks your passkey to confirm your email change, because your browser runs one passkey check at a time. It comes back when that check ends." | Above the checkbox, `body` `--bud-text` |
+
+The copy is the specification, not an example of it. **Departing's renders when both are true.** A
+run in flight and an unticked box get no sentence: the region and the checkbox already say what the
+control waits on.
+
+**The sentence goes above the checkbox, not between it and the control**, so the gate is still
+what sits immediately above the press. It is outside the region, and the control names it with
+`aria-describedby` while it renders — Export's not-ready treatment.
+
+**The hold runs the other way too.** The flow publishes its passkey check — the challenge and the
+ceremony of any of the three presses, and not the walk after them — as a reading of its own, and
+the email change's Confirm is held off while it is true.
 
 ### The acknowledgement, and the one rule it departs from
 
@@ -2149,7 +2301,8 @@ rotating *does*, rather than as what is about to happen, every sentence survives
   for the reason the two sections above give: one control, no rows, nothing for a second column to
   carry.
 - **The order inside the section is the reading order the act needs**: standing prose, consequence
-  block, the rename block when there is one, checkbox, control, progress block. The consequence is
+  block, the rename block when there is one, the email change's held-off sentence when one renders,
+  checkbox, control, progress block. The consequence is
   read before the gate and the gate before the press, and nothing between them competes for the eye.
   A name is typed before the gate is ticked, so the gate is still what sits immediately above the
   press.
@@ -2471,7 +2624,10 @@ anywhere else.
 **The gate is in the click handler as well as in the attribute**, and the handler is as wide as the
 attribute it backstops: the control is drawn unpressable on `working || !acknowledged()` and
 `rotate()` refuses on exactly that pair. Removing either half of it reddens exactly one case and the
-attribute assertions stay green, which is the measurement this rule exists for.
+attribute assertions stay green, which is the measurement this rule exists for. **The email
+change's two terms are specified and being built, and are not in that pair yet**: nothing holds the
+control while the email change departs or asks, and
+[Rotating held off by the email change](#rotating-held-off-by-the-email-change) is unrendered.
 
 **"A run is in flight" has one owner.** `RotationFlowService.working` is `busy || rotations.running()`,
 and the control's `disabled`, its `aria-busy`, the component's handler and the flow's own entry point
@@ -2797,8 +2953,8 @@ for, refused:
 
 - **Primary** (`mat-flat-button`), 48px target, visible label **Export**. It is the screen's one
   main action — the reason Sign out, Unlock and Rotate keys each give for not being Primary.
-- **Pressable only when ready and not busy, and drawn off the same way in both cases**:
-  `disabledInteractive`, so the control keeps its tab stop. `aria-busy="true"` only while an export
+- **Pressable only when ready, not busy and not departing, and drawn off the same way in every
+  case**: `disabledInteractive`, so the control keeps its tab stop. `aria-busy="true"` only while an export
   is running, resolving to `null` otherwise. **Not ready is not busy**: a control that is not ready is
   doing no work, and saying it is busy tells a screen reader to wait for something that is not coming.
 - **`disabledInteractive` while not ready, and not the plain `disabled` Register and Generate take.**
@@ -2810,11 +2966,15 @@ for, refused:
   look like the most important thing on screen is kept by the disabled appearance, which takes the
   fill away. Swapping to Outline while not ready is refused on Unlock's argument in reverse: a Primary
   that comes and goes with a state nobody is tracking is two Primary buttons on one screen.
+- **Departing holds it off too.** While the email change's page is leaving for Google, a press
+  would start a file the page leaves before it is saved. The term and its sentence are below.
 - **The gate is in the handler as well as in the attribute, and both read one predicate with one
   owner.** The service running the export publishes *pressable* — ready and not busy — and the
-  control's `disabled` and the handler's guard both read it; `aria-busy` and the region's in-flight
-  line read *busy* alone. Material's click-halt is applied to anchors only, so on a `<button>` the
-  press arrives whatever the attribute says. The drift two spellings produce, and the defect it
+  Settings screen joins it with the email change's *departing* into the control's one predicate,
+  because the email flow is provided on the screen and the service sees nothing of it. The
+  control's `disabled` and the handler's guard both read that predicate; `aria-busy` and the
+  region's in-flight line read *busy* alone. Material's click-halt is applied to anchors only, so on
+  a `<button>` the press arrives whatever the attribute says. The drift two spellings produce, and the defect it
   caused once, are argued under the Unlock control and not again here.
 
 ### Ready, and a reason of its own
@@ -2833,16 +2993,23 @@ Every inert control carries its own sentence above it, per the credential list's
 today*, and none of them may be pasted over this one or this one over them: those name a piece the
 product has not built, and this one names a state of this tab that the next press of Unlock or the
 end of a run clears. Which sentence renders is decided on the notice's terms from the same chapter:
-the run's when a run is in flight, whatever custody says; the locked one on `locked` alone.
+the run's when a run is in flight, whatever custody says; the locked one on `locked` alone — and
+the email change's *departing* before either, below.
 
 | State | Copy | Where it renders |
 | --- | --- | --- |
-| Ready | *nothing* | No sentence; the control is live |
+| Ready, not departing | *nothing* | No sentence; the control is live |
 | A run is in flight | "Export is off while Budgetoid gives this account new keys. It comes back when the key rotation above finishes." | Above the control, `body` `--bud-text` |
 | Locked, no run | "Export is off while this tab can’t read your names and notes — the file is written with them. Press Unlock in Account keys above to turn it back on." | Above the control, `body` `--bud-text` |
 | Unlocking, no run | *nothing* | No sentence; the control is off |
+| Departing, whatever else holds | "Export is off while this tab goes to Google to change your email address, because leaving the page would lose the file." | Above the control, `body` `--bud-text` |
 
 The copy is the specification, not an example of it.
+
+**Departing wins over every other row**, because it ends the screen and every sentence on it, per
+[Holds in both directions](#holds-in-both-directions). It is not a kind of not ready: the tab may
+hold the keys, and what stops the press is the page about to leave. It can meet *Locked* and a
+staged run, because Change is offered over both, and its sentence is the one that renders.
 
 **The run wins, because the locked sentence's advice is false during one.** Pressing Unlock mid-run
 gets the generation on its way out, which opens none of the re-sealed rows; the smallest act that
@@ -2946,15 +3113,19 @@ own, so the region says so.
 
 Heading level `h2` under the screen's one `h1`; no level skipped. One `role="status"` region, polite,
 in the DOM from first paint and empty at rest, never `assertive`. The control is a 48px target and
-keeps its place in the tab order when not ready and when busy (`disabledInteractive`); `aria-busy` is
-present only while busy. The not-ready sentence is visible prose in reading order immediately before
+keeps its place in the tab order when not ready, when departing and when busy
+(`disabledInteractive`); `aria-busy` is present only while busy. The held-off sentence, whichever
+renders, is visible prose in reading order immediately before
 the control, and the control names it with `aria-describedby` while it renders. Nothing is
 communicated by colour alone.
 
 ### What ships today
 
-**The section renders as this chapter specifies, and no departure is known.** Both paragraphs are
-the copy above character for character. The control is Primary, `disabledInteractive`, and reads
+**One departure: the departing hold is specified and being built, and is not shipped.** Nothing
+holds Export while the email change's page leaves for Google, its sentence is unrendered, and the
+control reads the service's predicate directly rather than the screen's. **Apart from that, the
+section renders as this chapter specifies.** Both paragraphs are the copy above character for
+character. The control is Primary, `disabledInteractive`, and reads
 `SettingsService.pressable` — custody `unlocked`, no run in flight, not already exporting — in its
 `disabled` binding and in `export()`'s guard alike; `aria-busy` reads `exporting` alone and
 resolves to `null` at rest. The not-ready sentence renders from `exportBlock`, the run's winning
@@ -3012,8 +3183,9 @@ dialog is opened, while it is open, and on a screen reached again after a dialog
 ### The trigger
 
 - **Outline** (`mat-stroked-button`), 48px target, visible label **Erase everything**, live.
-- **No sentence beside it.** It refuses no press, so the "not built yet" pattern has nothing to
-  say here — Sign out's position, and Sign out's reason.
+- **No sentence beside it at rest.** It refuses no press then, so the "not built yet" pattern has
+  nothing to say. Two states of the email change do hold it off, and each says why, below. Sign out
+  is the one control here that is never held.
 - **Not Destructive.** The fill promises that a confirmation follows and that there is no way back,
   and this press keeps neither promise: it opens the confirmation and destroys nothing. The fill is
   spent once on this path, on the dialog's commit — the press that does destroy something. Two red
@@ -3024,6 +3196,27 @@ dialog is opened, while it is open, and on a screen reached again after a dialog
   confirmation steps inside the second and do not count as interactions — and nothing may be added
   to the path to make them count: no second dialog, no *are you sure* after the word.
 - **`aria-haspopup="dialog"`**, so a screen reader says what the press opens before it is made.
+
+### The trigger held off by the email change
+
+The two terms are defined in [Holds in both directions](#holds-in-both-directions). While either
+holds, the trigger takes `disabledInteractive` without `aria-busy` — the [Buttons](#buttons)
+chapter's fourth case — and one sentence renders above it. The dialog's commit takes neither term:
+the trigger is held before a dialog can open.
+
+| Held off by | Copy | Where it renders |
+| --- | --- | --- |
+| Departing | "Erasing is off while this tab goes to Google, because if the page left part-way through an erasure, nothing could tell you whether it happened." | Above the trigger, `body` `--bud-text` |
+| Asking | "Erasing is off while this tab asks your passkey to confirm your email change, because your browser runs one passkey check at a time. It comes back when that check ends." | Above the trigger, `body` `--bud-text` |
+
+The copy is the specification, not an example of it. **Departing's renders when both are true.**
+
+- **The gate is in the click handler as well as in the attribute, and both read one predicate** —
+  not departing, not asking. Material's click-halt is applied to anchors only, so an ungated press
+  opens the dialog under a page about to leave or a passkey check already running.
+- **The sentence sits outside any region**, because it says why a control is off rather than
+  reporting an outcome, and the trigger names it with `aria-describedby` while it renders —
+  Export's not-ready treatment.
 
 ### Accessibility
 

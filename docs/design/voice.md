@@ -105,6 +105,10 @@ figures, not to copy that could just say the number).
   beside the rule is a claim the next shipped control makes false, so state the rule and let
   the screen be the count. One sentence pasted across several replaces an old falsehood with a
   new one, and reads as an apology nobody wrote for this control.
+- **Controls blocked by the same thing say so, each in its own sentence.** Each sentence names its
+  own control and its real reason, and where one reason holds several controls — the browser runs
+  one passkey check at a time — they share it. Never invent a difference: it makes one sentence
+  false.
 
 ## A sentence the API sends
 

@@ -320,8 +320,10 @@ Load-bearing rules. Each links the doc that argues it — **read that doc before
   `npm run build`**. [frontend testing](docs/engineering/frontend-testing.md)
 - **`/app/settings` is reached from the shell navigation**, a layout on the `app` route — so
   **which routes carry a bar is a fact about the route table**. **Every control the screen holds
-  off says why in a sentence of its own, and the reasons differ** — Export's, too, while this tab
-  cannot read what the file is written from; do not paste one sentence over another.
+  off says why in a sentence of its own, naming its own control and its real reason** — Export's,
+  too, while this tab cannot read what the file is written from; do not paste one sentence over
+  another. Two controls held by the same fact share that reason honestly; never invent a difference
+  to make them read apart.
   Home and Add are specified and not built — do not "complete" the screen.
   [export.md](docs/business-logic/export.md), [erasure.md](docs/business-logic/erasure.md),
   [recovery-codes.md](docs/business-logic/recovery-codes.md),
