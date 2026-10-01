@@ -1838,7 +1838,7 @@ instead of reading it is the drift the gate rule names.
 | Opening | "Opening your account…" | Inside the region, `body` `--bud-text` |
 | Keys held | "Your account is unlocked in this tab." | Inside the region, as its last child; no control is drawn |
 | `unsupported` | "This browser can’t check a passkey. Open Budgetoid in a different browser, or on a phone or laptop that can." | Inside the region, `--bud-over` |
-| `cancelled` | "The passkey check was cancelled. Nothing has changed — try again whenever you’re ready." | Inside the region, `--bud-over` |
+| `cancelled` | "The passkey check was cancelled or timed out. Try again whenever you’re ready — nothing changed." | Inside the region, `--bud-over` |
 | `no-prf` | "This device can’t open your account’s keys. Try the device that holds the passkey you made this account with." | Inside the region, `--bud-over` |
 | `ceremony-failed` | "Your device didn’t finish the passkey check. Nothing has changed." | Inside the region, `--bud-over` |
 | `unknown` | "Budgetoid couldn’t finish unlocking. Nothing has changed — try again." | Inside the region, `--bud-over` |
@@ -2363,12 +2363,12 @@ keep.
 else by it.**
 
 **The ceremony's five come from the Account keys chapter's table, four of them verbatim** —
-`unsupported`, `cancelled`, `no-prf` and `ceremony-failed` — including their closing *Nothing has
-changed.* That borrowing is honest because of a constraint on the flow rather than a judgement about
-the words: **the ceremony is the first thing every press does, and nothing is posted until it
-answers.** On a begin nothing has been written; on a resume nothing new has. A flow that ever posted
-before the ceremony would make five sentences false at once, which is why the order is stated here
-as a rule and not as an implementation note.
+`unsupported`, `cancelled`, `no-prf` and `ceremony-failed` — including, where a line has one, its
+closing that says nothing has changed. That borrowing is honest because of a constraint on the
+flow rather than a judgement about the words: **the ceremony is the first thing every press does,
+and nothing is posted until it answers.** On a begin nothing has been written; on a resume nothing
+new has. A flow that ever posted before the ceremony would make five sentences false at once, which
+is why the order is stated here as a rule and not as an implementation note.
 
 **The fifth is the one that cannot travel, because it is the only one of the five that names an
 act.** Custody's line is *Budgetoid couldn’t finish unlocking.*, and the other four say what a
@@ -2521,9 +2521,9 @@ its collection saw, so it can put a name back onto a record after another tab re
 
 **The rename asks for a passkey, because the keys went with the run.** A run that stops holds
 nothing — both generations end with it — so the press is a finish that carries a name, and its
-ceremony comes first, which keeps the five ceremony sentences and their *Nothing has changed.* true
-here. A run that stayed paused holding both generations while somebody thought of a name would save a
-tap on a rare path and break the one rule this chapter's copy rests on.
+ceremony comes first, which keeps the five ceremony sentences true here, and with them each claim
+that nothing has changed. A run that stayed paused holding both generations while somebody thought
+of a name would save a tap on a rare path and break the one rule this chapter's copy rests on.
 
 **It works the same on a locked account.** The names and the keys come from the run's own ceremony,
 never from Unlock, so nothing in the block mentions unlocking.
@@ -2644,10 +2644,10 @@ where the second press is refused.
 **The flow is a fourth producer of a key-encryption key in this client**, and the first that spends a
 server-minted challenge for one. `ReauthenticationApiService` posts
 `/api/passkeys/reauthentication/options` — the authenticated pool, never the anonymous assertion one
-— and the ceremony is the first thing either press does, so *Nothing has changed.* is true on a begin
-and on a resume alike. The flow checks `available()` before that call for `SignInService`'s reason
-and not the Unlock control's: a nonce the server persisted must not be spent by a browser that was
-never going to finish.
+— and the ceremony is the first thing either press does, so a ceremony sentence saying nothing has
+changed is true on a begin and on a resume alike. The flow checks `available()` before that call
+for `SignInService`'s reason and not the Unlock control's: a nonce the server persisted must not be
+spent by a browser that was never going to finish.
 
 Underneath it the driver is unchanged. `begin()` takes a passkey assertion and runs a whole rotation
 to its 204 — and over a run that is still staged it is the restart this chapter's `factors-moved`

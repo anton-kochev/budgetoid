@@ -718,7 +718,7 @@ export class KeyRotationService {
    * is authorized by, and the key-encryption key one factor derives. **The
    * ceremony is the first thing a press does and nothing is posted until it has
    * answered**, which is what makes the five ceremony sentences on the screen —
-   * each ending *Nothing has changed.* — true.
+   * each saying nothing has changed — true.
    *
    * It resolves rather than rejecting, always. Every refusal is published as
    * {@link failure}, because a rotation's failures are things for a person to

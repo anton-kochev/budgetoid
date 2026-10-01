@@ -183,7 +183,7 @@ export class RotationFlowService {
    * The same guard, the same `available()` check and the same ceremony-first
    * order as {@link rotate}, because it is the same act entered by a third
    * control: nothing is posted until the ceremony answers, which is what keeps
-   * the five ceremony sentences' *Nothing has changed.* true here too. A
+   * the five ceremony sentences' *nothing changed* true here too. A
    * ceremony that fails reaches no press, so the driver's pair stays standing
    * and the block with it.
    */

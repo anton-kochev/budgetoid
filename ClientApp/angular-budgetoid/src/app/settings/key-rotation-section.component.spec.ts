@@ -111,15 +111,15 @@ const RUN_REFUSALS = {
 // that names one.
 // The borrowing is honest because of a constraint on the flow rather than a
 // judgement about the words: the ceremony is the first thing either press does
-// and nothing is posted until it answers, so *Nothing has changed.* is true on a
+// and nothing is posted until it answers, so *nothing changed* is true on a
 // begin and on a resume alike.
 const CEREMONY_REFUSALS = {
   unsupported:
     'This browser can’t check a passkey. Open Budgetoid in a different ' +
     'browser, or on a phone or laptop that can.',
   cancelled:
-    'The passkey check was cancelled. Nothing has changed — try again ' +
-    'whenever you’re ready.',
+    'The passkey check was cancelled or timed out. Try again whenever ' +
+    'you’re ready — nothing changed.',
   'no-prf':
     'This device can’t open your account’s keys. Try the device that holds ' +
     'the passkey you made this account with.',

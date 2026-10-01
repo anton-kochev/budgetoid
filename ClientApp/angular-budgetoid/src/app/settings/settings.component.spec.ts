@@ -371,7 +371,7 @@ const UNLOCK_HELD = 'Your account is unlocked in this tab.';
 const UNLOCK_UNSUPPORTED =
   'This browser can’t check a passkey. Open Budgetoid in a different browser, or on a phone or laptop that can.';
 const UNLOCK_CANCELLED =
-  'The passkey check was cancelled. Nothing has changed — try again whenever you’re ready.';
+  'The passkey check was cancelled or timed out. Try again whenever you’re ready — nothing changed.';
 const UNLOCK_NO_PRF =
   'This device can’t open your account’s keys. Try the device that holds the passkey you made this account with.';
 const UNLOCK_CEREMONY_FAILED =
@@ -3643,7 +3643,7 @@ describe('SettingsComponent', () => {
     // another is the same collapse with a few extra words on the end, and it
     // would satisfy every `toContain` below.
     //
-    // Three of them end in *Nothing has changed*, which is exactly why the
+    // Two of them say *Nothing has changed*, which is exactly why the
     // comparison is over whole sentences and not over that clause.
     for (const failure of failures) {
       for (const other of failures) {
