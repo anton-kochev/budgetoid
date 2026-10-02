@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json.Nodes;
 using Application.Passkeys;
 using Domain.Security;
+using Domain.Sessions;
 using Domain.Users;
 using Infrastructure.Persistence.Inventory;
 using Microsoft.IdentityModel.JsonWebTokens;
@@ -63,6 +64,7 @@ internal static class LogCensusTraffic
     private const string ExportPath = "/api/me/export";
     private const string SignOutPath = "/api/me/session/revocation";
     private const string ErasurePath = "/api/me/erasure";
+    private const string ErasureSchedulePath = "/api/me/erasure/schedule";
     private const string RotationPath = "/api/me/key-rotation";
     private const string EmailChangePath = "/api/me/email-change";
 
@@ -89,6 +91,9 @@ internal static class LogCensusTraffic
 
     /// <summary>The name of the step that erases the primary account.</summary>
     public const string ErasureStep = "erasure";
+
+    /// <summary>The name of the step that schedules the primary account's erasure from a locked session.</summary>
+    public const string ErasureScheduleStep = "erasure schedule, locked session";
 
     public const string EmailChangeStep = "email change";
 
@@ -522,6 +527,22 @@ internal static class LogCensusTraffic
                 statuses.Add((int)response.StatusCode);
                 await RequireConflictKindAsync(EmailChangeStep, response, conflictKind);
             }
+        });
+
+        // The one act a locked session may perform. Nothing in the product establishes a locked session
+        // yet, so the session is seeded on the account's federated credential — the one the email change
+        // above refiled, which is why this runs after it — and only the request itself is traffic. Just
+        // before the erasure, which takes the schedule with the account.
+        await Step(ErasureScheduleStep, async statuses =>
+        {
+            Guid federated = await RepositoryTestHost.FederatedCredentialIdOnAsync(host.ConnectionString, accountId);
+            byte[] token = RandomNumberGenerator.GetBytes(SessionToken.TokenLength);
+            DateTime now = DateTime.UtcNow;
+            await RepositoryTestHost.SeedSessionOnAsync(
+                host.ConnectionString, federated, token, SessionKind.Locked, now.AddMinutes(-1), now.AddHours(1));
+
+            using HttpClient locked = CookieClient(factory, Base64UrlText.Encode(token));
+            statuses.Add((int)(await locked.PostAsync(ErasureSchedulePath, content: null)).StatusCode);
         });
 
         await Step(ErasureStep, async statuses =>

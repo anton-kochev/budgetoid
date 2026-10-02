@@ -15,16 +15,21 @@
 
 Erasure is the one action that destroys an account and everything owned beneath it. It exists so
 that leaving the product means actually leaving, rather than being archived: after it completes, no
-row in any table references the erased user or any budget it owned. Because it is irreversible, it
-is the one action a signed-in session does not buy on its own — a request must carry a WebAuthn
-assertion made moments earlier on an authenticator registered to the account, so a stolen session
-cannot destroy a budget. It cuts across almost every domain area, so the ordering rule and the
+row in any table references the erased user or any budget it owned. Because it is irreversible, the
+**immediate** erasure is the one action a signed-in session does not buy on its own — a request must
+carry a WebAuthn assertion made moments earlier on an authenticator registered to the account, so a
+stolen session cannot destroy a budget. A **locked** session may instead **schedule** the account's
+erasure for seven days out, with no passkey, because the person it exists for has none left. A
+schedule erases nothing, and nothing in the product carries one out yet — the schedule rule below
+argues both halves. It cuts across almost every domain area, so the ordering rule and the
 post-condition live here rather than being split across the files whose rows it removes.
 
 ## Key Entities
 
-Erasure owns no entity of its own. It acts on the account graph that already exists, and the shape
-of that graph is what the rules below are about:
+Erasure owns one entity, **ErasureSchedule** — one `erasure_schedules` row per account, holding the
+account's `user_id` as its primary key and the instant its erasure takes effect, and nothing else.
+The erasure itself owns nothing: it acts on the account graph that already exists, and the shape of
+that graph is what the rules below are about:
 
 ```mermaid
 erDiagram
@@ -32,6 +37,7 @@ erDiagram
     USER ||--o{ BUDGET : "cascade"
     USER ||--o| FACTOR_MANIFEST : "cascade"
     USER ||--o| KEY_ROTATION : "cascade"
+    USER ||--o| ERASURE_SCHEDULE : "cascade"
     CREDENTIAL ||--o{ SESSION : "cascade"
     SESSION ||--o{ SESSION_TOKEN : "cascade"
     CREDENTIAL ||--o| PASSKEY_PUBLIC_KEY : "cascade"
@@ -85,9 +91,12 @@ role holds no `DELETE` there of any shape.
   change-tracker rule below, where the reason is the grant matrix.
 - **Delete, in dependency order and before the user row, every table a `RESTRICT` edge would
   otherwise block.** → the deletion-order rule below.
-- **Be authorized by a fresh WebAuthn assertion on a `reauthentication` challenge, for a passkey
-  registered to the account the request is authenticated as** — a live session alone is not proof;
-  it is the thing the gate exists to distrust. Pinned across `ErasureReauthenticationTests`.
+- **Authorize an immediate erasure — `POST /api/me/erasure` — by a fresh WebAuthn assertion on a
+  `reauthentication` challenge, for a passkey registered to the account the request is authenticated
+  as** — a live session alone is not proof; it is the thing the gate exists to distrust. Pinned
+  across `ErasureReauthenticationTests`. A **schedule** is not an erasure until it takes effect, and
+  requesting one from a locked session needs only the session the federated credential opened. →
+  the schedule rule below.
 
 ### MUST NOT
 
@@ -114,7 +123,9 @@ role holds no `DELETE` there of any shape.
   remnant in this product to create. Every other gate reads names in a catalog or a route table, and
   a log line has no name for either to read. → the logging rule below.
 - **Offer any path that reverses an erasure that has taken effect** — no cancellation, no grace
-  period, no restore. → the irreversibility rule below.
+  period, no restore. → the irreversibility rule below. The words are scoped to an erasure that
+  **has taken effect**: the seven days before a schedule's instant are not a grace period on an
+  erasure, because nothing has been erased yet. → the schedule rule below.
 
 ## Business Rules & Invariants
 
@@ -469,9 +480,12 @@ role holds no `DELETE` there of any shape.
   catalog, a pattern in a route table — and a log line has no name to read. It is also the cheapest
   remnant in the product to create: adding a logger to a destructive handler and recording who was
   erased is the ordinary next step after such an endpoint ships.
-- **Enforced in**: `ErasureLoggingTests`, which asserts by reflection that the two types carrying an
-  erasure out — `EraseAccountHandler` and `PasskeyReauthentication`, the two that hold the account
-  id — take no `ILogger` or `ILoggerFactory` constructor dependency.
+- **Enforced in**: `ErasureLoggingTests`, which asserts by reflection that three types take no
+  `ILogger` or `ILoggerFactory` constructor dependency: `EraseAccountHandler` and
+  `PasskeyReauthentication`, the two that carry an erasure out holding the account id, and
+  `ScheduleErasureHandler`, which erases nothing and holds the same id to file the schedule under. A
+  line naming the account whose erasure was just scheduled is the same record seven days early: once
+  the schedule takes effect, the log still says who asked to be forgotten.
   - **The test is narrow on purpose and its scope is stated rather than implied.** It reds on
     exactly the move it names and covers nothing else: not the endpoint mapping, not the
     repositories those handlers call, and not the ASP.NET Core, EF Core and hosting stacks, all of
@@ -493,9 +507,14 @@ role holds no `DELETE` there of any shape.
 - **Enforced in**: `ErasureIrreversibilityTests`, with two pins of different shapes. One scans every
   route's pattern, display name and endpoint name for a vocabulary of reversal words, each spelling
   proved by a case of its own so the list cannot grow an entry nothing exercises. The other pins the
-  **`/api/me/erasure` resource** exhaustively to `POST /api/me/erasure`, which closes the naming
-  loophole a word list cannot see — a route called `/api/me/erasure/second-chance` trips the second
-  pin and not the first. Each has its own control built from a hand-made endpoint list.
+  **`/api/me/erasure` resource** exhaustively to two routes — `POST /api/me/erasure` and
+  `POST /api/me/erasure/schedule` — which closes the naming loophole a word list cannot see: a route
+  called `/api/me/erasure/second-chance` trips the second pin and not the first. Each has its own
+  control built from a hand-made endpoint list.
+  - **The schedule is inside the pinned resource on purpose.** It is the same erasure, deferred, and
+    it moves in the forward direction only: it brings nothing back, because nothing has gone yet.
+    Filing it under the resource keeps it where the exhaustive pin reads it, rather than in the
+    `/api/me` namespace that pin deliberately leaves alone.
   - **The second pin is scoped to the erasure resource, not to `/api/me`.** `/api/me` is the
     current-principal namespace: freezing it would refuse `GET /api/me`, `/api/me/sessions` and
     `/api/me/export` on erasure's behalf, and a rule that argues with unrelated features gets
@@ -503,9 +522,9 @@ role holds no `DELETE` there of any shape.
     ASP.NET routing itself matches — a raw ordinal prefix would have pulled in `/api/members` and
     let `/API/Me/erasure` escape.
   - **`cancel` is deliberately not a reversal word.** Cancelling something before it takes effect
-    brings nothing back; every word on the list names retrieving something already gone. Were a
-    delayed, cancellable erasure ever built, the cancellable window would belong to the *schedule*
-    and the erasure-resource pin — not the word list — is the line that would have to move.
+    brings nothing back; every word on the list names retrieving something already gone. A delayed
+    erasure now exists and nothing cancels one. A route that did would belong to the *schedule*, and
+    the erasure-resource pin — not the word list — is the line it would have to move.
   - **`recover` is deliberately not a reversal word either, for the opposite reason.** In a passkey
     product *account recovery* means regaining access to a live account, and a word that cannot
     separate that from resurrecting an erased one narrows to nothing. The derived forms of every
@@ -520,6 +539,83 @@ role holds no `DELETE` there of any shape.
 - **Counterexample**: a "restore within 30 days" endpoint added because it seems kind. It cannot
   work without keeping the rows, so it silently reintroduces the remnant the rule above forbids.
 - **Source**: `[SOURCE: user-story]`
+
+---
+
+- **Rule**: A **locked** session may schedule the account's erasure, and a schedule is **not an
+  erasure until it takes effect**. `POST /api/me/erasure/schedule` takes no body and no passkey: the
+  session the federated credential opened is the whole of the authorization. It files one
+  `erasure_schedules` row whose instant is `ErasurePolicy.Delay` — seven days — after the request,
+  and answers `200` with `{ "takesEffectAtUtc": … }` and no other member. It deletes no row of the
+  account, ends no session and writes no cookie. A repeat answers the instant first filed and writes
+  nothing. A full session is refused `403`; no live session is `401`.
+  - **Nothing establishes a locked session yet**, so this route, like the whole locked gate, is
+    reached today only by tests that seed a locked session through the database — see
+    [sessions.md](sessions.md).
+  - **Nothing cancels, shows or carries out a schedule yet.** No route withdraws one, no screen reads
+    one, and nothing erases the account when its instant passes. Today a schedule's only exit is the
+    account's **immediate** erasure, which takes the row with it by the cascade from `users`.
+- **Why**: it is the release valve for somebody who has lost every passkey and every recovery code.
+  - **Their data is already gone, and this does not change that.** Every factor holds its own
+    encapsulated copy of the account's keys and the server holds none, so with no factor left
+    nothing can open the account's content — see [account-keys.md](account-keys.md). What they still
+    lose without this route is the address: `users.email` is unique (`IX_users_email`), so an
+    account nobody can open holds its address, and with it the Google account, against ever
+    registering again.
+  - **No passkey, because the caller has none.** Asking for one would refuse exactly the person the
+    route exists for. That is why the assertion rule in the MUST list is scoped to the immediate
+    erasure, and why this act waits instead of happening.
+  - **The delay is what keeps a stolen provider account from being a weapon.** Somebody holding the
+    owner's Google sign-in would reach a locked session and nothing else, and what that buys them
+    here is a date on the account, not its end. The delay is the window the account is given. **The
+    act that would make the window useful does not exist yet**: until a passkey can withdraw a
+    schedule, nothing acts within it.
+  - **Seven days because it is the backup retention window** (ASM-010), so "the account is gone" and
+    "the last copy is gone" land one window apart rather than two. `ErasurePolicy.Delay` and
+    `BackupRetentionDays` are two literals nothing holds together — the backup-window rule below
+    names it among the places the number is restated. The length sits in `Application`, not on the
+    entity: `ErasureSchedule.Request` refuses only a delay that is not positive, because the length
+    is product policy and [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md)
+    keeps policy above the invariants.
+  - **A full session is refused because it has a better door, not because it is trusted less.** A
+    passkey holder erases at once through the assertion gate. Letting the same session file a
+    schedule would put a second erasure path beside that one which asks for no assertion, and a
+    stolen full session could then schedule what it cannot perform.
+  - **A repeat never moves the date.** The person is told an instant, and a second press tells them
+    the same one. A repeat that recomputed it would make the first answer false.
+- **Enforced in**:
+  - **The gate** — `AllowsLockedSessionAttribute` and `RequiresLockedSessionAttribute` on the route,
+    read by two requirements on the fallback policy. [sessions.md](sessions.md) owns the rule.
+  - **The identity** — `ScheduleErasureHandler` reads `IUserContext.UserId`, and
+    `ScheduleErasureCommand` has no member to name an account in, for the no-account-named rule's
+    reason above.
+  - **One row per account** — `user_id` is the whole of `PK_erasure_schedules`, so the rule is a key
+    rather than a check-then-insert. Two first requests can both find nothing and both add; the
+    loser's `23505` on that constraint is answered by `ErasureScheduleRepository.AddAsync` re-reading
+    the winner's row, and the handler answers what `AddAsync` returns, never the row it built. A
+    `23505` naming any other constraint escapes. `ErasureScheduleRepositoryTests`:
+    `AddAsync_WhenARowAlreadyExists_ReturnsTheStoredInstant` and
+    `AddAsync_WhenTheConflictNamesAnotherConstraint_LetsItEscape`; `ScheduleErasureHandlerTests`:
+    `HandleAsync_WhenTheAddMeetsARowFiledInBetween_AnswersTheStoredInstant`.
+  - **The grants** — `SELECT` and `INSERT` on `erasure_schedules`, nothing else. No `UPDATE` of any
+    shape, so no statement this role can issue moves a date. No `DELETE`, so a row leaves only by the
+    cascade from `users`, which runs as the referencing table's owner. `user_isolation`'s `WITH CHECK`
+    refuses an insert naming another account. The block in `app-role-grants.sql` argues each line.
+  - **The wire** — `ErasureScheduleEndpointTests`:
+    `ScheduleErasure_FromALockedSession_Answers200SevenDaysOut_AndErasesNothing` counts the account's
+    tables either side and requires no `Set-Cookie`;
+    `…_FromAFullSession_IsRefused403_WhileALockedSessionOnTheSameAccountSucceeds` pairs the refusal
+    with a locked session on the same account and compares its body whole against a locked session's
+    refusal elsewhere; `…_CalledTwice_AnswersTheFirstInstant_AndStoresOneRow`;
+    `…_FromAnEndedLockedSession_Is401`; `…_WithNoSession_Is401`; and
+    `…_LeavesAnotherAccountUntouched`, the counterweight. The seven days are a literal in those
+    tests, never `ErasurePolicy.Delay`, so a test cannot agree with whatever the policy later says.
+- **Example**: a locked session asks at 09:30 UTC and is told the erasure takes effect at 09:30 seven
+  days later. It asks again ten minutes on and is told the same instant; the table holds one row.
+- **Counterexample**: recomputing `now + 7 days` on every request and writing it back. It reads as
+  the same answer, needs an `UPDATE` grant the table does not hold, and turns a date somebody was
+  told into one that moves each time they ask.
+- **Source**: `[SOURCE: discussion]`
 
 ---
 
@@ -587,8 +683,9 @@ role holds no `DELETE` there of any shape.
     made on the server, leaves both numbers equal and the sentence false. And it reads the screen
     only — the window is restated in prose across `docs/` (this rule's own first line, ADR 0017,
     `adversarial-properties.md`, `patterns.md`, `components.md`), in `DEPLOYMENT.md` and in the
-    verbatim pin, and none of those is held by anything. **Whoever changes retention changes every
-    one of them in the same commit.**
+    verbatim pin, and none of those is held by anything. Neither is `ErasurePolicy.Delay`, the
+    schedule's seven days, which the schedule rule above sets to this window on purpose. **Whoever
+    changes retention changes every one of them in the same commit.**
 - **Source**: `[SOURCE: user-story]`
 
 ## Workflows & State Transitions
@@ -621,9 +718,28 @@ sequenceDiagram
     A-->>C: 204 No Content
 ```
 
-There is no state to transition through: an account is present or it is not. Nothing is marked,
-scheduled or flagged, and no row survives to record that an erasure happened — including the proof
-that authorized it, which leaves as the deleted nonce.
+An account is present, present with a schedule, or gone:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Present
+    Present --> Scheduled : a locked session files a schedule
+    Scheduled --> Scheduled : a repeat — answers the stored instant, writes nothing
+    Present --> [*] : immediate erasure, POST /api/me/erasure
+    Scheduled --> [*] : immediate erasure — the schedule row leaves by the cascade
+```
+
+| Transition | Triggered by | Validations |
+|---|---|---|
+| Present → Scheduled | `ScheduleErasureHandler`, from `POST /api/me/erasure/schedule` | a live locked session; a full session is refused `403`. Nothing establishes a locked session yet, so only a test that seeds one reaches this arrow |
+| Scheduled → Scheduled | the same route again | none; the stored instant is the answer and nothing is written |
+| Present or Scheduled → gone | `EraseAccountHandler`, from `POST /api/me/erasure` | a full session and a fresh passkey assertion — the sequence above |
+
+**Scheduled has no exit but the immediate erasure.** Nothing withdraws a schedule, and nothing
+erases the account when its instant passes; neither exists today. A schedule is its own row, so the
+account itself is never marked or flagged, and the row leaves with the account. No row survives to
+record that an erasure happened — including the proof that authorized it, which leaves as the
+deleted nonce.
 
 ## Decision Trees
 
@@ -633,8 +749,9 @@ How a request to `POST /api/me/erasure` is answered:
 IF the request carries no valid token                        ← arms are mutually exclusive
   THEN 401 from the fallback policy
 ELSE IF the caller's session reads no budget content         ← a federated sign-in; the route
-  THEN 403 from the fallback policy's                          carries no opt-out marker
-       FullSessionRequirement, before the handler runs
+  THEN 403 from the fallback policy's                          carries no opt-out marker — the
+       FullSessionRequirement, before the handler runs         schedule below is its one erasure
+                                                               route
 ELSE IF the presented cookie names no live session           ← including one the cascade just took
   THEN 401 from the fallback policy — nothing is minted on the way past,
        because nothing outside /api/registration inserts a users row
@@ -644,11 +761,28 @@ ELSE
   THEN transactions → user row, one transaction, cascade takes the rest — 204
 ```
 
+How a request to `POST /api/me/erasure/schedule` is answered:
+
+```
+IF the request carries no live session                       ← arms are mutually exclusive
+  THEN 401 from the fallback policy — the route accepts       an ended session included: the
+       no ended session                                         route carries no AcceptsEndedSession
+ELSE IF the session reads budget content                     ← a full session; it has the
+  THEN 403 from LockedSessionOnlyRequirement, the body        immediate erasure above
+       identical to every other refusal of a session's kind
+ELSE IF the account already holds a schedule
+  THEN 200 with the stored instant; nothing is written
+ELSE
+  THEN insert now + ErasurePolicy.Delay — on a PK_erasure_schedules collision, re-read
+       the winner's row — 200 with the stored instant
+```
+
 ## Integration Points
 
 - **The grant matrix** — `app-role-grants.sql` gives the role `DELETE` on `users` and
-  `transactions`, which is everything erasure needs. `AppRoleGrantMatrixTests` pins the set in both
-  directions, so a grant added to make an erasure problem go away fails a test rather than shipping.
+  `transactions`, which is everything erasure needs. The schedule needs `SELECT` and `INSERT` on
+  `erasure_schedules` and nothing more. `AppRoleGrantMatrixTests` pins the set in both directions, so
+  a grant added to make an erasure problem go away fails a test rather than shipping.
   - **Two of the role's other `DELETE` grants look like they belong to erasure and do not.**
     `credentials` holds one for removing a single credential — passkey revocation, replacing a
     recovery-code set, and retiring the federated credential on an email change — and
@@ -657,7 +791,10 @@ ELSE
     work if both grants were revoked tomorrow.
 - **Row-level security** — `user_isolation` scopes the `users` delete, `budget_isolation` scopes the
   `transactions` delete. Both are `FOR ALL`, so they constrain a delete exactly as they constrain a
-  read. See [data isolation](../engineering/data-isolation.md).
+  read. `user_isolation` on `erasure_schedules` hides another account's schedule and refuses an
+  insert naming one. See [data isolation](../engineering/data-isolation.md).
+- **[Sessions](sessions.md)** — the locked-session gate. The schedule route is the one route only a
+  locked session may reach, and sessions.md argues the two markers it carries.
 - **The referential cascade** — everything not listed above leaves because PostgreSQL performs the
   referential action through internal triggers running with the **referencing table owner's**
   privileges, not the caller's. That is why no grant on any child table is needed.

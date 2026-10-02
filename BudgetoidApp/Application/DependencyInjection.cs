@@ -17,6 +17,7 @@ using Application.CategoryGroups.GetCategoryGroups;
 using Application.CategoryGroups.MoveCategoryGroup;
 using Application.CategoryGroups.UpdateCategoryGroup;
 using Application.Currencies.GetCurrencies;
+using Application.Erasure.ScheduleErasure;
 using Application.KeyRotations.BeginKeyRotation;
 using Application.KeyRotations.CompleteKeyRotation;
 using Application.KeyRotations.GetKeyRotationState;
@@ -85,6 +86,7 @@ public static class DependencyInjection
         services.AddScoped<GetPayeeHandler>();
         services.AddScoped<RenamePayeeHandler>();
         services.AddScoped<EraseAccountHandler>();
+        services.AddScoped<ScheduleErasureHandler>();
         services.AddScoped<ExportDataHandler>();
         services.AddScoped<GetSignedInUserHandler>();
         services.AddScoped<ListCredentialsHandler>();

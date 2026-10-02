@@ -1,4 +1,5 @@
 using System.Reflection;
+using Application.Erasure.ScheduleErasure;
 using Application.Passkeys.Reauthentication;
 using Application.Users.EraseAccount;
 using Microsoft.Extensions.Logging;
@@ -6,7 +7,7 @@ using Microsoft.Extensions.Logging;
 namespace UnitTests;
 
 /// <summary>
-/// Neither type that carries out an erasure may be handed a logger by the container.
+/// No type that carries out or schedules an erasure may be handed a logger by the container.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -19,13 +20,19 @@ namespace UnitTests;
 /// goes red on it.
 /// </para>
 /// <para>
-/// <b>Exactly these two types, because they are the whole of the erasure command path that holds the
-/// erased account's id in hand.</b> <see cref="EraseAccountHandler" /> reads
+/// <b>Exactly these three types, because they are the whole of the two erasure command paths that
+/// hold the account's id in hand.</b> <see cref="EraseAccountHandler" /> reads
 /// <c>IUserContext.UserId</c> and hands it to the user delete;
 /// <see cref="PasskeyReauthentication" /> reads the same id to scope the key lookup and to compare
 /// the user handle against. <c>BeginReauthenticationHandler</c>, the ceremony's other leg, is left
 /// out for the same reason spelled the other way round: it takes no user context and so has no id to
 /// write down.
+/// </para>
+/// <para>
+/// <see cref="ScheduleErasureHandler" /> erases nothing and is here anyway. It reads the same id to
+/// file the schedule under, and a line naming the account whose erasure was just scheduled is the same
+/// record seven days early: once the schedule takes effect, the log still says who asked to be
+/// forgotten.
 /// </para>
 /// <para>
 /// <b>Three things it deliberately does not cover, and none of them is claimed.</b>
@@ -80,20 +87,21 @@ public sealed class ErasureLoggingTests
         // type and the parameter to remove instead of reporting that a number moved.
         await Assert.That(loggerDependencies).IsEmpty();
 
-        // Non-vacuity. Both types are reached through typeof, so neither can vanish silently, but a
+        // Non-vacuity. Every type is reached through typeof, so none can vanish silently, but a
         // reflection query that came back with no parameters at all would satisfy the claim above
         // while measuring nothing.
         await Assert.That(parameters.Length).IsGreaterThan(0);
     }
 
     /// <summary>
-    /// The two types the erasure command path is made of, both of which read the id of the account
-    /// being erased.
+    /// The types the two erasure command paths are made of, every one of which reads the id of the
+    /// account being erased or scheduled for erasure.
     /// </summary>
     private static readonly Type[] TypesThatCarryOutAnErasure =
     [
         typeof(EraseAccountHandler),
         typeof(PasskeyReauthentication),
+        typeof(ScheduleErasureHandler),
     ];
 
     private const BindingFlags AnyInstanceConstructor =

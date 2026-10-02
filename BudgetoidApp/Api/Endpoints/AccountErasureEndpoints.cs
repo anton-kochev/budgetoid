@@ -1,3 +1,5 @@
+using Api.Infrastructure;
+using Application.Erasure.ScheduleErasure;
 using Application.Passkeys.Reauthentication;
 using Application.Users.EraseAccount;
 
@@ -42,8 +44,40 @@ public static class AccountErasureEndpoints
             return TypedResults.NoContent();
         });
 
+        // The release valve: a locked session files the account's erasure for seven days out, and that is
+        // the one act it may perform. Under the erasure resource on purpose — it is the same erasure,
+        // deferred — and ErasureIrreversibilityTests pins the resource's two routes by count.
+        //
+        // No body and no id, for the immediate erasure's reason: the account scheduled is whichever one
+        // the request is authenticated as. No passkey either, and that is not a gap: the caller is
+        // somebody who has none left, which is why the erasure waits instead of happening.
+        //
+        // Both markers, and they are read by two requirements on the same fallback policy. The first lets
+        // a locked session past FullSessionRequirement; the second refuses a full one, which has the
+        // better door above and must not file an erasure no assertion authorized. Neither alone is the
+        // rule: the second without the first refuses every session there is. The cookie is not touched
+        // — scheduling ends nothing and begins nothing.
+        group.MapPost("/erasure/schedule", async (
+            ScheduleErasureHandler handler,
+            CancellationToken cancellationToken) =>
+        {
+            ScheduledErasure scheduled = await handler.HandleAsync(new ScheduleErasureCommand(), cancellationToken);
+
+            // 200 with the instant, the same one on every repeat: the person is told when the account
+            // goes, and a second press tells them the same date rather than a later one.
+            return TypedResults.Ok(new ScheduledErasureResponse(scheduled.TakesEffectAtUtc));
+        })
+            .WithMetadata(new AllowsLockedSessionAttribute())
+            .WithMetadata(new RequiresLockedSessionAttribute());
+
         return endpoints;
     }
+
+    /// <summary>
+    /// When the account's scheduled erasure takes effect, and nothing else about the account.
+    /// </summary>
+    /// <param name="TakesEffectAtUtc">The stored instant the erasure takes effect, in UTC.</param>
+    private sealed record ScheduledErasureResponse(DateTime TakesEffectAtUtc);
 
     /// <summary>
     /// The assertion the erasure is authorized by, in the shape the sign-in leg's own request record

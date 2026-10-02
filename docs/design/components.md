@@ -3520,7 +3520,8 @@ the target, and not what ships; see below.
 
 **A locked account and a locked session are two different things, and the screens may not borrow
 each other's words.** A locked *session* is a server fact — the row a federated credential opens,
-reaching exactly one route ([sessions.md](../business-logic/sessions.md)). A locked *account* is a
+reaching two routes — ending itself and scheduling the account's erasure
+([sessions.md](../business-logic/sessions.md)). A locked *account* is a
 browser fact: the session is live, every request is answered, and the words that come back cannot be
 read because this tab holds no content key. Only the second is what this chapter renders.
 [account-keys.md](../business-logic/account-keys.md) owns the rule; this chapter renders it.

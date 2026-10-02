@@ -49,8 +49,8 @@ public sealed class ErasureIrreversibilityTests
     /// nothing back, because nothing left. Whoever later builds a delayed, cancellable erasure should
     /// read this and understand that they are standing inside the carve-out rather than outside the
     /// rule — and that adding a cancellation route under the erasure resource would still have to
-    /// answer to <see cref="ErasureResource_MapsExactlyTheOneDestructiveRoute" />, which is where that
-    /// argument belongs.
+    /// answer to <see cref="ErasureResource_MapsExactlyTheDestructiveRouteAndItsSchedule" />,
+    /// which is where that argument belongs.
     /// </para>
     /// <para>
     /// <b><c>recover</c> and <c>recovery</c> are absent for the same shape of reason, and the reason is
@@ -64,8 +64,8 @@ public sealed class ErasureIrreversibilityTests
     /// which is the carve-out above restated: the pin would stand in front of work somebody was told to
     /// do, and would be deleted rather than argued with. The reversal the word would otherwise catch —
     /// a route directly under the erasure resource — is caught exhaustively by
-    /// <see cref="ErasureResource_MapsExactlyTheOneDestructiveRoute" /> instead, so the carve-out costs
-    /// nothing where the promise is actually made.
+    /// <see cref="ErasureResource_MapsExactlyTheDestructiveRouteAndItsSchedule" /> instead, so the
+    /// carve-out costs nothing where the promise is actually made.
     /// </para>
     /// <para>
     /// <b>Every word is listed in each form it could be routed under, because the matcher does not
@@ -174,17 +174,25 @@ public sealed class ErasureIrreversibilityTests
     private const string ErasureResourcePrefix = "/api/me/erasure";
 
     /// <summary>
-    /// The single route that may live under <see cref="ErasureResourcePrefix" />.
+    /// The routes that may live under <see cref="ErasureResourcePrefix" />: the immediate erasure, and
+    /// the schedule a locked session files instead.
     /// </summary>
     /// <remarks>
-    /// <b>Read this before editing the literal.</b> Exactly one route may ever join this set, and only
-    /// under the carve-out described on <see cref="ReversalVocabulary" />: a route that cancels a
-    /// <i>scheduled</i> erasure before it takes effect. Anything else added here — a read of what is
-    /// about to be erased, a download, a second-chance page, a route restoring anything — is a route
-    /// this requirement refuses, and the argument for it belongs in
-    /// <c>docs/business-logic/erasure.md</c> before it belongs in this string.
+    /// <para>
+    /// <b>Read this before editing the literal.</b> The second entry is the scheduled erasure — the one
+    /// act a locked session may perform, filing an erasure to take effect seven days out rather than
+    /// performing it. It moves in the forward direction only: it brings nothing back, because nothing has
+    /// gone yet, and a repeat answers the date first filed rather than a later one.
+    /// </para>
+    /// <para>
+    /// Exactly one more route may ever join this set, and only under the carve-out described on
+    /// <see cref="ReversalVocabulary" />: a route that cancels a <i>scheduled</i> erasure before it takes
+    /// effect. Anything else added here — a read of what is about to be erased, a download, a
+    /// second-chance page, a route restoring anything — is a route this requirement refuses, and the
+    /// argument for it belongs in <c>docs/business-logic/erasure.md</c> before it belongs in this string.
+    /// </para>
     /// </remarks>
-    private const string ErasureResourceSurface = "POST /api/me/erasure";
+    private const string ErasureResourceSurface = "POST /api/me/erasure, POST /api/me/erasure/schedule";
 
     /// <summary>
     /// No route in the whole table names a reversal, in its pattern, its display name or its endpoint
@@ -218,8 +226,8 @@ public sealed class ErasureIrreversibilityTests
     /// <para>
     /// Its limit is the vocabulary: this catches the route somebody names honestly, and a reversal
     /// route named <c>/api/me/erasure/second-chance</c> walks past it. That is the gap
-    /// <see cref="ErasureResource_MapsExactlyTheOneDestructiveRoute" /> closes within its own scope,
-    /// and the two are worth having together for exactly that reason.
+    /// <see cref="ErasureResource_MapsExactlyTheDestructiveRouteAndItsSchedule" /> closes within its
+    /// own scope, and the two are worth having together for exactly that reason.
     /// </para>
     /// </remarks>
     [Test]
@@ -422,7 +430,8 @@ public sealed class ErasureIrreversibilityTests
     }
 
     /// <summary>
-    /// The erasure resource carries exactly one route, and it is the destructive one.
+    /// The erasure resource carries exactly two routes: the destructive one, and the schedule that defers
+    /// it.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -431,7 +440,7 @@ public sealed class ErasureIrreversibilityTests
     /// <c>/api/me/erasure/second-chance</c> trips it where a word list would not, because it does not
     /// ask what a route is called, it asks how many there are. Exhaustive pins usually cost more than
     /// they return — this one does not, because the scope is one resource whose whole meaning is a
-    /// single destructive act, rather than a namespace that grows. See
+    /// single destructive act and the date it is filed for, rather than a namespace that grows. See
     /// <see cref="ErasureResourcePrefix" /> for why the scope is the resource and not the
     /// <c>/api/me</c> group it hangs off.
     /// </para>
@@ -457,7 +466,7 @@ public sealed class ErasureIrreversibilityTests
     /// </para>
     /// </remarks>
     [Test]
-    public async Task ErasureResource_MapsExactlyTheOneDestructiveRoute()
+    public async Task ErasureResource_MapsExactlyTheDestructiveRouteAndItsSchedule()
     {
         // Arrange
         await using ApiFactory factory = new(
@@ -479,8 +488,8 @@ public sealed class ErasureIrreversibilityTests
     }
 
     /// <summary>
-    /// The control for <see cref="ErasureResource_MapsExactlyTheOneDestructiveRoute" />: the same
-    /// filter, over a table where a second route has joined the resource.
+    /// The control for <see cref="ErasureResource_MapsExactlyTheDestructiveRouteAndItsSchedule" />: the
+    /// same filter, over a table where a route nobody argued for has joined the resource.
     /// </summary>
     /// <remarks>
     /// The probe is named <c>/api/me/erasure/second-chance</c> on purpose — it carries none of
@@ -523,6 +532,7 @@ public sealed class ErasureIrreversibilityTests
         RouteEndpoint[] endpoints =
         [
             Route("POST", "/api/me/erasure"),
+            Route("POST", "/api/me/erasure/schedule"),
             Route("GET", "/api/members"),
             Route("GET", "/api/merchants"),
         ];

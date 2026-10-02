@@ -8,6 +8,105 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-10-02 — A locked session may schedule the account's erasure with no passkey, and the passkey rule covers the immediate erasure only
+
+**Context:** erasure.md required a fresh passkey assertion to destroy an account, and its MUST NOT
+refused any cancellation, grace period or restore. Somebody who has lost every passkey and every
+recovery code cannot meet the first rule. Their content is already unrecoverable, because every
+factor holds its own encapsulated copy of the account's keys and the server holds none. What they
+still lose is the address: `users.email` is unique, so an account nobody can open holds its address,
+and with it the Google account, against ever registering again.
+
+**Decision:**
+- **A locked session may schedule the account's erasure**, `POST /api/me/erasure/schedule`, with no
+  body and no passkey. The session the federated credential opened is the whole authorization.
+- **A schedule is not an erasure until it takes effect.** It files one row seven days out and
+  changes nothing else about the account.
+- **The passkey rule is scoped to the immediate erasure**, `POST /api/me/erasure`. "No
+  cancellation, no grace period, no restore" applies to an erasure that has taken effect.
+- **The delay is the window the account is given**, so a stolen provider account buys a date on the
+  account rather than its end. Seven days is the backup retention window (ASM-010), so the account
+  and its last copy go one window apart.
+- **A full session is refused the schedule.** It has the immediate erasure; a schedule it could file
+  would be a second erasure path that asks for no assertion.
+
+[erasure.md](erasure.md) owns the rule.
+
+**Alternatives considered:**
+- **Keep the passkey rule product-wide**: rejected. It refuses exactly the person the valve is for,
+  and leaves their address held forever.
+- **Let a locked session erase at once**: rejected. A stolen provider account would end the account
+  with one request.
+- **Admit a full session to the schedule too**: rejected for the second-path reason above.
+
+**Consequences:** nothing withdraws, shows or carries out a schedule yet, so the window is not yet
+a defence anybody can use, and a schedule's only exit is the account's immediate erasure. Nothing
+establishes a locked session yet either, so only tests reach the route. `ErasurePolicy.Delay` and
+the backup retention are two literals nothing holds together.
+
+**Affected areas:** [erasure.md](erasure.md), [sessions.md](sessions.md),
+[_overview.md](_overview.md).
+
+---
+
+## 2026-10-02 — A route only a locked session may reach is held by a second fallback requirement and an opt-in marker
+
+**Context:** the erasure schedule is for a locked session and must refuse a full one. The fallback
+policy's `FullSessionRequirement` admits a locked session only where a route opts out with
+`AllowsLockedSessionAttribute`, and nothing refused a full session anywhere.
+
+**Decision:** `LockedSessionOnlyRequirement` rides the fallback policy beside
+`FullSessionRequirement`. Its handler succeeds on every route without
+`RequiresLockedSessionAttribute`, and on a marked route only for a kind that round-trips to exactly
+`Locked`. The marker narrows and never widens, so a locked-only route carries both markers. It is
+opt-in, because a gate on by default would refuse every full session until each route opted out.
+`LockedSessionTests` reads the locked-only set whole off the route table and refuses a route carrying
+the narrowing marker without the opt-out. [sessions.md](sessions.md) owns the rule.
+
+**Alternatives considered:**
+- **The route declares a policy of its own**: rejected. It would be the first route outside the
+  registration group to leave the fallback policy, and would carry only the rules it restates.
+- **A kind check in the route delegate or the handler**: rejected. It is invisible to the route
+  table, so no census can read which routes carry it.
+- **Teach `FullSessionRequirement` to refuse a full session on marked routes**: rejected. A
+  requirement named for admitting full sessions would then refuse them, and its name would lie.
+
+**Consequences:** a forgotten opt-in marker is quiet — a full session reaches the route — so the route
+is pinned twice, by a paired endpoint test and by the census. The handler's registration is
+load-bearing: unregistered, every authenticated request answers `403`.
+
+**Affected areas:** [sessions.md](sessions.md), [erasure.md](erasure.md).
+
+---
+
+## 2026-10-02 — The erasure schedule is a policed table of its own, granted SELECT and INSERT only
+
+**Context:** a scheduled erasure has to be stored somewhere, one per account, and read back so a
+repeat answers the first instant.
+
+**Decision:** `erasure_schedules`, two columns: `user_id`, which is the whole primary key and the
+tenancy column, and `takes_effect_at_utc`, the instant the person was told. It is policed by
+`user_isolation`, not exempt, because nothing reads it before the request has an identity. The role
+holds `SELECT` and `INSERT` and nothing else; the row leaves by the cascade from `users`. The stored
+instant is the promised one, so a repeat reads it and never recomputes. [erasure.md](erasure.md) owns
+the rule; the grants are argued in `app-role-grants.sql`.
+
+**Alternatives considered:**
+- **A column on `users`**: rejected. It needs the pinned user-row columns widened and an `UPDATE`
+  grant on `users`, and a column there could never be made exempt for a later read across accounts.
+- **A `requested_at` column**: rejected. Nothing reads it, and a second timestamp is one more thing
+  an export, a log or the erasure would have to answer for.
+- **A `CHECK` pinning the delay to seven days**: rejected. The length is product policy, and
+  [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) keeps policy above the
+  invariants. `ErasureSchedule.Request` refuses only a delay that is not positive.
+
+**Consequences:** no statement this role can issue moves a date or removes a row. A path that
+withdrew a schedule would need a `DELETE` grant the table does not hold.
+
+**Affected areas:** [erasure.md](erasure.md), [data isolation](../engineering/data-isolation.md).
+
+---
+
 ## 2026-10-01 — The email change keeps the provider token ahead of the passkey for the server property alone, and its client review fixes
 
 **Context:** the 2026-09-30 entry rejected *the passkey before the provider token* because a lapsed

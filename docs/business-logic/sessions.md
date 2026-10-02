@@ -788,8 +788,11 @@ required members. A third writer is a decision rather than a refactor.
 
 ---
 
-- **Rule**: A session whose kind reads no budget content reaches **one** route — the one that ends
-  sessions. Every other route answers `403`, and every one of those refusals is the same answer.
+- **Rule**: A session whose kind reads no budget content reaches **two** routes — the one that ends
+  sessions, and `POST /api/me/erasure/schedule`, which files the account's erasure for seven days
+  out. Every other route answers `403`, and every one of those refusals is the same answer. The
+  schedule route is also the one route a **full** session is refused: it is for a locked session
+  only.
 - **Why**: the kind has been on the row since sessions existed and on the request's claims since a
   cookie authenticated one, and until this requirement **nothing read either**: a locked session was
   answered normally by every route, ambient budget and all. What the rule protects is the thing a
@@ -824,25 +827,57 @@ required members. A third writer is a decision rather than a refactor.
   line twice over: it makes the fallback readable off the route table, and a later change of default
   cannot silently move every route that declares nothing onto some other handler. Routes opt out
   with `AllowsLockedSessionAttribute`; the opted-out set is exactly
-  `POST /api/me/session/revocation`, read whole off the route table by `LockedSessionTests`. The
+  `POST /api/me/session/revocation` and `POST /api/me/erasure/schedule`, read whole off the route
+  table by `LockedSessionTests`, which carries a paragraph arguing each. The
   kind claim is judged by a **round trip** — parse, then compare the presented text ordinally
   against what the parsed member renders as — because `Enum.TryParse` admits `"full"` under its
   case-insensitive overload and `"1"` under *every* overload, and the claim is written by
   `SessionKind.ToString()`. `SessionKindReach.ReadsBudgetContent` is the single definition of the
   rule; `Session.ReadsBudgetContent` calls it rather than restating the comparison, so a kind added
   later cannot be admitted by one caller and refused by the other.
+  - **The locked-only route is held by a second requirement on the same fallback policy, and an
+    opt-in marker.** `LockedSessionOnlyRequirement` rides the fallback beside
+    `FullSessionRequirement`. Its handler succeeds on every route not carrying
+    `RequiresLockedSessionAttribute`, and on a marked route only for a kind claim that round-trips to
+    exactly `Locked` — an equality, never "reads no budget content", so a kind added later reaches no
+    locked-only route until somebody edits that line. The marker **narrows and never widens**: a
+    locked session gets past `FullSessionRequirement` only by `AllowsLockedSessionAttribute`, so a
+    locked-only route carries **both**, and one carrying the narrowing marker alone refuses every
+    session there is. **Opt-in, because the other polarity cannot ship**: a gate on by default would
+    refuse every full session in the product until each route argued its way out. The cost is that
+    a forgotten marker is quiet — a full session reaches the route and nothing goes red at runtime —
+    so the route is pinned twice: by `ErasureScheduleEndpointTests`, which refuses a full session
+    beside a locked one succeeding on the same account, and by `LockedSessionTests`, whose census
+    reads the locked-only set whole off the route table and whose
+    `EveryLockedOnlyRoute_AlsoAllowsALockedSession` refuses a route carrying one marker without the
+    other. The handler is registered in `Program.cs`, and `LockedSessionOnlyRequirementTests`
+    resolves the registered set — unregistered, the fallback carries a requirement nothing can
+    satisfy, a `403` on every authenticated request. Three other shapes were refused:
+    - **The route declaring a policy of its own.** It would be the first route outside the
+      registration group to leave the fallback policy, and leaving it means the route carries only
+      the rules it restates — the cookie scheme, an authenticated user, every requirement beside
+      them.
+    - **A kind check in the route delegate or the handler.** It refuses the same requests and is
+      invisible to the route table, so no census can read which routes carry it.
+    - **Teaching `FullSessionRequirement` to refuse a full session on marked routes.** A requirement
+      named for admitting full sessions would then also refuse them, and its name would lie.
   - **The gate is unreachable from any live route today**, which is exactly how one ships broken and
     green: nothing establishes a locked session, because the only credential type that opens one is
-    `Federated` and the federated path mints no cookie. Every test seeds the session and its handle
-    directly through the database, and each refusal is paired with a `Full` session on the same
-    account against the same route — without that arm, a policy refusing everybody passes.
+    `Federated` and the federated path mints no cookie. That covers both markers: the schedule route
+    is reached only by a test that seeds a locked session. Every test seeds the session and its
+    handle directly through the database, and each refusal is paired with a `Full` session on the
+    same account against the same route — without that arm, a policy refusing everybody passes. The
+    schedule route's pairing runs the other way round: the full session is refused and the locked
+    one succeeds.
   - **A principal arriving here with no kind claim is refused, and nothing escapes on its scheme.**
     The fallback names the cookie scheme, so `AuthorizationMiddleware` re-authenticates against that
     handler alone — which makes a claimless principal a cookie principal without one, a session this
     product did not write. **Do not add an escape for another scheme**: one existed while a bridge
     forwarded bearer-bearing requests to `JwtBearer`, and it was a hole with a comment on it rather
     than a rule.
-- **Example**: `POST /api/me/session/revocation` answers `204` to a locked session;
+- **Example**: `POST /api/me/session/revocation` answers `204` to a locked session, and
+  `POST /api/me/erasure/schedule` answers it `200` with the instant the erasure takes effect while
+  answering a full session on the same account `403`, with the same body as the refusals below;
   `GET /api/accounts`, `GET /api/me`, `GET /api/me/export`, `GET /api/me/credentials`,
   `GET /api/me/account-keys` and
   `POST /api/me/erasure` each answer `403` with a body identical to the others and naming no
@@ -863,9 +898,11 @@ required members. A third writer is a decision rather than a refactor.
 - **Counterexample**: refusing a locked session by publishing no ambient budget for it. It looks
   equivalent and is not — the export reads `budgets` by `user_id`, so it would sail through, and
   every other route would fail with a raw exception rather than a refusal.
-- **Note**: `SessionKind.Locked` is *meant* to reach one more thing — requesting the account's
-  erasure, the release valve for somebody holding nothing but a provider sign-in. That is later
-  work, and the enum's own doc says so; today the erasure route is refused like everything else.
+- **Note**: the schedule route is the release valve for somebody holding nothing but a provider
+  sign-in, and it exists; the sign-in that would bring them to it does not. The **immediate**
+  erasure, `POST /api/me/erasure`, is refused to a locked session like everything else. Why a
+  schedule needs no passkey, and why a full session must not file one, is argued in
+  [erasure.md](erasure.md).
 - **Source**: `[SOURCE: discussion]`
 
 ## Workflows & State Transitions
@@ -977,7 +1014,8 @@ ELSE                                                    ← an unenumerated futu
     `SessionService.ended()`, which is the part this file records.
 - **`user_isolation`** — the policy on `sessions` is the policy every user-owned table carries, keyed
   on the same session setting: `users`, `budgets`, `sessions` itself,
-  `passkey_signature_counters`, `wrapped_account_keys`, `key_rotations` and `factor_manifests`.
+  `passkey_signature_counters`, `wrapped_account_keys`, `key_rotations`, `key_rotation_seals`,
+  `factor_manifests` and `erasure_schedules`.
   Written as the whole set rather than as the neighbours, because a reader checking whether a table
   is policed reads the list they are standing in front of, and one that silently omits its own
   subject teaches them to read it as a sample. What actually holds the rule is

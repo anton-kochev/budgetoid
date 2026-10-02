@@ -104,12 +104,12 @@ public sealed record AttributionCensus(
 /// see <c>Discovery_IsBlindToARepositoryOutsideTheNamespace</c>, which is a permanent demonstration
 /// rather than a defect to fix by widening the scan. Widening only moves the blind spot; what covers
 /// it instead is <c>Discovery_FindsExactlyTheRepositoriesTheNamespaceDeclares</c>, which pins the
-/// fifteen names, so a repository that leaves the namespace goes red there rather than quietly leaving
+/// sixteen names, so a repository that leaves the namespace goes red there rather than quietly leaving
 /// the census with nothing to count.
 /// </para>
 /// <para>
 /// <b>A gap this recorded, closed, and then partly reopened by a deletion.</b> Narrowing on
-/// <c>PostgresException.ConstraintName</c> is the house rule — twelve of the fifteen repositories do it,
+/// <c>PostgresException.ConstraintName</c> is the house rule — thirteen of the sixteen repositories do it,
 /// and two of those spell it inside a helper rather than in the <c>when</c> clause. Having a narrowed
 /// <c>catch</c> is not the same as having it <i>tested from both sides</i>, and
 /// <see cref="PinnedElsewhere" /> says per entry which halves exist. It once said, for three entries,
@@ -133,7 +133,7 @@ public sealed record AttributionCensus(
 /// one that hides a gap it does have, and the second is only easier to notice.
 /// </para>
 /// <para>
-/// <b>What is not claimed is that the fifteen are now uniformly covered</b> — only that every entry says
+/// <b>What is not claimed is that the sixteen are now uniformly covered</b> — only that every entry says
 /// which halves it holds. <c>SessionRepository</c> holds neither and says so, because it translates
 /// nothing; <c>SessionTokenRepository</c> says the stronger version of that, having no <c>catch</c> at
 /// all over a member that writes nothing; <c>NarrativeResealRepository</c> used to say a third version —
@@ -156,8 +156,8 @@ public sealed record AttributionCensus(
 /// Sabotaged in four directions before it was believed, each on synthetic input so the proof is
 /// permanent rather than a sentence about a change that was reverted: a repository in neither set, one
 /// in both, a set naming a repository that does not exist, and — the control without which the first
-/// three could all pass while the real census checked nothing — the live fifteen classified against
-/// two <b>empty</b> sets, which must report all fifteen unlisted.
+/// three could all pass while the real census checked nothing — the live sixteen classified against
+/// two <b>empty</b> sets, which must report all sixteen unlisted.
 /// </para>
 /// <para>
 /// It lives in <c>UnitTests</c> because <c>UnitTests.csproj</c> already references Infrastructure, so
@@ -219,8 +219,9 @@ public sealed class RepositoryAttributionCensusTests
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Read <see cref="AttributionPin.PinsWhat" /> on each, not the bucket name. Four of the ten are
-    /// pinned in both directions on every narrowing they hold — <c>TransactionRepository</c>;
+    /// Read <see cref="AttributionPin.PinsWhat" /> on each, not the bucket name. Five of the eleven are
+    /// pinned in both directions on every narrowing they hold — <c>ErasureScheduleRepository</c>,
+    /// whose one primary-key filter is translated and controlled in one file; <c>TransactionRepository</c>;
     /// <c>UserRepository</c>, which now holds only one narrowing because the insert that carried its
     /// other one was deleted with the provisioning path; <c>RegistrationRepository</c>, which holds
     /// both halves on all four of its narrowings, the second half being <b>one</b> test rather than
@@ -304,6 +305,31 @@ public sealed class RepositoryAttributionCensusTests
             + "ApplyAsync_WhenTheAccountIsErasedUnderneathTheSave_LetsTheConcurrencyFailureEscape erases "
             + "it during an address-only change and asserts a DbUpdateConcurrencyException on the User "
             + "entry escapes"),
+        new(
+            nameof(ErasureScheduleRepository),
+            "ErasureScheduleRepositoryTests",
+            "both halves on its one narrowing, both at the repository layer in the one file. AddAsync "
+            + "catches a DbUpdateException whose inner PostgresException carries the unique-violation "
+            + "SQLSTATE and whose ConstraintName is ErasureScheduleConfiguration.PrimaryKeyName, "
+            + "PK_erasure_schedules, and TRANSLATES it to a re-read: the losing first request of two "
+            + "answers the instant the winner stored rather than a 500 or the instant it computed. "
+            + "AddAsync_WhenARowAlreadyExists_ReturnsTheStoredInstant holds that, staging the winner's "
+            + "row on a context of its own a day earlier than the loser's request so the stored instant "
+            + "and the computed one cannot be confused, and asserting one row carrying the winner's "
+            + "instant. The same test holds the DETACH: it saves the repository's context once more "
+            + "afterwards and asserts that save succeeds, which it would not if the refused insert "
+            + "were still Added. "
+            + "THE MIS-ATTRIBUTION CONTROL IS AddAsync_WhenTheConflictNamesAnotherConstraint_LetsItEscape: "
+            + "a tracked users row reusing the seeded account's address, IX_users_email, flushed by the "
+            + "repository's own save, asserted to escape as a DbUpdateException with the unique-violation "
+            + "SQLSTATE whose ConstraintName IS IX_users_email and is not PK_erasure_schedules, with "
+            + "nothing stored. The rule had to come from another table: erasure_schedules carries one "
+            + "unique rule, its primary key, so a neighbouring rule on the same table does not exist. "
+            + "AddAsync_WhenNoRowExists_StoresAndReturnsTheGivenInstant is the control beside both, so "
+            + "an add that always threw or always re-read is told apart from a working insert. "
+            + "FindAsync's owner predicate is held there too, by "
+            + "FindAsync_ReturnsOnlyTheNamedAccountsSchedule, on the superuser connection where no "
+            + "policy can stand in for it"),
         new(
             nameof(KeyRotationRepository),
             "KeyRotationBeginEndpointTests and KeyRotationRepositoryTests",
@@ -729,6 +755,7 @@ public sealed class RepositoryAttributionCensusTests
             nameof(CategoryGroupRepository),
             nameof(CategoryRepository),
             nameof(EmailChangeRepository),
+            nameof(ErasureScheduleRepository),
             nameof(KeyRotationRepository),
             nameof(NarrativeResealRepository),
             nameof(PasskeyRepository),

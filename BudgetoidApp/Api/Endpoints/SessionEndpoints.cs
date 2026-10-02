@@ -72,7 +72,8 @@ public static class SessionEndpoints
             // The one route in the application that may be reached with a handle whose session has
             // already ended. Read the attribute before adding a second.
             .WithMetadata(new AcceptsEndedSessionAttribute())
-            // And the one route a session that reads no budget content may reach. The two markers are
+            // And one of the two routes a session that reads no budget content may reach — the other is
+            // the erasure schedule, which a full session may not. The two markers here are
             // independent and this route happens to need both: the first is about a handle that is no
             // longer good, the second about a credential that never opened the account's keys.
             .WithMetadata(new AllowsLockedSessionAttribute());

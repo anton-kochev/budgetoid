@@ -7,10 +7,9 @@ namespace Domain.Sessions;
 public enum SessionKind
 {
     /// <summary>
-    /// The session reads no budget content. Today it may end itself and nothing else: the sign-out is
-    /// the only route that opts out of the gate. Requesting the account's erasure is the one action it
-    /// is meant to gain — the release valve for somebody holding nothing but a provider sign-in — and
-    /// that is later work, not what ships.
+    /// The session reads no budget content. It may end itself, and it may schedule the account's
+    /// erasure — the release valve for somebody holding nothing but a provider sign-in, and a route
+    /// only this kind may reach.
     /// </summary>
     Locked,
 

@@ -52,6 +52,7 @@ public sealed class LockedSessionTests
     private const string CredentialsPath = "/api/me/credentials";
     private const string ErasurePath = "/api/me/erasure";
     private const string RevocationPath = "/api/me/session/revocation";
+    private const string SchedulePath = "/api/me/erasure/schedule";
 
     /// <summary>
     /// That budget content is refused to a locked session and served to a full one, on one host, from
@@ -144,9 +145,9 @@ public sealed class LockedSessionTests
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <b>The opt-out, and the only one argued for.</b> A person signed in with a provider has to be able
-    /// to sign out; a gate that refused the sign-out would leave a locked cookie on the client with no
-    /// way to shed it but waiting for expiry.
+    /// <b>The first opt-out, and one of the two argued for.</b> A person signed in with a provider has
+    /// to be able to sign out; a gate that refused the sign-out would leave a locked cookie on the client
+    /// with no way to shed it but waiting for expiry.
     /// </para>
     /// <para>
     /// <b>It is also the second control on "the policy does not refuse everything".</b> This one is green
@@ -184,6 +185,18 @@ public sealed class LockedSessionTests
     /// clears the cookie.
     /// </para>
     /// <para>
+    /// <c>POST /api/me/erasure/schedule</c> — requesting the account's erasure, which FR-113 names as the
+    /// one action a locked session offers. It is the release valve for somebody who lost every passkey
+    /// and every recovery code: without it, an account with no factors would also hold its address, and
+    /// with it the provider account, against ever registering again. What the caller learns is one
+    /// instant — when an erasure would take effect — and nothing about the account's content, its
+    /// credentials or its keys. It reads no budget content, and if it ever did it would be reading rows the
+    /// caller cannot open: a federated credential derives no key. It erases nothing on its own — it files
+    /// the instant, seven days out, at which an erasure would take effect; nothing in the product yet
+    /// cancels, shows or carries out that instant. It is also locked-<em>only</em>, which
+    /// <see cref="RoutesOnlyALockedSessionMayReach" /> argues separately.
+    /// </para>
+    /// <para>
     /// The method is part of the entry rather than decoration, for the reason
     /// <see cref="AcceptsEndedSessionTests" /> gives about its own set: a marker on a route group would
     /// admit a locked session to every verb over that prefix, including the ones added afterwards.
@@ -197,10 +210,37 @@ public sealed class LockedSessionTests
     private static readonly string[] RoutesALockedSessionMayReach =
     [
         $"POST {RevocationPath}",
+        $"POST {SchedulePath}",
     ];
 
     /// <summary>
-    /// The opted-out surface is exactly the route argued for above — no more, and no fewer.
+    /// Every route only a locked session may reach — a full session is refused there — and the argument
+    /// for each.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>POST /api/me/erasure/schedule</c> — a full session is refused because it has a better door, not
+    /// because it is trusted less. A person holding a passkey erases at once, through
+    /// <c>POST /api/me/erasure</c> and a fresh assertion; letting the same session file a seven-day
+    /// schedule instead would put a second erasure path beside that one which asks for no assertion at
+    /// all, and a stolen full session could then schedule what it could not perform. The delay exists for
+    /// the one caller who cannot prove a factor, and only that caller is admitted.
+    /// </para>
+    /// <para>
+    /// <b>The marker is opt-in, so a forgotten one is quiet</b> — a full session reaches the route and
+    /// nothing goes red at runtime. That is why this set is read whole off the route table, beside the
+    /// paired endpoint test that refuses a full session on the same account a locked one succeeds on.
+    /// A route added here needs its own paragraph answering one question: why a session that
+    /// <em>can</em> prove a factor must not be the one to use it.
+    /// </para>
+    /// </remarks>
+    private static readonly string[] RoutesOnlyALockedSessionMayReach =
+    [
+        $"POST {SchedulePath}",
+    ];
+
+    /// <summary>
+    /// The opted-out surface is exactly the routes argued for above — no more, and no fewer.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -254,6 +294,94 @@ public sealed class LockedSessionTests
         // The controls: the marker exists on this route table, and the route table was really read.
         await Assert.That(marked.Length).IsGreaterThan(0);
         await Assert.That(endpoints.Length).IsGreaterThan(marked.Length);
+    }
+
+    /// <summary>
+    /// The locked-only surface is exactly the route argued for above — no more, and no fewer.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The same shape as the opt-out census, for the opposite polarity's reason.</b> This marker is
+    /// opt-in, and an opt-in marker's failure is quiet in one direction: forgotten, a full session reaches
+    /// the route. Carried somewhere it was not argued for, it refuses every full session on a route that
+    /// served them — loud, but only once somebody calls it. Reading the set whole off the route table is
+    /// what makes either a decision somebody signs.
+    /// </para>
+    /// <para>
+    /// The two counts at the end are the controls, for the reason the census above gives.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task EveryRouteOnlyALockedSessionMayReach_IsTheOneArguedFor()
+    {
+        // Arrange
+        await using ApiFactory factory = new(
+            "Host=localhost;Port=5432;Database=unused;Username=postgres;Password=postgres",
+            environment: "Production");
+        EndpointDataSource dataSource = factory.Services.GetRequiredService<EndpointDataSource>();
+
+        // Act
+        RouteEndpoint[] endpoints = dataSource.Endpoints.OfType<RouteEndpoint>().ToArray();
+        string[] marked = endpoints
+            .Where(endpoint => endpoint.Metadata.GetMetadata<RequiresLockedSessionAttribute>() is not null)
+            .Select(endpoint =>
+                $"{MethodsOf(endpoint)} {endpoint.RoutePattern.RawText ?? string.Empty}")
+            .Distinct(StringComparer.Ordinal)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+
+        // Assert
+        await Assert.That(string.Join(", ", marked))
+            .IsEqualTo(string.Join(", ", RoutesOnlyALockedSessionMayReach.Order(StringComparer.Ordinal)));
+
+        // The controls: the marker exists on this route table, and the route table was really read.
+        await Assert.That(marked.Length).IsGreaterThan(0);
+        await Assert.That(endpoints.Length).IsGreaterThan(marked.Length);
+    }
+
+    /// <summary>
+    /// Every route carrying the locked-only marker also carries the opt-out from the full-session gate.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The locked-only marker narrows and never widens.</b> A locked session reaches a route only by the
+    /// route escaping <see cref="FullSessionRequirement" />; the locked-only marker on its own admits
+    /// nobody, so a route carrying it without the opt-out refuses every session there is — a full one by
+    /// the new requirement, a locked one by the old. Both censuses above would stay green over that route
+    /// if it were simply absent from both lists, which is why this is its own statement rather than a
+    /// consequence of theirs.
+    /// </para>
+    /// <para>
+    /// Read off the live route table, with the marked count as the control: a table carrying no
+    /// locked-only route satisfies "every such route also opts out" while proving nothing.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task EveryLockedOnlyRoute_AlsoAllowsALockedSession()
+    {
+        // Arrange
+        await using ApiFactory factory = new(
+            "Host=localhost;Port=5432;Database=unused;Username=postgres;Password=postgres",
+            environment: "Production");
+        EndpointDataSource dataSource = factory.Services.GetRequiredService<EndpointDataSource>();
+
+        // Act
+        RouteEndpoint[] lockedOnly = dataSource.Endpoints
+            .OfType<RouteEndpoint>()
+            .Where(endpoint => endpoint.Metadata.GetMetadata<RequiresLockedSessionAttribute>() is not null)
+            .ToArray();
+        string[] withoutTheOptOut = lockedOnly
+            .Where(endpoint => endpoint.Metadata.GetMetadata<AllowsLockedSessionAttribute>() is null)
+            .Select(endpoint =>
+                $"{MethodsOf(endpoint)} {endpoint.RoutePattern.RawText ?? string.Empty}")
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+
+        // Assert — joined, so a failure names the route that refuses everybody.
+        await Assert.That(string.Join(", ", withoutTheOptOut)).IsEqualTo(string.Empty);
+
+        // The control: there is a locked-only route to judge.
+        await Assert.That(lockedOnly.Length).IsGreaterThan(0);
     }
 
     /// <summary>
