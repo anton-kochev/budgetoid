@@ -1,4 +1,3 @@
-using System.Security.Claims;
 using Domain.Sessions;
 using Microsoft.AspNetCore.Authorization;
 
@@ -22,8 +21,9 @@ public sealed class FullSessionRequirement : IAuthorizationRequirement;
 /// <remarks>
 /// <para>
 /// <b>Every arm that does not succeed simply returns.</b> <c>Fail</c> is never called: it would veto the
-/// policy for every other handler as well, and this requirement is one of two on the fallback policy
-/// rather than the last word on the request. Leaving it unsatisfied is what refuses the request, and it
+/// policy for every other handler as well, and this requirement is one of three on the fallback policy —
+/// beside the authenticated-user rule and <see cref="LockedSessionOnlyRequirement" /> — rather than the
+/// last word on the request. Leaving it unsatisfied is what refuses the request, and it
 /// is the answer a handler that ran out of things to check should give.
 /// </para>
 /// <para>
@@ -67,32 +67,14 @@ public sealed class FullSessionRequirementHandler : AuthorizationHandler<FullSes
         // — the registration group's — declares itself and so never reaches this requirement at all. A
         // principal arriving here with no kind claim is therefore a cookie principal that does not have
         // one, which is a session this product did not write.
-        if (ReadsBudgetContent(
-                context.User.FindFirstValue(SessionCookieAuthenticationHandler.SessionKindClaimType)))
+        // The read is SessionCookieAuthenticationHandler.TryReadSessionKind's, which is where the round
+        // trip that refuses "full" and "1" is argued, and which LockedSessionOnlyRequirementHandler shares.
+        if (SessionCookieAuthenticationHandler.TryReadSessionKind(context.User, out SessionKind kind)
+            && kind.ReadsBudgetContent())
         {
             context.Succeed(requirement);
         }
 
         return Task.CompletedTask;
     }
-
-    /// <summary>
-    /// Whether <paramref name="claimValue" /> is a kind this product wrote, and one that reads budget
-    /// content.
-    /// </summary>
-    /// <remarks>
-    /// <b>The round trip is the rule, and a bare <c>Enum.TryParse</c> is not a substitute for it</b> — the
-    /// same argument <c>CanonicalIdentifier</c> makes about a format that is not a spelling. Two families of
-    /// value get in without it. The obvious call is the case-insensitive overload, which admits
-    /// <c>"full"</c>; and <em>every</em> overload accepts a numeric string, so <c>"1"</c> parses to
-    /// <see cref="SessionKind.Full" /> under the case-sensitive one too. The claim is written by
-    /// <c>SessionKind.ToString()</c>, which produces exactly one spelling per member, so comparing the
-    /// presented text back against what the parsed member renders as is the only formulation that cannot
-    /// drift from the value the authentication handler actually published. Anything else here is an
-    /// account opened by a value nothing in this product ever wrote.
-    /// </remarks>
-    private static bool ReadsBudgetContent(string? claimValue) =>
-        Enum.TryParse(claimValue, out SessionKind kind)
-        && string.Equals(claimValue, kind.ToString(), StringComparison.Ordinal)
-        && kind.ReadsBudgetContent();
 }

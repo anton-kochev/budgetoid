@@ -68,15 +68,51 @@ public sealed class SessionCookieAuthenticationHandler(
     /// <see cref="SessionKind" /> spells it.
     /// </summary>
     /// <remarks>
-    /// Read by <see cref="FullSessionRequirement" />'s handler, on the application's fallback policy and
-    /// therefore on every route that declares nothing: a session whose kind does not read budget content
-    /// is answered 403 unless the route carries <see cref="AllowsLockedSessionAttribute" />. Carried as a
-    /// claim rather than re-read per request so that the answer a request acts on is the one its own
-    /// authentication reached. An identity that authenticated on this scheme and carries no such claim
-    /// reaches nothing — the requirement refuses what it cannot find, because a missing claim is a
-    /// session nobody proved anything about rather than a session with nothing to prove.
+    /// Read, through <see cref="TryReadSessionKind" /> and nowhere else, by the handlers of the two
+    /// requirements on the application's fallback policy and therefore on every route that declares
+    /// nothing: <see cref="FullSessionRequirement" /> answers 403 to a session whose kind does not read
+    /// budget content unless the route carries <see cref="AllowsLockedSessionAttribute" />, and
+    /// <see cref="LockedSessionOnlyRequirement" /> answers 403 to anything but a locked session on a route
+    /// carrying <see cref="RequiresLockedSessionAttribute" />. Carried as a claim rather than re-read per
+    /// request so that the answer a request acts on is the one its own authentication reached. An
+    /// identity that authenticated on this scheme and carries no such claim reaches nothing — both
+    /// requirements refuse what they cannot find, because a missing claim is a session nobody proved
+    /// anything about rather than a session with nothing to prove.
     /// </remarks>
     public const string SessionKindClaimType = "session_kind";
+
+    /// <summary>
+    /// Reads the kind claim off <paramref name="principal" />, answering <see langword="true" /> only when
+    /// it is present and spelled exactly as this handler writes it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The round trip is the rule, and a bare <c>Enum.TryParse</c> is not a substitute for it</b> — the
+    /// same argument <c>CanonicalIdentifier</c> makes about a format that is not a spelling. Two families of
+    /// value get in without it. The obvious call is the case-insensitive overload, which admits
+    /// <c>"full"</c>; and <em>every</em> overload accepts a numeric string, so <c>"1"</c> parses to
+    /// <see cref="SessionKind.Full" /> under the case-sensitive one too. The claim is written by
+    /// <c>SessionKind.ToString()</c>, which produces exactly one spelling per member, so comparing the
+    /// presented text back against what the parsed member renders as is the only formulation that cannot
+    /// drift from the value this handler actually published. Anything else is an account opened by a value
+    /// nothing in this product ever wrote.
+    /// </para>
+    /// <para>
+    /// <b>One definition beside the write, because two readers depend on it.</b> Restated in each
+    /// requirement handler, the first one to be "simplified" would admit a spelling the other refuses. A
+    /// single-value read on purpose: this scheme writes the claim once, and a principal carrying two is
+    /// one it did not build — <c>FindFirst</c> judges the first, which is no worse than judging none.
+    /// </para>
+    /// </remarks>
+    internal static bool TryReadSessionKind(ClaimsPrincipal principal, out SessionKind kind)
+    {
+        ArgumentNullException.ThrowIfNull(principal);
+
+        string? claimValue = principal.FindFirstValue(SessionKindClaimType);
+
+        return Enum.TryParse(claimValue, out kind)
+               && string.Equals(claimValue, kind.ToString(), StringComparison.Ordinal);
+    }
 
     protected override async Task<AuthenticateResult> HandleAuthenticateAsync()
     {

@@ -146,23 +146,26 @@ builder.Services.AddAuthentication(SessionCookieAuthenticationHandler.SchemeName
             ValidateIssuerSigningKey = true
         };
     });
-// The fallback policy carries two rules: authenticated at all, and a session that reads the account's
-// budget content. It applies to every route that declares no policy of its own, which is everything
-// outside the AllowAnonymous surface and the registration group — so the second rule reaches the
-// routes nobody thought about, and a route that must admit a locked session declares
-// AllowsLockedSessionAttribute and says why. See that attribute for the polarity argument and
-// FullSessionRequirement for the decision.
+// The fallback policy carries three rules: authenticated at all, a session that reads the account's
+// budget content, and a locked session on a route marked for one. It applies to every route that
+// declares no policy of its own, which is everything outside the AllowAnonymous surface and the
+// registration group — so the second rule reaches the routes nobody thought about, and a route that
+// must admit a locked session declares AllowsLockedSessionAttribute and says why. See that attribute
+// for the polarity argument and FullSessionRequirement for the decision. The third judges only a route
+// carrying RequiresLockedSessionAttribute, which therefore carries the opt-out too; see
+// LockedSessionOnlyRequirement.
 //
 // It names the session cookie scheme, which is also the default one. Restating it is worth the line:
 // it makes the fallback readable off the route table, the way RegistrationRouteTests already reads the
 // registration group's own scheme, and it means a later change of default cannot silently move every
 // route that declares nothing onto some other handler.
 builder.Services.AddSingleton<IAuthorizationHandler, FullSessionRequirementHandler>();
+builder.Services.AddSingleton<IAuthorizationHandler, LockedSessionOnlyRequirementHandler>();
 builder.Services.AddAuthorizationBuilder()
     .SetFallbackPolicy(new AuthorizationPolicyBuilder()
         .AddAuthenticationSchemes(SessionCookieAuthenticationHandler.SchemeName)
         .RequireAuthenticatedUser()
-        .AddRequirements(new FullSessionRequirement())
+        .AddRequirements(new FullSessionRequirement(), new LockedSessionOnlyRequirement())
         .Build());
 builder.Services.ConfigureHttpJsonOptions(options =>
 {
