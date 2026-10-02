@@ -93,8 +93,9 @@ public static class KeyRotationEndpoints
         // AllowAnonymous set against a written list, so one here is a red there rather than a quiet
         // widening, which is the point of that test.
         //
-        // No AllowsLockedSessionAttribute: the opted-out set is exactly POST /api/me/session/revocation
-        // and this route is not it. A rotation reseals every narrative column in the account, so a
+        // No AllowsLockedSessionAttribute: the opted-out set is exactly POST /api/me/session/revocation,
+        // POST /api/me/erasure/schedule and GET /api/me/session — LockedSessionTests reads it whole —
+        // and this route is not among them. A rotation reseals every narrative column in the account, so a
         // session opened by the federated credential reaching it would be a caller who cannot hold the
         // account's keys asking for the generation those keys are sealed under to move.
         //

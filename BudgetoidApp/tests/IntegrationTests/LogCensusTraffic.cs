@@ -65,6 +65,7 @@ internal static class LogCensusTraffic
     private const string SignOutPath = "/api/me/session/revocation";
     private const string ErasurePath = "/api/me/erasure";
     private const string ErasureSchedulePath = "/api/me/erasure/schedule";
+    private const string SessionReadPath = "/api/me/session";
     private const string RotationPath = "/api/me/key-rotation";
     private const string EmailChangePath = "/api/me/email-change";
 
@@ -543,6 +544,12 @@ internal static class LogCensusTraffic
 
             using HttpClient locked = CookieClient(factory, Base64UrlText.Encode(token));
             statuses.Add((int)(await locked.PostAsync(ErasureSchedulePath, content: null)).StatusCode);
+
+            // The session read, on the same locked session and after the schedule, so the answer carries
+            // every member it can — the kind, the expiry and the filed instant — and its logging is
+            // searched with all three in play. Here rather than on the passkey client because a locked
+            // session holding a schedule is the fullest body this route writes.
+            statuses.Add((int)(await locked.GetAsync(SessionReadPath)).StatusCode);
         });
 
         await Step(ErasureStep, async statuses =>

@@ -738,10 +738,11 @@ public sealed class KeyRotationResumptionEndpointTests
     /// <para>
     /// <b>The route must declare no <see cref="AllowsLockedSessionAttribute" />, which is the whole of what
     /// this case asks about.</b> <see cref="FullSessionRequirement" /> rides the fallback policy and the
-    /// opted-out set is exactly <c>POST /api/me/session/revocation</c>. This read hands back the staged
-    /// generation of an account's content key and index key; a session opened by the federated credential
-    /// derives no key-encryption key at all, so a caller reaching it is one that can open none of what it
-    /// is being handed.
+    /// opted-out set is <c>POST /api/me/session/revocation</c>, <c>POST /api/me/erasure/schedule</c> and
+    /// <c>GET /api/me/session</c>, read whole by <see cref="LockedSessionTests" />. This read hands back
+    /// the staged generation of an account's content key and index key; a session opened by the federated
+    /// credential derives no key-encryption key at all, so a caller reaching it is one that can open none
+    /// of what it is being handed.
     /// </para>
     /// <para>
     /// <b>THE FULL-SESSION ARM IS NOT A CONTROL, IT IS WHAT MAKES THIS CASE ABOUT A ROUTE AT ALL — and

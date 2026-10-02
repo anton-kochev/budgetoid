@@ -82,10 +82,10 @@ because every one of these is something a reader will otherwise simplify away.
   the session-and-token pair — are argued in
   [sessions.md](docs/business-logic/sessions.md) and
   [ADR 0019](docs/decisions/0019-authenticate-a-request-from-a-first-party-session-cookie.md).
-- **A session opened by a federated credential reaches two routes, and the gate is opt-out.**
+- **A session opened by a federated credential reaches three routes, and the gate is opt-out.**
   `FullSessionRequirement` rides the fallback policy; a route escapes with
-  `AllowsLockedSessionAttribute`, and the opted-out set is exactly `POST /api/me/session/revocation`
-  and `POST /api/me/erasure/schedule`. Polarity follows from which mistake is audible. The schedule
+  `AllowsLockedSessionAttribute`, and the opted-out set is exactly `POST /api/me/session/revocation`,
+  `GET /api/me/session` and `POST /api/me/erasure/schedule`. Polarity follows from which mistake is audible. The schedule
   route also carries `RequiresLockedSessionAttribute`, read by `LockedSessionOnlyRequirement` on the
   same fallback, so a full session is refused there — **a schedule is not an erasure**, and the
   passkey rule governs only the immediate one. `LockedSessionTests` reads both sets whole.

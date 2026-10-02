@@ -788,11 +788,17 @@ required members. A third writer is a decision rather than a refactor.
 
 ---
 
-- **Rule**: A session whose kind reads no budget content reaches **two** routes — the one that ends
-  sessions, and `POST /api/me/erasure/schedule`, which files the account's erasure for seven days
-  out. Every other route answers `403`, and every one of those refusals is the same answer. The
-  schedule route is also the one route a **full** session is refused: it is for a locked session
-  only.
+- **Rule**: A session whose kind reads no budget content reaches **three** routes — the one that
+  ends sessions, `GET /api/me/session`, which tells the caller what it holds, and
+  `POST /api/me/erasure/schedule`, which files the account's erasure for seven days out. Every other
+  route answers `403`, and every one of those refusals is the same answer. The schedule route is
+  also the one route a **full** session is refused: it is for a locked session only.
+  - **`GET /api/me/session` answers what the caller already holds, and nothing else**: its kind
+    (`"full"` or `"locked"`, spelled as every establishing leg spells it), its own expiry from the
+    row, and its account's scheduled erasure instant or `null`. No session, account, budget or
+    credential identifier, no email. Both kinds reach it, because a client has to learn which one it
+    holds: a locked tab asking `GET /api/me` gets the `403` every budget route gives it, which reads
+    as no session at all. `SessionReadEndpointTests` pins the member set whole.
 - **Why**: the kind has been on the row since sessions existed and on the request's claims since a
   cookie authenticated one, and until this requirement **nothing read either**: a locked session was
   answered normally by every route, ambient budget and all. What the rule protects is the thing a
@@ -827,7 +833,8 @@ required members. A third writer is a decision rather than a refactor.
   line twice over: it makes the fallback readable off the route table, and a later change of default
   cannot silently move every route that declares nothing onto some other handler. Routes opt out
   with `AllowsLockedSessionAttribute`; the opted-out set is exactly
-  `POST /api/me/session/revocation` and `POST /api/me/erasure/schedule`, read whole off the route
+  `POST /api/me/session/revocation`, `GET /api/me/session` and `POST /api/me/erasure/schedule`, read
+  whole off the route
   table by `LockedSessionTests`, which carries a paragraph arguing each. The
   kind claim is judged by a **round trip** — parse, then compare the presented text ordinally
   against what the parsed member renders as — because `Enum.TryParse` admits `"full"` under its
@@ -875,7 +882,8 @@ required members. A third writer is a decision rather than a refactor.
     product did not write. **Do not add an escape for another scheme**: one existed while a bridge
     forwarded bearer-bearing requests to `JwtBearer`, and it was a hole with a comment on it rather
     than a rule.
-- **Example**: `POST /api/me/session/revocation` answers `204` to a locked session, and
+- **Example**: `POST /api/me/session/revocation` answers `204` to a locked session,
+  `GET /api/me/session` answers it `200` with `"kind": "locked"`, and
   `POST /api/me/erasure/schedule` answers it `200` with the instant the erasure takes effect while
   answering a full session on the same account `403`, with the same body as the refusals below;
   `GET /api/accounts`, `GET /api/me`, `GET /api/me/export`, `GET /api/me/credentials`,

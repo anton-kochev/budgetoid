@@ -53,6 +53,7 @@ public sealed class LockedSessionTests
     private const string ErasurePath = "/api/me/erasure";
     private const string RevocationPath = "/api/me/session/revocation";
     private const string SchedulePath = "/api/me/erasure/schedule";
+    private const string SessionPath = "/api/me/session";
 
     /// <summary>
     /// That budget content is refused to a locked session and served to a full one, on one host, from
@@ -145,7 +146,7 @@ public sealed class LockedSessionTests
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <b>The first opt-out, and one of the two argued for.</b> A person signed in with a provider has
+    /// <b>The first opt-out, and one of the three argued for.</b> A person signed in with a provider has
     /// to be able to sign out; a gate that refused the sign-out would leave a locked cookie on the client
     /// with no way to shed it but waiting for expiry.
     /// </para>
@@ -197,6 +198,18 @@ public sealed class LockedSessionTests
     /// <see cref="RoutesOnlyALockedSessionMayReach" /> argues separately.
     /// </para>
     /// <para>
+    /// <c>GET /api/me/session</c> — the session telling its holder what it is. A locked tab that reloads
+    /// has to learn that it is signed in and locked: <c>GET /api/me</c> refuses it 403, and a client
+    /// reading that refusal as "signed out" sends a signed-in person back to the front door with no way
+    /// to reach the one action FR-113 gives them. What the caller learns is the session's kind, its
+    /// expiry, and the instant at which its own account's erasure would take effect, if one is filed —
+    /// facts about the sign-in it already holds and the act it may already have taken. Nothing of the
+    /// account's content, its credentials or its keys, and no identifier: no session, account or budget
+    /// id and no address. It reads no budget content; the schedule it reads is policed on the caller's own
+    /// account. It is <em>not</em> locked-only — a full session asks the same question and gets the same
+    /// shape of answer.
+    /// </para>
+    /// <para>
     /// The method is part of the entry rather than decoration, for the reason
     /// <see cref="AcceptsEndedSessionTests" /> gives about its own set: a marker on a route group would
     /// admit a locked session to every verb over that prefix, including the ones added afterwards.
@@ -211,6 +224,7 @@ public sealed class LockedSessionTests
     [
         $"POST {RevocationPath}",
         $"POST {SchedulePath}",
+        $"GET {SessionPath}",
     ];
 
     /// <summary>

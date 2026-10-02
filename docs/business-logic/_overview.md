@@ -113,8 +113,8 @@ existence, are in [users-and-ownership.md](users-and-ownership.md).
 There is exactly **one role — the authenticated owner — reached by two tiers of session.**
 Everything below describes an owner signed in on a **full** session, which is what a passkey or a
 redeemed recovery code opens. A **locked** session, which only a federated sign-in opens, is the
-same person with the same ownership and reaches two routes: ending itself, and scheduling the
-account's erasure for seven days out. Every other route answers `403`, including the export and the
+same person with the same ownership and reaches three routes: ending itself, reading what kind of
+session it is, and scheduling the account's erasure for seven days out. Every other route answers `403`, including the export and the
 immediate erasure. Nothing establishes a locked session yet, so today only the integration suite
 reaches either. That is not a second role — nothing is scoped differently and nobody else is
 admitted anywhere — it is the same owner whose credential cannot hold the account's keys. See
