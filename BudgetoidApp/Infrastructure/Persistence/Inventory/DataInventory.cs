@@ -99,13 +99,13 @@ public static class DataInventory
     /// </para>
     /// <para>
     /// <b>One entry per column, and never a reason written at table grain for its columns to
-    /// inherit.</b> Sixty-nine written reasons is a real cost and the obvious saving is the wrong one:
+    /// inherit.</b> Seventy-one written reasons is a real cost and the obvious saving is the wrong one:
     /// a reason argued about a table drifts the moment a column arrives that it was not about, which
     /// is exactly why <see cref="Provisioning.TableExemption" /> had to grow
     /// <see cref="Provisioning.TableExemption.ColumnsTheReasonCovers" />, and why the rule there is
-    /// <i>move the column, do not widen the pin</i>. The twelve wholly-excluded tables below are
-    /// twelve tables' worth of separate arguments, not twelve sentences and a rubber stamp — and the six
-    /// <c>rotation_id</c> stamps are six more, spread across six owned tables that each lose
+    /// <i>move the column, do not widen the pin</i>. The thirteen wholly-excluded tables below are
+    /// thirteen tables' worth of separate arguments, not thirteen sentences and a rubber stamp — and
+    /// the six <c>rotation_id</c> stamps are six more, spread across six owned tables that each lose
     /// something different by publishing one.
     /// </para>
     /// <para>
@@ -730,6 +730,25 @@ public static class DataInventory
             + "from the live row it is compared against: it only ever answers 'is this still the "
             + "generation I read', and a file has no read to compare with. What a reader of a "
             + "published one would learn is how churned the person's recovery setup has been"),
+
+        // erasure_schedules — one row per account that asked, from a locked session, to be erased
+        // after a delay. Filed once, never rewritten, and gone with the account. Both columns are
+        // excluded, and the two arguments differ because the columns do.
+        ColumnClassificationEntry.Excluded(
+            "erasure_schedules",
+            "user_id",
+            "repeats the account already named by the exported user, here on the row that says the "
+            + "account has asked to be released. That is account-control state rather than content: "
+            + "it records what somebody did to the account's existence, not anything recorded inside "
+            + "it, and the person loses nothing by its absence from a file the account already names"),
+        ColumnClassificationEntry.Excluded(
+            "erasure_schedules",
+            "takes_effect_at_utc",
+            "the instant the account stops existing — a pending act on the account rather than "
+            + "anything the person recorded. A file taken inside the window would freeze a claim the "
+            + "account itself is about to move: withdrawing the schedule would remove the row, and the "
+            + "erasure removes the account, so a durable copy would go on stating a date that no "
+            + "longer binds or an account that no longer exists"),
     ];
 
     /// <summary>The entries carrying one classification, in the order the list declares them.</summary>

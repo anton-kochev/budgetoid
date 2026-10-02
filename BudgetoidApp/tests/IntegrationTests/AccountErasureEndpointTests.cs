@@ -110,6 +110,13 @@ public sealed class AccountErasureEndpointTests
     /// <c>sessions</c> row going is not enough on its own to prove the handle went with it.
     /// </para>
     /// <para>
+    /// <c>erasure_schedules</c> is in the list because a schedule that outlived its account would be
+    /// the deletion record the no-remnant rule forbids: a row saying this user existed and asked to be
+    /// erased. It is keyed on <c>user_id</c> and leaves only through the cascade from <c>users</c> —
+    /// the role holds no <c>DELETE</c> on it — so an immediate erasure of an account that also has one
+    /// scheduled has to carry the schedule away with everything else.
+    /// </para>
+    /// <para>
     /// <b>This list is hand-written and nothing checks it against the live schema</b>, which is why
     /// <c>wrapped_account_keys</c> could be added to the database and leave every test in this file
     /// green while the FR-025 claim quietly covered one table less than it says.
@@ -127,6 +134,7 @@ public sealed class AccountErasureEndpointTests
         new("passkey_signature_counters", "user_id", OwnedBy.User),
         new("recovery_code_hashes", "user_id", OwnedBy.User),
         new("wrapped_account_keys", "user_id", OwnedBy.User),
+        new("erasure_schedules", "user_id", OwnedBy.User),
         new("budgets", "user_id", OwnedBy.User),
         new("accounts", "budget_id", OwnedBy.Budget),
         new("category_groups", "budget_id", OwnedBy.Budget),
@@ -952,6 +960,21 @@ public sealed class AccountErasureEndpointTests
         }
 
         await db.SaveChangesAsync();
+
+        // A pending schedule, so the enumeration finds a row in erasure_schedules for every furnished
+        // account — the erased one and the survivor alike. Raw SQL rather than a domain factory, which
+        // breaks this helper's own rule on purpose: the row is two columns with no factory-held
+        // invariant a raw insert could get wrong, and writing it here keeps this file compiling and
+        // running against a schema whose entity has not been written yet.
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
+        await using NpgsqlCommand schedule = new(
+            "insert into erasure_schedules (user_id, takes_effect_at_utc) " +
+            "values (@user_id, @takes_effect_at_utc)",
+            connection);
+        schedule.Parameters.AddWithValue("user_id", userId);
+        schedule.Parameters.AddWithValue("takes_effect_at_utc", SeedInstant.AddDays(7));
+        await schedule.ExecuteNonQueryAsync();
     }
 
     /// <summary>

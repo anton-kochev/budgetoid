@@ -1786,6 +1786,76 @@ public sealed class AppRoleGrantsTests
         await Assert.That(consumed).IsEqualTo(1);
     }
 
+    [Test]
+    public async Task Database_RefusesEveryUpdateAndAnyDeleteOnAnErasureSchedule_WhileStillAllowingInsert()
+    {
+        // Arrange — one account and no schedule yet. erasure_schedules is policed on the user, so the
+        // session names the owner: on a connection naming nobody the policy would answer 22P02 before
+        // any grant was consulted, and every refusal below would be the wrong one.
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
+
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(userId);
+
+        // Act — the success half first, because it is also the arrangement: user_id is the whole
+        // primary key, so the one row this account may hold is the row the refusals below aim at.
+        // Requesting an erasure writes this row, so a role holding no INSERT here would leave the
+        // feature dead — and would satisfy every refusal below on its own.
+        await using NpgsqlCommand insert = new(
+            "insert into erasure_schedules (user_id, takes_effect_at_utc) " +
+            "values (@user_id, @takes_effect_at_utc)",
+            app);
+        insert.Parameters.AddWithValue("user_id", userId);
+        insert.Parameters.AddWithValue("takes_effect_at_utc", ScheduledErasureInstant);
+        int inserted = await insert.ExecuteNonQueryAsync();
+
+        // Every column by name. takes_effect_at_utc is the one a leaked grant would really be used on:
+        // moving it is how a repeated request would push the date out, which the product says it never
+        // does. user_id is set to its OWN value, so a leaked grant lands as a no-op of one row rather
+        // than meeting user_isolation's WITH CHECK — which answers the same 42501 and would let the
+        // statement pass for the wrong reason.
+        PostgresException takesEffectRefusal = await ThrowsPostgresExceptionAsync(
+            app,
+            "update erasure_schedules set takes_effect_at_utc = @value where user_id = @id",
+            ForgedInstant,
+            userId);
+        PostgresException userRefusal = await ThrowsPostgresExceptionAsync(
+            app,
+            "update erasure_schedules set user_id = @value where user_id = @id",
+            userId,
+            userId);
+
+        // And the delete. A cancel is a later story's, and it will take this privilege by deleting the
+        // row — never by stamping it — so until that story argues for it the absence holds.
+        PostgresException deleteRefusal = await ThrowsPostgresExceptionAsync(
+            app, "delete from erasure_schedules where user_id = @id", userId);
+
+        // Assert
+        await Assert.That(inserted).IsEqualTo(1);
+        await Assert.That(takesEffectRefusal.SqlState)
+            .IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(userRefusal.SqlState).IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(deleteRefusal.SqlState).IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+
+        // And the row is untouched. A SQLSTATE says each statement was rejected; only this says none of
+        // them moved the date or removed the row on its way to failing.
+        await Assert.That(await SelectScalarAsync(
+                admin, "select takes_effect_at_utc from erasure_schedules where user_id = @id", userId))
+            .IsEqualTo(ScheduledErasureInstant);
+        await Assert.That(await SelectScalarAsync(
+                admin, "select count(*) from erasure_schedules where user_id = @id", userId))
+            .IsEqualTo(1L);
+    }
+
+    /// <summary>
+    /// The instant the seeded erasure schedule takes effect at. Distinct from
+    /// <see cref="ForgedInstant" />, so a moved date reads back as a failure.
+    /// </summary>
+    private static readonly DateTime ScheduledErasureInstant =
+        new(2026, 6, 19, 13, 14, 15, DateTimeKind.Utc);
+
     /// <summary>
     /// Fixed UTC instant for rows these tests write. PostgreSQL <c>timestamptz</c> rejects a
     /// non-UTC <see cref="DateTime" />, so <see cref="DateTimeKind.Utc" /> is load-bearing.

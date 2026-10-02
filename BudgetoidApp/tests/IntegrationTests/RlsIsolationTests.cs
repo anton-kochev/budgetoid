@@ -1380,6 +1380,129 @@ public sealed class RlsIsolationTests
     }
 
     [Test]
+    public async Task Database_HidesAnotherAccountsErasureSchedule_FromASessionNamingThisUser()
+    {
+        // Arrange — two owners with one schedule each, seeded on the superuser connection. Two owners
+        // because this table is isolated by user, and user_id is its primary key: a second schedule
+        // under the same owner is unstorable, so a single-owner arrangement would leave the foreign
+        // count at zero with or without a policy.
+        await using RepositoryTestHost host = await StartHostAsync();
+        (RepositoryTestHost.SeededOwner session, RepositoryTestHost.SeededOwner other) =
+            await SeedTwoOwnersAsync(host);
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await using (NpgsqlCommand seedOwn = BuildErasureScheduleInsertProbe(admin, session.UserId))
+        {
+            await seedOwn.ExecuteNonQueryAsync();
+        }
+
+        await using (NpgsqlCommand seedOther = BuildErasureScheduleInsertProbe(admin, other.UserId))
+        {
+            await seedOther.ExecuteNonQueryAsync();
+        }
+
+        await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(session.UserId);
+
+        // Act — both halves, on one session. The own count is not decoration: a policy that hides
+        // every row from everyone satisfies the foreign half on its own, and only this notices.
+        long own = await CountKeyedRowsAsync(app, "erasure_schedules", "user_id", session.UserId);
+        long foreign = await CountKeyedRowsAsync(app, "erasure_schedules", "user_id", other.UserId);
+
+        // Assert — a schedule says when an account stops existing. Read across accounts it tells one
+        // person that another is about to go, and on this table that is the whole of what a row says.
+        await Assert.That(own).IsEqualTo(1L);
+        await Assert.That(foreign).IsEqualTo(0L);
+    }
+
+    [Test]
+    public async Task Database_RefusesAnErasureScheduleInsertNamingAnotherAccount()
+    {
+        // Arrange — two owners and no schedule for either, so the row each probe writes is that
+        // account's first and the primary key cannot be what refuses anything.
+        await using RepositoryTestHost host = await StartHostAsync();
+        (RepositoryTestHost.SeededOwner session, RepositoryTestHost.SeededOwner other) =
+            await SeedTwoOwnersAsync(host);
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(session.UserId);
+
+        // Act — the WITH CHECK half, which is the only half a SELECT cannot reach: hiding another
+        // account's schedule says nothing about whether this session can schedule that account's
+        // erasure, and a USING-only policy would let this through. That is the row this table exists
+        // to keep out — one person putting a date on another account's end.
+        await using NpgsqlCommand forOther = BuildErasureScheduleInsertProbe(app, other.UserId);
+        PostgresException? refusal = await CaptureRefusalAsync(forOther);
+
+        // The positive control, on the SAME connection and differing only in the owner it names.
+        // Without it every assertion below is satisfied by a role that holds no INSERT here at all,
+        // because a privilege failure answers the same 42501.
+        await using NpgsqlCommand forOwn = BuildErasureScheduleInsertProbe(app, session.UserId);
+        int inserted = await forOwn.ExecuteNonQueryAsync();
+
+        // Assert — the null coalesce is for the failure message: a bare refusal?.SqlState renders a
+        // statement that went through as the empty string, which reads as a blank SQLSTATE rather than
+        // as no exception at all.
+        await Assert.That(refusal?.SqlState ?? "no error")
+            .IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(inserted).IsEqualTo(1);
+
+        // And it was the POLICY that refused rather than the grant, said by the server rather than
+        // inferred from the pair above. "permission denied for table erasure_schedules" is the other
+        // sentence this SQLSTATE carries.
+        await Assert.That(refusal?.MessageText ?? "no error")
+            .Contains("row-level security policy for table \"erasure_schedules\"");
+
+        // And nothing landed. A SQLSTATE says the statement was rejected; only this says the other
+        // account still has no schedule at all. On the superuser connection, which row-level security
+        // does not apply to — no policed session could answer this question about another account.
+        await Assert.That(await CountKeyedRowsAsync(
+                admin, "erasure_schedules", "user_id", other.UserId))
+            .IsEqualTo(0L);
+        await Assert.That(await CountKeyedRowsAsync(
+                admin, "erasure_schedules", "user_id", session.UserId))
+            .IsEqualTo(1L);
+    }
+
+    [Test]
+    public async Task Database_RefusesAnErasureScheduleReadOnASessionNamingNobody()
+    {
+        // Arrange — a bare app-role connection: no set_config, so the session declares nobody. This is
+        // the shape of every bug where application code forgets to publish an identity, and it must
+        // fail loudly rather than quietly returning an empty result — which on this table reads as
+        // "nothing is scheduled", the answer a caller would show a person whose account is going.
+        await using RepositoryTestHost host = await StartHostAsync();
+        (RepositoryTestHost.SeededOwner session, _) = await SeedTwoOwnersAsync(host);
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await using (NpgsqlCommand seed = BuildErasureScheduleInsertProbe(admin, session.UserId))
+        {
+            await seed.ExecuteNonQueryAsync();
+        }
+
+        await using NpgsqlConnection bare = new(host.AppConnectionString);
+        await bare.OpenAsync();
+
+        // Act — the row is seeded, and that is a precondition rather than a convenience. A policy qual
+        // is only evaluated when there are candidate rows, so the same query over an empty table
+        // returns zero rows without ever touching the setting and this guarantee does not reach it.
+        // That is the honest limit of what this test proves.
+        await using NpgsqlCommand read = new("select count(*) from erasure_schedules", bare);
+        PostgresException? refusal = await CaptureRefusalAsync(read);
+
+        // Assert — 22P02, the same failure every other policed table pins, and for the same reason: the
+        // policy reads the setting as COALESCE(current_setting('app.current_user_id', true), '')::uuid,
+        // so an unset setting reaches it as the ''::uuid cast. One bug, one SQLSTATE.
+        await Assert.That(refusal?.SqlState ?? "no error")
+            .IsEqualTo(PostgresErrorCodes.InvalidTextRepresentation);
+
+        // The owner's own row is still there — the refusal above is the connection's doing, not a
+        // seeding failure that would make the SQLSTATE assertion meaningless.
+        await Assert.That(await CountKeyedRowsAsync(
+                admin, "erasure_schedules", "user_id", session.UserId))
+            .IsEqualTo(1L);
+    }
+
+    [Test]
     public async Task Database_ReadsAPasskeyPublicKeyWithNoUserOnTheSession()
     {
         // Arrange — one registered passkey and a bare app-role connection: no set_config, so the
@@ -2246,6 +2369,35 @@ public sealed class RlsIsolationTests
         RepositoryTestHost.EncapsulatedAccountKeysPayload(ProbeSealFiller);
 
     private const byte ProbeSealFiller = 0x7C;
+
+    /// <summary>
+    /// The instant every probed erasure schedule takes effect at. Distinct from every other constant
+    /// here, so a read-back cannot pass on a column nobody wrote.
+    /// </summary>
+    private static readonly DateTime ScheduledErasureInstant =
+        new(2026, 6, 19, 13, 14, 15, DateTimeKind.Utc);
+
+    /// <summary>
+    /// Builds the INSERT probe for <c>erasure_schedules</c>, owned by <paramref name="ownerId" />,
+    /// every column named.
+    /// </summary>
+    /// <remarks>
+    /// The table's only edge is <c>user_id → users</c>, and every owner seeded here exists, so the
+    /// only things that can refuse a row this builds are the primary key and the policy — and every
+    /// caller arranges that the key is free.
+    /// </remarks>
+    private static NpgsqlCommand BuildErasureScheduleInsertProbe(
+        NpgsqlConnection connection,
+        Guid ownerId)
+    {
+        NpgsqlCommand command = new(
+            "insert into erasure_schedules (user_id, takes_effect_at_utc) " +
+            "values (@user_id, @takes_effect_at_utc)",
+            connection);
+        command.Parameters.AddWithValue("user_id", ownerId);
+        command.Parameters.AddWithValue("takes_effect_at_utc", ScheduledErasureInstant);
+        return command;
+    }
 
     /// <summary>
     /// Writes one live challenge on the superuser connection and returns its id. The nonce is 32

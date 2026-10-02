@@ -33,10 +33,10 @@ column of `credentials` — is one PostgreSQL refuses to write at all
 well, on both axes. `budget_isolation` policies on the five budget-owned tables mean that role
 reaches no other budget's rows on any statement and can insert into no budget but the ambient one,
 so the query filters above them shape the answer rather than hold the boundary
-([ADR 0005](../decisions/0005-isolate-budget-owned-rows-with-row-level-security.md)); the eight
+([ADR 0005](../decisions/0005-isolate-budget-owned-rows-with-row-level-security.md)); the nine
 tables policed on the **user** instead by `user_isolation` — `users`, `budgets`,
 `sessions`, `passkey_signature_counters`, `wrapped_account_keys`, `key_rotations`,
-`key_rotation_seals` and `factor_manifests` — are keyed there because a budget *is* the tenant and so
+`key_rotation_seals`, `factor_manifests` and `erasure_schedules` — are keyed there because a budget *is* the tenant and so
 has no ambient budget to be checked against
 ([ADR 0011](../decisions/0011-police-the-user-owned-tables.md)). Carrying `user_id` is not by itself
 what decides it: `credentials`, `passkey_public_keys`, `recovery_code_hashes` and `session_tokens`

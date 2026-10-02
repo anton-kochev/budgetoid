@@ -938,6 +938,26 @@ public sealed class ErasureAtomicityTests
         }
 
         await db.SaveChangesAsync();
+
+        // A pending schedule, in erasure_schedules — a table the enumeration discovers and the
+        // non-vacuity guard reports as a zero until something puts a row in it. An account with an
+        // erasure scheduled can still be erased at once by a passkey, and the row has to go with it:
+        // FK_erasure_schedules_users cascades from users, and the role holds no DELETE here, so this
+        // seed is what exercises that edge on both paths — rolled back intact when the user delete
+        // fails, gone when it does not.
+        //
+        // Raw SQL rather than a factory, which breaks the remarks' rule on purpose: the row is two
+        // columns with no factory-held invariant a raw insert could get wrong, and writing it here
+        // keeps this file running against a schema whose entity has not been written yet.
+        await using NpgsqlConnection connection = new(host.ConnectionString);
+        await connection.OpenAsync();
+        await using NpgsqlCommand schedule = new(
+            "insert into erasure_schedules (user_id, takes_effect_at_utc) " +
+            "values (@user_id, @takes_effect_at_utc)",
+            connection);
+        schedule.Parameters.AddWithValue("user_id", userId);
+        schedule.Parameters.AddWithValue("takes_effect_at_utc", SeedInstant.AddDays(7));
+        await schedule.ExecuteNonQueryAsync();
     }
 
     /// <summary>

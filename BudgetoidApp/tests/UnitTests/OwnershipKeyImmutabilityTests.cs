@@ -135,6 +135,15 @@ public sealed class OwnershipKeyImmutabilityTests
             "Category.BudgetId",
             "CategoryGroup.BudgetId",
             "Credential.UserId",
+            // The primary key of erasure_schedules, a table policed by user_isolation and granted
+            // SELECT and INSERT with no UPDATE of any shape, so the database half refuses every
+            // statement that would move user_id after the insert. Unlike the factories around it,
+            // ErasureSchedule.Request takes the owner as an argument rather than reading it off a
+            // loaded entity; what is to keep that argument honest is that the handler filing a schedule
+            // takes it from the session's IUserContext, never from a request body. The private setter
+            // is the half a grant cannot see: Request is the one place the value is set, and a
+            // settable UserId would let a schedule be re-pointed at another account after it was.
+            "ErasureSchedule.UserId",
             // The primary key of factor_manifests, a per-account table policed by user_isolation —
             // the manifest belongs to the account, not to any one factor, so there is exactly one row
             // per user rather than one per credential. FactorManifest.For reads the owner off the

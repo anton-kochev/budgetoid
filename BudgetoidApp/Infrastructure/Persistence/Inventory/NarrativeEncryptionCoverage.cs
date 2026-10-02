@@ -34,7 +34,7 @@ namespace Infrastructure.Persistence.Inventory;
 /// <para>
 /// <b>The two type members are a floor and the two check members are the ceiling, and reading the
 /// pair the other way round is the mistake available here.</b> Measured over this model: <b>22</b> of
-/// the 110 mapped columns already have an effective provider type of <c>byte[]</c>, and <b>14</b> of
+/// the 112 mapped columns already have an effective provider type of <c>byte[]</c>, and <b>14</b> of
 /// those are not narrative — the four <c>name_key</c> blind indexes, <c>session_tokens.token_hash</c>,
 /// <c>recovery_code_hashes.verifier_hash</c>, both of <c>wrapped_account_keys</c>' payload columns,
 /// <c>key_rotations.staged_manifest</c>, <c>key_rotation_seals.encapsulated_account_keys</c>,

@@ -11,8 +11,8 @@ Enforced today:
 - **Row-level security, on both axes.** A `budget_isolation` policy on `accounts`,
   `category_groups`, `categories`, `payees` and `transactions` compares `budget_id` against the
   session's ambient budget, and a `user_isolation` policy on `users`, `budgets`, `sessions`,
-  `passkey_signature_counters`, `wrapped_account_keys`, `key_rotations`, `key_rotation_seals` and
-  `factor_manifests`
+  `passkey_signature_counters`, `wrapped_account_keys`, `key_rotations`, `key_rotation_seals`,
+  `factor_manifests` and `erasure_schedules`
   compares `id` and `user_id` against the session's authenticated user — each in both `USING` and
   `WITH CHECK`, so the connection every request is served by reaches no other tenant's rows and can insert into
   no tenant but its own, whatever produced the statement. `SessionContextInterceptor` puts both
@@ -249,7 +249,7 @@ Enforced today:
   a passkey name no budget at all, so there is none to filter them by. That is a statement about the
   *read-side filter* only, and it no longer travels with the coverage exemption: `users`, `budgets`,
   `sessions`, `passkey_signature_counters`, `wrapped_account_keys`, `key_rotations`,
-  `key_rotation_seals` and `factor_manifests` are
+  `key_rotation_seals`, `factor_manifests` and `erasure_schedules` are
   policed on the user, while `credentials`, `passkey_public_keys`, `recovery_code_hashes`,
   `session_tokens` and `webauthn_challenges` are
   exempt. The first four have to be — reading them is how a request discovers who is asking and
@@ -281,7 +281,7 @@ the policies instead, and a cross-budget read comes back empty rather than popul
 Still do not introduce them on budget-scoped data: an empty result where the code expects
 a row is a bug, and a connection that names no ambient budget — or no ambient user, for
 `users`, `budgets`, `sessions`, `passkey_signature_counters`, `wrapped_account_keys`,
-`key_rotations`, `key_rotation_seals` and `factor_manifests` — fails
+`key_rotations`, `key_rotation_seals`, `factor_manifests` and `erasure_schedules` — fails
 with `22P02` rather than answering. The build enforces this list: `BannedSymbols.txt` (referenced by
 `Infrastructure` and `Api`, the only projects with an EF reference) turns each API below
 into an RS0030 compile error.

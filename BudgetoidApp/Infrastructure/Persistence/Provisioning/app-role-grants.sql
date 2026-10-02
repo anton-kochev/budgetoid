@@ -123,7 +123,7 @@ GRANT SELECT ON currencies TO budgetoid_app;
 -- users → budgets → {payees, accounts, category_groups → categories}, users → credentials →
 -- {sessions → session_tokens, passkey_public_keys, passkey_signature_counters,
 -- recovery_code_hashes, wrapped_account_keys → key_rotation_seals}, users → key_rotations →
--- key_rotation_seals, and users → factor_manifests — and
+-- key_rotation_seals, users → factor_manifests, and users → erasure_schedules — and
 -- PostgreSQL performs a
 -- referential action through internal triggers that run with the privileges of the REFERENCING
 -- table's owner, not of the role that issued the statement. So this one grant empties the
@@ -168,8 +168,8 @@ GRANT SELECT ON currencies TO budgetoid_app;
 --
 -- The children holding no DELETE of any shape are budgets, payees, sessions, session_tokens,
 -- passkey_public_keys, passkey_signature_counters, wrapped_account_keys, key_rotations,
--- key_rotation_seals and factor_manifests. Three of them are the ones to read carefully, and they span
--- the whole width of the list. key_rotations holds SELECT, INSERT and a column-listed UPDATE and
+-- key_rotation_seals, factor_manifests and erasure_schedules. Three of them are the ones to read
+-- carefully, and they span the whole width of the list. key_rotations holds SELECT, INSERT and a column-listed UPDATE and
 -- still no DELETE of any shape, so it belongs here rather than being mistaken for a write-free table;
 -- ITS OWN block argues why staging needs the insert and the update together and why the delete waits
 -- for the completion step that clears the staging. factor_manifests holds SELECT, INSERT and a
@@ -177,7 +177,10 @@ GRANT SELECT ON currencies TO budgetoid_app;
 -- first manifest in the same save as the account, the update is a promotion rewriting that one row in
 -- place — and still no DELETE at all, because a manifest leaves only by the cascade from users. It
 -- belongs here for the same reason the first one does: this is a list of absent DELETEs, not a list of
--- read-only tables and not a list of write-free ones.
+-- read-only tables and not a list of write-free ones. erasure_schedules is the one entry whose absence
+-- is a wait rather than a rule: withdrawing a schedule will take DELETE by removing the row, and its
+-- own block says so. Until then the cascade from users is the only way out for a row, which is what
+-- keeps a schedule from outliving the account it names.
 -- key_rotation_seals STAYED ON THIS LIST WHILE GAINING TWO WRITES, and it carries the one correction
 -- worth repeating up here: its seals were said to leave by the ON DELETE CASCADE from key_rotations
 -- when a second begin replaced the staging row, and a second begin UPDATES that row in place rather
@@ -795,6 +798,36 @@ REVOKE ALL ON factor_manifests FROM budgetoid_app;
 GRANT SELECT, INSERT ON factor_manifests TO budgetoid_app;
 GRANT UPDATE (manifest, rotation_epoch) ON factor_manifests TO budgetoid_app;
 
+-- erasure_schedules: SELECT AND INSERT, AND NOTHING ELSE OF ANY SHAPE. One row per account, saying
+-- when that account's erasure takes effect. Requesting an erasure from a locked session writes the
+-- row once; a repeat request reads it back and answers the stored instant, so the date never moves.
+--
+-- SELECT, because the repeat request reads the row back, and because an ungranted SELECT is the one
+-- absence that hides something: NarrativeSecrecyTests' plaintext scan would meet 42501 here and report
+-- the table UNSCANNABLE, so two secrecy gates would pass while covering one table fewer than the
+-- schema holds.
+--
+-- INSERT, because filing the schedule is that statement. It is policed: user_isolation's WITH CHECK
+-- compares user_id against app.current_user_id, so a session can file a schedule for its own account
+-- and nobody else's.
+--
+-- NO UPDATE, NOT EVEN A COLUMN LIST, and the absence is the rule rather than a wait. There is no
+-- statement for one to serve — a repeat reads, it does not rewrite — and a grant on takes_effect_at_utc
+-- would be the first spelling of "a repeat pushes the date out", which the product says never happens.
+-- user_id is the primary key and the tenancy column at once, so it is immutable here as everywhere.
+--
+-- NO DELETE YET, and that absence IS a wait. Withdrawing a schedule is later work, and it takes DELETE
+-- by removing the row — never by stamping a cancelled_at, which would be a remnant on an account that
+-- asked to be forgotten. Rows still leave without it: FK_erasure_schedules_users cascades from users,
+-- and a referential action runs with the referencing table owner's privileges rather than this role's,
+-- so an erasure carries the row away although the role could not delete it itself.
+--
+-- The table is POLICED rather than exempt: it carries user_id, so the coverage classifier reaches that
+-- verdict from the columns without being told. Nothing here is read before the request has an
+-- identity. See the policy at the foot of this file.
+REVOKE ALL ON erasure_schedules FROM budgetoid_app;
+GRANT SELECT, INSERT ON erasure_schedules TO budgetoid_app;
+
 -- budgets: ONE UPDATE, ONE COLUMN, and it is the exception ASM-004 names rather than a softening of
 -- rule B2. No command may change a budget's name: it is sealed once, at creation, and no route accepts
 -- a rename. The one operation that must rewrite it is a content-key rotation (FR-099), which re-seals
@@ -1336,5 +1369,26 @@ CREATE POLICY user_isolation ON key_rotation_seals FOR ALL TO budgetoid_app
 ALTER TABLE factor_manifests ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS user_isolation ON factor_manifests;
 CREATE POLICY user_isolation ON factor_manifests FOR ALL TO budgetoid_app
+    USING      (user_id = COALESCE(current_setting('app.current_user_id', true), '')::uuid)
+    WITH CHECK (user_id = COALESCE(current_setting('app.current_user_id', true), '')::uuid);
+
+-- erasure_schedules says when an account's erasure takes effect, one row per account. It sits on the
+-- same side of the same boundary as the tables above it, and the test is the one the header states:
+-- not "is this sensitive" but "is this reachable before the request has an identity". It is not — a
+-- schedule is filed and read only from a session that has already resolved whose account it is — so a
+-- policy costs nothing and the table is policed rather than exempt.
+--
+-- Both halves matter, and on this table WITH CHECK is the one a reader would underrate. USING hides
+-- another account's schedule, which on its own would tell one person that somebody else's account is
+-- about to go. WITH CHECK refuses an INSERT naming another account, and that row is the one this table
+-- exists to keep out: one person putting a date on another account's end.
+--
+-- The policy is FOR ALL while the grant is SELECT and INSERT, for the reason the factor_manifests
+-- block gives: a policy is not a privilege, so the day withdrawing a schedule takes DELETE, the rows it
+-- may reach are already decided rather than decided in a hurry. It reads only the ownership column,
+-- like every policy above it; the instant is not an isolation axis.
+ALTER TABLE erasure_schedules ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS user_isolation ON erasure_schedules;
+CREATE POLICY user_isolation ON erasure_schedules FOR ALL TO budgetoid_app
     USING      (user_id = COALESCE(current_setting('app.current_user_id', true), '')::uuid)
     WITH CHECK (user_id = COALESCE(current_setting('app.current_user_id', true), '')::uuid);

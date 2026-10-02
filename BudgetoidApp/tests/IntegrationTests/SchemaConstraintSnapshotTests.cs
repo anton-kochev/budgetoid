@@ -133,6 +133,19 @@ public sealed class SchemaConstraintSnapshotTests
             // no longer exist, kept against nobody. Turned to Restrict it would also leave a remnant of
             // an erasure in the schema, which docs/business-logic/erasure.md forbids outright.
             "factor_manifests.FK_factor_manifests_users: FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE",
+            // SINGLE-COLUMN AND STRAIGHT TO users, for the reason the factor_manifests row above gives:
+            // a schedule belongs to the account, not to the credential whose locked session asked for
+            // it, and the owner is the whole primary key. Keyed to the credential instead, an email
+            // change retiring that credential would take the schedule with it — the date a person was
+            // told would vanish because they moved address.
+            //
+            // CASCADE, AND ON THIS TABLE IT IS THE RULE RATHER THAN THE DEFAULT. The row exists to say
+            // when the account goes; once the account has gone, a row still naming it is a record that
+            // this user existed and asked to be erased — the deletion record
+            // docs/business-logic/erasure.md forbids outright. Restrict would be worse in the other
+            // direction too: the erasure the schedule is waiting for would be refused by its own
+            // schedule.
+            "erasure_schedules.FK_erasure_schedules_users: FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE",
             "categories.FK_categories_category_groups_category_group_id_budget_id: FOREIGN KEY (category_group_id, budget_id) REFERENCES category_groups(id, budget_id) ON DELETE RESTRICT",
             "category_groups.FK_category_groups_budgets_budget_id: FOREIGN KEY (budget_id) REFERENCES budgets(id) ON DELETE CASCADE",
             // Cascade, and deliberately not Restrict: a credential is how the account is reached,
@@ -438,6 +451,13 @@ public sealed class SchemaConstraintSnapshotTests
             // this key already answers. Its absence from this list is therefore correct rather than an
             // omission, and it is not a unique index anyway.
             """CREATE UNIQUE INDEX "PK_factor_manifests" ON public.factor_manifests USING btree (user_id)""",
+            // KEYED ON THE OWNER, the third table in this set borrowing PK_key_rotations' shape. "An
+            // account holds at most one scheduled erasure" is what lets a repeat request answer the
+            // instant it was first told rather than a second, later one: two racing requests collide
+            // here and the loser re-reads the winner's row. A surrogate id beside user_id would make the
+            // second schedule storable, and an account would then carry two dates with nothing saying
+            // which one binds.
+            """CREATE UNIQUE INDEX "PK_erasure_schedules" ON public.erasure_schedules USING btree (user_id)""",
             // Both keyed on credential_id alone, which is what makes each table hold at most one row
             // per credential: a key that could be joined by a second row, or a counter that could,
             // would leave the ceremony with two answers and no rule saying which one binds.

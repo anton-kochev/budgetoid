@@ -70,7 +70,9 @@ served to a browser that presents one, and the manifest is the account's list of
 exist — a map of the front door, in an artifact that outlives every session that could have vouched
 for whoever is holding it. `key_rotation_seals` belongs with them: it holds one encapsulated value
 per factor for the account's latest rotation, and completion leaves those rows standing.
-`currencies` is global reference data belonging to no tenant. Every column of all twelve is
+`erasure_schedules` is account control too: it holds the instant a requested erasure of the
+account takes effect, a claim a file saved inside that window would freeze while the account moves
+on. `currencies` is global reference data belonging to no tenant. Every column of all thirteen is
 classified *excluded* in `DataInventory`, one written argument each, which is where a table joining
 this list has to earn its place.
 

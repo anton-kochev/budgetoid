@@ -4,6 +4,7 @@ using Domain.Budgets;
 using Domain.Categories;
 using Domain.CategoryGroups;
 using Domain.Currencies;
+using Domain.Erasure;
 using Domain.Payees;
 using Domain.Sessions;
 using Domain.Transactions;
@@ -101,6 +102,13 @@ public sealed class BudgetoidDbContext(
     // request has an identity — a client asks what to encapsulate to once it already knows whose
     // account it is — so every read must both carry its own user_id filter and stay policed.
     public DbSet<FactorManifest> FactorManifests => Set<FactorManifest>();
+
+    // Erasure schedules are unfiltered for the reason the three sets above them are: a schedule says
+    // when an ACCOUNT stops existing, so it names no budget and could not. Isolation on user_id comes
+    // from the user_isolation policy, which this table is subject to rather than exempt from: it is
+    // written and read only from a session that has already resolved whose account it is, so every
+    // read must both carry its own user_id filter and stay policed.
+    public DbSet<ErasureSchedule> ErasureSchedules => Set<ErasureSchedule>();
 
     // Internal rather than public, following its row type: nothing outside this assembly has a reason
     // to read a protocol nonce, and a public set would be the first step towards one.
