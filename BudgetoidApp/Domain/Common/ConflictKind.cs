@@ -279,4 +279,21 @@ public enum ConflictKind
     /// </para>
     /// </remarks>
     AccountIdentityMoved,
+
+    /// <summary>
+    /// A locked sign-in arrived carrying a live full session, and it would have replaced it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The remedy is to do nothing.</b> The caller is already signed in with more than a locked
+    /// sign-in would give them, so nothing is written and the cookie the browser holds still opens what
+    /// it opened. A live <em>locked</em> session is not refused: the sign-in replaces it.
+    /// </para>
+    /// <para>
+    /// <b>Deliberately not <see cref="SubjectAlreadyRegistered"/>.</b> That one is said to somebody with
+    /// no session, and tells them to sign in with a passkey; this caller already holds a session that
+    /// opens everything.
+    /// </para>
+    /// </remarks>
+    FullSession,
 }

@@ -32,6 +32,7 @@ public abstract record LockedSignInOutcome
     public sealed record Established(SessionSummary Session, SessionHandoff Handoff) : LockedSignInOutcome;
 
     /// <summary>No account holds a federated credential under the presented provider identity.</summary>
-    /// <remarks>Nothing was published and nothing was written.</remarks>
+    /// <remarks>The handler published nothing and wrote nothing. A request that arrived carrying a live
+    /// locked cookie still holds the account the cookie scheme published for it.</remarks>
     public sealed record NoAccount : LockedSignInOutcome;
 }

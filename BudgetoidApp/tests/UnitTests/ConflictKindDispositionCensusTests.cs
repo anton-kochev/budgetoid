@@ -185,6 +185,18 @@ public sealed partial class ConflictKindDispositionCensusTests
     private static readonly ConflictSitePin[] Pinned =
     [
         new(
+            "Api/Endpoints/SessionEndpoints.cs",
+            [nameof(ConflictKind.FullSession)],
+            "The locked sign-in refusing to replace a live FULL session, judged in the route delegate "
+            + "before the handler runs, so nothing is written and the cookie the browser holds still "
+            + "opens what it opened. The first conflict raised in the Api ring, and it sits there "
+            + "because the fact it judges is the request's own session cookie, which no handler sees. "
+            + "The remedy is to do nothing: the caller is already signed in with more than this sign-in "
+            + "would give them. Deliberately NOT SubjectAlreadyRegistered, which tells somebody with no "
+            + "session to sign in with a passkey, and deliberately NOT a 'refusal' member: every 409 "
+            + "carries conflictKind. A live LOCKED session is not refused and appears in no entry here "
+            + "— the sign-in replaces it"),
+        new(
             "Application/KeyRotations/CompleteKeyRotation/CompleteKeyRotationHandler.cs",
             [
                 nameof(ConflictKind.RotationAlreadyCompleted),
@@ -288,6 +300,7 @@ public sealed partial class ConflictKindDispositionCensusTests
                 nameof(ConflictKind.RotationNameCollision),
                 nameof(ConflictKind.ProviderIdentityInUse),
                 nameof(ConflictKind.AccountIdentityMoved),
+                nameof(ConflictKind.FullSession),
             ],
             "NOT A THROW SITE. This is the spelling table's switch, in declaration order, and it is "
             + "pinned for the same reason the scan is keyed on the enum reference rather than on a "

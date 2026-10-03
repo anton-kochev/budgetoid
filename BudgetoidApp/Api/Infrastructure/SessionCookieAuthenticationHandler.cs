@@ -68,16 +68,18 @@ public sealed class SessionCookieAuthenticationHandler(
     /// <see cref="SessionKind" /> spells it.
     /// </summary>
     /// <remarks>
-    /// Read, through <see cref="TryReadSessionKind" /> and nowhere else, by the handlers of the two
-    /// requirements on the application's fallback policy and therefore on every route that declares
-    /// nothing: <see cref="FullSessionRequirement" /> answers 403 to a session whose kind does not read
-    /// budget content unless the route carries <see cref="AllowsLockedSessionAttribute" />, and
+    /// Read, through <see cref="TryReadSessionKind" /> and nowhere else, by three readers. Two are the
+    /// handlers of the requirements on the application's fallback policy and therefore on every route that
+    /// declares nothing: <see cref="FullSessionRequirement" /> answers 403 to a session whose kind does not
+    /// read budget content unless the route carries <see cref="AllowsLockedSessionAttribute" />, and
     /// <see cref="LockedSessionOnlyRequirement" /> answers 403 to anything but a locked session on a route
-    /// carrying <see cref="RequiresLockedSessionAttribute" />. Carried as a claim rather than re-read per
-    /// request so that the answer a request acts on is the one its own authentication reached. An
-    /// identity that authenticated on this scheme and carries no such claim reaches nothing — both
-    /// requirements refuse what they cannot find, because a missing claim is a session nobody proved
-    /// anything about rather than a session with nothing to prove.
+    /// carrying <see cref="RequiresLockedSessionAttribute" />. The third is the locked sign-in in
+    /// <c>SessionEndpoints</c>, which answers 409 <c>full_session</c> rather than replace a live session
+    /// whose kind is anything but locked. Carried as a claim rather than re-read per request so that the
+    /// answer a request acts on is the one its own authentication reached. An identity that authenticated
+    /// on this scheme and carries no such claim reaches nothing and replaces nothing — all three refuse
+    /// what they cannot find, because a missing claim is a session nobody proved anything about rather
+    /// than a session with nothing to prove.
     /// </remarks>
     public const string SessionKindClaimType = "session_kind";
 
@@ -98,8 +100,9 @@ public sealed class SessionCookieAuthenticationHandler(
     /// nothing in this product ever wrote.
     /// </para>
     /// <para>
-    /// <b>One definition beside the write, because two readers depend on it.</b> Restated in each
-    /// requirement handler, the first one to be "simplified" would admit a spelling the other refuses. A
+    /// <b>One definition beside the write, because three readers depend on it</b> — the two requirement
+    /// handlers and the locked sign-in's refusal. Restated in each, the first one to be "simplified" would
+    /// admit a spelling another refuses. A
     /// single-value read on purpose: this scheme writes the claim once, and a principal carrying two is
     /// one it did not build — <c>FindFirst</c> judges the first, which is no worse than judging none.
     /// </para>

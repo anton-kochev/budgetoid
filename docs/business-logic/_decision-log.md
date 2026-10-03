@@ -8,6 +8,55 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-10-03 — A Google sign-in never replaces a live full session: the locked sign-in answers 409 `full_session` and writes nothing
+
+**Context:** `POST /api/locked-session` replaced whatever session cookie the browser held. The client
+guards against posting over a session — the bootstrap drops the hand-off when the startup probe
+finds one — but it keeps the hand-off when the probe answers `unreachable`. That return could
+replace a passkey holder's full cookie with a locked one and show them the release screen, which
+tells them their data is unrecoverable.
+
+**Decision:**
+- **A weaker proof never overwrites a stronger sign-in.** A live full session beside the provider
+  token — or one whose kind cannot be read — is refused `409` with `conflictKind: "full_session"`.
+  The handler never runs: nothing is written, no cookie is set, and the full session stays live.
+  The detail names no subject, address or account.
+- **A live locked session is still replaced**, on the same account or another. The new cookie
+  overwrites the old one, and the old row stays live until it expires, as with every sign-in that
+  overwrites a cookie.
+- **An ended session falls through**, because it authenticates as nothing on this route.
+- **The check runs in the route's delegate**, after the claim gate and before the handler. It
+  authenticates the cookie scheme by name and judges that result, never `HttpContext.User`.
+- **`full_session` is a conflict kind**, because every `409` in the product carries one
+  ([payees.md](payees.md)).
+
+[ADR 0028](../decisions/0028-open-a-locked-session-from-the-federated-credential.md) owns the
+mechanism; [sessions.md](sessions.md) owns the rule.
+
+**Alternatives considered:**
+- **Keep replacing**: rejected. It leaves the browser's drop as the guard, and the drop does not run
+  on an `unreachable` probe.
+- **Revoke the full session and open a locked one**: rejected. The same downgrade, made permanent.
+- **Answer `200` without replacing**: rejected. The body would describe a locked session the
+  browser does not hold.
+- **Refuse a live locked session too**: rejected. A stale locked cookie is `HttpOnly`, so the
+  client cannot clear it, and the person this route exists for would be refused.
+- **An endpoint filter**: rejected. A type and a registration for one route, and its order against
+  the claim gate would hang on registration order.
+- **A flag on the command**: rejected. Application cannot see a cookie; replacing one is transport.
+- **A requirement on the route's policy**: rejected. That policy authenticates the provider scheme
+  alone and never sees the cookie.
+
+**Consequences:** the locked sign-in's refusals are described as "the handler publishes nothing",
+never "nothing is published": the cookie is the default scheme, so a cookie on the request has
+already published its own account, and a live one its budget, before the route runs. Nothing
+policed runs after a `404` or a `409`. The web client has no branch for `full_session` and reads
+that `409` as `undetermined`.
+
+**Affected areas:** [sessions.md](sessions.md), [data isolation](../engineering/data-isolation.md).
+
+---
+
 ## 2026-10-03 — The release screen is a link from Welcome to a route of its own, confirmed by an acknowledgement, and it offers no recovery code as a way in
 
 **Context:** the server can open a locked session from a Google sign-in and file a schedule from it.

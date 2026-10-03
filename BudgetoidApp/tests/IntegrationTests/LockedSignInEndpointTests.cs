@@ -150,6 +150,199 @@ public sealed class LockedSignInEndpointTests
     }
 
     /// <summary>
+    /// A browser holding one account's locked cookie and presenting another account's provider token
+    /// opens everything on the token's account and nothing on the cookie's.
+    /// </summary>
+    /// <remarks>
+    /// The riskiest of the cases over an existing session, because a locked cookie is let through to the
+    /// handler on purpose. A route that took the account from the cookie's session — or from whatever
+    /// principal the request carried — would file the new row, or answer the schedule, for the wrong
+    /// person. Both accounts have a schedule, a day apart, so an answer read from the cookie's account is
+    /// visibly wrong; the stored row is checked for the token's account over the token's own federated
+    /// credential, never the cookie account's.
+    /// </remarks>
+    [Test]
+    public async Task LockedSignIn_WithAnotherAccountsLockedCookie_OpensEverythingOnTheTokensAccount()
+    {
+        // Arrange
+        using RSA rsa = RSA.Create(2048);
+        RsaSecurityKey signingKey = new(rsa) { KeyId = "locked-sign-in" };
+        await using PostgresTestHost host = await StartHostAsync();
+        await using ApiFactory factory = CreateRealBearerFactory(host, signingKey);
+        ApiFactory.SignedInClient cookieAccount =
+            await factory.CreateSignedInClientAsync(StrangerSubject, StrangerEmail, SessionKind.Locked);
+        ApiFactory.SignedInClient tokenAccount = await factory.CreateSignedInClientAsync(Subject, Email);
+        Guid tokenFederatedId =
+            await RepositoryTestHost.FederatedCredentialIdOnAsync(host.ConnectionString, tokenAccount.UserId);
+        DateTime own = new(2026, 11, 3, 9, 10, 11, DateTimeKind.Utc);
+        await SeedScheduleAsync(host, cookieAccount.UserId, own.AddDays(1));
+        await SeedScheduleAsync(host, tokenAccount.UserId, own);
+
+        // Act
+        HttpResponseMessage response = await PostLockedSessionAsync(
+            cookieAccount.Client, ProviderToken(signingKey, Claims(Subject, Email)));
+
+        // Assert — the answer is the token account's schedule.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        JsonObject body = await ReadJsonObjectAsync(response);
+        await Assert.That(body["kind"]!.GetValue<string>()).IsEqualTo("locked");
+        await Assert.That(ParseUtc(body["erasure"]!["takesEffectAtUtc"]!.GetValue<string>())).IsEqualTo(own);
+
+        // The row is the token account's, over its own federated credential.
+        string cookie = RegistrationCeremony.SessionCookieValueOf(response);
+        StoredSession stored = await StoredSessionOfAsync(host, cookie);
+        await Assert.That(stored.UserId).IsEqualTo(tokenAccount.UserId);
+        await Assert.That(stored.CredentialId).IsEqualTo(tokenFederatedId);
+        await Assert.That(stored.Kind).IsEqualTo("locked");
+    }
+
+    /// <summary>
+    /// A locked sign-in over a live full session is a 409 naming <c>full_session</c>, and nothing moves:
+    /// no row, no cookie, and the full cookie still opens what it opened.
+    /// </summary>
+    /// <remarks>
+    /// Two cases: the token names the session's own account, and it names another. Replacing the cookie
+    /// in the first downgrades somebody who is already signed in with a passkey; in the second it swaps
+    /// the browser to a stranger's account. The body must not repeat the subject or the address the token
+    /// carried. Counted on every table the route could write, and the full cookie is read back through
+    /// <c>GET /api/me/session</c> so a route that revoked it and answered 409 anyway is red.
+    /// </remarks>
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task LockedSignIn_OverALiveFullSession_IsRefused409FullSession_AndWritesNothing(
+        bool tokenNamesAnotherAccount)
+    {
+        // Arrange
+        using RSA rsa = RSA.Create(2048);
+        RsaSecurityKey signingKey = new(rsa) { KeyId = "locked-sign-in" };
+        await using PostgresTestHost host = await StartHostAsync();
+        await using ApiFactory factory = CreateRealBearerFactory(host, signingKey);
+        _ = await factory.CreateSignedInClientAsync(StrangerSubject, StrangerEmail);
+        ApiFactory.SignedInClient account = await factory.CreateSignedInClientAsync(Subject, Email);
+        (string tokenSubject, string tokenEmail) = tokenNamesAnotherAccount
+            ? (StrangerSubject, StrangerEmail)
+            : (Subject, Email);
+        RowCounts before = await RowCountsAsync(host);
+
+        // Act
+        HttpResponseMessage response = await PostLockedSessionAsync(
+            account.Client, ProviderToken(signingKey, Claims(tokenSubject, tokenEmail)));
+
+        // Assert — the refusal. The token is transcribed, never read from ConflictKindSpelling.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Conflict);
+        await Assert.That(await MemberOfAsync(response, "conflictKind")).IsEqualTo("full_session");
+
+        string raw = await response.Content.ReadAsStringAsync();
+        await Assert.That(raw.Contains(tokenSubject, StringComparison.Ordinal)).IsFalse();
+        await Assert.That(raw.Contains(tokenEmail, StringComparison.OrdinalIgnoreCase)).IsFalse();
+        await Assert.That(SetsAnyCookie(response)).IsFalse();
+        await Assert.That(await RowCountsAsync(host)).IsEqualTo(before);
+
+        // The full cookie still answers as itself.
+        HttpResponseMessage session = await account.Client.GetAsync(SessionPath);
+        await Assert.That(session.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        await Assert.That((await ReadJsonObjectAsync(session))["kind"]!.GetValue<string>()).IsEqualTo("full");
+    }
+
+    /// <summary>
+    /// A locked sign-in over a live locked session replaces it with a new one.
+    /// </summary>
+    /// <remarks>
+    /// The other side of the 409 above: only a full session is refused. A gate that refused any live
+    /// session would send somebody whose locked cookie is still good back with nowhere to go.
+    /// </remarks>
+    [Test]
+    public async Task LockedSignIn_OverALiveLockedSession_ReplacesIt()
+    {
+        // Arrange
+        using RSA rsa = RSA.Create(2048);
+        RsaSecurityKey signingKey = new(rsa) { KeyId = "locked-sign-in" };
+        await using PostgresTestHost host = await StartHostAsync();
+        await using ApiFactory factory = CreateRealBearerFactory(host, signingKey);
+        ApiFactory.SignedInClient account = await factory.CreateSignedInClientAsync(Subject, Email, SessionKind.Locked);
+        string oldCookie = CookieValueOf(account.Client);
+
+        // Act
+        HttpResponseMessage response = await PostLockedSessionAsync(
+            account.Client, ProviderToken(signingKey, Claims(Subject, Email)));
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        string newCookie = RegistrationCeremony.SessionCookieValueOf(response);
+        await Assert.That(newCookie).IsNotEqualTo(oldCookie);
+
+        StoredSession stored = await StoredSessionOfAsync(host, newCookie);
+        await Assert.That(stored.UserId).IsEqualTo(account.UserId);
+        await Assert.That(stored.Kind).IsEqualTo("locked");
+    }
+
+    /// <summary>
+    /// A full cookie whose session has ended is no session at all, so the sign-in succeeds over it.
+    /// </summary>
+    /// <remarks>
+    /// The session is ended through the real revocation route. A gate that judged the cookie's stored
+    /// kind without asking whether the session is still live would refuse this browser 409 forever —
+    /// the one person this route exists for, holding a cookie that opens nothing.
+    /// </remarks>
+    [Test]
+    public async Task LockedSignIn_OverAnEndedSession_Succeeds()
+    {
+        // Arrange
+        using RSA rsa = RSA.Create(2048);
+        RsaSecurityKey signingKey = new(rsa) { KeyId = "locked-sign-in" };
+        await using PostgresTestHost host = await StartHostAsync();
+        await using ApiFactory factory = CreateRealBearerFactory(host, signingKey);
+        ApiFactory.SignedInClient account = await factory.CreateSignedInClientAsync(Subject, Email);
+        HttpResponseMessage revocation = await account.Client.PostAsync(RevocationPath, content: null);
+        await Assert.That(revocation.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
+
+        // Act
+        HttpResponseMessage response = await PostLockedSessionAsync(
+            account.Client, ProviderToken(signingKey, Claims(Subject, Email)));
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        StoredSession stored = await StoredSessionOfAsync(host, RegistrationCeremony.SessionCookieValueOf(response));
+        await Assert.That(stored.UserId).IsEqualTo(account.UserId);
+        await Assert.That(stored.Kind).IsEqualTo("locked");
+    }
+
+    /// <summary>
+    /// Over a live full session, a token whose address the provider does not vouch for is the claim
+    /// gate's 401, not the conflict.
+    /// </summary>
+    /// <remarks>
+    /// The order is the point: the 409 says something true about the browser's session, and saying it to
+    /// a caller the provider never vouched for is an answer nobody earned. A conflict check placed ahead
+    /// of the claim gate answers 409 here.
+    /// </remarks>
+    [Test]
+    public async Task LockedSignIn_OverAFullSession_WithAnUnverifiedEmail_Is401NotTheConflict()
+    {
+        // Arrange
+        using RSA rsa = RSA.Create(2048);
+        RsaSecurityKey signingKey = new(rsa) { KeyId = "locked-sign-in" };
+        await using PostgresTestHost host = await StartHostAsync();
+        await using ApiFactory factory = CreateRealBearerFactory(host, signingKey);
+        ApiFactory.SignedInClient account = await factory.CreateSignedInClientAsync(Subject, Email);
+        RowCounts before = await RowCountsAsync(host);
+        Dictionary<string, object> claims = Claims(Subject, Email);
+        claims["email_verified"] = false;
+
+        // Act
+        HttpResponseMessage response = await PostLockedSessionAsync(
+            account.Client, ProviderToken(signingKey, claims));
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
+        await Assert.That(await MemberOfAsync(response, "title")).IsEqualTo(RegistrationClaimGate.UnverifiedEmailTitle);
+        await Assert.That(await MemberOfAsync(response, "conflictKind")).IsNull();
+        await Assert.That(SetsAnyCookie(response)).IsFalse();
+        await Assert.That(await RowCountsAsync(host)).IsEqualTo(before);
+    }
+
+    /// <summary>
     /// A subject nobody registered is a 404 naming <c>no_account</c>, and nothing is written.
     /// </summary>
     /// <remarks>
@@ -437,6 +630,17 @@ public sealed class LockedSignInEndpointTests
         client.DefaultRequestHeaders.Add("Cookie", $"{SessionCookieAuthenticationTests.CookieName}={cookie}");
 
         return client;
+    }
+
+    /// <summary>The session handle a seeded client presents, read back from its own header.</summary>
+    private static string CookieValueOf(HttpClient client)
+    {
+        string prefix = $"{SessionCookieAuthenticationTests.CookieName}=";
+        string header = client.DefaultRequestHeaders.GetValues("Cookie").Single();
+
+        return header.StartsWith(prefix, StringComparison.Ordinal)
+            ? header[prefix.Length..]
+            : throw new InvalidOperationException("The client presents no session cookie.");
     }
 
     private static bool SetsAnyCookie(HttpResponseMessage response) =>

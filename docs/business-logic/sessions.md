@@ -561,6 +561,15 @@ required members. A third writer is a decision rather than a refactor.
       refused mid-unlock. Both of the unlock's reads therefore carry the token, and custody publishes
       one word about the pair rather than letting the interceptor navigate. See
       [account-keys.md](account-keys.md).
+  - **Three session bodies are decoded strictly, so changing one takes two releases.**
+    `MeApiService` refuses any member it does not declare, and any declared member missing, on
+    `GET /api/me/session`, `POST /api/locked-session` and `POST /api/me/erasure/schedule`. A member
+    the server adds, renames or drops therefore ships client first — a client that accepts it
+    present or absent, then the server — for [export.md](export.md)'s reason: the two deploy jobs
+    run in parallel and an open tab keeps its old bundle. Skip the first release and every bundle
+    older than the change refuses the new body: its probe reads `unreachable`, and its release
+    sign-in and its schedule read `undetermined`. One commit carrying both halves is still that
+    outage.
 
   The **await** is what keeps every guard synchronous — bootstrapping cannot finish while the answer
   is outstanding — and `core.providers.spec.ts` pins both halves separately, because a
@@ -678,11 +687,17 @@ required members. A third writer is a decision rather than a refactor.
     back`). The next flow that needs the provider has to take the same position or re-argue this
     rule. See [email-change.md](email-change.md).
     - **Reading first does not mean keeping.** After the probe the bootstrap drops a locked
-      sign-in's hand-off when the probe found a session already open, full or locked: posting that
-      token replaces whatever session cookie the tab holds, so a full session would be downgraded
-      to a locked one. `core.providers.spec.ts` holds the drop (`is dropped once the probe finds a
-      %s session already open`) and `core.providers.cold-boot.spec.ts` holds it against the real
-      library (`hands nothing over when the probe finds a full session`).
+      sign-in's hand-off when the probe found a session already open, full or locked. Over a full
+      session the server refuses that post itself, `409` with `conflictKind: "full_session"`, and
+      writes nothing — see the locked sign-in's rule below. So the drop over a full session is a
+      restatement for the person, as [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md)
+      allows: it spares a request whose answer is known, and the release screen has no sentence
+      for that `409` — `ReleaseFlowService` reads it as `undetermined`. The server's refusal is
+      what holds when the drop does not run, because the probe answered `unreachable`. Over a
+      locked session the drop is the client's own choice: the server would replace that session.
+      `core.providers.spec.ts` holds the drop (`is dropped once the probe finds a %s session
+      already open`) and `core.providers.cold-boot.spec.ts` holds it against the real library
+      (`hands nothing over when the probe finds a full session`).
   - The rule sits in the client because the client is the only layer that holds the tokens; the
     server cannot clear a browser's storage.
 - **Enforced in**: `session.service.spec.ts` — the discard happens on `established()`, on
@@ -828,7 +843,8 @@ required members. A third writer is a decision rather than a refactor.
 
 - **Rule**: `POST /api/locked-session` turns a Google ID token, and nothing else, into a `Locked`
   session over the account's **federated** credential — or into a `404` that writes nothing. It
-  takes no body and creates no account.
+  takes no body and creates no account. **It never replaces a live full session**: a browser
+  holding one is refused `409` with `conflictKind: "full_session"`, and nothing is written.
 - **Why**: somebody whose passkeys and recovery codes are all gone still holds their Google sign-in.
   A locked session is what lets that sign-in reach the one act built for them — the erasure schedule
   — and nothing with budget content in it. See [erasure.md](erasure.md).
@@ -836,9 +852,24 @@ required members. A third writer is a decision rather than a refactor.
     shape: `RequireAuthenticatedUser` over `ProviderAuthentication.SchemeName`. Naming the scheme is
     what makes `AuthorizationMiddleware` authenticate the bearer rather than the cookie, so a browser
     already holding a session — full or locked — cannot stand in for the provider here. Declaring a
-    policy takes the route off the fallback, which is right rather than worked around: the caller
-    holds no session, so the two requirements about session kinds have nothing to judge. Not
-    `AllowAnonymous`: the provider's signature is the whole proof the session is opened on.
+    policy takes the route off the fallback, which is right rather than worked around: the two
+    requirements about session kinds judge the session a request is served under, and this route
+    serves none — it opens one. Whether the browser already holds one is the next bullet's
+    question. Not `AllowAnonymous`: the provider's signature is the whole proof the session is
+    opened on.
+  - **A weaker proof never overwrites a stronger sign-in.** The delegate's first statement, after
+    the policy and the claim gate and before the handler, authenticates the session cookie scheme
+    by name and judges that result — never `HttpContext.User`, which holds the provider's
+    principal. A live session whose kind is anything but `Locked`, or whose kind claim does not
+    read back, is refused: a `ConflictException` whose detail names no subject, address or account,
+    so the handler never runs, nothing is written and no cookie is set. A live **locked** session is
+    replaced, on the same account or another. An ended session authenticates as nothing here, so
+    its cookie falls through. Why this sits on the server: the bootstrap's drop of the hand-off
+    does not run when the startup probe answers `unreachable`, and before this check that return
+    could replace a full cookie with a locked one and show a passkey holder the screen that says
+    their data is unrecoverable. `full_session` is a conflict kind because every `409` in the
+    product carries one — see [payees.md](payees.md). The alternatives are in
+    [ADR 0028](../decisions/0028-open-a-locked-session-from-the-federated-credential.md).
   - **The claims are judged by `RegistrationClaimGate`, the filter registration uses, not a copy of
     it.** No usable `sub` or `email` is a `401` titled `MissingClaimsTitle`; an address the provider
     does not vouch for is a `401` titled `UnverifiedEmailTitle`. The checks are `ProviderClaims`', so
@@ -849,18 +880,23 @@ required members. A third writer is a decision rather than a refactor.
     credential" — would let an email change landing between them hand the session a credential this
     token never named. And it never reads the account's credentials in general, because a passkey
     there would open a `Full` session, the one thing a provider sign-in must not reach.
-  - **The order is the one every establishing path keeps.** The exempt read runs with nobody
-    published; then `ResolveUser(credential.UserId)`; then everything policed — the handle minted,
-    `Session.Establish` over that credential with `SessionPolicy.Lifetime`, one `AddAsync` carrying
-    the session and its handle, and the account's erasure schedule read. `Session.Establish` derives
-    `Locked` from the credential's type, so nothing on this path can ask for anything else. **No
+  - **The order is the one every establishing path keeps.** The exempt read runs before the handler
+    publishes anyone; then `ResolveUser(credential.UserId)`; then everything policed — the handle
+    minted, `Session.Establish` over that credential with `SessionPolicy.Lifetime`, one `AddAsync`
+    carrying the session and its handle, and the account's erasure schedule read.
+    `Session.Establish` derives `Locked` from the credential's type, so nothing on this path can
+    ask for anything else. **No
     transaction and no `ITransactionalExecutor`**: there is one write, and a transaction opened
-    before the publication would configure its connection with the identity still empty.
-  - **An unknown subject is a `404` with `refusal: "no_account"`**, and nothing is published,
-    written or set — no session, no handle, no cookie. The body repeats neither the subject nor the
-    address. **It is not an enumeration oracle**: only a caller holding a provider-verified token for
-    that exact subject learns it, the argument registration's own subject refusal rests on — see
-    [registration.md](registration.md).
+    before the publication would configure its connection with the identity still empty. On a
+    request carrying a live locked cookie, `ResolveUser` replaces that cookie's account with the
+    credential's owner.
+  - **An unknown subject is a `404` with `refusal: "no_account"`**, and the handler publishes,
+    writes and sets nothing — no session, no handle, no cookie. The body repeats neither the subject
+    nor the address. A cookie the browser sent has already published its own account by then — see
+    the residue gotcha under [Edge Cases](#edge-cases--known-gotchas) — and nothing policed runs
+    after the `404`. **It is not an enumeration oracle**: only a caller holding a provider-verified
+    token for that exact subject learns it, the argument registration's own subject refusal rests
+    on — see [registration.md](registration.md).
   - **The `200` carries three members** — `kind` (always `"locked"`), `expiresAtUtc`, and `erasure`,
     which is `null` or `{ "takesEffectAtUtc": … }` — the shape `GET /api/me/session` answers. The
     cookie is written by the endpoint on the established arm only, after the handler returned.
@@ -875,7 +911,19 @@ required members. A third writer is a decision rather than a refactor.
   `credentials`, `sessions`, `session_tokens` and `erasure_schedules`. It pins a `401` with no
   token even beside a full or a locked cookie, on a forged signature, on an unverified address, on a
   missing `email` and on a missing `sub`, and the first-party `403` without `X-Budgetoid-Client`.
-  `RegistrationRouteTests` reads the route among the provider-scheme routes.
+  Five cases hold the refusal over a cookie.
+  `LockedSignIn_OverALiveFullSession_IsRefused409FullSession_AndWritesNothing` runs with the token
+  naming the session's own account and another account; it asserts the token, a body repeating
+  neither the subject nor the address, no `Set-Cookie`, unchanged row counts, and the full cookie
+  still answering `"kind": "full"` on `GET /api/me/session`.
+  `LockedSignIn_OverALiveLockedSession_ReplacesIt` and `LockedSignIn_OverAnEndedSession_Succeeds`
+  hold the two cookies that are not refused.
+  `LockedSignIn_WithAnotherAccountsLockedCookie_OpensEverythingOnTheTokensAccount` holds that a
+  replaced locked cookie lends the new session nothing: the row and the schedule are the token's
+  account's. `LockedSignIn_OverAFullSession_WithAnUnverifiedEmail_Is401NotTheConflict` holds the
+  order — the claim gate answers before the conflict does. `ConflictKindSpellingTests` pins the
+  token and `ConflictKindDispositionCensusTests` pins `SessionEndpoints.cs` as the one file raising
+  it. `RegistrationRouteTests` reads the route among the provider-scheme routes.
 - **Counterexample**: keying the lookup on the address. The `404` test's second case sends an
   unregistered subject carrying an address an account holds; a lookup on the address opens a locked
   session on an account the provider never named.
@@ -923,8 +971,11 @@ required members. A third writer is a decision rather than a refactor.
   explicitly** — so it reaches every route declaring no policy of its own, which is everything
   outside the anonymous surface, the **registration** group and the **locked sign-in**. Both declare
   a policy naming the identity provider's scheme, which takes them out of the fallback; the outcome
-  is right rather than worked around, because a caller with no session at all gives a requirement
-  about session kinds nothing to judge. `POST /api/me/email-change` reads a provider token too and **stays** on
+  is right rather than worked around, because neither is served under a session — each opens one —
+  so a requirement about session kinds has nothing to judge. The locked sign-in asks the cookie
+  scheme itself whether the browser already holds one, for its `409`, through the same
+  `SessionCookieAuthenticationHandler.TryReadSessionKind` the two requirement handlers use.
+  `POST /api/me/email-change` reads a provider token too and **stays** on
   the fallback: it authenticates that token in a filter beside the session rather than in a policy,
   so a locked session is refused there like everywhere else — see
   [email-change.md](email-change.md). Naming the scheme on the fallback restates the default and
@@ -960,11 +1011,14 @@ required members. A third writer is a decision rather than a refactor.
     resolves the registered set — unregistered, the fallback carries a requirement nothing can
     satisfy, a `403` on every authenticated request. Three other shapes were refused:
     - **The route declaring a policy of its own.** The routes that declare one are the
-      registration group and the locked sign-in, whose callers hold no session at all; this route's
-      caller holds one. Leaving the fallback means the route carries only the rules it restates — the
-      cookie scheme, an authenticated user, every requirement beside them.
+      registration group and the locked sign-in, which are served under no session — each opens
+      one; this route is served under one. Leaving the fallback means the route carries only the
+      rules it restates — the cookie scheme, an authenticated user, every requirement beside them.
     - **A kind check in the route delegate or the handler.** It refuses the same requests and is
-      invisible to the route table, so no census can read which routes carry it.
+      invisible to the route table, so no census can read which routes carry it. The locked
+      sign-in's delegate does check a kind, and that is not this shape: it judges a cookie beside a
+      request its policy authenticated on the provider scheme, which no requirement on that policy
+      can see.
     - **Teaching `FullSessionRequirement` to refuse a full session on marked routes.** A requirement
       named for admitting full sessions would then also refuse them, and its name would lie.
   - **A real sign-in reaches the gate.** `POST /api/locked-session` opens a locked session over the
@@ -1157,7 +1211,14 @@ ELSE                                                    ← an unenumerated futu
   exception**: its `404` is a returned outcome, nothing clears that response, so the cookie is
   written on the established arm only and
   `LockedSignIn_ForAnUnregisteredSubject_Answers404NoAccount_AndWritesNothing` asserts no
-  `Set-Cookie`.
+  `Set-Cookie`. Its `409` is not part of the exception: it leaves as a `ConflictException`, thrown
+  before the handler runs, so there is no cookie to clear —
+  `LockedSignIn_OverALiveFullSession_IsRefused409FullSession_AndWritesNothing` asserts none.
+- **A new cookie overwrites the old one, and overwriting it ends nothing.** Every establishing path
+  writes `__Host-budgetoid-session` over whatever the browser held. The session the old cookie
+  named stays live, held by no browser, until it expires or a sweep of its credential ends it — the
+  recovery-code regeneration's own sweep is one. The locked sign-in refuses to overwrite a live
+  full session; see its rule above.
 - **A first issue of recovery codes sets no cookie.** Only the branch that swept a live session
   re-establishes one, and that condition is the rule rather than a detail — a handler minting
   unconditionally passes every other test on that path. Registration is not an exception: that route
@@ -1183,7 +1244,9 @@ ELSE                                                    ← an unenumerated futu
   On the registration routes and the locked sign-in the provider's principal is the only one — each
   policy names that scheme alone — and the account id is never a claim: registration derives it and
   publishes it after the signature verifies, and the locked sign-in publishes the owner of the
-  credential its subject found. On the email change both exist at once: `HttpContext.User` is the session's,
+  credential its subject found. The locked sign-in also reads the cookie scheme's result, once, by
+  its own `AuthenticateAsync` call, for the session's kind alone — never merged in and never read
+  for a `sub`. On the email change both exist at once: `HttpContext.User` is the session's,
   and its `sub` is this installation's account id; the provider's principal is the result of the
   gate's own `AuthenticateAsync` call, read once for its subject and address and never merged in. So
   no principal on any request carries both, and a `sub` read off one means one thing. A policy naming
@@ -1196,7 +1259,11 @@ ELSE                                                    ← an unenumerated futu
   the session is dead, `app.current_user_id` names the account whose handle really did match, on a
   request that then goes on to be refused. It reaches no budget, and every route that runs without
   authenticating publishes its own identity after its own proof, so today this residue changes no
-  answer. It is written down because **the next anonymous route added is where it would start to**,
+  answer. **The locked sign-in carries it too, and more of it**: its policy names the provider
+  scheme, but the cookie is the default scheme and runs first, so a handle that matches publishes
+  its account there, and a live session its budget as well. It still changes no answer — the
+  discovery read is on an exempt table, a `404` or `409` runs nothing policed after it, and an
+  established sign-in publishes the credential's owner over it. It is written down because **the next anonymous route added is where it would start to**,
   and because the only way to remove it is a "clear" member on `IUserContextWriter`, a decision
   about that port rather than about this path.
 - **The cascade can satisfy "revoking a credential ends its sessions" by accident.** Because

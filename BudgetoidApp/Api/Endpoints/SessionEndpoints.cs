@@ -4,6 +4,9 @@ using Api.Infrastructure;
 using Application.Sessions.EstablishLockedSession;
 using Application.Sessions.ReadSession;
 using Application.Sessions.RevokeSession;
+using Domain.Common;
+using Domain.Sessions;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Http.HttpResults;
 
 namespace Api.Endpoints;
@@ -141,15 +144,18 @@ public static class SessionEndpoints
         // THE LOCKED SIGN-IN: a provider token, and nothing else, turned into a locked session over the
         // account's federated credential. Here rather than in a file of its own because what it produces
         // is a session — the same three facts GET /api/me/session answers — and not beneath "/api/me"
-        // because the caller is nobody yet: there is no session to hang it off.
+        // because the request is served under no session: it opens one, and any it arrives with is at
+        // most replaced.
         //
         // Its own policy, naming the provider's scheme — the registration group's shape, for that group's
         // reason. Naming the scheme is what makes AuthorizationMiddleware authenticate the bearer rather
         // than the session cookie, so a browser already holding a session — full or locked — cannot
         // stand in for the provider here. And declaring a policy takes the route off the fallback, which
-        // is right rather than worked around: the caller holds no session, so the two requirements about
-        // session kinds have nothing to judge. Not AllowAnonymous: the provider's signature is the whole
-        // proof this route opens a session on.
+        // is right rather than worked around: the two requirements about session kinds judge the session
+        // a request is served under, and this route serves none — it opens one. Whether the browser
+        // already holds a session is a separate question, asked by the delegate itself before anything
+        // runs, and its only effect is the 409 below. Not AllowAnonymous: the provider's signature is the
+        // whole proof this route opens a session on.
         //
         // The SAME claim gate as registration, not a restatement of it: a token with no usable sub or
         // email, or whose address the provider does not vouch for, is refused here with registration's
@@ -159,15 +165,39 @@ public static class SessionEndpoints
         // This route creates no account. Registration stays the one path that does; an unknown subject
         // is a 404 naming no_account, and the client offers registration from there.
         endpoints.MapPost("/api/locked-session", async Task<Results<Ok<LockedSignInResponse>, ProblemHttpResult>> (
+                HttpContext httpContext,
                 ClaimsPrincipal principal,
                 EstablishLockedSessionHandler handler,
                 HttpResponse response,
                 CancellationToken cancellationToken) =>
             {
-                // The subject off the provider's principal — the only principal on this request, because
-                // the policy names the provider scheme alone — and never off a body. The empty fallback
-                // is unreachable past the claim gate and exists so the expression has a total answer; an
-                // empty subject matches no credential.
+                // FIRST, before the handler: a locked sign-in never replaces a live FULL session. The
+                // cookie the browser holds opens everything and this sign-in would open less, so the
+                // answer is a 409 that writes nothing, issues no cookie and leaves that session live. A
+                // live LOCKED session is not refused — the new cookie overwrites it — and neither is a
+                // request with no cookie or with an ended session: the cookie scheme answers NoResult for
+                // both, so the result does not succeed.
+                //
+                // The cookie scheme authenticated here, by name, and that RESULT judged — never
+                // HttpContext.User, which the policy replaced with the provider's principal, so it holds
+                // no session at all. ProviderAuthorizationGate reads its scheme the same way, for the same
+                // reason. The default scheme already ran this handler, and AuthenticationHandler caches
+                // its result per request, so this costs no second lookup. A kind that does not read back
+                // is judged full: refuse what cannot be read. The message names no subject and no address.
+                AuthenticateResult cookie = await httpContext.AuthenticateAsync(
+                    SessionCookieAuthenticationHandler.SchemeName);
+                if (cookie is { Succeeded: true, Principal: { } cookiePrincipal }
+                    && !(SessionCookieAuthenticationHandler.TryReadSessionKind(cookiePrincipal, out SessionKind kind)
+                         && kind == SessionKind.Locked))
+                {
+                    throw new ConflictException(FullSessionMessage, ConflictKind.FullSession);
+                }
+
+                // The subject off the provider's principal — the principal the policy set, because it
+                // names the provider scheme alone — and never off a body, nor off the cookie's principal
+                // judged above, whose sub is an account id rather than a provider subject. The empty
+                // fallback is unreachable past the claim gate and exists so the expression has a total
+                // answer; an empty subject matches no credential.
                 LockedSignInOutcome outcome = await handler.HandleAsync(
                     new EstablishLockedSessionCommand(
                         principal.FindFirstValue(ProviderClaims.SubjectClaimType) ?? string.Empty),
@@ -220,6 +250,13 @@ public static class SessionEndpoints
 
     /// <summary>The title of that refusal; it names no subject and no address.</summary>
     internal const string NoAccountTitle = "No account is registered under this sign-in.";
+
+    /// <summary>
+    /// The detail of the 409 a locked sign-in over a live full session answers; it names no subject, no
+    /// address and no account.
+    /// </summary>
+    internal const string FullSessionMessage =
+        "This browser is already signed in with full access, so this sign-in would open less and was not used.";
 
     /// <summary>
     /// The session a locked sign-in opened, and the account's pending erasure — and deliberately no

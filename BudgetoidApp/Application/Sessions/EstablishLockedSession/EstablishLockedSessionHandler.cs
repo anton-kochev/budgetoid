@@ -14,10 +14,18 @@ namespace Application.Sessions.EstablishLockedSession;
 /// <remarks>
 /// <para>
 /// <b>The order of the steps is the security property, as it is on every establishing path.</b>
-/// <c>credentials</c> is exempt from row-level security, so the discovery read runs with nobody
-/// published; <c>sessions</c>, <c>session_tokens</c> and <c>erasure_schedules</c> are policed, so
+/// <c>credentials</c> is exempt from row-level security, so the discovery read runs before this handler
+/// publishes anyone; <c>sessions</c>, <c>session_tokens</c> and <c>erasure_schedules</c> are policed, so
 /// everything after it needs the identity first or meets <c>''::uuid</c> and dies with <c>22P02</c>.
 /// <see cref="Passkeys.CompleteAssertion.CompleteAssertionHandler"/> orders the same steps the same way.
+/// </para>
+/// <para>
+/// <b>"Before this handler publishes anyone" is not "with nobody published".</b> A request carrying a
+/// live locked session cookie arrives with that cookie's account already published by the cookie scheme,
+/// which ran as the default scheme before the route (a live full one never gets here: the route answers
+/// it 409 first). The discovery read is unaffected, because the table is exempt, and the publication in
+/// step 3 replaces that account with the credential's owner — which is what lets one browser's locked
+/// session be replaced by a sign-in to another account.
 /// </para>
 /// <para>
 /// <b>Publishing on the strength of the lookup alone is sound here for the reason it is sound on the
@@ -65,8 +73,10 @@ public sealed class EstablishLockedSessionHandler(
             command.Subject,
             cancellationToken);
 
-        // 2. No account: nothing published and nothing written. A published identity on a request that
-        //    then answers 404 is residue sessions.md warns about; this path leaves none.
+        // 2. No account: the handler publishes nothing and writes nothing. A published identity on a
+        //    request that then answers 404 is residue sessions.md warns about; this handler adds none. (A
+        //    request carrying a live locked cookie still holds that cookie's account, published by the
+        //    cookie scheme before the route ran — its own, and not this handler's doing.)
         if (credential is null)
         {
             return new LockedSignInOutcome.NoAccount();

@@ -88,8 +88,10 @@ because every one of these is something a reader will otherwise simplify away.
   `GET /api/me/session` and `POST /api/me/erasure/schedule`. Polarity follows from which mistake is
   audible. One route opens such a session: `POST /api/locked-session`, on the provider scheme,
   discovering the federated credential by subject without joining `users`; an unknown subject is a
-  `404` `no_account` that writes nothing. The schedule route also carries `RequiresLockedSessionAttribute`, read by `LockedSessionOnlyRequirement` on the
-  same fallback, so a full session is refused there — **a schedule is not an erasure**, and the
+  `404` `no_account` that writes nothing, and **a live full session beside the token is a `409`
+  `full_session`** — a weaker proof never overwrites a stronger sign-in; a locked or ended one is
+  replaced. The schedule route also carries `RequiresLockedSessionAttribute`, read by
+  `LockedSessionOnlyRequirement` on the same fallback, so a full session is refused there — **a schedule is not an erasure**, and the
   passkey rule governs only the immediate one. `LockedSessionTests` reads both sets whole.
   [sessions.md](docs/business-logic/sessions.md), [erasure.md](docs/business-logic/erasure.md)
 - **Registration is one act and one transaction, and the account id is derived rather than chosen.**
