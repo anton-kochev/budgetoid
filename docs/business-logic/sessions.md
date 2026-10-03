@@ -32,9 +32,9 @@ presenting it is authenticated from it, publishing the account and the ambient b
 its creation ceremony, `/welcome` runs the assertion, and `/release` runs the locked sign-in — its
 **Continue with Google** starts the trip, and on the return the screen takes the answer once and
 sends it without a second press. The other two are reached today only by the integration suite —
-nothing in the browser redeems a code or regenerates a set. Welcome draws no link to `/release`
-yet: a person reaches it by its address, or because the guards send a locked session there. Every
-request this app makes is authenticated from the cookie. The browser contacts the identity provider
+nothing in the browser redeems a code or regenerates a set. A person reaches `/release` from
+Welcome's standing link, or because the guards send a locked session there. Every request this app
+makes is authenticated from the cookie except the three that carry a provider token in its place. The browser contacts the identity provider
 from three screens: `/register`, to create an account, `/app/settings`, to change its address, and
 `/release`, to sign in to an account nobody can open — and the email change's request carries a
 provider token **beside** the cookie, never in its place; see [email-change.md](email-change.md).

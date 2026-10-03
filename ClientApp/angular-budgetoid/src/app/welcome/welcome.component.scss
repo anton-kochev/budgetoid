@@ -127,6 +127,16 @@
   line-height: 1.55;
 }
 
+// Ghost: the accent-text label on a transparent, borderless button, quieter than
+// both calls to action. Material's own tokens rather than `color`, so the state
+// layer, the ripple and the focus ring stay Material's. It takes its own grid row
+// at its label's width at every size — `.w-cta` centres each row's item — and
+// the touch minimum comes from `.w-button`.
+.w-release {
+  --mat-button-text-label-text-color: var(--bud-accent-text);
+  --mat-button-text-state-layer-color: var(--bud-accent-text);
+}
+
 .w-fine {
   margin: 0;
   font-size: 12.5px;

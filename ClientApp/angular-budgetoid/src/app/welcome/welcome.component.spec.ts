@@ -41,7 +41,7 @@ import {
 } from '@app-core/session/session.service';
 import { Store } from '@ngrx/store';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { SignInService } from './sign-in.service';
+import { SignInService, type SignInFailure } from './sign-in.service';
 import { WelcomeComponent } from './welcome.component';
 
 const API_ORIGIN = 'https://api.test';
@@ -89,15 +89,18 @@ const PROVIDER_LINE_TODAY = 'Your Google account is used only to sign you in.';
 //
 // Three facts, in this order, because the order is the reassurance: an account
 // starts at Google, only to check an address, and signing in afterwards is the
-// passkey's — and one exception, stated rather than hidden: changing that
-// address asks Google again.
+// passkey's — and two exceptions, stated rather than hidden: changing that
+// address asks Google again, and so does releasing an account nobody can open.
+// The book says "the copy is the specification", so this is matched whole.
 const PROVIDER_ROLE =
   'Creating an account starts with Google, to check your email address. ' +
-  'After that you sign in with your passkey; Google is asked again only if you change that address.';
+  'After that you sign in with your passkey; Google is asked again only if you change that address, ' +
+  'or release an account you can no longer open.';
 
-// The load-bearing halves of it, and not every word: the wording above is a
-// starting point somebody may improve, but a version that drops any of these
-// four says something else. Each is free of punctuation that a template author
+// The load-bearing halves of it. The whole sentence is asserted as well, now
+// that the book calls the copy the specification; these are kept so a failure
+// names the half that went missing, and a version that drops any of these
+// five says something else. Each is free of punctuation that a template author
 // would reasonably write as an entity (`&mdash;`, `&rsquo;`), so a phrase is
 // matched against what the browser renders rather than against what the file
 // happens to contain.
@@ -106,12 +109,28 @@ const PROVIDER_ROLE_PHRASES = [
   'to check your email address',
   'sign in with your passkey',
   'Google is asked again only if you change that address',
+  'or release an account you can no longer open',
 ] as const;
 
 // The promise the email change broke, kept only as a negative: a screen that
 // still said it would be telling a cautious person something false about the
 // one other moment the provider hears from them.
 const RETIRED_NEVER_AGAIN_CLAIM = 'Google is never asked again';
+
+// The one-exception line, retired the day `/release` took its own trip to
+// Google: it names the address change as the only other moment the provider
+// hears from a person, and that is no longer true. The full stop is the point —
+// the line that replaces it continues past "that address" with a comma, so this
+// matches the old ending and never the new one.
+const RETIRED_ONE_EXCEPTION_LINE =
+  'Google is asked again only if you change that address.';
+
+// The third thing on the screen a person can press, and the only one that is
+// not an act: a question somebody answers about themselves. Copied from
+// docs/design/components.md, "The welcome screen", rather than imported, so a
+// reworded template cannot carry this file along with it.
+const RELEASE_LINK = 'Lost every passkey and recovery code?';
+const RELEASE_ROUTE = '/release';
 
 // The word this screen once said after an erasure, named only so its absence
 // can be asserted.
@@ -157,6 +176,24 @@ const REFUSAL_CAUSES = [
 // class read as "not that treatment" rather than as "possibly both".
 const FILLED_CLASS = 'mat-mdc-unelevated-button';
 const OUTLINE_CLASS = 'mat-mdc-outlined-button';
+// Ghost — Material's text button, `mat-button`. The same class
+// `codes-step.component.spec.ts` reads for its own Ghost control.
+const GHOST_CLASS = 'mat-mdc-button';
+
+// Every word the sign-in flow can end on. `satisfies` with no widening, so a
+// word added to `SignInFailure` fails to compile here until somebody says how
+// to reach it — and the release link is then held identical after that one too.
+const EVERY_OUTCOME = {
+  unsupported: true,
+  cancelled: true,
+  'no-prf': true,
+  'ceremony-failed': true,
+  'start-failed': true,
+  refused: true,
+  unknown: true,
+} satisfies Record<SignInFailure, true>;
+
+const OUTCOMES = Object.keys(EVERY_OUTCOME) as readonly SignInFailure[];
 
 // Every shape that makes a node a live region, not only the one this screen
 // uses. The rule is "the outcome is announced", and a sentence moved into a
@@ -264,6 +301,8 @@ describe('WelcomeComponent', () => {
       imports: [WelcomeComponent],
       providers: [
         { provide: Store, useValue: store },
+        // The template carries a `routerLink` to /release, which needs a router.
+        provideRouter([]),
         // This screen used to render static marketing copy and now owns a
         // sign-in flow: it provides `SignInService`, and the template reads
         // `busy()` and `failure()` on first paint, so building the component
@@ -323,12 +362,16 @@ describe('WelcomeComponent, as the way into an account', () => {
   // stub, because two of the tests below are about what happens when it says
   // no.
   let ceremonyOutcome: PasskeyCeremonyResult<PasskeyAssertionCeremony>;
+  // Whether this browser can run a ceremony at all — the `unsupported` outcome
+  // is the one reached before any request.
+  let ceremonyAvailable: boolean;
 
   beforeEach(async () => {
     const keyEncryptionKey = await importKeyEncryptionKey();
 
     store.dispatch.mockClear();
     navigations = [];
+    ceremonyAvailable = true;
     ceremonyOutcome = {
       ok: true,
       value: { payload: ASSERTION_PAYLOAD, keyEncryptionKey },
@@ -338,7 +381,7 @@ describe('WelcomeComponent, as the way into an account', () => {
       WebauthnCeremonyService,
       'available' | 'assertPasskey'
     > = {
-      available: () => true,
+      available: () => ceremonyAvailable,
       assertPasskey: (): Promise<
         PasskeyCeremonyResult<PasskeyAssertionCeremony>
       > => Promise.resolve(ceremonyOutcome),
@@ -386,6 +429,7 @@ describe('WelcomeComponent, as the way into an account', () => {
     fixture?.destroy();
     fixture = null;
     window.matchMedia = originalMatchMedia;
+    vi.restoreAllMocks();
   });
 
   // No `http.verify()` teardown: two tests below end with a request outstanding
@@ -679,7 +723,7 @@ describe('WelcomeComponent, as the way into an account', () => {
     }
   });
 
-  it('says the provider starts an account and is asked again only for an address change', () => {
+  it('says the provider starts an account and is asked again only for an address change or a release', () => {
     // Arrange
     render();
 
@@ -702,19 +746,308 @@ describe('WelcomeComponent, as the way into an account', () => {
       'the welcome screen still says Google is never asked again.',
     ).toBe(false);
 
-    // What replaces it says three things and one exception: the account starts
-    // at Google, only to check an address, signing in afterwards is the
-    // passkey's, and changing that address asks Google again. Phrases rather
-    // than the whole sentence, so the wording can be improved without this test
-    // standing in the way — but a version that drops one of these is making a
-    // different promise.
+    // And the one-exception line, which `/release` made false: it names the
+    // address change as the only other trip to Google, and releasing an account
+    // is a second one. This expectation used to be the phrase loop's last row
+    // read as a positive; the line it described is now a negative.
+    expect(
+      shown.includes(RETIRED_ONE_EXCEPTION_LINE),
+      'the welcome screen still says the address change is the only other trip to Google.',
+    ).toBe(false);
+
+    // What replaces it says three things and two exceptions. Each phrase first,
+    // so a failure names the half that went missing ...
     for (const phrase of PROVIDER_ROLE_PHRASES) {
       expect(
         shown.includes(phrase),
         `the welcome screen does not say "${phrase}". The copy to ship is: ${PROVIDER_ROLE}`,
       ).toBe(true);
     }
+
+    // ... then the whole sentence. This used to be phrases only, so the wording
+    // could be improved; the book now says the copy is the specification, and
+    // the word *release* is chosen to match the title of the screen the link
+    // opens, which a reworded line would quietly break.
+    expect(
+      shown.includes(PROVIDER_ROLE),
+      `the welcome screen does not carry the provider line verbatim: ${PROVIDER_ROLE}`,
+    ).toBe(true);
   });
+
+  it('offers a Ghost link, not a button, to releasing an account', () => {
+    // Arrange
+    render();
+
+    // Act
+    const links = controlsNamed(host(), RELEASE_LINK);
+    const link = links[0] ?? null;
+
+    // Assert
+    // Exactly one, and an anchor: it goes to an address and nothing else — no
+    // request, no ceremony, no provider. A `<button>` navigating
+    // programmatically would pass a lookup by name and fail this.
+    expect(
+      links.length,
+      `the welcome screen does not carry exactly one control named "${RELEASE_LINK}".`,
+    ).toBe(1);
+    expect(link?.tagName).toBe('A');
+    expect(link?.getAttribute('role')).toBeNull();
+    // The rendered `href`, which is what a new tab and a screen reader's link
+    // list both read. A `routerLink` writes it; a click handler on an `<a>`
+    // with no `href` is not a link at all.
+    expect(link?.getAttribute('href')).toBe(RELEASE_ROUTE);
+
+    // Ghost, and neither of the two button treatments: quieter than both, so
+    // Create account stays the one Primary and the link ranks no act.
+    expect(link?.classList.contains(GHOST_CLASS)).toBe(true);
+    expect(link?.classList.contains(FILLED_CLASS)).toBe(false);
+    expect(link?.classList.contains(OUTLINE_CLASS)).toBe(false);
+    expect(host().querySelectorAll(`.${FILLED_CLASS}`).length).toBe(1);
+
+    // Its visible text is its whole accessible name.
+    expect(link?.getAttribute('aria-label')).toBeNull();
+    expect(collapse(link?.textContent ?? '')).toBe(RELEASE_LINK);
+  });
+
+  it('sets the release link apart below the outcome region', () => {
+    // Arrange
+    render();
+
+    // Act
+    const link = controlNamed(host(), RELEASE_LINK);
+    const region = liveRegion(host());
+    const create = controlNamed(host(), CREATE_ACCOUNT_BUTTON);
+    const signIn = controlNamed(host(), SIGN_IN_BUTTON);
+    const providerLines = Array.from(
+      host().querySelectorAll<HTMLElement>('p'),
+    ).filter((paragraph) =>
+      collapse(paragraph.textContent ?? '').includes(PROVIDER_ROLE_PHRASES[0]),
+    );
+
+    // Assert
+    expect(link, `no control named "${RELEASE_LINK}".`).not.toBeNull();
+    expect(region).not.toBeNull();
+
+    // Outside every live region: a link in one is a control narrated as news.
+    expect(link?.closest(LIVE_REGION_SELECTOR) ?? null).toBeNull();
+
+    // Below the region in document order — the order a screen reader and a
+    // keyboard both walk.
+    expect(
+      region !== null &&
+        link !== null &&
+        (region.compareDocumentPosition(link) &
+          Node.DOCUMENT_POSITION_FOLLOWING) !==
+          0,
+      'the release link does not come after the outcome region.',
+    ).toBe(true);
+
+    // Not in the row of actions: no element that holds both buttons holds the
+    // link as well.
+    const row = create?.parentElement ?? null;
+    expect(row).not.toBeNull();
+    expect(row?.contains(signIn ?? null)).toBe(true);
+    expect(
+      row?.contains(link),
+      'the release link sits in the row of actions.',
+    ).toBe(false);
+
+    // And not folded into the provider line, which would turn the one sentence
+    // a cautious person reads closely into a menu.
+    for (const line of providerLines) {
+      expect(
+        line.contains(link),
+        'the release link is folded into the provider line.',
+      ).toBe(false);
+    }
+  });
+
+  it('takes a person who follows the release link to /release', async () => {
+    // Arrange
+    render();
+
+    // Act
+    press(RELEASE_LINK);
+    await settle();
+
+    // Assert
+    // One navigation, to the release screen, and nothing else: no request
+    // leaves this screen for it.
+    expect(navigations).toEqual([RELEASE_ROUTE]);
+    expect(http.match(() => true)).toEqual([]);
+  });
+
+  it('keeps the release link identical while the ceremony runs', async () => {
+    // Arrange
+    render();
+
+    const atRest = releaseLinkAsDrawn();
+    const service = signInService();
+
+    // Present at rest, or "identical" compares two absences and passes.
+    expect(atRest.count, `no control named "${RELEASE_LINK}" at rest.`).toBe(1);
+    // Outside every live region at rest, or "identical" holds for a link that
+    // is announced with every outcome.
+    expect(atRest.insideRegion, 'the release link sits in a live region.').toBe(
+      false,
+    );
+
+    // Act
+    // The options request is left unanswered, so the flow stays busy and the
+    // region carries the waiting line.
+    press(SIGN_IN_BUTTON);
+    await eventually(
+      () => http.match(OPTIONS_URL)[0] ?? null,
+      'the request for the assertion options',
+    );
+    current().detectChanges();
+
+    // Assert
+    expect(service.busy()).toBe(true);
+    expect(collapse(liveRegion(host())?.textContent ?? '')).not.toBe('');
+    expect(
+      releaseLinkAsDrawn(),
+      'the release link changed while the ceremony ran.',
+    ).toEqual(atRest);
+  });
+
+  it.each(OUTCOMES)(
+    'keeps the release link identical after a sign-in ends %s',
+    async (outcome) => {
+      // Arrange
+      render();
+
+      const atRest = releaseLinkAsDrawn();
+      const service = signInService();
+
+      // Present at rest, or "identical" compares two absences and passes.
+      expect(atRest.count, `no control named "${RELEASE_LINK}" at rest.`).toBe(
+        1,
+      );
+      // Outside every live region at rest, or "identical" holds for a link
+      // that is announced with every outcome.
+      expect(
+        atRest.insideRegion,
+        'the release link sits in a live region.',
+      ).toBe(false);
+
+      // Act
+      await driveTo(outcome);
+
+      await eventually(() => service.failure(), 'the outcome to be published');
+      await settle();
+
+      // Assert
+      // The outcome landed — the region says something, and it is the word this
+      // case drove — so "identical" is a comparison across a change rather than
+      // two readings of a screen nothing happened to.
+      expect(service.failure()).toBe(outcome);
+      expect(collapse(liveRegion(host())?.textContent ?? '')).not.toBe('');
+
+      // Not revealed, reworded or moved by any outcome. A link shown or
+      // changed by a refusal would tell somebody their passkey failed
+      // *because* they have lost everything.
+      expect(
+        releaseLinkAsDrawn(),
+        `the release link changed after a sign-in ended ${outcome}.`,
+      ).toEqual(atRest);
+
+      // And still exactly one Primary.
+      expect(host().querySelectorAll(`.${FILLED_CLASS}`).length).toBe(1);
+    },
+  );
+
+  // The link as a reader meets it: its markup whole, where it sits among the
+  // screen's controls, and which side of the region it is on. Taken twice and
+  // compared, so "identical" means the same element in the same place — not
+  // merely a link with the same words somewhere.
+  function releaseLinkAsDrawn(): {
+    readonly count: number;
+    readonly markup: string;
+    readonly href: string | null;
+    readonly position: number;
+    readonly insideRegion: boolean;
+    readonly followsRegion: boolean;
+  } {
+    const links = controlsNamed(host(), RELEASE_LINK);
+    const link = links[0] ?? null;
+    const region = liveRegion(host());
+    const controls = Array.from(
+      host().querySelectorAll<HTMLElement>('button, a'),
+    );
+
+    return {
+      count: links.length,
+      markup: link?.outerHTML ?? '',
+      href: link?.getAttribute('href') ?? null,
+      position: link === null ? -1 : controls.indexOf(link),
+      insideRegion: (link?.closest(LIVE_REGION_SELECTOR) ?? null) !== null,
+      followsRegion:
+        region !== null &&
+        link !== null &&
+        (region.compareDocumentPosition(link) &
+          Node.DOCUMENT_POSITION_FOLLOWING) !==
+          0,
+    };
+  }
+
+  // Ends a sign-in on the word asked for, by the real route to it: the
+  // ceremony stub for what the device says, the testing backend for what the
+  // server says. Nothing here sets the flow's state directly.
+  async function driveTo(outcome: SignInFailure): Promise<void> {
+    switch (outcome) {
+      case 'unsupported':
+        ceremonyAvailable = false;
+        press(SIGN_IN_BUTTON);
+        return;
+      case 'cancelled':
+      case 'no-prf':
+      case 'ceremony-failed':
+        ceremonyOutcome = {
+          ok: false,
+          failure: outcome === 'ceremony-failed' ? 'failed' : outcome,
+        };
+        press(SIGN_IN_BUTTON);
+        await answerOptions();
+        return;
+      case 'start-failed': {
+        press(SIGN_IN_BUTTON);
+        const options = await eventually(
+          () => http.match(OPTIONS_URL)[0] ?? null,
+          'the request for the assertion options',
+        );
+        options.flush(null, {
+          status: 503,
+          statusText: 'Service Unavailable',
+        });
+        return;
+      }
+      case 'refused':
+      case 'unknown': {
+        press(SIGN_IN_BUTTON);
+        await answerOptions();
+        const assertion = await eventually(
+          () => http.match(ASSERTION_URL)[0] ?? null,
+          'the assertion request',
+        );
+        assertion.flush(
+          null,
+          outcome === 'refused'
+            ? { status: 401, statusText: 'Unauthorized' }
+            : { status: 500, statusText: 'Internal Server Error' },
+        );
+        return;
+      }
+    }
+  }
+
+  async function answerOptions(): Promise<void> {
+    const options = await eventually(
+      () => http.match(OPTIONS_URL)[0] ?? null,
+      'the request for the assertion options',
+    );
+    options.flush(REQUEST_OPTIONS);
+  }
 
   // The current fixture, and a failure that names the mistake rather than a
   // property read off `null` three lines later.

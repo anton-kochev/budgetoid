@@ -5,7 +5,7 @@ import {
   inject,
 } from '@angular/core';
 import { MatButtonModule } from '@angular/material/button';
-import { Router } from '@angular/router';
+import { Router, RouterLink } from '@angular/router';
 import { BrandLockupComponent } from '@app-shared/components/brand-lockup/brand-lockup.component';
 import { KineticSentenceComponent } from '@app-shared/components/kinetic-sentence/kinetic-sentence.component';
 import { SignInService, type SignInFailure } from './sign-in.service';
@@ -35,7 +35,12 @@ const KINETIC_LINES: readonly (readonly [fear: string, verdict: string])[] = [
 // contacted — once, while an account is being created.
 @Component({
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [BrandLockupComponent, KineticSentenceComponent, MatButtonModule],
+  imports: [
+    BrandLockupComponent,
+    KineticSentenceComponent,
+    MatButtonModule,
+    RouterLink,
+  ],
   // **The custody decision, not a lifetime preference**, and the same one
   // `register.component.ts` makes. The flow dies with the screen, so a sign-in
   // somebody walked away from leaves nothing behind in the injector, and no

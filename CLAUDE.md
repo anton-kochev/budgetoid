@@ -449,7 +449,10 @@ Load-bearing rules. Each links the doc that argues it — **read that doc before
 - **Welcome carries two actions and exactly one of them is Primary**, and there is **no `/sign-in`
   route** — one control, no fields, because the authenticator is the form. **The screen says one
   thing however a sign-in was refused**, or a varying sentence would rebuild the
-  credential-enumeration oracle the server refuses to be. `refused` is not `unknown`.
+  credential-enumeration oracle the server refuses to be. `refused` is not `unknown`. **Below the
+  region sits one standing Ghost link to `/release`**, a question rather than a third action,
+  identical at rest and after every outcome — a link that appeared after a refusal would be a
+  varying screen.
   [passkeys.md](docs/business-logic/passkeys.md), [components.md](docs/design/components.md)
 
 ## Documentation
