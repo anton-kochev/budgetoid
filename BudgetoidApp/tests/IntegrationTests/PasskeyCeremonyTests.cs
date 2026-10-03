@@ -1541,8 +1541,8 @@ public sealed class PasskeyCeremonyTests
     /// Google token opens no session — a bearer holder could read their budget but held no
     /// <c>sessions</c> row, so a later revocation had nothing to revoke. The bridge policy scheme that
     /// let a bearer authenticate an ordinary route is gone: the fallback policy names the session
-    /// cookie's scheme, and the one policy that names the provider is the registration group's. So this
-    /// account, reached by its Google token alone, now reaches nothing at all.
+    /// cookie's scheme, and the two policies that name the provider are the registration group's and the
+    /// locked sign-in's. So this account, reached by its Google token alone, reaches no ordinary route.
     /// </para>
     /// <para>
     /// <b>The session count stays and is the half worth keeping.</b> A refusal that nonetheless wrote a

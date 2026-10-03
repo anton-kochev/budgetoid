@@ -4,6 +4,7 @@ using System.Text.Json.Nodes;
 using Api.Infrastructure;
 using Domain.Sessions;
 using Domain.Users;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
@@ -25,11 +26,13 @@ namespace IntegrationTests;
 /// verdict on the session's kind.
 /// </para>
 /// <para>
-/// <b>The gate is unreachable from any live route today, and that is why every session here is seeded
-/// through the database.</b> The only credential type that opens a locked session is
-/// <see cref="CredentialType.Federated" />, and the federated path mints no session cookie — so a suite
-/// that waited for a sign-in to produce one would be a suite that never exercised the gate at all. That
-/// is exactly how a gate ships broken and green.
+/// <b>Every session here is seeded through the database rather than opened by a sign-in.</b> The only
+/// credential type that opens a locked session is <see cref="CredentialType.Federated" />, and the one
+/// route that mints a cookie over it is the locked sign-in, <c>POST /api/locked-session</c>. Seeding keeps
+/// this file's subject the gate alone: a full and a locked session on one account, with no provider token
+/// and no sign-in route standing between the arrangement and the verdict. The other half — a cookie the
+/// locked sign-in really issued, refused budget content — is
+/// <see cref="LockedSignInEndpointTests" />' first test.
 /// </para>
 /// <para>
 /// <b>The trap this file is written around: both refusals on this path are 403.</b>
@@ -397,6 +400,73 @@ public sealed class LockedSessionTests
         // The control: there is a locked-only route to judge.
         await Assert.That(lockedOnly.Length).IsGreaterThan(0);
     }
+
+    /// <summary>
+    /// Every route carrying either locked-session marker rides the fallback policy and declares no
+    /// authorization of its own.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The markers only mean something under the fallback policy.</b> <see cref="FullSessionRequirement" />
+    /// and <see cref="LockedSessionOnlyRequirement" /> ride it, and a route that declares any authorization of its own —
+    /// <c>RequireAuthorization()</c>, a policy, a requirement, or <c>AllowAnonymous</c> — takes itself off
+    /// it. The marker stays on the route and both censuses above stay green, while the requirement that
+    /// reads it never runs: an opt-out that opts out of nothing, a locked-only route that a full session
+    /// reaches, or an anonymous one.
+    /// </para>
+    /// <para>
+    /// Offenders are collected and asserted empty rather than joined into one string, because a string
+    /// assertion's message truncates and names only the first. The marked count is the control.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task EveryRouteCarryingALockedSessionMarker_RidesTheFallbackPolicy()
+    {
+        // Arrange
+        await using ApiFactory factory = new(
+            "Host=localhost;Port=5432;Database=unused;Username=postgres;Password=postgres",
+            environment: "Production");
+        EndpointDataSource dataSource = factory.Services.GetRequiredService<EndpointDataSource>();
+
+        // Act
+        RouteEndpoint[] marked = dataSource.Endpoints
+            .OfType<RouteEndpoint>()
+            .Where(endpoint =>
+                endpoint.Metadata.GetMetadata<AllowsLockedSessionAttribute>() is not null
+                || endpoint.Metadata.GetMetadata<RequiresLockedSessionAttribute>() is not null)
+            .ToArray();
+        string[] offenders = marked
+            .Select(endpoint => (Endpoint: endpoint, Declared: DeclaredAuthorizationOf(endpoint)))
+            .Where(pair => pair.Declared.Length > 0)
+            .Select(pair =>
+                $"{MethodsOf(pair.Endpoint)} {pair.Endpoint.RoutePattern.RawText ?? string.Empty} "
+                + $"declares {string.Join(" + ", pair.Declared)}")
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+
+        // Assert
+        await Assert.That(offenders).IsEmpty();
+
+        // The control: there are marked routes to judge.
+        await Assert.That(marked.Length).IsGreaterThan(0);
+    }
+
+    /// <summary>
+    /// The kinds of authorization metadata a route declares for itself, each named once; empty for a
+    /// route that rides the fallback policy.
+    /// </summary>
+    private static string[] DeclaredAuthorizationOf(RouteEndpoint endpoint) =>
+        new (string Name, bool Present)[]
+            {
+                (nameof(IAuthorizeData), endpoint.Metadata.GetOrderedMetadata<IAuthorizeData>().Count > 0),
+                (nameof(AuthorizationPolicy), endpoint.Metadata.GetOrderedMetadata<AuthorizationPolicy>().Count > 0),
+                (nameof(IAuthorizationRequirementData),
+                    endpoint.Metadata.GetOrderedMetadata<IAuthorizationRequirementData>().Count > 0),
+                (nameof(IAllowAnonymous), endpoint.Metadata.GetOrderedMetadata<IAllowAnonymous>().Count > 0),
+            }
+            .Where(kind => kind.Present)
+            .Select(kind => kind.Name)
+            .ToArray();
 
     /// <summary>
     /// The verbs an endpoint answers, spelled the way the expectation above writes them.

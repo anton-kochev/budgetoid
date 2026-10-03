@@ -1007,7 +1007,11 @@ required members. A third writer is a decision rather than a refactor.
     beside a locked one succeeding on the same account, and by `LockedSessionTests`, whose census
     reads the locked-only set whole off the route table and whose
     `EveryLockedOnlyRoute_AlsoAllowsALockedSession` refuses a route carrying one marker without the
-    other. The handler is registered in `Program.cs`, and `LockedSessionOnlyRequirementTests`
+    other. **Both markers mean something only on the fallback**: a route declaring authorization of
+    its own — a policy, a bare `RequireAuthorization()`, `AllowAnonymous()` — leaves the fallback,
+    and both requirements with it, so a marked route there admits whatever its own declaration does.
+    `EveryRouteCarryingALockedSessionMarker_RidesTheFallbackPolicy` refuses any marked route
+    carrying such metadata. The handler is registered in `Program.cs`, and `LockedSessionOnlyRequirementTests`
     resolves the registered set — unregistered, the fallback carries a requirement nothing can
     satisfy, a `403` on every authenticated request. Three other shapes were refused:
     - **The route declaring a policy of its own.** The routes that declare one are the

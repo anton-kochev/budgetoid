@@ -234,22 +234,19 @@ public sealed class EstablishLockedSessionHandlerTests
     }
 
     /// <summary>
-    /// With a schedule filed, the answer carries its instant — and never a stranger's.
+    /// With a schedule filed, the answer carries its instant.
     /// </summary>
     /// <remarks>
-    /// The stranger's schedule is filed too and differs by a day, so a handler that read the schedule by
-    /// any id but the credential's owner — the request's empty identity, the stranger's, "the" schedule —
-    /// answers the wrong instant or none.
+    /// No stranger's schedule is seeded: the port is keyed only by its owner and the fake filters by that
+    /// key, so a stranger's row here would measure the fake. That half is held under the real policies by
+    /// <c>LockedSignInEndpointTests</c>, which files both accounts' schedules a day apart.
     /// </remarks>
     [Test]
-    public async Task HandleAsync_ForAnAccountWithASchedule_AnswersItsInstant_NotAStrangers()
+    public async Task HandleAsync_ForAnAccountWithASchedule_AnswersItsInstant()
     {
         // Arrange
         Fixture fixture = Fixture.Create();
         ErasureSchedule own = ErasureSchedule.Request(fixture.UserId, UtcNow.AddDays(-2), TimeSpan.FromDays(7));
-        ErasureSchedule strangers =
-            ErasureSchedule.Request(fixture.StrangerId, UtcNow.AddDays(-1), TimeSpan.FromDays(7));
-        fixture.Schedules.Seed(strangers);
         fixture.Schedules.Seed(own);
 
         // Act
@@ -273,7 +270,6 @@ public sealed class EstablishLockedSessionHandlerTests
         RecordingUserContextWriter Writer,
         FakeTimeProvider Clock,
         Guid UserId,
-        Guid StrangerId,
         Credential Passkey,
         Credential Federated)
     {
@@ -306,7 +302,6 @@ public sealed class EstablishLockedSessionHandlerTests
                 writer,
                 clock,
                 userId,
-                strangerId,
                 passkey,
                 federated);
         }

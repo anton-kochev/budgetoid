@@ -35,9 +35,10 @@ namespace IntegrationTests;
 /// </para>
 /// <para>
 /// <b>The app role, not the admin.</b> The host connects as <c>budgetoid_app</c>, so the discovery read
-/// running with nobody published and the session insert running with the account published are both
-/// judged by the real policies. A handler that published late answers 500 here with <c>22P02</c>; one that
-/// published nobody answers the same.
+/// and the session insert running with the account published are both judged by the real policies. The
+/// handler publishes nobody before its discovery read; on a request carrying a live cookie, the cookie's
+/// authentication has already published its own account by then. A handler that published late answers
+/// 500 here with <c>22P02</c>; one that published nobody answers the same.
 /// </para>
 /// </remarks>
 public sealed class LockedSignInEndpointTests
@@ -384,10 +385,18 @@ public sealed class LockedSignInEndpointTests
     /// No provider token is a 401 however the browser is otherwise signed in.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The cookie is the trap: this route's policy names the provider scheme and nothing else, so a
     /// session cookie — full or locked — must not stand in for the provider. A route that fell back to the
     /// default scheme would admit both, and with the full cookie would hand a passkey holder a locked
     /// session nobody's provider vouched for.
+    /// </para>
+    /// <para>
+    /// <b>The 401 alone does not tell those apart.</b> A policy naming the cookie's scheme beside the
+    /// provider's admits the cookie principal, and the claim gate then refuses it 401 for carrying no
+    /// provider email — the same status, from the wrong layer. So the challenge is asserted too: the
+    /// provider scheme's own <c>Bearer</c> challenge, and no claim-gate title in the body.
+    /// </para>
     /// </remarks>
     [Test]
     [Arguments(SessionKind.Full)]
@@ -405,10 +414,111 @@ public sealed class LockedSignInEndpointTests
         // Act
         HttpResponseMessage response = await PostLockedSessionAsync(account.Client, token: null);
 
-        // Assert
+        // Assert — refused by the provider scheme's challenge, not by the claim gate.
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
+        await Assert.That(string.Join(", ", response.Headers.WwwAuthenticate.Select(challenge => challenge.Scheme)))
+            .Contains("Bearer");
+        await Assert.That((await response.Content.ReadAsStringAsync())
+                .Contains(RegistrationClaimGate.MissingClaimsTitle, StringComparison.Ordinal))
+            .IsFalse();
         await Assert.That(SetsAnyCookie(response)).IsFalse();
         await Assert.That(await RowCountsAsync(host)).IsEqualTo(before);
+    }
+
+    /// <summary>
+    /// The cookie a locked sign-in sets is the product's one session cookie, with the attributes the
+    /// <c>__Host-</c> prefix requires, and it dies with the session the body reports.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The name is a literal rather than <c>SessionCookie.Name</c>, for the reason
+    /// <see cref="SessionCookieIssuanceTests" /> gives: a browser sends the bytes, not the symbol.
+    /// <c>Domain</c> is asserted absent on the raw header, because a parser reports an unset attribute and
+    /// one it failed to read the same way.
+    /// </para>
+    /// <para>
+    /// The expiry is compared to the body's <c>expiresAtUtc</c>, never to an interval, with a second of
+    /// tolerance because the header carries whole seconds. A cookie appended without the shared attributes,
+    /// or one outliving the session it names, is red here.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task LockedSignIn_SetsTheHostPrefixedCookie_ExpiringWithTheSession()
+    {
+        // Arrange
+        using RSA rsa = RSA.Create(2048);
+        RsaSecurityKey signingKey = new(rsa) { KeyId = "locked-sign-in" };
+        await using PostgresTestHost host = await StartHostAsync();
+        await using ApiFactory factory = CreateRealBearerFactory(host, signingKey);
+        _ = await factory.CreateSignedInClientAsync(Subject, Email);
+
+        // Act
+        HttpResponseMessage response = await PostLockedSessionAsync(
+            factory.CreateClient(), ProviderToken(signingKey, Claims(Subject, Email)));
+
+        // Assert
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        DateTime expiresAtUtc = ParseUtc((await ReadJsonObjectAsync(response))["expiresAtUtc"]!.GetValue<string>());
+
+        string[] headers = response.Headers.TryGetValues("Set-Cookie", out IEnumerable<string>? values)
+            ? [.. values]
+            : [];
+        string raw = headers.SingleOrDefault(header =>
+                         header.StartsWith("__Host-budgetoid-session=", StringComparison.Ordinal))
+                     ?? throw new InvalidOperationException(
+                         "The response set no '__Host-budgetoid-session' cookie. Set-Cookie: "
+                         + (headers.Length == 0 ? "<none>" : string.Join(" | ", headers)));
+        Microsoft.Net.Http.Headers.SetCookieHeaderValue issued =
+            Microsoft.Net.Http.Headers.SetCookieHeaderValue.Parse(raw);
+
+        await Assert.That(issued.HttpOnly).IsTrue();
+        await Assert.That(issued.Secure).IsTrue();
+        await Assert.That(issued.SameSite).IsEqualTo(Microsoft.Net.Http.Headers.SameSiteMode.Lax);
+        await Assert.That(issued.Path.ToString()).IsEqualTo("/");
+        await Assert.That(raw.Contains("domain", StringComparison.OrdinalIgnoreCase)).IsFalse();
+
+        DateTimeOffset cookieExpiry = issued.Expires
+                                      ?? throw new InvalidOperationException("The session cookie carries no expiry.");
+        await Assert.That((cookieExpiry.UtcDateTime - expiresAtUtc).Duration()).IsLessThanOrEqualTo(TimeSpan.FromSeconds(1));
+    }
+
+    /// <summary>
+    /// Judging the browser's cookie inside the route costs no second token lookup.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The route asks the cookie scheme for its result by name, after the default scheme has already
+    /// authenticated the same cookie for the request. The delegate's comment says the handler's cached
+    /// result answers that second ask, so the discovery read runs once. This counts it.
+    /// </para>
+    /// <para>
+    /// <b>Decoration, not substitution.</b> The real repository still answers on the real connection, so
+    /// the 409 below is the route's own verdict and the counter only watches. The count is taken as a
+    /// difference around the one request, so whatever the arrangement did is not in it. Over a live full
+    /// session, because that is the request on which the cookie's result decides the answer.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task LockedSignIn_OverALiveFullSession_LooksTheSessionTokenUpOnce()
+    {
+        // Arrange
+        using RSA rsa = RSA.Create(2048);
+        RsaSecurityKey signingKey = new(rsa) { KeyId = "locked-sign-in" };
+        TokenLookupCounter lookups = new();
+        await using PostgresTestHost host = await StartHostAsync();
+        await using ApiFactory factory = CreateRealBearerFactory(
+            host, signingKey, services => CountSessionTokenLookups(services, lookups));
+        ApiFactory.SignedInClient account = await factory.CreateSignedInClientAsync(Subject, Email);
+        int before = lookups.Count;
+
+        // Act
+        HttpResponseMessage response = await PostLockedSessionAsync(
+            account.Client, ProviderToken(signingKey, Claims(Subject, Email)));
+        int during = lookups.Count - before;
+
+        // Assert — the route reached its verdict on the cookie, and asked the store once to do it.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Conflict);
+        await Assert.That(during).IsEqualTo(1);
     }
 
     /// <summary>
@@ -577,15 +687,80 @@ public sealed class LockedSignInEndpointTests
     /// A factory whose provider scheme is the real bearer handler holding <paramref name="signingKey" />
     /// and no metadata address, the shape <c>EmailChangeEndpointTests</c> builds.
     /// </summary>
-    private static ApiFactory CreateRealBearerFactory(PostgresTestHost host, SecurityKey signingKey) =>
+    private static ApiFactory CreateRealBearerFactory(
+        PostgresTestHost host,
+        SecurityKey signingKey,
+        Action<IServiceCollection>? configureServices = null) =>
         host.CreateFactory(configureServices: services =>
+        {
             services.PostConfigure<JwtBearerOptions>(ProviderAuthentication.SchemeName, options =>
             {
                 OpenIdConnectConfiguration configuration = new() { Issuer = LogCensusTraffic.ProviderIssuer };
                 configuration.SigningKeys.Add(signingKey);
                 options.Configuration = configuration;
                 options.ConfigurationManager = new StaticConfigurationManager<OpenIdConnectConfiguration>(configuration);
-            }));
+            });
+            configureServices?.Invoke(services);
+        });
+
+    /// <summary>
+    /// Wraps whatever <see cref="ISessionTokenRepository" /> the application registered so each discovery
+    /// read is counted, leaving the registration's lifetime alone.
+    /// </summary>
+    /// <remarks>
+    /// The implementation type is rebuilt from the descriptor the application registered rather than
+    /// named here — the shape <c>AccountRegistrationTests</c> uses — so this cannot start decorating a
+    /// different implementation than the one the application resolves.
+    /// </remarks>
+    private static void CountSessionTokenLookups(IServiceCollection services, TokenLookupCounter lookups)
+    {
+        // Last, not single: the last registration for a service type is the one that resolves.
+        ServiceDescriptor registered =
+            services.LastOrDefault(descriptor => descriptor.ServiceType == typeof(ISessionTokenRepository))
+            ?? throw new InvalidOperationException(
+                $"Nothing registered {nameof(ISessionTokenRepository)}, so there is nothing to count.");
+
+        services.Remove(registered);
+        services.Add(ServiceDescriptor.Describe(
+            typeof(ISessionTokenRepository),
+            provider => new CountingSessionTokenRepository(Undecorated(provider, registered), lookups),
+            registered.Lifetime));
+    }
+
+    private static ISessionTokenRepository Undecorated(IServiceProvider provider, ServiceDescriptor registered) =>
+        registered switch
+        {
+            { ImplementationType: { } type } =>
+                (ISessionTokenRepository)ActivatorUtilities.CreateInstance(provider, type),
+            { ImplementationFactory: { } factory } => (ISessionTokenRepository)factory(provider),
+            { ImplementationInstance: ISessionTokenRepository instance } => instance,
+            _ => throw new InvalidOperationException(
+                $"The {nameof(ISessionTokenRepository)} registration has no shape this helper can rebuild."),
+        };
+
+    /// <summary>
+    /// How many discovery reads ran. Owned by the test rather than the decorator, because the decorator is
+    /// rebuilt per scope and a field on it would leave with the request.
+    /// </summary>
+    private sealed class TokenLookupCounter
+    {
+        private int count;
+
+        public int Count => Volatile.Read(ref count);
+
+        public void Record() => Interlocked.Increment(ref count);
+    }
+
+    /// <summary>Counts each lookup and forwards it to the real repository.</summary>
+    private sealed class CountingSessionTokenRepository(ISessionTokenRepository inner, TokenLookupCounter lookups)
+        : ISessionTokenRepository
+    {
+        public Task<SessionToken?> FindByTokenHashAsync(byte[] tokenHash, CancellationToken cancellationToken = default)
+        {
+            lookups.Record();
+            return inner.FindByTokenHashAsync(tokenHash, cancellationToken);
+        }
+    }
 
     private static Dictionary<string, object> Claims(string subject, string email) => new(StringComparer.Ordinal)
     {

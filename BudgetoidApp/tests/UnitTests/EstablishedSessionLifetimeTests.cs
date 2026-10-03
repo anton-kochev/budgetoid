@@ -21,10 +21,11 @@ namespace UnitTests;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Four handlers open a session — a passkey assertion, a recovery-code redemption, a regeneration
-/// that swept the sessions it replaced, and a locked sign-in — and this is the file that puts the four
-/// beside each other.</b> Each of the files that tests them pins its own handler's expiry, and none of
-/// them can say the others agree. The equality is a rule rather than a coincidence: the first three open
+/// <b>Five handlers open a session, and four of the five are driven here — a passkey assertion, a
+/// recovery-code redemption, a regeneration that swept the sessions it replaced, and a locked sign-in.
+/// This is the file that puts those four beside each other.</b> Each of the files that tests them pins
+/// its own handler's expiry, and none of them can say the others agree. The fifth, registration, is not
+/// driven here, and nothing in this file holds its lifetime. The equality is a rule rather than a coincidence: the first three open
 /// a <see cref="SessionKind.Full" /> session, and a shorter one on the recovery paths would quietly tell
 /// somebody who has just lost their authenticator that the way back in they were issued is worth less
 /// than the one they lost.

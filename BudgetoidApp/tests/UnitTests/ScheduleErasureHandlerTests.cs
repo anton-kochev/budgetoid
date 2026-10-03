@@ -82,22 +82,19 @@ public sealed class ScheduleErasureHandlerTests
     }
 
     /// <summary>
-    /// Another account's schedule is neither returned nor disturbed; this account files its own.
+    /// The schedule is filed under the account the context resolves, and answered for it.
     /// </summary>
     /// <remarks>
-    /// The counterweight to the case above: a handler that answered "whatever schedule exists" would pass
-    /// that one perfectly, because the only row there is the right one. Here the only stored row is a
-    /// stranger's, and it carries a date the right answer cannot equal.
+    /// No stranger's schedule is seeded: the port is keyed only by its owner and the fake filters by that
+    /// key, so a stranger's row here would measure the fake. That half is held under the real policies by
+    /// <c>ErasureScheduleEndpointTests.ScheduleErasure_LeavesAnotherAccountUntouched</c>.
     /// </remarks>
     [Test]
-    public async Task HandleAsync_FilesForTheResolvedAccount_AndLeavesAnotherAccountsScheduleAlone()
+    public async Task HandleAsync_FilesForTheResolvedAccount()
     {
         // Arrange
         Guid userId = Guid.CreateVersion7();
-        Guid strangerId = Guid.CreateVersion7();
         InMemoryErasureScheduleRepository schedules = new();
-        DateTime strangerFiledAt = RequestInstant.UtcDateTime.AddDays(-3);
-        schedules.Seed(ErasureSchedule.Request(strangerId, strangerFiledAt, TimeSpan.FromDays(7)));
         ScheduleErasureHandler handler = new(
             schedules, new StubUserContext(userId), new FakeTimeProvider(RequestInstant));
 
@@ -108,10 +105,6 @@ public sealed class ScheduleErasureHandlerTests
         await Assert.That(scheduled.TakesEffectAtUtc).IsEqualTo(RequestInstant.UtcDateTime.AddDays(7));
         await Assert.That(schedules.Stored[userId].TakesEffectAtUtc)
             .IsEqualTo(RequestInstant.UtcDateTime.AddDays(7));
-
-        // And the stranger's row is exactly as it was.
-        await Assert.That(schedules.Stored[strangerId].TakesEffectAtUtc).IsEqualTo(strangerFiledAt.AddDays(7));
-        await Assert.That(schedules.Stored.Count).IsEqualTo(2);
     }
 
     /// <summary>

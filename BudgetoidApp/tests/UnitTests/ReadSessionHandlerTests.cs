@@ -18,9 +18,11 @@ namespace UnitTests;
 /// handler answering "a session on this account" would pass any case with only one.
 /// </para>
 /// <para>
-/// <b>The schedule is the resolved account's and nobody else's.</b> <c>IUserContext</c> is the identity,
-/// for the reason <c>ScheduleErasureHandlerTests</c> gives; the stranger's row below carries a date the
-/// right answer cannot equal, so "whatever schedule exists" shows up as a wrong instant.
+/// <b>The schedule is read by the resolved account.</b> <c>IUserContext</c> is the identity, for the
+/// reason <c>ScheduleErasureHandlerTests</c> gives. No stranger's schedule is seeded here: the port is
+/// keyed only by its owner and the fake filters by that key, so a stranger's row would measure the
+/// fake. That half is held under the real policies by
+/// <c>SessionReadEndpointTests.SessionRead_DoesNotAnswerAnotherAccountsSchedule</c>.
 /// </para>
 /// <para>
 /// The expiries are fixed literals that differ per session, never read off <c>SessionPolicy</c>, so the
@@ -145,29 +147,6 @@ public sealed class ReadSessionHandlerTests
         // Assert
         await Assert.That(summary.Kind).IsEqualTo(SessionKind.Full);
         await Assert.That(summary.ErasureTakesEffectAtUtc).IsEqualTo(filedAt.AddDays(7));
-    }
-
-    /// <summary>
-    /// The only stored schedule is a stranger's; this account reads none.
-    /// </summary>
-    [Test]
-    public async Task HandleAsync_DoesNotAnswerAnotherAccountsSchedule()
-    {
-        // Arrange
-        Guid userId = Guid.CreateVersion7();
-        Guid strangerId = Guid.CreateVersion7();
-        InMemorySessionRepository sessions = new();
-        Session locked = Session.Establish(FederatedCredential(userId), CreatedAtUtc, LockedExpiresAtUtc);
-        await sessions.AddAsync(locked);
-        InMemoryErasureScheduleRepository schedules = new();
-        schedules.Seed(ErasureSchedule.Request(strangerId, CreatedAtUtc.AddDays(-3), TimeSpan.FromDays(7)));
-        ReadSessionHandler handler = new(sessions, schedules, new StubUserContext(userId));
-
-        // Act
-        SessionSummary summary = await handler.HandleAsync(new ReadSessionQuery(locked.Id));
-
-        // Assert
-        await Assert.That(summary.ErasureTakesEffectAtUtc).IsNull();
     }
 
     /// <summary>

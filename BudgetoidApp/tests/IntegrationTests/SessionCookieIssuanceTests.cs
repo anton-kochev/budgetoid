@@ -13,10 +13,18 @@ using TestSupport;
 namespace IntegrationTests;
 
 /// <summary>
-/// The minting half: the three paths that establish a session hand out the handle it is presented by,
-/// and the one path that establishes none hands out nothing.
+/// The minting half: three of the paths that establish a session hand out the handle it is presented
+/// by, and the one path that establishes none hands out nothing.
 /// </summary>
 /// <remarks>
+/// <para>
+/// <b>Five call sites issue the cookie, and this file drives three.</b> <c>SessionCookie.Issue</c> is
+/// called by a completed registration, a verified passkey assertion, a redeemed recovery code, a
+/// regeneration that swept a live session, and a locked sign-in. The three below — assertion,
+/// redemption and regeneration — are the ones this file was written for; registration's cookie is read
+/// in <see cref="AccountRegistrationTests" /> and the locked sign-in's in
+/// <see cref="LockedSignInEndpointTests" />.
+/// </para>
 /// <para>
 /// <b>Its own file rather than three additions to the three path files, and the reason is a rule rather
 /// than a preference.</b> <see cref="PasskeyCeremonyTests" />, <see cref="RecoveryCodeRedemptionTests" />

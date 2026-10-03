@@ -310,8 +310,8 @@ public sealed class FullSessionRequirementTests
     /// <para>
     /// <b>What closes the hole is not this handler, and that is worth being precise about.</b> Nothing
     /// defaults to <c>JwtBearer</c> any more: the fallback policy names the session cookie's scheme, and
-    /// the one policy that names the provider — the registration group's — declares itself and so never
-    /// reaches this requirement at all. A principal arriving here on some other scheme is therefore a
+    /// the two policies that name the provider — the registration group's and the locked sign-in's — each
+    /// declare themselves and so never reach this requirement at all. A principal arriving here on some other scheme is therefore a
     /// state no live route produces, and this test constructs one directly for exactly that reason. What
     /// it pins is the handler's <em>reading</em>: a kind claim that is absent must not be read as
     /// permission, whatever puts a foreign principal in front of it later.
