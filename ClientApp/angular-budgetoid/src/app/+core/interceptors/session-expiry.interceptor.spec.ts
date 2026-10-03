@@ -463,3 +463,87 @@ describe('sessionExpiryInterceptor and the two readers of GET /api/me', () => {
     expect(refusals).toHaveLength(1);
   });
 });
+
+// The locked sign-in's 401 is the provider token refused, answered to a browser
+// that has no session yet — the release screen says so in its own sentence.
+// Read as a session ending, it would send that person to `/welcome` from the
+// one screen that can help them, over a session that never existed. Through
+// the real `MeApiService`, because which request carries the mark is that
+// service's fact.
+//
+// The schedule's half — `POST /api/me/erasure/schedule` 401 ends the session,
+// its 403 is left alone — waits for that API member, which does not exist yet.
+describe('sessionExpiryInterceptor and the locked sign-in', () => {
+  const LOCKED_SESSION_URL = `${API_BASE_URL}/api/locked-session`;
+
+  let http: HttpTestingController;
+  let meApi: MeApiService;
+  let ended: () => boolean;
+  let destinations: () => readonly string[];
+
+  beforeEach(() => {
+    TestBed.resetTestingModule();
+    const navigateByUrl = vi.fn(
+      (url: string): Promise<boolean> => Promise.resolve(true),
+    );
+    const navigate = vi.fn(
+      (commands: readonly string[]): Promise<boolean> => Promise.resolve(true),
+    );
+    const configuration: Pick<ConfigurationService, 'getConfig'> = {
+      getConfig: () => ({ apiBaseUrl: API_BASE_URL, auth: {} }),
+    };
+
+    TestBed.configureTestingModule({
+      providers: [
+        provideHttpClient(withInterceptors([sessionExpiryInterceptor])),
+        provideHttpClientTesting(),
+        { provide: ConfigurationService, useValue: configuration },
+        { provide: Router, useValue: { navigateByUrl, navigate } },
+        {
+          provide: AuthService,
+          useValue: {
+            forgetProviderToken: vi.fn(),
+          } satisfies Pick<AuthService, 'forgetProviderToken'>,
+        },
+      ],
+    });
+
+    const session = TestBed.inject(SessionService);
+    const endedSpy = vi.spyOn(session, 'ended');
+    http = TestBed.inject(HttpTestingController);
+    meApi = TestBed.inject(MeApiService);
+    ended = () => endedSpy.mock.calls.length > 0;
+    destinations = () => [
+      ...navigateByUrl.mock.calls.map(([url]) => pathOf(url)),
+      ...navigate.mock.calls.map(([commands]) => pathOf(commands)),
+    ];
+  });
+
+  afterEach(() => {
+    try {
+      http.verify();
+    } finally {
+      vi.restoreAllMocks();
+      TestBed.resetTestingModule();
+    }
+  });
+
+  it('navigates nowhere and ends no session when the locked sign-in is refused', () => {
+    // Arrange
+    const refusals: unknown[] = [];
+
+    // Act
+    meApi.openLockedSession('provider.token.locked').subscribe({
+      error: (error: unknown) => refusals.push(error),
+    });
+    http
+      .expectOne(LOCKED_SESSION_URL)
+      .flush(null, { status: 401, statusText: 'Unauthorized' });
+
+    // Assert
+    expect(ended()).toBe(false);
+    expect(destinations()).toEqual([]);
+    // Still handed to the caller, which owes the person a sentence.
+    expect(refusals).toHaveLength(1);
+  });
+});

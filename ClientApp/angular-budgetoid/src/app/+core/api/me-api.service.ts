@@ -1,6 +1,9 @@
 import { HttpContext } from '@angular/common/http';
 import { Injectable } from '@angular/core';
-import { EMAIL_CHANGE_PATH } from '@app-core/interceptors/api-credentials.interceptor';
+import {
+  EMAIL_CHANGE_PATH,
+  LOCKED_SESSION_PATH,
+} from '@app-core/interceptors/api-credentials.interceptor';
 import { EXPECTS_UNAUTHENTICATED } from '@app-core/interceptors/expects-unauthenticated.token';
 import { PROVIDER_CREDENTIAL } from '@app-core/interceptors/provider-credential.token';
 import type { FactorKeypairEnvelopes } from '@app-core/security/factor-keypair';
@@ -191,6 +194,31 @@ function decodeSession(body: unknown): SessionDto {
     erasure:
       erasure === null ? null : { takesEffectAtUtc: erasure.takesEffectAtUtc },
   };
+}
+
+/**
+ * What `POST /api/locked-session` answers: a session description of exactly
+ * one kind. The route opens a locked session or refuses; it never opens a full
+ * one, so the type says so and a caller has no `'full'` branch to write.
+ */
+export type LockedSessionDto = SessionDto & { readonly kind: 'locked' };
+
+// `decodeSession`'s rules, then one more: the kind is `locked`. A `full` body
+// from this route is a server this bundle was not written against — read as a
+// full session, it would hand budget screens to a sign-in that proved nothing
+// but a Google account. A plain `Error` for `decodeSession`'s reason: the
+// caller tells a refusal of the request from a body it could not read by
+// whether it is an `HttpErrorResponse`.
+function decodeLockedSession(body: unknown): LockedSessionDto {
+  const session = decodeSession(body);
+
+  if (session.kind !== 'locked') {
+    throw new Error(
+      'The locked sign-in answered a kind of session it never opens.',
+    );
+  }
+
+  return { ...session, kind: session.kind };
 }
 
 // One member, and the route will never grow another: no id, no issued instant,
@@ -844,5 +872,35 @@ export class MeApiService extends BaseApiService {
         return { sessionsEnded: isSessionCount(count) ? count : null };
       }),
     );
+  }
+
+  // Opens a locked session on an account with no factors, authenticated by the
+  // provider token the release flow was handed and nothing else. The answer
+  // sets the session cookie; the body describes the session it opened.
+  //
+  // **The token rides on the context, and this method writes no header**, for
+  // `changeEmail`'s reason: handed to `apiCredentialsInterceptor` on
+  // `PROVIDER_CREDENTIAL`, it is sent only once that interceptor has decided
+  // the request is ours and is for `LOCKED_SESSION_PATH` — and never replaced
+  // by a stored token. The path is imported from there; `slice(1)` drops its
+  // leading slash because `post` joins with one. The body is `null`: the token
+  // is the whole of what this request presents.
+  //
+  // **It carries `EXPECTS_UNAUTHENTICATED`.** The browser asking holds no
+  // session yet, so a 401 is the route refusing the provider token — the
+  // release screen has its own sentence for that — never a session ending.
+  //
+  // Refusals are handed on untouched, status and body: `404` with
+  // `refusal: "no_account"` is answered on the screen with its own sentence and
+  // a way to create an account, and the rest are told apart by status. A body
+  // this client cannot read is a plain `Error` from `decodeLockedSession`.
+  public openLockedSession(idToken: string): Observable<LockedSessionDto> {
+    return this.post<unknown>(
+      LOCKED_SESSION_PATH.slice(1),
+      null,
+      new HttpContext()
+        .set(PROVIDER_CREDENTIAL, idToken)
+        .set(EXPECTS_UNAUTHENTICATED, true),
+    ).pipe(map(decodeLockedSession));
   }
 }

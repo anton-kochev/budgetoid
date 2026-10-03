@@ -5,6 +5,7 @@
       "clientId": "618255022627-7rh7dn1po7ovnopb1lp3jcnm4ft7oeb5.apps.googleusercontent.com",
       "redirectUri": "https://budgetoid.app/register",
       "emailChangeRedirectUri": "https://budgetoid.app/app/settings",
+      "lockedSignInRedirectUri": "https://budgetoid.app/release",
       "scope": "openid email"
     }
   }

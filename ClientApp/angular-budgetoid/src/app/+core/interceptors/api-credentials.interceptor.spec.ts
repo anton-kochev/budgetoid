@@ -14,6 +14,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   apiCredentialsInterceptor,
   EMAIL_CHANGE_PATH,
+  LOCKED_SESSION_PATH,
 } from './api-credentials.interceptor';
 import { PROVIDER_CREDENTIAL } from './provider-credential.token';
 
@@ -596,5 +597,164 @@ describe('apiCredentialsInterceptor on the email change', () => {
     // Assert
     expect(forwarded.headers.has(AUTHORIZATION_HEADER)).toBe(false);
     expect(forwarded.withCredentials).toBe(true);
+  });
+});
+
+// The locked sign-in: the one route a browser reaches carrying a provider token
+// and, by design, no session it can use — `POST /api/locked-session` answers a
+// Google sign-in on an account with no factors with a locked session. Its
+// bearer is the credential the release flow was handed by the provider return,
+// carried on the request, exactly as the email change's is. Spelled out rather
+// than built from `LOCKED_SESSION_PATH`, so a constant that drifted from the
+// server's route cannot pass by agreeing with itself.
+const LOCKED_SESSION_URL = `${API_BASE_URL}/api/locked-session`;
+
+describe('apiCredentialsInterceptor on the locked sign-in', () => {
+  beforeEach(() => {
+    TestBed.resetTestingModule();
+  });
+
+  it('names the locked sign-in route the server declares', () => {
+    // Act & Assert
+    expect(LOCKED_SESSION_PATH).toBe('/api/locked-session');
+  });
+
+  it('sends the credential the request carries as the bearer, beside the cookie and the client header', () => {
+    // Arrange
+    const request = new HttpRequest<unknown>('POST', LOCKED_SESSION_URL, null, {
+      context: carrying(HANDED_CREDENTIAL),
+    });
+
+    // Act
+    const forwarded = forwardedRequest(request);
+
+    // Assert
+    expect(forwarded.headers.get(AUTHORIZATION_HEADER)).toBe(
+      `Bearer ${HANDED_CREDENTIAL}`,
+    );
+    expect(forwarded.withCredentials).toBe(true);
+    expect(forwarded.headers.has(CLIENT_HEADER)).toBe(true);
+  });
+
+  // The library still holds a token here — the harness hands one to every
+  // case — and a request that was handed nothing must carry nothing. A
+  // fallback to storage would send whatever an abandoned registration left.
+  it('sends no stored provider token when the request carries none', () => {
+    // Arrange
+    const request = new HttpRequest<unknown>('POST', LOCKED_SESSION_URL, null);
+
+    // Act
+    const forwarded = forwardedRequest(request, { idToken: ID_TOKEN });
+
+    // Assert
+    expect(forwarded.headers.has(AUTHORIZATION_HEADER)).toBe(false);
+    expect(forwarded.withCredentials).toBe(true);
+    expect(forwarded.headers.has(CLIENT_HEADER)).toBe(true);
+  });
+
+  // The carried credential is the bearer even when storage holds a different
+  // one: equal to `ID_TOKEN` would mean storage was read first.
+  it('prefers the carried credential over a stored one', () => {
+    // Arrange
+    const request = new HttpRequest<unknown>('POST', LOCKED_SESSION_URL, null, {
+      context: carrying(HANDED_CREDENTIAL),
+    });
+
+    // Act
+    const forwarded = forwardedRequest(request, { idToken: ID_TOKEN });
+
+    // Assert
+    expect(forwarded.headers.get(AUTHORIZATION_HEADER)).not.toBe(
+      `Bearer ${ID_TOKEN}`,
+    );
+  });
+
+  // Origin first, path second.
+  it('sends nothing to the locked sign-in path on another origin', () => {
+    // Arrange
+    const request = new HttpRequest<unknown>(
+      'POST',
+      `${API_BASE_URL}.attacker.example/api/locked-session`,
+      null,
+      { context: carrying(HANDED_CREDENTIAL) },
+    );
+
+    // Act
+    const forwarded = forwardedRequest(request);
+
+    // Assert
+    expect(forwarded.withCredentials).toBe(false);
+    expect(forwarded.headers.has(CLIENT_HEADER)).toBe(false);
+    expect(forwarded.headers.has(AUTHORIZATION_HEADER)).toBe(false);
+  });
+
+  it.each([
+    { shape: 'a segment below the route', path: '/api/locked-session/x' },
+    { shape: 'a path extending its spelling', path: '/api/locked-sessionX' },
+    {
+      shape: 'the route with a bare trailing slash',
+      path: '/api/locked-session/',
+    },
+    { shape: 'the route under /api/me', path: '/api/me/locked-session' },
+  ])('sends no bearer to $shape', ({ path }) => {
+    // Arrange
+    const request = new HttpRequest<unknown>(
+      'POST',
+      `${API_BASE_URL}${path}`,
+      null,
+      { context: carrying(HANDED_CREDENTIAL) },
+    );
+
+    // Act
+    const forwarded = forwardedRequest(request);
+
+    // Assert
+    expect(forwarded.headers.has(AUTHORIZATION_HEADER)).toBe(false);
+  });
+
+  it('sends no bearer when the carried credential is empty', () => {
+    // Arrange
+    const request = new HttpRequest<unknown>('POST', LOCKED_SESSION_URL, null, {
+      context: carrying(''),
+    });
+
+    // Act
+    const forwarded = forwardedRequest(request);
+
+    // Assert
+    expect(forwarded.headers.has(AUTHORIZATION_HEADER)).toBe(false);
+    expect(forwarded.withCredentials).toBe(true);
+  });
+
+  // The route's own rule does not widen the email change's or registration's:
+  // a carried credential still reaches the email change, and registration
+  // still reads storage.
+  it('leaves the other provider routes to their own rules', () => {
+    // Arrange
+    const context = carrying(HANDED_CREDENTIAL);
+    const emailChange = new HttpRequest<unknown>(
+      'POST',
+      EMAIL_CHANGE_URL,
+      { credentialId: 'c' },
+      { context },
+    );
+    const registration = new HttpRequest<unknown>(
+      'POST',
+      REGISTRATION_URL,
+      { factorId: 'f' },
+      { context },
+    );
+
+    // Act
+    const forwardedEmailChange = forwardedRequest(emailChange);
+    const forwardedRegistration = forwardedRequest(registration);
+
+    // Assert
+    expect(forwardedEmailChange.headers.get(AUTHORIZATION_HEADER)).toBe(
+      `Bearer ${HANDED_CREDENTIAL}`,
+    );
+    expect(forwardedRegistration.headers.get(AUTHORIZATION_HEADER)).toBe(
+      `Bearer ${ID_TOKEN}`,
+    );
   });
 });

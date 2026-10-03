@@ -714,8 +714,9 @@ the *set*, so it is authenticated once.
 - **Rule**: **The identity provider's redirect lands on `/register`, and the matching entry in the
   Google Cloud console's authorized redirect URIs is part of that change.**
 - **Why**: the registration screen is the screen that does something with a fresh provider token in
-  a browser holding no session — the email change's return lands on `/app/settings` instead, on its
-  own redirect address. It reads the asserted address off the id token **while that token is still
+  a browser holding no session — the email change's return lands on `/app/settings` instead, and
+  the locked sign-in's on `/release`, each on its own redirect address; no screen on `/release`
+  takes that return yet. It reads the asserted address off the id token **while that token is still
   valid**, and
   both legs authenticate as the provider scheme and nothing else. The validity clause is
   load-bearing: `AuthService.providerEmail` answers `null` for a token whose hour has run out, which
@@ -730,10 +731,11 @@ the *set*, so it is authenticated once.
     the value `started` and nothing else — **and** the page sits at exactly the configured
     `redirectUri`, origin and path, **and** the fragment names a non-empty `access_token`, `id_token`
     and `state`, or a non-empty `error`. **The marker's value is the trip.** An email change leaves
-    `email-change` in the same key and returns to `/app/settings`; a marker from one trip beside the
-    other trip's address is nobody's return. `started` kept its spelling so a tab that left under
-    the previous bundle comes back recognised. The `APP_INITIALIZER` asks once and both return legs
-    decide from that one answer — see [email-change.md](email-change.md). The query is not read: the
+    `email-change` in the same key and returns to `/app/settings`, and the locked sign-in leaves
+    `locked-sign-in` and returns to `/release`; a marker from one trip beside another trip's
+    address is nobody's return. `started` kept its spelling so a tab that left under the previous
+    bundle comes back recognised. The `APP_INITIALIZER` asks once and every return leg decides from
+    that one answer — see [email-change.md](email-change.md). The query is not read: the
     library reads the implicit flow's answer from the fragment alone, and the code flow would need a
     `responseType` the pinned configuration refuses. Anything else is somebody opening the screen —
     a campaign parameter, an in-page anchor, half an answer, or a whole one in a tab where nobody
@@ -745,8 +747,8 @@ the *set*, so it is authenticated once.
     the library is told not to** (`preventClearHashAfterLogin`): `initialize()` removes it in a
     `finally` with `history.replaceState`, keeping the entry's state, so no history entry is added
     and none is left holding a token — the rule is [email-change.md](email-change.md)'s, *The answer
-    leaves the address*. A registration answer reaching a signed-in visitor, whose leg is skipped,
-    is removed by the boot's last step, `discardUnreadAnswer()`. A resolver on `/register` is the
+    leaves the address*. A registration answer reaching a visitor holding a session, full or
+    locked, whose leg is skipped, is removed by the boot's last step, `discardUnreadAnswer()`. A resolver on `/register` is the
     obvious home for the read and the wrong one: the router writes its navigation's target —
     fragment included — back to the address bar *after* resolvers run, so the tokens would come
     straight back. A bare `/register` contacts nobody; the press that starts the exchange prepares
@@ -763,7 +765,8 @@ the *set*, so it is authenticated once.
   `src/registration-redirect-uri.spec.ts`, which reads the **emitted build** rather than the source
   file and also fails when the key is renamed or dropped. The console entry is enforced by nothing
   and is named here so it is read as part of the change rather than as a follow-up. That only a
-  return leg — this one or the email change's — contacts the provider at bootstrap is pinned
+  return leg — this one, the email change's or the locked sign-in's — contacts the provider at
+  bootstrap is pinned
   twice: by `core.providers.spec.ts` over a stubbed `AuthService`, and by
   `core.providers.cold-boot.spec.ts` against the real OAuth library, which counts every request a
   cold load makes. What counts as a return is pinned by

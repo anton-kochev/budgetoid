@@ -2621,3 +2621,872 @@ describe('AuthService email change against the real provider client', () => {
     expectSilenceExcept(consoleSpies);
   });
 });
+
+// The locked sign-in's trip to the provider (`docs/design/components.md`,
+// "Releasing an account"): a third trip on the same client and the same one
+// discovery fetch per page load, a third redirect address — the release
+// screen — and a marker value of its own. It keeps the id token and nothing
+// else: no address is shown or sent for this trip.
+
+const LOCKED_SIGN_IN_MARKER = 'locked-sign-in';
+
+function lockedSignInServiceOver({
+  discovery = (): Promise<boolean> => Promise.resolve(true),
+  href = 'https://budgetoid.app/release',
+  refuseDeparture = false,
+  lockedSignInRedirectUri = 'https://budgetoid.app/release',
+}: {
+  readonly discovery?: () => Promise<boolean>;
+  readonly href?: string;
+  readonly refuseDeparture?: boolean;
+  // `null` leaves the key out of the configuration altogether.
+  readonly lockedSignInRedirectUri?: string | null;
+} = {}): {
+  readonly service: AuthService;
+  readonly departures: Departure[];
+  readonly configure: Mock<(config: object) => void>;
+  readonly loadDiscoveryDocument: Mock<() => Promise<boolean>>;
+  readonly tryLogin: Mock<() => Promise<boolean>>;
+  readonly departure: FakeDeparture;
+} {
+  const departures: Departure[] = [];
+  const loadDiscoveryDocument = vi.fn(discovery);
+  const tryLogin = vi.fn(() => Promise.resolve(false));
+  const departure = fakeDeparture();
+  const client: Record<string, unknown> = {};
+  const configure = vi.fn((config: object) => {
+    Object.assign(client, config);
+  });
+  Object.assign(client, {
+    configure,
+    loadDiscoveryDocument,
+    tryLogin,
+    resetImplicitFlow: vi.fn(),
+    initLoginFlow: vi.fn((state?: unknown, params?: unknown) => {
+      if (refuseDeparture) {
+        throw new Error('The login endpoint is refused.');
+      }
+      departures.push({
+        redirectUri: client['redirectUri'],
+        marker: sessionStorage.getItem(EXCHANGE_MARKER),
+        state,
+        params,
+      });
+      const openUri = client['openUri'];
+      void Promise.resolve().then(() => {
+        if (typeof openUri === 'function') {
+          (openUri as (uri: string) => void)(STUB_LOGIN_URL);
+        }
+      });
+    }),
+  });
+
+  TestBed.configureTestingModule({
+    providers: [
+      AuthService,
+      { provide: OAuthService, useValue: client },
+      { provide: ProviderDepartureService, useValue: departure.service },
+      {
+        provide: ConfigurationService,
+        useValue: {
+          getConfig: () => ({
+            apiBaseUrl: '',
+            auth: {
+              google: {
+                clientId: 'client',
+                redirectUri: 'https://budgetoid.app/register',
+                emailChangeRedirectUri: 'https://budgetoid.app/app/settings',
+                ...(lockedSignInRedirectUri === null
+                  ? {}
+                  : { lockedSignInRedirectUri }),
+                scope: 'openid email',
+              },
+            },
+          }),
+        },
+      },
+      { provide: DOCUMENT, useValue: { location: { href } } },
+    ],
+  });
+
+  return {
+    service: TestBed.inject(AuthService),
+    departures,
+    configure,
+    loadDiscoveryDocument,
+    tryLogin,
+    departure,
+  };
+}
+
+describe('AuthService locked sign-in', () => {
+  beforeEach(() => {
+    sessionStorage.clear();
+  });
+
+  afterEach(() => {
+    sessionStorage.clear();
+    vi.restoreAllMocks();
+  });
+
+  it('startLockedSignIn leaves for the release screen with the account chooser, marked as a locked sign-in', async () => {
+    // Arrange
+    const { service, departures } = lockedSignInServiceOver();
+
+    // Act
+    const outcome = await service.startLockedSignIn();
+
+    // Assert
+    expect(outcome).toBe('leaving');
+    expect(departures).toEqual([
+      {
+        redirectUri: 'https://budgetoid.app/release',
+        marker: LOCKED_SIGN_IN_MARKER,
+        state: '',
+        params: { prompt: 'select_account' },
+      },
+    ]);
+  });
+
+  // The third trip adds no key to the client's configuration: its address is
+  // written as a property before leaving, as the email change's is.
+  it('startLockedSignIn configures the client with exactly the keys it already had', async () => {
+    // Arrange
+    const { service, configure } = lockedSignInServiceOver();
+
+    // Act
+    await service.startLockedSignIn();
+
+    // Assert
+    expect(configure).toHaveBeenCalledOnce();
+    const keys = Object.keys(configure.mock.calls[0]?.[0] ?? {}).sort();
+    expect(keys).toEqual([
+      'clientId',
+      'issuer',
+      'openUri',
+      'redirectUri',
+      'scope',
+      'strictDiscoveryDocumentValidation',
+    ]);
+  });
+
+  it('startLockedSignIn answers unavailable, contacts nobody and leaves no marker when no redirect address is configured', async () => {
+    // Arrange
+    const { service, departures, loadDiscoveryDocument, departure } =
+      lockedSignInServiceOver({ lockedSignInRedirectUri: null });
+
+    // Act
+    const outcome = await service.startLockedSignIn();
+
+    // Assert
+    expect(outcome).toBe('unavailable');
+    expect(loadDiscoveryDocument).not.toHaveBeenCalled();
+    expect(departures).toEqual([]);
+    expect(sessionStorage.getItem(EXCHANGE_MARKER)).toBeNull();
+    expect(departure.departing()).toBe(false);
+  });
+
+  it('startLockedSignIn answers unavailable, leaves no marker and is not departing when the provider cannot be reached', async () => {
+    // Arrange
+    const { service, departures, departure } = lockedSignInServiceOver({
+      discovery: () =>
+        Promise.reject(new Error('The discovery document is unreachable.')),
+    });
+
+    // Act
+    const outcome = await service.startLockedSignIn();
+
+    // Assert
+    expect(outcome).toBe('unavailable');
+    expect(departures).toEqual([]);
+    expect(sessionStorage.getItem(EXCHANGE_MARKER)).toBeNull();
+    expect(departure.departing()).toBe(false);
+  });
+
+  it('startLockedSignIn answers unavailable and leaves no marker when the departure throws', async () => {
+    // Arrange
+    const { service } = lockedSignInServiceOver({ refuseDeparture: true });
+
+    // Act
+    const [outcome] = await Promise.allSettled([service.startLockedSignIn()]);
+
+    // Assert
+    expect(outcome).toEqual({ status: 'fulfilled', value: 'unavailable' });
+    expect(sessionStorage.getItem(EXCHANGE_MARKER)).toBeNull();
+  });
+
+  // The release screen holds Continue on `departing`, so it has to go up in the
+  // same turn as the press.
+  it('startLockedSignIn says the page is departing before it has asked anybody anything', () => {
+    // Arrange
+    const { service, departure } = lockedSignInServiceOver({
+      discovery: () => new Promise<boolean>(() => undefined),
+    });
+
+    // Act
+    void service.startLockedSignIn();
+
+    // Assert
+    expect(departure.departing()).toBe(true);
+  });
+
+  it('startLockedSignIn reads no answer off the address', async () => {
+    // Arrange
+    const { service, tryLogin } = lockedSignInServiceOver();
+
+    // Act
+    const outcome = await service.startLockedSignIn();
+
+    // Assert — the control first: a press that went nowhere reads nothing.
+    expect(outcome).toBe('leaving');
+    expect(tryLogin).not.toHaveBeenCalled();
+  });
+
+  // The address is a property on one shared client, so each trip writes its
+  // own back before leaving; a later press must not come back to /release.
+  it.each([
+    {
+      shape: 'signIn',
+      press: (service: AuthService): Promise<unknown> => {
+        service.signIn();
+
+        return afterPendingWork();
+      },
+      expected: 'https://budgetoid.app/register',
+    },
+    {
+      shape: 'startEmailChange',
+      press: (service: AuthService): Promise<unknown> =>
+        service.startEmailChange(),
+      expected: 'https://budgetoid.app/app/settings',
+    },
+  ])(
+    '$shape after startLockedSignIn returns to its own screen',
+    async ({ press, expected }) => {
+      // Arrange
+      const { service, departures } = lockedSignInServiceOver();
+      await service.startLockedSignIn();
+
+      // Act
+      await press(service);
+
+      // Assert
+      expect(departures.map((one) => one.redirectUri)).toEqual([
+        'https://budgetoid.app/release',
+        expected,
+      ]);
+    },
+  );
+
+  // The marker says which trip this tab is on, the address says where the
+  // provider landed, and an answer has to be there too. A crossed pair is
+  // nobody's return — above all a locked marker on /register.
+  it.each([
+    {
+      shape: 'a locked marker and an answer on the release screen',
+      marker: LOCKED_SIGN_IN_MARKER,
+      href: 'https://budgetoid.app/release#access_token=a&id_token=b&state=c',
+      expected: 'locked-sign-in',
+    },
+    {
+      shape: 'a locked marker and a refusal on the release screen',
+      marker: LOCKED_SIGN_IN_MARKER,
+      href: 'https://budgetoid.app/release#error=access_denied',
+      expected: 'locked-sign-in',
+    },
+    {
+      shape: 'a locked marker and an answer on the registration screen',
+      marker: LOCKED_SIGN_IN_MARKER,
+      href: 'https://budgetoid.app/register#access_token=a&id_token=b&state=c',
+      expected: null,
+    },
+    {
+      shape: 'a locked marker and an answer on the settings screen',
+      marker: LOCKED_SIGN_IN_MARKER,
+      href: 'https://budgetoid.app/app/settings#access_token=a&id_token=b&state=c',
+      expected: null,
+    },
+    {
+      shape: 'a registration marker and an answer on the release screen',
+      marker: 'started',
+      href: 'https://budgetoid.app/release#access_token=a&id_token=b&state=c',
+      expected: null,
+    },
+    {
+      shape: 'an email-change marker and an answer on the release screen',
+      marker: EMAIL_CHANGE_MARKER,
+      href: 'https://budgetoid.app/release#access_token=a&id_token=b&state=c',
+      expected: null,
+    },
+    {
+      shape: 'no marker and an answer on the release screen',
+      marker: null,
+      href: 'https://budgetoid.app/release#access_token=a&id_token=b&state=c',
+      expected: null,
+    },
+    {
+      shape: 'a locked marker and the release screen carrying nothing',
+      marker: LOCKED_SIGN_IN_MARKER,
+      href: 'https://budgetoid.app/release',
+      expected: null,
+    },
+    {
+      shape: 'a locked marker and a partial answer on the release screen',
+      marker: LOCKED_SIGN_IN_MARKER,
+      href: 'https://budgetoid.app/release#access_token=a&state=c',
+      expected: null,
+    },
+    {
+      shape: 'a locked marker and an answer below the release path',
+      marker: LOCKED_SIGN_IN_MARKER,
+      href: 'https://budgetoid.app/release/x#access_token=a&id_token=b&state=c',
+      expected: null,
+    },
+    {
+      shape: 'a locked marker and an answer on a path extending release',
+      marker: LOCKED_SIGN_IN_MARKER,
+      href: 'https://budgetoid.app/releaseX#access_token=a&id_token=b&state=c',
+      expected: null,
+    },
+    {
+      shape: 'a locked marker and a release answer on another origin',
+      marker: LOCKED_SIGN_IN_MARKER,
+      href: 'https://budgetoid.app.example/release#access_token=a&id_token=b&state=c',
+      expected: null,
+    },
+    // The other two trips still read as themselves beside the third.
+    {
+      shape: 'an email-change marker and an answer on the settings screen',
+      marker: EMAIL_CHANGE_MARKER,
+      href: 'https://budgetoid.app/app/settings#access_token=a&id_token=b&state=c',
+      expected: 'email-change',
+    },
+    {
+      shape: 'a registration marker and an answer on the registration screen',
+      marker: 'started',
+      href: 'https://budgetoid.app/register#access_token=a&id_token=b&state=c',
+      expected: 'registration',
+    },
+  ])(
+    'providerReturn reads $shape as $expected',
+    ({ marker, href, expected }) => {
+      // Arrange
+      if (marker !== null) {
+        sessionStorage.setItem(EXCHANGE_MARKER, marker);
+      }
+      const { service } = lockedSignInServiceOver({ href });
+
+      // Act
+      const answer = service.providerReturn();
+
+      // Assert
+      expect(answer).toBe(expected);
+    },
+  );
+
+  it('providerReturn reads no locked sign-in when its redirect address is not configured', () => {
+    // Arrange
+    sessionStorage.setItem(EXCHANGE_MARKER, LOCKED_SIGN_IN_MARKER);
+    const { service } = lockedSignInServiceOver({
+      href: 'https://budgetoid.app/release#access_token=a&id_token=b&state=c',
+      lockedSignInRedirectUri: null,
+    });
+
+    // Act
+    const answer = service.providerReturn();
+
+    // Assert
+    expect(answer).toBeNull();
+  });
+
+  it('takeLockedSignInReturn answers null on a page load that was no locked sign-in', () => {
+    // Arrange
+    const { service } = lockedSignInServiceOver();
+
+    // Act
+    const handedOver = service.takeLockedSignInReturn();
+
+    // Assert
+    expect(handedOver).toBeNull();
+  });
+});
+
+// The locked sign-in's return against the real library, because what a
+// return leaves in storage, and whether the library accepts the answer at
+// all, is the library's business.
+describe('AuthService locked sign-in against the real provider client', () => {
+  const DISCOVERY_URL =
+    'https://accounts.google.com/.well-known/openid-configuration';
+  const KEY_SET_URL = 'https://www.googleapis.com/oauth2/v3/certs';
+
+  const LIBRARY_KEYS = [
+    'access_token',
+    'id_token',
+    'refresh_token',
+    'nonce',
+    'PKCE_verifier',
+    'expires_at',
+    'id_token_claims_obj',
+    'id_token_expires_at',
+    'id_token_stored_at',
+    'access_token_stored_at',
+    'granted_scopes',
+    'session_state',
+  ] as const;
+
+  interface LockedRealClient {
+    readonly service: AuthService;
+    readonly http: HttpTestingController;
+    readonly opened: string[];
+  }
+
+  function realClient(): LockedRealClient {
+    const departure = fakeDeparture();
+    TestBed.configureTestingModule({
+      providers: [
+        AuthService,
+        provideOAuthClient(),
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        { provide: ProviderDepartureService, useValue: departure.service },
+        {
+          provide: ConfigurationService,
+          useValue: {
+            getConfig: () => ({
+              apiBaseUrl: '',
+              auth: {
+                google: {
+                  clientId: 'client',
+                  redirectUri: `${location.origin}/register`,
+                  emailChangeRedirectUri: `${location.origin}/app/settings`,
+                  lockedSignInRedirectUri: `${location.origin}/release`,
+                  scope: 'openid email',
+                },
+              },
+            }),
+          },
+        },
+      ],
+    });
+
+    return {
+      service: TestBed.inject(AuthService),
+      http: TestBed.inject(HttpTestingController),
+      opened: departure.opened,
+    };
+  }
+
+  function discoveryDocument(): object {
+    return {
+      issuer: 'https://accounts.google.com',
+      // The provider's own spelling.
+      // eslint-disable-next-line @typescript-eslint/naming-convention
+      authorization_endpoint: 'https://accounts.google.com/o/oauth2/v2/auth',
+      // eslint-disable-next-line @typescript-eslint/naming-convention
+      jwks_uri: KEY_SET_URL,
+    };
+  }
+
+  async function answerDiscovery(http: HttpTestingController): Promise<void> {
+    await afterPendingWork();
+    http.expectOne(DISCOVERY_URL).flush(discoveryDocument());
+    await afterPendingWork();
+    http.expectOne(KEY_SET_URL).flush({ keys: [] });
+  }
+
+  // Answers every discovery fetch and key-set fetch until a round finds none;
+  // returns how many discovery fetches there were.
+  async function answerAnyDiscovery(
+    http: HttpTestingController,
+  ): Promise<number> {
+    let fetched = 0;
+    for (let round = 0; round < 10; round += 1) {
+      await afterPendingWork();
+      const discovery = http.match(DISCOVERY_URL);
+      const keySet = http.match(KEY_SET_URL);
+      for (const request of discovery) {
+        fetched += 1;
+        request.flush(discoveryDocument());
+      }
+      for (const request of keySet) {
+        request.flush({ keys: [] });
+      }
+      if (round > 1 && discovery.length === 0 && keySet.length === 0) {
+        break;
+      }
+    }
+
+    return fetched;
+  }
+
+  function base64Url(value: object): string {
+    return btoa(JSON.stringify(value))
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/, '');
+  }
+
+  // An id token the library accepts under its default `NullValidationHandler`.
+  // **No address claim by default**: this trip keeps none, so a token without
+  // one is still an answer.
+  function idTokenFor(
+    nonce: string,
+    extraClaims: Readonly<Record<string, unknown>> = {},
+  ): string {
+    const now = Math.floor(Date.now() / 1000);
+
+    return [
+      base64Url({ alg: 'RS256', typ: 'JWT' }),
+      base64Url({
+        iss: 'https://accounts.google.com',
+        aud: 'client',
+        sub: 'subject-one',
+        iat: now,
+        exp: now + 3600,
+        nonce,
+        // eslint-disable-next-line @typescript-eslint/naming-convention
+        at_hash: 'hash-one',
+        ...extraClaims,
+      }),
+      'signature-one',
+    ].join('.');
+  }
+
+  function landOn(path: string): void {
+    history.replaceState(null, '', path);
+  }
+
+  function libraryKeysLeft(): readonly string[] {
+    return LIBRARY_KEYS.filter((key) => sessionStorage.getItem(key) !== null);
+  }
+
+  async function returnTo(
+    client: LockedRealClient,
+    path: string,
+  ): Promise<void> {
+    landOn(path);
+    const initialized = client.service.initialize();
+    await answerDiscovery(client.http);
+    await initialized;
+  }
+
+  beforeEach(() => {
+    sessionStorage.clear();
+    localStorage.clear();
+  });
+
+  afterEach(() => {
+    sessionStorage.clear();
+    localStorage.clear();
+    landOn('/');
+    vi.restoreAllMocks();
+  });
+
+  it('a locked sign-in return hands the id token over once and leaves none of the library keys behind', async () => {
+    // Arrange
+    const client = realClient();
+    sessionStorage.setItem('nonce', 'trip-nonce');
+    sessionStorage.setItem(EXCHANGE_MARKER, LOCKED_SIGN_IN_MARKER);
+    const token = idTokenFor('trip-nonce');
+    await returnTo(
+      client,
+      `/release#access_token=at&id_token=${token}&state=trip-nonce`,
+    );
+
+    // Act
+    const first = client.service.takeLockedSignInReturn();
+    const second = client.service.takeLockedSignInReturn();
+
+    // Assert — the token and nothing else: no address is kept for this trip.
+    expect(first).toEqual({ kind: 'answered', idToken: token });
+    expect(second).toBeNull();
+    expect(libraryKeysLeft()).toEqual([]);
+    expect(sessionStorage.getItem(EXCHANGE_MARKER)).toBeNull();
+  });
+
+  // An address the token asserts is not kept: the release screen names nobody.
+  it('a locked sign-in return keeps no address the token asserts', async () => {
+    // Arrange
+    const client = realClient();
+    sessionStorage.setItem('nonce', 'trip-nonce');
+    sessionStorage.setItem(EXCHANGE_MARKER, LOCKED_SIGN_IN_MARKER);
+    const token = idTokenFor('trip-nonce', {
+      email: 'lost.owner@budgetoid.test',
+    });
+    await returnTo(
+      client,
+      `/release#access_token=at&id_token=${token}&state=trip-nonce`,
+    );
+
+    // Act
+    const handedOver = client.service.takeLockedSignInReturn();
+
+    // Assert
+    expect(handedOver).toEqual({ kind: 'answered', idToken: token });
+  });
+
+  it('a locked sign-in return writes the id token to no storage', async () => {
+    // Arrange
+    const client = realClient();
+    sessionStorage.setItem('nonce', 'trip-nonce');
+    sessionStorage.setItem(EXCHANGE_MARKER, LOCKED_SIGN_IN_MARKER);
+    const token = idTokenFor('trip-nonce');
+
+    // Act
+    await returnTo(
+      client,
+      `/release#access_token=at&id_token=${token}&state=trip-nonce`,
+    );
+
+    // Assert — the control first: the token was handed over, so its absence
+    // from storage is the discard and not a return that read nothing.
+    expect(client.service.takeLockedSignInReturn()).toEqual({
+      kind: 'answered',
+      idToken: token,
+    });
+    const holding = [sessionStorage, localStorage].flatMap((storage) =>
+      Object.keys(storage).filter((key) =>
+        (storage.getItem(key) ?? '').includes(token),
+      ),
+    );
+    expect(holding).toEqual([]);
+  });
+
+  it('a locked sign-in return removes the answer from the address without adding a history entry', async () => {
+    // Arrange
+    const client = realClient();
+    sessionStorage.setItem('nonce', 'trip-nonce');
+    sessionStorage.setItem(EXCHANGE_MARKER, LOCKED_SIGN_IN_MARKER);
+    const token = idTokenFor('trip-nonce');
+    landOn(
+      `/release?from=test#access_token=at&id_token=${token}&state=trip-nonce`,
+    );
+    const entries = history.length;
+
+    // Act
+    const initialized = client.service.initialize();
+    await answerDiscovery(client.http);
+    await initialized;
+
+    // Assert
+    expect(location.hash).toBe('');
+    expect(location.pathname + location.search).toBe('/release?from=test');
+    expect(history.length).toBe(entries);
+  });
+
+  it('a locked sign-in return whose nonce does not match is unconfirmed and leaves nothing behind', async () => {
+    // Arrange
+    const client = realClient();
+    sessionStorage.setItem('nonce', 'stored-nonce');
+    sessionStorage.setItem(EXCHANGE_MARKER, LOCKED_SIGN_IN_MARKER);
+    const token = idTokenFor('forged-nonce');
+    await returnTo(
+      client,
+      `/release#access_token=at&id_token=${token}&state=forged-nonce`,
+    );
+
+    // Act
+    const handedOver = client.service.takeLockedSignInReturn();
+
+    // Assert — the nonce above all: one left by a failed return is what a
+    // crafted answer would need.
+    expect(handedOver).toEqual({ kind: 'unconfirmed' });
+    expect(libraryKeysLeft()).toEqual([]);
+    expect(sessionStorage.getItem(EXCHANGE_MARKER)).toBeNull();
+  });
+
+  // A registration abandoned in this tab left a validated token in storage. A
+  // locked return the library refuses must not be answered out of it.
+  it('a locked sign-in return refused on its nonce is unconfirmed even beside an abandoned registration token', async () => {
+    // Arrange
+    const client = realClient();
+    const abandoned = idTokenFor('abandoned-nonce');
+    sessionStorage.setItem('id_token', abandoned);
+    sessionStorage.setItem(
+      'id_token_claims_obj',
+      JSON.stringify({
+        iss: 'https://accounts.google.com',
+        aud: 'client',
+        sub: 'subject-one',
+      }),
+    );
+    sessionStorage.setItem(
+      'id_token_expires_at',
+      String(Date.now() + 60 * 60 * 1000),
+    );
+    sessionStorage.setItem('id_token_stored_at', String(Date.now()));
+    sessionStorage.setItem('nonce', 'stored-nonce');
+    sessionStorage.setItem(EXCHANGE_MARKER, LOCKED_SIGN_IN_MARKER);
+    const token = idTokenFor('forged-nonce');
+    await returnTo(
+      client,
+      `/release#access_token=at&id_token=${token}&state=forged-nonce`,
+    );
+
+    // Act
+    const handedOver = client.service.takeLockedSignInReturn();
+
+    // Assert
+    expect(handedOver).toEqual({ kind: 'unconfirmed' });
+  });
+
+  it('a locked sign-in return carrying a provider refusal is unconfirmed', async () => {
+    // Arrange
+    const client = realClient();
+    sessionStorage.setItem('nonce', 'trip-nonce');
+    sessionStorage.setItem(EXCHANGE_MARKER, LOCKED_SIGN_IN_MARKER);
+    await returnTo(client, '/release#error=access_denied&state=trip-nonce');
+
+    // Act
+    const handedOver = client.service.takeLockedSignInReturn();
+
+    // Assert
+    expect(handedOver).toEqual({ kind: 'unconfirmed' });
+    expect(libraryKeysLeft()).toEqual([]);
+  });
+
+  it('a locked sign-in return on which the provider cannot be reached is unconfirmed', async () => {
+    // Arrange
+    const client = realClient();
+    sessionStorage.setItem('nonce', 'trip-nonce');
+    sessionStorage.setItem(EXCHANGE_MARKER, LOCKED_SIGN_IN_MARKER);
+    const token = idTokenFor('trip-nonce');
+    landOn(`/release#access_token=at&id_token=${token}&state=trip-nonce`);
+    const initialized = client.service.initialize();
+    await afterPendingWork();
+    client.http
+      .expectOne(DISCOVERY_URL)
+      .error(new ProgressEvent('error'), { status: 0, statusText: '' });
+    await initialized;
+
+    // Act
+    const handedOver = client.service.takeLockedSignInReturn();
+
+    // Assert
+    expect(handedOver).toEqual({ kind: 'unconfirmed' });
+    expect(libraryKeysLeft()).toEqual([]);
+  });
+
+  // Each return hands over to its own taker and to nobody else's.
+  it('an email-change return hands nothing over to the locked sign-in', async () => {
+    // Arrange
+    const client = realClient();
+    sessionStorage.setItem('nonce', 'trip-nonce');
+    sessionStorage.setItem(EXCHANGE_MARKER, EMAIL_CHANGE_MARKER);
+    const token = idTokenFor('trip-nonce', {
+      email: 'moved.owner@budgetoid.test',
+    });
+    await returnTo(
+      client,
+      `/app/settings#access_token=at&id_token=${token}&state=trip-nonce`,
+    );
+
+    // Act
+    const locked = client.service.takeLockedSignInReturn();
+    const emailChange = client.service.takeEmailChangeReturn();
+
+    // Assert — the control second: the email change did receive its answer.
+    expect(locked).toBeNull();
+    expect(emailChange).toEqual({
+      kind: 'answered',
+      idToken: token,
+      email: 'moved.owner@budgetoid.test',
+    });
+  });
+
+  it('a locked sign-in return hands nothing over to the email change', async () => {
+    // Arrange
+    const client = realClient();
+    sessionStorage.setItem('nonce', 'trip-nonce');
+    sessionStorage.setItem(EXCHANGE_MARKER, LOCKED_SIGN_IN_MARKER);
+    const token = idTokenFor('trip-nonce', {
+      email: 'lost.owner@budgetoid.test',
+    });
+    await returnTo(
+      client,
+      `/release#access_token=at&id_token=${token}&state=trip-nonce`,
+    );
+
+    // Act
+    const emailChange = client.service.takeEmailChangeReturn();
+
+    // Assert
+    expect(emailChange).toBeNull();
+    expect(client.service.takeLockedSignInReturn()).toEqual({
+      kind: 'answered',
+      idToken: token,
+    });
+  });
+
+  it('a registration return hands nothing over to the locked sign-in', async () => {
+    // Arrange
+    const client = realClient();
+    sessionStorage.setItem('nonce', 'trip-nonce');
+    sessionStorage.setItem(EXCHANGE_MARKER, 'started');
+    const token = idTokenFor('trip-nonce');
+    await returnTo(
+      client,
+      `/register#access_token=at&id_token=${token}&state=trip-nonce`,
+    );
+
+    // Act
+    const handedOver = client.service.takeLockedSignInReturn();
+
+    // Assert
+    expect(handedOver).toBeNull();
+  });
+
+  // The drop is what the bootstrap calls when the probe finds a session
+  // already open: the answer must not reach the release flow's POST.
+  it('dropLockedSignInReturn leaves nothing for a later take', async () => {
+    // Arrange
+    const client = realClient();
+    sessionStorage.setItem('nonce', 'trip-nonce');
+    sessionStorage.setItem(EXCHANGE_MARKER, LOCKED_SIGN_IN_MARKER);
+    const token = idTokenFor('trip-nonce');
+    await returnTo(
+      client,
+      `/release#access_token=at&id_token=${token}&state=trip-nonce`,
+    );
+
+    // Act
+    client.service.dropLockedSignInReturn();
+
+    // Assert
+    expect(client.service.takeLockedSignInReturn()).toBeNull();
+  });
+
+  // A refused return must not cost the page its next trip: one discovery
+  // fetch for the page load, and the press leaves for the release address.
+  it('a press after a locked return refused on its nonce leaves for Google, with one discovery fetch', async () => {
+    // Arrange
+    const client = realClient();
+    sessionStorage.setItem('nonce', 'stored-nonce');
+    sessionStorage.setItem(EXCHANGE_MARKER, LOCKED_SIGN_IN_MARKER);
+    const token = idTokenFor('forged-nonce');
+    await returnTo(
+      client,
+      `/release#access_token=at&id_token=${token}&state=forged-nonce`,
+    );
+    const returned = client.service.takeLockedSignInReturn();
+
+    // Act
+    const pressed = client.service.startLockedSignIn();
+    const fetchedAgain = await answerAnyDiscovery(client.http);
+    const outcome = await pressed;
+    await afterPendingWork();
+
+    // Assert — the control first: an accepted return would prove nothing
+    // about a refused one.
+    expect(returned).toEqual({ kind: 'unconfirmed' });
+    expect(outcome).toBe('leaving');
+    expect(fetchedAgain).toBe(0);
+    expect(client.opened).toHaveLength(1);
+    const departure = new URL(client.opened[0] ?? 'https://nothing.invalid/');
+    expect(departure.searchParams.get('redirect_uri')).toBe(
+      `${location.origin}/release`,
+    );
+    expect(departure.searchParams.get('prompt')).toBe('select_account');
+    expect(sessionStorage.getItem(EXCHANGE_MARKER)).toBe(LOCKED_SIGN_IN_MARKER);
+  });
+});

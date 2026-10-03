@@ -913,7 +913,7 @@ which is worse than two sentences that agree. [voice](voice.md) states the rule.
   closed tab ends the answer by construction, and a second reader of the same load finds nothing,
   because the first one took it. **It is read before the first route draws**, which is what lets
   the first render already be the waiting state. **If that load's session check finds nobody signed
-  in, the answer is dropped before any route draws** — nothing reaches `/welcome` or `/register`
+  in, or only a locked session, the answer is dropped before any route draws** — nothing reaches `/welcome` or `/register`
   carrying it, where a Google answer reads as the start of a registration somebody never asked for.
   Which class holds it and drops it is the business-logic doc's to name, not this chapter's.
 - **The answer leaves the address bar before the first route draws, whatever the outcome.** It
@@ -3946,7 +3946,8 @@ them it carries one link for somebody who holds neither way in any more.
 **Two departures, both specified and not built.**
 
 - **The link is not drawn.** The shipped screen carries the two buttons, the region and the
-  provider line, and nothing below the region leads to `/release` — which has no route yet either.
+  provider line, and nothing below the region leads to `/release`, whose route draws only its
+  heading so far.
 - **The provider line is the one-exception sentence**, ending *Google is asked again only if you
   change that address.* It is false about the release screen's trip to Google the day that screen
   ships, so the line changes in the same change that draws the link, and neither lands before the
@@ -4290,8 +4291,10 @@ Every string on this screen, in one place. The copy is the specification, not an
 
 ### What ships today
 
-**Nothing in this chapter.** `/release` has no route, Welcome draws no link to it, the session
-status has no `locked-session` value, and nothing in the browser sends the locked sign-in or the
+**The screen itself, not yet.** `/release` is routed, guarded and outside the shell, and draws only
+its heading. Welcome draws no link to it. The session status carries `locked-session` and the
+guards send such a session here; the client can read a locked sign-in's return and send
+`POST /api/locked-session`, but no screen starts the trip or takes the return, and nothing sends the
 schedule. The server half is live: `POST /api/locked-session`, `GET /api/me/session` and
 `POST /api/me/erasure/schedule` answer as this chapter reads them.
 

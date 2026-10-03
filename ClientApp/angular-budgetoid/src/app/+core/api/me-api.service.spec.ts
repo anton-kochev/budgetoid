@@ -1642,6 +1642,205 @@ describe('MeApiService', () => {
       expect(received).toBeUndefined();
     });
   });
+
+  // The locked sign-in: `POST /api/locked-session`, authenticated by the
+  // provider token the release flow was handed and nothing else. It answers a
+  // Google sign-in on an account with no factors with a locked session, and
+  // its body is a session description of exactly one kind.
+  describe('openLockedSession', () => {
+    const LOCKED_SESSION_URL = 'https://api.test/api/locked-session';
+    const PROVIDER_TOKEN = 'provider.token.locked';
+
+    const LOCKED = {
+      kind: 'locked',
+      expiresAtUtc: '2026-10-17T08:00:00Z',
+      erasure: null,
+    } as const;
+
+    const LOCKED_SCHEDULED = {
+      kind: 'locked',
+      expiresAtUtc: '2026-10-17T08:00:00Z',
+      erasure: { takesEffectAtUtc: '2026-10-10T08:00:00Z' },
+    } as const;
+
+    function readAnswer(body: Parameters<TestRequest['flush']>[0]): {
+      readonly received: unknown;
+      readonly failure: unknown;
+    } {
+      let received: unknown;
+      let failure: unknown;
+
+      api.openLockedSession(PROVIDER_TOKEN).subscribe({
+        next: (value) => {
+          received = value;
+        },
+        error: (error: unknown) => {
+          failure = error;
+        },
+      });
+      http.expectOne(LOCKED_SESSION_URL).flush(body);
+
+      return { received, failure };
+    }
+
+    it('posts to the locked sign-in route with no body', () => {
+      // Act
+      api.openLockedSession(PROVIDER_TOKEN).subscribe();
+      const request = http.expectOne(LOCKED_SESSION_URL);
+
+      // Assert
+      expect(request.request.method).toBe('POST');
+      expect(request.request.body).toBeNull();
+
+      request.flush(LOCKED);
+    });
+
+    // The token rides on the context for the interceptor to send once it has
+    // settled the origin; a header written here would skip that check, and a
+    // token in the body would be one more place for it to be recorded.
+    it('carries the provider token on the request context and writes no bearer itself', () => {
+      // Act
+      api.openLockedSession(PROVIDER_TOKEN).subscribe();
+      const request = http.expectOne(LOCKED_SESSION_URL);
+
+      // Assert
+      expect(request.request.context.get(PROVIDER_CREDENTIAL)).toBe(
+        PROVIDER_TOKEN,
+      );
+      expect(request.request.headers.has('Authorization')).toBe(false);
+      expect(request.request.serializeBody()).toBeNull();
+
+      request.flush(LOCKED);
+    });
+
+    // A 401 here is the provider token refused — the release screen has its
+    // own sentence for it — and never a session ending: the browser asking has
+    // no session to end yet.
+    it('marks the request as one whose refusal is not a session ending', () => {
+      // Act
+      api.openLockedSession(PROVIDER_TOKEN).subscribe();
+      const request = http.expectOne(LOCKED_SESSION_URL);
+
+      // Assert
+      expect(request.request.context.get(EXPECTS_UNAUTHENTICATED)).toBe(true);
+
+      request.flush(LOCKED);
+    });
+
+    it('reads a locked session with nothing scheduled as itself', () => {
+      // Act
+      const { received, failure } = readAnswer(LOCKED);
+
+      // Assert
+      expect(failure).toBeUndefined();
+      expect(received).toEqual(LOCKED);
+    });
+
+    it('reads a locked session with a scheduled erasure as itself', () => {
+      // Act
+      const { received, failure } = readAnswer(LOCKED_SCHEDULED);
+
+      // Assert
+      expect(failure).toBeUndefined();
+      expect(received).toEqual(LOCKED_SCHEDULED);
+    });
+
+    // The session probe's instant rules, unchanged: an offset-less instant is
+    // read by `Date` as the reader's local time, and the release screen renders
+    // the erasure date from it.
+    it.each([
+      {
+        why: 'a full session, which this route never opens',
+        body: { ...LOCKED, kind: 'full' },
+      },
+      {
+        why: 'a kind this client does not know',
+        body: { ...LOCKED, kind: 'x' },
+      },
+      { why: 'a list', body: [] },
+      { why: 'null', body: null },
+      { why: 'no erasure member', body: without(LOCKED, 'erasure') },
+      { why: 'no expiry', body: without(LOCKED, 'expiresAtUtc') },
+      {
+        why: 'an expiry with no offset',
+        body: { ...LOCKED, expiresAtUtc: '2026-10-17T08:00:00' },
+      },
+      {
+        why: 'an erasure instant with no offset',
+        body: {
+          ...LOCKED,
+          erasure: { takesEffectAtUtc: '2026-10-10T08:00:00' },
+        },
+      },
+      {
+        why: 'an expiry on a day the month does not have',
+        body: { ...LOCKED, expiresAtUtc: '2026-02-30T10:00:00Z' },
+      },
+      {
+        why: 'a member this client does not know',
+        body: { ...LOCKED, budgetId: 'b' },
+      },
+    ])('refuses a body with $why', ({ body }) => {
+      // Act
+      const { received, failure } = readAnswer(body);
+
+      // Assert
+      expect(received).toBeUndefined();
+      expect(failure).toBeInstanceOf(Error);
+      expect(failure).not.toBeInstanceOf(HttpErrorResponse);
+    });
+
+    // `no_account` is the one refusal the release screen answers with its own
+    // sentence and a way to create an account, so it has to reach the caller
+    // as itself — status and body — and not as a generic failure.
+    it('hands a no-account refusal to the caller with its status and its refusal', () => {
+      // Arrange
+      let failure: unknown;
+
+      // Act
+      api.openLockedSession(PROVIDER_TOKEN).subscribe({
+        error: (error: unknown) => {
+          failure = error;
+        },
+      });
+      http
+        .expectOne(LOCKED_SESSION_URL)
+        .flush(
+          { refusal: 'no_account' },
+          { status: 404, statusText: 'Not Found' },
+        );
+
+      // Assert
+      expect(failure).toBeInstanceOf(HttpErrorResponse);
+      expect(failure instanceof HttpErrorResponse ? failure.status : -1).toBe(
+        404,
+      );
+      expect(
+        failure instanceof HttpErrorResponse ? failure.error : null,
+      ).toEqual({ refusal: 'no_account' });
+    });
+
+    it.each([401, 403, 500])(
+      'hands a %i to the caller with its status',
+      (status) => {
+        // Arrange
+        let seen: number | null = null;
+
+        // Act
+        api.openLockedSession(PROVIDER_TOKEN).subscribe({
+          error: (error: unknown) => {
+            seen = error instanceof HttpErrorResponse ? error.status : -1;
+          },
+        });
+        http
+          .expectOne(LOCKED_SESSION_URL)
+          .flush(null, { status, statusText: 'Refused' });
+
+        // Assert
+        expect(seen).toBe(status);
+      },
+    );
+  });
 });
 
 // The body as it crosses the wire: HttpClient's own serialization of what the

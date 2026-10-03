@@ -60,6 +60,12 @@ const EMAIL_CHANGE_MARKER = 'email-change';
 const SETTINGS_ANSWER_PATH = '/app/settings#access_token=a&id_token=b&state=c';
 const KEY_SET_URL = 'https://www.googleapis.com/oauth2/v3/certs';
 
+// The locked sign-in's marker value, and its answer landing on the release
+// screen. Spelled here rather than imported: it is module-private in
+// `AuthService`, and a rename there is a change to what every open tab holds.
+const LOCKED_SIGN_IN_MARKER = 'locked-sign-in';
+const RELEASE_ANSWER_PATH = '/release#access_token=a&id_token=b&state=c';
+
 // The keys angular-oauth2-oidc 17 writes to its storage for a trip or on an
 // implicit-flow return.
 const LIBRARY_KEYS = [
@@ -149,6 +155,7 @@ function answer(
           clientId: 'budgetoid-client',
           redirectUri: `${appOrigin()}/register`,
           emailChangeRedirectUri: `${appOrigin()}/app/settings`,
+          lockedSignInRedirectUri: `${appOrigin()}/release`,
           scope: 'openid email',
         },
       },
@@ -722,5 +729,190 @@ describe('a cold load whose address carries an answer nobody reads', () => {
 
     // Assert
     expect(atFirstRoute).toBe('#section');
+  });
+});
+
+// The locked sign-in comes back to `/release`, in a tab that usually holds no
+// session: the account behind it has no factor left to open one. The answer is
+// read before the probe and handed to the release flow in memory; nothing the
+// library wrote for the trip survives the boot that read it.
+describe('a cold load the provider answers a locked sign-in on', () => {
+  let originalHref: string;
+
+  beforeEach(() => {
+    originalHref = document.location.href;
+    sessionStorage.clear();
+  });
+
+  afterEach(() => {
+    TestBed.resetTestingModule();
+    for (const frame of document.querySelectorAll('iframe')) {
+      frame.remove();
+    }
+    sessionStorage.clear();
+    history.replaceState(null, '', originalHref);
+  });
+
+  // The control: the census has to see this contact, or the negatives below
+  // are a census that sees nothing.
+  it('sees the discovery request when the provider redirects a locked sign-in back', async () => {
+    // Arrange
+    sessionStorage.setItem(EXCHANGE_MARKER, LOCKED_SIGN_IN_MARKER);
+
+    // Act
+    const boot = await coldBoot('anonymous', RELEASE_ANSWER_PATH);
+
+    // Assert
+    expect(foreignRequests(boot)).toEqual([DISCOVERY_URL]);
+  });
+
+  it('hands the locked sign-in the id token the provider sent back', async () => {
+    // Arrange
+    sessionStorage.setItem('nonce', 'trip-nonce');
+    sessionStorage.setItem(EXCHANGE_MARKER, LOCKED_SIGN_IN_MARKER);
+    const token = idTokenFor('trip-nonce');
+    let handedOver: unknown = 'never read';
+
+    // Act
+    await coldBoot(
+      'anonymous',
+      `/release#access_token=at&id_token=${token}&state=trip-nonce`,
+      {
+        answerProvider: true,
+        afterStart: () => {
+          handedOver = TestBed.inject(AuthService).takeLockedSignInReturn();
+        },
+      },
+    );
+
+    // Assert — the token and nothing else: no address is kept for this trip.
+    expect(handedOver).toEqual({ kind: 'answered', idToken: token });
+  });
+
+  it('leaves no provider token, marker or answer behind after a locked sign-in boot', async () => {
+    // Arrange
+    sessionStorage.setItem('nonce', 'trip-nonce');
+    sessionStorage.setItem(EXCHANGE_MARKER, LOCKED_SIGN_IN_MARKER);
+    const token = idTokenFor('trip-nonce');
+    let hashAtFirstRoute: string | null = null;
+
+    // Act
+    const boot = await coldBoot(
+      'anonymous',
+      `/release#access_token=at&id_token=${token}&state=trip-nonce`,
+      {
+        answerProvider: true,
+        afterStart: () => {
+          hashAtFirstRoute = location.hash;
+        },
+      },
+    );
+
+    // Assert — the control first: the answer was read, so the emptiness below
+    // is the return leg's discard and not a boot that read nothing. An
+    // anonymous probe discards nothing on its own.
+    expect(foreignRequests(boot)).toEqual([DISCOVERY_URL, KEY_SET_URL]);
+    const left = LIBRARY_KEYS.filter(
+      (key) => sessionStorage.getItem(key) !== null,
+    );
+    expect(left).toEqual([]);
+    expect(sessionStorage.getItem(EXCHANGE_MARKER)).toBeNull();
+    expect(hashAtFirstRoute).toBe('');
+  });
+
+  // **Load-bearing.** Posting the answer would replace the full session's
+  // cookie with a locked one, so a locked return reaching a tab that already
+  // holds a full session is dropped before any screen can take it.
+  it('hands nothing over when the probe finds a full session', async () => {
+    // Arrange
+    sessionStorage.setItem('nonce', 'trip-nonce');
+    sessionStorage.setItem(EXCHANGE_MARKER, LOCKED_SIGN_IN_MARKER);
+    const token = idTokenFor('trip-nonce');
+    let handedOver: unknown = 'never read';
+
+    // Act
+    const boot = await coldBoot(
+      'authenticated',
+      `/release#access_token=at&id_token=${token}&state=trip-nonce`,
+      {
+        answerProvider: true,
+        afterStart: () => {
+          handedOver = TestBed.inject(AuthService).takeLockedSignInReturn();
+        },
+      },
+    );
+
+    // Assert — the control first: the answer was read, so a `null` is the
+    // drop and not a return nobody recognised.
+    expect(foreignRequests(boot)).toEqual([DISCOVERY_URL, KEY_SET_URL]);
+    expect(handedOver).toBeNull();
+  });
+
+  // A reload of `/release` after the return — the fragment gone, or still on
+  // a history entry — is not a second return leg. The marker was spent.
+  it.each([
+    { shape: 'the release screen', path: '/release' },
+    { shape: 'the answer-shaped address', path: RELEASE_ANSWER_PATH },
+  ])(
+    'reaches no provider on a reload of $shape after the return',
+    async ({ path }) => {
+      // Arrange
+      sessionStorage.setItem(EXCHANGE_MARKER, LOCKED_SIGN_IN_MARKER);
+      await coldBoot('anonymous', RELEASE_ANSWER_PATH);
+      TestBed.resetTestingModule();
+
+      // Act
+      const reload = await coldBoot('anonymous', path);
+
+      // Assert — the probe first: a boot that asked nothing passes the census.
+      expect(reload.requested).toContain(`${API_ORIGIN}/api/me/session`);
+      expect(foreignRequests(reload)).toEqual([]);
+      expect(framesInDocument()).toEqual([]);
+    },
+  );
+
+  it.each<{
+    readonly shape: string;
+    readonly path: string;
+    readonly marker: string | null;
+  }>([
+    {
+      shape: 'a plain load of the release screen',
+      path: '/release',
+      marker: null,
+    },
+    {
+      shape: 'a release answer in a tab that never pressed',
+      path: RELEASE_ANSWER_PATH,
+      marker: null,
+    },
+    {
+      shape: 'a release answer in a tab that pressed to register',
+      path: RELEASE_ANSWER_PATH,
+      marker: 'started',
+    },
+    {
+      shape: 'a release answer in a tab that pressed to change its email',
+      path: RELEASE_ANSWER_PATH,
+      marker: EMAIL_CHANGE_MARKER,
+    },
+    {
+      shape: 'a registration answer in a tab that pressed to release',
+      path: PROVIDER_ANSWER_PATH,
+      marker: LOCKED_SIGN_IN_MARKER,
+    },
+  ])('reaches no provider on $shape', async ({ path, marker }) => {
+    // Arrange
+    if (marker !== null) {
+      sessionStorage.setItem(EXCHANGE_MARKER, marker);
+    }
+
+    // Act
+    const boot = await coldBoot('anonymous', path);
+
+    // Assert
+    expect(boot.requested).toContain(`${API_ORIGIN}/api/me/session`);
+    expect(foreignRequests(boot)).toEqual([]);
+    expect(framesInDocument()).toEqual([]);
   });
 });

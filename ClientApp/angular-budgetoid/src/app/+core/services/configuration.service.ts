@@ -14,6 +14,11 @@ interface GoogleAuthConfig {
   // not required by `validateConfiguration`: a deployment without it has no
   // email change, and registration must not fail to boot over it.
   emailChangeRedirectUri?: string;
+  // Where the locked sign-in's trip to the provider comes back — the release
+  // screen. Optional for `emailChangeRedirectUri`'s reason: a deployment
+  // without it has no locked sign-in, and nothing else may fail to boot over
+  // it.
+  lockedSignInRedirectUri?: string;
   scope: string;
 }
 

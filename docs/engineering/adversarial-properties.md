@@ -298,10 +298,11 @@ assertion against this product's own API and reaches no provider. The API itself
 provider's published signing keys to validate a provider token — registration's, the email
 change's and the locked sign-in's — which names no person. Of the three moments NFR-025 permits,
 registration and the email change are built in the browser and on the server. The locked sign-in
-is built on the server only: `POST /api/locked-session` accepts a provider token and opens a locked
-session; it stores nothing the token asserts, and writes only the session row and its handle. No
-browser runs it, so
-no trip to the provider exists for it yet; see [sessions.md](../business-logic/sessions.md) and
+is built on the server: `POST /api/locked-session` accepts a provider token and opens a locked
+session; it stores nothing the token asserts, and writes only the session row and its handle. The
+client holds its parts — `AuthService` can start the trip to `/release` and read its return, and
+`MeApiService` can send the request — but no screen starts the trip, so no browser makes it yet;
+see [sessions.md](../business-logic/sessions.md) and
 [email-change.md](../business-logic/email-change.md).
 
 ## Keeping this chapter true

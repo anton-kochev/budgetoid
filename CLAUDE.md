@@ -268,9 +268,10 @@ because every one of these is something a reader will otherwise simplify away.
 Load-bearing rules. Each links the doc that argues it — **read that doc before changing the rule**.
 
 - **Two interceptors, one predicate.** `apiCredentialsInterceptor` answers "is this going to our
-  API?" once and attaches `withCredentials`, `X-Budgetoid-Client`, and a provider bearer on **three
-  paths only**: the two registration routes read the stored token, and `EMAIL_CHANGE_PATH` takes
-  **only** the `PROVIDER_CREDENTIAL` on its own request context, never storage, matched exactly.
+  API?" once and attaches `withCredentials`, `X-Budgetoid-Client`, and a provider bearer on **four
+  paths only**: the two registration routes read the stored token, and `EMAIL_CHANGE_PATH` and
+  `LOCKED_SESSION_PATH` take **only** the `PROVIDER_CREDENTIAL` on their own request context, never
+  storage, matched exactly.
   `sessionExpiryInterceptor` imports that same predicate,
   never restates it. It compares **origins**, not `startsWith`, and the bearer is narrowed by origin
   first and path second. Neither interceptor's own spec can see whether it is registered, so
@@ -290,9 +291,12 @@ Load-bearing rules. Each links the doc that argues it — **read that doc before
   that publishes a session — `established()`, `establishedLocked()` and a full or locked probe —
   and **never** on an anonymous or unreachable probe, which would take the provider-return leg's
   nonce.
-  **An email-change return is read before the probe, not after it**: the initializer reads
-  `providerReturn()` once, and on `'email-change'` runs `initialize()` first — the authenticated
-  probe's discard would otherwise take the nonce — then drops the hand-off on an `anonymous` probe.
+  **An email-change or locked sign-in return is read before the probe, not after it**: the
+  initializer reads `providerReturn()` once, and on `'email-change'` or `'locked-sign-in'` runs
+  `initialize()` first — a session-publishing probe's discard would otherwise take the nonce — then
+  drops the email-change hand-off on an `anonymous` or `locked-session` probe, and the locked one on
+  an `authenticated` or `locked-session` probe: its `POST` would replace a full session's cookie.
+  The registration leg runs for neither session kind.
   [sessions.md](docs/business-logic/sessions.md)
 - **The email change's answer lives in memory, for one load, and is taken once.**
   `AuthService.takeEmailChangeReturn()` hands `EmailChangeFlowService` the id token and the
@@ -307,7 +311,7 @@ Load-bearing rules. Each links the doc that argues it — **read that doc before
   page is leaving for Google"; a back-forward-cache restore settles it. **Holds run both ways**:
   departing and Confirm's passkey check hold Export, Unlock, Rotate and the Erase trigger, and
   Confirm is held only by the unlock's or a rotation's passkey check. The Google console must list
-  `/app/settings`; no test can see it.
+  `/app/settings` and `/release`; no test can see it.
   [email-change.md](docs/business-logic/email-change.md),
   [components.md](docs/design/components.md)
 - **Nothing loads from another origin** — no CDN script, stylesheet, typeface, icon, image, or

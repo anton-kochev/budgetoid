@@ -3,7 +3,7 @@ import { OAuthService } from 'angular-oauth2-oidc';
 import { ConfigurationService } from './configuration.service';
 import { ProviderDepartureService } from './provider-departure.service';
 
-// The mark `signIn` leaves in this tab's `sessionStorage` immediately before
+// The mark each trip leaves in this tab's `sessionStorage` immediately before
 // it sends the person to the provider, and the second half of what makes a
 // page load the provider coming back — see `providerReturn`. Its own key,
 // not the library's `nonce`: that one outlives the exchange it was written
@@ -21,10 +21,11 @@ const EXCHANGE_MARKER = 'budgetoid-provider-exchange';
 const EXCHANGE_VALUES = {
   registration: 'started',
   'email-change': 'email-change',
+  'locked-sign-in': 'locked-sign-in',
 } as const satisfies Record<ProviderTrip, string>;
 
-/** Which of the two trips to the provider a page load is coming back from. */
-export type ProviderTrip = 'registration' | 'email-change';
+/** Which of the three trips to the provider a page load is coming back from. */
+export type ProviderTrip = 'registration' | 'email-change' | 'locked-sign-in';
 
 /**
  * What an email-change return left for the settings screen: the id token the
@@ -36,6 +37,16 @@ export type EmailChangeReturn =
       readonly idToken: string;
       readonly email: string;
     }
+  | { readonly kind: 'unconfirmed' };
+
+/**
+ * What a locked sign-in's return left for the release screen: the id token the
+ * provider answered with, or the fact that the trip came back unconfirmed.
+ * **The token and nothing else** — the release screen names nobody, so no
+ * address is kept for this trip.
+ */
+export type LockedSignInReturn =
+  | { readonly kind: 'answered'; readonly idToken: string }
   | { readonly kind: 'unconfirmed' };
 
 // The `email` member of an id token's claims, or `null`. **Narrowed, never
@@ -130,10 +141,10 @@ export class AuthService {
   // **Memoized here, and not at either caller, because this service is the
   // only thing both legs share.** The return leg asks from the
   // `APP_INITIALIZER`, the outbound leg asks from a button press — on the
-  // registration screen or the settings screen — and on a page that came back
+  // registration, settings or release screen — and on a page that came back
   // from the provider both happen: a person whose token lapsed presses
-  // **Continue with Google** again, or one whose email change came back
-  // unconfirmed presses **Change email address** again.
+  // **Continue with Google** again, or one whose email change or locked
+  // sign-in came back unconfirmed presses that trip's control again.
   // A flag at either caller cannot see the other; this field sees both, so the
   // provider hears from this page load at most once.
   //
@@ -156,6 +167,10 @@ export class AuthService {
   // hand it over a second time. The library's own copy is discarded the moment
   // this one is taken; see {@link initialize}.
   #emailChangeReturn: EmailChangeReturn | null = null;
+
+  // What a locked sign-in's return left for the release screen, taken once.
+  // Memory only and a `#` field, for the email-change hand-off's reason above.
+  #lockedSignInReturn: LockedSignInReturn | null = null;
 
   // **A page restored from the back-forward cache is a trip abandoned, and
   // `pageshow` with `persisted` is the one moment this page learns it.** Back
@@ -196,7 +211,8 @@ export class AuthService {
    * **This is what contacts the identity provider, so it runs only where a
    * trip needs it** (NFR-025): from the `APP_INITIALIZER` when
    * {@link providerReturn} says the provider is redirecting back, and from
-   * {@link signIn} and {@link startEmailChange} before a trip starts. Run on
+   * {@link signIn}, {@link startEmailChange} and {@link startLockedSignIn}
+   * before a trip starts. Run on
    * every cold load, it would tell Google the address and time of every visit
    * to the product, anonymous or signed in.
    *
@@ -235,19 +251,29 @@ export class AuthService {
    * asserting no non-empty address is `unconfirmed`: the settings screen names
    * that address, and could confirm nothing without one. The token and the
    * address are all that is kept; no other claim.
+   *
+   * **A locked sign-in's return is handed over exactly the same way, minus
+   * the address**: the validated id token kept in memory for
+   * {@link takeLockedSignInReturn}, anything else `unconfirmed`, and
+   * `logOut(true)` on every outcome. No claim is read at all — the release
+   * screen names nobody, so a token asserting no address is still an answer.
    */
   public async initialize(): Promise<void> {
     // Asked before anything is read: the `finally` below removes the fragment,
     // and the trip is judged by the page as it landed.
     const trip = this.providerReturn();
-    const answered = trip === 'email-change' ? this.idTokenOnUrl() : null;
+    const handsOver = trip === 'email-change' || trip === 'locked-sign-in';
+    const answered = handsOver ? this.idTokenOnUrl() : null;
 
     try {
       const read = (await this.whenReady()) && (await this.readAnswer());
+      // The token the library stored is the one on this URL. Anything else —
+      // a refusal, a nonce that did not match, a token left by an abandoned
+      // trip — is not this return's answer.
+      const validated =
+        read && answered !== null && this.oAuth.getIdToken() === answered;
 
       if (trip === 'email-change') {
-        const validated =
-          read && answered !== null && this.oAuth.getIdToken() === answered;
         const email = validated
           ? assertedEmail(this.oAuth.getIdentityClaims())
           : null;
@@ -256,9 +282,13 @@ export class AuthService {
           validated && email !== null
             ? { kind: 'answered', idToken: answered, email }
             : { kind: 'unconfirmed' };
+      } else if (trip === 'locked-sign-in') {
+        this.#lockedSignInReturn = validated
+          ? { kind: 'answered', idToken: answered }
+          : { kind: 'unconfirmed' };
       }
     } finally {
-      if (trip === 'email-change') {
+      if (handsOver) {
         this.discardLibraryKeys();
       }
       unmarkExchange();
@@ -286,8 +316,9 @@ export class AuthService {
    * other fragment where it is.
    *
    * The `APP_INITIALIZER`'s last step, after every leg that might have read the
-   * answer: a registration answer reaching a signed-in visitor, whose leg is
-   * skipped, or an answer in a tab that started no trip. Each would otherwise
+   * answer: a registration answer reaching a visitor who already holds a
+   * session, full or locked, whose leg is skipped, or an answer in a tab that
+   * started no trip. Each would otherwise
    * stay in the address bar, and a reload, a
    * bookmark or a copied link would carry it on. A leg that did read the answer
    * has already removed it, so this finds nothing.
@@ -381,16 +412,16 @@ export class AuthService {
     // What a failure degrades to is a *working* application whose provider
     // exchange does not work: the first-party session cookie was already
     // probed, and every screen that does not need the identity provider renders
-    // as usual. Only registration and the email change are unavailable, and
-    // they were unavailable anyway — the provider both depend on is the thing
-    // that could not be reached.
+    // as usual. Only the three trips — registration, the email change and the
+    // locked sign-in — are unavailable, and they were unavailable anyway — the
+    // provider all three depend on is the thing that could not be reached.
     //
     // Nothing is re-thrown and nothing is published. Registration reads
     // `providerEmail()`, which already answers `null` for a browser that never
-    // completed an exchange; an email-change return reads the `false` in
-    // {@link initialize} and hands over `unconfirmed`. The `false` is otherwise
-    // for {@link signIn} and {@link startEmailChange}, which must not send
-    // anybody to a login endpoint nobody has learned.
+    // completed an exchange; an email-change or locked sign-in return reads the
+    // `false` in {@link initialize} and hands over `unconfirmed`. The `false`
+    // is otherwise for {@link startTrip}, which must not send anybody to a
+    // login endpoint nobody has learned.
     //
     // **Nothing schedules a silent refresh, and the omission is the rule.**
     // `setupAutomaticSilentRefresh()` used to sit on the next line; it plants a
@@ -398,9 +429,10 @@ export class AuthService {
     // for as long as the tab is open. A provider token is now used **once per
     // trip**: registration's on the registration screen, discarded by
     // `forgetProviderToken()` whenever `SessionService` publishes a session;
-    // the email change's handed over in memory by {@link initialize}, which
-    // discards the library's copy itself. Every other request authenticates
-    // from the first-party session cookie. Refreshing either would be
+    // the email change's and the locked sign-in's handed over in memory by
+    // {@link initialize}, which discards the library's copy itself. Every
+    // other request authenticates from the first-party session cookie.
+    // Refreshing any of them would be
     // a third-party request on every page of the product, forever, to keep alive
     // a credential nothing reads. Adding it back is a change to what this
     // application loads from another origin, not a convenience.
@@ -428,8 +460,9 @@ export class AuthService {
    *
    * **Three things, all required, and none is enough alone:**
    *
-   * - **This tab started that trip.** {@link signIn} and
-   *   {@link startEmailChange} each leave a marker in `sessionStorage`
+   * - **This tab started that trip.** {@link signIn},
+   *   {@link startEmailChange} and {@link startLockedSignIn} each leave a
+   *   marker in `sessionStorage`
    *   immediately before leaving for the provider, its value naming the trip,
    *   and {@link initialize} consumes it once preparation settles. An
    *   answer-shaped address is something anybody can put in a link; only a
@@ -437,8 +470,9 @@ export class AuthService {
    *   link opened anywhere else costs no request to Google (NFR-025).
    * - **That trip's redirect address — origin and path, compared for
    *   equality** — `redirectUri` for registration, `emailChangeRedirectUri`
-   *   for the email change. A marker and an address from two different trips
-   *   are nobody's return.
+   *   for the email change, `lockedSignInRedirectUri` for the locked sign-in.
+   *   A marker and an address from two different trips are nobody's return,
+   *   and a trip whose address is not configured has no return at all.
    * - **An answer in the fragment**, parsed by key and never matched as a
    *   substring: a
    *   non-empty `access_token`, `id_token` and `state` together, or a
@@ -477,29 +511,45 @@ export class AuthService {
    * `core.providers.ts` for why it has to be that early.
    */
   public providerReturn(): ProviderTrip | null {
-    const google = this.config.getConfig().auth.google;
-
     if (!answerShaped(this.fragment())) {
       return null;
     }
 
     const mark = exchangeMark();
+    const returnedFrom = (trip: ProviderTrip): boolean =>
+      mark === EXCHANGE_VALUES[trip] &&
+      this.landedOn(this.redirectUriFor(trip));
 
-    if (
-      mark === EXCHANGE_VALUES['email-change'] &&
-      this.landedOn(google?.emailChangeRedirectUri)
-    ) {
+    if (returnedFrom('email-change')) {
       return 'email-change';
     }
 
-    if (
-      mark === EXCHANGE_VALUES.registration &&
-      this.landedOn(google?.redirectUri)
-    ) {
+    if (returnedFrom('locked-sign-in')) {
+      return 'locked-sign-in';
+    }
+
+    if (returnedFrom('registration')) {
       return 'registration';
     }
 
     return null;
+  }
+
+  // Where `trip` comes back to, as configured — `undefined` for a trip this
+  // deployment does not offer. **One spelling**, read by both the outbound leg
+  // and the return, so the address a press sends the provider and the address
+  // a return is recognised on can never be two different keys.
+  private redirectUriFor(trip: ProviderTrip): string | undefined {
+    const google = this.config.getConfig().auth.google;
+
+    switch (trip) {
+      case 'registration':
+        return google?.redirectUri;
+      case 'email-change':
+        return google?.emailChangeRedirectUri;
+      case 'locked-sign-in':
+        return google?.lockedSignInRedirectUri;
+    }
   }
 
   // Whether the page sits at `address`'s origin and path, exactly. Origins,
@@ -610,14 +660,15 @@ export class AuthService {
    *
    * **Puts the registration redirect address back before leaving.** The
    * address is a property on the one shared client, and
-   * {@link startEmailChange} writes its own there; without this, a
-   * registration press after it would come back to the settings screen.
+   * {@link startEmailChange} and {@link startLockedSignIn} write their own
+   * there; without this, a registration press after either would come back to
+   * the settings or the release screen.
    *
-   * Raises and lowers `departing` exactly as {@link startEmailChange} does —
-   * see {@link startTrip}. Nothing on the registration screen reads it today;
-   * it is raised here because this service is its one writer, and a writer
-   * that raised it for one trip and not the other would leave the flag
-   * meaning "an email change is leaving" under a name that says otherwise.
+   * Raises and lowers `departing` exactly as the other two trips do — see
+   * {@link startTrip}. Nothing on the registration screen reads it today; it
+   * is raised here because this service is its one writer, and a writer that
+   * raised it for some trips and not others would leave the flag meaning
+   * "another trip is leaving" under a name that says otherwise.
    */
   public signIn(): void {
     void this.startTrip('registration', () => {
@@ -648,7 +699,25 @@ export class AuthService {
     });
   }
 
-  // The one way a press leaves for the provider, for both trips.
+  /**
+   * Starts the locked sign-in's trip: a top-level navigation to the provider's
+   * account chooser, which redirects back to the release screen.
+   *
+   * **Everything {@link startEmailChange} says holds here**, on the same
+   * client and the same one preparation per page load, with
+   * `lockedSignInRedirectUri` as the address and its own marker value. The
+   * account chooser is asked for because the person is choosing which Google
+   * account they created a lost account with — the one the browser happens to
+   * be signed in to is a guess. Answers `'unavailable'`, having contacted
+   * nobody, when the address is not configured; it never rejects.
+   */
+  public startLockedSignIn(): Promise<'leaving' | 'unavailable'> {
+    return this.startTrip('locked-sign-in', () => {
+      this.oAuth.initLoginFlow('', { prompt: 'select_account' });
+    });
+  }
+
+  // The one way a press leaves for the provider, for every trip.
   //
   // **The configuration is checked before anything else, and before
   // `departing` is raised.** Without a redirect address there is nowhere to
@@ -670,13 +739,12 @@ export class AuthService {
     trip: ProviderTrip,
     start: () => void,
   ): Promise<'leaving' | 'unavailable'> {
-    const google = this.config.getConfig().auth.google;
-    const redirectUri =
-      trip === 'registration'
-        ? google?.redirectUri
-        : google?.emailChangeRedirectUri;
+    const redirectUri = this.redirectUriFor(trip);
 
-    if (redirectUri === undefined || google?.scope === undefined) {
+    if (
+      redirectUri === undefined ||
+      this.config.getConfig().auth.google?.scope === undefined
+    ) {
       return 'unavailable';
     }
 
@@ -756,14 +824,35 @@ export class AuthService {
   }
 
   /**
+   * What the locked sign-in's return on this page load left, handed over
+   * once: a second call answers `null`.
+   */
+  public takeLockedSignInReturn(): LockedSignInReturn | null {
+    const handedOver = this.#lockedSignInReturn;
+    this.#lockedSignInReturn = null;
+
+    return handedOver;
+  }
+
+  /**
+   * Discards what a locked sign-in's return left, untaken. The bootstrap calls
+   * it when the probe finds a session already open: posting the token would
+   * replace that session's cookie with a locked one.
+   */
+  public dropLockedSignInReturn(): void {
+    this.#lockedSignInReturn = null;
+  }
+
+  /**
    * Discards the provider's tokens locally, without visiting the provider.
    *
    * `logOut(true)` is the local-discard overload: it clears this application's
    * copy of the id and access tokens from `sessionStorage` and performs **no**
    * redirect to Google's end-session endpoint. That is the whole point — the
-   * one caller is `SessionService`, each time it publishes `authenticated`:
-   * from `established()` (the registration 201, a passkey sign-in) and from a
-   * start-up probe that finds a session. A first-party session cookie has taken
+   * one caller is `SessionService`, each time it publishes a session, full or
+   * locked: from `established()` (the registration 201, a passkey sign-in),
+   * from `establishedLocked()` (the locked sign-in's 200) and from a start-up
+   * probe that finds either kind. A first-party session cookie has taken
    * over by then, so the id token is a credential this application has no
    * further use for and every reason to stop carrying. Ending the person's
    * Google session on their behalf is not something this application was asked
@@ -775,10 +864,10 @@ export class AuthService {
    * answer no longer validates. The arm is chosen in `SessionService`; this
    * method only discards.
    *
-   * On an email-change return the order is the other way round:
-   * {@link initialize} runs before the probe and has already run
-   * `logOut(true)` and removed the marker, so the authenticated arm's discard
-   * finds nothing left to take.
+   * On an email-change or locked sign-in return the order is the other way
+   * round: {@link initialize} runs before the probe and has already run
+   * `logOut(true)` and removed the marker, so a session arm's discard finds
+   * nothing left to take.
    *
    * **Not a sign-out.** A discard ends nothing the person can see; a sign-out
    * ends their visit, and it is first-party — the settings screen ends the
@@ -786,9 +875,9 @@ export class AuthService {
    * This service offers no provider sign-out at all: the argument-less
    * `logOut()` navigates to the provider's end-session endpoint whenever the
    * library knows one, and a contact with Google on a person's own action is
-   * outside every moment NFR-025 permits — of its three, this product builds
-   * registration's exchange and the email change's trip, and neither is a
-   * sign-out. Google's discovery document publishes
+   * outside every moment NFR-025 permits — its three are registration's
+   * exchange, the email change's trip and the locked sign-in's trip, and none
+   * is a sign-out. Google's discovery document publishes
    * no `end_session_endpoint` today, so against this configuration the two
    * overloads happen to behave alike; the `true` is what keeps this a discard
    * whatever the provider publishes next.
@@ -798,9 +887,12 @@ export class AuthService {
    * would make an answer-shaped link opened here later cost a discovery fetch.
    * Removed first, so a library that throws cannot leave it behind.
    *
-   * **Never touches the email-change hand-off.** That is this service's memory,
-   * not the library's storage, and a session being published is no reason for
-   * the settings screen to lose an answer it has not read yet.
+   * **Never touches either hand-off**, the email change's or the locked
+   * sign-in's. Each is this service's memory, not the library's storage, and a
+   * session being published is no reason for a screen to lose an answer it has
+   * not read yet. Whether a locked sign-in's answer survives a session found
+   * at start-up is the bootstrap's decision ({@link dropLockedSignInReturn}),
+   * not this method's.
    */
   public forgetProviderToken(): void {
     unmarkExchange();

@@ -58,33 +58,53 @@ export const provideAppCore = (): EnvironmentProviders =>
           //
           // **Which trip the provider is answering, if any, is read once,
           // here** — after the config, because the redirect addresses are in
-          // it, and before the probe, because the probe's authenticated arm
-          // discards the provider's tokens and the exchange marker with them.
-          // Both legs below decide from this one answer.
+          // it, and before the probe, because the probe's session arms discard
+          // the provider's tokens and the exchange marker with them. Every leg
+          // below decides from this one answer.
           const returning = auth.providerReturn();
 
-          // **An email change is read before the probe, and awaited.** It comes
-          // back to a tab that holds a session, so the probe answers
-          // `authenticated` and its discard takes the library's nonce — the
-          // value the answer is checked against. Read after it, every email
-          // change would come back unconfirmed. `initialize()` hands the id
-          // token over in memory and discards the library's copy itself.
-          if (returning === 'email-change') {
+          // **An email change and a locked sign-in are read before the probe,
+          // and awaited.** An email change comes back to a tab that holds a
+          // session, so the probe answers `authenticated` and its discard takes
+          // the library's nonce — the value the answer is checked against. A
+          // locked sign-in usually comes back to a tab holding none, but one
+          // that does would lose its nonce the same way. Read after it, either
+          // would come back unconfirmed. `initialize()` hands the id token over
+          // in memory and discards the library's copy itself.
+          if (returning === 'email-change' || returning === 'locked-sign-in') {
             await auth.initialize();
           }
 
           await session.probe();
 
-          // **Dropped only when the probe found nobody signed in**: there is no
-          // account to change an address for, and an answer carried on to
-          // `/welcome` or `/register` would read as a registration nobody asked
-          // for. `unreachable` and `unknown` are not "nobody" — the status names
+          const status = session.status();
+
+          // **An email-change answer is dropped when the probe found no full
+          // session**: nobody signed in has no account to change an address
+          // for, and a locked session may not change one. Carried on, the
+          // answer would sit in memory for a screen that never takes it.
+          // `unreachable` and `unknown` are not "nobody" — the status names
           // them apart so that they are never collapsed into `anonymous`.
           if (
             returning === 'email-change' &&
-            session.status() === 'anonymous'
+            (status === 'anonymous' || status === 'locked-session')
           ) {
             auth.dropEmailChangeReturn();
+          }
+
+          // **A locked sign-in's answer is dropped when the probe found a
+          // session already open, full or locked — and this is load-bearing.**
+          // Posting the answer replaces whatever session cookie the tab holds,
+          // so a full session would be downgraded to a locked one over a press
+          // on the release screen. Only the probe's answer knows, so the drop
+          // is decided after it, and before the first route can take the
+          // hand-off. `unreachable` and `unknown` keep it: neither says a
+          // session is open, and nobody signed in is who this trip is for.
+          if (
+            returning === 'locked-sign-in' &&
+            (status === 'authenticated' || status === 'locked-session')
+          ) {
+            auth.dropLockedSignInReturn();
           }
 
           // **Whether a key rotation is in flight, and it is asked here for the
@@ -96,9 +116,10 @@ export const provideAppCore = (): EnvironmentProviders =>
           // list that is part names and part em dashes with nothing on screen
           // saying why.
           //
-          // **After the probe has answered, and only for a visitor the server
-          // recognised.** This route is authenticated, so an anonymous visitor
-          // asking it is answered 401 — and `sessionExpiryInterceptor` is the
+          // **After the probe has answered, and only for a full session.** This
+          // route is budget-scoped: a locked session is answered 403, and an
+          // anonymous visitor asking it is answered 401 — and
+          // `sessionExpiryInterceptor` is the
           // single owner of "the session ended" and acts on 401 alone, so an
           // unconditional read would report a session ending to somebody who
           // never had one, on every cold load of `/welcome`. Sequential rather
@@ -112,18 +133,18 @@ export const provideAppCore = (): EnvironmentProviders =>
           // bootstrapping than the probe can, and awaiting it is what keeps a
           // screen from drawing a list before the answer that would have
           // replaced it.
-          if (session.status() === 'authenticated') {
+          if (status === 'authenticated') {
             await rotations.readStagedRotation();
           }
 
           // **The identity provider is contacted here only when it is
           // redirecting a trip back to the tab that started it** (NFR-025) —
-          // a registration here, an email change above. Every other cold load —
-          // anonymous or signed in, on any screen — makes no request to Google
-          // at all; each outbound leg prepares the client itself, on the press
-          // that starts it (`AuthService.signIn`, `startEmailChange`). An
-          // unconditional call here told Google the address and time of every
-          // visit.
+          // a registration here, an email change or a locked sign-in above.
+          // Every other cold load — anonymous or signed in, on any screen —
+          // makes no request to Google at all; each outbound leg prepares the
+          // client itself, on the press that starts it (`AuthService.signIn`,
+          // `startEmailChange`, `startLockedSignIn`). An unconditional call
+          // here told Google the address and time of every visit.
           //
           // **Here, and not in a resolver on `/register`, because the answer
           // has to be read before the router's first navigation.** The provider
@@ -135,16 +156,25 @@ export const provideAppCore = (): EnvironmentProviders =>
           // Awaited for the same reason the probe is: `/register` renders the
           // address off the token this reads, and must not render before it.
           //
-          // After the probe, and skipped for a visitor it recognised:
-          // `guestGuard` turns a session away from `/register`, so completing
-          // an exchange for them contacts the provider for a screen they will
-          // never see. It is also why a browser that cannot reach Google still
-          // learns who its own server thinks it is. Decided from `returning`,
-          // not asked again, so an email-change boot can never reach
-          // `initialize()` a second time through this leg.
+          // After the probe, and skipped for a visitor holding a session, full
+          // or locked: `guestGuard` turns a full session away from `/register`
+          // and sends a locked one to `/release`, so completing an exchange for
+          // either contacts the provider for a screen they will never see.
+          // `unreachable` and `unknown` still complete it — neither says a
+          // session is open. Probing first is also why a browser that cannot
+          // reach Google still learns who its own server thinks it is. Decided
+          // from `returning`, not asked again, so an email-change or locked
+          // sign-in boot can never reach `initialize()` a second time through
+          // this leg.
+          //
+          // Asked again rather than reusing `status`: the rotation read above
+          // is awaited, and a session it found ended is no longer open.
+          const statusNow = session.status();
+
           if (
             returning === 'registration' &&
-            session.status() !== 'authenticated'
+            statusNow !== 'authenticated' &&
+            statusNow !== 'locked-session'
           ) {
             await auth.initialize();
           }
@@ -153,7 +183,8 @@ export const provideAppCore = (): EnvironmentProviders =>
           // route draws**, for the reason a read one does: a reload, a bookmark
           // or a copied link would carry it on. Each leg above removes the
           // answer it read; this takes the ones no leg read — a registration
-          // answer reaching a signed-in visitor, whose leg is skipped, or an
+          // answer reaching a visitor holding a session, whose leg is skipped,
+          // or an
           // answer in a tab that started no trip, where `returning` is `null`.
           // Answer-shaped fragments only, so an in-page anchor survives.
           //

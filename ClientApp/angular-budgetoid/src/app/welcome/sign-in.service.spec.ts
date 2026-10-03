@@ -154,6 +154,9 @@ function providerStub(): ProviderStub {
     startEmailChange: vi.fn(),
     takeEmailChangeReturn: vi.fn(),
     dropEmailChangeReturn: vi.fn(),
+    startLockedSignIn: vi.fn(),
+    takeLockedSignInReturn: vi.fn(),
+    dropLockedSignInReturn: vi.fn(),
     discardUnreadAnswer: vi.fn(),
   };
 }

@@ -1015,19 +1015,22 @@ The budget branch that runs after this, on every path, is in
   reaches the account through a federated credential rather than a column on the user. The API
   reads three claims and no others — `sub` and `email`, which are stored, and `email_verified`, read
   and discarded — on the two registration routes and on `POST /api/me/email-change`, and the same
-  three on `POST /api/locked-session`, which stores none of them. The frontend does not call the
-  locked sign-in yet. It attaches the **ID token** (not the access token) as the
-  `Authorization: Bearer` header on **three routes and nowhere else**: on the registration routes the token the library stored, on the
-  email change only the token its own request carries on its context. The client's own narrowing is
+  three on `POST /api/locked-session`, which stores none of them. No screen starts the locked
+  sign-in yet: the client holds its trip, the read of its return and its request, and nothing calls
+  the trip. The client attaches the **ID token** (not the access token) as the
+  `Authorization: Bearer` header on **four routes and nowhere else**: on the registration routes the
+  token the library stored, and on the email change and the locked sign-in only the token the
+  request carries on its context. The client's own narrowing is
   not what makes a bearer useless elsewhere; it is what stops a credential travelling further than
   the routes that can act on it. The authorization request asks for `openid email` and nothing more,
-  on both trips, pinned by `no-profile-scope.spec.ts`, which reads the built bundle.
+  on every trip, pinned by `no-profile-scope.spec.ts`, which reads the built bundle.
   - **The client reads exactly one claim, in two places.** `providerEmail()` reads `email` so the
     registration introduction can show which account is about to be created, and an email-change
     return reads the same member out of the claims the library validated, so the settings screen can
-    name the address Google sent back. Both go through one narrowing function and read no other
-    member — not `name`, and above all not `picture`, an image from another origin this application
-    does not load at all. `auth-service.spec.ts` pins the registration read through a proxy
+    name the address Google sent back. A locked sign-in's return reads no claim at all: it keeps
+    the validated token and nothing else. Both reads go through one narrowing function and read no
+    other member — not `name`, and above all not `picture`, an image from another origin this
+    application does not load at all. `auth-service.spec.ts` pins the registration read through a proxy
     recording every claim touched; on the email change, the specs compare the hand-off whole, so a
     second claim kept there reddens, while one kept in a separate field would be held by review
     alone — see [email-change.md](email-change.md).

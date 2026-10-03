@@ -332,6 +332,12 @@ const allowedReaches = new Map<string, string>([
       'signed in; contacts nothing',
   ],
   [
+    'src/app/+core/core.providers.ts: dropLockedSignInReturn',
+    'drops the in-memory locked sign-in answer when the probe finds a ' +
+      'session already open, full or locked — posting it would replace that ' +
+      'cookie; contacts nothing',
+  ],
+  [
     'src/app/+core/session/session.service.ts: forgetProviderToken',
     'a local discard of the provider tokens when a session is published; ' +
       'contacts nothing',

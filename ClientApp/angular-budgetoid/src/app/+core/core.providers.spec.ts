@@ -1,7 +1,10 @@
 import { ApplicationInitStatus, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { KeyRotationService } from '@app-core/security/key-rotation.service';
-import { AuthService } from '@app-core/services/auth-service';
+import {
+  AuthService,
+  type ProviderTrip,
+} from '@app-core/services/auth-service';
 import { ConfigurationService } from '@app-core/services/configuration.service';
 import {
   SessionService,
@@ -29,9 +32,10 @@ interface BootOptions {
   readonly readStagedRotation?: () => Promise<void>;
   // Which trip, if any, the identity provider is redirecting back from, as
   // `AuthService.providerReturn()` answers it. `null` is the default because
-  // it is every cold load but two: the provider is none of this initializer's
-  // business unless a registration or an email change is coming back from it.
-  readonly providerReturn?: 'registration' | 'email-change' | null;
+  // it is every cold load but three: the provider is none of this
+  // initializer's business unless a registration, an email change or a locked
+  // sign-in is coming back from it.
+  readonly providerReturn?: ProviderTrip | null;
   readonly initialize?: () => Promise<void>;
 }
 
@@ -73,6 +77,7 @@ function bootstrap(options: BootOptions = {}): Boot {
     | 'initialize'
     | 'providerReturn'
     | 'dropEmailChangeReturn'
+    | 'dropLockedSignInReturn'
     | 'discardUnreadAnswer'
   > = {
     initialize: () => {
@@ -83,6 +88,9 @@ function bootstrap(options: BootOptions = {}): Boot {
     providerReturn: () => providerReturn,
     dropEmailChangeReturn: () => {
       calls.push('auth.dropEmailChangeReturn');
+    },
+    dropLockedSignInReturn: () => {
+      calls.push('auth.dropLockedSignInReturn');
     },
     discardUnreadAnswer: () => {
       calls.push('auth.discardUnreadAnswer');
@@ -447,6 +455,212 @@ describe('provideAppCore', () => {
     );
   });
 
+  // The locked sign-in comes back to `/release`, usually in a tab holding no
+  // session. It is read before the probe for the email change's reason — the
+  // probe's discard on a session it finds takes the nonce the answer is checked
+  // against — and the release flow posts the token it was handed.
+  describe('a locked sign-in coming back from the provider', () => {
+    it('is read before the server is asked who the visitor is', async () => {
+      // Arrange
+      const boot = bootstrap({
+        status: 'anonymous',
+        providerReturn: 'locked-sign-in',
+      });
+
+      // Act
+      await boot.initialized;
+
+      // Assert
+      expect(boot.calls).toEqual([
+        'config.load',
+        'auth.initialize',
+        'session.probe',
+        'auth.discardUnreadAnswer',
+      ]);
+    });
+
+    it('holds the probe back until the answer has been read', async () => {
+      // Arrange
+      const boot = bootstrap({
+        status: 'anonymous',
+        providerReturn: 'locked-sign-in',
+        initialize: () => new Promise<void>(() => undefined),
+      });
+
+      // Act
+      await afterPendingWork();
+
+      // Assert
+      expect(boot.calls).toEqual(['config.load', 'auth.initialize']);
+      expect(TestBed.inject(ApplicationInitStatus).done).toBe(false);
+    });
+
+    // **Load-bearing.** The locked sign-in's answer replaces whatever cookie the
+    // tab holds, so posting it from a tab that already has a full session would
+    // downgrade that session to a locked one — every budget screen gone, over a
+    // stray press on the release screen. The probe's answer is the only thing
+    // that knows, so the drop is decided after it.
+    it.each<SessionStatus>(['authenticated', 'locked-session'])(
+      'is dropped once the probe finds a %s session already open',
+      async (status) => {
+        // Arrange
+        const boot = bootstrap({ status, providerReturn: 'locked-sign-in' });
+
+        // Act
+        await boot.initialized;
+
+        // Assert — after the probe, whose answer is the condition, and before
+        // the first route draws.
+        const probe = boot.calls.indexOf('session.probe');
+        const drop = boot.calls.indexOf('auth.dropLockedSignInReturn');
+        expect(probe).toBeGreaterThan(-1);
+        expect(drop).toBeGreaterThan(probe);
+        expect(boot.calls.at(-1)).toBe('auth.discardUnreadAnswer');
+      },
+    );
+
+    // A server that could not be reached, or an answer nobody has read, says
+    // nothing about a session being open — and nobody signed in is exactly who
+    // this trip is for.
+    it.each<SessionStatus>(['anonymous', 'unreachable', 'unknown'])(
+      'is kept when the probe answers %s',
+      async (status) => {
+        // Arrange
+        const boot = bootstrap({ status, providerReturn: 'locked-sign-in' });
+
+        // Act
+        await boot.initialized;
+
+        // Assert — the control first: an initializer that never read the
+        // answer has nothing to drop either.
+        expect(boot.calls).toContain('auth.initialize');
+        expect(boot.calls).not.toContain('auth.dropLockedSignInReturn');
+      },
+    );
+
+    // One read. The registration leg decides from `returning`, so a locked
+    // return can never reach `initialize()` a second time through it.
+    it('is read once', async () => {
+      // Arrange
+      const boot = bootstrap({
+        status: 'anonymous',
+        providerReturn: 'locked-sign-in',
+      });
+
+      // Act
+      await boot.initialized;
+
+      // Assert
+      expect(
+        boot.calls.filter((call) => call === 'auth.initialize'),
+      ).toHaveLength(1);
+    });
+
+    // Each return has its own drop, and neither drops the other's answer.
+    it('drops no email-change answer', async () => {
+      // Arrange
+      const boot = bootstrap({
+        status: 'authenticated',
+        providerReturn: 'locked-sign-in',
+      });
+
+      // Act
+      await boot.initialized;
+
+      // Assert
+      expect(boot.calls).toContain('auth.dropLockedSignInReturn');
+      expect(boot.calls).not.toContain('auth.dropEmailChangeReturn');
+    });
+
+    it('is never dropped on an email-change boot', async () => {
+      // Arrange
+      const boot = bootstrap({
+        status: 'authenticated',
+        providerReturn: 'email-change',
+      });
+
+      // Act
+      await boot.initialized;
+
+      // Assert
+      expect(boot.calls).toContain('auth.initialize');
+      expect(boot.calls).not.toContain('auth.dropLockedSignInReturn');
+    });
+  });
+
+  // A locked session reads no budget content and may not change an address,
+  // so the initializer asks nothing on its behalf that only a full session may.
+  describe('a locked session', () => {
+    // The rotation route is budget-scoped and answers a locked session 403.
+    it('is not asked about a staged rotation', async () => {
+      // Arrange
+      const boot = bootstrap({ status: 'locked-session' });
+
+      // Act
+      await boot.initialized;
+
+      // Assert — the control first, as above.
+      expect(boot.calls).toContain('session.probe');
+      expect(boot.calls).not.toContain('rotations.readStagedRotation');
+    });
+
+    // `guestGuard` sends a locked session to `/release`, so completing a
+    // registration exchange for it contacts the provider for a screen it will
+    // never see.
+    it('completes no registration coming back from the provider', async () => {
+      // Arrange
+      const boot = bootstrap({
+        status: 'locked-session',
+        providerReturn: 'registration',
+      });
+
+      // Act
+      await boot.initialized;
+
+      // Assert
+      expect(boot.calls).toContain('session.probe');
+      expect(boot.calls).not.toContain('auth.initialize');
+    });
+
+    // The control on the case above: an anonymous visitor's registration
+    // return is still completed, so the skip is about the locked session.
+    it('leaves an anonymous registration return to be completed', async () => {
+      // Arrange
+      const boot = bootstrap({
+        status: 'anonymous',
+        providerReturn: 'registration',
+      });
+
+      // Act
+      await boot.initialized;
+
+      // Assert
+      expect(boot.calls).toContain('auth.initialize');
+    });
+
+    // An email change needs a full session, so an answer reaching a locked one
+    // has no account it may change, as with nobody signed in.
+    it('drops an email-change answer', async () => {
+      // Arrange
+      const boot = bootstrap({
+        status: 'locked-session',
+        providerReturn: 'email-change',
+      });
+
+      // Act
+      await boot.initialized;
+
+      // Assert
+      expect(boot.calls).toEqual([
+        'config.load',
+        'auth.initialize',
+        'session.probe',
+        'auth.dropEmailChangeReturn',
+        'auth.discardUnreadAnswer',
+      ]);
+    });
+  });
+
   // **An answer nobody read leaves the address bar before the first route
   // draws** (docs/design/components.md, "Changing the email address"): a
   // registration answer reaching a signed-in visitor, an answer in a tab that
@@ -455,7 +669,7 @@ describe('provideAppCore', () => {
   // about to read.
   describe('an answer nobody read', () => {
     it.each<{
-      readonly providerReturn: 'registration' | 'email-change' | null;
+      readonly providerReturn: ProviderTrip | null;
       readonly status: SessionStatus;
     }>([
       { providerReturn: null, status: 'anonymous' },
@@ -465,6 +679,12 @@ describe('provideAppCore', () => {
       { providerReturn: 'registration', status: 'authenticated' },
       { providerReturn: 'email-change', status: 'authenticated' },
       { providerReturn: 'email-change', status: 'anonymous' },
+      { providerReturn: null, status: 'locked-session' },
+      { providerReturn: 'locked-sign-in', status: 'anonymous' },
+      { providerReturn: 'locked-sign-in', status: 'authenticated' },
+      { providerReturn: 'locked-sign-in', status: 'locked-session' },
+      { providerReturn: 'email-change', status: 'locked-session' },
+      { providerReturn: 'registration', status: 'locked-session' },
     ])(
       'is discarded as the last step, once, when the provider is answering $providerReturn and the visitor is $status',
       async ({ providerReturn, status }) => {

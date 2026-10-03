@@ -10,7 +10,8 @@ import { PROVIDER_CREDENTIAL } from './provider-credential.token';
 const CLIENT_HEADER = 'X-Budgetoid-Client';
 const CLIENT_NAME = 'budgetoid-web';
 
-// The two routes authenticated by the provider scheme and nothing else.
+// The two registration routes, authenticated by the provider scheme and
+// nothing else and reading their bearer from the library's storage.
 //
 // Declared here and imported by `RegistrationApiService`, which builds the
 // requests, rather than the other way round. Two modules have to agree about
@@ -34,13 +35,24 @@ const CLIENT_NAME = 'budgetoid-web';
 export const REGISTRATION_OPTIONS_PATH = '/api/registration/options';
 export const REGISTRATION_PATH = '/api/registration';
 
-// The one route authenticated by the session cookie **and** a provider token:
+// The route authenticated by the session cookie **and** a provider token:
 // the email change's confirmation. Declared here and imported by
 // `MeApiService` for the registration paths' reason. Its bearer is the
 // credential the request carries on `PROVIDER_CREDENTIAL`, never the stored
 // one — a signed-in browser holds nothing in the library's storage, and a
 // token read from there would be whatever an abandoned registration left.
 export const EMAIL_CHANGE_PATH = '/api/me/email-change';
+
+// The locked sign-in: the route that answers a Google sign-in on an account
+// with no factors with a locked session. Authenticated by the provider scheme
+// and nothing else, like the registration routes — but its bearer is the
+// credential the request carries on `PROVIDER_CREDENTIAL`, as the email
+// change's is, never the stored one. The release flow takes its token from the
+// provider return's in-memory hand-off; a token read from storage here would be
+// whatever an abandoned registration left, sent on a request handed none.
+// Declared here and imported by `MeApiService` for the registration paths'
+// reason.
+export const LOCKED_SESSION_PATH = '/api/locked-session';
 
 function originOf(url: string): string | null {
   try {
@@ -74,17 +86,21 @@ function pathnameOf(url: string): string | null {
 // from the two constants above, so none of them carries a trailing slash or a
 // segment underneath them, and `/api/registrations` is not a route this product
 // has.
-function isProviderAuthenticatedPath(path: string): boolean {
+//
+// Only the routes whose bearer comes from storage. The locked sign-in is
+// authenticated by the provider scheme too, and is deliberately not here: its
+// credential is the one its own request carries, decided below.
+function isStoredCredentialPath(path: string): boolean {
   return path === REGISTRATION_OPTIONS_PATH || path === REGISTRATION_PATH;
 }
 
 // Which provider credential, if any, a request already known to be for our API
 // carries — and *where each route's comes from*, which is the rule. The
 // registration routes read the library's storage, because an anonymous browser
-// has nowhere else to hold it. The email change reads only what its own request
-// carries: a stored token there would be whatever an abandoned registration
-// left behind, sent on a request that was handed none. Every other route gets
-// nothing, whatever its context holds.
+// has nowhere else to hold it. The email change and the locked sign-in read
+// only what their own request carries: a stored token there would be whatever
+// an abandoned registration left behind, sent on a request that was handed
+// none. Every other route gets nothing, whatever its context holds.
 //
 // Exact matches again, and an empty string is no credential: `Bearer ` with
 // nothing after it is a malformed header, not an absent one.
@@ -92,11 +108,11 @@ function providerCredentialFor(
   path: string,
   request: HttpRequest<unknown>,
 ): string | null {
-  if (isProviderAuthenticatedPath(path)) {
+  if (isStoredCredentialPath(path)) {
     return inject(OAuthService).getIdToken() || null;
   }
 
-  if (path === EMAIL_CHANGE_PATH) {
+  if (path === EMAIL_CHANGE_PATH || path === LOCKED_SESSION_PATH) {
     return request.context.get(PROVIDER_CREDENTIAL) || null;
   }
 
@@ -139,9 +155,9 @@ export function isApiRequest(url: string, apiBaseUrl: string): boolean {
 // provider scheme and nothing else and always will be: an account may not exist
 // without a completed provider exchange, so there is no first-party credential
 // to present on the one call that creates the first-party account. Those two
-// routes, and the email change, are now the only requests in the product that
-// carry a provider bearer — and the email change carries only the one its own
-// request was handed, never the stored one.
+// routes, the email change and the locked sign-in are now the only requests in
+// the product that carry a provider bearer — and the last two carry only the
+// one their own request was handed, never the stored one.
 //
 // Worth narrowing rather than leaving alone, even though nothing outside
 // registration reads the stored token: `SessionService` discards it whenever it
@@ -157,8 +173,8 @@ export function isApiRequest(url: string, apiBaseUrl: string): boolean {
 // then which route it is asking for. Reversed — or folded into one path test —
 // `https://api.budgetoid.app.attacker.example/api/registration` is a
 // registration request, and a host anybody can register is handed the token.
-// The email change's credential is decided behind the same guard, for the same
-// reason.
+// The email change's and the locked sign-in's credentials are decided behind
+// the same guard, for the same reason.
 export const apiCredentialsInterceptor: HttpInterceptorFn = (request, next) => {
   const { apiBaseUrl } = inject(ConfigurationService).getConfig();
 

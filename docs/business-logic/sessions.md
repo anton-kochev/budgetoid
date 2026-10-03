@@ -30,8 +30,10 @@ session over the account's federated credential — see the rule on it below.
 presenting it is authenticated from it, publishing the account and the ambient budget; and
 `POST /api/me/session/revocation` ends it. **Two of the five have a screen**: `/register` runs its
 creation ceremony and `/welcome` runs the assertion. The other three are reached today only by the
-integration suite — nothing in the browser redeems a code, regenerates a set or runs the locked
-sign-in. Every request this app makes is authenticated from the cookie. The browser contacts the identity provider from two
+integration suite — nothing in the browser redeems a code or regenerates a set, and nothing starts
+the locked sign-in. The client holds that sign-in's parts — the trip to Google, the read of its
+return, and `MeApiService.openLockedSession` — but no screen starts the trip or takes the return
+yet. Every request this app makes is authenticated from the cookie. The browser contacts the identity provider from two
 screens: `/register`, to create an account, and `/app/settings`, to change its address — and the
 email change's request carries a provider token **beside** the cookie, never in its place; see
 [email-change.md](email-change.md).
@@ -418,11 +420,12 @@ required members. A third writer is a decision rather than a refactor.
 
 - **Rule**: The web client decides **once** whether a request is going to this product's API, and
   that one answer carries **three** effects: `withCredentials: true` and the `X-Budgetoid-Client`
-  header on every such request, and the `Authorization: Bearer` header on **three routes and no
+  header on every such request, and the `Authorization: Bearer` header on **four routes and no
   others**, from two sources: `POST /api/registration/options` and `POST /api/registration` take the
-  id token the library stored, and `POST /api/me/email-change` takes only the token its own request
-  carries on the `PROVIDER_CREDENTIAL` context token. The decision compares **origins**, never a
-  string prefix, and the origin is settled **before** the route is looked at.
+  id token the library stored, and `POST /api/me/email-change` and `POST /api/locked-session` take
+  only the token their own request carries on the `PROVIDER_CREDENTIAL` context token. The decision
+  compares **origins**, never a string prefix, and the origin is settled **before** the route is
+  looked at.
 - **Why**: the three effects share a predicate because two predicates drift, and the drift is silent
   in both directions. Drop the cookie and every request arrives unauthenticated; drop the header and
   every request answers 403; widen the predicate and the browser hands this app's credentials to
@@ -448,6 +451,15 @@ required members. A third writer is a decision rather than a refactor.
     change's return handed over on the context and writes no header itself; the interceptor reads
     that context on the exact path `EMAIL_CHANGE_PATH` and ignores it on every other route. An empty
     string is no credential. See [email-change.md](email-change.md).
+  - **The locked sign-in takes its bearer the same way, though it holds no session.** Its route is
+    authenticated by the provider scheme alone, like the registration routes, so storage would
+    have been the obvious source. It is the wrong one: the token this request needs is the one its
+    own return handed over, which `AuthService.initialize()` took into memory and discarded from
+    storage. A stored token there is whatever an abandoned registration left, sent on a request
+    that was handed none. `MeApiService.openLockedSession` puts the token on the context, marks the
+    request `EXPECTS_UNAUTHENTICATED` and writes no header; the interceptor reads that context on
+    the exact path `LOCKED_SESSION_PATH`, after the origin check. No screen takes the return that
+    would hand it a token yet.
   - **Narrowing was worth doing, and no route the client calls reads a provider token anywhere else.**
     `SessionService` discards the stored token once the tab holds a session, but a browser that
     abandoned registration still holds it when that person does what they usually do next, a
@@ -466,13 +478,16 @@ required members. A third writer is a decision rather than a refactor.
   other, because the service already imports two paths from here, so the opposite edge would close a
   cycle directly. A second spelling of either path fails silently in both directions: corrected only
   in the service, the bearer is lost and the flow's first call meets a `401`; corrected only in the
-  interceptor, the provider's token goes to a route that has moved. `EMAIL_CHANGE_PATH` is declared
-  there and imported by `MeApiService` for the same reason, and `PROVIDER_CREDENTIAL` lives in a
-  module of its own, `provider-credential.token.ts`, for `EXPECTS_UNAUTHENTICATED`'s reason below.
+  interceptor, the provider's token goes to a route that has moved. `EMAIL_CHANGE_PATH` and
+  `LOCKED_SESSION_PATH` are declared there and imported by `MeApiService` for the same reason, and
+  `PROVIDER_CREDENTIAL` lives in a module of its own, `provider-credential.token.ts`, for
+  `EXPECTS_UNAUTHENTICATED`'s reason below.
   `api-credentials.interceptor.spec.ts` holds the email change's half in a block of its own: the
   context's token as the bearer, no stored token when the request carries none, a carried token
   ignored on every other route, nothing to the path on another origin, exact-path matching, and no
-  bearer for an empty string.
+  bearer for an empty string. A second block holds the same for the locked sign-in, plus a carried
+  token winning over a stored one, the route's spelling under `/api/me` sent nothing, and the other
+  provider routes left to their own rules.
   - **`EXPECTS_UNAUTHENTICATED` is the same rule reached from the other side and answered
     differently**: it lives in `expects-unauthenticated.token.ts`, a module holding the token and
     nothing else, rather than in the interceptor that reads it. Three unrelated services set it and
@@ -484,8 +499,11 @@ required members. A third writer is a decision rather than a refactor.
   - The interceptor's spec calls the function directly and therefore cannot see whether anybody
     registered it, so `app.config.spec.ts` stands up the real provider list with only the HTTP
     backend swapped and goes red on an emptied `withInterceptors([…])`. Without it the registration
-    can be deleted with the whole suite green and the product answering 403 to everything. **Three
-    of that spec's assertions separate mistakes nothing else would catch**: that the two assertion
+    can be deleted with the whole suite green and the product answering 403 to everything. It also
+    sends the email change and the locked sign-in through the registered chain, each carrying a
+    token on its context, and requires that token as the bearer — the interceptor's spec cannot see
+    a path that never reaches the chain. **Three of the interceptor spec's own assertions separate
+    mistakes nothing else would catch**: that the two assertion
     legs and `GET /api/me` carry no bearer; that the narrowing touched the bearer alone, since
     narrowing the whole interceptor to the registration routes would cost every other request its
     cookie and its header — a 403 on every route, from a change that reads as a tightening; and that
@@ -642,19 +660,27 @@ required members. A third writer is a decision rather than a refactor.
   - **The edge runs one way**: `SessionService` injects `AuthService`, and `AuthService` must never
     inject `SessionService`. Both are asked from the `APP_INITIALIZER`, and an edge back would be an
     import cycle between two things bootstrap awaits.
-  - **A signed-in flow that uses the provider reads its answer before the probe, and the discard
+  - **A return that can reach a tab holding a session is read before the probe, and the discard
     then finds nothing.** The email change comes back to a tab holding a session, so the probe
-    answers `authenticated` and its discard would take the nonce the answer is checked against. So
-    the `APP_INITIALIZER` reads an email-change return **before** the probe:
-    `AuthService.initialize()` validates the answer, keeps the token and the address in memory, runs
-    `logOut(true)` itself and removes the marker. By the time the authenticated arm runs, the
-    library's storage is already empty, and the discard leaves the in-memory hand-off alone. This
-    rule therefore still owns "a session beginning discards the provider's tokens" without
-    exception; what the email change adds is an ordering in front of it, held by
-    `core.providers.spec.ts` (`is read before the server is asked who the visitor is`) and by
-    `core.providers.cold-boot.spec.ts` (`hands a signed-in email change the id token the provider
-    sent back`). The next signed-in flow that needs the provider has to take the same position or
-    re-argue this rule. See [email-change.md](email-change.md).
+    answers `authenticated` and its discard would take the nonce the answer is checked against. A
+    locked sign-in's return usually reaches a tab holding none, but one that holds a session would
+    lose its nonce the same way. So the `APP_INITIALIZER` reads either return **before** the probe:
+    `AuthService.initialize()` validates the answer, keeps the token in memory — with the address,
+    on an email change — runs `logOut(true)` itself and removes the marker. By the time a session
+    arm runs, the library's storage is already empty, and the discard leaves both in-memory
+    hand-offs alone. This rule therefore still owns "a session beginning discards the provider's
+    tokens" without exception; what the two returns add is an ordering in front of it, held by
+    `core.providers.spec.ts` (`is read before the server is asked who the visitor is`, in each
+    return's block) and by `core.providers.cold-boot.spec.ts` (`hands a signed-in email change the
+    id token the provider sent back`, `hands the locked sign-in the id token the provider sent
+    back`). The next flow that needs the provider has to take the same position or re-argue this
+    rule. See [email-change.md](email-change.md).
+    - **Reading first does not mean keeping.** After the probe the bootstrap drops a locked
+      sign-in's hand-off when the probe found a session already open, full or locked: posting that
+      token replaces whatever session cookie the tab holds, so a full session would be downgraded
+      to a locked one. `core.providers.spec.ts` holds the drop (`is dropped once the probe finds a
+      %s session already open`) and `core.providers.cold-boot.spec.ts` holds it against the real
+      library (`hands nothing over when the probe finds a full session`).
   - The rule sits in the client because the client is the only layer that holds the tokens; the
     server cannot clear a browser's storage.
 - **Enforced in**: `session.service.spec.ts` — the discard happens on `established()`, on
@@ -977,8 +1003,8 @@ required members. A third writer is a decision rather than a refactor.
   every other route would fail with a raw exception rather than a refusal.
 - **Note**: the schedule route is the release valve for somebody holding nothing but a provider
   sign-in. The sign-in that brings them to it exists on the server — `POST /api/locked-session`,
-  which answers the account's scheduled instant beside the session — and nothing in the browser
-  runs it yet. The **immediate**
+  which answers the account's scheduled instant beside the session. The client holds the code for
+  its trip, its return and its request, and no screen starts the trip yet. The **immediate**
   erasure, `POST /api/me/erasure`, is refused to a locked session like everything else. Why a
   schedule needs no passkey, and why a full session must not file one, is argued in
   [erasure.md](erasure.md).

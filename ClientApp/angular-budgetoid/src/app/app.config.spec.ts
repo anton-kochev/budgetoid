@@ -228,6 +228,32 @@ describe('appConfig', () => {
     );
   });
 
+  // The locked sign-in is the third route that takes its bearer from its own
+  // request context, and the interceptor's spec cannot see whether the path
+  // reaches the registered chain. A path line dropped from the interceptor
+  // sends this request bare — a 401 the release screen reads as Google
+  // refusing the account.
+  it('sends the locked sign-in with the cookie, the client header and the credential it was handed', () => {
+    // Arrange
+    const client = TestBed.inject(HttpClient);
+    const lockedSessionUrl = `${API_BASE_URL}/api/locked-session`;
+    const context = new HttpContext().set(
+      PROVIDER_CREDENTIAL,
+      'handed.locked.credential',
+    );
+
+    // Act
+    client.post(lockedSessionUrl, null, { context }).subscribe();
+    const { request } = httpMock.expectOne(lockedSessionUrl);
+
+    // Assert
+    expect(request.withCredentials).toBe(true);
+    expect(request.headers.get(CLIENT_HEADER)?.trim()).toBeTruthy();
+    expect(request.headers.get('Authorization')).toBe(
+      'Bearer handed.locked.credential',
+    );
+  });
+
   // The other half of the same hole. Dropping `sessionExpiryInterceptor` from
   // the `withInterceptors([…])` array costs the application its only owner of
   // "the session ended" — no 401 anywhere declares the session over or leaves

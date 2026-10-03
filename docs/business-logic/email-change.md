@@ -454,16 +454,17 @@ The rules from here down are the web client's.
   this trip, the page sits at exactly that trip's redirect address — origin and path — and the
   fragment carries an answer.
 - **Why**: each piece closes one way of being wrong about which trip came back.
-  - **One client, one preparation per page load.** `signIn` and `startEmailChange` share the memo
+  - **One client, one preparation per page load.** `signIn`, `startEmailChange` and
+    `startLockedSignIn` share the memo
     `AuthService` keeps, so a page that came back from a registration and then starts an email
     change makes one discovery fetch, not two. The redirect address is written as a **property**
     after preparing, never through a second `configure()`, which would reset the login endpoint the
     discovery document taught the client. Because the property outlives the press, `signIn` writes
     the registration address back before it leaves.
   - **The marker carries the trip.** `budgetoid-provider-exchange` holds `email-change` for this
-    trip and `started` for registration — the value a tab that left under the previous bundle still
-    holds, which is why registration kept it. A marker from one trip beside the other trip's address
-    is nobody's return.
+    trip, `locked-sign-in` for the locked sign-in, and `started` for registration — the value a tab
+    that left under the previous bundle still holds, which is why registration kept it. A marker
+    from one trip beside another trip's address is nobody's return.
   - **The marker is written only once the provider has been reached**, and removed again if the
     library refuses the departure, so a press that goes nowhere leaves nothing that makes a later
     load look like a return. With no redirect address configured the press answers `unavailable` and
@@ -539,24 +540,32 @@ The rules from here down are the web client's.
 - **Rule**: **The bootstrap reads an email-change answer before it asks who the visitor is.** The
   `APP_INITIALIZER` in `core.providers.ts` loads the config, asks `providerReturn()` **once**, and on
   an email change awaits `initialize()`; only then does it run the session probe. After the probe it
-  drops the hand-off when, and only when, the probe answered `anonymous`. The registration leg
-  decides from the same one answer, after the probe, and only for a visitor the probe did not
-  recognise.
+  drops the hand-off when the probe answered `anonymous` or `locked-session`, and on no other
+  answer. The registration leg decides from the same one answer, after the probe, and never for a
+  visitor the probe found holding a session, full or locked.
 - **Why**: the email change comes back to a tab that holds a session.
   - **The probe's authenticated arm discards the provider's tokens**, through
     `forgetProviderToken()`, and the nonce goes with them — the value the answer is checked against.
     Read after the probe, every email change would come back `unconfirmed`. The registration leg is
     the other way round, for the reason [sessions.md](sessions.md) gives.
-  - **Dropped on `anonymous` alone.** Nobody signed in means no account to change an address for,
-    and an answer carried on to `/welcome` or `/register` would read as a registration nobody asked
-    for. `unreachable` and `unknown` are not "nobody", which is what the status keeps them apart
-    from `anonymous` to say.
+  - **Dropped on `anonymous` and on `locked-session`.** Nobody signed in means no account to change
+    an address for, and an answer carried on to `/welcome` or `/register` would read as a
+    registration nobody asked for. A locked session may not change an address at all — the route
+    answers it `403`. `unreachable` and `unknown` are not "nobody", which is what the status keeps
+    them apart from `anonymous` to say.
   - **One read of `providerReturn()`**, so an email-change boot can never reach `initialize()` a
     second time through the registration leg.
+  - **The locked sign-in's return takes the same position, with the opposite drop.** It is read
+    before the probe too, for the nonce's reason, and its hand-off is dropped when the probe finds
+    a session already open — `authenticated` or `locked-session` — because posting that token
+    replaces whatever session cookie the tab holds. Each return has its own drop, and neither drops
+    the other's answer. See [sessions.md](sessions.md).
 - **Enforced in**: `core.providers.spec.ts`, in *an email change coming back from the provider*:
   `is read before the server is asked who the visitor is`, `holds the probe back until the answer has
   been read`, `is not read on a signed-in boot the provider is not answering`, `is dropped once the
-  probe finds nobody signed in` and `is kept when the probe answers %s`. Against the real library,
+  probe finds nobody signed in` and `is kept when the probe answers %s`; in *a locked session*,
+  `drops an email-change answer`; and in *a locked sign-in coming back from the provider*, `drops no
+  email-change answer` and `is never dropped on an email-change boot`. Against the real library,
   `core.providers.cold-boot.spec.ts` holds `hands a signed-in email change the id token the provider
   sent back` — the regression for the ordering — and `leaves no provider token or marker behind after
   an email-change boot`.
@@ -723,7 +732,9 @@ The rules from here down are the web client's.
   puts the token on the `PROVIDER_CREDENTIAL` context token and marks the request
   `EXPECTS_UNAUTHENTICATED`; it writes no header. `apiCredentialsInterceptor` attaches it only after
   it has settled that the request is going to this API's origin, only on the exact path
-  `EMAIL_CHANGE_PATH`, and only from that context. An empty string is no credential.
+  `EMAIL_CHANGE_PATH`, and only from that context. An empty string is no credential. The locked
+  sign-in's request is the one other route that reads a credential off its own context; see
+  [sessions.md](sessions.md).
 - **Why**: the library's storage is either empty — the session's start cleared it — or holds a
   token an abandoned registration left before that clear ran. It never holds the token this change
   was handed, which `initialize()` took into memory and discarded from storage on the return. So a
@@ -731,7 +742,8 @@ The rules from here down are the web client's.
   handed none.
   - **A header written in the service would reach the wire whatever origin the request went to.**
     Handed to the interceptor, the token is subject to the same origin-first, path-second order the
-    registration bearer is, and a credential on the context of any other request is dropped.
+    registration bearer is, and a credential on the context of a request to any route but this one
+    and `LOCKED_SESSION_PATH` is dropped.
   - **The path is declared beside the interceptor and imported by the service**, the registration
     paths' arrangement and for their reason: two spellings of one route fail silently in both
     directions.
@@ -887,8 +899,8 @@ sequenceDiagram
     B->>A: providerReturn() — once
     B->>A: initialize() — validate, keep token + address in memory, logOut(true), drop the marker
     Note over A: replaceState — the fragment leaves the address, on every outcome
-    B->>API: GET /api/me — the probe, only now
-    Note over B: anonymous → dropEmailChangeReturn()
+    B->>API: GET /api/me/session — the probe, only now
+    Note over B: anonymous or locked-session → dropEmailChangeReturn()
     B->>A: discardUnreadAnswer() — last, finds nothing here
     S->>A: takeEmailChangeReturn() — once, as the flow is built
     Note over S: Confirm with your passkey, focused after the first render
@@ -981,8 +993,8 @@ rolls the sweep back.
   carries on its context. The screen is the **Changing the email address** chapter of
   [components.md](../design/components.md); the trip and the bootstrap order are the client rules
   above.
-- **[No third-party origins](../engineering/no-third-party-origins.md)** — the trip is the second of
-  the two moments the browser contacts the identity provider, and that chapter names the specs that
+- **[No third-party origins](../engineering/no-third-party-origins.md)** — the trip is one of the
+  two trips the browser makes to the identity provider today, and that chapter names the specs that
   hold when and from where.
 
 ## Edge Cases & Known Gotchas
@@ -1018,7 +1030,7 @@ rolls the sweep back.
   of the code, not of a test.
 - **`sessionsEnded` counts the sessions a provider sign-in opened.** The sweep can only find
   sessions the federated credential opened, which are the locked sessions `POST /api/locked-session`
-  establishes — see [sessions.md](sessions.md). No browser runs that sign-in yet, and every test
+  establishes — see [sessions.md](sessions.md). No screen starts that sign-in yet, and every test
   that expects a non-zero count seeds the locked session through the database.
 - **An erasure racing an email change answers `500`.** The account is gone either way, so no honest
   `409` exists. A change that moves the Google identity fails on `23503 FK_credentials_users_user_id`
