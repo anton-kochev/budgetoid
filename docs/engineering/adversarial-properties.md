@@ -264,6 +264,10 @@ covers some of the following without saying the rows exist:
   recovery code opened, when codes were redeemed; from the hash rows left against the factor rows,
   how many are spent. From the sessions the federated credential opened, when the person signed in
   through the provider alone.
+- **A requested release.** An `erasure_schedules` row says the account asked to be erased and
+  when it takes effect — in practice, that somebody holding the account's Google sign-in reached a
+  locked session and asked: either the person lost every passkey and every code, or someone else
+  holds their Google account. The row stands until the account goes.
 - **Key history.** The rotation epoch, which counts every change to the factor set and every
   rotation; while a rotation is in flight, that one is and when it began; and the `rotation_id`
   stamp on every narrative row, which names the run that last re-sealed it.

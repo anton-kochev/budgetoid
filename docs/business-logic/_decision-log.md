@@ -8,6 +8,39 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-10-03 — A session can ask what it holds, and the schedule's policing has a known end
+
+**Context:** a locked session is refused by `GET /api/me` like every budget route, so a client that
+learned who it was from that read took a locked tab's `403` for no session and sent it to
+`/welcome` on every reload. Separately, the 2026-10-02 entry on `erasure_schedules` kept the table
+policed "because nothing reads it before the request has an identity" — true of every reader built
+so far, and not of the one that carries a schedule out.
+
+**Decision:**
+- **`GET /api/me/session` answers what the caller already holds and nothing else**: its kind, its
+  own expiry and its account's scheduled erasure instant or `null`, with no identifier and no
+  email. Both kinds reach it, so a locked session's opted-out set is three routes.
+  [sessions.md](sessions.md) owns the rule.
+- **The schedule stays policed until a reader without an identity exists.** The job that carries
+  schedules out reads due rows across accounts with nobody published, which `user_isolation`
+  answers `22P02`. That work makes the table exempt behind a pinned column set and a single
+  discovery read, or argues another way; it does not inherit the 2026-10-02 reason.
+- **The surface the 2026-10-02 book entry specified now ships**, the Welcome link and the release
+  screen with it ([components.md](../design/components.md)).
+
+**Alternatives considered:**
+- **Widen `GET /api/me` to answer a locked session**: rejected. It changes a read every full
+  session already depends on, and its body carries an email and a budget a locked session has no
+  business learning.
+
+**Consequences:** the client probes `GET /api/me/session` first and reads the budget only for a full
+session. The executor's design starts from an exemption question, not from a finished table.
+
+**Affected areas:** [sessions.md](sessions.md), [erasure.md](erasure.md),
+[data-isolation.md](../engineering/data-isolation.md).
+
+---
+
 ## 2026-10-03 — A Google sign-in never replaces a live full session: the locked sign-in answers 409 `full_session` and writes nothing
 
 **Context:** `POST /api/locked-session` replaced whatever session cookie the browser held. The client
