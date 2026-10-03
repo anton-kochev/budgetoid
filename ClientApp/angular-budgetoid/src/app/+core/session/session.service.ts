@@ -230,15 +230,16 @@ export class SessionService {
     this.scheduledErasureSignal.set('unread');
 
     // **Custody ends where the session does, and it ends here rather than at
-    // each caller.** Three paths end a session today —
-    // `sessionExpiryInterceptor` on a 401, `SettingsService.leave()`, and
-    // `ErasureFlowService` on the erasing request's 204 — and the third is the
-    // case this placement was for: it was added by somebody thinking about
-    // erasure rather than about key material, and it clears the account's keys
-    // without a line of its own. Put in the callers instead, a fourth would not,
-    // and the symptom is an ended session whose content key is still readable
-    // from the root injector for the life of the tab. Nothing goes red about it
-    // either way.
+    // each caller.** Four paths end a session today —
+    // `sessionExpiryInterceptor` on a 401, `SettingsService.leave()`,
+    // `ErasureFlowService` on the erasing request's 204, and
+    // `ReleaseFlowService.leave()` — and the last two are the case this
+    // placement was for: each was added by somebody thinking about erasure or
+    // release rather than about key material, and each clears the account's
+    // keys without a line of its own. Put in the callers instead, a fifth would
+    // not, and the symptom is an ended session whose content key is still
+    // readable from the root injector for the life of the tab. Nothing goes red
+    // about it either way.
     //
     // **Not an `effect()` over {@link status}, and the temptation is real** —
     // one reaction beside the signal reads tidier than a call inside a method.
@@ -252,12 +253,12 @@ export class SessionService {
     // the guards and in {@link readingOf}; writing it a third time is how the
     // third copy drifts.
     //
-    // {@link established} owns no key material. It discards the provider's
-    // token and nothing else: a session beginning says nothing about which
-    // factor opened it, and the two paths that know — registration and
-    // sign-in — hand the keys over themselves. {@link establishedLocked} is the
-    // one establishing arm that locks custody, because the session it opens
-    // holds no key material by definition.
+    // No establishing arm touches custody. {@link established} discards the
+    // provider's token and nothing else: a session beginning says nothing about
+    // which factor opened it, and the two paths that know — registration and
+    // sign-in — hand the keys over themselves. {@link establishedLocked} finds
+    // custody empty, for the reasons written over it, so ending custody stays
+    // this method's alone.
     this.custody.lock();
   }
 
@@ -291,19 +292,23 @@ export class SessionService {
   // re-probe, for the same reason — the server has just said what it thinks,
   // and its answer carries the schedule, so nothing is asked afterwards.
   //
-  // **Synchronous, and it clears what a full session held.** The cookie the
-  // locked sign-in set *replaces* whatever this tab held, so a budget left
-  // standing would be keyed into a write the locked session may not make, and
-  // keys left in custody would be readable from the root injector by a session
-  // that reads no budget content of any kind (FR-113). {@link ended} makes the
-  // same two drops for the same reason.
+  // **Synchronous, and it drops the budget because the status it publishes owns
+  // none.** A locked session reads no budget content of any kind (FR-113), so
+  // an identifier left standing would be keyed into a write that session may
+  // not make.
+  //
+  // **It says nothing to custody, because custody holds nothing here.** The
+  // provider hand-off this leg spends is taken only on a fresh load and dropped
+  // on any published session, and the server refuses a locked sign-in over a
+  // full session with a `409`, so no tab that unlocked keys reaches this `200`.
+  // Ending custody stays {@link ended}'s alone; a lock here would be a second
+  // owner of that act, guarding a state that cannot occur.
   //
   // The provider's tokens go last and through the guarded discard, so a throw
   // there cannot unpublish the session set first.
   public establishedLocked(answer: SessionDto): void {
     this.statusSignal.set('locked-session');
     this.budgetSignal.set(null);
-    this.custody.lock();
     this.scheduledErasureSignal.set(SessionService.scheduleOf(answer));
     this.forgetProviderToken();
   }
@@ -417,8 +422,8 @@ export class SessionService {
     // Everything else: status `0` for a request that never reached a server, a
     // 500 from a server that is up and broken, a timeout, a body that failed to
     // parse. None of them is a statement about who is asking, and an
-    // implementation reading "not 200" as "not signed in" is the defect the
-    // fourth state exists to prevent.
+    // implementation reading "not 200" as "not signed in" is the defect
+    // `'unreachable'`, one of the five states, exists to prevent.
     return 'unreachable';
   }
 }

@@ -65,6 +65,15 @@
   min-height: var(--bud-touch-target);
 }
 
+// Ghost: the accent-text label on a transparent, borderless button — the
+// declaration `welcome.component.scss` makes at `.w-release` for the same
+// variant. Material's own tokens rather than `color`, so the state layer, the
+// ripple and the focus ring stay Material's.
+.rl-link {
+  --mat-button-text-label-text-color: var(--bud-accent-text);
+  --mat-button-text-state-layer-color: var(--bud-accent-text);
+}
+
 // **Destructive**, `--bud-over` fill with a `#FFFFFF` label — the declaration
 // `erase-dialog.component.scss` makes for the same variant, and the one
 // hard-coded hex here, because the Buttons chapter names it. Material's own

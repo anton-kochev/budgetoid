@@ -54,6 +54,7 @@ import { ReleaseFlowService } from './release-flow.service';
 
 const API_ORIGIN = 'https://api.budgetoid.test';
 const LOCKED_SESSION_URL = `${API_ORIGIN}/api/locked-session`;
+const SESSION_URL = `${API_ORIGIN}/api/me/session`;
 const SCHEDULE_URL = `${API_ORIGIN}/api/me/erasure/schedule`;
 const REVOCATION_URL = `${API_ORIGIN}/api/me/session/revocation`;
 // The immediate erasure, named only so its absence can be asserted: a locked
@@ -76,6 +77,18 @@ const LOCKED_SCHEDULED = {
 } as const satisfies SessionDto;
 
 const SCHEDULED_INSTANT = '2026-10-16T08:00:00Z';
+
+// The server's 409 when this browser already holds a full session: a
+// ProblemDetails whose `conflictKind` member names it. The word is read from
+// that member and nothing else — `detail` is prose and may change.
+const FULL_SESSION_CONFLICT = {
+  type: 'https://tools.ietf.org/html/rfc9110#section-15.5.10',
+  title: 'The request conflicts with the current state of the resource.',
+  status: 409,
+  detail:
+    'This browser is already signed in with full access, so this sign-in would open less and was not used.',
+  conflictKind: 'full_session',
+} as const;
 
 // What the flow was saying at the instant the session was told something.
 interface Publication {
@@ -401,7 +414,26 @@ describe('ReleaseFlowService', () => {
         body: { refusal: 'something_else' },
         word: 'undetermined',
       },
-      { why: 'a 409', status: 409, body: null, word: 'undetermined' },
+      {
+        why: 'a 409 with no body',
+        status: 409,
+        body: null,
+        word: 'undetermined',
+      },
+      {
+        why: 'a 409 naming another conflict',
+        status: 409,
+        body: { ...FULL_SESSION_CONFLICT, conflictKind: 'something_else' },
+        word: 'undetermined',
+      },
+      // The member alone does not name it either: `full_session` on any
+      // status but 409 is a server this client was not written against.
+      {
+        why: 'a 404 naming the full-session conflict',
+        status: 404,
+        body: FULL_SESSION_CONFLICT,
+        word: 'undetermined',
+      },
       { why: 'a 500', status: 500, body: null, word: 'undetermined' },
       { why: 'a 503', status: 503, body: null, word: 'undetermined' },
     ])('reads $why as $word', async ({ status, body, word }) => {
@@ -415,6 +447,43 @@ describe('ReleaseFlowService', () => {
       expect(flow.signInFailure()).toBe(word);
       expect(session.publications).toEqual([]);
       expect(flow.signingIn()).toBe(false);
+    });
+
+    // The server refused to replace a full session this browser already
+    // holds, so nothing changed and a reload opens that account. Not
+    // `undetermined`: the answer is known, and it is not a lost 200.
+    it('reads a 409 naming the full-session conflict as full-session and leaves the session alone', async () => {
+      // Act
+      const flow = await signInAnswered((request) =>
+        request.flush(FULL_SESSION_CONFLICT, {
+          status: 409,
+          statusText: 'Conflict',
+        }),
+      );
+      await eventually(() => flow.signInFailure(), 'a sign-in word');
+
+      // Assert
+      expect(flow.signInFailure()).toBe('full-session');
+      expect(session.publications).toEqual([]);
+      expect(session.status()).toBe('anonymous');
+      expect(flow.signingIn()).toBe(false);
+    });
+
+    // One answer, one request, and no probe behind it: the reload the
+    // sentence names is the person's act, not this flow's.
+    it('sends exactly one locked sign-in and reads no session after a full-session 409', async () => {
+      // Act
+      const flow = await signInAnswered((request) =>
+        request.flush(FULL_SESSION_CONFLICT, {
+          status: 409,
+          statusText: 'Conflict',
+        }),
+      );
+      await eventually(() => flow.signInFailure(), 'a sign-in word');
+
+      // Assert
+      expect(await openRequestsAfterQuiet(LOCKED_SESSION_URL)).toBe(0);
+      expect(http.match(SESSION_URL)).toEqual([]);
     });
 
     it('reads a request that got no answer as undetermined', async () => {

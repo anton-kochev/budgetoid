@@ -93,13 +93,17 @@ export const provideAppCore = (): EnvironmentProviders =>
           }
 
           // **A locked sign-in's answer is dropped when the probe found a
-          // session already open, full or locked — and this is load-bearing.**
-          // Posting the answer replaces whatever session cookie the tab holds,
-          // so a full session would be downgraded to a locked one over a press
-          // on the release screen. Only the probe's answer knows, so the drop
-          // is decided after it, and before the first route can take the
-          // hand-off. `unreachable` and `unknown` keep it: neither says a
-          // session is open, and nobody signed in is who this trip is for.
+          // session already open, full or locked.** The server refuses a
+          // locked sign-in beside a live full session with a `409` whose
+          // `conflictKind` is `full_session`, so this drop no longer guards
+          // a downgrade. It stays so a load that knows its session sends
+          // nothing the server would refuse, and so a locked tab is not
+          // swapped to another account's locked session — over a live
+          // locked cookie, posting the answer replaces it. Only the probe's
+          // answer knows, so the drop is decided after it, and before the
+          // first route can take the hand-off. `unreachable` and `unknown`
+          // keep it: neither says a session is open, and nobody signed in is
+          // who this trip is for.
           if (
             returning === 'locked-sign-in' &&
             (status === 'authenticated' || status === 'locked-session')

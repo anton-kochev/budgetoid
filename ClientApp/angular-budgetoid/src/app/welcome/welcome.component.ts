@@ -30,9 +30,10 @@ const KINETIC_LINES: readonly (readonly [fear: string, verdict: string])[] = [
 //
 // The provider button is gone from here, and there is no shared component left
 // behind it: the button, the facade it provided and the store chain it
-// dispatched into went with it. The registration flow's introduction step draws
-// its own control, and that step is the one place the provider is ever
-// contacted — once, while an account is being created.
+// dispatched into went with it. The provider is contacted on three trips, and
+// none of them starts here: registration's introduction step, while an account
+// is being created; the email change, from Settings; and the locked sign-in,
+// from the release screen.
 @Component({
   changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [

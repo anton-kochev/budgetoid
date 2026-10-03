@@ -34,6 +34,9 @@ import { SessionService } from '@app-core/session/session.service';
  *   was created with that Google account.
  * * `provider-refused` — `401`: the server did not accept the Google answer.
  * * `unrecognised` — `403`: the request was not one the server reads.
+ * * `full-session` — `409` with `conflictKind: "full_session"`: this browser
+ *   already holds a full session, and the server changed nothing. A reload
+ *   opens that account; the request is not retried and nothing is probed.
  * * `undetermined` — no answer, a `5xx`, a `200` that does not read, or any
  *   answer not listed. A lost `200` may have set the cookie, so this is the
  *   one word that names a reload.
@@ -44,6 +47,7 @@ export type ReleaseSignInFailure =
   | 'no-account'
   | 'provider-refused'
   | 'unrecognised'
+  | 'full-session'
   | 'undetermined'
   | 'unconfirmed'
   | 'unavailable';
@@ -214,8 +218,9 @@ export class ReleaseFlowService {
 }
 
 // The words come from members of the answer, never from its prose, and a
-// status alone never names `no-account`: a `404` without that refusal is a
-// route or a proxy this client was not written against.
+// status alone never names `no-account` or `full-session`: a `404` without
+// that refusal, or a `409` without that conflict kind, is a route or a proxy
+// this client was not written against.
 function signInFailureOf(error: unknown): ReleaseSignInFailure {
   if (!(error instanceof HttpErrorResponse)) {
     return 'undetermined';
@@ -230,6 +235,10 @@ function signInFailureOf(error: unknown): ReleaseSignInFailure {
       return refusalOf(error.error) === 'no_account'
         ? 'no-account'
         : 'undetermined';
+    case 409:
+      return conflictKindOf(error.error) === 'full_session'
+        ? 'full-session'
+        : 'undetermined';
     default:
       return 'undetermined';
   }
@@ -238,6 +247,12 @@ function signInFailureOf(error: unknown): ReleaseSignInFailure {
 function refusalOf(body: unknown): unknown {
   return typeof body === 'object' && body !== null && 'refusal' in body
     ? body.refusal
+    : undefined;
+}
+
+function conflictKindOf(body: unknown): unknown {
+  return typeof body === 'object' && body !== null && 'conflictKind' in body
+    ? body.conflictKind
     : undefined;
 }
 

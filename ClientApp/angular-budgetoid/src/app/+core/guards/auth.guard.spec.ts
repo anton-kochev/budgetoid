@@ -61,8 +61,9 @@ describe('authGuard', () => {
     expect(run.redirectedTo).toBeNull();
   });
 
-  // The only status that is evidence the visitor is not signed in, and so the
-  // only one that may bounce them. Control for the three tests below: a guard
+  // The only status that is evidence the visitor holds no session, and so the
+  // only one that may bounce them to Welcome — a locked session is sent to the
+  // release screen instead, pinned below. Control for the three tests below: a guard
   // that admitted everything would pass all of them and hand the app's screens
   // to anybody who types the URL.
   it('sends a visitor the server refused to the welcome screen', () => {
@@ -74,7 +75,7 @@ describe('authGuard', () => {
     expect(run.redirectedTo).toBe('/welcome');
   });
 
-  // The defect this whole four-valued shape exists to prevent, seen from the
+  // The defect this whole five-valued shape exists to prevent, seen from the
   // screen it happens on. A server that could not be reached has said nothing
   // about who the visitor is; treated as a refusal, one blinked request during
   // the cold load throws a signed-in person out of their own account and onto a

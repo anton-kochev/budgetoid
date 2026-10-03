@@ -693,7 +693,10 @@ export class KeyRotationService {
   // **Two conditions, and the status one is not implied by the budget one.**
   // `ended()` drops the budget and the status together, but only `anonymous` is
   // a session that ended — `unknown` and `unreachable` keep everything, or a
-  // blinked request would take a typed name away. The budget is compared by
+  // blinked request would take a typed name away. A `locked-session` status
+  // owns no budget either, beside `anonymous`, and it is the budget term that
+  // hides an account's values from it: both arms that publish a locked session
+  // set the budget to `null`. The budget is compared by
   // equality, so a current `null` matches no value stamped with a budget: a
   // session that has not yet said which account it is has not said it is this
   // one. A value stamped `null` is one a press published while it, too, had no

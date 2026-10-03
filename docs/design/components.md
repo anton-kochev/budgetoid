@@ -4081,6 +4081,7 @@ holds no answer, so it cannot send a second. The request is marked as expecting 
 | --- | --- | --- | --- |
 | `200` | — | *nothing* | The session is published as `locked-session`, and the surface becomes *nothing scheduled* or *scheduled* by the answer's own `erasure` member, on the same route |
 | `404`, `refusal: "no_account"` | `no-account` | "There’s no Budgetoid account for that Google account. Nothing has changed." | Before the trip, plus a **Create an account** link to `/register` below the region |
+| `409`, `conflictKind: "full_session"` | `full-session` | "This browser is already signed in to Budgetoid, so nothing has changed. Reload the page to open that account." | Before the trip |
 | `401` | `provider-refused` | "Google didn’t confirm that account, so nothing has changed. Try again, or choose another Google account." | Before the trip |
 | `403` | `unrecognised` | "Budgetoid couldn’t read this request. Reload the page and try again — nothing has changed." | Before the trip |
 | No answer, a `5xx`, a `200` that does not read, or any answer not listed | `undetermined` | "Budgetoid can’t tell whether you’re signed in. Reload the page to find out." | Before the trip |
@@ -4099,8 +4100,17 @@ and a reload is the one act that asks the server who this is: a locked session l
 surface, anybody else back here. Continue is not a retry of the lost request. It fetches a new
 answer, and a second locked sign-in over a first replaces the cookie and harms nothing.
 
+**`full-session` means this browser holds more than the sign-in would open.** The server refuses
+a locked sign-in beside a live full session rather than replacing it, and a reload is the way
+forward: the startup check finds the full session and the guards take the browser into the app.
+It is reachable only when that check could not answer on the return — otherwise the client drops
+the hand-off before it posts — so it is rare, and it is not `undetermined`, because the server did
+determine something. It is never retried and never answered with a probe of the screen's own. It
+says "that account", not "your account": the session in a shared browser may not be the reader's.
+
 **The words come from members of the answer, never from its prose.** `no_account` is read off
-`refusal`. Lines that land on a return load wait one render, as the email change's do, so the region
+`refusal`, and `full_session` off `conflictKind`; a `409` naming anything else, or no body at all,
+is `undetermined`. Lines that land on a return load wait one render, as the email change's do, so the region
 exists before its text.
 
 ### Nothing scheduled
@@ -4264,6 +4274,7 @@ Every string on this screen, in one place. The copy is the specification, not an
 | Signing in | "Checking your Google sign-in…" |
 | `no-account` | "There’s no Budgetoid account for that Google account. Nothing has changed." |
 | `no-account` link | "Create an account" |
+| `full-session` | "This browser is already signed in to Budgetoid, so nothing has changed. Reload the page to open that account." |
 | `provider-refused` | "Google didn’t confirm that account, so nothing has changed. Try again, or choose another Google account." |
 | Sign-in `unrecognised` | "Budgetoid couldn’t read this request. Reload the page and try again — nothing has changed." |
 | Sign-in `undetermined` | "Budgetoid can’t tell whether you’re signed in. Reload the page to find out." |
@@ -4281,12 +4292,10 @@ Every string on this screen, in one place. The copy is the specification, not an
 
 ### What ships today
 
-**The screen, as specified, with one departure.** `/release` draws every state, outcome and string
-above: `ReleaseComponent` over `ReleaseFlowService`, which takes the Google answer once, sends the
-locked sign-in without a second press, schedules and signs out as the tables read. Welcome's
-standing link leads here, and the guards send a locked session here. **The acknowledgement checkbox draws no visible focus ring**: accessibility.md moves the ring to the
-visible box with `:has(:focus-visible)`, and no rule in `styles.scss` does that yet — the same gap
-the key-rotation checkbox carries. The server half is live: `POST /api/locked-session`,
+**The screen, as specified.** `/release` draws every state, outcome and string above:
+`ReleaseComponent` over `ReleaseFlowService`, which takes the Google answer once, sends the locked
+sign-in without a second press, schedules and signs out as the tables read. Welcome's standing link
+leads here, and the guards send a locked session here. The server half is live: `POST /api/locked-session`,
 `GET /api/me/session` and `POST /api/me/erasure/schedule` answer as this chapter reads them.
 
 **The result sentence promises an erasure on a date, and nothing carries a schedule out yet.** So

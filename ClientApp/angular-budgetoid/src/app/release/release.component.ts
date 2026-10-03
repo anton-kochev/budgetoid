@@ -217,6 +217,8 @@ function textOf(line: RegionLine): string {
       return 'Google didn’t confirm that account, so nothing has changed. Try again, or choose another Google account.';
     case 'sign-in:unrecognised':
       return 'Budgetoid couldn’t read this request. Reload the page and try again — nothing has changed.';
+    case 'sign-in:full-session':
+      return 'This browser is already signed in to Budgetoid, so nothing has changed. Reload the page to open that account.';
     case 'sign-in:undetermined':
       return 'Budgetoid can’t tell whether you’re signed in. Reload the page to find out.';
     case 'sign-in:unconfirmed':

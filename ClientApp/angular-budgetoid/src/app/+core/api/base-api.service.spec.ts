@@ -187,8 +187,8 @@ describe('BaseApiService', () => {
   // fallback and by Azure Static Web Apps' `navigationFallback` alike — and
   // under `responseType: 'json'` that body fails to parse, which Angular reports
   // as an `HttpErrorResponse` still carrying status 200. `readingOf` maps it to
-  // `unreachable`, both guards admit `unreachable` deliberately, and the visitor
-  // gets a painted screen whose every request then 401s.
+  // `unreachable`, all three guards admit `unreachable` deliberately, and the
+  // visitor gets a painted screen whose every request then 401s.
   //
   // Green before the fix and after it, on purpose: it pins the consequence, so
   // nobody closes this by teaching the probe to read an unparseable 200 as a

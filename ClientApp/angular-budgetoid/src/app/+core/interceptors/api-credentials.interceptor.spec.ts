@@ -25,11 +25,12 @@ import { PROVIDER_CREDENTIAL } from './provider-credential.token';
 const API_BASE_URL = 'https://api.budgetoid.app';
 const API_URL = `${API_BASE_URL}/api/me`;
 
-// The two routes authenticated by the provider scheme and nothing else. An
-// account may not exist without a completed provider exchange, so these are the
-// only requests in the product a Google bearer still means anything on, and
-// they always will be: registration is the one act that runs before this
-// product has an identity of its own to present.
+// Registration's two routes, authenticated by the provider scheme and nothing
+// else, with the bearer read from storage. An account may not exist without a
+// completed provider exchange, and registration is the one act that runs
+// before this product has an identity of its own to present. The email change
+// and the locked sign-in also take a Google bearer, each from its own request
+// rather than storage; their rules are below.
 const REGISTRATION_OPTIONS_URL = `${API_BASE_URL}/api/registration/options`;
 const REGISTRATION_URL = `${API_BASE_URL}/api/registration`;
 
@@ -276,6 +277,38 @@ describe('apiCredentialsInterceptor', () => {
       .map((one) => one.url);
 
     expect(carriers).toEqual([]);
+  });
+
+  // Exact, never a suffix: a registration path under another prefix — or
+  // behind a doubled slash — is another route, and the stored token is the
+  // one credential here an abandoned trip leaves lying around.
+  it.each([
+    { shape: 'the finish leg under a prefix', path: '/v1/api/registration' },
+    {
+      shape: 'the finish leg behind a doubled slash',
+      path: '//api/registration',
+    },
+    {
+      shape: 'the options leg under a prefix',
+      path: '/v1/api/registration/options',
+    },
+    {
+      shape: 'the options leg behind a doubled slash',
+      path: '//api/registration/options',
+    },
+  ])('carries no provider token to $shape', ({ path }) => {
+    // Arrange
+    const request = new HttpRequest<unknown>(
+      'POST',
+      `${API_BASE_URL}${path}`,
+      null,
+    );
+
+    // Act
+    const forwarded = forwardedRequest(request, { idToken: ID_TOKEN });
+
+    // Assert
+    expect(forwarded.headers.has(AUTHORIZATION_HEADER)).toBe(false);
   });
 
   // The narrowing touches the bearer and nothing else. Without this, an
@@ -555,14 +588,20 @@ describe('apiCredentialsInterceptor on the email change', () => {
     expect(forwarded.headers.has(AUTHORIZATION_HEADER)).toBe(false);
   });
 
-  // Exact, never a prefix: a segment below the route and a path that merely
-  // starts with its spelling are both other routes.
+  // Exact, never a prefix or a suffix: a segment below the route, a path that
+  // merely starts with its spelling, and a path that merely ends with it are
+  // all other routes.
   it.each([
     { shape: 'a segment below the route', path: '/api/me/email-change/x' },
     { shape: 'a path extending its spelling', path: '/api/me/email-changeX' },
     {
       shape: 'the route with a bare trailing slash',
       path: '/api/me/email-change/',
+    },
+    { shape: 'the route under a prefix', path: '/v1/api/me/email-change' },
+    {
+      shape: 'the route behind a doubled slash',
+      path: '//api/me/email-change',
     },
   ])('sends no bearer to $shape', ({ path }) => {
     // Arrange
@@ -600,9 +639,10 @@ describe('apiCredentialsInterceptor on the email change', () => {
   });
 });
 
-// The locked sign-in: the one route a browser reaches carrying a provider token
-// and, by design, no session it can use — `POST /api/locked-session` answers a
-// Google sign-in on an account with no factors with a locked session. Its
+// The locked sign-in: `POST /api/locked-session` answers a Google sign-in on an
+// account with no factors with a locked session. Like registration's two, it
+// is reached carrying a provider token and no session it can use; unlike
+// them, it opens a session for an account that already exists. Its
 // bearer is the credential the release flow was handed by the provider return,
 // carried on the request, exactly as the email change's is. Spelled out rather
 // than built from `LOCKED_SESSION_PATH`, so a constant that drifted from the
@@ -696,6 +736,8 @@ describe('apiCredentialsInterceptor on the locked sign-in', () => {
       path: '/api/locked-session/',
     },
     { shape: 'the route under /api/me', path: '/api/me/locked-session' },
+    { shape: 'the route under a prefix', path: '/v1/api/locked-session' },
+    { shape: 'the route behind a doubled slash', path: '//api/locked-session' },
   ])('sends no bearer to $shape', ({ path }) => {
     // Arrange
     const request = new HttpRequest<unknown>(

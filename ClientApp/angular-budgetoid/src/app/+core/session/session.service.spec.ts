@@ -300,10 +300,11 @@ describe('SessionService', () => {
     expect(service.status()).toBe('anonymous');
   });
 
-  // The CSRF refusal and the locked-session refusal both land here. Neither is
-  // an authenticated visitor, and neither has a next step that differs from a
-  // 401's, so the two collapse deliberately — this is the one collapse in the
-  // file that is correct.
+  // The CSRF refusal lands here. A locked session does not — the session
+  // route answers it `200` with its kind. A 403 is not an authenticated
+  // visitor and has no next step that differs from a 401's, so the two
+  // collapse deliberately — this is the one collapse in the file that is
+  // correct.
   it('answers anonymous when the server refuses the read outright', async () => {
     // Arrange
     api.getSession.mockReturnValue(throwError(() => refusal(403)));
@@ -316,7 +317,7 @@ describe('SessionService', () => {
   });
 
   // The most important test here, and the one a future reader will delete while
-  // simplifying four states into two. A request that never got an answer is not
+  // simplifying five states into two. A request that never got an answer is not
   // evidence about the visitor; read as one, it signs a person holding a
   // perfectly good session out of their own account and drops them on a
   // marketing page because the network blinked once during the cold load. It is
@@ -967,13 +968,13 @@ describe('SessionService', () => {
       expect(service.status()).toBe('locked-session');
     });
 
-    // The cookie the locked sign-in set **replaces** whatever this tab held.
-    // Arranged from a full session holding a budget, because that is the case
-    // the replacement makes real: a budget left standing would be keyed into
-    // a write the locked session may not make, and keys left in custody would
-    // be readable from the root injector by a session that reads no budget
-    // content of any kind.
-    it('drops the budget and the account keys a full session held', async () => {
+    // Arranged from a full session holding a budget, because a budget left
+    // standing would be keyed into a write the locked session may not make,
+    // and the status published owns no budget. Custody is not this arm's to
+    // touch: the server refuses a locked sign-in over a full session, so no
+    // keys can be held when it answers `200`, and ending custody stays
+    // `ended()`'s alone.
+    it('drops a budget it finds and says nothing to custody', async () => {
       // Arrange
       await service.probe();
       expect(service.status()).toBe('authenticated');
@@ -985,8 +986,7 @@ describe('SessionService', () => {
 
       // Assert
       expect(service.budgetId()).toBeNull();
-      expect(touchedMembersOf(custody)).toEqual(['lock']);
-      expect(custody.lock).toHaveBeenCalledOnce();
+      expect(touchedMembersOf(custody)).toEqual([]);
     });
 
     // C10: the sign-in's `200` carries `erasure`, so the answer is the

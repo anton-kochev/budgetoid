@@ -84,6 +84,8 @@ const SIGN_IN_UNRECOGNISED =
   'Budgetoid couldn’t read this request. Reload the page and try again — nothing has changed.';
 const SIGN_IN_UNDETERMINED =
   'Budgetoid can’t tell whether you’re signed in. Reload the page to find out.';
+const FULL_SESSION =
+  'This browser is already signed in to Budgetoid, so nothing has changed. Reload the page to open that account.';
 const UNCONFIRMED =
   'Signing in with Google didn’t finish. Nothing has changed — try again whenever you’re ready.';
 const UNAVAILABLE =
@@ -146,6 +148,16 @@ const LOCKED_SCHEDULED = {
   expiresAtUtc: '2026-10-17T08:00:00Z',
   erasure: { takesEffectAtUtc: SCHEDULED_INSTANT },
 } as const satisfies SessionDto;
+
+// The server's 409 when this browser already holds a full session.
+const FULL_SESSION_CONFLICT = {
+  type: 'https://tools.ietf.org/html/rfc9110#section-15.5.10',
+  title: 'The request conflicts with the current state of the resource.',
+  status: 409,
+  detail:
+    'This browser is already signed in with full access, so this sign-in would open less and was not used.',
+  conflictKind: 'full_session',
+} as const;
 
 type PreTripStatus = 'unknown' | 'anonymous' | 'unreachable';
 
@@ -603,6 +615,79 @@ describe('ReleaseComponent', () => {
       expect(link?.getAttribute('href')).toBe('/register');
       expect(statusRegion(host)?.contains(link ?? null)).toBe(false);
       expect(controlNames(host)).toEqual([CONTINUE, CREATE_ACCOUNT].sort());
+    });
+
+    // Tertiary, in the accent the book gives a text link, exactly as Welcome's
+    // release link — Material's default text colour is the primary role. Read
+    // off the rendered element: jsdom does not resolve the `var()`, but it
+    // does cascade the component's stylesheet onto the element it matches, so
+    // a rule on the wrong selector fails.
+    it('draws Create an account in the accent text colour', async () => {
+      // Arrange
+      handOff = { kind: 'answered', idToken: ID_TOKEN };
+      const host = await render();
+      (await requestTo(LOCKED_SESSION_URL)).flush(
+        { refusal: 'no_account' },
+        { status: 404, statusText: 'Not Found' },
+      );
+      await regionReads(host, NO_ACCOUNT);
+      const link = controlNamed(host, CREATE_ACCOUNT);
+
+      // Act
+      const style = link === null ? null : getComputedStyle(link);
+      const label = style
+        ?.getPropertyValue('--mat-button-text-label-text-color')
+        .trim();
+      const stateLayer = style
+        ?.getPropertyValue('--mat-button-text-state-layer-color')
+        .trim();
+
+      // Assert
+      expect(link).not.toBeNull();
+      expect(label).toBe('var(--bud-accent-text)');
+      expect(stateLayer).toBe('var(--bud-accent-text)');
+    });
+
+    // The server refused to replace the full session this browser holds.
+    // The answer is known, so it is its own line rather than undetermined's,
+    // and the trip stays standing: Continue is still a way forward for
+    // somebody who signs that session out first.
+    it('reads a full-session 409 in the region over the trip it leaves standing, offering no Create an account', async () => {
+      // Arrange
+      handOff = { kind: 'answered', idToken: ID_TOKEN };
+      const host = await render();
+
+      // Act
+      (await requestTo(LOCKED_SESSION_URL)).flush(FULL_SESSION_CONFLICT, {
+        status: 409,
+        statusText: 'Conflict',
+      });
+
+      // Assert
+      await regionReads(host, FULL_SESSION);
+      expect(buttonNamed(host, CONTINUE)).not.toBeNull();
+      expect(controlNamed(host, CREATE_ACCOUNT)).toBeNull();
+    });
+
+    // A refusal line is announced by the region; nothing the person stood on
+    // went away, so focus stays where it was.
+    it('moves no focus over a full-session 409', async () => {
+      // Arrange
+      handOff = { kind: 'answered', idToken: ID_TOKEN };
+      (document.activeElement as HTMLElement | null)?.blur();
+      const host = await render();
+
+      // Act
+      (await requestTo(LOCKED_SESSION_URL)).flush(FULL_SESSION_CONFLICT, {
+        status: 409,
+        statusText: 'Conflict',
+      });
+      await regionReads(host, FULL_SESSION);
+      await quiet();
+      redraw();
+
+      // Assert
+      expect(document.activeElement).toBe(document.body);
     });
 
     it.each([

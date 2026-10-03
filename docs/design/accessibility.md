@@ -50,7 +50,10 @@ traps); this chapter is what the system adds and what every component must satis
   Material renders the real `<input type="checkbox">` at `opacity: 0`, stretched over the
   visible box, so the global `:focus-visible` ring is painted on something nobody can
   see — the control looks unfocused while being focused. The ring moves to the visible
-  box with `:has(:focus-visible)`, at the same 2px and the same offset. It is the same
+  box with `.mdc-checkbox__native-control:focus-visible ~ .mdc-checkbox__background`, at
+  the same 2px and the same offset — the sibling form Material's own focus styles use, and
+  not `:has()`, because the selector sits in the one global list and a selector an engine
+  cannot parse drops the whole list, every button's ring with it. It is the same
   ring in the same place to a sighted keyboard user; what changes is which node draws it.
   The same will be true of any control Material builds this way.
 - Focus is never hidden, never `outline: none` without replacement, and never trapped

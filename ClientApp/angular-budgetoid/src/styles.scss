@@ -179,7 +179,12 @@ button:focus-visible,
 a[href]:focus-visible,
 summary:focus-visible,
 [role='button']:focus-visible,
-[role='link']:focus-visible {
+[role='link']:focus-visible,
+// Material draws a checkbox's real input at opacity 0 over the visible box, so
+// a ring on the input is a ring nobody sees. This moves it to the box, by the
+// sibling combinator Material's own focus styles use — no `:has()`, because one
+// selector an engine cannot parse would drop this whole list, buttons too.
+.mdc-checkbox__native-control:focus-visible ~ .mdc-checkbox__background {
   outline: 2px solid var(--bud-focus-ring);
   outline-offset: 2px;
 }

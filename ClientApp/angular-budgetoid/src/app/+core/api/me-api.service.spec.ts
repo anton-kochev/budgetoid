@@ -1310,6 +1310,16 @@ describe('MeApiService', () => {
         why: 'an expiry ending in a lowercase z',
         body: { ...FULL, expiresAtUtc: '2026-10-17T08:00:00z' },
       },
+      // The pattern admits any two digits in an offset, so the range check
+      // is the one refusal each of these meets.
+      {
+        why: 'an expiry at an offset hour a day does not have',
+        body: { ...FULL, expiresAtUtc: '2026-10-17T10:00:00+24:00' },
+      },
+      {
+        why: 'an expiry at an offset minute an hour does not have',
+        body: { ...FULL, expiresAtUtc: '2026-10-17T10:00:00+00:60' },
+      },
     ])('refuses a body with $why', ({ body }) => {
       // Act
       const { received, failure } = readAnswer(body);

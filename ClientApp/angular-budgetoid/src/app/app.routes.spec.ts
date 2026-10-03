@@ -14,8 +14,8 @@ import { ShellComponent } from './shell/shell.component';
 // No `<router-outlet>` is rendered here, so navigation resolves and guards run but no
 // routed component is instantiated — nothing reaches the network.
 //
-// The status is stubbed rather than the identity provider: both guards read the
-// one answer `SessionService` holds, and the probe that fills it is an
+// The status is stubbed rather than the identity provider: all three guards
+// read the one answer `SessionService` holds, and the probe that fills it is an
 // `APP_INITIALIZER` this module does not register. `authenticated`, `anonymous`
 // and `locked-session` are the three these routes discriminate on; `unknown`
 // and `unreachable` admit everywhere and are pinned in each guard's own spec.

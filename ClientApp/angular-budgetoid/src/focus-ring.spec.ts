@@ -49,6 +49,45 @@ function focusVisibleRules(stylesheet: string): string[] {
     );
 }
 
+// The selector list of a rule `focusVisibleRules` returned, one entry per
+// top-level comma — a comma inside `:is()`, `:not()` or `:where()` belongs to
+// its selector — with the whitespace around each combinator removed, so a
+// source spacing and a minifier's spacing compare equal.
+function selectorsOf(rule: string): string[] {
+  const list = rule.slice(0, rule.indexOf('{'));
+  const selectors: string[] = [];
+  let depth = 0;
+  let current = '';
+
+  for (const character of list) {
+    if (character === '(') {
+      depth += 1;
+    } else if (character === ')') {
+      depth -= 1;
+    }
+
+    if (character === ',' && depth === 0) {
+      selectors.push(current);
+      current = '';
+    } else {
+      current += character;
+    }
+  }
+
+  selectors.push(current);
+
+  return selectors.map((selector) =>
+    selector.trim().replace(/\s*([>+~])\s*/g, '$1'),
+  );
+}
+
+// Material's checkbox draws its box on `.mdc-checkbox__background`, a sibling
+// that follows the native input, and the input itself is invisible — so a ring
+// on the input draws nothing anybody can see. The ring has to sit on the
+// sibling, reached through the input's own focus.
+const CHECKBOX_RING_SELECTOR =
+  '.mdc-checkbox__native-control:focus-visible~.mdc-checkbox__background';
+
 describe('focus ring', () => {
   it('is asserted against a production build', () => {
     expectProductionBuild();
@@ -71,5 +110,24 @@ describe('focus ring', () => {
     // the file is a rule about something other than focus. Counting occurrences
     // of `:focus-visible` across the whole stylesheet would accept both.
     expect(rules.length).toBeGreaterThan(0);
+  });
+
+  it('rings the box a checkbox draws, not its invisible input', () => {
+    // Arrange
+    const stylesheets = emittedFiles(['.css']);
+
+    // Act
+    const selectors = stylesheets
+      .flatMap((path) => focusVisibleRules(readFileSync(path, 'utf8')))
+      .flatMap(selectorsOf);
+
+    // Assert
+    // Exactly the sibling form: a ring on the input alone draws nothing, and
+    // one wrapped in `:where()` scores zero — the trap the global block's own
+    // comment names. No ring selector may use `:where()` for that reason.
+    expect(selectors).toContain(CHECKBOX_RING_SELECTOR);
+    expect(
+      selectors.filter((selector) => selector.includes(':where(')),
+    ).toEqual([]);
   });
 });

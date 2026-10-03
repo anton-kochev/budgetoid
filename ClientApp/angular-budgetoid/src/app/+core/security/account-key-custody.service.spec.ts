@@ -2810,9 +2810,9 @@ describe('AccountKeyCustodyService', () => {
     // ceremony an authenticator has just agreed to, with a screen to move on to.
     // One refactor later that `await` grows a `catch`, and a key that did not
     // open becomes a ceremony that failed: on the way into the account an
-    // authentication failure, which must never happen because only `anonymous`
-    // may bounce anybody out of an account, and on a screen inside the account a
-    // device blamed for something it did not do.
+    // authentication failure, which must never happen because only a status
+    // the server answered moves anybody out of an account, and on a screen
+    // inside the account a device blamed for something it did not do.
     //
     // Both readings, because they fail on different widenings. `undefined` is
     // false for a `Promise`; the second is false for anything thenable at all,

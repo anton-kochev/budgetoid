@@ -3,9 +3,11 @@ import { join, relative, sep } from 'node:path';
 import type * as typescriptModule from 'typescript';
 import { describe, expect, it } from 'vitest';
 
-// NFR-025: the identity provider is contacted on two acts and at no other
-// time — creating an account, and changing its email address (the press on
-// `/app/settings`, or a marked return to it). This census holds the call-site
+// NFR-025: the identity provider is contacted on three acts and at no other
+// time — creating an account, changing its email address (the press on
+// `/app/settings`, or a marked return to it), and the locked sign-in that
+// releases an account nobody can open (the press on `/release`, or a marked
+// return to it). This census holds the call-site
 // half of that: which shipped file reaches which member of the provider client.
 //
 // The provider client is two classes. `AuthService`
@@ -708,7 +710,7 @@ describe('the identity provider client', () => {
     expect(errors).toEqual([]);
   }, 60_000);
 
-  it('is reached only from the sites registration and the email change need', () => {
+  it('is reached only from the sites registration, the email change and the locked sign-in need', () => {
     // Arrange
     const allowed = [...allowedReaches.keys()].sort();
 

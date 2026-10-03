@@ -3330,6 +3330,47 @@ describe('AuthService locked sign-in against the real provider client', () => {
     expect(handedOver).toEqual({ kind: 'unconfirmed' });
   });
 
+  // The other half of the same guard: the library *accepts* this return but
+  // stores nothing of its own, so the token it holds is still the abandoned
+  // registration's. Only "the stored token is the one on this URL" tells the
+  // two apart — a successful read alone is not this return's answer.
+  it('a locked sign-in return the library accepts without storing its token is unconfirmed beside an abandoned registration token', async () => {
+    // Arrange
+    const client = realClient();
+    const abandoned = idTokenFor('abandoned-nonce');
+    sessionStorage.setItem('id_token', abandoned);
+    sessionStorage.setItem(
+      'id_token_claims_obj',
+      JSON.stringify({
+        iss: 'https://accounts.google.com',
+        aud: 'client',
+        sub: 'subject-one',
+      }),
+    );
+    sessionStorage.setItem(
+      'id_token_expires_at',
+      String(Date.now() + 60 * 60 * 1000),
+    );
+    sessionStorage.setItem('id_token_stored_at', String(Date.now()));
+    sessionStorage.setItem('nonce', 'trip-nonce');
+    sessionStorage.setItem(EXCHANGE_MARKER, LOCKED_SIGN_IN_MARKER);
+    const tryLogin = vi
+      .spyOn(TestBed.inject(OAuthService), 'tryLogin')
+      .mockResolvedValue(true);
+    const token = idTokenFor('trip-nonce');
+    await returnTo(
+      client,
+      `/release#access_token=at&id_token=${token}&state=trip-nonce`,
+    );
+
+    // Act
+    const handedOver = client.service.takeLockedSignInReturn();
+
+    // Assert — the control first: the read did run and did succeed.
+    expect(tryLogin).toHaveBeenCalledOnce();
+    expect(handedOver).toEqual({ kind: 'unconfirmed' });
+  });
+
   it('a locked sign-in return carrying a provider refusal is unconfirmed', async () => {
     // Arrange
     const client = realClient();
