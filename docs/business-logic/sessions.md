@@ -496,31 +496,38 @@ required members. A third writer is a decision rather than a refactor.
 ---
 
 - **Rule**: On a cold load the client asks the server who the visitor is, **once**, before the first
-  route activates. The answer has **four** values: `authenticated`, `anonymous`, `unreachable`, and
-  `unknown` before the question has been answered. **Only `anonymous` may bounce anybody** — both
-  guards admit `unreachable` and `unknown`.
+  route activates. The answer has **five** values: `authenticated`, `locked-session`, `anonymous`,
+  `unreachable`, and `unknown` before the question has been answered. **Only a status the server
+  answered moves anybody** — `anonymous` to `/welcome`, `locked-session` to `/release`,
+  `authenticated` off the guest screens — and every guard admits `unreachable` and `unknown`.
 - **Why**: the cookie is `HttpOnly`, so there is no local evidence to read and asking is the only
-  way to know. The four values exist because **an answer that never arrived is not evidence about
-  the visitor**. Collapsed into `anonymous`, one blinked request during the cold load signs a person
+  way to know. `unreachable` and `unknown` exist because **an answer that never arrived is not
+  evidence about the visitor**. Collapsed into `anonymous`, one blinked request during the cold load signs a person
   holding a perfectly good session out of their own account and drops them on a page served by the
   same server they could not reach, where nothing they do fixes it — the same defect as collapsing
   `null` into `0` on the recovery-code count. `403` joins `401` as `anonymous`, while a 500, a
-  timeout and a status-`0` network failure all read `unreachable`. `unknown` is the same argument
+  timeout, a status-`0` network failure, a body that does not decode and a kind this bundle does not
+  know all read `unreachable` — the last never as a session of either kind, because reading it as
+  `locked-session` would tell somebody holding a full session that their data is unrecoverable. `unknown` is the same argument
   before the first ask rather than after a failed one; admitting it means a deleted initializer
   costs a redundant state rather than every visitor bounced on every cold load.
 - **Enforced in**: `SessionService` in `+core/session/`, probed from the `APP_INITIALIZER` in
   `core.providers.ts` **after** `config.load()` and **awaited**. Two rules ride on that one call and
   each is silent when broken.
   - **The ordering.** The config holds `''` until `load()` resolves, so a probe made before it
-    addresses `GET /api/me` to this app's own origin — which answers neither 404 nor 401 but **200
+    addresses `GET /api/me/session` to this app's own origin — which answers neither 404 nor 401 but **200
     with `index.html`**, the SPA fallback of the dev server and of Azure's `navigationFallback`
     alike. That body fails to parse under `responseType: 'json'`, which reads as `unreachable`, and
-    both guards admit it — so the visitor reaches `/app`, the screen paints, and its own requests
+    every guard admits it — so the visitor reaches `/app`, the screen paints, and its own requests
     are refused: a flash of somebody else's screen on every cold load. `BaseApiService` resolves the
     base **per request** so no service can hold a stale copy, which rests the ordering on when the
     request is made rather than on when a class is built.
-  - **The probe goes through `MeApiService.getSessionOwner()`, which carries
-    `EXPECTS_UNAUTHENTICATED`, and never through `getMe()`.** One route, two questions: the probe
+  - **The probe asks `MeApiService.getSession()` first** — `GET /api/me/session`, the one read both
+    kinds of session reach — and only for a full session goes on to `getSessionOwner()` for the
+    budget, sequentially, so an anonymous or locked visitor sends no budget read at all. A full
+    session whose owner read then fails stays `authenticated` with no budget, the same reading
+    `established()` gives its own follow-up. Both members carry `EXPECTS_UNAUTHENTICATED`, and the
+    probe never goes through `getMe()`. One route, two questions: the probe
     asks whether there is a session and a `401` is its answer, while the Settings screen reads the
     same route signed in and a `401` there is a session that ended. Unmarked, the probe navigates
     **every anonymous cold load** to `/welcome` from inside the initializer, before any route
@@ -595,9 +602,9 @@ required members. A third writer is a decision rather than a refactor.
 ---
 
 - **Rule**: A session beginning is the single owner of discarding the identity provider's tokens.
-  `SessionService` calls `AuthService.forgetProviderToken()` on **both** arms that publish
-  `authenticated` — `established()`, and a start-up probe the server answers with a session — and
-  **never** on `anonymous` or `unreachable`.
+  `SessionService` calls `AuthService.forgetProviderToken()` on **every** arm that publishes a
+  session — `established()`, `establishedLocked()`, and a start-up probe the server answers with a
+  full or a locked session — and **never** on `anonymous` or `unreachable`.
 - **Why**: the library keeps the provider's tokens in `sessionStorage`: the access token, the id
   token, the decoded claims with the email among them, and the nonce. That storage is per tab and
   survives a reload, so without a discard a registration that was refused or abandoned leaves them
@@ -623,7 +630,7 @@ required members. A third writer is a decision rather than a refactor.
     abandoned at the provider and then signed in by passkey — or came back on a probe that found a
     session, which skips
     `auth.initialize()` — would otherwise keep it, and an answer-shaped address opened there later
-    would contact the provider. It rides the same two arms for the same ordering reason: removed on
+    would contact the provider. It rides the same arms for the same ordering reason: removed on
     `anonymous` or `unreachable`, it would be gone before the return leg read it.
   - **One place, not one per flow**, for the reason `ended()` owns `custody.lock()`: the next
     establishing path will be written by somebody thinking about sign-in rather than about an id
@@ -650,8 +657,8 @@ required members. A third writer is a decision rather than a refactor.
     re-argue this rule. See [email-change.md](email-change.md).
   - The rule sits in the client because the client is the only layer that holds the tokens; the
     server cannot clear a browser's storage.
-- **Enforced in**: `session.service.spec.ts` — the discard happens on `established()` and on an
-  authenticated probe; it does not happen on a `401` or `403` probe, nor on a network failure, a 500
+- **Enforced in**: `session.service.spec.ts` — the discard happens on `established()`, on
+  `establishedLocked()`, and on a full or locked probe; it does not happen on a `401` or `403` probe, nor on a network failure, a 500
   or a timeout; the provider service is asked for nothing but the discard; and a discard that throws
   does not unpublish the session. `auth-service.spec.ts` holds the discard itself: a local
   `logOut(true)` that removes the library's keys and no others and makes no request.
@@ -706,7 +713,7 @@ required members. A third writer is a decision rather than a refactor.
     without the sentence two files away being opened. So the rule carries it: a member sets the
     token when the `401` it may collect is **that route's verdict on that request** rather than a
     session ending. `RegistrationApiService` sets it on both legs, `SignInApiService` on both
-    assertion legs, and `MeApiService` on `getSessionOwner()`, `getAccountKeys()`, `eraseAccount()`
+    assertion legs, and `MeApiService` on `getSession()`, `getSessionOwner()`, `getAccountKeys()`, `eraseAccount()`
     and `changeEmail()` — the last on `eraseAccount()`'s terms, resolved the same way, by one
     unmarked `GET /api/me` the email-change flow makes before it names a refusal. `getMe()` is the
     counterexample — the same route as `getSessionOwner()`, asked as somebody already signed in —

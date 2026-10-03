@@ -18,6 +18,7 @@ import {
   type AccountKeyCustodyDto,
   type AccountKeyEntry,
   type MeDto,
+  type SessionDto,
 } from './me-api.service';
 
 const ACCOUNT_KEYS_URL = 'https://api.test/api/me/account-keys';
@@ -1087,6 +1088,261 @@ describe('MeApiService', () => {
     expect(marked.request.context.get(EXPECTS_UNAUTHENTICATED)).toBe(true);
 
     marked.flush({ email: 'owner@budgetoid.test' });
+  });
+
+  // `GET /api/me/session`: what kind of session this browser holds, when it
+  // ends, and the account's scheduled erasure or `null`. It is the probe's first
+  // question on every cold load, and the only read a locked session can make
+  // that tells it what it is — `GET /api/me` answers a locked session `403`,
+  // which reads as no session at all.
+  describe('getSession', () => {
+    const SESSION_URL = 'https://api.test/api/me/session';
+
+    const FULL = {
+      kind: 'full',
+      expiresAtUtc: '2026-10-17T08:00:00Z',
+      erasure: null,
+    } satisfies SessionDto;
+
+    const LOCKED_SCHEDULED = {
+      kind: 'locked',
+      expiresAtUtc: '2026-10-17T08:00:00Z',
+      erasure: { takesEffectAtUtc: '2026-10-10T08:00:00Z' },
+    } satisfies SessionDto;
+
+    // Subscribes, flushes `body` as a 200, and reports what came out either
+    // side. `failure` stays `undefined` when nothing failed.
+    function readAnswer(body: Parameters<TestRequest['flush']>[0]): {
+      readonly received: SessionDto | undefined;
+      readonly failure: unknown;
+    } {
+      let received: SessionDto | undefined;
+      let failure: unknown;
+
+      api.getSession().subscribe({
+        next: (value) => {
+          received = value;
+        },
+        error: (error: unknown) => {
+          failure = error;
+        },
+      });
+      http.expectOne(SESSION_URL).flush(body);
+
+      return { received, failure };
+    }
+
+    it('reads the session route', () => {
+      // Act
+      api.getSession().subscribe();
+      const request = http.expectOne(SESSION_URL);
+
+      // Assert
+      expect(request.request.method).toBe('GET');
+      expect(request.request.responseType).toBe('json');
+
+      request.flush(FULL);
+    });
+
+    // The probe's own question, asked by a browser that cannot read its
+    // `HttpOnly` cookie and so holds no local evidence at all: a 401 here is the
+    // answer it went to fetch. Unmarked, `sessionExpiryInterceptor` reads that
+    // answer as a session ending and navigates to `/welcome` from inside the
+    // `APP_INITIALIZER`, before the router has activated anything — every
+    // anonymous deep link in the product, gone.
+    it('marks the session read as one whose refusal is not a session ending', () => {
+      // Act
+      api.getSession().subscribe();
+      const request = http.expectOne(SESSION_URL);
+
+      // Assert
+      expect(request.request.context.get(EXPECTS_UNAUTHENTICATED)).toBe(true);
+
+      request.flush(FULL);
+    });
+
+    it('reads a full session with nothing scheduled as itself', () => {
+      // Act
+      const { received, failure } = readAnswer(FULL);
+
+      // Assert
+      expect(failure).toBeUndefined();
+      expect(received).toEqual(FULL);
+    });
+
+    it('reads a locked session with a scheduled erasure as itself', () => {
+      // Act
+      const { received, failure } = readAnswer(LOCKED_SCHEDULED);
+
+      // Assert
+      expect(failure).toBeUndefined();
+      expect(received).toEqual(LOCKED_SCHEDULED);
+    });
+
+    // The spellings an instant may arrive in and still say which instant it
+    // is. The fractional row is the server's own: `System.Text.Json` writes a
+    // UTC `DateTime` with up to seven fractional digits, and a decoder that
+    // demanded whole seconds would refuse every real answer.
+    it.each([
+      { why: 'a Z designator', instant: '2026-10-17T08:00:00Z' },
+      {
+        why: 'seven fractional digits and a Z',
+        instant: '2026-10-17T08:00:00.1234567Z',
+      },
+      { why: 'a positive offset', instant: '2026-10-17T10:00:00+02:00' },
+      { why: 'a negative offset', instant: '2026-10-17T03:00:00-05:00' },
+    ])('accepts an instant written with $why', ({ instant }) => {
+      // Arrange
+      const body = {
+        kind: 'locked',
+        expiresAtUtc: instant,
+        erasure: { takesEffectAtUtc: instant },
+      };
+
+      // Act
+      const { received, failure } = readAnswer(body);
+
+      // Assert
+      expect(failure).toBeUndefined();
+      expect(received).toEqual(body);
+    });
+
+    // **Refused, never coerced.** Each of these is a body a version skew or a
+    // proxy produces, and each would be published as a fact about the session.
+    // An unknown kind is the sharpest: read as either known kind it either
+    // hands budget screens to a session the server refuses on every one of
+    // them, or sends a full session to the release screen. An offset-less
+    // instant is the quietest: `Date` parses it as *local* time, so the
+    // erasure date shown would move by the reader's offset — fourteen hours in
+    // the runner's own zone — with nothing anywhere saying so. A missing
+    // `erasure` is not `null`: `null` claims nothing is scheduled, which a body
+    // that never mentioned schedules has not said.
+    it.each([
+      { why: 'a list', body: [] },
+      { why: 'null', body: null },
+      { why: 'a string', body: 'full' },
+      {
+        why: 'a kind this client does not know',
+        body: { ...FULL, kind: 'admin' },
+      },
+      {
+        why: 'a kind spelled in another case',
+        body: { ...FULL, kind: 'Full' },
+      },
+      { why: 'no kind', body: without(FULL, 'kind') },
+      { why: 'no expiry', body: without(FULL, 'expiresAtUtc') },
+      {
+        why: 'an expiry that is a number',
+        body: { ...FULL, expiresAtUtc: 1792224000 },
+      },
+      {
+        why: 'an expiry with no offset',
+        body: { ...FULL, expiresAtUtc: '2026-10-17T08:00:00' },
+      },
+      {
+        why: 'an expiry that is not an instant',
+        body: { ...FULL, expiresAtUtc: 'tomorrowZ' },
+      },
+      { why: 'no erasure member', body: without(FULL, 'erasure') },
+      {
+        why: 'an erasure that is a string',
+        body: { ...FULL, erasure: '2026-10-10T08:00:00Z' },
+      },
+      { why: 'an erasure that is a list', body: { ...FULL, erasure: [] } },
+      { why: 'an erasure naming no instant', body: { ...FULL, erasure: {} } },
+      {
+        why: 'an erasure instant with no offset',
+        body: { ...FULL, erasure: { takesEffectAtUtc: '2026-10-10T08:00:00' } },
+      },
+      {
+        why: 'an erasure instant that is a number',
+        body: { ...FULL, erasure: { takesEffectAtUtc: 1791619200 } },
+      },
+      // A member this bundle does not know is a server it was not written
+      // against, at either level of the body.
+      {
+        why: 'a member this client does not know',
+        body: { ...FULL, scope: 'budget' },
+      },
+      {
+        why: 'an erasure carrying a member this client does not know',
+        body: {
+          ...LOCKED_SCHEDULED,
+          erasure: { takesEffectAtUtc: '2026-10-10T08:00:00Z', reason: 'x' },
+        },
+      },
+      // Spelled like an instant and naming none: `Date.parse` would roll each
+      // forward into a real one rather than refuse it.
+      {
+        why: 'an expiry on a day the month does not have',
+        body: { ...FULL, expiresAtUtc: '2026-02-30T10:00:00Z' },
+      },
+      {
+        why: 'an expiry at an hour the day does not have',
+        body: { ...FULL, expiresAtUtc: '2026-10-09T25:00:00Z' },
+      },
+      {
+        why: 'an expiry at a minute the hour does not have',
+        body: { ...FULL, expiresAtUtc: '2026-10-09T10:61:00Z' },
+      },
+      {
+        why: 'an erasure instant on a day the month does not have',
+        body: {
+          ...LOCKED_SCHEDULED,
+          erasure: { takesEffectAtUtc: '2026-02-30T10:00:00Z' },
+        },
+      },
+      {
+        why: 'an erasure instant at an hour the day does not have',
+        body: {
+          ...LOCKED_SCHEDULED,
+          erasure: { takesEffectAtUtc: '2026-10-09T25:00:00Z' },
+        },
+      },
+      {
+        why: 'an erasure instant at a minute the hour does not have',
+        body: {
+          ...LOCKED_SCHEDULED,
+          erasure: { takesEffectAtUtc: '2026-10-09T10:61:00Z' },
+        },
+      },
+      {
+        why: 'an expiry ending in a lowercase z',
+        body: { ...FULL, expiresAtUtc: '2026-10-17T08:00:00z' },
+      },
+    ])('refuses a body with $why', ({ body }) => {
+      // Act
+      const { received, failure } = readAnswer(body);
+
+      // Assert
+      expect(received).toBeUndefined();
+      expect(failure).toBeInstanceOf(Error);
+      // Not dressed as an HTTP refusal: the probe reads a 401 or 403 as
+      // `anonymous`, and a body it could not read says nothing about who is
+      // asking — it is `unreachable`'s, whose remedy is a reload.
+      expect(failure).not.toBeInstanceOf(HttpErrorResponse);
+    });
+
+    // The probe tells `anonymous` from `unreachable` by the status on this
+    // error, so a service that caught it, or rethrew it as something else,
+    // would turn every signed-out visitor into one the server could not reach.
+    it('hands a refusal to the caller with its status', () => {
+      // Arrange
+      let status: number | null = null;
+
+      // Act
+      api.getSession().subscribe({
+        error: (error: unknown) => {
+          status = error instanceof HttpErrorResponse ? error.status : -1;
+        },
+      });
+      http
+        .expectOne(SESSION_URL)
+        .flush(null, { status: 401, statusText: 'Unauthorized' });
+
+      // Assert
+      expect(status).toBe(401);
+    });
   });
 
   // There is deliberately no test for a generate/POST method: the service has

@@ -549,8 +549,8 @@ The rules from here down are the web client's.
     the other way round, for the reason [sessions.md](sessions.md) gives.
   - **Dropped on `anonymous` alone.** Nobody signed in means no account to change an address for,
     and an answer carried on to `/welcome` or `/register` would read as a registration nobody asked
-    for. `unreachable` and `unknown` are not "nobody", which is what the four-valued status exists
-    to keep apart.
+    for. `unreachable` and `unknown` are not "nobody", which is what the status keeps them apart
+    from `anonymous` to say.
   - **One read of `providerReturn()`**, so an email-change boot can never reach `initialize()` a
     second time through the registration leg.
 - **Enforced in**: `core.providers.spec.ts`, in *an email change coming back from the provider*:

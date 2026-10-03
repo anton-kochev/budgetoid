@@ -107,7 +107,18 @@ describe('appConfig', () => {
       forgetProviderToken: () => undefined,
       discardUnreadAnswer: () => undefined,
     };
-    const me: Pick<MeApiService, 'getSessionOwner'> = {
+    // `getSession` because the probe asks it first, and only a full answer
+    // goes on to `getSessionOwner`. Absent, the probe throws a `TypeError` it
+    // swallows into `'unreachable'`, the owner read and the rotation read never
+    // happen, and the silencing described above is no longer what this fixture
+    // does.
+    const me: Pick<MeApiService, 'getSession' | 'getSessionOwner'> = {
+      getSession: () =>
+        of({
+          kind: 'full',
+          expiresAtUtc: '2026-10-17T08:00:00Z',
+          erasure: null,
+        }),
       getSessionOwner: () =>
         of({
           budgetId: '3f5b0a91-7c24-4a1e-9d3b-6e8f0c2a5471',
@@ -351,7 +362,18 @@ describe('appConfig failure logging', () => {
       forgetProviderToken: () => undefined,
       discardUnreadAnswer: () => undefined,
     };
-    const me: Pick<MeApiService, 'getSessionOwner'> = {
+    // `getSession` because the probe asks it first, and only a full answer
+    // goes on to `getSessionOwner`. Absent, the probe throws a `TypeError` it
+    // swallows into `'unreachable'`, the owner read and the rotation read never
+    // happen, and the silencing described above is no longer what this fixture
+    // does.
+    const me: Pick<MeApiService, 'getSession' | 'getSessionOwner'> = {
+      getSession: () =>
+        of({
+          kind: 'full',
+          expiresAtUtc: '2026-10-17T08:00:00Z',
+          erasure: null,
+        }),
       getSessionOwner: () =>
         of({
           budgetId: '3f5b0a91-7c24-4a1e-9d3b-6e8f0c2a5471',

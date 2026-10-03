@@ -1,10 +1,27 @@
-import { HttpErrorResponse } from '@angular/common/http';
+import { HttpErrorResponse, provideHttpClient } from '@angular/common/http';
+import {
+  HttpTestingController,
+  provideHttpClientTesting,
+} from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
-import { MeApiService, type MeDto } from '@app-core/api/me-api.service';
+import {
+  MeApiService,
+  type MeDto,
+  type SessionDto,
+} from '@app-core/api/me-api.service';
 import { AccountKeyCustodyService } from '@app-core/security/account-key-custody.service';
 import { AuthService } from '@app-core/services/auth-service';
+import { ConfigurationService } from '@app-core/services/configuration.service';
 import { Observable, Subject, TimeoutError, of, throwError } from 'rxjs';
-import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+  type Mock,
+} from 'vitest';
 import { SessionService } from './session.service';
 
 // The session cookie is `HttpOnly`, so script cannot read it and a cold load
@@ -15,6 +32,26 @@ const BUDGET_ID = '3f5b0a91-7c24-4a1e-9d3b-6e8f0c2a5471';
 const ME: MeDto = {
   budgetId: BUDGET_ID,
   email: 'owner@budgetoid.test',
+};
+
+// What `GET /api/me/session` answers, one per kind. The expiry is never read by
+// the class under test; it is here because the answer always carries it.
+const FULL_SESSION: SessionDto = {
+  kind: 'full',
+  expiresAtUtc: '2026-10-17T08:00:00Z',
+  erasure: null,
+};
+
+const LOCKED_SESSION: SessionDto = {
+  kind: 'locked',
+  expiresAtUtc: '2026-10-17T08:00:00Z',
+  erasure: null,
+};
+
+// An account whose erasure is already on file, seven days out.
+const TAKES_EFFECT_AT_UTC = '2026-10-10T08:00:00Z';
+const SCHEDULED: SessionDto['erasure'] = {
+  takesEffectAtUtc: TAKES_EFFECT_AT_UTC,
 };
 
 // What Angular hands a subscriber when the request never reached a server: the
@@ -41,7 +78,12 @@ function refusal(status: number): HttpErrorResponse {
 // session ending. Which of the two `probe()` calls is the split, and it is
 // pinned as an interaction in `session-expiry.interceptor.spec.ts` — this stub
 // only has to name the same method the service reaches for.
+//
+// `getSession` is the probe's first question — what kind of session, if any —
+// and it answers a full session here by default, so every case below that is
+// about the owner read reaches it the way a cold load does.
 class MeApiStub {
+  public getSession = vi.fn((): Observable<SessionDto> => of(FULL_SESSION));
   public getSessionOwner = vi.fn((): Observable<MeDto> => of(ME));
 }
 
@@ -125,6 +167,13 @@ describe('SessionService', () => {
     service = TestBed.inject(SessionService);
   });
 
+  // Every stub above is built fresh per case, so nothing here needs restoring
+  // today; this is for the `vi.spyOn` a later case adds, which — with no
+  // `restoreMocks` configured — would otherwise outlive its case.
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   // The state every guard on the site reads before a route activates, and the
   // one the initializer exists to make unobservable. Asserted at rest *and*
   // while the read is in flight: an implementation that seeded `'anonymous'`
@@ -132,8 +181,8 @@ describe('SessionService', () => {
   // bouncing every visitor whose network is slow.
   it('says nothing about the visitor until an answer arrives', () => {
     // Arrange
-    const pending = new Subject<MeDto>();
-    api.getSessionOwner.mockReturnValue(pending);
+    const pending = new Subject<SessionDto>();
+    api.getSession.mockReturnValue(pending);
 
     // Act
     expect(service.status()).toBe('unknown');
@@ -239,7 +288,7 @@ describe('SessionService', () => {
   // That is evidence, and it is the only kind this class treats as evidence.
   it('answers anonymous when the server refuses the read as unauthenticated', async () => {
     // Arrange
-    api.getSessionOwner.mockReturnValue(throwError(() => refusal(401)));
+    api.getSession.mockReturnValue(throwError(() => refusal(401)));
 
     // Act
     await service.probe();
@@ -254,7 +303,7 @@ describe('SessionService', () => {
   // file that is correct.
   it('answers anonymous when the server refuses the read outright', async () => {
     // Arrange
-    api.getSessionOwner.mockReturnValue(throwError(() => refusal(403)));
+    api.getSession.mockReturnValue(throwError(() => refusal(403)));
 
     // Act
     await service.probe();
@@ -272,7 +321,7 @@ describe('SessionService', () => {
   // claim about the account made out of a failure to ask.
   it('does not sign a visitor out because the read never reached the server', async () => {
     // Arrange
-    api.getSessionOwner.mockReturnValue(throwError(() => NETWORK_FAILURE));
+    api.getSession.mockReturnValue(throwError(() => NETWORK_FAILURE));
 
     // Act
     await service.probe();
@@ -287,7 +336,7 @@ describe('SessionService', () => {
   // "not 200" as "not signed in" passes every test above this line.
   it('answers unreachable when the server fails to answer the read', async () => {
     // Arrange
-    api.getSessionOwner.mockReturnValue(throwError(() => refusal(500)));
+    api.getSession.mockReturnValue(throwError(() => refusal(500)));
 
     // Act
     await service.probe();
@@ -303,7 +352,7 @@ describe('SessionService', () => {
   // `throw` inside the handler needs a test whose name names the consequence.
   it('resolves rather than rejecting when the read fails', async () => {
     // Arrange
-    api.getSessionOwner.mockReturnValue(throwError(() => NETWORK_FAILURE));
+    api.getSession.mockReturnValue(throwError(() => NETWORK_FAILURE));
 
     // Act & Assert
     await expect(service.probe()).resolves.toBeUndefined();
@@ -384,7 +433,7 @@ describe('SessionService', () => {
   // would pass a test that started at rest.
   it('publishes an established session without waiting to be told again', async () => {
     // Arrange
-    api.getSessionOwner.mockReturnValue(throwError(() => refusal(401)));
+    api.getSession.mockReturnValue(throwError(() => refusal(401)));
     await service.probe();
     expect(service.status()).toBe('anonymous');
     // A read that never answers, so anything this method does with one cannot
@@ -414,7 +463,7 @@ describe('SessionService', () => {
   // rather than with a cold load, and nothing anywhere says why.
   it('reads the budget when a session is established', async () => {
     // Arrange
-    api.getSessionOwner.mockReturnValue(throwError(() => refusal(401)));
+    api.getSession.mockReturnValue(throwError(() => refusal(401)));
     await service.probe();
     expect(service.budgetId()).toBeNull();
     api.getSessionOwner.mockClear();
@@ -467,7 +516,7 @@ describe('SessionService', () => {
   // reddens anything that exists without this test.
   it('keeps the account keys when a session is established', async () => {
     // Arrange
-    api.getSessionOwner.mockReturnValue(throwError(() => refusal(401)));
+    api.getSession.mockReturnValue(throwError(() => refusal(401)));
     await service.probe();
     expect(service.status()).toBe('anonymous');
 
@@ -493,7 +542,7 @@ describe('SessionService', () => {
   // anybody on `'unreachable'`, one layer down, where the cost is higher.
   it('does not drop the account keys because a probe never reached the server', async () => {
     // Arrange
-    api.getSessionOwner.mockReturnValue(throwError(() => NETWORK_FAILURE));
+    api.getSession.mockReturnValue(throwError(() => NETWORK_FAILURE));
 
     // Act
     await service.probe();
@@ -539,7 +588,7 @@ describe('SessionService', () => {
       "keeps the provider's token when the probe finds no session ($why)",
       async ({ status }) => {
         // Arrange
-        api.getSessionOwner.mockReturnValue(throwError(() => refusal(status)));
+        api.getSession.mockReturnValue(throwError(() => refusal(status)));
 
         // Act
         await service.probe();
@@ -561,7 +610,7 @@ describe('SessionService', () => {
       "keeps the provider's token when the probe never reached the server ($why)",
       async ({ error }) => {
         // Arrange
-        api.getSessionOwner.mockReturnValue(throwError(() => error));
+        api.getSession.mockReturnValue(throwError(() => error));
 
         // Act
         await service.probe();
@@ -662,5 +711,466 @@ describe('SessionService', () => {
       expect(service.status()).toBe('authenticated');
       expect(service.budgetId()).toBe(BUDGET_ID);
     });
+  });
+
+  // **The probe asks what kind of session first, and only a full one is asked
+  // whose budget it is.** `GET /api/me` answers a locked session `403`, which
+  // reads as no session at all, so asking it first would sign a locked tab out
+  // on every reload. Sequential rather than parallel: the second question is
+  // only worth asking once the first has said there is a full session to ask
+  // it of.
+  describe('the kind of session', () => {
+    it('asks what kind of session before asking whose budget it is', async () => {
+      // Arrange
+      const kind = new Subject<SessionDto>();
+      api.getSession.mockReturnValue(kind);
+
+      // Act
+      const probed = service.probe();
+      await Promise.resolve();
+
+      // Assert — nothing asked of the owner while the kind is unanswered.
+      expect(api.getSession).toHaveBeenCalledOnce();
+      expect(api.getSessionOwner).not.toHaveBeenCalled();
+
+      kind.next(FULL_SESSION);
+      kind.complete();
+      await probed;
+
+      expect(api.getSessionOwner).toHaveBeenCalledOnce();
+      expect(service.status()).toBe('authenticated');
+      expect(service.budgetId()).toBe(BUDGET_ID);
+    });
+
+    // AC1 on the client: a session established from a federated credential is
+    // a session, and a different one. `'locked-session'` and never `'locked'`,
+    // which the account-key status already spells.
+    it('answers locked-session when the server says the session is locked', async () => {
+      // Arrange
+      api.getSession.mockReturnValue(of(LOCKED_SESSION));
+
+      // Act
+      await service.probe();
+
+      // Assert
+      expect(service.status()).toBe('locked-session');
+    });
+
+    // The owner read is a budget route, and a locked session is refused on
+    // every one of those — so asking it would only fetch a `403`, and a
+    // locked session has no budget to learn in any case.
+    it('does not ask whose budget a locked session is', async () => {
+      // Arrange
+      api.getSession.mockReturnValue(of(LOCKED_SESSION));
+
+      // Act
+      await service.probe();
+
+      // Assert
+      expect(api.getSessionOwner).not.toHaveBeenCalled();
+    });
+
+    // Arranged from a full session that really did publish a budget: a
+    // locked session reads no budget content of any kind (FR-113), and a
+    // budget left standing from an earlier answer would be keyed into
+    // whatever this tab writes next.
+    it('holds no budget for a locked session', async () => {
+      // Arrange
+      await service.probe();
+      expect(service.budgetId()).toBe(BUDGET_ID);
+      api.getSession.mockReturnValue(of(LOCKED_SESSION));
+
+      // Act
+      await service.probe();
+
+      // Assert
+      expect(service.budgetId()).toBeNull();
+    });
+
+    // **Exactly `unreachable`**, and neither of the two readings a reader
+    // reaches for. Read as `authenticated` it hands budget screens to a session
+    // the server may refuse on every one; read as `locked-session` it sends a
+    // full session to the release screen, whose one act is erasing the
+    // account. A kind this bundle does not know is a statement about the
+    // bundle, and a reload is the act that changes it.
+    it.each([
+      {
+        why: 'a kind this bundle does not know',
+        answer: (): Observable<SessionDto> =>
+          of({ ...FULL_SESSION, kind: 'admin' } as unknown as SessionDto),
+      },
+      {
+        why: 'a body the boundary refused',
+        answer: (): Observable<SessionDto> =>
+          throwError(
+            () => new Error('The session response named no known kind.'),
+          ),
+      },
+    ])('answers exactly unreachable for $why', async ({ answer }) => {
+      // Arrange
+      api.getSession.mockReturnValue(answer());
+
+      // Act
+      await service.probe();
+
+      // Assert
+      expect(service.status()).toBe('unreachable');
+      expect(service.budgetId()).toBeNull();
+      expect(api.getSessionOwner).not.toHaveBeenCalled();
+    });
+
+    // **A semantic change, and deliberate.** The session read already said
+    // there is a full session; the owner read failing afterwards is a fact
+    // about the budget, not about the visitor. Before the session route
+    // existed the owner read *was* the probe and its failure read
+    // `unreachable` — kept, that would sign a confirmed session out over a
+    // second request blinking. Budget `null` is the honest reading: signed in,
+    // tenancy unknown, every write refused with a word whose remedy is a
+    // reload.
+    it.each([
+      { why: 'unauthenticated', error: refusal(401) },
+      { why: 'refused outright', error: refusal(403) },
+      { why: 'a server error', error: refusal(500) },
+      { why: 'a network failure', error: NETWORK_FAILURE },
+      { why: 'a timeout', error: new TimeoutError() },
+    ])(
+      'stays authenticated with no budget when the owner read fails ($why)',
+      async ({ error }) => {
+        // Arrange
+        api.getSessionOwner.mockReturnValue(throwError(() => error));
+
+        // Act
+        await service.probe();
+
+        // Assert
+        expect(service.status()).toBe('authenticated');
+        expect(service.budgetId()).toBeNull();
+      },
+    );
+
+    it('resolves rather than rejecting when the owner read fails', async () => {
+      // Arrange
+      api.getSessionOwner.mockReturnValue(throwError(() => NETWORK_FAILURE));
+
+      // Act & Assert
+      await expect(service.probe()).resolves.toBeUndefined();
+    });
+  });
+
+  // The account's scheduled erasure, as this tab last learned it. Three values
+  // and never two: `'unread'` is "nobody has said", `null` is "the server said
+  // nothing is scheduled". Collapsing them claims an answer out of a failure to
+  // ask — the release screen would offer the commit as if nothing were on file.
+  describe('the scheduled erasure', () => {
+    it('is unread before anything has been asked', () => {
+      // Assert
+      expect(service.scheduledErasure()).toBe('unread');
+    });
+
+    it('holds nothing scheduled when the session read says so', async () => {
+      // Arrange
+      api.getSession.mockReturnValue(of(FULL_SESSION));
+
+      // Act
+      await service.probe();
+
+      // Assert
+      expect(service.scheduledErasure()).toBeNull();
+    });
+
+    it('holds the instant the session read named', async () => {
+      // Arrange
+      api.getSession.mockReturnValue(
+        of({ ...LOCKED_SESSION, erasure: SCHEDULED }),
+      );
+
+      // Act
+      await service.probe();
+
+      // Assert
+      expect(service.scheduledErasure()).toEqual({
+        takesEffectAtUtc: TAKES_EFFECT_AT_UTC,
+      });
+    });
+
+    // A probe that learned nothing about the session learned nothing about
+    // its schedule either. `null` here would claim the server said nothing is
+    // on file.
+    it.each([
+      { why: 'refused', error: refusal(401) },
+      { why: 'never reached the server', error: NETWORK_FAILURE },
+    ])('stays unread when the session read is $why', async ({ error }) => {
+      // Arrange
+      api.getSession.mockReturnValue(throwError(() => error));
+
+      // Act
+      await service.probe();
+
+      // Assert
+      expect(service.scheduledErasure()).toBe('unread');
+    });
+
+    // Arranged from a schedule that really was read: the value is a fact about
+    // the session that just ended, and the next occupant of this tab is owed
+    // a fresh read rather than the last one's date.
+    it('is unread again once the session ends', async () => {
+      // Arrange
+      api.getSession.mockReturnValue(
+        of({ ...LOCKED_SESSION, erasure: SCHEDULED }),
+      );
+      await service.probe();
+      expect(service.scheduledErasure()).not.toBe('unread');
+
+      // Act
+      service.ended();
+
+      // Assert
+      expect(service.scheduledErasure()).toBe('unread');
+    });
+
+    // The schedule request's `200` names the instant the server stored, and
+    // the release screen renders it from here.
+    it('holds the instant a schedule request answered', async () => {
+      // Arrange
+      api.getSession.mockReturnValue(of(LOCKED_SESSION));
+      await service.probe();
+      expect(service.scheduledErasure()).toBeNull();
+
+      // Act
+      service.erasureScheduled(TAKES_EFFECT_AT_UTC);
+
+      // Assert
+      expect(service.scheduledErasure()).toEqual({
+        takesEffectAtUtc: TAKES_EFFECT_AT_UTC,
+      });
+    });
+  });
+
+  // The mirror of `established()` for the one establishing leg that opens a
+  // locked session: `POST /api/locked-session` answering `200`. A set rather
+  // than a re-probe, for `established()`'s reason — the server has just said
+  // what it thinks.
+  describe('establishedLocked', () => {
+    it('publishes a locked session without waiting to be told again', async () => {
+      // Arrange
+      api.getSession.mockReturnValue(throwError(() => refusal(401)));
+      await service.probe();
+      expect(service.status()).toBe('anonymous');
+
+      // Act
+      service.establishedLocked(LOCKED_SESSION);
+
+      // Assert
+      expect(service.status()).toBe('locked-session');
+    });
+
+    // The cookie the locked sign-in set **replaces** whatever this tab held.
+    // Arranged from a full session holding a budget, because that is the case
+    // the replacement makes real: a budget left standing would be keyed into
+    // a write the locked session may not make, and keys left in custody would
+    // be readable from the root injector by a session that reads no budget
+    // content of any kind.
+    it('drops the budget and the account keys a full session held', async () => {
+      // Arrange
+      await service.probe();
+      expect(service.status()).toBe('authenticated');
+      expect(service.budgetId()).toBe(BUDGET_ID);
+      expect(touchedMembersOf(custody)).toEqual([]);
+
+      // Act
+      service.establishedLocked(LOCKED_SESSION);
+
+      // Assert
+      expect(service.budgetId()).toBeNull();
+      expect(touchedMembersOf(custody)).toEqual(['lock']);
+      expect(custody.lock).toHaveBeenCalledOnce();
+    });
+
+    // C10: the sign-in's `200` carries `erasure`, so the answer is the
+    // schedule and nothing is asked afterwards.
+    it.each([
+      { why: 'nothing scheduled', erasure: null, expected: null },
+      {
+        why: 'an erasure on file',
+        erasure: SCHEDULED,
+        expected: { takesEffectAtUtc: TAKES_EFFECT_AT_UTC },
+      },
+    ])(
+      'holds the schedule the answer carried ($why) and asks nothing more',
+      async ({ erasure, expected }) => {
+        // Act
+        service.establishedLocked({ ...LOCKED_SESSION, erasure });
+        await Promise.resolve();
+
+        // Assert
+        expect(service.scheduledErasure()).toEqual(expected);
+        expect(api.getSession).not.toHaveBeenCalled();
+        expect(api.getSessionOwner).not.toHaveBeenCalled();
+      },
+    );
+  });
+
+  // **A session beginning discards the provider's tokens, and the locked arms
+  // are session beginnings.** A locked session is opened by a Google ID token,
+  // and once the cookie stands nothing in this tab reads that token again.
+  // Never on `anonymous` or `unreachable`: a provider-return leg can probe
+  // before the answer is read, and a discard there takes the nonce with it.
+  describe("the provider's token on a locked session", () => {
+    it("discards the provider's token when a locked session is established", () => {
+      // Act
+      service.establishedLocked(LOCKED_SESSION);
+
+      // Assert
+      expect(calledProviderMembersOf(provider)).toEqual([
+        'forgetProviderToken',
+      ]);
+      expect(provider.forgetProviderToken).toHaveBeenCalledOnce();
+    });
+
+    it("discards the provider's token when the probe finds a locked session", async () => {
+      // Arrange
+      api.getSession.mockReturnValue(of(LOCKED_SESSION));
+
+      // Act
+      await service.probe();
+
+      // Assert
+      expect(calledProviderMembersOf(provider)).toEqual([
+        'forgetProviderToken',
+      ]);
+      expect(provider.forgetProviderToken).toHaveBeenCalledOnce();
+    });
+
+    // The session read said there is a full session; the owner read failing
+    // after it does not make that less true, so the discard still runs.
+    it("discards the provider's token for a full session whose owner read failed", async () => {
+      // Arrange
+      api.getSessionOwner.mockReturnValue(throwError(() => NETWORK_FAILURE));
+
+      // Act
+      await service.probe();
+
+      // Assert
+      expect(service.status()).toBe('authenticated');
+      expect(provider.forgetProviderToken).toHaveBeenCalledOnce();
+    });
+
+    it("keeps the provider's token when the session read finds no session", async () => {
+      // Arrange
+      api.getSession.mockReturnValue(throwError(() => refusal(401)));
+
+      // Act
+      await service.probe();
+
+      // Assert
+      expect(service.status()).toBe('anonymous');
+      expect(calledProviderMembersOf(provider)).toEqual([]);
+    });
+
+    it('a discard that throws does not unpublish an established locked session', () => {
+      // Arrange
+      provider.forgetProviderToken.mockImplementation(() => {
+        throw new Error('sessionStorage is unavailable.');
+      });
+
+      // Act
+      const act = (): void => {
+        service.establishedLocked(LOCKED_SESSION);
+      };
+
+      // Assert
+      expect(act).not.toThrow();
+      expect(provider.forgetProviderToken).toHaveBeenCalledOnce();
+      expect(service.status()).toBe('locked-session');
+    });
+
+    it('a discard that throws does not unpublish the locked session the probe found', async () => {
+      // Arrange
+      api.getSession.mockReturnValue(of(LOCKED_SESSION));
+      provider.forgetProviderToken.mockImplementation(() => {
+        throw new Error('sessionStorage is unavailable.');
+      });
+
+      // Act
+      await service.probe();
+
+      // Assert
+      expect(provider.forgetProviderToken).toHaveBeenCalledOnce();
+      expect(service.status()).toBe('locked-session');
+    });
+  });
+});
+
+// The same probe over the real `MeApiService` and `HttpClient`, with only the
+// backend swapped. The stubbed cases above can say that `getSessionOwner()` was
+// not *called*; only the wire can say that `GET /api/me` was not *sent* — by
+// any member, under any name.
+describe('SessionService on the wire', () => {
+  const SESSION_URL = 'https://api.test/api/me/session';
+  const ME_URL = 'https://api.test/api/me';
+
+  let http: HttpTestingController;
+  let service: SessionService;
+
+  // A macrotask, so the probe's next request has been made before a case
+  // looks for it.
+  function afterPendingWork(): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  beforeEach(() => {
+    TestBed.configureTestingModule({
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        {
+          provide: ConfigurationService,
+          useValue: { getConfig: () => ({ apiBaseUrl: 'https://api.test' }) },
+        },
+        { provide: AuthService, useValue: providerStub() },
+        { provide: AccountKeyCustodyService, useValue: new CustodyStub() },
+      ],
+    });
+    http = TestBed.inject(HttpTestingController);
+    service = TestBed.inject(SessionService);
+  });
+
+  afterEach(() => {
+    http.verify();
+    vi.restoreAllMocks();
+  });
+
+  it('sends no GET /api/me for a locked session', async () => {
+    // Arrange
+    const probed = service.probe();
+    await afterPendingWork();
+
+    // Act
+    http.expectOne(SESSION_URL).flush(LOCKED_SESSION);
+    await probed;
+    await afterPendingWork();
+
+    // Assert
+    http.expectNone(ME_URL);
+    expect(service.status()).toBe('locked-session');
+  });
+
+  // The control: without it, the case above passes against a probe that never
+  // asks `GET /api/me` for anybody — and every blind index written after a
+  // cold load would be keyed without a budget.
+  it('sends GET /api/me after the session read for a full session', async () => {
+    // Arrange
+    const probed = service.probe();
+    await afterPendingWork();
+
+    // Act
+    http.expectOne(SESSION_URL).flush(FULL_SESSION);
+    await afterPendingWork();
+    http.expectOne(ME_URL).flush(ME);
+    await probed;
+
+    // Assert
+    expect(service.status()).toBe('authenticated');
+    expect(service.budgetId()).toBe(BUDGET_ID);
   });
 });

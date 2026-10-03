@@ -37,7 +37,7 @@ export const provideAppCore = (): EnvironmentProviders =>
           // `index.html`**, not 404: the dev server's history fallback and Azure
           // Static Web Apps' `navigationFallback` both serve the shell for any
           // unmatched path. Under `responseType: 'json'` the shell fails to
-          // parse, the read is published as `unreachable`, both guards admit
+          // parse, the read is published as `unreachable`, every guard admits
           // `unreachable`, and the visitor is shown a screen whose every request
           // then 401s. Quiet enough to survive a long time, which it did.
           //
@@ -78,8 +78,8 @@ export const provideAppCore = (): EnvironmentProviders =>
           // **Dropped only when the probe found nobody signed in**: there is no
           // account to change an address for, and an answer carried on to
           // `/welcome` or `/register` would read as a registration nobody asked
-          // for. `unreachable` and `unknown` are not "nobody" — the four-valued
-          // status exists so that they are never collapsed into `anonymous`.
+          // for. `unreachable` and `unknown` are not "nobody" — the status names
+          // them apart so that they are never collapsed into `anonymous`.
           if (
             returning === 'email-change' &&
             session.status() === 'anonymous'

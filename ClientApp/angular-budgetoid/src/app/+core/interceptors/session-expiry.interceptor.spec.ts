@@ -29,6 +29,9 @@ import { sessionExpiryInterceptor } from './session-expiry.interceptor';
 // have to be able to disagree about it.
 const API_BASE_URL = 'https://api.budgetoid.app';
 const API_URL = `${API_BASE_URL}/api/me`;
+// The probe's own question since a locked session needed one it could ask:
+// `GET /api/me` answers a locked session `403`, which reads as no session.
+const SESSION_URL = `${API_BASE_URL}/api/me/session`;
 // The third route this block reaches, and the only one whose 401 belongs to
 // nobody: it is read by `AccountKeyCustodyService` and by nothing else.
 const ACCOUNT_KEYS_URL = `${API_BASE_URL}/api/me/account-keys`;
@@ -365,7 +368,7 @@ describe('sessionExpiryInterceptor and the two readers of GET /api/me', () => {
     const probed = wiring.session.probe();
 
     // Act
-    refuse();
+    refuseAt(SESSION_URL);
     await probed;
 
     // Assert
@@ -382,7 +385,7 @@ describe('sessionExpiryInterceptor and the two readers of GET /api/me', () => {
     const probed = wiring.session.probe();
 
     // Act
-    refuse();
+    refuseAt(SESSION_URL);
     await probed;
 
     // Assert

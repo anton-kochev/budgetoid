@@ -23,8 +23,9 @@ import { appConfig } from '../app.config';
 // table, and reads what was asked of whom.
 //
 // **Only the backend is swapped.** Every answer is given on the wire: the
-// configuration file, `GET /api/me` (which is what decides who the visitor is),
-// and the staged-rotation read. Anything else is answered as a network failure,
+// configuration file, `GET /api/me/session` (which is what decides who the
+// visitor is), `GET /api/me` behind it for a full session, and the
+// staged-rotation read. Anything else is answered as a network failure,
 // so a boot that asks something new still finishes and still shows up in the
 // census rather than hanging the case.
 //
@@ -152,6 +153,22 @@ function answer(
         },
       },
     });
+
+    return;
+  }
+
+  // The probe's first question: what kind of session, if any. Only a full
+  // answer goes on to `GET /api/me` below.
+  if (url.href === `${API_ORIGIN}/api/me/session`) {
+    if (visitor === 'authenticated') {
+      request.flush({
+        kind: 'full',
+        expiresAtUtc: '2026-10-17T08:00:00Z',
+        erasure: null,
+      });
+    } else {
+      request.flush(null, { status: 401, statusText: 'Unauthorized' });
+    }
 
     return;
   }
@@ -346,7 +363,7 @@ describe('a cold load against the real provider client', () => {
     'reaches no provider for a visitor who is $visitor at $path (marked: $marked)',
     async ({ visitor, path, marked }) => {
       // Arrange
-      const expectedProbe = `${API_ORIGIN}/api/me`;
+      const expectedProbe = `${API_ORIGIN}/api/me/session`;
       if (marked) {
         sessionStorage.setItem(EXCHANGE_MARKER, 'started');
       }
@@ -380,7 +397,7 @@ describe('a cold load against the real provider client', () => {
       // Assert — the fixture first: tokens the library did not judge valid
       // would pin nothing about what it does with valid ones.
       expect(boot.heldValidProviderTokens).toBe(true);
-      expect(boot.requested).toContain(`${API_ORIGIN}/api/me`);
+      expect(boot.requested).toContain(`${API_ORIGIN}/api/me/session`);
       expect(foreignRequests(boot)).toEqual([]);
       expect(framesInDocument()).toEqual([]);
     },
@@ -428,7 +445,7 @@ describe('a cold load against the real provider client', () => {
     const reload = await coldBoot('anonymous', PROVIDER_ANSWER_PATH);
 
     // Assert — the probe first, as above.
-    expect(reload.requested).toContain(`${API_ORIGIN}/api/me`);
+    expect(reload.requested).toContain(`${API_ORIGIN}/api/me/session`);
     expect(foreignRequests(reload)).toEqual([]);
   });
 });
@@ -543,7 +560,7 @@ describe('a cold load the provider answers an email change on', () => {
     const boot = await coldBoot(visitor, path);
 
     // Assert — the probe first: a boot that asked nothing would pass the census.
-    expect(boot.requested).toContain(`${API_ORIGIN}/api/me`);
+    expect(boot.requested).toContain(`${API_ORIGIN}/api/me/session`);
     expect(foreignRequests(boot)).toEqual([]);
     expect(framesInDocument()).toEqual([]);
   });

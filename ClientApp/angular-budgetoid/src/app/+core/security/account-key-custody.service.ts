@@ -476,8 +476,9 @@ export class AccountKeyCustodyService {
    * whatever follows it, and one refactor later that `await` grows a `catch` —
    * at which point a key that did not open has become a ceremony that failed.
    * On the way into the account that reads as an authentication failure, which
-   * must never happen, because only `anonymous` may bounce anybody out of an
-   * account. On a screen inside the account it reads as a device that did not
+   * must never happen, because only the server's own answer about the session
+   * — `anonymous` or `locked-session` — may bounce anybody out of an account.
+   * On a screen inside the account it reads as a device that did not
    * work, and sends somebody off to retry an authenticator that was never the
    * problem. A caller beyond the first strengthens that argument rather than
    * weakening it: the rule has to hold at every call site, and the only way to

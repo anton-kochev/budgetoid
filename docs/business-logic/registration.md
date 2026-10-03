@@ -597,7 +597,7 @@ the *set*, so it is authenticated once.
   all thirty-one rows and had its `201` lost on the way back. Telling that person their codes are
   worthless tells them to discard the only key to an account they cannot make more codes for,
   because `POST /api/me/recovery-codes` has no caller in this client. It is
-  [sessions.md](sessions.md)'s four-valued reading of a probe, on the one screen where collapsing it
+  [sessions.md](sessions.md)'s reading of a probe that never answered, on the one screen where collapsing it
   costs an account nobody can ever open again.
 - **Enforced in**: `RegisterService.failureOf`, a `switch` on the status with the two groups written
   out and a `default` arm that reads status `0`, every `5xx` and anything a proxy invents as *cannot

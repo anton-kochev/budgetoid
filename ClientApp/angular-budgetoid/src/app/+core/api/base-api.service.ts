@@ -22,7 +22,7 @@ export abstract class BaseApiService {
   // starts at — and `'' + '/api/me'` is a same-origin path, so the request goes
   // to the static host, which answers **200 with `index.html`** rather than a
   // 404. Under `responseType: 'json'` that body fails to parse and the read is
-  // published as `unreachable`, which both guards admit, so the visitor sees a
+  // published as `unreachable`, which every guard admits, so the visitor sees a
   // screen whose every later call is refused. Nothing about that is loud, and
   // nothing about it is dev-only: Azure Static Web Apps' `navigationFallback`
   // answers the same way.

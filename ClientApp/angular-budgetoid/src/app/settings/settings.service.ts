@@ -485,7 +485,7 @@ export class SettingsService {
    * stranded on a signed-in screen pressing a button that keeps failing, in
    * front of whoever is at the keyboard.
    *
-   * This is **not** the four-valued reading `SessionService` applies to its own
+   * This is **not** the five-valued reading `SessionService` applies to its own
    * probe, and a reader will try to make it one. That rule refuses to read
    * silence as a *refusal*, because silence is not evidence about the visitor.
    * Here silence is not evidence about the visitor either — but the visitor has

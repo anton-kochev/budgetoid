@@ -278,13 +278,18 @@ Load-bearing rules. Each links the doc that argues it — **read that doc before
   [sessions.md](docs/business-logic/sessions.md)
 - **The client learns who it is by asking, once, before the first route activates.**
   `SessionService.probe()` runs in the `APP_INITIALIZER` after `config.load()` and is **awaited**,
-  which is what keeps every guard synchronous. `status` is **four-valued**: a network failure, a 500
-  or a timeout is `unreachable`, and **both guards admit `unreachable` and `unknown`** — only
-  `anonymous` may bounce anybody. `sessionExpiryInterceptor` is the single owner of "the session
-  ended", acts on **401 only**, and skips requests carrying `EXPECTS_UNAUTHENTICATED`.
-  **A session beginning discards the provider's tokens**, owned by `SessionService` on both arms
-  that publish `authenticated` — `established()` and an authenticated probe — and **never** on an
-  anonymous or unreachable probe, which would take the provider-return leg's nonce.
+  which is what keeps every guard synchronous. It asks `GET /api/me/session` first — a locked
+  session is refused by `GET /api/me` like every budget route — and reads the budget only for a
+  full one. `status` is **five-valued**: a network failure, a 500, a timeout or a kind this bundle
+  does not know is `unreachable`, and **every guard admits `unreachable` and `unknown`** — only a
+  status the server answered moves anybody: `anonymous` to `/welcome`, `locked-session` to
+  `/release`, `authenticated` off the guest screens. `sessionExpiryInterceptor` is the single owner
+  of "the session ended", acts on **401 only**, and skips requests carrying
+  `EXPECTS_UNAUTHENTICATED`.
+  **A session beginning discards the provider's tokens**, owned by `SessionService` on every arm
+  that publishes a session — `established()`, `establishedLocked()` and a full or locked probe —
+  and **never** on an anonymous or unreachable probe, which would take the provider-return leg's
+  nonce.
   **An email-change return is read before the probe, not after it**: the initializer reads
   `providerReturn()` once, and on `'email-change'` runs `initialize()` first — the authenticated
   probe's discard would otherwise take the nonce — then drops the hand-off on an `anonymous` probe.

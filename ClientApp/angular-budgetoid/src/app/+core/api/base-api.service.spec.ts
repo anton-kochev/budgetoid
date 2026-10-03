@@ -32,12 +32,18 @@ import {
   KeyRotationApiService,
   type KeyRotationStateDto,
 } from './key-rotation-api.service';
-import { type MeDto } from './me-api.service';
+import { type MeDto, type SessionDto } from './me-api.service';
 
 const API_BASE_URL = 'https://api.budgetoid.app';
 const ME: MeDto = {
   budgetId: '3f5b0a91-7c24-4a1e-9d3b-6e8f0c2a5471',
   email: 'owner@budgetoid.test',
+};
+// The probe's first answer: a full session, so it goes on to `GET /api/me`.
+const FULL_SESSION: SessionDto = {
+  kind: 'full',
+  expiresAtUtc: '2026-10-17T08:00:00Z',
+  erasure: null,
 };
 
 interface Boot {
@@ -138,9 +144,16 @@ describe('BaseApiService', () => {
     TestBed.resetTestingModule();
   });
 
+  // `finally`, because the runner shares one module graph across files
+  // (`isolate: false`) and a throwing `afterEach` skips every hook after it —
+  // including the builder's own TestBed cleanup. A failed `verify()` would
+  // otherwise leave this file's module instantiated for the next file.
   afterEach(() => {
-    httpMock.verify();
-    TestBed.resetTestingModule();
+    try {
+      httpMock.verify();
+    } finally {
+      TestBed.resetTestingModule();
+    }
   });
 
   // The defect, stated as the rule it broke: where a request goes is decided by
@@ -160,9 +173,11 @@ describe('BaseApiService', () => {
 
     // Assert
     expect(requests.map(({ request }) => request.url)).toEqual([
-      `${API_BASE_URL}/api/me`,
+      `${API_BASE_URL}/api/me/session`,
     ]);
-    requests.forEach((request) => request.flush(ME));
+    requests.forEach((request) => request.flush(FULL_SESSION));
+    await afterPendingWork();
+    httpMock.expectOne(`${API_BASE_URL}/api/me`).flush(ME);
     await boot.initialized;
   });
 
@@ -211,6 +226,8 @@ describe('BaseApiService', () => {
     await afterPendingWork();
 
     // Act
+    httpMock.expectOne(`${API_BASE_URL}/api/me/session`).flush(FULL_SESSION);
+    await afterPendingWork();
     httpMock.expectOne(`${API_BASE_URL}/api/me`).flush(ME);
     await boot.initialized;
 

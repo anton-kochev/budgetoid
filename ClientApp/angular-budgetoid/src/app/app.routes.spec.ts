@@ -1,22 +1,24 @@
 import { provideLocationMocks } from '@angular/common/testing';
 import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
-import { provideRouter, Router } from '@angular/router';
+import { provideRouter, Router, type Route } from '@angular/router';
+import { releaseGuard } from '@app-core/guards/release.guard';
 import {
   SessionService,
   type SessionStatus,
 } from '@app-core/session/session.service';
 import { describe, expect, it } from 'vitest';
 import { routes } from './app.routes';
+import { ShellComponent } from './shell/shell.component';
 
 // No `<router-outlet>` is rendered here, so navigation resolves and guards run but no
 // routed component is instantiated — nothing reaches the network.
 //
 // The status is stubbed rather than the identity provider: both guards read the
 // one answer `SessionService` holds, and the probe that fills it is an
-// `APP_INITIALIZER` this module does not register. The two statuses below are
-// the two these routes discriminate on; the other two admit everywhere and are
-// pinned in each guard's own spec.
+// `APP_INITIALIZER` this module does not register. `authenticated`, `anonymous`
+// and `locked-session` are the three these routes discriminate on; `unknown`
+// and `unreachable` admit everywhere and are pinned in each guard's own spec.
 function routerFor(status: SessionStatus): Router {
   TestBed.configureTestingModule({
     providers: [
@@ -136,4 +138,112 @@ describe('app routes', () => {
     // Assert
     expect(router.url).toBe('/welcome');
   });
+
+  // A locked session reads no budget content of any kind (FR-113), so every
+  // screen under `app` is closed to it — and so are welcome and registration,
+  // which are for somebody holding no session. Each address is its own row
+  // because each sits behind its own `canActivate`: a child that lost
+  // `authGuard`, or a guard that lost its locked branch, reddens one row by
+  // name.
+  it.each([
+    '/app',
+    '/app/transactions',
+    '/app/accounts',
+    '/app/categories',
+    '/app/settings',
+    '/app/groups',
+    '/welcome',
+    '/register',
+    '/nowhere-at-all',
+  ])('sends a locked session from %s to the release screen', async (url) => {
+    // Arrange
+    const router = routerFor('locked-session');
+
+    // Act
+    await router.navigateByUrl(url);
+
+    // Assert
+    expect(router.url).toBe('/release');
+  });
+
+  // The release screen's own session lands and stays. `releaseGuard` admits
+  // it, and nothing between the guards sends it on: if it did, `authGuard`
+  // and `guestGuard` would send it straight back, and the navigation would
+  // never settle.
+  it('keeps a locked session on the release screen without a redirect loop', async () => {
+    // Arrange
+    const router = routerFor('locked-session');
+
+    // Act
+    const landed = await router.navigateByUrl('/release');
+
+    // Assert
+    expect(landed).toBe(true);
+    expect(router.url).toBe('/release');
+  });
+
+  // Somebody signed out reaches the screen from Welcome's link, and somebody
+  // whose probe never got an answer is not moved anywhere.
+  it.each<SessionStatus>(['anonymous', 'unreachable', 'unknown'])(
+    'admits a visitor who is %s to the release screen',
+    async (status) => {
+      // Arrange
+      const router = routerFor(status);
+
+      // Act
+      await router.navigateByUrl('/release');
+
+      // Assert
+      expect(router.url).toBe('/release');
+    },
+  );
+
+  it('sends a full session from the release screen into the app', async () => {
+    // Arrange
+    const router = routerFor('authenticated');
+
+    // Act
+    await router.navigateByUrl('/release');
+
+    // Assert
+    expect(router.url).toBe('/app/transactions');
+  });
+
+  // **A sibling of `app`, never a child of it**, which is what keeps the
+  // navigation bar off the screen: the bar is `ShellComponent`, the layout of
+  // the `app` route, and every destination it offers draws budget content a
+  // locked session may not read. Read off the table rather than rendered, so
+  // the release screen's own dependencies are not this file's fixture.
+  it('mounts the release screen outside the shell', async () => {
+    // Arrange
+    const release = routes.find((route) => route.path === 'release');
+    const app = routes.find((route) => route.path === 'app');
+
+    // Act
+    const component = await loadedComponentOf(release);
+
+    // Assert
+    expect(release).toBeDefined();
+    expect(release?.children).toBeUndefined();
+    expect(release?.canActivate).toEqual([releaseGuard]);
+    expect(component).toBeDefined();
+    expect(component).not.toBe(ShellComponent);
+    expect(app?.children?.map((child) => child.path)).not.toContain('release');
+  });
 });
+
+// What a route's `loadComponent` resolves to, or `undefined` for a route that
+// has none. Lazy, as every route in the table is.
+async function loadedComponentOf(route: Route | undefined): Promise<unknown> {
+  const load = route?.loadComponent;
+
+  if (load === undefined) {
+    return undefined;
+  }
+
+  const loaded: unknown = await load();
+
+  return typeof loaded === 'object' && loaded !== null && 'default' in loaded
+    ? loaded.default
+    : loaded;
+}

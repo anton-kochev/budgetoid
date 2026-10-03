@@ -94,4 +94,18 @@ describe('guestGuard', () => {
     expect(run.result).toBe(true);
     expect(run.redirectedTo).toBeNull();
   });
+
+  // Welcome and registration are for somebody holding no session, and a
+  // locked session is one. Admitted to `/register`, it would spend a provider
+  // trip and a passkey ceremony on an address the server already holds; sent
+  // to `/app`, `authGuard` would bounce it again. Its one screen is
+  // `/release`.
+  it('redirects a locked session to the release screen', () => {
+    // Arrange & Act
+    const run = runGuard('locked-session');
+
+    // Assert
+    expect(run.result).toBe(run.redirect);
+    expect(run.redirectedTo).toBe('/release');
+  });
 });

@@ -102,4 +102,18 @@ describe('authGuard', () => {
     expect(run.result).toBe(true);
     expect(run.redirectedTo).toBeNull();
   });
+
+  // A locked session reads no budget content of any kind (FR-113), and every
+  // screen under `app` draws some — so it is sent to the one screen that is its
+  // own rather than admitted to a screen of refusals. Not to `/welcome`: the
+  // server has answered that there *is* a session, and the welcome screen
+  // offers nothing a person holding one can use.
+  it('sends a locked session to the release screen', () => {
+    // Arrange & Act
+    const run = runGuard('locked-session');
+
+    // Assert
+    expect(run.result).toBe(run.redirect);
+    expect(run.redirectedTo).toBe('/release');
+  });
 });

@@ -919,7 +919,7 @@ export class RegisterService {
   // Collapsing the two readings means telling somebody whose account *was*
   // created that the only codes it has are worthless — and there is no way for
   // them to make more, because `POST /api/me/recovery-codes` has no caller in
-  // this client. It is the four-valued reading `SessionStatus` and
+  // this client. It is the five-valued reading `SessionStatus` and
   // `SessionService.readingOf` carry in `session.service.ts`, and
   // `SettingsService`'s rule about never collapsing `null` into `0`, on the one
   // screen where the cost is an account nobody can ever open again.

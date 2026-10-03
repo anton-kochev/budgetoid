@@ -1,31 +1,49 @@
 import { HttpErrorResponse } from '@angular/common/http';
 import { Injectable, Signal, inject, signal } from '@angular/core';
-import { MeApiService, type MeDto } from '@app-core/api/me-api.service';
+import {
+  MeApiService,
+  type MeDto,
+  type SessionDto,
+} from '@app-core/api/me-api.service';
 import { logFailure } from '@app-core/logging/log-failure';
 import { AccountKeyCustodyService } from '@app-core/security/account-key-custody.service';
 import { AuthService } from '@app-core/services/auth-service';
 import { firstValueFrom } from 'rxjs';
 
-// Four states, and the fourth is the one a reader will collapse into the third.
-// The session cookie is `HttpOnly`, so nothing in the browser can read it and
-// the only way to learn who the visitor is is to ask the server — which makes
-// every value here a reading of an *answer*, and `unreachable` the reading of an
-// answer that never came. A request that got no answer is not evidence about the
-// visitor: read as a refusal it signs a person holding a perfectly good session
-// out of their own account, over a network that blinked once during the cold
-// load, and drops them on a page served by the same server they could not reach.
-// It is `SettingsService`'s "never collapse `null` to `0`" rule one screen over —
-// a claim about the account made out of a failure to ask.
+// Five states, and `unreachable` is the one a reader will collapse into
+// `anonymous`. The session cookie is `HttpOnly`, so nothing in the browser can
+// read it and the only way to learn who the visitor is is to ask the server —
+// which makes every value here a reading of an *answer*, and `unreachable` the
+// reading of an answer that never came. A request that got no answer is not
+// evidence about the visitor: read as a refusal it signs a person holding a
+// perfectly good session out of their own account, over a network that blinked
+// once during the cold load, and drops them on a page served by the same server
+// they could not reach. It is `SettingsService`'s "never collapse `null` to `0`"
+// rule one screen over — a claim about the account made out of a failure to ask.
 //
 // `unknown` is the same argument before the first ask rather than after a failed
 // one: the initializer resolves the probe before the first route activates, so
 // nothing should see it, and it exists so that a deleted initializer is a
 // redundant state rather than every visitor bounced on every cold load.
+//
+// `locked-session` is a session opened by a federated credential: it reads no
+// budget content of any kind and reaches one screen, `/release`. Spelled
+// `locked-session` and never `locked`, which the account-key status already
+// spells for a different fact — an account whose keys this tab does not hold.
 export type SessionStatus =
   | 'unknown'
   | 'authenticated'
+  | 'locked-session'
   | 'anonymous'
   | 'unreachable';
+
+// The account's scheduled erasure as this tab last learned it. Three values and
+// never two: `'unread'` is "nobody has said", `null` is "the server said nothing
+// is scheduled". Collapsing them claims an answer out of a failure to ask.
+export type ScheduledErasure =
+  | { readonly takesEffectAtUtc: string }
+  | null
+  | 'unread';
 
 @Injectable({ providedIn: 'root' })
 export class SessionService {
@@ -86,50 +104,107 @@ export class SessionService {
   public readonly budgetId: Signal<string | null> =
     this.budgetSignal.asReadonly();
 
-  // Resolves however the read ends, and never rejects. The `APP_INITIALIZER`
+  private readonly scheduledErasureSignal = signal<ScheduledErasure>('unread');
+
+  /**
+   * The account's scheduled erasure: `'unread'` while nothing has said, `null`
+   * when the server said nothing is scheduled, or the instant it takes effect.
+   *
+   * Written by the probe and by the two locked-session arms — the locked
+   * sign-in's answer and a schedule request's — and returned to `'unread'` when
+   * the session ends, because the value is a fact about that session's account
+   * and the next occupant of this tab is owed a fresh read.
+   */
+  public readonly scheduledErasure: Signal<ScheduledErasure> =
+    this.scheduledErasureSignal.asReadonly();
+
+  // Resolves however the reads end, and never rejects. The `APP_INITIALIZER`
   // awaits this promise, so a rejection is not a failed probe — it is an
   // application that never finishes bootstrapping and a browser left on a blank
   // page. The failure is published as a state, which is the handling.
+  //
+  // **Two questions, asked in order and never in parallel.** First what kind of
+  // session this is, if any; then, only for a full one, whose budget it is.
+  // `GET /api/me` is budget-scoped and answers a locked session `403`, which
+  // reads as no session at all — so asked first, or beside the first, it would
+  // sign a locked tab out on every reload, and for a locked session it would
+  // only ever fetch a refusal. The second question is worth asking once the
+  // first has said there is a full session to ask it of.
   public async probe(): Promise<void> {
+    let session: SessionDto;
+
     try {
-      // `getSessionOwner()` and not `getMe()`, which is the same route. That
-      // method carries `EXPECTS_UNAUTHENTICATED`, so the 401 this call went to
-      // fetch reaches the `catch` below and nothing else — without it
+      // `getSession()` carries `EXPECTS_UNAUTHENTICATED`, so the 401 this call
+      // went to fetch reaches the `catch` below and nothing else — without it
       // `sessionExpiryInterceptor` reads the answer as a session ending and
       // navigates to `/welcome` from inside the `APP_INITIALIZER`, before the
       // router has activated anything, which is every anonymous visitor's deep
       // link. The reading of that 401 belongs to the `catch` below, and is made
       // once.
-      //
-      // **The budget rides on the answer this call already makes**, which is
-      // the whole reason nothing was added to the initializer: it is awaited
-      // before the first route activates, so every screen behind `authGuard`
-      // starts with the identifier its writes need, at the cost of no round
-      // trip at all.
-      const me = await firstValueFrom(this.api.getSessionOwner());
-
-      this.budgetSignal.set(SessionService.budgetOf(me));
-      this.statusSignal.set('authenticated');
+      session = await firstValueFrom(this.api.getSession());
     } catch (error: unknown) {
       // Dropped beside the status, because it is a claim about a read that did
       // not land. A stale identifier left standing here would be keyed into
-      // values written by whoever comes back next.
+      // values written by whoever comes back next. The schedule is left as it
+      // is: a probe that learned nothing about the session learned nothing
+      // about its schedule either.
       this.budgetSignal.set(null);
       this.statusSignal.set(SessionService.readingOf(error));
 
       return;
     }
 
-    // **Outside the `try`, and only on this arm.** Inside it, a discard that
-    // threw would reach the `catch` above and rewrite a session the server just
-    // confirmed as `unreachable`. And never on `anonymous` or `unreachable`:
-    // on a registration return this probe runs *before* `auth.initialize()`
-    // reads the answer off the URL, and a discard there takes the library's
-    // nonce with the tokens, so the answer no longer validates and
-    // registration cannot complete. On an email-change return the order is
-    // the other way round: `initialize()` runs before this probe and has
-    // already run `logOut(true)`, so the discard here finds nothing to take.
+    // Read off the answer as `unknown` rather than trusted from the type,
+    // which is the decoder's claim and not a check this class made. A kind
+    // this bundle does not know is **exactly `unreachable`**: read as
+    // `authenticated` it hands budget screens to a session the server may
+    // refuse on every one of them; read as `locked-session` it sends a full
+    // session to the release screen, whose one act is erasing the account. A
+    // reload is the act that changes it.
+    const kind: unknown = session.kind;
+
+    if (kind === 'locked') {
+      this.budgetSignal.set(null);
+      this.scheduledErasureSignal.set(SessionService.scheduleOf(session));
+      this.statusSignal.set('locked-session');
+      // A session beginning, so the provider's tokens go — and outside any
+      // `try`, for the reason the full arm's discard is.
+      this.forgetProviderToken();
+
+      return;
+    }
+
+    if (kind !== 'full') {
+      this.budgetSignal.set(null);
+      this.statusSignal.set('unreachable');
+
+      return;
+    }
+
+    // **Published before the owner read, and kept whatever it answers.** The
+    // session read has already said there is a full session; the owner read
+    // failing afterwards is a fact about the budget, not about the visitor, and
+    // reading it as `unreachable` would sign a confirmed session out over a
+    // second request blinking. `null` is the honest budget meanwhile: signed in,
+    // tenancy unknown, every write refused with a word whose remedy is a reload.
+    this.budgetSignal.set(null);
+    this.scheduledErasureSignal.set(SessionService.scheduleOf(session));
+    this.statusSignal.set('authenticated');
+
+    // **Never inside a `try` that could unpublish the session, and only on the
+    // two arms that publish one.** Never on `anonymous` or `unreachable`: on a
+    // registration return this probe runs *before* `auth.initialize()` reads
+    // the answer off the URL, and a discard there takes the library's nonce
+    // with the tokens, so the answer no longer validates and registration
+    // cannot complete. On an email-change return the order is the other way
+    // round: `initialize()` runs before this probe and has already run
+    // `logOut(true)`, so the discard here finds nothing to take.
     this.forgetProviderToken();
+
+    // **The budget rides on the probe the initializer already awaits**, so
+    // every screen behind `authGuard` starts with the identifier its writes
+    // need. A failure leaves the `null` set above standing.
+    await this.readBudget();
   }
 
   // The mid-visit transition, called by `sessionExpiryInterceptor` when the API
@@ -149,6 +224,10 @@ export class SessionService {
     // session, for the reason `custody.lock()` is: a third path will be added by
     // somebody thinking about sign-out, and put here it costs them nothing.
     this.budgetSignal.set(null);
+
+    // The schedule is a fact about the account whose session just ended, for
+    // the budget's reason above.
+    this.scheduledErasureSignal.set('unread');
 
     // **Custody ends where the session does, and it ends here rather than at
     // each caller.** Three paths end a session today —
@@ -176,7 +255,9 @@ export class SessionService {
     // {@link established} owns no key material. It discards the provider's
     // token and nothing else: a session beginning says nothing about which
     // factor opened it, and the two paths that know — registration and
-    // sign-in — hand the keys over themselves.
+    // sign-in — hand the keys over themselves. {@link establishedLocked} is the
+    // one establishing arm that locks custody, because the session it opens
+    // holds no key material by definition.
     this.custody.lock();
   }
 
@@ -205,19 +286,49 @@ export class SessionService {
     void this.readBudget();
   }
 
+  // The mirror of {@link established} for the one leg that opens a locked
+  // session: `POST /api/locked-session` answering `200`. A set rather than a
+  // re-probe, for the same reason — the server has just said what it thinks,
+  // and its answer carries the schedule, so nothing is asked afterwards.
+  //
+  // **Synchronous, and it clears what a full session held.** The cookie the
+  // locked sign-in set *replaces* whatever this tab held, so a budget left
+  // standing would be keyed into a write the locked session may not make, and
+  // keys left in custody would be readable from the root injector by a session
+  // that reads no budget content of any kind (FR-113). {@link ended} makes the
+  // same two drops for the same reason.
+  //
+  // The provider's tokens go last and through the guarded discard, so a throw
+  // there cannot unpublish the session set first.
+  public establishedLocked(answer: SessionDto): void {
+    this.statusSignal.set('locked-session');
+    this.budgetSignal.set(null);
+    this.custody.lock();
+    this.scheduledErasureSignal.set(SessionService.scheduleOf(answer));
+    this.forgetProviderToken();
+  }
+
+  // The schedule request's `200` names the instant the server stored, the same
+  // instant on every repeat, and the release screen renders it from here.
+  public erasureScheduled(takesEffectAtUtc: string): void {
+    this.scheduledErasureSignal.set({ takesEffectAtUtc });
+  }
+
   // Drops the provider's tokens once this tab has published a session, from
-  // both arms that publish one — the probe's answer and {@link established}.
+  // every arm that publishes one — the probe's full and locked answers,
+  // {@link established} and {@link establishedLocked}.
   //
   // **Owned here rather than by the paths that establish a session**, for the
   // reason {@link ended} owns `custody.lock()`: a third establishing path will
   // be written by somebody thinking about sign-in rather than about the id
   // token sitting in `sessionStorage`, and put here it discards for free.
   //
-  // **Correct only while no signed-in flow uses the provider.** Today the
-  // token is read on the registration screen and nowhere after the session
-  // cookie takes over, so a tab holding a session has no use for it. A future
-  // signed-in flow that needs a provider token breaks that, and this call with
-  // it.
+  // **Correct only while every flow that uses the provider reads its answer
+  // before a session is published.** Registration and the locked sign-in spend
+  // the token on the request that opens the session; the email change reads
+  // its answer before the probe. A tab holding a session then has no use for
+  // it. A future flow that needs a provider token *after* a session stands
+  // breaks that, and this call with it.
   //
   // **Guarded, because it is housekeeping and the session is the fact.** A
   // throw out of the library — `sessionStorage` refused in a locked-down
@@ -234,17 +345,20 @@ export class SessionService {
 
   // Reads the budget alone, publishing nothing else and never rejecting.
   //
-  // **The same `EXPECTS_UNAUTHENTICATED` method the probe uses**, for the reason
-  // `me-api.service.ts` writes out over `getAccountKeys`: this request is made
-  // by a browser that has just been handed a session, and a 401 to it is a
-  // cookie that had not landed rather than a session ending. Unmarked, it routes
+  // Called from {@link established} and, for a full session, from the probe.
+  //
+  // **An `EXPECTS_UNAUTHENTICATED` method**, for the reason `me-api.service.ts`
+  // writes out over `getAccountKeys`: this request is made by a browser that
+  // has just been handed a session, or told on a cold load that it holds one,
+  // and a 401 to it is a cookie that had not landed rather than a session
+  // ending. Unmarked, it routes
   // its own refusal into `sessionExpiryInterceptor` — the single owner of "the
   // session ended" — which navigates to `/welcome` from underneath a screen that
   // has just succeeded, through an edge no import graph shows.
   //
   // A failure publishes nothing: `null` is already what the signal holds when
-  // nothing has said, and setting it here would be a second writer of a value
-  // whose only other writers are the probe and the end of a session.
+  // nothing has said — the probe sets it before calling — and setting it here
+  // would be one more writer of a value that has enough.
   private async readBudget(): Promise<void> {
     try {
       const me = await firstValueFrom(this.api.getSessionOwner());
@@ -278,11 +392,21 @@ export class SessionService {
     return typeof answered === 'string' && answered !== '' ? answered : null;
   }
 
+  // The schedule an answer carried, copied off the wire object rather than
+  // held by reference to it.
+  private static scheduleOf(answer: SessionDto): ScheduledErasure {
+    return answer.erasure === null
+      ? null
+      : { takesEffectAtUtc: answer.erasure.takesEffectAtUtc };
+  }
+
   private static readingOf(error: unknown): SessionStatus {
     // 401 is the server saying it knows who is asking and the answer is nobody;
-    // 403 is the CSRF refusal and the locked-session refusal. Neither describes
-    // an authenticated visitor and neither has a next step that differs from the
-    // other's, so the two collapse — the one collapse here that is correct.
+    // 403 is the first-party refusal of a request missing `X-Budgetoid-Client`.
+    // A locked session is not among them any more — the session route answers
+    // it `200` with its kind. Neither describes a session and neither has a
+    // next step that differs from the other's, so the two collapse — the one
+    // collapse here that is correct.
     if (
       error instanceof HttpErrorResponse &&
       (error.status === 401 || error.status === 403)

@@ -33,6 +33,166 @@ export interface MeDto {
   budgetId: string;
 }
 
+/**
+ * What `GET /api/me/session` answers: which kind of session this browser
+ * holds, when it ends, and the account's scheduled erasure or `null`.
+ *
+ * **No identifier of any kind, no budget, no address.** It is the one read a
+ * locked session can make that tells it what it is — `GET /api/me` answers a
+ * locked session `403` — so it carries only what a session of *either* kind may
+ * be told about itself.
+ *
+ * `erasure` is `null` when nothing is scheduled, and the member is always
+ * present: a body that never mentioned a schedule has not said that none is on
+ * file, and `MeApiService.getSession` refuses it rather than reading it so.
+ */
+export interface SessionDto {
+  readonly kind: 'full' | 'locked';
+  readonly expiresAtUtc: string;
+  readonly erasure: { readonly takesEffectAtUtc: string } | null;
+}
+
+// An instant as this client accepts one off the wire: a calendar date, a time
+// of day, up to seven fractional digits — `System.Text.Json` writes a UTC
+// `DateTime` with up to seven — and then **a `Z` or a `±hh:mm` offset, never
+// neither**. An offset-less spelling is the one this pattern exists to refuse:
+// `Date` parses it as the *reader's* local time, so a date rendered from it
+// moves by the reader's offset with nothing anywhere saying so.
+const INSTANT =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,7})?(?:Z|[+-](\d{2}):(\d{2}))$/;
+
+// Leap years by the Gregorian rule, written out rather than borrowed from
+// `Date.UTC`, which maps years 0–99 onto the twentieth century.
+function daysInMonth(year: number, month: number): number {
+  if (month === 2) {
+    const leap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+
+    return leap ? 29 : 28;
+  }
+
+  return [4, 6, 9, 11].includes(month) ? 30 : 31;
+}
+
+// The pattern above checks the spelling; this checks that the spelling names a
+// date and a time that exist. `2026-02-30T25:61:00Z` matches the pattern and is
+// no instant at all, and `Date.parse` would roll it forward into a real one
+// rather than refuse it.
+function isInstant(value: unknown): value is string {
+  if (typeof value !== 'string') {
+    return false;
+  }
+
+  const match = INSTANT.exec(value);
+
+  if (match === null) {
+    return false;
+  }
+
+  const [year, month, day, hour, minute, second] = match
+    .slice(1, 7)
+    .map(Number);
+  // Absent on a `Z` instant, so they read as `0`, which is in range.
+  const offsetHour = Number(match[7] ?? 0);
+  const offsetMinute = Number(match[8] ?? 0);
+
+  if (
+    year === undefined ||
+    month === undefined ||
+    day === undefined ||
+    hour === undefined ||
+    minute === undefined ||
+    second === undefined
+  ) {
+    return false;
+  }
+
+  return (
+    month >= 1 &&
+    month <= 12 &&
+    day >= 1 &&
+    day <= daysInMonth(year, month) &&
+    hour <= 23 &&
+    minute <= 59 &&
+    second <= 59 &&
+    offsetHour <= 23 &&
+    offsetMinute <= 59
+  );
+}
+
+// Exactly the members named, in any order, and no others. A member this bundle
+// does not know is a server this bundle was not written against, and reading
+// the members it does know off that body would publish a fact about the
+// session from a body this client cannot vouch for.
+function hasExactly(
+  body: object,
+  members: readonly string[],
+): body is Record<string, unknown> {
+  const keys = Object.keys(body);
+
+  return (
+    keys.length === members.length &&
+    members.every((member) => keys.includes(member))
+  );
+}
+
+function isScheduledErasure(
+  erasure: unknown,
+): erasure is NonNullable<SessionDto['erasure']> {
+  return (
+    typeof erasure === 'object' &&
+    erasure !== null &&
+    !Array.isArray(erasure) &&
+    hasExactly(erasure, ['takesEffectAtUtc']) &&
+    isInstant(erasure['takesEffectAtUtc'])
+  );
+}
+
+// The boundary check `isRecoveryCodeCount` argues for, on the body that decides
+// who the visitor is. **A plain `Error`, never an `HttpErrorResponse`**: the
+// probe reads a 401 or 403 as `anonymous`, and a body it could not read says
+// nothing about who is asking — it is `unreachable`'s, whose remedy is a
+// reload.
+//
+// `kind` is matched exactly, case and all. Read as either known kind, an
+// unknown one either hands budget screens to a session the server refuses on
+// every one of them or sends a full session to the release screen, whose one
+// act is erasing the account.
+function decodeSession(body: unknown): SessionDto {
+  if (
+    typeof body !== 'object' ||
+    body === null ||
+    Array.isArray(body) ||
+    !hasExactly(body, ['kind', 'expiresAtUtc', 'erasure'])
+  ) {
+    throw new Error(
+      'The session response did not arrive as a description of a session.',
+    );
+  }
+
+  const { kind, expiresAtUtc, erasure } = body;
+
+  if (kind !== 'full' && kind !== 'locked') {
+    throw new Error('The session response named no kind this client knows.');
+  }
+
+  if (!isInstant(expiresAtUtc)) {
+    throw new Error('The session response carried no readable expiry.');
+  }
+
+  if (erasure !== null && !isScheduledErasure(erasure)) {
+    throw new Error(
+      'The session response carried a scheduled erasure this client cannot read.',
+    );
+  }
+
+  return {
+    kind,
+    expiresAtUtc,
+    erasure:
+      erasure === null ? null : { takesEffectAtUtc: erasure.takesEffectAtUtc },
+  };
+}
+
 // One member, and the route will never grow another: no id, no issued instant,
 // no total, and above all no hash. It is unwrapped at this boundary rather than
 // carried inward, because the screen renders a number and a one-member envelope
@@ -267,22 +427,45 @@ export class MeApiService extends BaseApiService {
     return this.get<MeDto>('api/me');
   }
 
-  // The same route, asked the opposite question: *is* there a session, whose,
-  // and which budget it is scoped by — the third rides along because the answer
-  // already carries it, and because the browser cannot key a blind index without
-  // it. It is the request `SessionService.probe()` makes on every cold load,
-  // before the first route activates, from a browser that cannot read the
-  // `HttpOnly` cookie and so has no local evidence at all — which makes a 401
-  // this call's own answer rather than a session ending. It is the purest
-  // member of the class `EXPECTS_UNAUTHENTICATED` names: a request made by a
-  // browser holding no session to lose.
-  //
-  // Without the token every anonymous cold load ends in
+  // **What kind of session this browser holds, if any** — the probe's first
+  // question on every cold load, asked before the first route activates by a
+  // browser that cannot read the `HttpOnly` cookie and so has no local evidence
+  // at all. That makes a 401 this call's own answer rather than a session
+  // ending, so it carries `EXPECTS_UNAUTHENTICATED` for `getSessionOwner()`'s
+  // reason below: without the token every anonymous cold load ends in
   // `sessionExpiryInterceptor` navigating to `/welcome` from inside the
-  // `APP_INITIALIZER` — before the router has activated anything, so no deep
-  // link in the product is reachable while signed out. `probe()` already
-  // publishes `anonymous` from this refusal itself, so what is suppressed here
-  // is a second, redundant statement of a fact the caller has already made.
+  // `APP_INITIALIZER`, and no deep link in the product is reachable while
+  // signed out.
+  //
+  // **Its own route, because `GET /api/me` cannot answer a locked session.**
+  // That route is budget-scoped and refuses a locked session `403`, which reads
+  // as no session at all — so a probe that asked it first would sign a locked
+  // tab out on every reload. This one answers both kinds.
+  //
+  // The body is decoded strictly by `decodeSession`; a refusal is a plain
+  // `Error`, and a refusal of the request is handed on untouched, status and
+  // all, because the probe tells `anonymous` from `unreachable` by it.
+  public getSession(): Observable<SessionDto> {
+    return this.get<unknown>(
+      'api/me/session',
+      new HttpContext().set(EXPECTS_UNAUTHENTICATED, true),
+    ).pipe(map(decodeSession));
+  }
+
+  // The same route as `getMe()`, asked the opposite question: whose session
+  // this is, and which budget it is scoped by — the second is the reason it is
+  // asked at all, because the browser cannot key a blind index without it. It
+  // is the request `SessionService.probe()` makes on a cold load **after**
+  // `getSession()` has answered `full`, and never for a locked session, which
+  // this route refuses. It is made by a browser that holds no local evidence of
+  // its own, so a 401 is this call's own answer rather than a session ending —
+  // the class `EXPECTS_UNAUTHENTICATED` names.
+  //
+  // Without the token, a refusal here ends in `sessionExpiryInterceptor`
+  // navigating to `/welcome` from inside the `APP_INITIALIZER` — before the
+  // router has activated anything. The probe reads this failure itself, as a
+  // budget it could not learn, so what is suppressed is an interceptor acting
+  // on a fact the caller has already handled.
   //
   // A second method rather than a token on `getMe()`, because the two callers
   // are asking different things of one route and only the request can tell them
