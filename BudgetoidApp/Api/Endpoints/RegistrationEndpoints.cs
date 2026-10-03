@@ -16,7 +16,9 @@ public static class RegistrationEndpoints
         ArgumentNullException.ThrowIfNull(endpoints);
 
         // ONE GROUP, TWO ROUTES, AND THE POLICY NAMES A SCHEME — which no other group in this application
-        // does. Everything else either declares nothing and inherits the fallback policy, or is anonymous.
+        // does. One other route does, POST /api/locked-session, in the same shape and with this group's
+        // claim gate; everything else either declares nothing and inherits the fallback policy, or is
+        // anonymous.
         //
         // NOT AllowAnonymous, and the difference matters more here than anywhere: an account cannot exist
         // without a completed provider exchange, and the scheme is what enforces that. An anonymous

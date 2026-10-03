@@ -20,6 +20,30 @@ public interface IUserRepository
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// The federated credential filed under <paramref name="provider"/> and <paramref name="subject"/>,
+    /// or <see langword="null"/> when no account holds that provider identity.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The discovery read of the locked sign-in, and the credential rather than its owner.</b> It
+    /// runs before the request has an identity, exactly as
+    /// <see cref="FindUserIdByFederatedCredentialAsync"/> does, so it reads <c>credentials</c> alone —
+    /// exempt from row-level security — and never joins <c>users</c>, which is policed on the very id
+    /// being resolved. It publishes nothing; the caller decides what to do with the answer.
+    /// </para>
+    /// <para>
+    /// <b>One read, never the id lookup followed by a credential read.</b> The session has to be opened
+    /// over the credential the provider token named. Resolving the owner first and then fetching "the
+    /// account's federated credential" in a second statement lets an email change that moves the Google
+    /// identity between the two reads hand the session a credential the token never vouched for.
+    /// </para>
+    /// </remarks>
+    Task<Credential?> FindFederatedCredentialBySubjectAsync(
+        string provider,
+        string subject,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Removes the user row, which cascades away everything that hangs off it. A row that is already
     /// gone is not an error: this states a post-condition rather than acting on a row, and a caller
     /// asking for an account to be absent has its answer either way. That covers a row another

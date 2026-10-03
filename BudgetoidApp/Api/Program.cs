@@ -118,9 +118,10 @@ builder.Services.AddSingleton<IPasskeyCeremonyPolicy, ConfiguredPasskeyCeremonyP
 // that does not exist" a structural fact rather than a check: the cookie is only ever issued over a
 // session row, and a session row is only ever written beside the account it names.
 //
-// JwtBearer stays registered, but nothing defaults to it any more. It is reached by exactly one
-// policy — the registration group's, which names ProviderAuthentication.SchemeName — because an
-// account may not exist without a completed provider exchange. Beyond that policy it is reached only by
+// JwtBearer stays registered, but nothing defaults to it any more. It is reached by exactly two
+// policies, each naming ProviderAuthentication.SchemeName — the registration group's, because an
+// account may not exist without a completed provider exchange, and POST /api/locked-session's, because
+// a provider sign-in is the whole proof a locked session is opened on. Beyond those it is reached only by
 // ProviderAuthorizationGate, on a route that declares RequireProviderAuthorization(): there the bearer is
 // a second proof judged beside the session, never the request's identity. A bearer presented to any
 // other route therefore authenticates nothing at all.
@@ -148,8 +149,8 @@ builder.Services.AddAuthentication(SessionCookieAuthenticationHandler.SchemeName
     });
 // The fallback policy carries three rules: authenticated at all, a session that reads the account's
 // budget content, and a locked session on a route marked for one. It applies to every route that
-// declares no policy of its own, which is everything outside the AllowAnonymous surface and the
-// registration group — so the second rule reaches the routes nobody thought about, and a route that
+// declares no policy of its own, which is everything outside the AllowAnonymous surface, the
+// registration group and the locked sign-in — so the second rule reaches the routes nobody thought about, and a route that
 // must admit a locked session declares AllowsLockedSessionAttribute and says why. See that attribute
 // for the polarity argument and FullSessionRequirement for the decision. The third judges only a route
 // carrying RequiresLockedSessionAttribute, which therefore carries the opt-out too; see

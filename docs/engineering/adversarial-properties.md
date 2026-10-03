@@ -262,7 +262,8 @@ covers some of the following without saying the rows exist:
   backups for seven days after; each passkey's signature counter, which counts its assertions —
   sign-ins and re-authentications — where the authenticator keeps one. From the sessions a
   recovery code opened, when codes were redeemed; from the hash rows left against the factor rows,
-  how many are spent.
+  how many are spent. From the sessions the federated credential opened, when the person signed in
+  through the provider alone.
 - **Key history.** The rotation epoch, which counts every change to the factor set and every
   rotation; while a rotation is in flight, that one is and when it began; and the `rotation_id`
   stamp on every narrative row, which names the run that last re-sealed it.
@@ -292,11 +293,15 @@ construction — a cold load with the real library, a census resolved by the typ
 files reach the provider client, and a scan of the shipped bundle — and
 [no-third-party-origins.md](no-third-party-origins.md) names each and what none of them sees: a
 top-level navigation, a timer outlasting the boot, a subclass or an object spread of the client, a
-component template, and a `logOut` reached through an alias. Signing in is a passkey
+component template, and a `logOut` reached through an alias. A full sign-in is a passkey
 assertion against this product's own API and reaches no provider. The API itself fetches the
-provider's published signing keys to validate a provider token — registration's, and the email
-change's — which names no person. Of the three moments NFR-025 permits, registration and the email
-change are built and the locked sign-in is not; see
+provider's published signing keys to validate a provider token — registration's, the email
+change's and the locked sign-in's — which names no person. Of the three moments NFR-025 permits,
+registration and the email change are built in the browser and on the server. The locked sign-in
+is built on the server only: `POST /api/locked-session` accepts a provider token and opens a locked
+session; it stores nothing the token asserts, and writes only the session row and its handle. No
+browser runs it, so
+no trip to the provider exists for it yet; see [sessions.md](../business-logic/sessions.md) and
 [email-change.md](../business-logic/email-change.md).
 
 ## Keeping this chapter true

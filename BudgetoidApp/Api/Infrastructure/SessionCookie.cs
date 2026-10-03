@@ -54,12 +54,14 @@ public static class SessionCookie
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <b>Four callers, and each of them is an endpoint rather than a handler.</b> A completed
-    /// registration, a verified passkey assertion, a redeemed recovery code, and a regeneration that
-    /// swept a live session: the four paths that establish one. Each writes this <em>after</em> its
-    /// handler returned, because every refusal on those routes leaves by exception — a cookie
-    /// written before the handler ran is a cookie a refusal leaves behind on the client of whoever
-    /// was guessing.
+    /// <b>Five callers, and each of them is an endpoint rather than a handler.</b> A completed
+    /// registration, a verified passkey assertion, a redeemed recovery code, a regeneration that
+    /// swept a live session, and a locked sign-in: the five paths that establish one. Each writes this
+    /// <em>after</em> its handler returned, because every refusal on the first four leaves by exception —
+    /// a cookie written before the handler ran is a cookie a refusal leaves behind on the client of
+    /// whoever was guessing. The locked sign-in's one refusal past its gates is a returned outcome
+    /// rather than an exception, so there the cookie is written on the established arm only, and the
+    /// 404 arm writes nothing.
     /// </para>
     /// <para>
     /// <b>Neither argument may be built here.</b> <paramref name="value"/> is the handle the handler

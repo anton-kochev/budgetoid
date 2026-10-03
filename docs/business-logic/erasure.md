@@ -421,8 +421,9 @@ role holds no `DELETE` there of any shape.
   1. **The token an account holds is a `session_tokens` row.** It is the digest a cookie is looked
      up by, and the one handle this system issues for a request to present. The identity
      provider's ID token is not issued here and cannot be ended here; what bounds it is where it
-     reaches — `/api/registration` as a caller's only credential, and the email change only beside
-     a live session, which an erasure deletes. The resurrection gotcha under
+     reaches — `/api/registration` and `POST /api/locked-session` as a caller's only credential,
+     the second finding no credential once the account is gone, and the email change only beside a
+     live session, which an erasure deletes. The resurrection gotcha under
      [Edge Cases](#edge-cases--known-gotchas) argues it, and this rule does not restate it.
   2. **A revocation instant would be a remnant.** A revoked session still present names the erased
      user, which the no-remnant rule above and the post-condition both forbid. Stamped and then
@@ -455,10 +456,10 @@ role holds no `DELETE` there of any shape.
   same spread and must still answer `200`, `200` and `403`, so an erasure that ended every `Locked`
   session in the database, or every session a set opened, cannot pass. Dropping the `sessions → credentials` edge reds it, and so does an authentication
   path that caches what a token resolved to.
-  - **The federated arm is schema-legal, not reachable.** No production path opens a session on the
-    federated credential today — see [sessions.md](sessions.md). It is seeded for the same guard:
-    a sweep keyed on the kinds that open sessions today would skip exactly this one, and the seed
-    costs one row.
+  - **The federated arm is a session a real sign-in opens.** `POST /api/locked-session` opens
+    exactly this one — see [sessions.md](sessions.md). The test seeds it rather than signing in, for
+    the same guard as the other two: a sweep keyed on the kinds that read budget content would skip
+    exactly this one, and the seed costs one row.
   - **The token half is held by the sweep, not by that test.** `session_tokens` is a row of the
     file's `OwnedTables`, so `…Erase_ForAFullyFurnishedAccount_LeavesNoRowInAnyTable` requires it
     empty after an erasure and `…Erase_LeavesAnotherAccountUntouched` requires the survivor's
@@ -549,9 +550,10 @@ role holds no `DELETE` there of any shape.
   and answers `200` with `{ "takesEffectAtUtc": … }` and no other member. It deletes no row of the
   account, ends no session and writes no cookie. A repeat answers the instant first filed and writes
   nothing. A full session is refused `403`; no live session is `401`.
-  - **Nothing establishes a locked session yet**, so this route, like the whole locked gate, is
-    reached today only by tests that seed a locked session through the database — see
-    [sessions.md](sessions.md).
+  - **A locked session is opened by `POST /api/locked-session`**, a provider token turned into a
+    session over the federated credential, and that sign-in answers the schedule's instant beside
+    the session — see [sessions.md](sessions.md). Nothing in the browser runs it yet, and this
+    route's own tests seed their locked session through the database.
   - **Nothing cancels, shows or carries out a schedule yet.** No route withdraws one, no screen reads
     one, and nothing erases the account when its instant passes. Today a schedule's only exit is the
     account's **immediate** erasure, which takes the row with it by the cascade from `users`.
@@ -731,7 +733,7 @@ stateDiagram-v2
 
 | Transition | Triggered by | Validations |
 |---|---|---|
-| Present → Scheduled | `ScheduleErasureHandler`, from `POST /api/me/erasure/schedule` | a live locked session; a full session is refused `403`. Nothing establishes a locked session yet, so only a test that seeds one reaches this arrow |
+| Present → Scheduled | `ScheduleErasureHandler`, from `POST /api/me/erasure/schedule` | a live locked session; a full session is refused `403`. The locked session comes from `POST /api/locked-session`, which no screen runs yet |
 | Scheduled → Scheduled | the same route again | none; the stored instant is the answer and nothing is written |
 | Present or Scheduled → gone | `EraseAccountHandler`, from `POST /api/me/erasure` | a full session and a fresh passkey assertion — the sequence above |
 
@@ -829,8 +831,12 @@ ELSE
   an hour after the account it names is gone, so any path where being authenticated *creates* an
   account lets a second erasure attempt, an in-flight poll or a second tab write a fresh `users` row
   moments after they asked to be forgotten. Two things close it. **A provider token is a caller's
-  only credential on exactly two routes**, both under `/api/registration`, because the fallback
-  policy names the session cookie scheme. The one other route that reads a token,
+  only credential on exactly three routes** — the two under `/api/registration` and
+  `POST /api/locked-session` — because the fallback policy names the session cookie scheme and only
+  those three name the provider's. The locked sign-in creates nothing: once the account is gone its
+  subject matches no credential, and it answers `404` naming `no_account` having written nothing —
+  `LockedSignIn_ForAnUnregisteredSubject_Answers404NoAccount_AndWritesNothing` counts `users` and
+  `credentials` either side. The one other route that reads a token,
   `POST /api/me/email-change`, reads it only beside a live full session — which the erasure deleted
   — and creates nothing. And **the two registration routes cannot complete without a fresh
   server-minted challenge and a WebAuthn credential the caller's own authenticator produced**. Any

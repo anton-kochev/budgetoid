@@ -824,9 +824,10 @@ ELSE
     as an opening balance" over values a naive `Number.isInteger(x·1e4)` would refuse. The 3.24M
     sweep and the 200k-per-scale hole count are one-off measurements, not tests.
 - **A locked session never reaches the Export control, so the client carries no word for one.**
-  No path creates a locked session today. If one existed, its cold-load probe would be refused with
-  the same `403` this route gives it, the session would read `anonymous`, and the guard would turn it
-  away from `/app/settings` before the screen rendered.
+  The server opens one — `POST /api/locked-session` — and no screen runs that sign-in yet. A browser
+  holding such a cookie would have its cold-load probe refused with the same `403` this route gives
+  it, the session would read `anonymous`, and the guard would turn it away from `/app/settings`
+  before the screen rendered.
   `LockedSessionTests.ALockedSession_IsRefusedTheExport` holds the server half;
   `session.service.spec.ts`, `auth.guard.spec.ts` and `app.routes.spec.ts` hold the client half.
   Every *locked* in this chapter's client rules is a locked **account** — a tab

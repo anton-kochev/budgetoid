@@ -58,7 +58,7 @@ assertion is required as well.**
    The marker is what lets a census read, off the route table, which routes reach the provider
    scheme this way. The marker means nothing without the filter, so `RequireProviderAuthorization()`
    is the one place that adds both; review and the route census hold that.
-   `RegistrationRouteTests.TheProviderScheme_IsReachedByExactlyTheRegistrationRoutesAndTheEmailChange`
+   `RegistrationRouteTests.TheProviderScheme_IsReachedByExactlyTheRegistrationRoutesTheLockedSignInAndTheEmailChange`
    pins both halves against written-out sets: the routes whose policy names the scheme, and the
    routes carrying the marker.
 
@@ -122,9 +122,10 @@ above stands. Before the provider filter, every provider refusal would spend the
 
 ## Consequences
 
-- **`JwtBearer` has two readers**: the registration group's policy, and this filter. A bearer is a
-  caller's only credential on the two registration routes; on the email change it is a second proof
-  beside a session; everywhere else it authenticates nothing.
+- **`JwtBearer` has three readers**: the registration group's policy, the locked sign-in's policy
+  ([ADR 0028](0028-open-a-locked-session-from-the-federated-credential.md)), and this filter. A
+  bearer is a caller's only credential on the two registration routes and the locked sign-in; on the
+  email change it is a second proof beside a session; everywhere else it authenticates nothing.
   [registration.md](../business-logic/registration.md), [sessions.md](../business-logic/sessions.md)
   and ADRs 0019 and 0021 say so.
 - **The census is blind to a route that calls `AuthenticateAsync` with the provider scheme itself,
@@ -136,8 +137,9 @@ above stands. Before the provider filter, every provider refusal would spend the
 - **A refused address (`400`) and every `409` come after the passkey gate**, so the challenge is
   spent and the person runs the ceremony again. That is the cost of decision 6, which keeps only the
   provider's refusals ahead of the gate.
-- **`sessionsEnded` is `0` on every real account today.** The sweep finds only sessions the retired
-  federated credential opened, and nothing opens a locked session yet.
+- **`sessionsEnded` counts the sessions a provider sign-in opened.** The sweep finds only sessions the
+  retired federated credential opened, which are the locked sessions `POST /api/locked-session`
+  establishes ([ADR 0028](0028-open-a-locked-session-from-the-federated-credential.md)).
 - **There is no rate limit on the route**, as on the rest of the API.
 - **Replacing the federated credential is delete plus insert in one save**, because `credentials`
   holds no `UPDATE`. `users.email` has two writers: registration's insert, and this route's

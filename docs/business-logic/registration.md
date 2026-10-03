@@ -35,7 +35,9 @@ the order its checks run in, and the one value it derives rather than chooses.
 **This is the only way an account comes to exist**, so every invariant below, stated as what **this
 path** establishes, is also a claim about every account in the schema — nothing else inserts a
 `users` row. The email change updates one column of an existing row, and creates nothing — see
-[email-change.md](email-change.md).
+[email-change.md](email-change.md). The locked sign-in opens a session on an account that already
+stands, and creates nothing either: an unknown subject is a `404` — see
+[sessions.md](sessions.md).
 
 **The two sides of the path meet, and this is the one write path in the product where they do.** The
 `/register` screen runs the ceremony, draws the account's keys, mints the set, mints a keypair for
@@ -74,7 +76,9 @@ the screen looks like is the **Registration** chapter of [components.md](../desi
   `FactorTaken`. `SubjectTaken` is `0` so that `default` is a **refusal**, the fail-closed direction
   `CredentialType` and `SessionKind` already take.
 - **`RegistrationClaimGate`** — the `IEndpointFilter` on the group that judges `sub`, `email` and
-  `email_verified`, with a distinct title for each of its two refusals. It carries no value out: the
+  `email_verified`, with a distinct title for each of its two refusals. `POST /api/locked-session`
+  carries the same filter, because its policy names the same scheme alone; the name is
+  registration's and predates that second caller. It carries no value out: the
   route delegate reads the two claim members off the principal itself, so nothing plumbed through
   the filter can disagree with what the handler is given. The three checks are `ProviderClaims`',
   shared with the email change's `ProviderAuthorizationGate`; the titles are this filter's.
@@ -122,8 +126,10 @@ the *set*, so it is authenticated once.
     of the **fallback** policy and therefore out of `FullSessionRequirement`, which is correct
     rather than worked around: this caller holds no session, so a rule about what kind of session
     may read budget content has nothing to judge.
-    - **This is the one policy that names `JwtBearer`, and one other reader reaches it.** Nothing
-      defaults to it and no other policy names it. `POST /api/me/email-change` authenticates a
+    - **One other policy names `JwtBearer`, and one other reader reaches it.** Nothing defaults to
+      it. `POST /api/locked-session` names it in a policy of its own, for this group's reason — its
+      caller holds no session yet — and opens a locked session on an existing account rather than
+      creating one; see [sessions.md](sessions.md). `POST /api/me/email-change` authenticates a
       provider token too, but through `ProviderAuthorizationGate`, a filter that calls the scheme
       itself **beside** a full session and never instead of one — see
       [email-change.md](email-change.md). A provider bearer presented to any other route
@@ -132,8 +138,9 @@ the *set*, so it is authenticated once.
     `ProviderAuthentication.SchemeName` — a name rather than the `JwtBearer` literal, because "did
     the provider vouch for this caller?" and "which handler validates the bearer" are the same value
     only until sign-in leaves the identity provider.
-    `RegistrationRouteTests.TheProviderScheme_IsReachedByExactlyTheRegistrationRoutesAndTheEmailChange`
-    reads the group's scheme off the route table, and the email change's marker beside it.
+    `RegistrationRouteTests.TheProviderScheme_IsReachedByExactlyTheRegistrationRoutesTheLockedSignInAndTheEmailChange`
+    reads the group's scheme and the locked sign-in's off the route table, against two written-out
+    lists, and the email change's marker beside them.
 
 - **Both routes MUST carry `RegistrationClaimGate`, declared on the group.**
   - **Why**: the policy says which scheme may speak for this caller; the gate says what that scheme
@@ -792,7 +799,7 @@ stateDiagram-v2
 | Accepted → Registered | `IRegistrationRepository.RegisterAsync` | one `SaveChanges`; the identity is published first, and no transaction wraps it |
 | Accepted → Conflicted | the same save | the provider subject, the email, the authenticator's handle, or one of the eleven factor identifiers is already stored |
 
-The session's lifetime is **14 days**, read from `SessionPolicy.Lifetime` — the same value the three
+The session's lifetime is **14 days**, read from `SessionPolicy.Lifetime` — the same value the four
 other establishing paths read, which is a rule rather than a coincidence; see
 [sessions.md](sessions.md).
 
@@ -874,7 +881,7 @@ ELSE consume the nonce — from here every outcome has burnt it
   That chapter owns the promotion rule, the epoch, and why
   `manifest: null` survives in the read's shape without being a state anybody reaches.
 - **[Sessions](sessions.md)** — the **fourth** thing that establishes a session, and like the other
-  three it mints a handle and sets the cookie.
+  four it mints a handle and sets the cookie.
 - **[Users & Ownership](users-and-ownership.md)** — the account, its credentials, and the invariant
   this path establishes, which is the invariant of every account there is.
 - **[Budgets](budgets.md)** — the nameless default budget, created in the same save.
@@ -916,6 +923,8 @@ ELSE consume the nonce — from here every outcome has burnt it
   - **This is not the enumeration oracle a dedicated route would be.** There is still **no route
     that answers "does this subject have an account?"**, and there must not be. What the options leg
     answers is narrower: it refuses *this caller's own* registration, to a caller who arrived
+    holding a provider-verified token for that exact subject. The locked sign-in's `404` naming
+    `no_account` is the same narrowing from the other side: it too is answered only to a caller
     holding a provider-verified token for that exact subject.
   - **What it does not cover is written down beside it**, because the shape is easy to mistake for a
     guarantee: a passkey is still minted before the refusal when the *address* collides rather than
@@ -974,5 +983,6 @@ ELSE consume the nonce — from here every outcome has burnt it
   to retry.
 - **The `null` arm on the cookie write is unreachable and is written as a pattern anyway.** A
   registration that returns has established a session. The alternative is a null-forgiving operator
-  asserting a rule that lives in another project, and the shape matches the three other establishing
-  legs.
+  asserting a rule that lives in another project, and the shape matches the passkey and
+  recovery-code legs. The locked sign-in writes its cookie on the established arm of a `switch`
+  instead, because its one refusal past the gates is a returned outcome rather than an exception.

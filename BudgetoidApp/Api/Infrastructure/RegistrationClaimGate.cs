@@ -4,10 +4,17 @@ namespace Api.Infrastructure;
 
 /// <summary>
 /// The two claim gates a provider token clears before the routes under <c>/api/registration</c> may
-/// create anything: the principal has a usable <c>sub</c> and <c>email</c>, and the provider asserts
-/// the address as verified.
+/// create anything, and before <c>POST /api/locked-session</c> may open a session: the principal has a
+/// usable <c>sub</c> and <c>email</c>, and the provider asserts the address as verified.
 /// </summary>
 /// <remarks>
+/// <para>
+/// <b>Two surfaces, one filter, and the name is registration's for now.</b> The locked sign-in's
+/// policy names the provider scheme exactly as the registration group's does, so the principal this
+/// filter reads is the provider's on both, and the same titles answer the same refusals there. The
+/// name predates the second caller; a neutral one is a rename of its own rather than part of the
+/// change that added that caller.
+/// </para>
 /// <para>
 /// <b>These gates are the only thing between a provider token and an account created under an address
 /// nobody verified — and now they are literally the only thing.</b> A provisioning middleware carried a
@@ -95,8 +102,9 @@ public sealed class RegistrationClaimGate : IEndpointFilter
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(next);
 
-        // HttpContext.User is the provider's principal here, and only here: the group's policy names
-        // the provider scheme, so AuthorizationMiddleware re-authenticated on it and replaced whatever
+        // HttpContext.User is the provider's principal here, and only here: every route carrying this
+        // filter — the registration group and the locked sign-in — declares a policy naming the
+        // provider scheme alone, so AuthorizationMiddleware re-authenticated on it and replaced whatever
         // the default scheme produced. ProviderAuthorizationGate cannot make that assumption and does
         // not.
         //

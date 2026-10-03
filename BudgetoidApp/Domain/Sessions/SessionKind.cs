@@ -7,9 +7,9 @@ namespace Domain.Sessions;
 public enum SessionKind
 {
     /// <summary>
-    /// The session reads no budget content. It may end itself, and it may schedule the account's
-    /// erasure — the release valve for somebody holding nothing but a provider sign-in, and a route
-    /// only this kind may reach.
+    /// The session reads no budget content. It may end itself, read what it is, and schedule the
+    /// account's erasure — the release valve for somebody holding nothing but a provider sign-in, and a
+    /// route only this kind may reach. A federated credential opens it, through the locked sign-in.
     /// </summary>
     Locked,
 

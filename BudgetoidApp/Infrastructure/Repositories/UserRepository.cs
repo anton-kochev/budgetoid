@@ -35,6 +35,33 @@ public sealed class UserRepository(BudgetoidDbContext dbContext) : IUserReposito
             .SingleOrDefaultAsync(cancellationToken);
     }
 
+    public Task<Credential?> FindFederatedCredentialBySubjectAsync(
+        string provider,
+        string subject,
+        CancellationToken cancellationToken = default)
+    {
+        string trimmedProvider = provider.Trim();
+        string trimmedSubject = subject.Trim();
+
+        // The same predicate as FindUserIdByFederatedCredentialAsync above, for the same three reasons:
+        // the explicit type is what reaches the partial unique index, credentials alone is what keeps a
+        // statement with nobody published off every policed table, and SingleOrDefault turns a lost
+        // (provider, subject) uniqueness into a fault rather than a coin toss between two accounts.
+        //
+        // The whole row rather than a projection, because the caller opens a session over it and
+        // Session.Establish derives the kind from the credential's type. Untracked, because nothing may
+        // be written through it: this row was found with no owner predicate, which is legal for the one
+        // discovery read and for nothing downstream of it — the destructive statements on this table are
+        // scoped by an owner-bearing read in PasskeyRepository and EmailChangeRepository, never by this
+        // one (docs/decisions/0014).
+        return dbContext.Credentials
+            .AsNoTracking()
+            .Where(credential => credential.Type == CredentialType.Federated
+                                 && credential.Provider == trimmedProvider
+                                 && credential.Subject == trimmedSubject)
+            .SingleOrDefaultAsync(cancellationToken);
+    }
+
     public async Task DeleteAsync(Guid userId, CancellationToken cancellationToken = default)
     {
         // Loaded through the set and removed through the change tracker, because ExecuteDelete is a

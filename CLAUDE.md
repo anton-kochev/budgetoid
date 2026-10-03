@@ -85,8 +85,10 @@ because every one of these is something a reader will otherwise simplify away.
 - **A session opened by a federated credential reaches three routes, and the gate is opt-out.**
   `FullSessionRequirement` rides the fallback policy; a route escapes with
   `AllowsLockedSessionAttribute`, and the opted-out set is exactly `POST /api/me/session/revocation`,
-  `GET /api/me/session` and `POST /api/me/erasure/schedule`. Polarity follows from which mistake is audible. The schedule
-  route also carries `RequiresLockedSessionAttribute`, read by `LockedSessionOnlyRequirement` on the
+  `GET /api/me/session` and `POST /api/me/erasure/schedule`. Polarity follows from which mistake is
+  audible. One route opens such a session: `POST /api/locked-session`, on the provider scheme,
+  discovering the federated credential by subject without joining `users`; an unknown subject is a
+  `404` `no_account` that writes nothing. The schedule route also carries `RequiresLockedSessionAttribute`, read by `LockedSessionOnlyRequirement` on the
   same fallback, so a full session is refused there — **a schedule is not an erasure**, and the
   passkey rule governs only the immediate one. `LockedSessionTests` reads both sets whole.
   [sessions.md](docs/business-logic/sessions.md), [erasure.md](docs/business-logic/erasure.md)
@@ -101,7 +103,7 @@ because every one of these is something a reader will otherwise simplify away.
   scheme itself and judges *that* principal — the cookie's `sub` is the account id, so reading
   `HttpContext.User` files the account id as a Google subject. The gate adds a marker because filters
   are invisible to route metadata; `RegistrationRouteTests` reads it, so the provider scheme is
-  reached by exactly the two registration routes and this one. A passkey re-authentication runs
+  reached by exactly the two registration routes, the locked sign-in and this one. A passkey re-authentication runs
   **after** the gate, so a provider refusal never spends the nonce. The federated credential is
   retired and refiled in one save (no `UPDATE` grant on `credentials`), its sessions revoked first;
   every refusal throws, so the sweep never commits. Every passkey refusal product-wide carries the

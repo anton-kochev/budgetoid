@@ -8,6 +8,43 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-10-03 — A Google sign-in alone opens a locked session over the account's federated credential, and an unknown subject is a 404 that creates nothing
+
+**Context:** the erasure schedule exists for somebody holding nothing but a Google sign-in, and only a
+locked session may file one. No route turned that sign-in into a session, so the schedule was
+reachable only by tests that seeded one.
+
+**Decision:**
+- **`POST /api/locked-session` takes a Google ID token and no body** and opens a `Locked` session
+  over the account's federated credential, lasting the product's one session lifetime.
+- **It creates no account.** A subject no federated credential carries is a `404` naming
+  `no_account`, with nothing published, written or set. Registration stays the one path that
+  creates an account.
+- **The session is opened over the credential the token named and no other**, found by one read
+  keyed on the provider identity, so no passkey or recovery-code credential can open it as `Full`.
+- **The `200` answers the account's scheduled erasure beside the session**, because a person
+  signing in on a provider alone is most often coming back to see or file exactly that.
+
+[ADR 0028](../decisions/0028-open-a-locked-session-from-the-federated-credential.md) owns the
+authentication shape and its alternatives; [sessions.md](sessions.md) owns the rule.
+
+**Alternatives considered:**
+- **Create an account for an unknown subject**: rejected. It would be a second creating path, the
+  one thing [registration.md](registration.md) exists to refuse.
+- **Nest the route under `/api/registration`**: rejected. A route there that creates nothing blurs
+  the rule that the group is where accounts are created.
+
+**Consequences:** the locked gate and the erasure schedule are reachable by a real sign-in on the
+server. Nothing in the browser runs the sign-in yet, and nothing withdraws, shows or carries out a
+schedule. The email change's sweep of the federated credential now ends sessions a real sign-in
+opened.
+
+**Affected areas:** [sessions.md](sessions.md), [erasure.md](erasure.md),
+[email-change.md](email-change.md), [users-and-ownership.md](users-and-ownership.md),
+[_overview.md](_overview.md).
+
+---
+
 ## 2026-10-02 — A locked session may schedule the account's erasure with no passkey, and the passkey rule covers the immediate erasure only
 
 **Context:** erasure.md required a fresh passkey assertion to destroy an account, and its MUST NOT

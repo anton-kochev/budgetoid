@@ -92,6 +92,10 @@ public sealed class SessionTokenSecrecyTests
         await Assert.That(reached).Contains("RecoveryCodeEndpoints.RecoveryCodeGenerationResponse");
         await Assert.That(reached).Contains("RegistrationEndpoints.RegistrationResponse");
 
+        // The fifth: the locked sign-in, named here in the commit that adds it rather than after, for the
+        // reason the paragraph on registration gives — it would otherwise arrive green and unchecked.
+        await Assert.That(reached).Contains("SessionEndpoints.LockedSignInResponse");
+
         // The recursion's own control: each of these is a member type of a response above it, so a walk
         // that stopped at the top level would report green having never looked at either of the two
         // nested responses in the API — which are also the only places a session opened by something

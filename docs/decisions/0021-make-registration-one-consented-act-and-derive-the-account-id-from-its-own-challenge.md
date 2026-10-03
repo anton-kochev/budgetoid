@@ -1,6 +1,9 @@
 # ADR 0021 — Make registration one consented act, and derive the account id from its own challenge
 
-- **Status:** Accepted and implemented, and it is now the **only** way an account comes to exist.
+- **Status:** Accepted and implemented, and it is now the **only** way an account comes to exist. One
+  other route names the provider's scheme in its policy — the locked sign-in, which opens a locked
+  session on an existing account and creates none
+  ([ADR 0028](0028-open-a-locked-session-from-the-federated-credential.md)).
 - **Date:** 2026-08-18
 - **Area:** API / Application (account creation, WebAuthn ceremony pools, provisioning markers)
 
@@ -62,8 +65,10 @@ challenge rather than chosen.**
    `AuthorizationMiddleware` re-authenticate against the provider's handler rather than against
    the default, which is the session cookie's — so without the name a browser already holding a
    session could create an account nobody's provider vouched for, and no bearer would be read at all.
-   **This is the one policy that names `JwtBearer`**: nothing defaults to it and no other policy
-   names it. Its one other reader is `ProviderAuthorizationGate` on the email change, which calls the
+   **One other policy names `JwtBearer`**, `POST /api/locked-session`'s, for this group's reason —
+   its caller holds no session — and it creates no account
+   ([ADR 0028](0028-open-a-locked-session-from-the-federated-credential.md)); nothing defaults to
+   it. Its one other reader is `ProviderAuthorizationGate` on the email change, which calls the
    scheme itself beside a full session and never makes the bearer the request's identity
    ([ADR 0027](0027-authenticate-the-email-change-on-the-session-and-a-fresh-provider-token-side-by-side.md)),
    so a bearer presented anywhere else authenticates nothing.
@@ -72,13 +77,15 @@ challenge rather than chosen.**
    than a side effect worked around: this caller holds no session, so a rule about what kind of session
    may read budget content has nothing to judge.
 
-2. **A caller with no account reaches these two routes and nothing else, and the scheme on the group's
-   policy is what says so.** This began as a third marker attribute, `RegistersAccountAttribute`,
+2. **A caller with no account reaches these two routes and nothing else that can act for them, and
+   the scheme on the group's policy is what says so.** The locked sign-in admits such a caller only
+   to answer `404`. This began as a third marker attribute, `RegistersAccountAttribute`,
    because a provisioning middleware ran before the endpoint's own policy and would otherwise have
    refused a provider principal with no account before the handler was ever entered. That middleware
    and that marker are both deleted, and **the argument they carried survives intact, held by the
-   policy above**: a bearer is a caller's only credential here and nowhere else — the email change
-   reads one only beside a session that already names an account — so "this route serves callers who
+   policy above**: a bearer is a caller's only credential here and on the locked sign-in, which
+   creates no account — and the email change reads one only beside a session that already names an
+   account — so "this route serves callers who
    have no account" is a property of the two routes' own authentication rather than of metadata
    somebody could add to a seventh group by mistake. What was the marker's arm is now three
    properties of this group: the claim gates run **before** the handler, as an endpoint filter, so an

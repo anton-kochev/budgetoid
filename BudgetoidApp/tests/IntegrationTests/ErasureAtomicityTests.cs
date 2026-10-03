@@ -371,6 +371,12 @@ public sealed class ErasureAtomicityTests
             CancellationToken cancellationToken = default) =>
             inner.FindUserIdByFederatedCredentialAsync(provider, subject, cancellationToken);
 
+        public Task<Credential?> FindFederatedCredentialBySubjectAsync(
+            string provider,
+            string subject,
+            CancellationToken cancellationToken = default) =>
+            inner.FindFederatedCredentialBySubjectAsync(provider, subject, cancellationToken);
+
         // Non-transient on purpose. An NpgsqlException would be replayed by
         // NpgsqlRetryingExecutionStrategy, which runs the whole transactional delegate again and turns
         // this into a test about retries — and the tally, pinned to exactly 1, is what keeps that choice

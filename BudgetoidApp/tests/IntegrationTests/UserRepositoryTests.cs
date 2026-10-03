@@ -400,6 +400,112 @@ public sealed class UserRepositoryTests
         await Assert.That(found).IsNull();
     }
 
+    // FindFederatedCredentialBySubjectAsync carries the same `type = 'federated'` predicate, and no test
+    // below can pin it by its answer: CK_credentials_type_shape gives every passkey and recovery-code
+    // row (NULL, NULL), so no row of another type can ever match a (provider, subject) pair. The account
+    // holding both kinds is still worth its test — it pins that the read never answers "some credential
+    // of the account" — but it is a control on the provider and subject predicates, not on the type.
+    [Test]
+    public async Task FindFederatedCredentialBySubjectAsync_WithAKnownSubject_ReturnsTheFederatedCredential()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
+        Guid credentialId = await host.FederatedCredentialIdAsync(userId);
+        await using BudgetoidDbContext db = CreateDb(host);
+        var repository = new UserRepository(db);
+
+        // Act
+        Credential? found = await repository.FindFederatedCredentialBySubjectAsync(
+            Credential.GoogleProvider, "google-1");
+
+        // Assert — the credential row itself, because the caller opens the session over it and the
+        // session's kind is derived from this row's type.
+        await Assert.That(found).IsNotNull();
+        await Assert.That(found!.Id).IsEqualTo(credentialId);
+        await Assert.That(found.UserId).IsEqualTo(userId);
+        await Assert.That(found.Type).IsEqualTo(CredentialType.Federated);
+    }
+
+    [Test]
+    public async Task FindFederatedCredentialBySubjectAsync_WithAnUnknownSubject_ReturnsNull()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartHostAsync();
+        await host.SeedUserAsync("google-1", "person@example.com");
+        await using BudgetoidDbContext db = CreateDb(host);
+        var repository = new UserRepository(db);
+
+        // Act
+        Credential? found = await repository.FindFederatedCredentialBySubjectAsync(
+            Credential.GoogleProvider, "google-2");
+
+        // Assert — null rather than a throw: a provider identity nobody holds is an ordinary refusal.
+        await Assert.That(found).IsNull();
+    }
+
+    [Test]
+    public async Task FindFederatedCredentialBySubjectAsync_WhenTheAccountAlsoHoldsAPasskey_ReturnsTheFederatedOne()
+    {
+        // Arrange — the passkey is filed after the federated credential, so a read answering "the
+        // account's newest credential" would land on it.
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
+        Guid federatedId = await host.FederatedCredentialIdAsync(userId);
+        Guid passkeyId = await host.SeedPasskeyAsync(
+            userId, [.. Enumerable.Repeat((byte)0x01, PasskeyPublicKey.MinWebAuthnCredentialIdLength)]);
+        await using BudgetoidDbContext db = CreateDb(host);
+        var repository = new UserRepository(db);
+
+        // Act
+        Credential? found = await repository.FindFederatedCredentialBySubjectAsync(
+            Credential.GoogleProvider, "google-1");
+
+        // Assert — the passkey id is checked as a premise: two distinct rows exist to choose between.
+        await Assert.That(passkeyId).IsNotEqualTo(federatedId);
+        await Assert.That(found).IsNotNull();
+        await Assert.That(found!.Id).IsEqualTo(federatedId);
+        await Assert.That(found.Type).IsEqualTo(CredentialType.Federated);
+    }
+
+    [Test]
+    public async Task FindFederatedCredentialBySubjectAsync_WithAnotherProviderAndTheSameSubject_ReturnsNull()
+    {
+        // Arrange — 'google' is the only provider CK_credentials_provider admits, so the other provider
+        // cannot be seeded; it can only be asked for. A subject is unique per issuer, never globally.
+        await using RepositoryTestHost host = await StartHostAsync();
+        await host.SeedUserAsync("google-1", "person@example.com");
+        await using BudgetoidDbContext db = CreateDb(host);
+        var repository = new UserRepository(db);
+
+        // Act
+        Credential? found = await repository.FindFederatedCredentialBySubjectAsync(
+            "another-provider", "google-1");
+
+        // Assert
+        await Assert.That(found).IsNull();
+    }
+
+    [Test]
+    public async Task FindFederatedCredentialBySubjectAsync_ReturnsAnUntrackedEntity()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartHostAsync();
+        await host.SeedUserAsync("google-1", "person@example.com");
+        await using BudgetoidDbContext db = CreateDb(host);
+        var repository = new UserRepository(db);
+
+        // Act
+        Credential? found = await repository.FindFederatedCredentialBySubjectAsync(
+            Credential.GoogleProvider, "google-1");
+
+        // Assert — this row was found with no owner predicate, so nothing downstream may write through
+        // it. Read off the change tracker, as TransactionRepositoryTests does for its sweep: this read is
+        // the only thing that has touched a credential on this context, so any tracked entry is its own.
+        await Assert.That(found).IsNotNull();
+        await Assert.That(db.ChangeTracker.Entries<Credential>().Count()).IsEqualTo(0);
+    }
+
     /// <summary>
     /// That the arrangement the two tests below stand on really does raise a concurrency conflict.
     /// </summary>

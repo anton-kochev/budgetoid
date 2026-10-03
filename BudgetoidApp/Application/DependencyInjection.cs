@@ -37,6 +37,7 @@ using Application.RecoveryCodes.GenerateRecoveryCodes;
 using Application.RecoveryCodes.RedeemRecoveryCode;
 using Application.Registration;
 using Application.Sessions.AuthenticateSession;
+using Application.Sessions.EstablishLockedSession;
 using Application.Sessions.ReadSession;
 using Application.Sessions.RevokeSession;
 using Application.Sessions.RevokeSessionsForCredential;
@@ -97,6 +98,7 @@ public static class DependencyInjection
         services.AddScoped<AuthenticateSessionHandler>();
         services.AddScoped<RevokeSessionHandler>();
         services.AddScoped<ReadSessionHandler>();
+        services.AddScoped<EstablishLockedSessionHandler>();
         services.AddScoped<BeginRegistrationHandler>();
         services.AddScoped<CompleteRegistrationHandler>();
         services.AddScoped<BeginAssertionHandler>();

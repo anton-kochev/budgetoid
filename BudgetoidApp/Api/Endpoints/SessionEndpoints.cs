@@ -1,8 +1,10 @@
 using System.Security.Claims;
 using System.Text.Json;
 using Api.Infrastructure;
+using Application.Sessions.EstablishLockedSession;
 using Application.Sessions.ReadSession;
 using Application.Sessions.RevokeSession;
+using Microsoft.AspNetCore.Http.HttpResults;
 
 namespace Api.Endpoints;
 
@@ -136,8 +138,104 @@ public static class SessionEndpoints
             })
             .WithMetadata(new AllowsLockedSessionAttribute());
 
+        // THE LOCKED SIGN-IN: a provider token, and nothing else, turned into a locked session over the
+        // account's federated credential. Here rather than in a file of its own because what it produces
+        // is a session — the same three facts GET /api/me/session answers — and not beneath "/api/me"
+        // because the caller is nobody yet: there is no session to hang it off.
+        //
+        // Its own policy, naming the provider's scheme — the registration group's shape, for that group's
+        // reason. Naming the scheme is what makes AuthorizationMiddleware authenticate the bearer rather
+        // than the session cookie, so a browser already holding a session — full or locked — cannot
+        // stand in for the provider here. And declaring a policy takes the route off the fallback, which
+        // is right rather than worked around: the caller holds no session, so the two requirements about
+        // session kinds have nothing to judge. Not AllowAnonymous: the provider's signature is the whole
+        // proof this route opens a session on.
+        //
+        // The SAME claim gate as registration, not a restatement of it: a token with no usable sub or
+        // email, or whose address the provider does not vouch for, is refused here with registration's
+        // own titles. One judgement in ProviderClaims, one filter applying it to a policy-authenticated
+        // provider principal; a second filter would be the second copy ProviderClaims exists to prevent.
+        //
+        // This route creates no account. Registration stays the one path that does; an unknown subject
+        // is a 404 naming no_account, and the client offers registration from there.
+        endpoints.MapPost("/api/locked-session", async Task<Results<Ok<LockedSignInResponse>, ProblemHttpResult>> (
+                ClaimsPrincipal principal,
+                EstablishLockedSessionHandler handler,
+                HttpResponse response,
+                CancellationToken cancellationToken) =>
+            {
+                // The subject off the provider's principal — the only principal on this request, because
+                // the policy names the provider scheme alone — and never off a body. The empty fallback
+                // is unreachable past the claim gate and exists so the expression has a total answer; an
+                // empty subject matches no credential.
+                LockedSignInOutcome outcome = await handler.HandleAsync(
+                    new EstablishLockedSessionCommand(
+                        principal.FindFirstValue(ProviderClaims.SubjectClaimType) ?? string.Empty),
+                    cancellationToken);
+
+                switch (outcome)
+                {
+                    case LockedSignInOutcome.NoAccount:
+                        // A refusal a client acts on — offer registration — so it names itself under the
+                        // product's refusal member, and it repeats nothing the caller sent: neither the
+                        // subject nor the address. No cookie: nothing was established.
+                        return TypedResults.Problem(
+                            title: NoAccountTitle,
+                            statusCode: StatusCodes.Status404NotFound,
+                            extensions: new Dictionary<string, object?> { [RefusalMember.Name] = NoAccountRefusal });
+
+                    case LockedSignInOutcome.Established established:
+                        // AFTER THE HANDLER RETURNED, from the handoff it returned, and only on this arm —
+                        // so the 404 above can never carry a cookie naming a session nobody wrote.
+                        SessionCookie.Issue(response, established.Handoff.Token, established.Handoff.ExpiresAtUtc);
+
+                        // The kind converted here, at the boundary every establishing leg converts its
+                        // own, so the wire reads "locked" as the column does. The erasure member is
+                        // written as JSON null when nothing is filed, as GET /api/me/session writes it.
+                        SessionSummary session = established.Session;
+                        return TypedResults.Ok(new LockedSignInResponse(
+                            JsonNamingPolicy.CamelCase.ConvertName(session.Kind.ToString()),
+                            session.ExpiresAtUtc,
+                            session.ErasureTakesEffectAtUtc is { } takesEffectAtUtc
+                                ? new ScheduledErasureResponse(takesEffectAtUtc)
+                                : null));
+
+                    default:
+                        throw new InvalidOperationException(
+                            $"A locked sign-in outcome was added and nobody answered it: {outcome.GetType().Name}.");
+                }
+            })
+            .RequireAuthorization(policy => policy
+                .RequireAuthenticatedUser()
+                .AddAuthenticationSchemes(ProviderAuthentication.SchemeName))
+            // Reused under its registration name rather than renamed in this change; see the gate's
+            // remarks for why the judgement is shared and the response shape is too.
+            .AddEndpointFilter<RegistrationClaimGate>();
+
         return endpoints;
     }
+
+    /// <summary>The <c>refusal</c> word a locked sign-in for a provider identity no account holds carries.</summary>
+    internal const string NoAccountRefusal = "no_account";
+
+    /// <summary>The title of that refusal; it names no subject and no address.</summary>
+    internal const string NoAccountTitle = "No account is registered under this sign-in.";
+
+    /// <summary>
+    /// The session a locked sign-in opened, and the account's pending erasure — and deliberately no
+    /// session, account or budget id, no address and no subject.
+    /// </summary>
+    /// <param name="Kind">The session's kind in the product's one spelling; always <c>"locked"</c> here,
+    /// carried anyway so a client reads one shape off this route and off <c>GET /api/me/session</c>.</param>
+    /// <param name="ExpiresAtUtc">The stored row's expiry, in UTC.</param>
+    /// <param name="Erasure">The account's scheduled erasure, or <see langword="null" /> when it holds
+    /// none.</param>
+    /// <remarks>
+    /// Flat rather than nested under a <c>session</c> member, the shape the passkey sign-in answers in;
+    /// the erasure member is the one addition, because a person signing in on a provider alone is most
+    /// often coming back to see — or file — exactly that.
+    /// </remarks>
+    private sealed record LockedSignInResponse(string Kind, DateTime ExpiresAtUtc, ScheduledErasureResponse? Erasure);
 
     /// <summary>
     /// The session the caller holds, and the account's pending erasure — and deliberately no session,

@@ -101,8 +101,9 @@ Enforced today:
   grows, the second has its shape owned by EF.
 - **An exempt table scopes nothing, so the application is the only thing scoping access to it — and
   some of those accesses destroy rows.** On the exempt tables that carry an owner column —
-  `credentials`, `passkey_public_keys`, `recovery_code_hashes` and `session_tokens` — one query per
-  table is allowed to omit it, the one that discovers who is asking, and every other **read** must
+  `credentials`, `passkey_public_keys`, `recovery_code_hashes` and `session_tokens` — one query
+  shape per table is allowed to omit it, the one that discovers who is asking, and every other
+  **read** must
   carry its own `where user_id = …`, exactly as `FindFirstForUserAsync` does on `budgets`. **The
   destructive statements are an exception to that sentence and not to the rule**: EF issues each of
   them by primary key, with no owner predicate in the statement at all, and what scopes one is the
@@ -127,6 +128,7 @@ Enforced today:
   | `passkey_public_keys` | `FindByWebAuthnCredentialIdForUserAsync` on the re-authentication gate | `where user_id`, watched by `ErasureReauthenticationTests.Erasure_WithAnotherAccountsPasskey_IsRefusedAndErasesNeitherAccount` |
   | `passkey_public_keys` | `INSERT` at passkey registration, and again at account registration | the credential it hangs off, written in the same save |
   | `credentials` | `FindUserIdByFederatedCredentialAsync`, the re-read that settles an ambiguous email collision on a losing registration, and the email change's subject lookup | provider and subject, which name a principal rather than an account. `RegisterAccountHandler.RefusalFor` calls it, unaffected by the identity that handler published for a row that was never written, because this table is exempt. `ChangeEmailHandler` calls it twice — before its transaction opens, and again to settle an ambiguous `EmailTaken` — and only after its passkey gate has passed, because an unproven caller asking it is an oracle for which Google identities hold an account ([email-change.md](../business-logic/email-change.md)) |
+  | `credentials` | `FindFederatedCredentialBySubjectAsync`, the locked sign-in's discovery read | provider and subject, the same shape as the row above — never the owner, which is what the read discovers. It returns the whole row so the session can be opened over it, and returns it **untracked**: a row found with no owner predicate is legal for this one read and for nothing written downstream of it, so the destructive statements below stay scoped by their own owner-bearing reads. `EstablishLockedSessionHandler` calls it with nobody published and publishes the found row's owner next ([sessions.md](../business-logic/sessions.md)). Watched in `UserRepositoryTests` by `FindFederatedCredentialBySubjectAsync_WhenTheAccountAlsoHoldsAPasskey_ReturnsTheFederatedOne`, `…_WithAnotherProviderAndTheSameSubject_ReturnsNull` and `…_ReturnsAnUntrackedEntity`, and in `EstablishLockedSessionHandlerTests` by a stranger's federated credential filed before the account's. The `type` predicate cannot be pinned by its answer: `CK_credentials_type_shape` gives every other type `(NULL, NULL)`, so no other row can match a subject |
   | `credentials` | `FindPasskeyCredentialAsync`, on the **sign-in assertion** and on revocation | `where user_id`, watched by `Revocation_OfAnotherAccountsCredential_IsRefusedAndRemovesNeitherAccountsRows`; and `type`, watched by `Revocation_OfTheFederatedCredential_IsRefusedAndRemovesNothing` |
   | `credentials` | `CountPasskeysForUserAsync`, behind the last-passkey rule | `where user_id` and `type`, watched by `Revocation_OfTheOnlyRemainingPasskey_IsRefusedWithConflictAndRemovesNothing` |
   | `credentials` | `ListForUserAsync`, behind `GET /api/me/credentials` | `where user_id`, watched by `Credentials_ForASecondAccount_ListThatAccountsCredentialsAndNotTheFirsts` |
@@ -140,7 +142,7 @@ Enforced today:
   | `recovery_code_hashes` | **`DELETE`**, consuming the code a redemption spent | the owner-scoped read above it, in the same transaction, and nothing else — never the discovery lookup, whose answer is an account rather than a row to spend |
   | `recovery_code_hashes` | `INSERT` at generation, and again at account registration | the credential it hangs off, written in the same save |
   | `session_tokens` | `FindByTokenHashAsync`, the discovery lookup every authenticated request makes | **nothing, deliberately** — it runs before there is an identity to key a filter on, and the account it answers is the one the request then adopts. This is the table's *one* permitted unscoped query, and there is currently no other read of it to compare against, which is precisely when a rule is easiest to lose |
-  | `session_tokens` | `INSERT` when a session is established, on all four establishing paths | the session it hangs off, written in the same save — `ISessionRepository.AddAsync` takes both rows and has no overload taking a session alone, and `IRegistrationRepository.RegisterAsync`, the second and only other writer, takes a `Registration` carrying both as required members, so a handle-less session is unwritable on either. The composite foreign key `(session_id, user_id) → sessions(id, user_id)` means a row whose owner disagreed with its session's is unstorable, so this one is scoped by the schema as well as by the caller |
+  | `session_tokens` | `INSERT` when a session is established, on all five establishing paths | the session it hangs off, written in the same save — `ISessionRepository.AddAsync` takes both rows and has no overload taking a session alone, and `IRegistrationRepository.RegisterAsync`, the second and only other writer, takes a `Registration` carrying both as required members, so a handle-less session is unwritable on either. The composite foreign key `(session_id, user_id) → sessions(id, user_id)` means a row whose owner disagreed with its session's is unstorable, so this one is scoped by the schema as well as by the caller |
   | `session_tokens` | **no `DELETE` and no `UPDATE`, of any shape** | not applicable, and the absence is the point: rows leave by the cascade from `sessions`, which runs as the table owner. Without the grant, an EF change-tracker cascade into tracked copies dies loudly with `42501` instead of succeeding silently |
   | `webauthn_challenges` | issue, consume, sweep | **nothing, and there is nothing to scope by** — the row names no person |
 
@@ -149,7 +151,7 @@ Enforced today:
 
   **Every named test on `credentials` but one has been watched fail**, under the deletion of the
   exact clause it guards, rather than merely asserted to guard it; the one is named at the end of
-  this paragraph. That is worth recording
+  this paragraph. The locked sign-in's row is outside this claim: its tests are not counted here. That is worth recording
   because three of them were green the day they were written and a test that has only ever been
   green is not yet evidence. The email change's find test was run against both of its clauses: an
   owner-less read reddened `FindFederatedCredentialAsync_ReturnsOnlyThisAccountsFederatedCredential`
@@ -259,8 +261,9 @@ Enforced today:
   [ADR 0016](../decisions/0016-give-recovery-code-hashes-their-own-exempt-table.md) — the third for
   the lookup a redemption is matched by, which is all a redemption touches before it knows who is
   asking).
-  That is also why the credential lookup projects to `credentials.user_id` and never joins `users`:
-  the join would touch the table policed on the very id being resolved.
+  That is also why the two federated credential lookups never join `users` — one projects to
+  `credentials.user_id`, the locked sign-in's returns the row itself: the join would touch the table
+  policed on the very id being resolved.
 - **Immutable ownership.** `Transaction.BudgetId` has no public setter and is set only via the
   factory. The query filter is read-side only — `SaveChanges` ignores it — so that immutability is
   what stops the *application* from moving a row between budgets. The database holds the same rule

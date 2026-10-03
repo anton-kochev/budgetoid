@@ -21,9 +21,10 @@ runs entirely by itself has none of those** — the local assertion an unlock sp
 gotchas below so that "four" is not read as "every ceremony a person can be asked for", and it is
 argued in [account-keys.md](account-keys.md), which owns what it produces.
 
-Two of the four paths that open a session run a ceremony here — an assertion, and the account
-registration whose own rules live in [registration.md](registration.md); the other two are in
-[recovery-codes.md](recovery-codes.md). A passkey is one of the two credential types whose session
+Two of the five paths that open a session run a ceremony here — an assertion, and the account
+registration whose own rules live in [registration.md](registration.md); two more are in
+[recovery-codes.md](recovery-codes.md), and the fifth, the locked sign-in, runs no ceremony at all —
+see [sessions.md](sessions.md). A passkey is one of the two credential types whose session
 reaches budget content, the other being a set of codes; `federated` is the only type that never can.
 Identity lives in [users-and-ownership.md](users-and-ownership.md); what happens after a credential
 has answered lives in [sessions.md](sessions.md); this file covers the answering itself. What of it
@@ -656,7 +657,7 @@ A proved re-authentication is **not a state anything stores**. The gate returns,
 and the only durable trace is the deleted nonce — see the rule in [erasure.md](erasure.md) on why
 the freshness window is the challenge's own lifetime rather than a recorded instant.
 
-The session's lifetime is **14 days**, read from `SessionPolicy.Lifetime`, which all four
+The session's lifetime is **14 days**, read from `SessionPolicy.Lifetime`, which all five
 establishing paths share; [sessions.md](sessions.md) owns that rule. What they share is the interval
 alone: where this handler establishes its session, after the signature verifies and after the
 identity is published, is this file's own rule above.
@@ -726,7 +727,9 @@ factor, and an account identifier derived from the challenge it just spent —
     `/api/registration` is the only group in this application whose authorization policy **names** a
     scheme, and it names the identity provider's — which is what admits a caller with no account and
     what stops a browser already holding a session from creating an account nobody's provider
-    vouched for.
+    vouched for. One route outside the group names the same scheme for the same reason — the
+    locked sign-in, whose caller holds no session either and which creates no account; see
+    [sessions.md](sessions.md).
 
 ## Edge Cases & Known Gotchas
 

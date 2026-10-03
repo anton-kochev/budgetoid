@@ -3777,6 +3777,12 @@ public sealed class AccountRegistrationTests
             return inner.FindUserIdByFederatedCredentialAsync(provider, subject, cancellationToken);
         }
 
+        public Task<Credential?> FindFederatedCredentialBySubjectAsync(
+            string provider,
+            string subject,
+            CancellationToken cancellationToken = default) =>
+            inner.FindFederatedCredentialBySubjectAsync(provider, subject, cancellationToken);
+
         public Task DeleteAsync(Guid userId, CancellationToken cancellationToken = default) =>
             inner.DeleteAsync(userId, cancellationToken);
     }

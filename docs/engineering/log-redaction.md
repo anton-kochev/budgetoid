@@ -375,13 +375,17 @@ rotation's begin, chunk and completion; two forced 500s — issuing codes for an
 factor manifest, and an export over two owned budgets, whose seeded second budget is taken away
 again in a step of its own; the email change, four ways — an address another account holds, a
 Google identity another account holds, an address the provider does not verify, and a success that
-moves both the subject and the address, answering exactly `409,409,401,200`; and the erasure, last,
-because it takes the account every other step wrote into. The email change's success retires the
-credential holding the registered subject and moves the registered address out of `users`, so the
-old values survive only in the snapshots and on the sent list. On the bearer host the traffic also
-changes the email of the account its validated token registered, first with a forged token — `401`,
-refused by `ProviderAuthorizationGate` before the passkey gate, with the handler's failure record —
-and then with a valid one, `200` with the handler's success record.
+moves both the subject and the address, answering exactly `409,409,401,200`; the locked sign-in,
+twice — the subject the email change moved the account to, then a subject nobody registered, which
+answers `404` and is never stored; a schedule filed and the session read from a locked session
+seeded on the federated credential; and the erasure, last, because it takes the account every other
+step wrote into. The email change's success retires the credential holding the registered subject
+and moves the registered address out of `users`, so the old values survive only in the snapshots
+and on the sent list. On the bearer host the traffic also changes the email of the account its
+validated token registered, first with a forged token — `401`, refused by
+`ProviderAuthorizationGate` before the passkey gate, with the handler's failure record — and then
+with a valid one, `200` with the handler's success record; and then signs that account in on the
+locked sign-in with a valid token for the identity the change moved it to.
 
 **The route floor.** `RouteTally` is a startup filter that records which endpoint each request was
 matched to and what it answered, and a route counts as reached **only on a 2xx** — a 401 selects the
@@ -390,23 +394,22 @@ every `RouteEndpoint` in the host's `EndpointDataSource`, with or without a meth
 `METHOD pattern` key per method an endpoint's `HttpMethodMetadata` names, and one `* pattern` key
 for an endpoint carrying no method metadata, which answers any method. A hit on such an endpoint is
 keyed `*` as well, so the two sides agree; `MapHealthChecks` maps one, and the traffic reads
-`GET /health` anonymously to reach it. Every declared key must be reached — [Guessing] 51 declared
-and 0 undriven, counted as the measured 50 plus `POST /api/me/email-change` and not re-run — with a
-floor on the declared count so an enumeration that found nothing cannot
+`GET /health` anonymously to reach it. Every declared key must be reached, with a floor on the
+declared count so an enumeration that found nothing cannot
 pass by demanding nothing, and the exemption list must name only keys the table still declares. The
 list is empty. An endpoint that is not a `RouteEndpoint` is not counted.
 
 **The needles are read back, never written down.** Every value of every column in
 `NeverLoggedColumns.All` is read on the admin connection, so row-level security hides nothing,
 **after every step** of the main host's traffic and once more after both hosts are disposed —
-[Guessing] 30 snapshots, counted as the measured 29 plus the email change's step and not re-run;
-the measured 29 took about 210 ms in all. The **union** is searched, so a value a later step
+32 snapshots, 31 steps and the final read, counted off `LogCensusTraffic` rather than off a run; a
+run of 29 snapshots was measured at about 210 ms in all. The **union** is searched, so a value a later step
 replaced or erased is still looked for. After every step rather than at chosen moments, so a step
 added later cannot take a value away before it is read. That is why deleting the seeded second
 budget is a step of its own: its name — which the export's 500 path holds, as an `ExportedBudget`
 in the snapshot `ReadSnapshotAsync` answers, when it throws — stands at the boundary between the
 seed and the removal. The records are read after the hosts are disposed, so one written at shutdown is searched
-too. The bearer host's five steps are not snapshotted one by one; they get only the final read.
+too. The bearer host's six steps are not snapshotted one by one; they get only the final read.
 
 **The limit is the step.** A value a single step writes and deletes within itself stands at no
 boundary and is never read back, so unless the traffic also lists it as sent, it is never searched.

@@ -45,6 +45,7 @@ public sealed class InMemoryUserRepository(InMemoryTransactionRepository transac
     private readonly List<Credential> _credentials = [];
     private readonly List<Budget> _budgets = [];
     private readonly List<string> _federatedLookupSubjects = [];
+    private readonly List<string> _credentialLookupSubjects = [];
 
     public int DeleteCallCount { get; private set; }
 
@@ -99,6 +100,43 @@ public sealed class InMemoryUserRepository(InMemoryTransactionRepository transac
             string.Equals(credential.Provider, provider, StringComparison.Ordinal)
             && string.Equals(credential.Subject, subject, StringComparison.Ordinal));
         return Task.FromResult(credential?.UserId);
+    }
+
+    /// <summary>
+    /// The subject every credential discovery — the locked sign-in's lookup — was asked about, in call
+    /// order and exactly as handed in.
+    /// </summary>
+    /// <remarks>
+    /// A list of its own rather than a share of <see cref="FederatedLookupSubjects" />, because the two
+    /// members answer different questions and a handler calling the wrong one is the mistake worth
+    /// seeing: the id-only lookup cannot hand a session the credential it must be opened over.
+    /// </remarks>
+    public IReadOnlyList<string> CredentialLookupSubjects => _credentialLookupSubjects;
+
+    /// <summary>
+    /// The federated credential filed under <paramref name="provider" /> and <paramref name="subject" />,
+    /// or <see langword="null" />.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Matched on the type as well as the pair, because the real read's predicate names
+    /// <c>type = 'federated'</c> and a passkey or a set of codes carries no provider or subject anyway —
+    /// so the type clause changes no answer this fake can give and is written for fidelity alone.
+    /// Ordinal on both halves, for <see cref="FindUserIdByFederatedCredentialAsync" />'s reason.
+    /// </para>
+    /// </remarks>
+    public Task<Credential?> FindFederatedCredentialBySubjectAsync(
+        string provider,
+        string subject,
+        CancellationToken cancellationToken = default)
+    {
+        _credentialLookupSubjects.Add(subject);
+
+        Credential? credential = _credentials.SingleOrDefault(credential =>
+            credential.Type == CredentialType.Federated
+            && string.Equals(credential.Provider, provider, StringComparison.Ordinal)
+            && string.Equals(credential.Subject, subject, StringComparison.Ordinal));
+        return Task.FromResult(credential);
     }
 
     /// <summary>

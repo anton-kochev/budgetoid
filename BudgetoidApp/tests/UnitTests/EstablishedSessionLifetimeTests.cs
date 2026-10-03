@@ -6,6 +6,7 @@ using Application.Passkeys.Reauthentication;
 using Application.RecoveryCodes.GenerateRecoveryCodes;
 using Application.RecoveryCodes.RedeemRecoveryCode;
 using Application.Sessions;
+using Application.Sessions.EstablishLockedSession;
 using Application.Sessions.RevokeSessionsForCredential;
 using Domain.Sessions;
 using Domain.Users;
@@ -20,13 +21,19 @@ namespace UnitTests;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Three handlers open a session — a passkey assertion, a recovery-code redemption and a
-/// regeneration that swept the sessions it replaced — and this is the file that puts the three beside
-/// each other.</b> Each of the three files that tests them pins its own handler's expiry, and none of
-/// them can say the other two agree. The equality is a rule rather than a coincidence: all three open a
-/// <see cref="SessionKind.Full" /> session, and a shorter one on the recovery paths would quietly tell
+/// <b>Four handlers open a session — a passkey assertion, a recovery-code redemption, a regeneration
+/// that swept the sessions it replaced, and a locked sign-in — and this is the file that puts the four
+/// beside each other.</b> Each of the files that tests them pins its own handler's expiry, and none of
+/// them can say the others agree. The equality is a rule rather than a coincidence: the first three open
+/// a <see cref="SessionKind.Full" /> session, and a shorter one on the recovery paths would quietly tell
 /// somebody who has just lost their authenticator that the way back in they were issued is worth less
 /// than the one they lost.
+/// </para>
+/// <para>
+/// <b>The locked sign-in shares the lifetime by decision, not by accident</b> — it opens a
+/// <see cref="SessionKind.Locked" /> session, and nothing in the domain forces its interval to match.
+/// It is here because "locked sessions last as long as full ones" is a product rule exactly as the
+/// recovery paths' equality is, and a locked-only constant is the edit that reddens only this file.
 /// </para>
 /// <para>
 /// <b>The value is asserted as an observable expiry against a fixed clock, and never read off the
@@ -34,7 +41,7 @@ namespace UnitTests;
 /// that type later decides — <c>TimeSpan.FromDays(14000)</c> included, which is how an intercepted code
 /// buys a session that never practically expires. Nothing here names a handler's field or
 /// <see cref="SessionPolicy.Lifetime" />, so <b>how</b> the number is stored is invisible to this file
-/// and <b>what</b> it is, on each of the three paths, is not. That independence has already been paid
+/// and <b>what</b> it is, on each of the four paths, is not. That independence has already been paid
 /// out once: the three handlers used to hold a private constant each, those were consolidated into the
 /// one shared value, and not a line here moved. It is the same insurance against the reverse edit — a
 /// handler given a lifetime of its own again reddens the second test below without anything here having
@@ -45,13 +52,13 @@ namespace UnitTests;
 /// <see cref="EveryPathThatOpensASession_ExpiresItFourteenDaysAfterTheHandlersInstant" /> pins the
 /// number, and <see cref="EveryPathThatOpensASession_AgreesWithTheOthers" /> pins the equality without
 /// naming it: the day product policy moves the interval, the first test is edited on purpose and the
-/// second is what refuses an edit that moved only one of the three.
+/// second is what refuses an edit that moved only one of the four.
 /// </para>
 /// <para>
 /// <b>Every path is driven through its real handler over the ordinary fakes</b> — a real device holding
 /// a real key pair, a real signature over the real nonce, and a real set of codes filed by the domain
 /// factories. A shortcut that constructed <see cref="Session.Establish" /> here would pin the domain,
-/// which already has its own tests, and would say nothing about the three call sites that choose the
+/// which already has its own tests, and would say nothing about the four call sites that choose the
 /// expiry.
 /// </para>
 /// </remarks>
@@ -85,21 +92,22 @@ public sealed class EstablishedSessionLifetimeTests
     [Test]
     public async Task EveryPathThatOpensASession_ExpiresItFourteenDaysAfterTheHandlersInstant()
     {
-        // Arrange & Act — one sign-in on each of the three paths, all reading the same fixed instant.
+        // Arrange & Act — one sign-in on each of the four paths, all reading the same fixed instant.
         Expiries expiries = await OpenOneSessionOnEveryPathAsync();
 
         // Assert
         await Assert.That(expiries.PasskeyAssertion).IsEqualTo(UtcNow + SessionLifetime);
         await Assert.That(expiries.RecoveryCodeRedemption).IsEqualTo(UtcNow + SessionLifetime);
         await Assert.That(expiries.RecoveryCodeRegeneration).IsEqualTo(UtcNow + SessionLifetime);
+        await Assert.That(expiries.LockedSignIn).IsEqualTo(UtcNow + SessionLifetime);
     }
 
     /// <summary>
-    /// The three paths agree with each other, whatever the interval happens to be.
+    /// The four paths agree with each other, whatever the interval happens to be.
     /// </summary>
     /// <remarks>
     /// <b>This is the claim the three handlers' remarks made and no test made.</b> Sharing
-    /// <see cref="SessionPolicy.Lifetime" /> is what makes the three agree today, and a shared field is
+    /// <see cref="SessionPolicy.Lifetime" /> is what makes the four agree today, and a shared field is
     /// exactly as easy to stop reading as a private one was to edit: a handler given an interval of its
     /// own again leaves that handler's own test green once its expectation is updated alongside, and
     /// leaves the first test below green too if the number it moved to happens to be fourteen days.
@@ -115,16 +123,18 @@ public sealed class EstablishedSessionLifetimeTests
         // Assert
         await Assert.That(expiries.RecoveryCodeRedemption).IsEqualTo(expiries.PasskeyAssertion);
         await Assert.That(expiries.RecoveryCodeRegeneration).IsEqualTo(expiries.PasskeyAssertion);
+        await Assert.That(expiries.LockedSignIn).IsEqualTo(expiries.PasskeyAssertion);
     }
 
-    /// <summary>The expiry each of the three paths stamped its session with.</summary>
+    /// <summary>The expiry each of the four paths stamped its session with.</summary>
     private sealed record Expiries(
         DateTime PasskeyAssertion,
         DateTime RecoveryCodeRedemption,
-        DateTime RecoveryCodeRegeneration);
+        DateTime RecoveryCodeRegeneration,
+        DateTime LockedSignIn);
 
     /// <summary>
-    /// Signs in once on each path and hands back the three expiries.
+    /// Signs in once on each path and hands back the four expiries.
     /// </summary>
     /// <remarks>
     /// Read off what the caller is <b>told</b> rather than off the stored row, because that is the value a
@@ -134,7 +144,33 @@ public sealed class EstablishedSessionLifetimeTests
     private static async Task<Expiries> OpenOneSessionOnEveryPathAsync() => new(
         await AssertWithAPasskeyAsync(),
         await RedeemARecoveryCodeAsync(),
-        await RegenerateARecoveryCodeSetAsync());
+        await RegenerateARecoveryCodeSetAsync(),
+        await SignInLockedAsync());
+
+    /// <summary>One locked sign-in, for an account holding a federated credential and a passkey.</summary>
+    private static async Task<DateTime> SignInLockedAsync()
+    {
+        const string subject = "google-lifetime-locked";
+        Guid userId = Guid.CreateVersion7();
+        InMemoryUserRepository users = new(new InMemoryTransactionRepository());
+        users.Seed(
+            User.CreateWithId(userId, "lifetime-locked@example.com", IssuedEarlier),
+            Credential.CreatePasskey(userId, IssuedEarlier));
+        users.SeedCredential(Credential.CreateFederated(userId, Credential.GoogleProvider, subject, IssuedEarlier));
+
+        EstablishLockedSessionHandler handler = new(
+            users,
+            new InMemorySessionRepository(),
+            new InMemoryErasureScheduleRepository(),
+            new RecordingUserContextWriter(),
+            new FakeTimeProvider(new DateTimeOffset(UtcNow)));
+
+        LockedSignInOutcome outcome = await handler.HandleAsync(new EstablishLockedSessionCommand(subject));
+
+        return outcome is LockedSignInOutcome.Established established
+            ? established.Session.ExpiresAtUtc
+            : throw new InvalidOperationException("The subject is registered, so the sign-in had to establish a session.");
+    }
 
     /// <summary>
     /// One completed passkey assertion: a real device, a real signature over the nonce the store holds.

@@ -69,6 +69,29 @@ public sealed class RegistrationRouteTests
     ];
 
     /// <summary>
+    /// The locked sign-in, the one route outside the registration group whose own policy names the
+    /// provider's scheme, exactly as the route table spells it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Its own list rather than a third row in <see cref="RegistrationRoutes" />,</b> because it is not
+    /// a registration route and must not read as one: registration is the one path that creates an
+    /// account, and this route creates none. It shares the registration group's <em>shape</em> — a policy
+    /// naming the provider's scheme, which takes it off the fallback — for the reason that group carries
+    /// it: the caller holds no session yet, so a requirement about session kinds has nothing to judge.
+    /// </para>
+    /// <para>
+    /// No trailing slash, on the expectation that it is mapped as one route rather than as a group with a
+    /// <c>MapPost("/")</c> under it. If it is mapped the other way the pattern grows the slash and this
+    /// row is what says so.
+    /// </para>
+    /// </remarks>
+    private static readonly string[] LockedSignInRoutes =
+    [
+        "/api/locked-session",
+    ];
+
+    /// <summary>
     /// The one route that reaches the provider's scheme through <see cref="ProviderAuthorizationGate" />
     /// rather than through a policy, exactly as the route table spells it.
     /// </summary>
@@ -82,8 +105,8 @@ public sealed class RegistrationRouteTests
     ];
 
     /// <summary>
-    /// NFR-025: the identity provider's scheme is reached by the two registration routes, which name it in
-    /// their policy, and by <c>POST /api/me/email-change</c>, which carries
+    /// NFR-025: the identity provider's scheme is reached by the two registration routes and the locked
+    /// sign-in, which name it in their policy, and by <c>POST /api/me/email-change</c>, which carries
     /// <see cref="RequiresProviderAuthorizationMetadata" /> — and by nothing else.
     /// </summary>
     /// <remarks>
@@ -102,7 +125,7 @@ public sealed class RegistrationRouteTests
     /// the shape it lands in endpoint metadata as is a framework detail rather than a property of this
     /// application. Reading only one of them would make this test go quiet — reporting an empty set, which
     /// reads exactly like the rule holding — on a framework upgrade that moved it. Reading both fails
-    /// closed instead: the comparison is against a written-out set of two, so a reader finding the scheme
+    /// closed instead: the comparison is against a written-out set of three, so a reader finding the scheme
     /// nowhere reports an empty set against a non-empty expectation.
     /// </para>
     /// <para>
@@ -111,7 +134,7 @@ public sealed class RegistrationRouteTests
     /// endpoint's metadata, so <see cref="SchemesNamedBy" /> reads nothing of it however carefully it
     /// reads. Adding <see cref="ProviderAuthentication.SchemeName" /> to that builder therefore hands a
     /// provider bearer <em>every route in the product that declares no policy of its own</em> — the whole
-    /// surface behind the session cookie — while the set comparison above goes on reporting exactly two
+    /// surface behind the session cookie — while the set comparison above goes on reporting exactly three
     /// routes. So the fallback's own schemes are read from
     /// <see cref="IAuthorizationPolicyProvider.GetFallbackPolicyAsync" /> and pinned separately.
     /// </para>
@@ -135,7 +158,7 @@ public sealed class RegistrationRouteTests
     /// </para>
     /// </remarks>
     [Test]
-    public async Task TheProviderScheme_IsReachedByExactlyTheRegistrationRoutesAndTheEmailChange()
+    public async Task TheProviderScheme_IsReachedByExactlyTheRegistrationRoutesTheLockedSignInAndTheEmailChange()
     {
         // Arrange
         await using ApiFactory factory = new(
@@ -165,7 +188,9 @@ public sealed class RegistrationRouteTests
         // Assert — joined rather than compared as collections so a failure names the route that moved
         // instead of reporting that two sets differ.
         await Assert.That(string.Join(", ", namingTheProvider))
-            .IsEqualTo(string.Join(", ", RegistrationRoutes.Order(StringComparer.Ordinal)));
+            .IsEqualTo(string.Join(
+                ", ",
+                RegistrationRoutes.Concat(LockedSignInRoutes).Order(StringComparer.Ordinal)));
 
         // The two controls AnonymousSurfaceTests carries, and they are what stop this passing over a
         // route table that came back empty: the scheme is named somewhere, and the table holds routes

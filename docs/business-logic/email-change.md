@@ -14,8 +14,9 @@
 ## Purpose
 
 The email change moves an existing account to the Google identity and address a fresh provider
-sign-in asserts. It is the one route besides the two registration routes that reads a provider token,
-and the one path in the product that writes `users.email` after the account exists. It creates no account:
+sign-in asserts. It is the one route that reads a provider token **beside** a session — the two
+registration routes and the locked sign-in read one in place of a session — and the one path in the
+product that writes `users.email` after the account exists. It creates no account:
 `RegisterAccountHandler` is still the only code that brings one into existence, and nothing here
 inserts a `users` row.
 
@@ -169,11 +170,12 @@ response body is a value in a log.
 - **Why**: an endpoint filter is a delegate, not metadata. A dump of the email change's
   `RouteEndpoint.Metadata` shows the handler's method, binding and response metadata and the marker,
   and no trace of the filter type (measured, as `RegistrationRouteTests` records). Without the
-  marker, a census of which routes reach the provider scheme would read the registration group's
-  policy and miss this route entirely.
-- **Enforced in**: `RegistrationRouteTests.TheProviderScheme_IsReachedByExactlyTheRegistrationRoutesAndTheEmailChange`
-  pins two sets, each against a written-out list: the routes whose policy names the provider scheme
-  (the two registration routes), and the routes carrying the marker (`/api/me/email-change`). A
+  marker, a census of which routes reach the provider scheme would read the policies of the
+  registration group and the locked sign-in and miss this route entirely.
+- **Enforced in**: `RegistrationRouteTests.TheProviderScheme_IsReachedByExactlyTheRegistrationRoutesTheLockedSignInAndTheEmailChange`
+  pins two sets against written-out lists: the routes whose policy names the provider scheme (the
+  two registration routes and `/api/locked-session`), and the routes carrying the marker
+  (`/api/me/email-change`). A
   registration route that moved onto the gate, or this route moving into a policy, is a red in both.
   It also pins the fallback's own schemes to the session cookie's alone.
   - **What it cannot see**: a route whose own code calls `AuthenticateAsync` with the provider scheme,
@@ -186,8 +188,8 @@ response body is a value in a log.
   shared with `RegistrationClaimGate`: a non-blank `sub` and `email`, and `email_verified` read by
   `bool.TryParse` as `true`. The missing-claim check runs first.
 - **Why**: two copies of three checks is how one gate starts admitting `"1"` as verified while the
-  other refuses it. The verdict is shared; the response is not. Registration answers by title
-  alone; this route answers with a `refusal` word, because here a `401` has three causes with three
+  other refuses it. The verdict is shared; the response is not. Registration and the locked sign-in
+  answer by title alone, through `RegistrationClaimGate`; this route answers with a `refusal` word, because here a `401` has three causes with three
   different next steps — sign in to Google again, choose an address Google verifies, retry the
   passkey.
 - **Enforced in**: `ProviderAuthorizationGate` maps `ProviderClaims.Refusal.MissingClaims` and a
@@ -952,9 +954,10 @@ rolls the sweep back.
 
 ## Integration Points
 
-- **[Registration](registration.md)** — the other route that reads a provider token. It reaches the
-  scheme through its group's **policy**, because its caller holds no session; this route reaches it
-  through a **filter**, beside a session. The claim judgement is shared through `ProviderClaims`; the
+- **[Registration](registration.md)** — the other routes that read a provider token. They reach
+  the scheme through their group's **policy**, because their caller holds no session; the locked
+  sign-in reaches it the same way for the same reason — see [sessions.md](sessions.md). This route
+  reaches it through a **filter**, beside a session. The claim judgement is shared through `ProviderClaims`; the
   response shapes are not.
 - **[Sessions](sessions.md)** — the fallback policy and `FullSessionRequirement` gate the route; the
   sweep is `RevokeSessionsForCredentialHandler`, and this is one of its callers.
@@ -1013,10 +1016,10 @@ rolls the sweep back.
   compare the hand-off whole, so a third member on it reddens; a separate private field keeping the
   decoded claims beside it would redden nothing, and `assertedEmail` reading one member is a property
   of the code, not of a test.
-- **`sessionsEnded` is `0` on every real account today.** The sweep can only find sessions the
-  federated credential opened, and nothing opens a locked session yet — see
-  [sessions.md](sessions.md). Every test that expects a non-zero count seeds the locked session
-  through the database.
+- **`sessionsEnded` counts the sessions a provider sign-in opened.** The sweep can only find
+  sessions the federated credential opened, which are the locked sessions `POST /api/locked-session`
+  establishes — see [sessions.md](sessions.md). No browser runs that sign-in yet, and every test
+  that expects a non-zero count seeds the locked session through the database.
 - **An erasure racing an email change answers `500`.** The account is gone either way, so no honest
   `409` exists. A change that moves the Google identity fails on `23503 FK_credentials_users_user_id`
   — the batch surfaces the `INSERT`'s foreign-key error before the `DELETE`'s row count — pinned by

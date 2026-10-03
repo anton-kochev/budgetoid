@@ -1745,6 +1745,9 @@ public sealed class KeyMaterialSecrecyTests
             + "factor count. The server cannot open it and never will, so what it carries is held by the "
             + "authentication tag; nothing private is inside it, and a private key arriving here would "
             + "be a secret the operator could reach with no test able to notice"),
+        new("SessionEndpoints.LockedSignInResponse", "Kind",
+            "a response member: the kind of session the locked sign-in just opened, always \"locked\", "
+            + "as SessionKind spells it"),
         new("SessionEndpoints.SessionResponse", "Kind",
             "a response member: the kind of session the caller already holds, as SessionKind spells it"),
         new("TransactionEndpoints.UpdateTransactionRequest", "Description",

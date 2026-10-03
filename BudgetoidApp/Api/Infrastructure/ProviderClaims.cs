@@ -9,7 +9,8 @@ namespace Api.Infrastructure;
 /// <remarks>
 /// <para>
 /// <b>One judgement, two gates.</b> <see cref="RegistrationClaimGate" /> asks it of the principal the
-/// registration group's policy authenticated; <see cref="ProviderAuthorizationGate" /> asks it of the
+/// registration group's policy — or the locked sign-in's — authenticated;
+/// <see cref="ProviderAuthorizationGate" /> asks it of the
 /// principal it authenticates itself, beside a session. The two answer in different shapes — registration
 /// by title alone, the email change with a <c>refusal</c> word — so this class returns the verdict and
 /// never a response. A second copy of the three checks is how one gate starts admitting <c>"1"</c> as

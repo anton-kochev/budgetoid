@@ -24,11 +24,14 @@ An authenticated request resolves an account that already exists or is refused, 
 **structural rather than a check**: a request authenticates from a session cookie, a cookie is only
 ever issued over a session row, and a session row is only ever written beside the account it names —
 so "an authenticated request naming an account that does not exist" is not a state the pipeline can
-be in. Every route outside `/api/registration` inherits a fallback policy naming the **session
-cookie** scheme, so a provider bearer there is never the request's identity: presented with no
-cookie it is answered a `401` indistinguishable from an anonymous one. One of those routes reads a
-bearer at all — the email change, which judges it in a filter **beside** the session, as a second
-proof. Everywhere else it authenticates nothing.
+be in. Every route outside `/api/registration` and `POST /api/locked-session` inherits a fallback
+policy naming the **session cookie** scheme, so a provider bearer there is never the request's
+identity: presented with no cookie it is answered a `401` indistinguishable from an anonymous one.
+One of those routes reads a bearer at all — the email change, which judges it in a filter
+**beside** the session, as a second proof. Everywhere else it authenticates nothing. The locked
+sign-in names the provider's scheme itself and resolves an account that already exists, from the
+federated credential the token's subject finds, or answers `404` and resolves nobody — see
+[sessions.md](sessions.md).
 
 A user owns **Budgets** and nothing else. Everything else — accounts, category groups, categories,
 payees, transactions — belongs to a budget, so **the budget, not the user, is the unit of tenancy**;
@@ -157,8 +160,10 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
     context opens, so a session that resolved nobody fails with `22P02` rather than reading another
     person's row. There is no EF query filter above them — the budget lookup that follows a
     session's own resolve runs before the ambient budget exists, so `Budgets` is scoped by owner
-    explicitly in `FindFirstForUserAsync`. The credential lookup projects to `credentials.user_id`
-    and never joins `users`, which holds that table's exemption to the reason it was granted for.
+    explicitly in `FindFirstForUserAsync`. The two federated discovery lookups —
+    `FindUserIdByFederatedCredentialAsync`, projecting to `credentials.user_id`, and the locked
+    sign-in's `FindFederatedCredentialBySubjectAsync`, returning the row untracked — never join
+    `users`, which holds that table's exemption to the reason it was granted for.
     `RlsIsolationTests` proves the isolation on both axes and `RlsCoverageTests` fails any new table
     that owes a policy and has none.
 
@@ -175,15 +180,17 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
     actually leaving" is the claim [erasure.md](erasure.md) opens with; a single consented creation
     path is what makes it true of every route rather than of the marked ones.
   - **What closes it is structural.** A provider token is a caller's **only** credential on exactly
-    **two** routes, both under `/api/registration`, and neither completes without a live
+    **three** routes. The two under `/api/registration` cannot complete without a live
     server-minted challenge and a WebAuthn credential the caller's own authenticator produced. The
-    one other route that reads a provider token, `POST /api/me/email-change`, reads it beside a full
+    third, `POST /api/locked-session`, creates nothing: a subject no credential carries — an erased
+    account's included — is a `404` that writes no row. The one other route that reads a provider
+    token, `POST /api/me/email-change`, reads it beside a full
     session — so a token outliving an erasure meets the fallback's `401` there, having no session to
     stand beside — and it creates nothing. Any scheme where a marker on a route group permits account
     creation reopens it: a marked route called on boot mints from a stale token, which is how this
     was reachable before.
-    `RegistrationRouteTests.TheProviderScheme_IsReachedByExactlyTheRegistrationRoutesAndTheEmailChange`
-    reads both off the route table and `AnonymousSurfaceTests` reads the anonymous set whole, so
+    `RegistrationRouteTests.TheProviderScheme_IsReachedByExactlyTheRegistrationRoutesTheLockedSignInAndTheEmailChange`
+    reads all of them off the route table and `AnonymousSurfaceTests` reads the anonymous set whole, so
     neither surface widens quietly.
   - **Counterexample**: answering the authenticated-but-unresolved case with `204` on the erasure
     route, on the grounds that "no account" satisfies erasure's post-condition. It reads well and it
@@ -208,21 +215,23 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
     `CurrentUser.UserId` exists because the request needs a scoped home for the identity the session
     resolved; no query filters by it.
 
-- **A provider principal reaching `/api/registration` or `POST /api/me/email-change` must carry
-  `sub`, `email` and `email_verified` claims.**
+- **A provider principal reaching `/api/registration`, `POST /api/locked-session` or
+  `POST /api/me/email-change` must carry `sub`, `email` and `email_verified` claims.**
   - **Why**: `sub` is the stable identity the account's federated credential is filed under, and
     `email` is the address the account is reached at. `email_verified` decides whether that address
     may be registered — or moved to — at all: an address the provider will not vouch for is one
     anybody could have typed.
-    - **Why those three routes rather than every request**: they are the only routes a provider
+    - **Why those four routes rather than every request**: they are the only routes a provider
       token is read on at all, so there is no other request on which the claims exist to be judged.
-      On the email change the principal judged is the one the gate authenticates itself, never the
-      session's — see [email-change.md](email-change.md).
+      The locked sign-in stores neither claim; it is judged by registration's own filter so that one
+      token is refused the same way on both. On the email change the principal judged is the one
+      the gate authenticates itself, never the session's — see [email-change.md](email-change.md).
     - **Why not in the database**: the rule is about a token, and the database cannot inspect one.
       Pushing it lower would mean procedural logic, which
       [ADR 0002](../decisions/0002-enforce-rules-at-the-lowest-capable-layer.md) rules out.
   - **Enforced in**: `Api/Infrastructure/RegistrationClaimGate`, an `IEndpointFilter` declared on
-    the `/api/registration` group beside its `RequireAuthorization`, so both legs carry it. It
+    the `/api/registration` group beside its `RequireAuthorization`, so both legs carry it, and on
+    `POST /api/locked-session` beside that route's own. It
     answers `401` with `MissingClaimsTitle` when `sub` or `email` is absent or blank, and `401` with
     `UnverifiedEmailTitle` when `email_verified` is absent or is anything `bool.TryParse` does not
     read as `true` — `"false"` and `"1"` alike. **The two titles must stay distinct**, the property
@@ -415,12 +424,14 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
 
 - **Rule**: What the identity provider reports changes the stored account **only on a request the
   person makes for it**. Registration is the first such request; the email change is the only other.
-  A sign-in never asks the provider anything, and nothing refreshes the account from a token on the
+  No sign-in writes what the provider reports, and nothing refreshes the account from a token on the
   way past.
 - **Why**: the provider vouching for this person once is not standing authority to rewrite what the
   account holds — an address the user never asked to change is not an address they can be reached
-  at. Signing in is a passkey assertion or a redeemed recovery code, neither of which involves any
-  third party, so there is no sign-in on which the provider has anything to say.
+  at. A full sign-in is a passkey assertion or a redeemed recovery code, neither of which involves
+  any third party. The **locked** sign-in does present a provider token, and it takes the subject
+  from it to find the federated credential and nothing more: it writes a session and no column of
+  the account, even when the token's address differs from the stored one.
   - **Consequence, accepted**: the stored address goes stale until the person asks to move it.
     Moving it is its own operation — a full session, a fresh provider token and a passkey assertion
     together — `POST /api/me/email-change`, which the settings screen's **Change email address**
@@ -428,9 +439,10 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
   - **The federated credential is still the account's link to the provider**, filed under
     `(provider, subject)` and unique across the table, which is what makes a second registration
     from the same Google identity a `409` rather than a second account. After creation it is read by
-    `RegisterAccountHandler`'s re-read that settles an ambiguous email collision, and by the email
+    `RegisterAccountHandler`'s re-read that settles an ambiguous email collision, by the email
     change, which reads it to compare the subject and, when the Google identity moves, retires it
-    and files a replacement in one save.
+    and files a replacement in one save, and by the locked sign-in, which opens a `Locked` session
+    over it.
 - **Enforced in**: registration inserts `users.email`; `EmailChangeRepository.ApplyAsync` updates it
   through `User.ChangeEmail`, spending the `users` `UPDATE (email)` grant. Those are the only two
   writers, measured by a search of Domain, Application and Infrastructure: the address is set in
@@ -876,15 +888,25 @@ area — see [sessions.md](sessions.md) — and this file does not restate its r
 
 ## Workflows & State Transitions
 
-**How a request comes to name an account.** There are two shapes and they share no code: a request
-*presenting a session* resolves one, and a request *under `/api/registration`* creates one. Nothing
-else in the product does either.
+**How a request comes to name an account.** There are three shapes and they share no code: a
+request *presenting a session* resolves one, a provider bearer on *`POST /api/locked-session`*
+resolves one from the federated credential its subject finds, and a request *under
+`/api/registration`* creates one. The anonymous sign-in routes — a passkey assertion and a
+recovery-code redemption — also publish an account after their own proof, with no provider
+involved; [passkeys.md](passkeys.md) and [recovery-codes.md](recovery-codes.md) own them.
 
 ```mermaid
 stateDiagram-v2
     [*] --> Presented : __Host-budgetoid-session on the request
     [*] --> Provider : a provider bearer on /api/registration
+    [*] --> LockedSignIn : a provider bearer on POST /api/locked-session
     [*] --> Neither : anything else
+
+    LockedSignIn --> LockedGated : RegistrationClaimGate — sub, email, email_verified
+    LockedGated --> Refused : a claim is missing, or the address is not asserted as verified
+    LockedGated --> NoAccount : no federated credential carries the subject
+    LockedGated --> [*] : the credential's owner published, a Locked session written
+    NoAccount --> [*] : 404 refusal "no_account", nothing written
 
     Presented --> TokenFound : session_tokens by digest — exempt, nobody published
     Presented --> Refused : the cookie is absent, malformed, or names no row
@@ -911,10 +933,11 @@ stateDiagram-v2
 | TokenFound → Published → SessionRead | Always, and **in that order** | Reversed, the policed read meets `''::uuid` and every request in the product answers `22P02`. No transaction may wrap any of it |
 | SessionRead → Refused | The session is revoked or past its expiry | 401, except on the one route carrying `AcceptsEndedSessionAttribute`, which reaches no ambient budget even there |
 | SessionRead → BudgetResolved | A live session | The account's first budget; `ResolveBudget` runs after `ResolveUser` because that call clears it |
-| Neither → Refused | An authenticated bearer on any route outside `/api/registration`, or nothing at all | **The same 401.** The fallback policy names the session cookie scheme, so `AuthorizationMiddleware` re-authenticates against that handler alone and it answers `NoResult` for a request with no cookie |
-| Provider → Gated | Either leg of `/api/registration` | The group's policy names `ProviderAuthentication.SchemeName` and nothing else, so this is the only place a bearer is the request's identity. (The email change authenticates one too, but beside a session that already resolved the account — see [email-change.md](email-change.md).) `RegistrationClaimGate` then requires `sub`, `email` and `email_verified`, with a distinct title for each of the two refusals |
+| Neither → Refused | An authenticated bearer on any route outside `/api/registration` and `POST /api/locked-session`, or nothing at all | **The same 401.** The fallback policy names the session cookie scheme, so `AuthorizationMiddleware` re-authenticates against that handler alone and it answers `NoResult` for a request with no cookie |
+| Provider → Gated | Either leg of `/api/registration` | The group's policy names `ProviderAuthentication.SchemeName` and nothing else, so this and the locked sign-in are the only places a bearer is the request's principal. (The email change authenticates one too, but beside a session that already resolved the account — see [email-change.md](email-change.md).) `RegistrationClaimGate` then requires `sub`, `email` and `email_verified`, with a distinct title for each of the two refusals |
 | Gated → Creating | A verified account-registration ceremony, a `prf` result, a canonical factor id, two envelopes and ten submissions | `User.CreateWithId` validates the derived identifier and the address; `Credential.CreateFederated` validates provider and subject; `Budget.CreateDefault` validates the owner. See [registration.md](registration.md) |
 | Creating → Conflict | A unique violation on one of four pinned index names | `RegisterAsync` reports which, `RefusalFor` chooses the sentence, and **the race winner is never adopted** |
+| LockedSignIn → LockedGated → published | `POST /api/locked-session` | The route's policy names the provider scheme alone; the same `RegistrationClaimGate`; one read of `credentials` by type, provider and subject, never joining `users`, with nobody published; then the found credential's owner is published and the session written. See [sessions.md](sessions.md) |
 
 ## Decision Trees
 
@@ -936,8 +959,15 @@ IF the request presents __Host-budgetoid-session
                                                            beside it. On POST /api/me/email-change
                                                            a provider bearer is then judged beside
                                                            it, never in its place
-ELSE IF the route is under /api/registration             ← the only routes where JwtBearer is the
-                                                           request's identity
+ELSE IF the route is POST /api/locked-session            ← JwtBearer is the request's principal here
+  IF sub or email is missing or blank, or email_verified does not parse as true
+    THEN 401 ProblemDetails, registration's two titles
+  ELSE IF no federated credential carries the subject    ← exempt read, nobody published
+    THEN 404 refusal "no_account", nothing written
+  ELSE
+    publish the credential's owner, write a Locked session over that credential
+ELSE IF the route is under /api/registration             ← the other routes where JwtBearer is the
+                                                           request's principal
   IF sub or email is missing or blank
     THEN 401 ProblemDetails "Authenticated principal is missing required claims."
   ELSE IF email_verified does not parse as true              ← absent, blank, "false" and "1" all fail
@@ -984,9 +1014,10 @@ The budget branch that runs after this, on every path, is in
   create an account, and `/app/settings`, to change its address — and the identity it vouches for
   reaches the account through a federated credential rather than a column on the user. The API
   reads three claims and no others — `sub` and `email`, which are stored, and `email_verified`, read
-  and discarded — on the two registration routes and on `POST /api/me/email-change`. The frontend
-  attaches the **ID token** (not the access token) as the `Authorization: Bearer` header on those
-  **three routes and nowhere else**: on the registration routes the token the library stored, on the
+  and discarded — on the two registration routes and on `POST /api/me/email-change`, and the same
+  three on `POST /api/locked-session`, which stores none of them. The frontend does not call the
+  locked sign-in yet. It attaches the **ID token** (not the access token) as the
+  `Authorization: Bearer` header on **three routes and nowhere else**: on the registration routes the token the library stored, on the
   email change only the token its own request carries on its context. The client's own narrowing is
   not what makes a bearer useless elsewhere; it is what stops a credential travelling further than
   the routes that can act on it. The authorization request asks for `openid email` and nothing more,
@@ -1013,8 +1044,9 @@ The budget branch that runs after this, on every path, is in
 - **[Email Change](email-change.md)**: the one path that writes `users.email` and replaces the
   federated credential after the account exists. It reads a provider token in a filter, beside a
   full session, and asks for a passkey assertion too.
-- **[Registration](registration.md)**: the one way an account comes to exist. Its two routes are the
-  only ones in this application whose policy **names** an authentication scheme, and the account
+- **[Registration](registration.md)**: the one way an account comes to exist. Its two routes and
+  the locked sign-in are the only ones in this application whose policy **names** an authentication
+  scheme, and the account
   they leave behind satisfies the three-credential invariant from its first instant — which is the
   same sentence as "every account satisfies it". The account identifier they write is derived from
   the ceremony's own challenge rather than drawn by `Guid.CreateVersion7()`, which is why
@@ -1091,8 +1123,9 @@ The budget branch that runs after this, on every path, is in
 - **A returning user's stored email is never refreshed on the way past, and it will go stale until
   they move it.** The obvious "fix" is to re-apply a token's claims to an account that already
   exists on every authenticated request. Do not do it: the provider is not standing authority to
-  rewrite the account. A returning person signs in with a passkey, contacting no third party, so no
-  sign-in carries a token to re-apply. The one request that does carry one beside a session, the
+  rewrite the account. A returning person signs in with a passkey, contacting no third party. The
+  locked sign-in does carry a token, and it reads the subject off it and writes nothing of the
+  account's from it. The one request that carries one beside a session, the
   email change, writes only because the person asked it to and proved it with a passkey — see
   [email-change.md](email-change.md).
 

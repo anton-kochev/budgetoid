@@ -19,17 +19,19 @@ covers what happens *after* a credential has answered who is asking. The distinc
 point: a token issued by an identity provider cannot be taken back by this product, while a session
 row can be ended here, in one write, by the same role that serves every request.
 
-**Four things establish a session and there is no fifth**, and all four open a `Full` session
-lasting 14 days. The fourth is the earliest in a person's life with the product: **completing
-`POST /api/registration`**, which signs somebody in on the passkey the same request created — see
-[registration.md](registration.md).
+**Five things establish a session and there is no sixth.** Four open a `Full` session and one
+opens a `Locked` session, and all five last 14 days. The fourth is the earliest in a person's life
+with the product: **completing `POST /api/registration`**, which signs somebody in on the passkey
+the same request created — see [registration.md](registration.md). The fifth is the **locked
+sign-in**, `POST /api/locked-session`: a Google ID token and nothing else, turned into a `Locked`
+session over the account's federated credential — see the rule on it below.
 
-**The loop is closed on the server.** All four paths mint a handle and set the cookie; a request
+**The loop is closed on the server.** All five paths mint a handle and set the cookie; a request
 presenting it is authenticated from it, publishing the account and the ambient budget; and
-`POST /api/me/session/revocation` ends it. **Two of the four have a screen**: `/register` runs its
-creation ceremony and `/welcome` runs the assertion. The other two are reached today only by the
-integration suite — nothing in the browser redeems a code or regenerates a set. Every request this
-app makes is authenticated from the cookie. The browser contacts the identity provider from two
+`POST /api/me/session/revocation` ends it. **Two of the five have a screen**: `/register` runs its
+creation ceremony and `/welcome` runs the assertion. The other three are reached today only by the
+integration suite — nothing in the browser redeems a code, regenerates a set or runs the locked
+sign-in. Every request this app makes is authenticated from the cookie. The browser contacts the identity provider from two
 screens: `/register`, to create an account, and `/app/settings`, to change its address — and the
 email change's request carries a provider token **beside** the cookie, never in its place; see
 [email-change.md](email-change.md).
@@ -151,7 +153,7 @@ required members. A third writer is a decision rather than a refactor.
     never live can only mislead whatever reads it.
   - **Enforced in**: `CK_sessions_lifetime` (`expires_at_utc > created_at_utc`), restated in
     `Session.Establish` so a bad call fails with a named field rather than a raw `23514`. No request
-    can reach it: each of the four establishing paths computes the expiry by adding the shared
+    can reach it: each of the five establishing paths computes the expiry by adding the shared
     lifetime to the instant it just read. The restatement guards against a future caller that
     computes an expiry from something a request supplied.
 
@@ -357,8 +359,8 @@ required members. A third writer is a decision rather than a refactor.
   real least-privilege connection, which is the test that dies with `22P02` if anyone ever wraps it.
   - **No transaction anywhere on this path**, the same trap from the other side: one opened before
     the publication configures its connection while the setting is still empty, and every policed
-    statement inside it fails. `RegisterAccountHandler`, `CompleteAssertionHandler` and
-    `RedeemRecoveryCodeHandler` each carry the same warning. Nothing here writes, so an atomic unit
+    statement inside it fails. `RegisterAccountHandler`, `CompleteAssertionHandler`,
+    `RedeemRecoveryCodeHandler` and `EstablishLockedSessionHandler` each carry the same warning. Nothing here writes, so an atomic unit
     would be protecting nothing.
   - **Two round trips per authenticated request**, stated as the cost rather than hidden. Folding
     them into one is the "denormalise the expiry onto the exempt table" alternative ADR 0019
@@ -788,6 +790,67 @@ required members. A third writer is a decision rather than a refactor.
 
 ---
 
+- **Rule**: `POST /api/locked-session` turns a Google ID token, and nothing else, into a `Locked`
+  session over the account's **federated** credential — or into a `404` that writes nothing. It
+  takes no body and creates no account.
+- **Why**: somebody whose passkeys and recovery codes are all gone still holds their Google sign-in.
+  A locked session is what lets that sign-in reach the one act built for them — the erasure schedule
+  — and nothing with budget content in it. See [erasure.md](erasure.md).
+  - **The route names the provider's scheme in a policy of its own**, the registration group's
+    shape: `RequireAuthenticatedUser` over `ProviderAuthentication.SchemeName`. Naming the scheme is
+    what makes `AuthorizationMiddleware` authenticate the bearer rather than the cookie, so a browser
+    already holding a session — full or locked — cannot stand in for the provider here. Declaring a
+    policy takes the route off the fallback, which is right rather than worked around: the caller
+    holds no session, so the two requirements about session kinds have nothing to judge. Not
+    `AllowAnonymous`: the provider's signature is the whole proof the session is opened on.
+  - **The claims are judged by `RegistrationClaimGate`, the filter registration uses, not a copy of
+    it.** No usable `sub` or `email` is a `401` titled `MissingClaimsTitle`; an address the provider
+    does not vouch for is a `401` titled `UnverifiedEmailTitle`. The checks are `ProviderClaims`', so
+    a second filter would be the second copy that class exists to prevent.
+  - **One discovery read, on `credentials` alone.** `FindFederatedCredentialBySubjectAsync` matches
+    type `federated`, provider and subject, untracked, and never joins `users`. It returns the
+    credential itself, not the account id. Two reads — the id, then "the account's federated
+    credential" — would let an email change landing between them hand the session a credential this
+    token never named. And it never reads the account's credentials in general, because a passkey
+    there would open a `Full` session, the one thing a provider sign-in must not reach.
+  - **The order is the one every establishing path keeps.** The exempt read runs with nobody
+    published; then `ResolveUser(credential.UserId)`; then everything policed — the handle minted,
+    `Session.Establish` over that credential with `SessionPolicy.Lifetime`, one `AddAsync` carrying
+    the session and its handle, and the account's erasure schedule read. `Session.Establish` derives
+    `Locked` from the credential's type, so nothing on this path can ask for anything else. **No
+    transaction and no `ITransactionalExecutor`**: there is one write, and a transaction opened
+    before the publication would configure its connection with the identity still empty.
+  - **An unknown subject is a `404` with `refusal: "no_account"`**, and nothing is published,
+    written or set — no session, no handle, no cookie. The body repeats neither the subject nor the
+    address. **It is not an enumeration oracle**: only a caller holding a provider-verified token for
+    that exact subject learns it, the argument registration's own subject refusal rests on — see
+    [registration.md](registration.md).
+  - **The `200` carries three members** — `kind` (always `"locked"`), `expiresAtUtc`, and `erasure`,
+    which is `null` or `{ "takesEffectAtUtc": … }` — the shape `GET /api/me/session` answers. The
+    cookie is written by the endpoint on the established arm only, after the handler returned.
+- **Enforced in**: `EstablishLockedSessionHandler` and the route in `SessionEndpoints`.
+  `EstablishLockedSessionHandlerTests` pins the order over one log of calls, on an account holding a
+  passkey beside its federated credential and a stranger's account filed before it — a handler that
+  took "the account's first credential", or the first federated row, lands on the wrong one.
+  `LockedSignInEndpointTests` runs the real `JwtBearer` handler with a test signing key, on the app
+  role, so a handler that published late answers `500` with `22P02`. It pins the stored row
+  (`locked`, over the federated credential and not the passkey), the three-member body, the `403`
+  that session meets on `GET /api/accounts`, and a `404` that writes nothing — counted on `users`,
+  `credentials`, `sessions`, `session_tokens` and `erasure_schedules`. It pins a `401` with no
+  token even beside a full or a locked cookie, on a forged signature, on an unverified address, on a
+  missing `email` and on a missing `sub`, and the first-party `403` without `X-Budgetoid-Client`.
+  `RegistrationRouteTests` reads the route among the provider-scheme routes.
+- **Counterexample**: keying the lookup on the address. The `404` test's second case sends an
+  unregistered subject carrying an address an account holds; a lookup on the address opens a locked
+  session on an account the provider never named.
+- **Note** — **a race recorded rather than handled.** An erasure committing between the discovery
+  read and the save removes the credential the session names, so the insert fails its foreign key
+  with `23503` and the request answers `500`; a retry finds no credential and answers `404`. Nothing
+  in the suite drives that interleaving.
+- **Source**: `[SOURCE: discussion]`
+
+---
+
 - **Rule**: A session whose kind reads no budget content reaches **three** routes — the one that
   ends sessions, `GET /api/me/session`, which tells the caller what it holds, and
   `POST /api/me/erasure/schedule`, which files the account's erasure for seven days out. Every other
@@ -822,10 +885,10 @@ required members. A third writer is a decision rather than a refactor.
 - **Enforced in**: `FullSessionRequirement` and its handler, carried on the fallback authorization
   policy beside `RequireAuthenticatedUser` and beside the **session cookie scheme, named
   explicitly** — so it reaches every route declaring no policy of its own, which is everything
-  outside the anonymous surface and the **registration** group. That group declares a policy naming
-  the identity provider's scheme, which takes it out of the fallback; the outcome is right rather
-  than worked around, because a caller with no session at all gives a requirement about session
-  kinds nothing to judge. `POST /api/me/email-change` reads a provider token too and **stays** on
+  outside the anonymous surface, the **registration** group and the **locked sign-in**. Both declare
+  a policy naming the identity provider's scheme, which takes them out of the fallback; the outcome
+  is right rather than worked around, because a caller with no session at all gives a requirement
+  about session kinds nothing to judge. `POST /api/me/email-change` reads a provider token too and **stays** on
   the fallback: it authenticates that token in a filter beside the session rather than in a policy,
   so a locked session is refused there like everywhere else — see
   [email-change.md](email-change.md). Naming the scheme on the fallback restates the default and
@@ -860,22 +923,21 @@ required members. A third writer is a decision rather than a refactor.
     other. The handler is registered in `Program.cs`, and `LockedSessionOnlyRequirementTests`
     resolves the registered set — unregistered, the fallback carries a requirement nothing can
     satisfy, a `403` on every authenticated request. Three other shapes were refused:
-    - **The route declaring a policy of its own.** It would be the first route outside the
-      registration group to leave the fallback policy, and leaving it means the route carries only
-      the rules it restates — the cookie scheme, an authenticated user, every requirement beside
-      them.
+    - **The route declaring a policy of its own.** The routes that declare one are the
+      registration group and the locked sign-in, whose callers hold no session at all; this route's
+      caller holds one. Leaving the fallback means the route carries only the rules it restates — the
+      cookie scheme, an authenticated user, every requirement beside them.
     - **A kind check in the route delegate or the handler.** It refuses the same requests and is
       invisible to the route table, so no census can read which routes carry it.
     - **Teaching `FullSessionRequirement` to refuse a full session on marked routes.** A requirement
       named for admitting full sessions would then also refuse them, and its name would lie.
-  - **The gate is unreachable from any live route today**, which is exactly how one ships broken and
-    green: nothing establishes a locked session, because the only credential type that opens one is
-    `Federated` and the federated path mints no cookie. That covers both markers: the schedule route
-    is reached only by a test that seeds a locked session. Every test seeds the session and its
-    handle directly through the database, and each refusal is paired with a `Full` session on the
-    same account against the same route — without that arm, a policy refusing everybody passes. The
-    schedule route's pairing runs the other way round: the full session is refused and the locked
-    one succeeds.
+  - **A real sign-in reaches the gate.** `POST /api/locked-session` opens a locked session over the
+    federated credential, and `LockedSignInEndpointTests` follows that session to `GET /api/accounts`
+    (`403`), `GET /api/me/session` (`200`, `"kind": "locked"`) and the sign-out (`204`). The census
+    and refusal tests seed their session and its handle directly through the database, and each
+    refusal is paired with a `Full` session on the same account against the same route — without
+    that arm, a policy refusing everybody passes. The schedule route's tests seed theirs too, and
+    the pairing runs the other way round: the full session is refused and the locked one succeeds.
   - **A principal arriving here with no kind claim is refused, and nothing escapes on its scheme.**
     The fallback names the cookie scheme, so `AuthorizationMiddleware` re-authenticates against that
     handler alone — which makes a claimless principal a cookie principal without one, a session this
@@ -907,7 +969,9 @@ required members. A third writer is a decision rather than a refactor.
   equivalent and is not — the export reads `budgets` by `user_id`, so it would sail through, and
   every other route would fail with a raw exception rather than a refusal.
 - **Note**: the schedule route is the release valve for somebody holding nothing but a provider
-  sign-in, and it exists; the sign-in that would bring them to it does not. The **immediate**
+  sign-in. The sign-in that brings them to it exists on the server — `POST /api/locked-session`,
+  which answers the account's scheduled instant beside the session — and nothing in the browser
+  runs it yet. The **immediate**
   erasure, `POST /api/me/erasure`, is refused to a locked session like everything else. Why a
   schedule needs no passkey, and why a full session must not file one, is argued in
   [erasure.md](erasure.md).
@@ -927,7 +991,7 @@ stateDiagram-v2
 
 | Transition | Triggered by | Validations |
 |---|---|---|
-| → Established | `Session.Establish(credential, createdAtUtc, expiresAtUtc)`, reached from `RegisterAccountHandler` once a registration ceremony verifies — over the **passkey** credential it just created, never the recovery-codes one — from `CompleteAssertionHandler` once a passkey assertion verifies, from `RedeemRecoveryCodeHandler` once a presented verifier matches a stored hash, and from `GenerateRecoveryCodesHandler` when replacing a set ended at least one of that set's sessions | the credential is required; the expiry must be after the creation instant; the kind is derived from the credential's type and cannot be supplied |
+| → Established | `Session.Establish(credential, createdAtUtc, expiresAtUtc)`, reached from `RegisterAccountHandler` once a registration ceremony verifies — over the **passkey** credential it just created, never the recovery-codes one — from `CompleteAssertionHandler` once a passkey assertion verifies, from `RedeemRecoveryCodeHandler` once a presented verifier matches a stored hash, from `GenerateRecoveryCodesHandler` when replacing a set ended at least one of that set's sessions, and from `EstablishLockedSessionHandler` once a provider token's subject matches a federated credential — the one path whose session is `Locked` | the credential is required; the expiry must be after the creation instant; the kind is derived from the credential's type and cannot be supplied |
 | Established → Revoked | `Session.Revoke(revokedAtUtc)`, reached two ways: through `RevokeSessionsForCredentialHandler`, which `RevokePasskeyHandler`, `GenerateRecoveryCodesHandler` and `ChangeEmailHandler` each call before deleting a credential, and through `RevokeSessionHandler`, which `POST /api/me/session/revocation` calls to end the caller's own | none. Already revoked is a no-op keeping the first instant, which is what makes a retry honest about having ended nothing new |
 | Established → Expired | the clock | none. `IsActiveAt` reads the expiry as well as the revocation, with an exclusive boundary: a session is live up to its expiry and not at it |
 | Established → deleted | `EraseAccountHandler` deleting the user row; the session and its `session_tokens` rows leave by the cascade `users → credentials → sessions → session_tokens`, in the erasure's own transaction. A revoked or expired row leaves the same way | none, and nothing is stamped: a `revoked_at_utc` would be a remnant. The cascade runs as the referencing table's owner; the role holds no `DELETE` on either table, so a cascade is the only way these rows leave — see [erasure.md](erasure.md). The next request presenting the cookie finds no token row and answers `401` — **the sign-out route included**, which makes this the one end where the cookie stays on the client until its `Expires`. Harmless, because it names nothing; do not answer it by relaxing the lookup — see the ended-session rule |
@@ -1011,8 +1075,9 @@ ELSE                                                    ← an unenumerated futu
     answer. A **locked account** is that file's word for a browser that does not hold the content
     key, which is the state every tab starts in and which a page reload returns to, on a session
     that is perfectly live. **The two are left by different acts, and that is the sharpest way to
-    keep them apart.** Nothing in the product leaves a *locked session* — no route establishes one,
-    so the gate over them is unreachable from any live surface. A *locked account* is left on
+    keep them apart.** Nothing in the product turns a *locked session* into a full one — `kind` is
+    immutable by omission from the grant — so a person holding one reaches budget content only by a
+    new sign-in on a passkey or a recovery code, which writes a new row. A *locked account* is left on
     `/app/settings`, by the Account keys section's **Unlock**: a passkey ceremony the browser mints
     and discards, which calls no route, spends no challenge and changes no row in `sessions`. So an
     unlock is invisible to everything this file describes, and a sign-in is not the only way to
@@ -1049,9 +1114,13 @@ ELSE                                                    ← an unenumerated futu
   expires, and cannot spend that knowledge.
 - **The cookie is written by the endpoint, on the handler's success, and never before it.** An
   endpoint that wrote one unconditionally would leave a cookie behind on a refused ceremony. Note
-  what does *not* hold that rule: on these routes a refusal leaves as an exception and
+  what does *not* hold that rule: on the ceremony routes a refusal leaves as an exception and
   `UseExceptionHandler` clears the response, so the framework would wipe such a cookie anyway. The
-  ordering is held by the positive tests, not by the refusal ones.
+  ordering is held by the positive tests, not by the refusal ones. **The locked sign-in is the
+  exception**: its `404` is a returned outcome, nothing clears that response, so the cookie is
+  written on the established arm only and
+  `LockedSignIn_ForAnUnregisteredSubject_Answers404NoAccount_AndWritesNothing` asserts no
+  `Set-Cookie`.
 - **A first issue of recovery codes sets no cookie.** Only the branch that swept a live session
   re-establishes one, and that condition is the rule rather than a detail — a handler minting
   unconditionally passes every other test on that path. Registration is not an exception: that route
@@ -1061,10 +1130,12 @@ ELSE                                                    ← an unenumerated futu
   positions are correct and no test distinguishes them, which is exactly why the choice is written
   down: outside means one secret per request rather than one per retry attempt, and correctness does
   not rest on the subtle property that the value a retried delegate returns belongs to the attempt
-  that survived. **Registration has no delegate at all**, so there the question does not arise.
+  that survived. **Registration and the locked sign-in have no delegate at all**, so there the
+  question does not arise.
 - **The session cookie is the API's default authentication scheme, and nothing forwards to another
-  one.** `JwtBearer` stays registered and is reached two ways: by exactly **one** policy — the
-  registration group's — and by `ProviderAuthorizationGate`, a filter on `POST /api/me/email-change`
+  one.** `JwtBearer` stays registered and is reached two ways: by exactly **two** policies — the
+  registration group's and `POST /api/locked-session`'s — and by `ProviderAuthorizationGate`, a
+  filter on `POST /api/me/email-change`
   that authenticates the bearer **beside** a full session and never as the request's identity. A
   bearer presented anywhere else authenticates nothing; a bearer presented to the email change with
   no cookie gets the fallback's own `401`
@@ -1072,9 +1143,10 @@ ELSE                                                    ← an unenumerated futu
   chose a handler per request would put a second way to authenticate an ordinary route back on the
   table.
 - **A session's `sub` and a provider's `sub` meet on one request, and never in one principal.**
-  On the registration routes the provider's principal is the only one — the policy names that
-  scheme — and the account id is never a claim: the handler derives it and publishes it after the
-  signature verifies. On the email change both exist at once: `HttpContext.User` is the session's,
+  On the registration routes and the locked sign-in the provider's principal is the only one — each
+  policy names that scheme alone — and the account id is never a claim: registration derives it and
+  publishes it after the signature verifies, and the locked sign-in publishes the owner of the
+  credential its subject found. On the email change both exist at once: `HttpContext.User` is the session's,
   and its `sub` is this installation's account id; the provider's principal is the result of the
   gate's own `AuthenticateAsync` call, read once for its subject and address and never merged in. So
   no principal on any request carries both, and a `sub` read off one means one thing. A policy naming
@@ -1144,11 +1216,11 @@ ELSE                                                    ← an unenumerated futu
   straight to `ISessionRepository`, because the handler is where the clock is read, so one decision
   to end access is stamped as one instant however many rows it touches. **`ChangeEmailHandler` is the
   one caller that sweeps the federated credential**, and it does so only when the Google identity
-  moves; since nothing establishes a locked session, that sweep finds nothing on a real account
-  today — see [email-change.md](email-change.md).
-- **The expiry is decided by the caller, and the four callers read one value.** `Session.Establish`
+  moves. The locked sign-in opens sessions over exactly that credential, so the sweep is what ends
+  them when the identity they were opened on moves — see [email-change.md](email-change.md).
+- **The expiry is decided by the caller, and the five callers read one value.** `Session.Establish`
   validates only that the expiry is after the creation instant; the number — **14 days** — is
-  `SessionPolicy.Lifetime` in `Application/Sessions`, which all four handlers add to the instant
+  `SessionPolicy.Lifetime` in `Application/Sessions`, which all five handlers add to the instant
   they read. It lives in Application rather than Domain because how long a session lasts is product
   policy, which ADR 0002 keeps above the invariants, and it is not on `IPasskeyCeremonyPolicy`
   because a session lifetime varying per environment is a difference nobody meant.
@@ -1160,6 +1232,11 @@ ELSE                                                    ← an unenumerated futu
     the only shape in which a single edit cannot separate them — which is exactly what happened when
     the fourth path arrived: `RegisterAccountHandler` inherited the interval by construction rather
     than by anybody remembering.
+  - **The locked sign-in shares it by decision, not by force.** Nothing in the domain makes a
+    locked session's interval match a full one's; "locked sessions last as long as full ones" is a
+    product rule like the recovery paths' equality. `EstablishedSessionLifetimeTests` drives it
+    beside the passkey assertion, the redemption and the regeneration, so a locked-only constant
+    reddens there.
   - **What is shared is the interval and nothing else.** *When* each handler establishes its session
     is a security property that path owns, argued at its own call site and stated as its own rule in
     [passkeys.md](passkeys.md), [recovery-codes.md](recovery-codes.md) and

@@ -68,6 +68,7 @@ internal static class LogCensusTraffic
     private const string SessionReadPath = "/api/me/session";
     private const string RotationPath = "/api/me/key-rotation";
     private const string EmailChangePath = "/api/me/email-change";
+    private const string LockedSessionPath = "/api/locked-session";
 
     /// <summary>The issuer the application's bearer handler accepts.</summary>
     public const string ProviderIssuer = "https://accounts.google.com";
@@ -101,6 +102,15 @@ internal static class LogCensusTraffic
     public const string BearerEmailChangeStep = "email change, provider token validated";
 
     public const string ForgedEmailChangeStep = "email change, provider token forged";
+
+    /// <summary>
+    /// The name of the step that signs the primary account in as a locked session, then a subject nobody
+    /// registered.
+    /// </summary>
+    public const string LockedSignInStep = "locked sign-in";
+
+    /// <summary>The name of the bearer step that signs the registered account in as a locked session.</summary>
+    public const string BearerLockedSignInStep = "locked sign-in, provider token validated";
 
     /// <summary>One step of the traffic and the records it wrote.</summary>
     public sealed record Step(string Name, IReadOnlyList<int> Statuses, IReadOnlyList<CapturedLogRecord> Records);
@@ -530,9 +540,25 @@ internal static class LogCensusTraffic
             }
         });
 
-        // The one act a locked session may perform. Nothing in the product establishes a locked session
-        // yet, so the session is seeded on the account's federated credential — the one the email change
-        // above refiled, which is why this runs after it — and only the request itself is traffic. Just
+        // The locked sign-in: the subject the email change above refiled, which is why this runs after
+        // it, and then a subject nobody registered — refused 404 and never stored, so only the sent list
+        // makes it a needle. Before the schedule step, so the sign-in's own records are searched with no
+        // schedule filed and its success is the 2xx the route floor demands.
+        string unregisteredSubject = Marker("locked-unregistered-subject");
+        sent.Add(SentValue.OfText("credentials", "subject", unregisteredSubject));
+        await Step(LockedSignInStep, async statuses =>
+        {
+            using HttpClient signedIn = factory.CreateAuthenticatedClient(movedSubject, movedEmail, emailVerified: "true");
+            statuses.Add((int)(await signedIn.PostAsync(LockedSessionPath, content: null)).StatusCode);
+
+            using HttpClient nobody = factory.CreateAuthenticatedClient(
+                unregisteredSubject, $"{Marker("locked-unregistered-email")}@example.test", emailVerified: "true");
+            statuses.Add((int)(await nobody.PostAsync(LockedSessionPath, content: null)).StatusCode);
+        });
+
+        // The one act a locked session may perform. The session is seeded on the account's federated
+        // credential rather than taken from the sign-in above, so this step's statuses are about the
+        // schedule and the session read alone, and only the requests themselves are traffic. Just
         // before the erasure, which takes the schedule with the account.
         await Step(ErasureScheduleStep, async statuses =>
         {
@@ -694,6 +720,14 @@ internal static class LogCensusTraffic
 
         await StepAsync(steps, recorder, BearerEmailChangeStep, async statuses =>
             statuses.Add(await ChangeEmailAsync(Sent(ProviderToken(signingKey, movedSubject, movedEmail)))));
+
+        // The locked sign-in on this host, so the bearer handler's own records on that route are searched:
+        // the identity the email change above moved the account to.
+        await StepAsync(steps, recorder, BearerLockedSignInStep, async statuses =>
+        {
+            using HttpClient client = BearerClient(factory, Sent(ProviderToken(signingKey, movedSubject, movedEmail)));
+            statuses.Add((int)(await client.PostAsync(LockedSessionPath, content: null)).StatusCode);
+        });
 
         return new BearerRun(steps, sent);
     }

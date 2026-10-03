@@ -645,7 +645,7 @@ erDiagram
     authenticator is, and reaches exactly as far, so a session expiring sooner here would tell
     somebody who has just lost their device that the way back in they were issued is worth less than
     the one they lost. The number is `SessionPolicy.Lifetime`, read by this path and the other
-    establishing paths alike: the three differing is a defect rather than a decision. What sharing
+    establishing paths alike: any two of them differing is a defect rather than a decision. What sharing
     does **not** cover is where in the handler the session is established — here, only after the
     code is spent, which is the rule below. See [sessions.md](sessions.md), which owns the lifetime.
 - **Enforced in**: `Session.KindFor`, with every arm written out and a throwing discard arm, and
@@ -859,9 +859,10 @@ ELSE                                                               ← first iss
   that issues an account's first. It replaces nothing, sweeps nothing and reports no
   `sessionsEnded`. What it adds beyond this file's validation is one rule: the passkey's factor
   identifier must differ from all ten codes'.
-- **[Sessions](sessions.md)** — this area holds **two** of the four paths that establish a session:
+- **[Sessions](sessions.md)** — this area holds **two** of the five paths that establish a session:
   a redemption, and a regeneration that swept any. Each opens a `Full` session lasting the same 14
-  days, and a redemption is the only establishing path that runs no WebAuthn ceremony at all.
+  days. A redemption is one of the two establishing paths that run no WebAuthn ceremony at all, and
+  the only one of those two whose session is `Full` — the other is the locked sign-in.
   Replacing a set also revokes the sessions the replaced one opened, which is why
   `GenerateRecoveryCodesHandler` calls `RevokeSessionsForCredentialHandler` as
   `RevokePasskeyHandler` does; the redemption is not among that handler's callers and must not
