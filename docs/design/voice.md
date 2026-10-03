@@ -200,6 +200,36 @@ the next act of this shape will reach for them.
   copy written for the resting state has to be swapped out mid-run, and the swap is what nobody
   maintains.
 
+## An account nobody can open
+
+The release screen is for somebody who has lost every passkey and every recovery code, and it is
+the one screen where the worst news in the product is already true when the person arrives. The
+chapter specifying it is [components](components.md), *Releasing an account*; these are the rules
+its sentences answer to.
+
+- **State the loss as already true, never as the button's doing.** "It’s already unrecoverable:
+  nothing you hold can open it, and Budgetoid keeps no copy." The loss happened when the last
+  factor went, and erasing neither causes it nor can undo it. "Erasing permanently deletes your
+  data" puts the loss on the button, and a person reading it goes looking for a way to keep what
+  they think they still have.
+- **Say what the act frees, and that it recovers nothing, in the same sentence.** "Erasing the
+  account recovers nothing — it releases the account and its email address, so you can create a
+  new account with that address." *Release* is the verb because it is the honest one: the account
+  and the address are what change hands, and nothing comes back with them.
+- **Put the operator in the same position, out loud.** "— by you or by us." It is *A secret shown
+  once*'s *to you, and to us*, met from the other side: there it is a warning, here it is the fact
+  the warning was about.
+- **Name only doors the screen has.** No recovery code offered as a way in, no way to take a
+  schedule back, no support address. A person this far down will try every door a sentence names,
+  so a door that is not there costs them more than silence would.
+- **The acknowledgement names the loss as something that happened.** "I’ve lost every passkey and
+  every recovery code for this account." Past tense, about an act — the rule above, applied to a
+  loss rather than a save.
+- **A date, not a countdown.** "This account will be erased on {date} at {time}." An absolute
+  date in the reader's zone, per the mechanics above; *in 7 days* is false on the next day's load.
+- **The locked account's words stay off this screen.** *Unlock*, *locked* and *this tab can’t read*
+  each promise a press on this device opens something, and nothing this person holds does.
+
 ## Marketing voice (Welcome and public surfaces)
 
 Currency-free, no feature lists, no trust-claim lists, no gimmick lines. The shipped
@@ -207,4 +237,7 @@ Welcome copy is the reference: "Always watching. Never judging." — statements,
 acts. Two of those are offered and exactly one of them is Primary, per
 [components](components.md); the voice rule is that the screen sells one thing and the
 second control is there to be found rather than to persuade. Anything that reads as a
-sales trick gets cut.
+sales trick gets cut. **A third element sits below the two, and it is a question, not an act**:
+"Lost every passkey and recovery code?" It is phrased as the question only the person it is for
+answers yes to, so it persuades nobody and sells nothing, and it goes to a screen that says plainly
+what it cannot do.

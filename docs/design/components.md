@@ -1178,8 +1178,8 @@ has to name `/app/settings` for the trip to come back at all.
 
 The **Google** row in Ways to sign in draws no Revoke, and this chapter is why: the federated
 credential is replaced by a change, never removed. The welcome screen's provider line names this
-act as the one exception to Google never being asked again — see
-[the welcome screen](#the-welcome-screen).
+act as one of two exceptions to Google never being asked again — the other is the sign-in on
+[Releasing an account](#releasing-an-account) — see [the welcome screen](#the-welcome-screen).
 
 ## Credential list and row
 
@@ -3526,6 +3526,18 @@ browser fact: the session is live, every request is answered, and the words that
 read because this tab holds no content key. Only the second is what this chapter renders.
 [account-keys.md](../business-logic/account-keys.md) owns the rule; this chapter renders it.
 
+**The locked session has a screen of its own, and the two vocabularies stay on their own
+screens.** It is [Releasing an account](#releasing-an-account), at `/release`, and nothing under
+`/app` renders a locked session at all. *Unlock*, *locked* and *this tab can’t read* belong to a
+locked account — the notice, the form sentences, the markers, the Account keys section — and none
+of them appears on `/release`, because each tells the reader that a press on this device opens
+something, and the person on that screen holds nothing that opens anything. *Release*, *erase this
+account* and *sign in with Google* belong to `/release`, and none of them appears on a
+locked-account surface, where somebody whose reload simply dropped the keys would read them as a
+way out of a state one press of **Unlock** clears. The client's own word for the session is
+`locked-session`, never `locked`, which the account-key status already spells; it is a status and
+never copy.
+
 **A reload locks the account, and that is the design rather than a gap in it.** The two keys sit on
 private fields of one root-provided service and are persisted nowhere — not to IndexedDB, not across
 a `BroadcastChannel` — each refusal argued where the service is. So closing the tab ends this
@@ -3837,7 +3849,8 @@ that sees an unused import or a missing return type.
 
 The one public surface, at `/welcome`, and the one screen written in marketing voice
 ([voice](voice.md)). It states what the product is for and then offers the two ways into an account —
-and from the commit that gave it the second one, neither of them is the identity provider.
+and from the commit that gave it the second one, neither of them is the identity provider. Below
+them it carries one link for somebody who holds neither way in any more.
 
 - **One `h1`, and it is the hero line.** The screen carried an `<h2>` wearing the hero type style's
   name, which left the first page anybody meets with no top-level heading at all. The element
@@ -3848,6 +3861,36 @@ and from the commit that gave it the second one, neither of them is the identity
   things the design has already decided between: the screen is selling the first, and somebody
   returning is looking for a control rather than being persuaded by one. Both are verbs in sentence
   case, and both clear the 48px target.
+- **A third element sits below them, and it is a link, not a call to action.** One standing text
+  link, **Lost every passkey and recovery code?**, goes to `/release`
+  ([Releasing an account](#releasing-an-account)). The screen therefore carries three things a
+  person can press, and the rule above is about two of them: the two acts the screen offers
+  everybody. The link offers nobody an act. It is a question the person answers about
+  themselves, and only somebody who answers yes follows it — which is why it is phrased as that
+  question rather than as a verb. It does not compete with the Primary because it is quieter than
+  both buttons: Ghost treatment (`--bud-accent-text` label, transparent, no border), set apart
+  below the outcome region rather than in the row of actions. **Create account** stays the only
+  Primary.
+  - **An `<a routerLink>`, not a button.** It goes to an address and nothing else — no request,
+    no ceremony, no provider. Opened in a new tab it leaves Welcome standing and correct, which
+    is the case the registration chapter's "a button, not a link" rule exists to refuse and this
+    one is not: that rule is about a way out of a flow that ended.
+  - **A 48px target.** It stands on its own line rather than inside a sentence, so
+    [accessibility](accessibility.md)'s exemption for links in prose does not reach it. Its
+    visible text is its whole accessible name.
+  - **Identical at rest and after every outcome.** It is not revealed by a refused sign-in,
+    reworded by one, or moved by one. A link that appeared only after a refusal would tell
+    somebody their passkey failed *because* they have lost everything, and the refusal sentence
+    below is built to say one thing whatever the cause. It renders outside the region: a link in
+    a live region is a control narrated as news.
+  - **Welcome contacts no provider.** The Google trip starts on `/release`, after that screen has
+    said what the trip can and cannot do. A provider button here would ask somebody to leave for
+    Google before anything had told them nothing comes back.
+  - **Rejected:** a third button labelled *Sign in with Google* — it is the sentence the provider
+    line below exists to retire, and a third filled or outlined control would rank three acts;
+    the link shown only after a refusal, argued above; a URL nobody can find; and the link folded
+    into the provider line, which would make that line carry a control and turn the one sentence
+    a cautious person reads closely into a menu.
 - **There is no `/sign-in` route.** The screen carries one control and no fields, because **the
   authenticator is the form** — there is nothing to type, so there is no page to type it on. A
   sign-in *address* is the reflex carried over from password screens, where the second page exists
@@ -3855,9 +3898,12 @@ and from the commit that gave it the second one, neither of them is the identity
   costing two things: a second entry point into one assertion, and the single refusal sentence
   below split across two screens that would then have to be kept saying the same thing. The
   absence is written down because an absence cannot be found by grep — a reader looking for the
-  sign-in page finds nothing, and nothing reads like an oversight.
+  sign-in page finds nothing, and nothing reads like an oversight. **`/release` is not that page.**
+  It runs no passkey and opens no session that reads the account, and the refusal sentence below is
+  still said in one place.
 - **Mobile first**: the two stack full width in one grid column and sit side by side, each at its
-  label's width, from the 600px query this screen already uses.
+  label's width, from the 600px query this screen already uses. The link takes its own row under
+  the outcome region at every width, at its label's width.
 - **The outcome of a sign-in lands in one `role="status"` region, in the DOM from first paint and
   empty at rest.** It is the "value read from the network" rule above applied to an act rather than a
   read: the waiting line and the sentence that follows it share one region, so the second replaces
@@ -3872,25 +3918,385 @@ and from the commit that gave it the second one, neither of them is the identity
   person. A refusal and an answer that never came are still different sentences: one says this
   passkey does not work here and points at another way in, the other says the server could not be
   reached and points at the same press a minute later.
-- **The provider line says what Google is for, in three facts and one exception, in this order**: an
-  account starts there, only to check an address, and signing in afterwards is the passkey's — and
-  Google is asked again only if the person changes that address, which is the one other trip to
-  Google the product makes. The order is the reassurance, and the exception is stated rather than
-  hidden: a line still promising that Google is never asked again would be false about the one
-  other moment the provider hears from this person. `welcome.component.spec.ts` carries the sentence
-  as `PROVIDER_ROLE`, its four load-bearing phrases as `PROVIDER_ROLE_PHRASES`, and the retired
-  promise as the negative `RETIRED_NEVER_AGAIN_CLAIM`. The sentence it replaced — that the Google
-  account is what signs you in — stopped being true the moment the passkey control landed, and
-  leaving it would have been worse than leaving nothing: it is the sentence a cautious person reads before deciding whether to hand
-  over an address at all.
+- **The provider line says what Google is for, in three facts and two exceptions, in this order**:
+  an account starts there, only to check an address, and signing in afterwards is the passkey's —
+  and Google is asked again only if the person changes that address, or releases an account they
+  can no longer open. Those are the two other trips to Google the product makes. The order is the
+  reassurance, and the exceptions are stated rather than hidden: a line naming only the address
+  change would be false about the other moment the provider hears from this person. The copy is the
+  specification:
+
+  > Creating an account starts with Google, to check your email address. After that you sign in
+  > with your passkey; Google is asked again only if you change that address, or release an
+  > account you can no longer open.
+
+  *Release* is the word the release screen's title uses, so the line and the screen the link opens
+  name one act. `welcome.component.spec.ts` carries the sentence as `PROVIDER_ROLE`, its
+  load-bearing phrases as `PROVIDER_ROLE_PHRASES`, and the retired promise as the negative
+  `RETIRED_NEVER_AGAIN_CLAIM`; the one-exception sentence joins the negatives when the line
+  changes. The sentence before both — that the Google account is what signs you in — stopped being
+  true the moment the passkey control landed, and leaving it would have been worse than leaving
+  nothing: it is the sentence a cautious person reads before deciding whether to hand over an
+  address at all.
 - **The kinetic sentence is unchanged** and remains `aria-live="off"` decorative narrative
   ([motion](motion.md), [accessibility](accessibility.md)).
 
 ### What ships today
 
-All of the above. What does **not** ship is a way back in for somebody holding no passkey: redeeming
-a recovery code has no surface anywhere in the app, so this screen offers no third control and says
-nothing about one.
+**Two departures, both specified and not built.**
+
+- **The link is not drawn.** The shipped screen carries the two buttons, the region and the
+  provider line, and nothing below the region leads to `/release` — which has no route yet either.
+- **The provider line is the one-exception sentence**, ending *Google is asked again only if you
+  change that address.* It is false about the release screen's trip to Google the day that screen
+  ships, so the line changes in the same change that draws the link, and neither lands before the
+  screen they point at: until then the second exception would name a trip nobody can take.
+
+Everything else above ships. What does **not** ship anywhere is a way back in for somebody holding
+no passkey: redeeming a recovery code has no surface in the app, so this screen offers no control
+for it and says nothing about one. The link is not that control. It leads to a screen that releases
+an account and recovers nothing, and says so before anything is pressed.
+
+## Releasing an account
+
+The screen for somebody who has lost every passkey and every recovery code. It does one thing: it
+signs them in with the Google account their Budgetoid account was created with, and from that
+**locked session** it schedules the account's erasure, so the account and its email address are
+released. It recovers nothing, and it says so before the first press. The locked session is
+[sessions.md](../business-logic/sessions.md)'s, the schedule is
+[erasure.md](../business-logic/erasure.md)'s, and this chapter renders both.
+
+**The person on this screen has already lost what they recorded.** Every factor holds its own
+copy of the account's keys and the server holds none, so with every factor gone nothing anyone
+holds opens the account's names and notes. Erasing does not cause that loss and cannot undo it.
+What it changes is the address: an account nobody can open still holds its email address, and with
+it the Google account, against ever registering again. Every sentence below is measured against
+those two facts, and [voice](voice.md) states the rule they come from.
+
+### Where it sits
+
+- **`/release`, a sibling of the `app` route** — beside `/welcome` and `/register`, outside
+  `ShellComponent`, so it draws **no navigation**. Every destination the bar offers draws budget
+  content, and a locked session displays none of any kind (FR-113). A bar whose every item is
+  refused is a bar of dead ends.
+- **Who reaches it is a fact about the guards.** A locked session is sent here from every other
+  route — `authGuard` and `guestGuard` both redirect `locked-session` to `/release` — and a full
+  session is sent from here to `/app`. `anonymous` is admitted, and so are `unknown` and
+  `unreachable`, which no guard ever bounces: only a status the server has answered may move
+  anybody. Those three see the screen before the trip.
+- **The brand lockup at the head**, `app-brand-lockup` as Welcome draws it, and not a link.
+  `/register` draws none. This screen does because it is where a Google trip lands: the person
+  arrives on a fresh load from another site, and the lockup is the first thing saying whose page
+  they came back to.
+- **One `h1`, Release your account, the same in every state.** The states below replace each
+  other on one route with no navigation between them. A heading that changed with the state would
+  rename the page under the reader, and the region is where a change is announced.
+- **One `role="status"` region, in the DOM from first paint and empty at rest**, counted in every
+  state, per [A value read from the network](#a-value-read-from-the-network). It carries the
+  in-flight lines and the outcome lines and nothing else: never a control, and never the
+  scheduled date, which is content (below). `status` and never `alert` — the person asked for
+  every line in it.
+- **One grid column at every width**, `justify-items: start`, `--bud-space-4` between children,
+  prose capped at 65ch. One act about one thing is a sentence, and nothing here groups more than
+  one of anything.
+
+### Words this screen does not use
+
+- **No *Unlock*, no *locked*, no *this tab can’t read*.** They are the locked account's words, per
+  [the locked account](#the-locked-account), and each tells the reader that a press on this device
+  opens something. Nothing this person holds opens anything.
+- **No recovery code as a way in.** The acknowledgement names codes as lost, and the first paragraph names them
+  as something Budgetoid keeps no copy of. Neither offers one. Redeeming a code has no surface in
+  the product, so a sentence offering it would name a door the screen does not have — the rule the
+  Account keys chapter applies to `unopened`.
+- **No way to take the schedule back, and no mention of one.** No screen offers to withdraw a
+  schedule, so this one names none.
+- **No email address.** The screen shows no address and names nobody: the Google answer is spent
+  on one request, and what comes back describes a session, not a person.
+
+### The states
+
+Which state renders is the session status and the schedule, and nothing else.
+
+| State | When | What renders | Controls |
+| --- | --- | --- | --- |
+| Before the trip | Status `anonymous`, `unknown` or `unreachable`, and no sign-in running | The two standing paragraphs | Primary **Continue with Google**; **Create an account** after `no-account` only |
+| Signing in | A Google answer was taken on this load, and its request is out | The region's waiting line | None |
+| Nothing scheduled | Status `locked-session`, and no schedule known | The statement, the consequence, the acknowledgement | Destructive **Erase this account**; Outline **Sign out** |
+| Scheduled | Status `locked-session`, and a schedule read or answered | The statement, the result sentence | Outline **Sign out** |
+
+**Outcome lines are not a fifth surface.** Each lands in the region over the state it leaves
+standing: the sign-in's refusals over *before the trip*, the schedule's over *nothing scheduled*.
+
+**Signing in draws no paragraphs.** The second standing paragraph describes a trip, and by then
+the trip has been made; the request is quick, and its answer replaces the line either way.
+
+**A locked session whose schedule this tab has not read renders as nothing scheduled.** The
+session's own read and the sign-in's `200` both carry the schedule, so the case is rare. Where it
+happens the commit is offered, and that is safe rather than optimistic: the server answers a
+repeated schedule with the instant it stored the first time, so the press finds out and moves
+nothing.
+
+### Before the trip
+
+> Budgetoid keeps no copy of your passkeys or recovery codes, so if you’ve lost all of them, what
+> you recorded here can’t be recovered — by you or by us.
+>
+> You can still release the account, so its email address is free for a new one. Continuing takes
+> you to Google to choose the account you created this one with, then brings you back here.
+
+**The loss comes first, before any press.** Somebody who followed a link about losing everything
+is hoping for a way back in, and the first sentence tells them there is none before they spend a
+trip to Google finding out. *By you or by us* is the hand-off's *to you, and to us*: the operator
+is in the same position, which is the design and the only thing that makes the sentence honest.
+
+**The second paragraph is [voice](voice.md)'s *Leaving for another site***: where the person goes,
+what they do there, and where they come back. The pattern's fourth part, what the trip costs here,
+is absent on purpose. This page holds nothing a reload loses, and a cost block invented to fill
+the slot would be a warning about nothing.
+
+**Continue with Google is Primary**, `mat-flat-button`, 48px. It is the one act this state offers
+and the act the screen exists for. The registration flow draws the same control Outline in three
+places, and that treatment stays theirs; a lone Outline here would read as a secondary act with the
+main one missing.
+
+- **Held while the page is departing.** `ProviderDepartureService` owns *departing*, from the press
+  until the page leaves, the trip fails, or the browser restores the page from its back-forward
+  cache. While it holds, the control takes `disabledInteractive` with `aria-busy="true"` — the
+  [Buttons](#buttons) busy case — and the region reads **Taking you to Google…**, the email
+  change's line word for word, so the product says one thing about a trip wherever it makes one.
+- **The gate is in the handler as well as in the attribute**, and both read one predicate: not
+  departing and not signing in. Material's click-halt is applied to anchors only, so on a
+  `<button>` the press arrives whatever the attribute says; an ungated press starts a second trip
+  under the first.
+- **The account chooser is requested on every trip** (`prompt=select_account`), for the email
+  change's reason. The person is choosing which Google account their Budgetoid account was made
+  with, and a trip that silently returned the one the browser holds would choose for them.
+- **The return lands on `/release`** as a fresh load. The Google answer is held in memory for that
+  one load, taken once, and gone from the address bar before the first route draws — the email
+  change's rules, owned by [sessions.md](../business-logic/sessions.md) rather than restated here.
+  A load whose session check finds a session already published drops the answer unsent.
+
+### The sign-in is sent without a second press
+
+**Taking a Google answer sends the sign-in at once**, `POST /api/locked-session`. The press of
+Continue was made under standing prose that says what the trip is for, and that press is the
+consent; a second **Continue** after the return would ask the same question twice. **One answer
+sends one request, and it is never retried** — not by the flow and not by any interceptor. A reload
+holds no answer, so it cannot send a second. The request is marked as expecting a `401`, so
+`sessionExpiryInterceptor` leaves the refusal to this screen.
+
+| Answer | Word | Copy | What stays |
+| --- | --- | --- | --- |
+| `200` | — | *nothing* | The session is published as `locked-session`, and the surface becomes *nothing scheduled* or *scheduled* by the answer's own `erasure` member, on the same route |
+| `404`, `refusal: "no_account"` | `no-account` | "There’s no Budgetoid account for that Google account. Nothing has changed." | Before the trip, plus a **Create an account** link to `/register` below the region |
+| `401` | `provider-refused` | "Google didn’t confirm that account, so nothing has changed. Try again, or choose another Google account." | Before the trip |
+| `403` | `unrecognised` | "Budgetoid couldn’t read this request. Reload the page and try again — nothing has changed." | Before the trip |
+| No answer, a `5xx`, a `200` that does not read, or any answer not listed | `undetermined` | "Budgetoid can’t tell whether you’re signed in. Reload the page to find out." | Before the trip |
+| The return carried no confirmed answer | `unconfirmed` | "Signing in with Google didn’t finish. Nothing has changed — try again whenever you’re ready." | Before the trip; nothing is sent |
+| The trip could not start | `unavailable` | "Budgetoid couldn’t reach Google, so nothing has changed. Try again in a minute." | Before the trip; nothing is sent |
+
+The copy is the specification, not an example of it. Every line is inside the region, `--bud-over`.
+
+**`no-account` changes nothing about the session.** The status stays what it was, so the screen
+stays *before the trip* and Continue stays offered: choosing another Google account is a real way
+forward for somebody who has two. **Create an account** is a Ghost `<a routerLink>`, Welcome's link
+treatment, rendered below the region only while that line stands — the region carries no control.
+
+**`undetermined` names a reload, and Continue stays.** A lost `200` may have set the session cookie,
+and a reload is the one act that asks the server who this is: a locked session lands on the locked
+surface, anybody else back here. Continue is not a retry of the lost request. It fetches a new
+answer, and a second locked sign-in over a first replaces the cookie and harms nothing.
+
+**The words come from members of the answer, never from its prose.** `no_account` is read off
+`refusal`. Lines that land on a return load wait one render, as the email change's do, so the region
+exists before its text.
+
+### Nothing scheduled
+
+Three blocks and two controls, top to bottom.
+
+1. **The statement** — its own paragraph, `body` `--bud-text`, never a label and never a heading:
+
+   > Signing in with Google can’t open anything you recorded. It’s already unrecoverable: nothing
+   > you hold can open it, and Budgetoid keeps no copy. Erasing the account recovers nothing — it
+   > releases the account and its email address, so you can create a new account with that address.
+
+   It is what the session is for, stated plainly (CON-006), and it is true before the press, during
+   it and after it, so it renders in both locked states. It states the loss as already true and
+   never as the button's doing — [voice](voice.md)'s rule for this screen. No label sits above it:
+   not *Warning*, not *Important*, not an icon standing in for one.
+2. **The consequence** — its own block, above the checkbox and never its label:
+
+   > The account is erased 7 days after you ask.
+
+   A label is announced every time focus lands on its control, and a consequence heard that way is
+   noise — the hand-off's rule. The delay is the schedule's (ASM-010); the sentence says when, and
+   the result sentence below says the date.
+3. **The acknowledgement** — one `MatCheckbox`:
+
+   > ☐ I’ve lost every passkey and every recovery code for this account.
+
+   Past tense, about an act, per [voice](voice.md): what the person did, not a feeling they agree
+   to. It is the one thing worth asking here — whether this person has any way in left — and it is
+   checkable by the person in a way *I understand* is not.
+4. **Erase this account** — **Destructive**, 48px, `mat-flat-button` with the Destructive fill.
+5. **Sign out** — **Outline**, 48px, last.
+
+**An acknowledgement, not a typed word.** The hand-off reserves the typed word for destroying data
+that exists now, and the erasure dialog spends it there: the word checks whether somebody meant
+*that* control, on a screen where everything they can read sits a few lines away. Neither half is
+true here. The press destroys nothing now — it files a date seven days out — and what goes on that
+date is already beyond reading for everybody. And the screen offers one act, reached by a link
+named for the loss and a trip to Google, so whether the person meant this control is already
+answered. A word typed into a dialog would add a step and ask nothing new.
+
+**The fill keeps both of its promises.** A confirmation follows — the acknowledgement is the
+confirmation, inline, as the hand-off's is. And there is no way back: nothing this person holds,
+and nothing any screen offers, takes the date back. **The label is not Erase everything.** That is
+the act on Settings, which erases at once and asks for a passkey; this one files a date and asks
+for neither. One label on two acts would tell a reader they are one act.
+
+**The commit's gate**, in the attribute and in the handler, reading one predicate with one owner:
+the acknowledgement is ticked, nothing is running, and the status is `locked-session`.
+
+- **`disabledInteractive` until the box is ticked** — the [Buttons](#buttons) chapter's third case,
+  a control waiting on the person, with the thing it waits on immediately above it. No sentence
+  beside it.
+- **The handler refuses what the attribute draws as refused.** Material's click-halt is applied to
+  anchors only, so on a `<button>` the press arrives whatever the attribute says. The status term
+  is there for the moment after Sign out or an ended session, when the press would otherwise send
+  a schedule from a screen that no longer holds a session.
+- **While the request is out** it stays in place, `disabledInteractive` with `aria-busy="true"`, its
+  label unchanged, and the region reads **Scheduling the erasure…**.
+
+**Sign out is the Settings control's semantics**, for its reasons: it posts the revocation, ends the
+session through `SessionService.ended()`, then navigates to `/welcome`, in that order; it shows no
+busy state; and a failed request signs the person out anyway. It is never held, including while a
+schedule is out. **It is not a second action** under FR-113's *one action*: it ends the session and
+touches nothing the account holds. Outline and not Destructive, because nothing is lost by it.
+
+| Answer | Word | Copy | What stays |
+| --- | --- | --- | --- |
+| `200` with an instant that reads | `scheduled` | The result sentence, below | *Scheduled*; focus moves to the result sentence |
+| `401` | — | *nothing* | `sessionExpiryInterceptor` ends the session and takes the tab to Welcome |
+| `403` | `unrecognised` | "Budgetoid couldn’t read this request, so nothing was scheduled. Reload the page and try again." | *Nothing scheduled* |
+| Anything else — no answer, a `5xx`, a `200` whose instant does not read | `undetermined` | "Budgetoid didn’t hear back, so this may already be scheduled. Press again to check — asking twice never changes the date." | *Nothing scheduled*; **the commit stays live** |
+
+The copy is the specification, not an example of it. Every line but the result is inside the
+region, `--bud-over`.
+
+**The schedule request is not marked as expecting a `401`.** A `401` there is an ended session, which
+is the interceptor's, and this screen says nothing over it.
+
+**An instant reads only with its offset.** A value with `Z` or a numeric offset is an instant; one
+without is a wall-clock time in no zone, and rendering it would put a date on screen that is
+hours wrong for somebody. It is refused, and the answer is `undetermined`.
+
+**`undetermined` keeps the commit, and that is the erasure dialog's rule inverted on purpose.** That
+dialog withdraws its commit because erasure is not idempotent to the caller: a second request after
+a lost `204` is answered `401`, and the dialog would say *nothing was erased* over an account that
+is gone. A schedule is idempotent: a repeat answers the instant the first request stored, never a
+second date ([erasure.md](../business-logic/erasure.md)). So another press is the way to find out,
+and the sentence says so. **No retry is automatic** — the press is the person's.
+
+**A `403` names a reload.** It is chiefly a request missing the client header, or a session another
+tab has since replaced with a full one; in both a reload is what changes the answer, and in the
+second the guard takes the tab to `/app`.
+
+### Scheduled
+
+> This account will be erased on {date} at {time}. Its email address is free from then.
+
+- **The date and time are the server's instant, in the reader's own zone and locale**, wrapped in a
+  `<time>` whose `datetime` carries the instant as it arrived. `Intl.DateTimeFormat` with the
+  reader's locale, and never `DatePipe`: nothing provides `LOCALE_ID`, so the pipe would pin every
+  date to `en-US` — the credential list's rule. The day is the reader's calendar day, never the UTC
+  day. Under the test runner's pinned `Pacific/Kiritimati`, `2026-10-09T10:30:00Z` reads as
+  10 October, 00:30.
+- **Absolute, never relative** — no *in 7 days*, no *next Friday*. [voice](voice.md) keeps relative
+  words for lists, and a relative phrase goes false on a load a day later while the stored instant
+  does not move.
+- **The sentence is content, not a region line.** It is a standing fact about the account, and the
+  same sentence renders on every later load that finds the schedule — where a line in a live region
+  at first paint is announced unreliably. After the press it is announced by focus instead: it
+  carries `tabindex="-1"`, and focus moves to it when the commit leaves.
+- **The commit leaves the DOM**, with the consequence and the acknowledgement. It is not disabled: a
+  control that will not be pressed again on this screen makes a promise it cannot keep. The
+  statement stays — it is as true after the schedule as before it. **Sign out** stays.
+
+### Focus
+
+- **Arriving moves nothing** — a fresh load, a return from Google, the switch from *signing in* to
+  a locked state, or a load that finds a schedule. The person made no press on this load, and the
+  document's top is the `h1`.
+- **The commit leaving moves focus to the result sentence**, because the control focus stood on has
+  gone.
+- **A refusal moves nothing.** Focus stays on the control the next attempt starts from — Continue,
+  or the commit.
+
+### What a writer will get wrong
+
+- **Offering a recovery code as a way in.** Nothing redeems one.
+- **Mentioning a way to take the schedule back.** No screen offers one.
+- **Writing the loss as the button's doing** — *Erasing permanently deletes your data.* The loss
+  happened before the person arrived, and that sentence sends them looking for a way to keep it.
+- **Borrowing the locked account's words.** *Unlock* here names a control that needs a passkey this
+  person has lost.
+- **Asking for a second press after the return**, or sending the sign-in again on a timeout.
+- **Withdrawing the commit on `undetermined`**, by copying the erasure dialog.
+- **Putting the statement in the checkbox's label**, or a *Warning* above it.
+- **A relative date**, or the instant in UTC.
+- **Drawing the app shell**, or any budget content, on a locked session.
+
+### Accessibility
+
+One `h1`, stable across every state; no other heading level is needed. One `role="status"` region,
+polite, present and empty from first paint, never `assertive`. Every control is a 48px target, and
+Continue and the commit keep their tab stops while held or busy (`disabledInteractive`);
+`aria-busy` is present only while work runs. The checkbox's focus ring is drawn on the visible box,
+per [accessibility](accessibility.md). The statement and the consequence are prose in reading order,
+never labels. The result sentence takes focus once, programmatically, and is not in the tab order.
+Nothing is communicated by colour alone — every line reads the same with `--bud-over` removed.
+
+### Copy
+
+Every string on this screen, in one place. The copy is the specification, not an example of it.
+
+| Where | Copy |
+| --- | --- |
+| Title (`h1`) | "Release your account" |
+| Before the trip, first paragraph | "Budgetoid keeps no copy of your passkeys or recovery codes, so if you’ve lost all of them, what you recorded here can’t be recovered — by you or by us." |
+| Before the trip, second paragraph | "You can still release the account, so its email address is free for a new one. Continuing takes you to Google to choose the account you created this one with, then brings you back here." |
+| Trip control | "Continue with Google" |
+| Departing | "Taking you to Google…" |
+| Signing in | "Checking your Google sign-in…" |
+| `no-account` | "There’s no Budgetoid account for that Google account. Nothing has changed." |
+| `no-account` link | "Create an account" |
+| `provider-refused` | "Google didn’t confirm that account, so nothing has changed. Try again, or choose another Google account." |
+| Sign-in `unrecognised` | "Budgetoid couldn’t read this request. Reload the page and try again — nothing has changed." |
+| Sign-in `undetermined` | "Budgetoid can’t tell whether you’re signed in. Reload the page to find out." |
+| `unconfirmed` | "Signing in with Google didn’t finish. Nothing has changed — try again whenever you’re ready." |
+| `unavailable` | "Budgetoid couldn’t reach Google, so nothing has changed. Try again in a minute." |
+| The statement | "Signing in with Google can’t open anything you recorded. It’s already unrecoverable: nothing you hold can open it, and Budgetoid keeps no copy. Erasing the account recovers nothing — it releases the account and its email address, so you can create a new account with that address." |
+| The consequence | "The account is erased 7 days after you ask." |
+| The acknowledgement | "I’ve lost every passkey and every recovery code for this account." |
+| Commit | "Erase this account" |
+| Scheduling | "Scheduling the erasure…" |
+| `scheduled` | "This account will be erased on {date} at {time}. Its email address is free from then." |
+| Schedule `unrecognised` | "Budgetoid couldn’t read this request, so nothing was scheduled. Reload the page and try again." |
+| Schedule `undetermined` | "Budgetoid didn’t hear back, so this may already be scheduled. Press again to check — asking twice never changes the date." |
+| Sign out | "Sign out" |
+
+### What ships today
+
+**Nothing in this chapter.** `/release` has no route, Welcome draws no link to it, the session
+status has no `locked-session` value, and nothing in the browser sends the locked sign-in or the
+schedule. The server half is live: `POST /api/locked-session`, `GET /api/me/session` and
+`POST /api/me/erasure/schedule` answer as this chapter reads them.
+
+**The result sentence promises an erasure on a date, and nothing carries a schedule out yet.** So
+this screen may not reach production before the erasure it promises does.
 
 ## Registration
 
@@ -3971,7 +4377,9 @@ A promise made in the product's own words and broken two screens later.
   this browser does not have.
 - **Holding no *usable* token**, it shows no address and no **Continue**. One line saying this
   browser is not holding a Google address, and an **Outline** **Continue with Google** — the
-  treatment the book gives that control wherever it appears. **The test is validity, not
+  treatment the registration flow gives that control everywhere it draws it.
+  [Releasing an account](#releasing-an-account) is the one screen that draws it Primary, and says
+  why there. **The test is validity, not
   presence**: a token whose hour has run out is read as no token at all, so a browser reloading the
   screen after lunch lands here rather than being shown a promise its next press cannot keep. A
   browser arrives in this state routinely: a bookmark, a reload an hour later, an exchange that

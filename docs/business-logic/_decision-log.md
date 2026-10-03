@@ -8,6 +8,57 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-10-03 — The release screen is a link from Welcome to a route of its own, confirmed by an acknowledgement, and it offers no recovery code as a way in
+
+**Context:** the server can open a locked session from a Google sign-in and file a schedule from it.
+The browser needs a surface for both, for somebody who has lost every passkey and every recovery
+code. Welcome carries two acts with one Primary, there is no `/sign-in` route, and every Google trip
+so far starts from a screen that has already said what the trip is for.
+
+**Decision:**
+- **Welcome gets one standing text link, not a button** — "Lost every passkey and recovery
+  code?" — identical at rest and after every outcome. Create account stays the only Primary, and
+  Welcome contacts no provider.
+- **The screen is `/release`, a sibling of the `app` route**, outside the shell. A locked session
+  is redirected there from every route; a full session is redirected away from it; `unknown` and
+  `unreachable` are never bounced.
+- **The client's status word is `locked-session` and the route is `/release`.** Not `locked`,
+  which the account-key status already spells; the design book forbids the two screens borrowing
+  each other's words.
+- **The sign-in is sent as soon as the Google answer is taken**, with no second press. The press
+  of Continue under standing prose is the consent, and one answer sends one request, never retried.
+- **The erasure is confirmed by an inline acknowledgement beside a Destructive button**, not by a
+  typed word in a dialog. The press destroys nothing at once — it files a date — and what goes on
+  that date is already beyond anybody's reading.
+- **The screen does not offer a recovery code as a way in.** Redeeming one has no surface in the
+  browser, and the design book may not describe a door the screen does not have. Browser
+  redemption is held to the same production gate as this screen and the act that carries a
+  schedule out: none of them reaches a production environment without the others.
+
+[components.md](../design/components.md), *Releasing an account* and *The welcome screen*, owns the
+surface; [voice.md](../design/voice.md) owns its sentences.
+
+**Alternatives considered:**
+- **A third Welcome button, *Sign in with Google***: rejected. It restates the sentence the provider
+  line retired and ranks three acts on a screen built to rank two.
+- **The link shown only after a refused sign-in**: rejected. It would tie a passkey refusal to a
+  cause, and the refusal is built to name none.
+- **The link inside the provider line**: rejected. It turns the sentence a cautious person reads
+  closely into a menu.
+- **A typed word in a dialog, as Settings' erasure asks**: rejected for the reason above; it adds a
+  step and asks nothing the acknowledgement does not.
+- **A Continue press on the return before the sign-in is sent**: rejected. It asks the same
+  question twice.
+
+**Consequences:** Welcome carries three pressable elements, and its rule of exactly one Primary
+holds over the two acts. The provider line names two exceptions instead of one, and changes in the
+same change that draws the link. Nothing here ships yet: the book specifies the surface first.
+
+**Affected areas:** [sessions.md](sessions.md), [erasure.md](erasure.md),
+[components.md](../design/components.md), [voice.md](../design/voice.md).
+
+---
+
 ## 2026-10-03 — A Google sign-in alone opens a locked session over the account's federated credential, and an unknown subject is a 404 that creates nothing
 
 **Context:** the erasure schedule exists for somebody holding nothing but a Google sign-in, and only a
