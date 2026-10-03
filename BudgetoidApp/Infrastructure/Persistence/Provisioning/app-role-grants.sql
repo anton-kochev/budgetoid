@@ -168,19 +168,20 @@ GRANT SELECT ON currencies TO budgetoid_app;
 --
 -- The children holding no DELETE of any shape are budgets, payees, sessions, session_tokens,
 -- passkey_public_keys, passkey_signature_counters, wrapped_account_keys, key_rotations,
--- key_rotation_seals, factor_manifests and erasure_schedules. Three of them are the ones to read
--- carefully, and they span the whole width of the list. key_rotations holds SELECT, INSERT and a column-listed UPDATE and
--- still no DELETE of any shape, so it belongs here rather than being mistaken for a write-free table;
--- ITS OWN block argues why staging needs the insert and the update together and why the delete waits
--- for the completion step that clears the staging. factor_manifests holds SELECT, INSERT and a
--- column-listed UPDATE (manifest, rotation_epoch) — the insert is registration writing the account's
--- first manifest in the same save as the account, the update is a promotion rewriting that one row in
--- place — and still no DELETE at all, because a manifest leaves only by the cascade from users. It
--- belongs here for the same reason the first one does: this is a list of absent DELETEs, not a list of
--- read-only tables and not a list of write-free ones. erasure_schedules is the one entry whose absence
--- is a wait rather than a rule: withdrawing a schedule will take DELETE by removing the row, and its
--- own block says so. Until then the cascade from users is the only way out for a row, which is what
--- keeps a schedule from outliving the account it names.
+-- key_rotation_seals, factor_manifests and erasure_schedules. Four of them are the ones to read
+-- carefully, and they span the whole width of the list. key_rotations holds SELECT, INSERT and a
+-- column-listed UPDATE and still no DELETE of any shape, so it belongs here rather than being
+-- mistaken for a write-free table; ITS OWN block argues why staging needs the insert and the update
+-- together and why the delete waits for the completion step that clears the staging.
+-- factor_manifests holds SELECT, INSERT and a column-listed UPDATE (manifest, rotation_epoch) — the
+-- insert is registration writing the account's first manifest in the same save as the account, the
+-- update is a promotion rewriting that one row in place — and still no DELETE at all, because a
+-- manifest leaves only by the cascade from users. It belongs here for the same reason the first one
+-- does: this is a list of absent DELETEs, not a list of read-only tables and not a list of
+-- write-free ones. erasure_schedules is the one entry whose absence is a wait rather than a rule:
+-- withdrawing a schedule will take DELETE by removing the row, and its own block says so. Until
+-- then the cascade from users is the only way out for a row, which is what keeps a schedule from
+-- outliving the account it names.
 -- key_rotation_seals STAYED ON THIS LIST WHILE GAINING TWO WRITES, and it carries the one correction
 -- worth repeating up here: its seals were said to leave by the ON DELETE CASCADE from key_rotations
 -- when a second begin replaced the staging row, and a second begin UPDATES that row in place rather

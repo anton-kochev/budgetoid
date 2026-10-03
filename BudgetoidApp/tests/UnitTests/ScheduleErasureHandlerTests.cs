@@ -82,29 +82,35 @@ public sealed class ScheduleErasureHandlerTests
     }
 
     /// <summary>
-    /// The schedule is filed under the account the context resolves, and answered for it.
+    /// A clock read finer than a microsecond is cut to the microsecond before the date is computed, and
+    /// the answer and the filed row agree on it.
     /// </summary>
     /// <remarks>
-    /// No stranger's schedule is seeded: the port is keyed only by its owner and the fake filters by that
-    /// key, so a stranger's row here would measure the fake. That half is held under the real policies by
-    /// <c>ErasureScheduleEndpointTests.ScheduleErasure_LeavesAnotherAccountUntouched</c>.
+    /// <c>erasure_schedules.takes_effect_at_utc</c> is a <c>timestamptz</c> and keeps microseconds; a
+    /// <see cref="DateTime" /> keeps 100 ns ticks. Left whole, the first request answers a seventh
+    /// fractional digit the stored row does not hold, so a repeat — or the loser of a race, answered with
+    /// the winner's row read back — reports a different instant for the same schedule. The clock here ends
+    /// in <c>…7</c> ticks so that truncation and rounding disagree: <c>.1234567</c> must become
+    /// <c>.1234560</c>, never <c>.1234570</c>. <c>BeginKeyRotationHandler</c> cuts its instant the same way.
     /// </remarks>
     [Test]
-    public async Task HandleAsync_FilesForTheResolvedAccount()
+    public async Task HandleAsync_AtASubMicrosecondInstant_AnswersAndFilesItCutToTheMicrosecond()
     {
         // Arrange
         Guid userId = Guid.CreateVersion7();
         InMemoryErasureScheduleRepository schedules = new();
+        DateTimeOffset subMicrosecond = RequestInstant.AddTicks(1_234_567);
         ScheduleErasureHandler handler = new(
-            schedules, new StubUserContext(userId), new FakeTimeProvider(RequestInstant));
+            schedules, new StubUserContext(userId), new FakeTimeProvider(subMicrosecond));
 
         // Act
         ScheduledErasure scheduled = await handler.HandleAsync(new ScheduleErasureCommand());
 
-        // Assert — this account's own date, filed under this account.
-        await Assert.That(scheduled.TakesEffectAtUtc).IsEqualTo(RequestInstant.UtcDateTime.AddDays(7));
-        await Assert.That(schedules.Stored[userId].TakesEffectAtUtc)
-            .IsEqualTo(RequestInstant.UtcDateTime.AddDays(7));
+        // Assert — truncated, not rounded: …1234567 ticks is …1234560, then seven days out. Compared in
+        // ticks because a DateTime failure message prints whole seconds and would show two equal values.
+        long expected = RequestInstant.UtcDateTime.AddTicks(1_234_560).AddDays(7).Ticks;
+        await Assert.That(scheduled.TakesEffectAtUtc.Ticks).IsEqualTo(expected);
+        await Assert.That(schedules.Stored[userId].TakesEffectAtUtc.Ticks).IsEqualTo(expected);
     }
 
     /// <summary>
@@ -137,7 +143,7 @@ public sealed class ScheduleErasureHandlerTests
     }
 
     /// <summary>
-    /// A fixed request instant, whole seconds so nothing here depends on sub-microsecond arithmetic.
+    /// A fixed request instant in whole seconds; only the sub-microsecond case adds ticks to it.
     /// </summary>
     private static readonly DateTimeOffset RequestInstant = new(2026, 10, 2, 9, 30, 0, TimeSpan.Zero);
 

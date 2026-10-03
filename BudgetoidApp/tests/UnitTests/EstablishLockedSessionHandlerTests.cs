@@ -218,6 +218,39 @@ public sealed class EstablishLockedSessionHandlerTests
     }
 
     /// <summary>
+    /// A clock read finer than a microsecond is cut to the microsecond before the session is built, so
+    /// what the caller is told is what a <c>timestamptz</c> keeps.
+    /// </summary>
+    /// <remarks>
+    /// <c>sessions.created_at_utc</c> and <c>expires_at_utc</c> keep microseconds; a <see cref="DateTime" />
+    /// keeps 100 ns ticks, and EF never refreshes a tracked value from what the database stored. Left whole,
+    /// the sign-in answers an expiry that <c>GET /api/me/session</c> later answers a fraction differently.
+    /// The clock ends in <c>…7</c> ticks so truncation and rounding disagree: <c>.1234567</c> must become
+    /// <c>.1234560</c>. <c>BeginKeyRotationHandler</c> cuts its instant the same way.
+    /// </remarks>
+    [Test]
+    public async Task HandleAsync_AtASubMicrosecondInstant_StampsAndAnswersTheSessionCutToTheMicrosecond()
+    {
+        // Arrange
+        Fixture fixture = Fixture.Create();
+        fixture.Clock.SetUtcNow(new DateTimeOffset(UtcNow.AddTicks(1_234_567)));
+
+        // Act
+        LockedSignInOutcome outcome = await fixture.Handler.HandleAsync(new EstablishLockedSessionCommand(Subject));
+
+        // Assert — truncated, not rounded: …1234567 ticks is …1234560. Compared in ticks because a
+        // DateTime failure message prints whole seconds and would show two equal values.
+        long created = UtcNow.AddTicks(1_234_560).Ticks;
+        long expires = (UtcNow.AddTicks(1_234_560) + SessionLifetime).Ticks;
+        LockedSignInOutcome.Established established = (LockedSignInOutcome.Established)outcome;
+        Session stored = fixture.Sessions.Sessions.Single();
+        await Assert.That(stored.CreatedAtUtc.Ticks).IsEqualTo(created);
+        await Assert.That(stored.ExpiresAtUtc.Ticks).IsEqualTo(expires);
+        await Assert.That(established.Session.ExpiresAtUtc.Ticks).IsEqualTo(expires);
+        await Assert.That(established.Handoff.ExpiresAtUtc.Ticks).IsEqualTo(expires);
+    }
+
+    /// <summary>
     /// With no schedule filed, the answer says so rather than inventing one.
     /// </summary>
     [Test]

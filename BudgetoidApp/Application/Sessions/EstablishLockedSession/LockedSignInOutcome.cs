@@ -13,8 +13,10 @@ namespace Application.Sessions.EstablishLockedSession;
 /// to correct.
 /// </para>
 /// <para>
-/// <b>Closed.</b> The constructor is private, so the two nested cases are the only values there are and
-/// a switch over them needs no discard arm that could quietly admit a third.
+/// <b>Two cases, and not sealed shut.</b> The constructor is private, but a record also synthesizes a
+/// protected copy constructor, so a record in another assembly can still derive a third case from an
+/// existing value. That is why the endpoint's switch keeps a default arm, and why that arm throws rather
+/// than answering anything.
 /// </para>
 /// </remarks>
 public abstract record LockedSignInOutcome

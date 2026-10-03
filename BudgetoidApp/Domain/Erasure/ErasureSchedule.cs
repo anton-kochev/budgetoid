@@ -8,8 +8,9 @@ namespace Domain.Erasure;
 /// <b>A schedule is not an erasure, and nothing about the account changes when one is filed.</b> It
 /// is the one act a locked session may perform — a person who lost every passkey and every recovery
 /// code releasing the account and the address behind it — and it is filed with a delay rather than
-/// carried out at once, so that the owner of the account, if the request came from somebody holding
-/// a stolen provider account instead, has a window in which a passkey can still say no.
+/// carried out at once. The delay is the window an owner would need if the request came from somebody
+/// holding a stolen provider account instead; nothing withdraws a schedule yet, so today a filed one
+/// stands until the account goes.
 /// </para>
 /// <para>
 /// <b><see cref="UserId"/> is the primary key, and that is the rule a repeat request rests on.</b> An
@@ -23,9 +24,9 @@ namespace Domain.Erasure;
 /// <para>
 /// <b>Two columns, and the absences are decisions.</b> There is no requested-at instant, because the
 /// instant that binds is when the account goes, and a second timestamp is a second thing an export, a
-/// log or the erasure itself would have to answer for. There is no status and no cancelled-at stamp:
-/// a schedule that is withdrawn leaves by its row being deleted, because a stamped row is a remnant
-/// on an account that asked to be forgotten.
+/// log or the erasure itself would have to answer for. There is no status and no cancelled-at stamp,
+/// because a stamped row is a remnant on an account that asked to be forgotten. Nothing withdraws a
+/// schedule today; a row leaves only by the cascade from <c>users</c>.
 /// </para>
 /// <para>
 /// <b>The length of the delay is not this type's business.</b> The factory refuses a delay that is

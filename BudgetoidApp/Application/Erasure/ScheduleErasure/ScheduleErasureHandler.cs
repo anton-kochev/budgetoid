@@ -48,7 +48,7 @@ public sealed class ScheduleErasureHandler(
         }
 
         ErasureSchedule requested = ErasureSchedule.Request(
-            userId, timeProvider.GetUtcNow().UtcDateTime, ErasurePolicy.Delay);
+            userId, timeProvider.GetUtcNowToTheMicrosecond(), ErasurePolicy.Delay);
         ErasureSchedule stored = await schedules.AddAsync(requested, cancellationToken);
 
         return new ScheduledErasure(stored.TakesEffectAtUtc);

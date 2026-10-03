@@ -100,9 +100,9 @@ public sealed class LockedSignInEndpointTests
         await Assert.That(stored.CredentialId).IsEqualTo(federatedId);
         await Assert.That(stored.Kind).IsEqualTo("locked");
 
-        // Within a microsecond rather than equal: the answer may carry the clock's 100 ns ticks, and a
-        // timestamptz keeps microseconds.
-        await Assert.That((stored.ExpiresAtUtc - expiresAtUtc).Duration()).IsLessThanOrEqualTo(TimeSpan.FromMicroseconds(1));
+        // Equal, not merely close: the handler cuts its clock read to the microsecond a timestamptz keeps,
+        // so the answer and the stored row are one instant. In ticks, so a failure names the digit.
+        await Assert.That(expiresAtUtc.Ticks).IsEqualTo(stored.ExpiresAtUtc.Ticks);
 
         // What the session reaches: no budget content, its own kind, and the way out.
         HttpClient locked = CookieClient(factory, cookie);

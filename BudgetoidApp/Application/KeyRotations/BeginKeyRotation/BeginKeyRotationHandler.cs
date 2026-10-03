@@ -295,16 +295,9 @@ public sealed class BeginKeyRotationHandler(
         // rather than merely unstorable.
         //
         // AND THE INSTANT IS CUT TO THE MICROSECOND BEFORE THE ROW IS BUILT, because the response
-        // answers it. started_at_utc is a timestamptz and keeps microseconds; a DateTime keeps ticks.
-        // Left whole, the row in memory carries a seventh fractional digit the stored row does not, and
-        // EF never refreshes a tracked value from what the database kept — so the begin would answer one
-        // instant while GET /api/me/key-rotation answers another for the same run. Truncating HERE,
-        // rather than trusting the provider to drop the digit the same way on the write, means the value
-        // handed to the save is already one the column holds exactly, and what this handler answers is
-        // what was stored whichever way Npgsql would have rounded. It is a whole-tick subtraction, so the
-        // Kind stays Utc and the wire spelling is the resume read's.
-        DateTime clock = timeProvider.GetUtcNow().UtcDateTime;
-        DateTime now = clock.AddTicks(-(clock.Ticks % TimeSpan.TicksPerMicrosecond));
+        // answers it: left whole, the begin would answer one instant while GET /api/me/key-rotation
+        // answers another for the same run. TimeProviderExtensions argues the cut.
+        DateTime now = timeProvider.GetUtcNowToTheMicrosecond();
         KeyRotation rotation = KeyRotation.Begin(
             passkey,
             command.RotationId,

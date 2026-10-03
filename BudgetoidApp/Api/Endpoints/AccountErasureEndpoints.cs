@@ -46,7 +46,8 @@ public static class AccountErasureEndpoints
 
         // The release valve: a locked session files the account's erasure for seven days out, and that is
         // the one act it may perform. Under the erasure resource on purpose — it is the same erasure,
-        // deferred — and ErasureIrreversibilityTests pins the resource's two routes by count.
+        // deferred — and ErasureIrreversibilityTests pins the resource's two routes as an exact list
+        // (ErasureResource_MapsExactlyTheDestructiveRouteAndItsSchedule).
         //
         // No body and no id, for the immediate erasure's reason: the account scheduled is whichever one
         // the request is authenticated as. No passkey either, and that is not a gap: the caller is

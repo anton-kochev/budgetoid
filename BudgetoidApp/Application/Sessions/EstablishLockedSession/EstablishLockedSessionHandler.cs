@@ -89,7 +89,8 @@ public sealed class EstablishLockedSessionHandler(
         // 4. The clock and the handle, read and drawn once. There is no retrying delegate on this path,
         //    so nothing replays them; they sit outside any unit of work for the reason every establishing
         //    path gives, so a later edit wrapping the save cannot turn one sign-in into several secrets.
-        DateTime now = timeProvider.GetUtcNow().UtcDateTime;
+        //    The instant is cut to the microsecond because the summary answers the expiry the row stores.
+        DateTime now = timeProvider.GetUtcNowToTheMicrosecond();
         SessionHandle handle = SessionHandle.Mint();
 
         // 5. The session over the credential the token named. Session.Establish derives the kind from the

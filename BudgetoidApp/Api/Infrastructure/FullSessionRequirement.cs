@@ -63,8 +63,9 @@ public sealed class FullSessionRequirementHandler : AuthorizationHandler<FullSes
         // change the bridge scheme's deletion bought. While it stood, a Google bearer authenticated
         // through JwtBearer on the default scheme and carried no kind claim, so this requirement had to
         // let such a principal past or refuse the entire product. Nothing defaults to JwtBearer any
-        // more: the fallback policy names the cookie scheme, and the one policy that names the provider
-        // — the registration group's — declares itself and so never reaches this requirement at all. A
+        // more: the fallback policy names the cookie scheme, and the two policies that name the provider
+        // — the registration group's and the locked sign-in's — each declare themselves and so never
+        // reach this requirement at all. A
         // principal arriving here with no kind claim is therefore a cookie principal that does not have
         // one, which is a session this product did not write.
         // The read is SessionCookieAuthenticationHandler.TryReadSessionKind's, which is where the round
