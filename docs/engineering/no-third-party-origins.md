@@ -71,33 +71,28 @@ second as a `window` property name.
 
 ## Two gaps this test cannot close
 
-Creating an account, and changing its address, fetch
-`accounts.google.com/.well-known/openid-configuration` and, from the URL that document returns,
-`www.googleapis.com/oauth2/v3/certs`. Neither is a subresource, and the second appears in no bundle
+Creating an account, changing its address, and signing in to release an account nobody can open
+fetch `accounts.google.com/.well-known/openid-configuration` and, from the URL that document
+returns, `www.googleapis.com/oauth2/v3/certs`. Neither is a subresource, and the second appears in no bundle
 — the library learns the URL at runtime. Ending them means ending the dependency on a federated
 identity provider.
 
-**Both fetches are made only on a trip a person starts, and a person can start two trips today.**
+**Both fetches are made only on a trip a person starts, and a person can start three trips today.**
 Each has two moments. **Registration**, on `/register`: the press on **Continue with Google**, because the login
 endpoint it navigates to is learned from the discovery document, and the page load the provider
 redirects back to, because the `APP_INITIALIZER` must read the answer off the URL before the
 router's first navigation. **The email change**, on `/app/settings`: the press on **Change email
 address**, and the page load Google redirects back to there, which the `APP_INITIALIZER` reads
-before the session probe. `AuthService` prepares the client at most once per page load, so a press
-on a page that came back costs no second fetch. **Nothing else a person does contacts the provider**,
-with the one residual below: every other cold load — anonymous or signed in, on any screen, and a
-bare `/register` or `/app/settings` that carries no answer — makes no request to Google, signing in
-is a WebAuthn assertion against this product's own API, and every request after it authenticates
-from the first-party session cookie. So the page loads privately, *signing in* loads privately, and
-the two fetches above are reachable only from a tab in which somebody pressed one of those two
-controls.
-
-**A third trip is written, and nothing starts it.** `AuthService` holds the locked sign-in's press,
-`startLockedSignIn()`, which would leave for Google's account chooser and come back to `/release`,
-and the boot reads that return before the probe as it reads the email change's. No screen calls
-the press, so no tab is ever marked for the trip and no page load reads as its return. The
-identity-provider census below is what holds that: no shipped file may reach `startLockedSignIn`
-or `takeLockedSignInReturn`.
+before the session probe. **The locked sign-in**, on `/release`: that screen's own **Continue with
+Google**, which leaves for Google's account chooser, and the page load Google redirects back to
+there, which the `APP_INITIALIZER` also reads before the probe. `AuthService` prepares the client
+at most once per page load, so a press on a page that came back costs no second fetch. **Nothing
+else a person does contacts the provider**, with the one residual below: every other cold load —
+anonymous or signed in, on any screen, and a bare `/register`, `/app/settings` or `/release` that
+carries no answer — makes no request to Google, signing in is a WebAuthn assertion against this
+product's own API, and every request after it authenticates from the first-party session cookie.
+So the page loads privately, *signing in* loads privately, and the two fetches above are reachable
+only from a tab in which somebody pressed one of those three controls.
 
 **A page load counts as the provider redirecting back only when this tab started that trip and the
 address carries an answer shaped like one.** The press leaves `budgetoid-provider-exchange` in
@@ -146,7 +141,7 @@ Six specs hold *when* and *from where*, and each sees what the others cannot:
 - `src/email-change-redirect-uri.spec.ts` holds where the second trip comes back: the emitted
   configuration's `emailChangeRedirectUri`, on `/app/settings`, on the registration address's
   origin, and never equal to it.
-- `src/locked-sign-in-redirect-uri.spec.ts` holds the same for the trip nothing starts yet: the
+- `src/locked-sign-in-redirect-uri.spec.ts` holds the same for the third trip: the
   emitted configuration's `lockedSignInRedirectUri`, on `/release`, on the registration address's
   origin, and equal to neither other address.
 - `src/identity-provider-callers.spec.ts` holds *who*: it fails on a program with type errors,
@@ -160,10 +155,9 @@ Six specs hold *when* and *from where*, and each sees what the others cannot:
 
 None of them sees a top-level navigation, a timer longer than the boot, what a screen does after
 someone presses something, a subclass or an object spread of the client, or a component template.
-The census keeps the calls in the files it lists; that those files render only on `/register` and
-`/app/settings` is a fact about the route table, which no spec reads. Nor does anything here see
-the Google Cloud console, whose redirect list has to name both addresses — and `/release` before a
-screen starts the third trip.
+The census keeps the calls in the files it lists; that those files render only on `/register`,
+`/app/settings` and `/release` is a fact about the route table, which no spec reads. Nor does
+anything here see the Google Cloud console, whose redirect list has to name all three addresses.
 
 **What an allow-listed origin buys, and what it therefore cannot catch.**
 `accounts.google.com` is listed above as the issuer `auth-service.ts` configures, legitimately —
@@ -192,11 +186,12 @@ policy cannot see a CDN URL that no browser has been asked to fetch yet.
 
 ## No cookie from a script, and nothing to consent to
 
-**The product loads nothing from another origin, except the two trips to the identity provider a
-person starts — creating an account on `/register` and changing its address on `/app/settings`;
-the third is written and no screen starts it — and sets no cookie but the session handle, so there is no tracker in it and nothing to ask
-anybody's consent for.** Those trips are the two fetches under the gaps above, made only because
-the person pressed **Continue with Google** or **Change email address**, or came back from one.
+**The product loads nothing from another origin, except the three trips to the identity provider
+a person starts — creating an account on `/register`, changing its address on `/app/settings`, and
+signing in to release an account on `/release` — and sets no cookie but the session handle, so
+there is no tracker in it and nothing to ask anybody's consent for.** Those trips are the two
+fetches under the gaps above, made only because the person pressed **Continue with Google** or
+**Change email address**, or came back from one.
 That is why the web client presents no consent banner, no cookie notice and no tracking-preference
 surface. It is not an omission waiting on a review; it is what this chapter holding looks like from the screen, and a
 surface asking permission for something the product does not do would be a false sentence in front
@@ -249,7 +244,7 @@ column.
 | `__Host-budgetoid-session` | cookie, set by the API, `HttpOnly` | the session handle | Serves the request. One per session; its expiry is the session's lifetime, not a record of an act. |
 | angular-oauth2-oidc's token entries | `sessionStorage`, this tab | `access_token`, `id_token`, `id_token_claims_obj` (the decoded claims, the email among them), `granted_scopes`, `session_state`, `nonce`, and stored-at and expiry entries | Serve the trip the person started, and nothing after it. On a registration, `SessionService` discards them through `AuthService.forgetProviderToken()` whenever the tab learns it holds a session — the registration `201`, a sign-in, a start-up probe that finds one. On an email change or a locked sign-in, `AuthService.initialize()` discards them itself on the return, whatever it concluded, after moving the token into memory — and, on an email change, the address. A tab that abandons registration and never signs in keeps them until it closes. Nothing sends the stored token anywhere but the two registration routes; the email change's and the locked sign-in's bearers come from the request, never from here. The library writes the nonce and PKCE verifier to `localStorage` only on an old-IE user-agent branch no supported browser takes. |
 | the library's availability probe | `localStorage` | a `test` key | Written and removed at once, on every cold load: `AuthService` is built at startup, and the library's service with it. |
-| `budgetoid-provider-exchange` | `sessionStorage`, this tab | `started`, `email-change` or `locked-sign-in`, naming the trip | Present from the press on **Continue with Google** or **Change email address** — or `startLockedSignIn()`, which no screen calls — until the return leg has been read, or until the tab publishes a session. It tells the return leg which trip this tab started, so an answer-shaped address nobody here asked for contacts nobody. One value, no time; `AuthService.initialize()`, `forgetProviderToken()`, a press that did not leave, and a back-forward-cache restore remove it. A signed-in tab keeps it only until its next cold load, where the authenticated probe's `forgetProviderToken()` removes it; an anonymous tab that abandons at the provider keeps it until it closes or signs in. |
+| `budgetoid-provider-exchange` | `sessionStorage`, this tab | `started`, `email-change` or `locked-sign-in`, naming the trip | Present from the press on **Continue with Google** (on `/register` or `/release`) or **Change email address** until the return leg has been read, or until the tab publishes a session. It tells the return leg which trip this tab started, so an answer-shaped address nobody here asked for contacts nobody. One value, no time; `AuthService.initialize()`, `forgetProviderToken()`, a press that did not leave, and a back-forward-cache restore remove it. A signed-in tab keeps it only until its next cold load, where the authenticated probe's `forgetProviderToken()` removes it; an anonymous tab that abandons at the provider keeps it until it closes or signs in. |
 | `budgetoid-theme` | `localStorage` | `system`, `light` or `dark` | One value, overwritten. A preference, not an observation. Nothing writes it today: neither `ThemeService.setMode` nor `toggle`, which calls it, is called from outside the service, so `theme-prepaint.js` and `ThemeService` only ever read it. |
 | `budgetoid-rotation-epoch:<budgetId>` | `localStorage` | one number per account this device has unlocked | Rises only. A rollback control — see [account keys](../business-logic/account-keys.md). |
 

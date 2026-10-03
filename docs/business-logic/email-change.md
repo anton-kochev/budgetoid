@@ -994,8 +994,8 @@ rolls the sweep back.
   [components.md](../design/components.md); the trip and the bootstrap order are the client rules
   above.
 - **[No third-party origins](../engineering/no-third-party-origins.md)** — the trip is one of the
-  two trips the browser makes to the identity provider today, and that chapter names the specs that
-  hold when and from where.
+  three trips the browser makes to the identity provider today, and that chapter names the specs
+  that hold when and from where.
 
 ## Edge Cases & Known Gotchas
 
@@ -1030,8 +1030,8 @@ rolls the sweep back.
   of the code, not of a test.
 - **`sessionsEnded` counts the sessions a provider sign-in opened.** The sweep can only find
   sessions the federated credential opened, which are the locked sessions `POST /api/locked-session`
-  establishes — see [sessions.md](sessions.md). No screen starts that sign-in yet, and every test
-  that expects a non-zero count seeds the locked session through the database.
+  establishes — see [sessions.md](sessions.md). The `/release` screen starts that sign-in; every
+  test here that expects a non-zero count still seeds the locked session through the database.
 - **An erasure racing an email change answers `500`.** The account is gone either way, so no honest
   `409` exists. A change that moves the Google identity fails on `23503 FK_credentials_users_user_id`
   — the batch surfaces the `INSERT`'s foreign-key error before the `DELETE`'s row count — pinned by

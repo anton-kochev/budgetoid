@@ -552,11 +552,13 @@ role holds no `DELETE` there of any shape.
   nothing. A full session is refused `403`; no live session is `401`.
   - **A locked session is opened by `POST /api/locked-session`**, a provider token turned into a
     session over the federated credential, and that sign-in answers the schedule's instant beside
-    the session — see [sessions.md](sessions.md). Nothing in the browser runs it yet, and this
-    route's own tests seed their locked session through the database.
-  - **Nothing cancels, shows or carries out a schedule yet.** No route withdraws one, no screen reads
-    one, and nothing erases the account when its instant passes. Today a schedule's only exit is the
-    account's **immediate** erasure, which takes the row with it by the cascade from `users`.
+    the session — see [sessions.md](sessions.md). In the browser, `/release` runs that sign-in and
+    then files the schedule. This route's own tests still seed their locked session through the
+    database.
+  - **Nothing cancels or carries out a schedule yet.** No route withdraws one, and nothing erases
+    the account when its instant passes. `/release` shows the instant, from the session read or the
+    schedule's own answer, and no other screen does. Today a schedule's only exit is the account's
+    **immediate** erasure, which takes the row with it by the cascade from `users`.
 - **Why**: it is the release valve for somebody who has lost every passkey and every recovery code.
   - **Their data is already gone, and this does not change that.** Every factor holds its own
     encapsulated copy of the account's keys and the server holds none, so with no factor left
@@ -733,7 +735,7 @@ stateDiagram-v2
 
 | Transition | Triggered by | Validations |
 |---|---|---|
-| Present → Scheduled | `ScheduleErasureHandler`, from `POST /api/me/erasure/schedule` | a live locked session; a full session is refused `403`. The locked session comes from `POST /api/locked-session`, which no screen runs yet |
+| Present → Scheduled | `ScheduleErasureHandler`, from `POST /api/me/erasure/schedule` | a live locked session; a full session is refused `403`. The locked session comes from `POST /api/locked-session`, which `/release` runs |
 | Scheduled → Scheduled | the same route again | none; the stored instant is the answer and nothing is written |
 | Present or Scheduled → gone | `EraseAccountHandler`, from `POST /api/me/erasure` | a full session and a fresh passkey assertion — the sequence above |
 
@@ -819,6 +821,12 @@ ELSE
   interceptor's to act on, and the dialog says nothing; a `200`, or a probe that cannot answer, is
   `refused`. A `401` on the challenge is a session that ended, which is the interceptor's too. See
   [sessions.md](sessions.md) for the token's rule.
+  - **The schedule's caller is `ReleaseFlowService`, on `/release`**, through
+    `MeApiService.scheduleErasure`. That request is **unmarked**: the route judges nothing but the
+    session it was sent with, so a `401` is that session having ended, and the interceptor's. It is
+    never retried; after an answer that does not read, the next request is the person's next press,
+    which a repeat answers with the stored instant. The screen is
+    [components.md](../design/components.md#releasing-an-account)'s.
 
 ## Edge Cases & Known Gotchas
 

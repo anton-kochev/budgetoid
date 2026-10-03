@@ -1010,14 +1010,15 @@ The budget branch that runs after this, on every path, is in
 
 ## Integration Points
 
-- **Google OAuth / OIDC**: the browser contacts the provider from two screens — `/register`, to
-  create an account, and `/app/settings`, to change its address — and the identity it vouches for
+- **Google OAuth / OIDC**: the browser contacts the provider from three screens — `/register`, to
+  create an account, `/app/settings`, to change its address, and `/release`, to sign in to an
+  account nobody can open — and the identity it vouches for
   reaches the account through a federated credential rather than a column on the user. The API
   reads three claims and no others — `sub` and `email`, which are stored, and `email_verified`, read
   and discarded — on the two registration routes and on `POST /api/me/email-change`, and the same
-  three on `POST /api/locked-session`, which stores none of them. No screen starts the locked
-  sign-in yet: the client holds its trip, the read of its return and its request, and nothing calls
-  the trip. The client attaches the **ID token** (not the access token) as the
+  three on `POST /api/locked-session`, which stores none of them. The release screen's **Continue
+  with Google** starts the locked sign-in, and the screen sends that request on the return. The
+  client attaches the **ID token** (not the access token) as the
   `Authorization: Bearer` header on **four routes and nowhere else**: on the registration routes the
   token the library stored, and on the email change and the locked sign-in only the token the
   request carries on its context. The client's own narrowing is

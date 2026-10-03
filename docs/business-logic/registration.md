@@ -713,11 +713,11 @@ the *set*, so it is authenticated once.
 
 - **Rule**: **The identity provider's redirect lands on `/register`, and the matching entry in the
   Google Cloud console's authorized redirect URIs is part of that change.**
-- **Why**: the registration screen is the screen that does something with a fresh provider token in
-  a browser holding no session — the email change's return lands on `/app/settings` instead, and
-  the locked sign-in's on `/release`, each on its own redirect address; no screen on `/release`
-  takes that return yet. It reads the asserted address off the id token **while that token is still
-  valid**, and
+- **Why**: the registration screen is the screen that creates an account from a fresh provider
+  token in a browser holding no session. The other two trips come back to their own screens, each
+  on its own redirect address: the email change's to `/app/settings`, and the locked sign-in's to
+  `/release`, which opens a session on an account that already stands. The registration screen
+  reads the asserted address off the id token **while that token is still valid**, and
   both legs authenticate as the provider scheme and nothing else. The validity clause is
   load-bearing: `AuthService.providerEmail` answers `null` for a token whose hour has run out, which
   is what puts the screen back on its **Continue with Google** arm instead of showing an address

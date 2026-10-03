@@ -1,0 +1,115 @@
+<!-- Not a link: the person arrives here on a fresh load from another site, and
+     the lockup is the first thing saying whose page they came back to. -->
+<app-brand-lockup class="rl-lockup" />
+
+<h1 class="rl-title">Release your account</h1>
+
+@if (state() === 'before') {
+  <!-- The loss first, before any press: somebody who followed a link about
+       losing everything is hoping for a way back in. -->
+  <p class="rl-prose">
+    Budgetoid keeps no copy of your passkeys or recovery codes, so if
+    you&rsquo;ve lost all of them, what you recorded here can&rsquo;t be
+    recovered &mdash; by you or by us.
+  </p>
+  <p class="rl-prose">
+    You can still release the account, so its email address is free for a new
+    one. Continuing takes you to Google to choose the account you created this
+    one with, then brings you back here.
+  </p>
+
+  <!-- Primary: the one act this state offers. `disabledInteractive` while the
+       page is departing — the busy case — and the gate is in the flow's
+       handler as well, reading the same predicate. -->
+  <button
+    class="rl-button"
+    mat-flat-button
+    type="button"
+    [disabled]="!flow.continuePressable()"
+    [disabledInteractive]="true"
+    [attr.aria-busy]="departing() ? 'true' : null"
+    (click)="flow.continue()"
+  >
+    Continue with Google
+  </button>
+}
+
+@if (locked()) {
+  <!-- True before the press, during it and after it, so both locked states
+       draw it. Its own paragraph, never a label and never a heading, with
+       nothing above it standing in for a warning. -->
+  <p class="rl-prose">
+    Signing in with Google can&rsquo;t open anything you recorded. It&rsquo;s
+    already unrecoverable: nothing you hold can open it, and Budgetoid keeps no
+    copy. Erasing the account recovers nothing &mdash; it releases the account
+    and its email address, so you can create a new account with that address.
+  </p>
+
+  @if (scheduledAt(); as at) {
+    <!-- Content, not a region line: a standing fact about the account, drawn
+         the same on every load that finds the schedule. After the press it is
+         announced by focus instead, which is why it takes `tabindex="-1"`. -->
+    <p #result class="rl-prose" tabindex="-1">
+      This account will be erased on
+      <time [attr.datetime]="at.wire">{{ at.date }} at {{ at.time }}</time
+      >. Its email address is free from then.
+    </p>
+  } @else {
+    <!-- Its own block above the checkbox, never its label: a label is
+         announced every time focus lands on its control. -->
+    <p class="rl-prose">The account is erased 7 days after you ask.</p>
+
+    <mat-checkbox
+      class="rl-acknowledgement"
+      [checked]="flow.acknowledged()"
+      (change)="flow.acknowledge($event.checked)"
+    >
+      I&rsquo;ve lost every passkey and every recovery code for this account.
+    </mat-checkbox>
+
+    <!-- Destructive: the acknowledgement above is the confirmation, and
+         nothing takes the date back. `disabledInteractive` until it is ticked
+         and while the request is out, label unchanged; the flow's handler
+         refuses what this attribute draws as refused. -->
+    <button
+      class="rl-button rl-commit"
+      mat-flat-button
+      type="button"
+      [disabled]="!flow.commitPressable()"
+      [disabledInteractive]="true"
+      [attr.aria-busy]="flow.scheduling() ? 'true' : null"
+      (click)="flow.commit()"
+    >
+      Erase this account
+    </button>
+  }
+}
+
+<!-- The one live region, in the DOM from first paint and empty at rest, in
+     every state. `status`, never `alert`: the person asked for every line in
+     it. It carries in-flight and outcome lines and nothing else — never a
+     control, never the scheduled date. -->
+<div class="rl-outcome" role="status">
+  @if (painted()) {
+    @if (lineText(); as text) {
+      <p [class]="lineIsRefusal() ? 'rl-error' : 'rl-prose'">{{ text }}</p>
+    }
+  }
+</div>
+
+@if (offersRegistration()) {
+  <a class="rl-button" mat-button routerLink="/register">Create an account</a>
+}
+
+@if (locked()) {
+  <!-- Outline, last, and never held: it ends the session and touches nothing
+       the account holds. -->
+  <button
+    class="rl-button"
+    mat-stroked-button
+    type="button"
+    (click)="flow.signOut()"
+  >
+    Sign out
+  </button>
+}

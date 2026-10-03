@@ -1841,6 +1841,155 @@ describe('MeApiService', () => {
       },
     );
   });
+
+  // The one act a locked session offers. See docs/design/components.md,
+  // "Releasing an account", and docs/business-logic/erasure.md.
+  describe('scheduleErasure', () => {
+    const SCHEDULE_URL = 'https://api.test/api/me/erasure/schedule';
+    const SCHEDULED = { takesEffectAtUtc: '2026-10-16T08:00:00Z' } as const;
+
+    function readAnswer(body: Parameters<TestRequest['flush']>[0]): {
+      readonly received: unknown;
+      readonly failure: unknown;
+    } {
+      let received: unknown;
+      let failure: unknown;
+
+      api.scheduleErasure().subscribe({
+        next: (value) => {
+          received = value;
+        },
+        error: (error: unknown) => {
+          failure = error;
+        },
+      });
+      http.expectOne(SCHEDULE_URL).flush(body);
+
+      return { received, failure };
+    }
+
+    it('posts to the schedule route with an empty body', () => {
+      // Act
+      api.scheduleErasure().subscribe();
+      const request = http.expectOne(SCHEDULE_URL);
+
+      // Assert
+      expect(request.request.method).toBe('POST');
+      expect(request.request.body).toBeNull();
+      expect(request.request.serializeBody()).toBeNull();
+
+      request.flush(SCHEDULED);
+    });
+
+    // **Unmarked, and that is the decision.** The route judges nothing but the
+    // session it was sent with, so its 401 is a session that ended — the fact
+    // `sessionExpiryInterceptor` owns. Marked, the release screen would sit on
+    // an ended session saying nothing.
+    it('leaves the schedule request unmarked, so its 401 is a session ending', () => {
+      // Act
+      api.scheduleErasure().subscribe();
+      const request = http.expectOne(SCHEDULE_URL);
+
+      // Assert
+      expect(request.request.context.get(EXPECTS_UNAUTHENTICATED)).toBe(false);
+      expect(request.request.context.get(PROVIDER_CREDENTIAL)).toBeFalsy();
+
+      request.flush(SCHEDULED);
+    });
+
+    it('reads the instant the server stored as itself', () => {
+      // Act
+      const { received, failure } = readAnswer(SCHEDULED);
+
+      // Assert
+      expect(failure).toBeUndefined();
+      expect(received).toEqual(SCHEDULED);
+    });
+
+    it.each([
+      { why: 'a Z designator', instant: '2026-10-16T08:00:00Z' },
+      {
+        why: 'seven fractional digits and a Z',
+        instant: '2026-10-16T08:00:00.1234567Z',
+      },
+      { why: 'a positive offset', instant: '2026-10-16T10:00:00+02:00' },
+      { why: 'a negative offset', instant: '2026-10-16T03:00:00-05:00' },
+    ])('accepts an instant written with $why', ({ instant }) => {
+      // Act
+      const { received, failure } = readAnswer({ takesEffectAtUtc: instant });
+
+      // Assert
+      expect(failure).toBeUndefined();
+      expect(received).toEqual({ takesEffectAtUtc: instant });
+    });
+
+    // The session probe's instant rules, unchanged. An offset-less instant is
+    // the sharpest: `Date` reads it as the reader's local time, and the
+    // release screen would render a date hours wrong — fourteen in the
+    // runner's own zone.
+    it.each([
+      { why: 'a list', body: [] },
+      { why: 'null', body: null },
+      { why: 'a bare string', body: '2026-10-16T08:00:00Z' },
+      { why: 'no instant', body: {} },
+      {
+        why: 'an instant with no offset',
+        body: { takesEffectAtUtc: '2026-10-16T08:00:00' },
+      },
+      {
+        why: 'an instant that is a number',
+        body: { takesEffectAtUtc: 1792137600 },
+      },
+      { why: 'an instant that is null', body: { takesEffectAtUtc: null } },
+      {
+        why: 'an instant on a day the month does not have',
+        body: { takesEffectAtUtc: '2026-02-30T10:00:00Z' },
+      },
+      {
+        why: 'an instant at an hour the day does not have',
+        body: { takesEffectAtUtc: '2026-10-16T25:00:00Z' },
+      },
+      {
+        why: 'an instant ending in a lowercase z',
+        body: { takesEffectAtUtc: '2026-10-16T08:00:00z' },
+      },
+      {
+        why: 'a member this client does not know',
+        body: { ...SCHEDULED, cancellable: true },
+      },
+    ])('refuses a body with $why', ({ body }) => {
+      // Act
+      const { received, failure } = readAnswer(body);
+
+      // Assert
+      expect(received).toBeUndefined();
+      expect(failure).toBeInstanceOf(Error);
+      // Not dressed as an HTTP refusal: the flow reads a 403 as `unrecognised`
+      // and everything that is not an `HttpErrorResponse` as `undetermined`.
+      expect(failure).not.toBeInstanceOf(HttpErrorResponse);
+    });
+
+    it.each([401, 403, 500])(
+      'hands a %i to the caller with its status',
+      (status) => {
+        // Arrange
+        let seen: number | null = null;
+
+        // Act
+        api.scheduleErasure().subscribe({
+          error: (error: unknown) => {
+            seen = error instanceof HttpErrorResponse ? error.status : -1;
+          },
+        });
+        http
+          .expectOne(SCHEDULE_URL)
+          .flush(null, { status, statusText: 'Refused' });
+
+        // Assert
+        expect(seen).toBe(status);
+      },
+    );
+  });
 });
 
 // The body as it crosses the wire: HttpClient's own serialization of what the

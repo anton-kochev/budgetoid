@@ -52,7 +52,16 @@ export interface MeDto {
 export interface SessionDto {
   readonly kind: 'full' | 'locked';
   readonly expiresAtUtc: string;
-  readonly erasure: { readonly takesEffectAtUtc: string } | null;
+  readonly erasure: ErasureScheduleDto | null;
+}
+
+/**
+ * A scheduled erasure: the instant it takes effect, with its offset. What
+ * `POST /api/me/erasure/schedule` answers, and what a session read carries in
+ * `erasure` when one is on file.
+ */
+export interface ErasureScheduleDto {
+  readonly takesEffectAtUtc: string;
 }
 
 // An instant as this client accepts one off the wire: a calendar date, a time
@@ -902,5 +911,35 @@ export class MeApiService extends BaseApiService {
         .set(PROVIDER_CREDENTIAL, idToken)
         .set(EXPECTS_UNAUTHENTICATED, true),
     ).pipe(map(decodeLockedSession));
+  }
+
+  // Files the account's erasure for a date the server picks, from a locked
+  // session — the one act the release screen offers. The answer is the instant
+  // the server stored, and a repeat answers that same instant, never a second
+  // date. See docs/design/components.md, "Releasing an account", and
+  // docs/business-logic/erasure.md.
+  //
+  // **No `EXPECTS_UNAUTHENTICATED`, for `endSession`'s reason.** The route
+  // judges nothing but the session it was sent with, so a 401 is that session
+  // having ended — `sessionExpiryInterceptor`'s fact. Marked, the screen would
+  // sit on an ended session with nothing saying why.
+  //
+  // The body is decoded by the rules a scheduled erasure in the session read
+  // answers to: exactly one member, an instant **with** its offset. An
+  // offset-less one would render a date hours wrong for the reader, so it is
+  // refused here as a plain `Error` — which the flow reads as `undetermined`,
+  // because only an `HttpErrorResponse` is a refusal of the request.
+  public scheduleErasure(): Observable<ErasureScheduleDto> {
+    return this.post<unknown>('api/me/erasure/schedule', null).pipe(
+      map((body): ErasureScheduleDto => {
+        if (!isScheduledErasure(body)) {
+          throw new Error(
+            'The erasure schedule response carried no instant this client can read.',
+          );
+        }
+
+        return { takesEffectAtUtc: body.takesEffectAtUtc };
+      }),
+    );
   }
 }

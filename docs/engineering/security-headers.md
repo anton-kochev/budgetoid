@@ -106,11 +106,11 @@ origin.
 it. It names four sources: `'self'`, the API, `accounts.google.com` for the OpenID discovery
 document, and `www.googleapis.com` for the JWKS that document points at. The last two are the same
 fetches [no-third-party-origins.md](no-third-party-origins.md) already records as gaps it cannot
-close, and both leave with federated sign-in. They are reachable on **two** screens — `/register`
-and `/app/settings`, each on the press that starts its trip to the provider and on the page load the
-provider redirects back to, the only places the provider is contacted — so the policy has to permit
-them on a document served at every address, for fetches made only while an account is being
-created or its address changed. `oauth2.googleapis.com` is deliberately absent: the application
+close, and both leave with federated sign-in. They are reachable on **three** screens —
+`/register`, `/app/settings` and `/release`, each on the press that starts its trip to the provider
+and on the page load the provider redirects back to, the only places the provider is contacted — so
+the policy has to permit them on a document served at every address, for fetches made only while an
+account is being created, its address changed, or a locked sign-in made. `oauth2.googleapis.com` is deliberately absent: the application
 runs the implicit flow, so no request reaches a token endpoint.
 
 `img-src` carries no `data:`, verified against the emitted CSS and JavaScript, which contain none.
@@ -248,8 +248,8 @@ same reasoning.
 ## Silent refresh is gone, and the policy refuses it independently
 
 **Nothing calls `setupAutomaticSilentRefresh()`.** `+core/services/auth-service.ts` used to, and the
-call is deleted: a provider token is obtained only on a trip a person starts — registration, and
-the email change — and discarded when that trip's answer has been used, so a background renewal
+call is deleted: a provider token is obtained only on a trip a person starts — registration, the
+email change and the locked sign-in — and discarded when that trip's answer has been used, so a background renewal
 keeps alive a credential nothing reads. That decision is argued
 in [no third-party origins](no-third-party-origins.md), pinned by `auth-service.spec.ts` at the
 call site and by `no-external-origins.spec.ts`, which refuses a call to the member by name anywhere

@@ -279,14 +279,18 @@ covers some of the following without saying the rows exist:
 **This product claims no anonymity.** An account cannot exist without a completed exchange with the
 registration provider, so the provider learns that the person registered, when, and from which
 address, and the product stores the address the provider asserted and the provider's subject
-identifier. The person's browser contacts the provider on two trips, each in two moments and both
+identifier. The person's browser contacts the provider on three trips, each in two moments and all
 following the person's own press in that tab: registration, when `/register` starts the exchange and
-when the provider redirects it back there; and the email change, when **Change email address** on
-`/app/settings` leaves for the account chooser and when Google redirects back there. Each return is
+when the provider redirects it back there; the email change, when **Change email address** on
+`/app/settings` leaves for the account chooser and when Google redirects back there; and the locked
+sign-in, when **Continue with Google** on `/release` leaves for the account chooser and when Google
+redirects back there. Each return is
 recognised by a marker the press left in the tab naming that trip, the trip's own address and a
 fragment shaped like the answer. An email change shows the provider a further sign-in to this
 product's client, redirected to `/app/settings` — when, and from which network address — and the
-product stores the address and subject that sign-in asserts. The one contact outside them is a tab
+product stores the address and subject that sign-in asserts. A locked sign-in shows the provider
+the same kind of sign-in, redirected to `/release`, and the product stores nothing it asserts. The
+one contact outside them is a tab
 that pressed, abandoned at the provider, and then opened an answer-shaped address somebody built,
 which costs one discovery and key-set fetch before the library refuses it. That is held by tests rather than by
 construction — a cold load with the real library, a census resolved by the type checker of which
@@ -296,13 +300,10 @@ top-level navigation, a timer outlasting the boot, a subclass or an object sprea
 component template, and a `logOut` reached through an alias. A full sign-in is a passkey
 assertion against this product's own API and reaches no provider. The API itself fetches the
 provider's published signing keys to validate a provider token — registration's, the email
-change's and the locked sign-in's — which names no person. Of the three moments NFR-025 permits,
-registration and the email change are built in the browser and on the server. The locked sign-in
-is built on the server: `POST /api/locked-session` accepts a provider token and opens a locked
-session; it stores nothing the token asserts, and writes only the session row and its handle. The
-client holds its parts — `AuthService` can start the trip to `/release` and read its return, and
-`MeApiService` can send the request — but no screen starts the trip, so no browser makes it yet;
-see [sessions.md](../business-logic/sessions.md) and
+change's and the locked sign-in's — which names no person. All three moments NFR-025 permits are
+built in the browser and on the server. The locked sign-in's request, `POST /api/locked-session`,
+accepts a provider token and opens a locked session; it stores nothing the token asserts, and
+writes only the session row and its handle. See [sessions.md](../business-logic/sessions.md) and
 [email-change.md](../business-logic/email-change.md).
 
 ## Keeping this chapter true

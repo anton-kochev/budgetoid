@@ -3946,12 +3946,12 @@ them it carries one link for somebody who holds neither way in any more.
 **Two departures, both specified and not built.**
 
 - **The link is not drawn.** The shipped screen carries the two buttons, the region and the
-  provider line, and nothing below the region leads to `/release`, whose route draws only its
-  heading so far.
+  provider line, and nothing below the region leads to `/release`. That screen ships — see
+  [Releasing an account](#releasing-an-account) — so a person reaches it today by its address, or
+  because the guards send a locked session there.
 - **The provider line is the one-exception sentence**, ending *Google is asked again only if you
-  change that address.* It is false about the release screen's trip to Google the day that screen
-  ships, so the line changes in the same change that draws the link, and neither lands before the
-  screen they point at: until then the second exception would name a trip nobody can take.
+  change that address.* It is false now that `/release` takes its own trip to Google, and the line
+  changes in the same change that draws the link.
 
 Everything else above ships. What does **not** ship anywhere is a way back in for somebody holding
 no passkey: redeeming a recovery code has no surface in the app, so this screen offers no control
@@ -4291,12 +4291,15 @@ Every string on this screen, in one place. The copy is the specification, not an
 
 ### What ships today
 
-**The screen itself, not yet.** `/release` is routed, guarded and outside the shell, and draws only
-its heading. Welcome draws no link to it. The session status carries `locked-session` and the
-guards send such a session here; the client can read a locked sign-in's return and send
-`POST /api/locked-session`, but no screen starts the trip or takes the return, and nothing sends the
-schedule. The server half is live: `POST /api/locked-session`, `GET /api/me/session` and
-`POST /api/me/erasure/schedule` answer as this chapter reads them.
+**The screen, as specified, except where it is reached from.** `/release` draws every state, outcome
+and string above: `ReleaseComponent` over `ReleaseFlowService`, which takes the Google answer once,
+sends the locked sign-in without a second press, schedules and signs out as the tables read. A
+locked session is sent here by the guards. **Welcome draws no link to it yet**, so a person arrives
+only by its address or by being sent; that is the Welcome chapter's departure, not this one's.
+**The acknowledgement checkbox draws no visible focus ring**: accessibility.md moves the ring to the
+visible box with `:has(:focus-visible)`, and no rule in `styles.scss` does that yet — the same gap
+the key-rotation checkbox carries. The server half is live: `POST /api/locked-session`,
+`GET /api/me/session` and `POST /api/me/erasure/schedule` answer as this chapter reads them.
 
 **The result sentence promises an erasure on a date, and nothing carries a schedule out yet.** So
 this screen may not reach production before the erasure it promises does.

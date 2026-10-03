@@ -471,10 +471,13 @@ describe('sessionExpiryInterceptor and the two readers of GET /api/me', () => {
 // the real `MeApiService`, because which request carries the mark is that
 // service's fact.
 //
-// The schedule's half — `POST /api/me/erasure/schedule` 401 ends the session,
-// its 403 is left alone — waits for that API member, which does not exist yet.
+// The schedule is the other way round, and the pair is the point: its request
+// is unmarked, so a 401 there is the session ending — the interceptor's, and
+// the release screen says nothing over it — while its 403 is the screen's own
+// `unrecognised` and moves nobody.
 describe('sessionExpiryInterceptor and the locked sign-in', () => {
   const LOCKED_SESSION_URL = `${API_BASE_URL}/api/locked-session`;
+  const SCHEDULE_URL = `${API_BASE_URL}/api/me/erasure/schedule`;
 
   let http: HttpTestingController;
   let meApi: MeApiService;
@@ -544,6 +547,42 @@ describe('sessionExpiryInterceptor and the locked sign-in', () => {
     expect(ended()).toBe(false);
     expect(destinations()).toEqual([]);
     // Still handed to the caller, which owes the person a sentence.
+    expect(refusals).toHaveLength(1);
+  });
+
+  it('ends the session and leaves for the welcome screen when the schedule is refused 401', () => {
+    // Arrange
+    const refusals: unknown[] = [];
+
+    // Act
+    meApi.scheduleErasure().subscribe({
+      error: (error: unknown) => refusals.push(error),
+    });
+    http
+      .expectOne(SCHEDULE_URL)
+      .flush(null, { status: 401, statusText: 'Unauthorized' });
+
+    // Assert
+    expect(ended()).toBe(true);
+    expect(destinations()).toEqual([WELCOME]);
+    expect(refusals).toHaveLength(1);
+  });
+
+  it('navigates nowhere and ends no session when the schedule is refused 403', () => {
+    // Arrange
+    const refusals: unknown[] = [];
+
+    // Act
+    meApi.scheduleErasure().subscribe({
+      error: (error: unknown) => refusals.push(error),
+    });
+    http
+      .expectOne(SCHEDULE_URL)
+      .flush(null, { status: 403, statusText: 'Forbidden' });
+
+    // Assert
+    expect(ended()).toBe(false);
+    expect(destinations()).toEqual([]);
     expect(refusals).toHaveLength(1);
   });
 });

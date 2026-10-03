@@ -107,9 +107,10 @@ Every new surface is designed and reviewed in both themes before shipping.
 ## Nothing to consent to
 
 The product shall present **no consent banner, no cookie notice and no tracking-preference
-surface**. It has nothing to ask consent for: it loads nothing from another origin except the two
-trips to the identity provider a person starts — creating an account on `/register`, and changing
-its address on `/app/settings` — sets no cookie but the session handle, and keeps
+surface**. It has nothing to ask consent for: it loads nothing from another origin except the three
+trips to the identity provider a person starts — creating an account on `/register`, changing its
+address on `/app/settings`, and releasing an account on `/release` — sets no cookie but the session
+handle, and keeps
 nothing on the device that is not strictly necessary for something the person asked for — never a
 trail of what they did —
 [no third-party origins](../engineering/no-third-party-origins.md#no-cookie-from-a-script-and-nothing-to-consent-to)

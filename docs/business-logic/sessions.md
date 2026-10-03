@@ -28,15 +28,16 @@ session over the account's federated credential — see the rule on it below.
 
 **The loop is closed on the server.** All five paths mint a handle and set the cookie; a request
 presenting it is authenticated from it, publishing the account and the ambient budget; and
-`POST /api/me/session/revocation` ends it. **Two of the five have a screen**: `/register` runs its
-creation ceremony and `/welcome` runs the assertion. The other three are reached today only by the
-integration suite — nothing in the browser redeems a code or regenerates a set, and nothing starts
-the locked sign-in. The client holds that sign-in's parts — the trip to Google, the read of its
-return, and `MeApiService.openLockedSession` — but no screen starts the trip or takes the return
-yet. Every request this app makes is authenticated from the cookie. The browser contacts the identity provider from two
-screens: `/register`, to create an account, and `/app/settings`, to change its address — and the
-email change's request carries a provider token **beside** the cookie, never in its place; see
-[email-change.md](email-change.md).
+`POST /api/me/session/revocation` ends it. **Three of the five have a screen**: `/register` runs
+its creation ceremony, `/welcome` runs the assertion, and `/release` runs the locked sign-in — its
+**Continue with Google** starts the trip, and on the return the screen takes the answer once and
+sends it without a second press. The other two are reached today only by the integration suite —
+nothing in the browser redeems a code or regenerates a set. Welcome draws no link to `/release`
+yet: a person reaches it by its address, or because the guards send a locked session there. Every
+request this app makes is authenticated from the cookie. The browser contacts the identity provider
+from three screens: `/register`, to create an account, `/app/settings`, to change its address, and
+`/release`, to sign in to an account nobody can open — and the email change's request carries a
+provider token **beside** the cookie, never in its place; see [email-change.md](email-change.md).
 
 ## Key Entities
 
@@ -458,8 +459,8 @@ required members. A third writer is a decision rather than a refactor.
     storage. A stored token there is whatever an abandoned registration left, sent on a request
     that was handed none. `MeApiService.openLockedSession` puts the token on the context, marks the
     request `EXPECTS_UNAUTHENTICATED` and writes no header; the interceptor reads that context on
-    the exact path `LOCKED_SESSION_PATH`, after the origin check. No screen takes the return that
-    would hand it a token yet.
+    the exact path `LOCKED_SESSION_PATH`, after the origin check. `ReleaseFlowService` takes that
+    return once, when `/release` is built, and hands the token straight to this request.
   - **Narrowing was worth doing, and no route the client calls reads a provider token anywhere else.**
     `SessionService` discards the stored token once the tab holds a session, but a browser that
     abandoned registration still holds it when that person does what they usually do next, a
@@ -577,11 +578,12 @@ required members. A third writer is a decision rather than a refactor.
     await buys is a screen that does not draw a list the answer would have replaced.
   - **The reading also moves twice mid-visit, and both moves are a *set* rather than a re-probe.**
     `ended()` is called by `sessionExpiryInterceptor` on a `401`, by the Settings screen's sign out,
-    and by `ErasureFlowService` on the erasing request's `204`. The last two call it **before** they
-    navigate to `/welcome`, because `guestGuard` reads the status the moment the router asks, and a
-    navigation made first is judged against a stale `authenticated` and sent back into the app.
-    `established()` is called by the registration flow on the `201` and by the sign-in flow on the
-    assertion's answer. Each time the server has just said what it thinks, in the same breath as
+    by the release screen's Sign out, and by `ErasureFlowService` on the erasing request's `204`.
+    The last three call it **before** they navigate to `/welcome`, because `guestGuard` reads the
+    status the moment the router asks, and a navigation made first is judged against a stale
+    session and sent back. `established()` is called by the registration flow on the `201` and by
+    the sign-in flow on the assertion's answer, and `establishedLocked()` by the release flow on the
+    locked sign-in's `200`. Each time the server has just said what it thinks, in the same breath as
     the cookie it set or the refusal it answered, so asking again would replace an answer with a
     guess over a network that may itself be the problem. On the establishing side a re-probe also
     costs a round trip at the happiest moment of the flow and can come back `unreachable` — a
@@ -739,12 +741,13 @@ required members. A third writer is a decision rather than a refactor.
     without the sentence two files away being opened. So the rule carries it: a member sets the
     token when the `401` it may collect is **that route's verdict on that request** rather than a
     session ending. `RegistrationApiService` sets it on both legs, `SignInApiService` on both
-    assertion legs, and `MeApiService` on `getSession()`, `getSessionOwner()`, `getAccountKeys()`, `eraseAccount()`
-    and `changeEmail()` — the last on `eraseAccount()`'s terms, resolved the same way, by one
-    unmarked `GET /api/me` the email-change flow makes before it names a refusal. `getMe()` is the
+    assertion legs, and `MeApiService` on `getSession()`, `getSessionOwner()`, `getAccountKeys()`, `eraseAccount()`,
+    `changeEmail()` and `openLockedSession()` — `changeEmail()` on `eraseAccount()`'s terms, resolved
+    the same way, by one unmarked `GET /api/me` the email-change flow makes before it names a
+    refusal. `getMe()` is the
     counterexample — the same route as `getSessionOwner()`, asked as somebody already signed in —
-    and carries none; nor does `endSession()`, whose `401`
-    means the session it presented had already ended. **The rule is about the member and not about
+    and carries none; nor do `endSession()` and `scheduleErasure()`, whose `401`
+    means the session they presented had already ended. **The rule is about the member and not about
     who calls it**, which is what keeps it true now that `getSessionOwner()` has a second caller.
     Most of the members are the plain case: the browser holds no session to lose. The members a
     signed-in browser makes are not that case, and each carries its own reason.
@@ -1003,8 +1006,9 @@ required members. A third writer is a decision rather than a refactor.
   every other route would fail with a raw exception rather than a refusal.
 - **Note**: the schedule route is the release valve for somebody holding nothing but a provider
   sign-in. The sign-in that brings them to it exists on the server — `POST /api/locked-session`,
-  which answers the account's scheduled instant beside the session. The client holds the code for
-  its trip, its return and its request, and no screen starts the trip yet. The **immediate**
+  which answers the account's scheduled instant beside the session. In the browser, `/release`
+  starts its trip, sends its request on the return, and then files the schedule with
+  `MeApiService.scheduleErasure`. The **immediate**
   erasure, `POST /api/me/erasure`, is refused to a locked session like everything else. Why a
   schedule needs no passkey, and why a full session must not file one, is argued in
   [erasure.md](erasure.md).

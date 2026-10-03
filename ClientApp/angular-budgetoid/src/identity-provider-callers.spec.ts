@@ -366,6 +366,17 @@ const allowedReaches = new Map<string, string>([
       'settings screen is built; contacts nothing',
   ],
   [
+    'src/app/release/release-flow.service.ts: startLockedSignIn',
+    'the press of Continue with Google on /release that starts the locked ' +
+      'sign-in: a top-level trip to the provider, and the only contact with ' +
+      'it somebody who has lost every factor can ask for',
+  ],
+  [
+    'src/app/release/release-flow.service.ts: takeLockedSignInReturn',
+    "takes the locked sign-in's answer out of memory once, when the release " +
+      'screen is built; contacts nothing',
+  ],
+  [
     'src/app/+core/interceptors/api-credentials.interceptor.ts: getIdToken',
     'reads the id token from storage for the two registration routes; ' +
       'contacts nothing',

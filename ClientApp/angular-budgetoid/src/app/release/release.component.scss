@@ -1,0 +1,77 @@
+// One grid column at every width, `justify-items: start`, `--bud-space-4`
+// between children: one act about one thing is a sentence, and nothing here
+// groups more than one of anything. No shell draws around this route, so it
+// owns its own inset and surface.
+:host {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--bud-space-4);
+  justify-items: start;
+  align-content: start;
+  min-height: 100dvh;
+  box-sizing: border-box;
+  padding: var(--bud-space-6) var(--bud-gutter) var(--bud-space-9);
+  background: var(--mat-sys-background);
+  color: var(--bud-text);
+  font-family: var(--bud-font-ui);
+}
+
+// Above `branding/BRAND.md`'s 24px recommended minimum; there is no size token
+// for the mark, so it borrows the spacing step that lands there.
+.rl-lockup {
+  height: var(--bud-space-7);
+  color: var(--mat-sys-primary);
+}
+
+// `title` role. Sizes and line heights in this file are literals for the
+// reason `register.component.scss` gives at its own: the book names no
+// type-scale token.
+.rl-title {
+  margin: 0;
+  font-family: var(--bud-font-display);
+  font-weight: 500;
+  font-size: 1.5rem;
+  line-height: 1.2;
+}
+
+// `body` `--bud-text`, capped at the reading measure.
+.rl-prose {
+  margin: 0;
+  max-width: 65ch;
+  font-size: 0.875rem;
+  line-height: 1.55;
+}
+
+// Colour is never the message: every line reads the same with it removed.
+.rl-error {
+  margin: 0;
+  max-width: 65ch;
+  color: var(--bud-over);
+  font-size: 0.875rem;
+  line-height: 1.55;
+}
+
+// Holds one line box while empty, so nothing below it moves when a line
+// arrives.
+.rl-outcome {
+  display: grid;
+  min-height: 1lh;
+  font-size: 0.875rem;
+  line-height: 1.55;
+}
+
+// Material's M3 height is below the system's touch minimum.
+.rl-button {
+  min-height: var(--bud-touch-target);
+}
+
+// **Destructive**, `--bud-over` fill with a `#FFFFFF` label — the declaration
+// `erase-dialog.component.scss` makes for the same variant, and the one
+// hard-coded hex here, because the Buttons chapter names it. Material's own
+// tokens rather than `background` and `color`, so the state layer, the ripple
+// and the disabled appearance stay Material's.
+.rl-commit {
+  --mat-button-filled-container-color: var(--bud-over);
+  --mat-button-filled-label-text-color: #ffffff;
+  --mat-button-filled-state-layer-color: #ffffff;
+}
