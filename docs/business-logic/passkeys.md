@@ -749,11 +749,13 @@ factor, and an account identifier derived from the challenge it just spent —
   somebody shaped has to get past. [account-keys.md](account-keys.md) owns them, and the order they
   run in is the security property. **The re-authentication ceremony runs on `/app/settings`**:
   `RotationFlowService`, behind the Key rotation section, `ErasureFlowService`, behind the erasure
-  dialog, and `EmailChangeFlowService`, behind **Confirm with your passkey**, each mint a challenge
+  dialog, `EmailChangeFlowService`, behind **Confirm with your passkey**, and
+  `ErasureCancellationFlowService`, behind **Cancel the erasure**, each mint a challenge
   through `ReauthenticationApiService` and have the authenticator sign it with `assertPasskey`; the
   assertion goes to the rotation begin through `KeyRotationService`, to `POST /api/me/erasure`
-  through `MeApiService.eraseAccount`, and to `POST /api/me/email-change` through
-  `MeApiService.changeEmail`. The
+  through `MeApiService.eraseAccount`, to `POST /api/me/email-change` through
+  `MeApiService.changeEmail`, and to `POST /api/me/erasure/schedule/cancellation` through
+  `MeApiService.cancelScheduledErasure`. The
   revocation and recovery-code-generation gates take the same assertion, and nothing in the browser
   calls either route yet; they, and the registration of a **further** passkey, are reached today
   only by the integration suite. **Account creation is gated on a passkey, on the only path there

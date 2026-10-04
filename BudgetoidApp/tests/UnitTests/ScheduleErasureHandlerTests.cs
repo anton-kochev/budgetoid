@@ -163,5 +163,11 @@ public sealed class ScheduleErasureHandlerTests
             AddCalls++;
             return Task.FromResult(winner);
         }
+
+        public Task<ErasureSchedule?> FindTrackedAsync(Guid userId, CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("Scheduling reads no tracked row.");
+
+        public Task<ScheduleRemoval> RemoveAsync(ErasureSchedule schedule, CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("Scheduling removes nothing.");
     }
 }

@@ -1,4 +1,5 @@
 using Api.Infrastructure;
+using Application.Erasure.CancelScheduledErasure;
 using Application.Erasure.ScheduleErasure;
 using Application.Passkeys.Reauthentication;
 using Application.Users.EraseAccount;
@@ -46,7 +47,8 @@ public static class AccountErasureEndpoints
 
         // The release valve: a locked session files the account's erasure for seven days out, and that is
         // the one act it may perform. Under the erasure resource on purpose — it is the same erasure,
-        // deferred — and ErasureIrreversibilityTests pins the resource's two routes as an exact list
+        // deferred — and ErasureIrreversibilityTests pins the resource's three routes, this one, the
+        // erasure above and the cancellation below, as an exact list
         // (ErasureResource_MapsExactlyTheDestructiveRouteAndItsSchedule).
         //
         // No body and no id, for the immediate erasure's reason: the account scheduled is whichever one
@@ -71,6 +73,37 @@ public static class AccountErasureEndpoints
             .WithMetadata(new AllowsLockedSessionAttribute())
             .WithMetadata(new RequiresLockedSessionAttribute());
 
+        // The owner's answer to a schedule: a full session withdraws it with a fresh passkey assertion.
+        // Under the schedule it withdraws, and it brings nothing back — nothing has been erased yet.
+        //
+        // POST for the immediate erasure's reason: the request carries a proof that has to be verified,
+        // and a DELETE with a body is a shape intermediaries are free to strip. The body is the same
+        // ErasureRequest, so a refused assertion here answers exactly what one there answers.
+        //
+        // NO session-kind markers, and the absence is the rule. The route rides the fallback policy, so
+        // FullSessionRequirement refuses a locked session 403 before the handler runs: a locked session is
+        // what somebody holding only the owner's provider account reaches, and letting it withdraw what the
+        // owner filed — or what that same person filed — would make the passkey gate decorative. Never add
+        // AllowsLockedSessionAttribute here. The cookie is not touched: a withdrawal ends nothing.
+        group.MapPost("/erasure/schedule/cancellation", async (
+            ErasureRequest request,
+            CancelScheduledErasureHandler handler,
+            CancellationToken cancellationToken) =>
+        {
+            await handler.HandleAsync(
+                new CancelScheduledErasureCommand(new ReauthenticationAssertion(
+                    request.CredentialId,
+                    request.ClientDataJson,
+                    request.AuthenticatorData,
+                    request.Signature,
+                    request.UserHandle)),
+                cancellationToken);
+
+            // 204 whether this request removed the row, another tab did, or none stood: the post-condition
+            // is the answer, and a body distinguishing them would say whether a schedule existed.
+            return TypedResults.NoContent();
+        });
+
         return endpoints;
     }
 
@@ -81,8 +114,8 @@ public static class AccountErasureEndpoints
     private sealed record ScheduledErasureResponse(DateTime TakesEffectAtUtc);
 
     /// <summary>
-    /// The assertion the erasure is authorized by, in the shape the sign-in leg's own request record
-    /// already uses.
+    /// The assertion the erasure — or the withdrawal of its schedule — is authorized by, in the shape the
+    /// sign-in leg's own request record already uses.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -96,8 +129,8 @@ public static class AccountErasureEndpoints
     /// That envelope covers what binds, not what fails to. No body at all, a literal <c>null</c>, or a
     /// member of the wrong JSON type is a framework 400 raised before this handler is entered, and the
     /// gap is accepted: a deserialization failure is a fact about the caller's own request and says
-    /// nothing about what credentials exist. Closing it would mean a custom model binder on the one
-    /// endpoint that must never grow one.
+    /// nothing about what credentials exist. Closing it would mean a custom model binder on the two
+    /// endpoints that must never grow one.
     /// </para>
     /// </remarks>
     private sealed record ErasureRequest(

@@ -16,6 +16,10 @@ import { ProviderDepartureService } from '@app-core/services/provider-departure.
 import { SessionService } from '@app-core/session/session.service';
 import { BrandLockupComponent } from '@app-shared/components/brand-lockup/brand-lockup.component';
 import {
+  readScheduledInstant,
+  type ScheduledInstant,
+} from '@app-shared/scheduled-instant';
+import {
   ReleaseFlowService,
   type ReleaseScheduleFailure,
   type ReleaseSignInFailure,
@@ -35,13 +39,6 @@ type RegionLine =
   | 'scheduling'
   | `sign-in:${ReleaseSignInFailure}`
   | `schedule:${ReleaseScheduleFailure}`;
-
-/** The scheduled instant as it arrived, and as the reader's clock reads it. */
-interface ScheduledInstant {
-  readonly wire: string;
-  readonly date: string;
-  readonly time: string;
-}
 
 // The screen for somebody who has lost every passkey and every recovery code:
 // it signs them in with Google into a locked session and, from there, files the
@@ -85,9 +82,12 @@ export class ReleaseComponent {
 
     return schedule === null || schedule === 'unread'
       ? null
-      : readInstant(schedule.takesEffectAtUtc);
+      : readScheduledInstant(schedule.takesEffectAtUtc);
   });
 
+  // An instant that does not parse renders as nothing scheduled, whose commit
+  // answers with the stored instant.
+  //
   // A locked session whose schedule this tab has not read renders as nothing
   // scheduled. That is safe rather than optimistic: a repeated schedule is
   // answered with the instant stored the first time.
@@ -230,35 +230,4 @@ function textOf(line: RegionLine): string {
     case 'schedule:undetermined':
       return 'Budgetoid didn’t hear back, so this may already be scheduled. Press again to check — asking twice never changes the date.';
   }
-}
-
-// The server's instant in the reader's own zone and locale: the day is the
-// reader's calendar day, never the UTC one, and the date is absolute, never a
-// countdown that goes false on tomorrow's load. `Intl.DateTimeFormat` rather
-// than `DatePipe`, because nothing provides `LOCALE_ID` and the pipe would pin
-// every date to `en-US` — the credential list's rule.
-//
-// The decoders behind both writers of the schedule refuse an instant without
-// an offset, so `Date` never reads one as local time. An instant that still
-// does not parse renders as nothing scheduled, whose commit answers with the
-// stored instant.
-function readInstant(wire: string): ScheduledInstant | null {
-  const instant = new Date(wire);
-
-  if (Number.isNaN(instant.getTime())) {
-    return null;
-  }
-
-  return {
-    wire,
-    date: new Intl.DateTimeFormat(undefined, {
-      day: 'numeric',
-      month: 'long',
-      year: 'numeric',
-    }).format(instant),
-    time: new Intl.DateTimeFormat(undefined, {
-      hour: 'numeric',
-      minute: '2-digit',
-    }).format(instant),
-  };
 }

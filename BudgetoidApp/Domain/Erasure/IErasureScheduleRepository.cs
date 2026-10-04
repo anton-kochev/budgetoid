@@ -32,4 +32,33 @@ public interface IErasureScheduleRepository
     /// </para>
     /// </remarks>
     Task<ErasureSchedule> AddAsync(ErasureSchedule schedule, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Returns the schedule filed for <paramref name="userId"/>'s account as an instance the unit of work
+    /// tracks, ready to hand to <see cref="RemoveAsync"/>, or <see langword="null"/> when it holds none.
+    /// </summary>
+    /// <remarks>
+    /// The owner predicate is explicit for the reason <see cref="FindAsync"/> gives: <c>user_isolation</c>
+    /// is the second wall, not the first. A remove that leant on the policy alone would delete whichever
+    /// row the connection can see.
+    /// </remarks>
+    Task<ErasureSchedule?> FindTrackedAsync(Guid userId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Deletes <paramref name="schedule"/>'s row and reports whether this call removed it or found it
+    /// already gone.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The row is deleted, never stamped.</b> A cancelled-at column would be a remnant on an account
+    /// that once asked to be forgotten, and it would need an <c>UPDATE</c> the table is deliberately
+    /// never granted.
+    /// </para>
+    /// <para>
+    /// <see cref="ScheduleRemoval.AlreadyGone"/> answers only a delete that matched nothing because a
+    /// concurrent cancel removed the row first. A conflict over any other row the same unit of work was
+    /// tracking propagates: it is a failure this method does not model.
+    /// </para>
+    /// </remarks>
+    Task<ScheduleRemoval> RemoveAsync(ErasureSchedule schedule, CancellationToken cancellationToken = default);
 }

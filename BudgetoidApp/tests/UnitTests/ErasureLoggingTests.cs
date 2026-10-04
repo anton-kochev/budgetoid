@@ -1,4 +1,5 @@
 using System.Reflection;
+using Application.Erasure.CancelScheduledErasure;
 using Application.Erasure.ScheduleErasure;
 using Application.Passkeys.Reauthentication;
 using Application.Users.EraseAccount;
@@ -20,8 +21,8 @@ namespace UnitTests;
 /// goes red on it.
 /// </para>
 /// <para>
-/// <b>Exactly these three types, because they are the whole of the two erasure command paths that
-/// hold the account's id in hand.</b> <see cref="EraseAccountHandler" /> reads
+/// <b>Exactly these types, because they are the whole of the erasure command paths that hold the
+/// account's id in hand.</b> <see cref="EraseAccountHandler" /> reads
 /// <c>IUserContext.UserId</c> and hands it to the user delete;
 /// <see cref="PasskeyReauthentication" /> reads the same id to scope the key lookup and to compare
 /// the user handle against. <c>BeginReauthenticationHandler</c>, the ceremony's other leg, is left
@@ -33,6 +34,12 @@ namespace UnitTests;
 /// file the schedule under, and a line naming the account whose erasure was just scheduled is the same
 /// record seven days early: once the schedule takes effect, the log still says who asked to be
 /// forgotten.
+/// </para>
+/// <para>
+/// <see cref="CancelScheduledErasureHandler" /> withdraws a schedule and is here for the same reason: it
+/// reads the same id to find the row it removes, and a line naming an account whose schedule was
+/// withdrawn records that the account once asked to be forgotten — the remnant the cancellation's delete,
+/// rather than a stamp, exists to avoid.
 /// </para>
 /// <para>
 /// <b>Three things it deliberately does not cover, and none of them is claimed.</b>
@@ -102,6 +109,7 @@ public sealed class ErasureLoggingTests
         typeof(EraseAccountHandler),
         typeof(PasskeyReauthentication),
         typeof(ScheduleErasureHandler),
+        typeof(CancelScheduledErasureHandler),
     ];
 
     private const BindingFlags AnyInstanceConstructor =

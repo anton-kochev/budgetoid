@@ -110,13 +110,30 @@ export class SessionService {
    * The account's scheduled erasure: `'unread'` while nothing has said, `null`
    * when the server said nothing is scheduled, or the instant it takes effect.
    *
-   * Written by the probe and by the two locked-session arms — the locked
-   * sign-in's answer and a schedule request's — and returned to `'unread'` when
-   * the session ends, because the value is a fact about that session's account
-   * and the next occupant of this tab is owed a fresh read.
+   * Written by the probe, by the two locked-session arms — the locked sign-in's
+   * answer and a schedule request's — by a cancellation's `204`, and by the
+   * schedule reads {@link established} and {@link refreshSchedule} make. It is
+   * returned to `'unread'` when the session ends, because the value is a fact
+   * about that session's account and the next occupant of this tab is owed a
+   * fresh read.
    */
   public readonly scheduledErasure: Signal<ScheduledErasure> =
     this.scheduledErasureSignal.asReadonly();
+
+  // **Moves on every write of the status or the schedule that is not a
+  // schedule read's own publication**, and a schedule read publishes only if
+  // it has not moved since the read was sent. One counter rather than a status
+  // comparison, because a session can end and a new one begin while a read is
+  // out — `'authenticated'` again, the same value, about a different visit —
+  // and because a cancellation's `204` changes no status at all: a read sent
+  // before it describes the account as it was, and published last it would
+  // put the notice back over a schedule that is gone.
+  #generation = 0;
+
+  // How many schedule reads are out. {@link refreshSchedule} sends none while
+  // any is: a tab switched back and forth would otherwise stack reads against
+  // an API that scales to zero.
+  #scheduleReads = 0;
 
   // Resolves however the reads end, and never rejects. The `APP_INITIALIZER`
   // awaits this promise, so a rejection is not a failed probe — it is an
@@ -149,7 +166,7 @@ export class SessionService {
       // is: a probe that learned nothing about the session learned nothing
       // about its schedule either.
       this.budgetSignal.set(null);
-      this.statusSignal.set(SessionService.readingOf(error));
+      this.publishStatus(SessionService.readingOf(error));
 
       return;
     }
@@ -165,8 +182,8 @@ export class SessionService {
 
     if (kind === 'locked') {
       this.budgetSignal.set(null);
-      this.scheduledErasureSignal.set(SessionService.scheduleOf(session));
-      this.statusSignal.set('locked-session');
+      this.publishSchedule(SessionService.scheduleOf(session));
+      this.publishStatus('locked-session');
       // A session beginning, so the provider's tokens go — and outside any
       // `try`, for the reason the full arm's discard is.
       this.forgetProviderToken();
@@ -176,7 +193,7 @@ export class SessionService {
 
     if (kind !== 'full') {
       this.budgetSignal.set(null);
-      this.statusSignal.set('unreachable');
+      this.publishStatus('unreachable');
 
       return;
     }
@@ -188,8 +205,8 @@ export class SessionService {
     // second request blinking. `null` is the honest budget meanwhile: signed in,
     // tenancy unknown, every write refused with a word whose remedy is a reload.
     this.budgetSignal.set(null);
-    this.scheduledErasureSignal.set(SessionService.scheduleOf(session));
-    this.statusSignal.set('authenticated');
+    this.publishSchedule(SessionService.scheduleOf(session));
+    this.publishStatus('authenticated');
 
     // **Never inside a `try` that could unpublish the session, and only on the
     // two arms that publish one.** Never on `anonymous` or `unreachable`: on a
@@ -213,7 +230,7 @@ export class SessionService {
   // asking it again over a network that may itself be the problem would replace
   // an answer with a guess.
   public ended(): void {
-    this.statusSignal.set('anonymous');
+    this.publishStatus('anonymous');
 
     // **Dropped beside the keys, and for the same reason they are.** The
     // identifier is a fact about the session that just ended, and a browser that
@@ -227,7 +244,7 @@ export class SessionService {
 
     // The schedule is a fact about the account whose session just ended, for
     // the budget's reason above.
-    this.scheduledErasureSignal.set('unread');
+    this.publishSchedule('unread');
 
     // **Custody ends where the session does, and it ends here rather than at
     // each caller.** Four paths end a session today —
@@ -280,11 +297,20 @@ export class SessionService {
   // verified credential and the app for the sake of a value only a *write*
   // needs. Until it lands, {@link budgetId} is `null` and a write says so —
   // `unreachable`, and the remedy is the same press a moment later.
+  //
+  // **The schedule is asked for beside it, for the same reason and on the same
+  // terms.** Neither establishing leg's answer carries it, and the tab may have
+  // probed anonymous on its cold load, which leaves `'unread'` — so without
+  // this read an owner who signs in with a surviving passkey would see no
+  // notice of an erasure a Google sign-in filed until a reload. Not awaited,
+  // publishing the schedule and nothing else, and a failure publishes nothing:
+  // a 401 here is a cookie that had not landed, never a session ending.
   public established(): void {
-    this.statusSignal.set('authenticated');
+    this.publishStatus('authenticated');
     this.forgetProviderToken();
 
     void this.readBudget();
+    void this.readSchedule();
   }
 
   // The mirror of {@link established} for the one leg that opens a locked
@@ -307,16 +333,52 @@ export class SessionService {
   // The provider's tokens go last and through the guarded discard, so a throw
   // there cannot unpublish the session set first.
   public establishedLocked(answer: SessionDto): void {
-    this.statusSignal.set('locked-session');
+    this.publishStatus('locked-session');
     this.budgetSignal.set(null);
-    this.scheduledErasureSignal.set(SessionService.scheduleOf(answer));
+    this.publishSchedule(SessionService.scheduleOf(answer));
     this.forgetProviderToken();
   }
 
   // The schedule request's `200` names the instant the server stored, the same
   // instant on every repeat, and the release screen renders it from here.
   public erasureScheduled(takesEffectAtUtc: string): void {
-    this.scheduledErasureSignal.set({ takesEffectAtUtc });
+    this.publishSchedule({ takesEffectAtUtc });
+  }
+
+  // A cancellation's `204`: the server saying nothing is scheduled. `null` and
+  // never `'unread'`, which would claim nobody had said. It moves the
+  // generation, so a schedule read sent before the `204` cannot resurrect the
+  // notice when its older answer lands.
+  public erasureCancelled(): void {
+    this.publishSchedule(null);
+  }
+
+  // Asks the server for the schedule again, for a tab that has just come back
+  // into view — `ShellComponent` calls it on `visibilitychange`. A Google
+  // sign-in on another device can file an erasure at any moment of a visit,
+  // and this is how a tab left open learns of it without a reload.
+  //
+  // **Not a probe, and not a timer.** It publishes the schedule and nothing
+  // else, and a failure publishes nothing: the read carries
+  // `EXPECTS_UNAUTHENTICATED`, so the interceptor never hears its 401, and
+  // reading that 401 as `anonymous` here would sign a tab out because it came
+  // back into view. No polling, because the API scales to zero and a timer in
+  // every open tab would keep it awake for nobody.
+  //
+  // Nothing is asked for a tab holding no session, and nothing while another
+  // schedule read is out.
+  public refreshSchedule(): void {
+    const status = this.statusSignal();
+
+    if (status !== 'authenticated' && status !== 'locked-session') {
+      return;
+    }
+
+    if (this.#scheduleReads > 0) {
+      return;
+    }
+
+    void this.readSchedule();
   }
 
   // Drops the provider's tokens once this tab has published a session, from
@@ -345,6 +407,52 @@ export class SessionService {
       this.auth.forgetProviderToken();
     } catch (error: unknown) {
       logFailure('Provider token discard failed', error);
+    }
+  }
+
+  // The two writers every published status and every schedule not read by
+  // {@link readSchedule} goes through, so neither can be written without
+  // moving the generation that read is judged against.
+  private publishStatus(status: SessionStatus): void {
+    this.#generation += 1;
+    this.statusSignal.set(status);
+  }
+
+  private publishSchedule(schedule: ScheduledErasure): void {
+    this.#generation += 1;
+    this.scheduledErasureSignal.set(schedule);
+  }
+
+  // Reads the schedule alone, publishing nothing else and never rejecting.
+  //
+  // **Two conditions on publishing, and each guards against a true answer
+  // becoming a false claim.** The generation has not moved since the read was
+  // sent — the session did not end or begin again, and nothing wrote the
+  // schedule meanwhile, a cancellation's `204` above all. And the answer's
+  // kind is the kind of session this tab holds: a body describing a locked
+  // session to a full one is not an answer about the session here.
+  //
+  // `getSession()` carries `EXPECTS_UNAUTHENTICATED`, so a 401 lands in the
+  // `catch` and nowhere else; see {@link refreshSchedule} and
+  // {@link established} for why each caller wants exactly that.
+  private async readSchedule(): Promise<void> {
+    const sentUnder = this.#generation;
+
+    this.#scheduleReads += 1;
+
+    try {
+      const answer = await firstValueFrom(this.api.getSession());
+
+      if (
+        sentUnder === this.#generation &&
+        SessionService.statusOfKind(answer.kind) === this.statusSignal()
+      ) {
+        this.scheduledErasureSignal.set(SessionService.scheduleOf(answer));
+      }
+    } catch {
+      // Nothing: a read that did not land learned nothing about the schedule.
+    } finally {
+      this.#scheduleReads -= 1;
     }
   }
 
@@ -403,6 +511,16 @@ export class SessionService {
     return answer.erasure === null
       ? null
       : { takesEffectAtUtc: answer.erasure.takesEffectAtUtc };
+  }
+
+  // The status a session of this kind is published as. Read off the answer as
+  // `unknown`, for the probe's reason: the decoder's type is its claim.
+  private static statusOfKind(kind: unknown): SessionStatus | null {
+    if (kind === 'full') {
+      return 'authenticated';
+    }
+
+    return kind === 'locked' ? 'locked-session' : null;
   }
 
   private static readingOf(error: unknown): SessionStatus {

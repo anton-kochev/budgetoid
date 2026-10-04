@@ -1,6 +1,14 @@
-import { ChangeDetectionStrategy, Component } from '@angular/core';
+import { DOCUMENT } from '@angular/common';
+import {
+  ChangeDetectionStrategy,
+  Component,
+  DestroyRef,
+  inject,
+} from '@angular/core';
 import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
+import { SessionService } from '@app-core/session/session.service';
 import { BrandLockupComponent } from '@app-shared/components/brand-lockup/brand-lockup.component';
+import { ScheduledErasureNoticeComponent } from './scheduled-erasure-notice.component';
 
 // The glyphs the navigation draws, addressed by **codepoint**.
 //
@@ -89,11 +97,42 @@ export const SHELL_DESTINATIONS = [
 // long as a stale status said the visitor was signed in.
 @Component({
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [BrandLockupComponent, RouterLink, RouterLinkActive, RouterOutlet],
+  imports: [
+    BrandLockupComponent,
+    RouterLink,
+    RouterLinkActive,
+    RouterOutlet,
+    ScheduledErasureNoticeComponent,
+  ],
   selector: 'app-shell',
   styleUrls: ['./shell.component.scss'],
   templateUrl: './shell.component.html',
 })
 export class ShellComponent {
   protected readonly destinations = SHELL_DESTINATIONS;
+
+  constructor() {
+    const session = inject(SessionService);
+    const document = inject(DOCUMENT);
+
+    // **The tab coming back into view asks for the schedule once**, so a tab
+    // left open learns of an erasure a Google sign-in filed elsewhere without
+    // a reload. Wired here because this is the layout every signed-in screen
+    // renders through: one listener covers them all, and it goes when the
+    // signed-in surface does — a listener left on `document` would read the
+    // schedule from `/welcome` once per tab switch for the rest of the tab's
+    // life. **No timer**: the API scales to zero, and polling from every open
+    // tab would keep it awake for nobody. What the read publishes, and when it
+    // publishes nothing, is `SessionService.refreshSchedule`'s.
+    const onVisibilityChange = (): void => {
+      if (document.visibilityState === 'visible') {
+        session.refreshSchedule();
+      }
+    };
+
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    inject(DestroyRef).onDestroy(() => {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    });
+  }
 }

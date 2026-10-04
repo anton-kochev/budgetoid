@@ -47,6 +47,10 @@
   </ul>
 </nav>
 
+<!-- The scheduled-erasure notice leads the content: inside `main`, because it
+     is about the account the screen below is showing, and before the outlet,
+     so it is read first and stays put while the screens change under it. -->
 <main class="sh-content">
+  <app-scheduled-erasure-notice />
   <router-outlet />
 </main>

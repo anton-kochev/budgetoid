@@ -91,6 +91,13 @@ const ACCOUNT_KEYS_URL = `${API_ORIGIN}/api/me/account-keys`;
 // began with a sign-in rather than with a cold load. It is not awaited, so the
 // navigation below does not wait for it.
 const ME_URL = `${API_ORIGIN}/api/me`;
+// The fifth, started beside the fourth by `established()` for the same reason:
+// the assertion's answer does not carry the scheduled erasure, and a tab that
+// probed anonymous on its cold load holds `'unread'` — so without this read an
+// owner signing in with a surviving passkey sees no notice until a reload.
+// Marked, because its 401 is a cookie that had not landed, never a session
+// ending.
+const SESSION_URL = `${API_ORIGIN}/api/me/session`;
 
 // What `POST /api/passkeys/assertion/options` answers with: four members and
 // deliberately not a fifth. **There is no `allowCredentials` and none may be
@@ -487,7 +494,7 @@ describe('SignInService', () => {
       'the navigation into the app',
     );
 
-    // **The third and fourth requests, and this census moved to account for
+    // **Requests three to five, and this census moved to account for
     // each of them rather than relaxing to stop seeing them.** Two requests were
     // the whole of a sign-in until custody was wired, and the line below said
     // so. The 200 now hands the key-encryption key to
@@ -512,18 +519,32 @@ describe('SignInService', () => {
     );
     seen.push(budget.request.urlWithParams);
 
+    const schedule = await eventually(
+      () => http.match(SESSION_URL)[0] ?? null,
+      'the read of the erasure this account has scheduled, if any',
+    );
+    seen.push(schedule.request.urlWithParams);
+
     // Assert
-    // Four requests left this browser and all four went to Budgetoid's own
+    expect(schedule.request.context.get(EXPECTS_UNAUTHENTICATED)).toBe(true);
+
+    // Five requests left this browser and all five went to Budgetoid's own
     // API. Origins, not prefixes: `https://api.test.attacker.example` is a name
     // anybody can register and `startsWith` admits it, which is the rule
     // `apiCredentialsInterceptor` states one layer down.
     //
-    // Compared as a set rather than in order, because the last two are started
-    // by two collaborators one statement apart and neither waits for the other:
+    // Compared as a set rather than in order, because the last three are
+    // started by collaborators statements apart and none waits for another:
     // pinning which of them reaches the backend first would be a red bar over a
     // scheduling detail nothing depends on.
     expect([...seen].sort()).toEqual(
-      [OPTIONS_URL, ASSERTION_URL, ACCOUNT_KEYS_URL, ME_URL].sort(),
+      [
+        OPTIONS_URL,
+        ASSERTION_URL,
+        ACCOUNT_KEYS_URL,
+        ME_URL,
+        SESSION_URL,
+      ].sort(),
     );
 
     for (const url of seen) {

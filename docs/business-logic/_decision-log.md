@@ -8,6 +8,43 @@ here — this log is for **business/domain** decisions only.
 
 ---
 
+## 2026-10-04 — A passkey withdraws a schedule; the notice is shown, never mailed
+
+**Context:** a locked session could file an erasure for seven days out and nothing could take it
+back, so the delay protected nothing — somebody holding a stolen Google account could end a budget
+its owner could still read. The owner also had no way to learn of a schedule outside `/release`,
+a screen they had no reason to visit.
+
+**Decision:**
+- **A full session plus a fresh `reauthentication` assertion withdraws a schedule, by deleting
+  the row.** A locked session is refused, and a further federated sign-in writes nothing to it.
+  The answer is `204` whether a row was removed or none stood. [erasure.md](erasure.md) owns the
+  rule.
+- **Every authenticated session shows the instant, and nothing sends it by email.** A full session
+  shows a notice above every `/app` screen, kept current by reading the schedule after a sign-in
+  and each time the tab becomes visible — not by polling.
+- **The withdrawal ships before anything carries a schedule out.** A schedule's exits are the
+  withdrawal and the immediate erasure; nothing erases an account when its instant passes.
+
+**Alternatives considered:**
+- *Admit a locked session that also carries an assertion* — rejected: whoever can assert can sign
+  in in full, so it buys nothing and widens the locked session's pinned route set.
+- *A `cancelled_at` stamp* — rejected: it is a record that the account once asked to be forgotten,
+  and it needs an `UPDATE` grant the table deliberately does not hold.
+- *A dedicated challenge pool for the withdrawal* — rejected: a client able to mint one challenge
+  can mint any and send the assertion where it likes, so a per-act pool protects nothing.
+- *Withdraw the control on a lost answer, as the erasure dialog does* — rejected: the withdrawal is
+  idempotent, so a second press after a lost success is told nothing stands.
+- *An email on scheduling* — rejected: in the case the delay exists for, the attacker holds the
+  inbox too.
+- *Cancel inside the notice* — rejected: it has to share Settings' passkey holds, and the shell
+  cannot see Settings' flows.
+
+**Affected areas:** [erasure.md](erasure.md), [sessions.md](sessions.md),
+[passkeys.md](passkeys.md), [components.md](../design/components.md).
+
+---
+
 ## 2026-10-03 — A session can ask what it holds, and the schedule's policing has a known end
 
 **Context:** a locked session is refused by `GET /api/me` like every budget route, so a client that

@@ -27,6 +27,7 @@ import { ProviderDepartureService } from '@app-core/services/provider-departure.
 import { NARRATIVE_NAME_CHARACTERS } from '@app-shared/narrative-field-caps';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { EmailChangeFlowService } from './email-change-flow.service';
+import { ErasureCancellationFlowService } from './erasure-cancellation-flow.service';
 import { KeyRotationSectionComponent } from './key-rotation-section.component';
 import {
   RotationFlowService,
@@ -61,6 +62,10 @@ const ROTATE_OFF_ASKING =
   'Rotating keys is off while this tab asks your passkey to confirm your ' +
   'email change, because your browser runs one passkey check at a time. It ' +
   'comes back when that check ends.';
+const ROTATE_OFF_CANCELLING =
+  'Rotating keys is off while this tab asks your passkey to cancel the ' +
+  'erasure, because your browser runs one passkey check at a time. It comes ' +
+  'back when that check ends.';
 
 const ROTATE = 'Rotate keys';
 const FINISH = 'Finish rotating';
@@ -179,6 +184,13 @@ interface EmailChangeAskingStub {
   readonly asking: WritableSignal<boolean>;
 }
 
+// The erasure cancellation's one reading this section takes: its passkey
+// check. Its cancelling request asks the device for nothing, so the section
+// reads no more of it. Also provided by the settings screen.
+type CancellationAskingStub = Pick<ErasureCancellationFlowService, 'asking'> & {
+  readonly asking: WritableSignal<boolean>;
+};
+
 // Collapses the whitespace a template's line wrapping introduces, so a pinned
 // sentence is compared against what a reader sees rather than against the
 // markup's indentation.
@@ -198,6 +210,7 @@ describe('KeyRotationSectionComponent', () => {
   let rotations: KeyRotationStub;
   let flow: RotationFlowStub;
   let emailFlow: EmailChangeAskingStub;
+  let cancellation: CancellationAskingStub;
   let fixture: ComponentFixture<KeyRotationSectionComponent>;
   let host: HTMLElement;
 
@@ -223,6 +236,7 @@ describe('KeyRotationSectionComponent', () => {
     rotations = new KeyRotationStub();
     flow = new RotationFlowStub();
     emailFlow = { asking: signal(false) };
+    cancellation = { asking: signal(false) };
     TestBed.configureTestingModule({
       imports: [KeyRotationSectionComponent],
       providers: [
@@ -230,6 +244,7 @@ describe('KeyRotationSectionComponent', () => {
         { provide: KeyRotationService, useValue: rotations },
         { provide: RotationFlowService, useValue: flow },
         { provide: EmailChangeFlowService, useValue: emailFlow },
+        { provide: ErasureCancellationFlowService, useValue: cancellation },
       ],
     });
     await TestBed.compileComponents();
@@ -1338,6 +1353,35 @@ describe('KeyRotationSectionComponent', () => {
       expect(departingSentence()).not.toBeNull();
       expect(askingSentence()).toBeNull();
       expect(describedBy(control())).toEqual([ROTATE_OFF_DEPARTING]);
+    });
+
+    // **The email change's check outranks the cancellation's**, production's
+    // order: departing, then the email change, then the cancellation. The
+    // browser runs one passkey check at a time, so the two cannot both be
+    // asking on a screen that holds each against the other — this pins which
+    // sentence a state that broke that would still say, one at a time.
+    it('says asking’s sentence and not the cancellation’s when both ask', () => {
+      // Act
+      ask();
+      cancellation.asking.set(true);
+      tick();
+
+      // Assert
+      expect(askingSentence()).not.toBeNull();
+      expect(elementSaying(ROTATE_OFF_CANCELLING)).toBeNull();
+      expect(describedBy(control())).toEqual([ROTATE_OFF_ASKING]);
+    });
+
+    // The control for the case above: the cancellation's check, alone, does
+    // hold the control and say so.
+    it('says the cancellation’s sentence while only the cancellation asks', () => {
+      // Act
+      cancellation.asking.set(true);
+      tick();
+
+      // Assert
+      expect(describedBy(control())).toEqual([ROTATE_OFF_CANCELLING]);
+      expect(control()?.getAttribute('aria-disabled')).toBe('true');
     });
 
     // Confirm is held by a rotation's *asking*, not its whole run, so Confirm

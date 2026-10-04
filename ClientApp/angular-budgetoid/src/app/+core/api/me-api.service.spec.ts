@@ -11,6 +11,7 @@ import type { PasskeyAssertionPayload } from '@app-core/security/webauthn-encodi
 import { ConfigurationService } from '@app-core/services/configuration.service';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import type { Observable } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   AccountKeyResponseError,
@@ -2020,3 +2021,202 @@ function sentJson(request: TestRequest): Record<string, unknown> {
 
   return parsed as Record<string, unknown>;
 }
+
+// `POST /api/me/erasure/schedule/cancellation`: withdraws the account's
+// scheduled erasure, authorized by a fresh passkey assertion over a
+// re-authentication challenge. The body is the immediate erasure's, member for
+// member, and so is the refusal of a declined assertion.
+//
+// **Called by name**, so a service that does not have the method yet fails on
+// an assertion naming it rather than taking this whole file down with a
+// compile error.
+describe('MeApiService.cancelScheduledErasure', () => {
+  const CANCELLATION_URL =
+    'https://api.test/api/me/erasure/schedule/cancellation';
+
+  const ASSERTION: PasskeyAssertionPayload = {
+    credentialId: 'AQIDBAUGBwgJCgsMDQ4PEA',
+    clientDataJson: 'eyJ0eXBlIjoid2ViYXV0aG4uZ2V0In0',
+    authenticatorData: 'gIGCg4SFhoeIiYqLjI2Oj5CRkpOUlZaXmJmam5ydnp8',
+    signature: 'MEUCIQD-YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXowMTIzNA',
+    userHandle: 'EBESExQVFhcYGRobHB0eHw',
+  };
+
+  // What the server's `PasskeyVerificationExceptionHandler` writes for every
+  // declined assertion in the product, this route's included
+  // (`CancelScheduledErasureEndpointTests.Cancel_WithoutAnAssertion_Is401_…`).
+  const ASSERTION_REFUSAL = {
+    type: 'https://tools.ietf.org/html/rfc9110#section-15.5.2',
+    title: 'The passkey could not be verified.',
+    status: 401,
+    refusal: 'assertion',
+  };
+
+  let http: HttpTestingController;
+  let api: MeApiService;
+
+  beforeEach(() => {
+    TestBed.configureTestingModule({
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        {
+          provide: ConfigurationService,
+          useValue: { getConfig: () => ({ apiBaseUrl: 'https://api.test' }) },
+        },
+      ],
+    });
+    http = TestBed.inject(HttpTestingController);
+    api = TestBed.inject(MeApiService);
+  });
+
+  afterEach(() => http.verify());
+
+  function cancel(assertion: PasskeyAssertionPayload): Observable<void> {
+    const member: unknown = Reflect.get(api, 'cancelScheduledErasure');
+
+    if (typeof member !== 'function') {
+      throw new Error('MeApiService has no "cancelScheduledErasure" method.');
+    }
+
+    return Reflect.apply(member, api, [assertion]) as Observable<void>;
+  }
+
+  it('posts to the cancellation route', () => {
+    // Act
+    cancel(ASSERTION).subscribe();
+    const request = http.expectOne(CANCELLATION_URL);
+
+    // Assert
+    expect(request.request.method).toBe('POST');
+
+    request.flush(null, { status: 204, statusText: 'No Content' });
+  });
+
+  it('sends the five assertion members and nothing beside them', () => {
+    // Arrange
+    // A sixth member the way a caller that spread the whole ceremony value
+    // would hand one over. A `CryptoKey` serializes as `{}`, so this is what a
+    // leaked key-encryption key looks like on the wire.
+    const withExtra = {
+      ...ASSERTION,
+      keyEncryptionKey: {},
+    } as PasskeyAssertionPayload;
+
+    // Act
+    cancel(withExtra).subscribe();
+    const request = http.expectOne(CANCELLATION_URL);
+
+    // Assert
+    const sent = sentJson(request);
+
+    expect(Object.keys(sent).sort()).toEqual(
+      [
+        'authenticatorData',
+        'clientDataJson',
+        'credentialId',
+        'signature',
+        'userHandle',
+      ].sort(),
+    );
+    expect(sent).toEqual(ASSERTION);
+
+    request.flush(null, { status: 204, statusText: 'No Content' });
+  });
+
+  it('sends an absent user handle as null rather than leaving it out', () => {
+    // Arrange
+    const withoutHandle: PasskeyAssertionPayload = {
+      ...ASSERTION,
+      userHandle: null,
+    };
+
+    // Act
+    cancel(withoutHandle).subscribe();
+    const request = http.expectOne(CANCELLATION_URL);
+
+    // Assert
+    // `JSON.stringify` drops an `undefined` member, so `?? undefined` or a
+    // body built from the truthy members would send four.
+    expect(sentJson(request)).toHaveProperty('userHandle', null);
+
+    request.flush(null, { status: 204, statusText: 'No Content' });
+  });
+
+  // A 401 here is usually the gate declining the assertion — the screen's own
+  // sentence — so the request is marked, or the interceptor takes the tab to
+  // Welcome over a sentence the section never got to say.
+  it('marks the request as one whose refusal is not a session ending', () => {
+    // Act
+    cancel(ASSERTION).subscribe({ error: () => undefined });
+    const request = http.expectOne(CANCELLATION_URL);
+
+    // Assert
+    expect(request.request.context.get(EXPECTS_UNAUTHENTICATED)).toBe(true);
+    expect(request.request.context.get(PROVIDER_CREDENTIAL)).toBeFalsy();
+
+    request.flush(null, { status: 204, statusText: 'No Content' });
+  });
+
+  it('completes on a 204 with nothing to read', () => {
+    // Arrange
+    let completed = false;
+    let failed = false;
+
+    // Act
+    cancel(ASSERTION).subscribe({
+      complete: () => (completed = true),
+      error: () => (failed = true),
+    });
+    http
+      .expectOne(CANCELLATION_URL)
+      .flush(null, { status: 204, statusText: 'No Content' });
+
+    // Assert
+    // A decoder demanding a body would turn every cancellation that landed
+    // into an error the flow reads as `undetermined`.
+    expect(completed).toBe(true);
+    expect(failed).toBe(false);
+  });
+
+  it('hands a refused assertion to the caller with its status and body untouched', () => {
+    // Arrange
+    let refusal: unknown = null;
+
+    // Act
+    cancel(ASSERTION).subscribe({
+      error: (error: unknown) => {
+        refusal = error;
+      },
+    });
+    http
+      .expectOne(CANCELLATION_URL)
+      .flush(ASSERTION_REFUSAL, { status: 401, statusText: 'Unauthorized' });
+
+    // Assert
+    // The flow reads `refusal` off the body to say `refused` without a
+    // probe; a service that mapped the error or dropped the body would leave
+    // it nothing to read.
+    expect(refusal).toBeInstanceOf(HttpErrorResponse);
+    expect((refusal as HttpErrorResponse).status).toBe(401);
+    expect((refusal as HttpErrorResponse).error).toEqual(ASSERTION_REFUSAL);
+  });
+
+  it.each([400, 403, 500])('hands a %i to the caller', (status) => {
+    // Arrange
+    let received: number | null = null;
+
+    // Act
+    cancel(ASSERTION).subscribe({
+      error: (error: unknown) => {
+        received = error instanceof HttpErrorResponse ? error.status : -1;
+      },
+    });
+    http
+      .expectOne(CANCELLATION_URL)
+      .flush(null, { status, statusText: 'Refused' });
+
+    // Assert
+    expect(received).toBe(status);
+  });
+});

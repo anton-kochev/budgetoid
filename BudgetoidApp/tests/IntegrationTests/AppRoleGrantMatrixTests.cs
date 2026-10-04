@@ -305,13 +305,13 @@ public sealed class AppRoleGrantMatrixTests
         // moves and there is no statement for an UPDATE to serve. A table-wide or column-listed UPDATE
         // arriving here would be the first spelling of "a repeat pushes the date out".
         //
-        // NO DELETE YET, and the absence is a wait rather than a property of the table: cancelling a
-        // schedule is a later story's, and it takes DELETE by removing the row — never by stamping a
-        // cancelled_at, which would be a remnant on an account that had asked to be forgotten. Rows
-        // still leave without it: FK_erasure_schedules_users cascades from users, and a referential
-        // action runs with the referencing table owner's privileges rather than this role's, so an
-        // erasure carries the row away although the role could not delete it itself.
-        ("erasure_schedules", ["SELECT", "INSERT"]),
+        // DELETE, AND ITS CALLER IS THE CANCELLATION. A full session withdrawing a schedule with a
+        // passkey removes the row — never stamps a cancelled_at, which would be a remnant on an account
+        // that had asked to be forgotten, and which would need the UPDATE this table still does not
+        // hold. user_isolation is FOR ALL, so the DELETE reaches only the account the session names;
+        // RlsIsolationTests holds that half. Rows still also leave by FK_erasure_schedules_users
+        // cascading from users, which runs with the referencing table owner's privileges.
+        ("erasure_schedules", ["SELECT", "INSERT", "DELETE"]),
         ("budgets", ["SELECT", "INSERT"]),
         ("accounts", ["SELECT", "INSERT", "DELETE"]),
         ("category_groups", ["SELECT", "INSERT", "DELETE"]),

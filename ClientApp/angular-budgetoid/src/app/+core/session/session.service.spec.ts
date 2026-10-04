@@ -9,6 +9,7 @@ import {
   type MeDto,
   type SessionDto,
 } from '@app-core/api/me-api.service';
+import { EXPECTS_UNAUTHENTICATED } from '@app-core/interceptors/expects-unauthenticated.token';
 import { AccountKeyCustodyService } from '@app-core/security/account-key-custody.service';
 import { AuthService } from '@app-core/services/auth-service';
 import { ConfigurationService } from '@app-core/services/configuration.service';
@@ -1175,5 +1176,556 @@ describe('SessionService on the wire', () => {
     // Assert
     expect(service.status()).toBe('authenticated');
     expect(service.budgetId()).toBe(BUDGET_ID);
+  });
+});
+
+// A method this class is to grow, read by name, so a class that does not have
+// it yet fails on an assertion naming it rather than taking this whole file
+// down with a compile error.
+function methodOf(service: SessionService, name: string): () => unknown {
+  const member: unknown = Reflect.get(service, name);
+
+  expect(typeof member, `SessionService has no "${name}" method.`).toBe(
+    'function',
+  );
+
+  return (): unknown => {
+    const result: unknown = Reflect.apply(
+      member as (...args: never[]) => unknown,
+      service,
+      [],
+    );
+
+    return result;
+  };
+}
+
+// A macrotask, so every promise the class chains off an answer has run.
+function afterAnswers(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+// **A schedule filed after this tab bootstrapped**, and the three ways this tab
+// learns of one: the read `established()` makes beside the budget, the read
+// `refreshSchedule()` makes when the tab comes back into view, and the write
+// `erasureCancelled()` makes on a cancellation's 204. Measured before this
+// block existed: an owner who signed in with a surviving passkey saw no notice
+// until a reload, because `established()` never read the schedule and an
+// anonymous probe leaves it `'unread'`.
+describe('SessionService learning of a schedule after bootstrap', () => {
+  let service: SessionService;
+  let api: MeApiStub;
+  let custody: CustodyStub;
+
+  beforeEach(() => {
+    api = new MeApiStub();
+    custody = new CustodyStub();
+    TestBed.configureTestingModule({
+      providers: [
+        { provide: MeApiService, useValue: api },
+        { provide: AuthService, useValue: providerStub() },
+        { provide: AccountKeyCustodyService, useValue: custody },
+      ],
+    });
+    service = TestBed.inject(SessionService);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // A tab that probed anonymous — the state every passkey sign-in starts from.
+  async function signedOut(): Promise<void> {
+    api.getSession.mockReturnValue(throwError(() => refusal(401)));
+    await service.probe();
+    expect(service.status()).toBe('anonymous');
+    expect(service.scheduledErasure()).toBe('unread');
+    api.getSession.mockClear();
+  }
+
+  // A tab that probed a full session with nothing scheduled.
+  async function signedInWithNothingScheduled(): Promise<void> {
+    api.getSession.mockReturnValue(of(FULL_SESSION));
+    await service.probe();
+    expect(service.status()).toBe('authenticated');
+    expect(service.scheduledErasure()).toBeNull();
+    api.getSession.mockClear();
+  }
+
+  describe('established', () => {
+    it('reads the schedule, and publishes the session before the answer arrives', async () => {
+      // Arrange
+      await signedOut();
+      const answer = new Subject<SessionDto>();
+      api.getSession.mockReturnValue(answer);
+
+      // Act
+      service.established();
+
+      // Assert
+      // Pending: the status is the establishing leg's own fact and the caller
+      // navigates on the next line, so it cannot wait on this read.
+      expect(api.getSession).toHaveBeenCalledTimes(1);
+      expect(service.status()).toBe('authenticated');
+      expect(service.scheduledErasure()).toBe('unread');
+
+      // Act
+      answer.next({ ...FULL_SESSION, erasure: SCHEDULED });
+      answer.complete();
+      await afterAnswers();
+
+      // Assert
+      expect(service.scheduledErasure()).toEqual({
+        takesEffectAtUtc: TAKES_EFFECT_AT_UTC,
+      });
+      expect(service.status()).toBe('authenticated');
+    });
+
+    it('publishes nothing scheduled when the read says so', async () => {
+      // Arrange
+      await signedOut();
+      api.getSession.mockReturnValue(of(FULL_SESSION));
+
+      // Act
+      service.established();
+      await afterAnswers();
+
+      // Assert
+      // `null` is the server's answer, which `'unread'` is not.
+      expect(service.scheduledErasure()).toBeNull();
+    });
+
+    // **`'unread'` exactly, and the status untouched.** A 401 here is a cookie
+    // that had not landed, not a session ending — and `null` would claim the
+    // server said nothing is scheduled.
+    it.each([
+      { why: 'refused', error: refusal(401) },
+      { why: 'never reached the server', error: NETWORK_FAILURE },
+    ])(
+      'stays unread and authenticated when the read is $why',
+      async ({ error }) => {
+        // Arrange
+        await signedOut();
+        api.getSession.mockReturnValue(throwError(() => error));
+
+        // Act
+        service.established();
+        await afterAnswers();
+
+        // Assert
+        // The read went out — without this the case passes against an
+        // `established()` that never reads at all.
+        expect(api.getSession).toHaveBeenCalledTimes(1);
+        expect(service.scheduledErasure()).toBe('unread');
+        expect(service.status()).toBe('authenticated');
+        expect(touchedMembersOf(custody)).toEqual([]);
+      },
+    );
+
+    // **The establishing read is judged like a refresh.** An owner who signs
+    // in with a passkey and cancels before this read answers has had a `204`
+    // say nothing is scheduled; the read describes the account before it, and
+    // published last it would put the notice back over a schedule that is gone.
+    it('drops an answer that lands after a cancellation', async () => {
+      // Arrange
+      await signedOut();
+      const answer = new Subject<SessionDto>();
+      api.getSession.mockReturnValue(answer);
+      service.established();
+      expect(api.getSession).toHaveBeenCalledTimes(1);
+      service.erasureCancelled();
+
+      // Act
+      answer.next({ ...FULL_SESSION, erasure: SCHEDULED });
+      answer.complete();
+      await afterAnswers();
+
+      // Assert
+      expect(service.scheduledErasure()).toBeNull();
+      expect(service.status()).toBe('authenticated');
+    });
+  });
+
+  // The full arm's own case: the cases above the `the scheduled erasure` block
+  // read an instant only off a locked answer, so a full arm that dropped the
+  // instant would pass them.
+  it('holds the instant a full session read named', async () => {
+    // Arrange
+    api.getSession.mockReturnValue(of({ ...FULL_SESSION, erasure: SCHEDULED }));
+
+    // Act
+    await service.probe();
+
+    // Assert
+    expect(service.status()).toBe('authenticated');
+    expect(service.scheduledErasure()).toEqual({
+      takesEffectAtUtc: TAKES_EFFECT_AT_UTC,
+    });
+  });
+
+  describe('refreshSchedule', () => {
+    it('publishes a schedule filed after bootstrap and moves nothing else', async () => {
+      // Arrange
+      await signedInWithNothingScheduled();
+      expect(service.budgetId()).toBe(BUDGET_ID);
+      api.getSession.mockReturnValue(
+        of({ ...FULL_SESSION, erasure: SCHEDULED }),
+      );
+      const refresh = methodOf(service, 'refreshSchedule');
+
+      // Act
+      refresh();
+      await afterAnswers();
+
+      // Assert
+      expect(api.getSession).toHaveBeenCalledTimes(1);
+      expect(service.scheduledErasure()).toEqual({
+        takesEffectAtUtc: TAKES_EFFECT_AT_UTC,
+      });
+      expect(service.status()).toBe('authenticated');
+      expect(service.budgetId()).toBe(BUDGET_ID);
+      expect(touchedMembersOf(custody)).toEqual([]);
+    });
+
+    it('publishes a schedule withdrawn elsewhere as nothing scheduled', async () => {
+      // Arrange
+      api.getSession.mockReturnValue(
+        of({ ...FULL_SESSION, erasure: SCHEDULED }),
+      );
+      await service.probe();
+      api.getSession.mockReturnValue(of(FULL_SESSION));
+
+      // Act
+      methodOf(service, 'refreshSchedule')();
+      await afterAnswers();
+
+      // Assert
+      expect(service.scheduledErasure()).toBeNull();
+    });
+
+    // **A read sent before a cancellation cannot resurrect the notice.** The
+    // answer describes the account as it was before the 204 this tab already
+    // published; read last, it would put the notice back over a schedule that
+    // is gone.
+    it('drops an answer to a read sent before a cancellation', async () => {
+      // Arrange
+      api.getSession.mockReturnValue(
+        of({ ...FULL_SESSION, erasure: SCHEDULED }),
+      );
+      await service.probe();
+      api.getSession.mockClear();
+      const answer = new Subject<SessionDto>();
+      api.getSession.mockReturnValue(answer);
+      methodOf(service, 'refreshSchedule')();
+      methodOf(service, 'erasureCancelled')();
+
+      // Act
+      answer.next({ ...FULL_SESSION, erasure: SCHEDULED });
+      answer.complete();
+      await afterAnswers();
+
+      // Assert
+      expect(api.getSession).toHaveBeenCalledTimes(1);
+      expect(service.scheduledErasure()).toBeNull();
+    });
+
+    // **A schedule request's `200` moves the generation as a cancellation's
+    // `204` does.** A read sent before it describes the account as it was —
+    // nothing scheduled — and published last it would take the instant the
+    // release screen just drew back off it.
+    it('drops an answer to a read sent before a schedule request answered', async () => {
+      // Arrange
+      api.getSession.mockReturnValue(of(LOCKED_SESSION));
+      await service.probe();
+      expect(service.status()).toBe('locked-session');
+      expect(service.scheduledErasure()).toBeNull();
+      api.getSession.mockClear();
+      const answer = new Subject<SessionDto>();
+      api.getSession.mockReturnValue(answer);
+      service.refreshSchedule();
+      service.erasureScheduled(TAKES_EFFECT_AT_UTC);
+
+      // Act
+      answer.next(LOCKED_SESSION);
+      answer.complete();
+      await afterAnswers();
+
+      // Assert
+      expect(api.getSession).toHaveBeenCalledTimes(1);
+      expect(service.scheduledErasure()).toEqual({
+        takesEffectAtUtc: TAKES_EFFECT_AT_UTC,
+      });
+    });
+
+    // The control for the case above: a class that simply stopped publishing
+    // after a cancellation would pass it, and then never show a schedule the
+    // account's Google sign-in filed again.
+    it('publishes an answer to a read sent after a cancellation', async () => {
+      // Arrange
+      api.getSession.mockReturnValue(
+        of({ ...FULL_SESSION, erasure: SCHEDULED }),
+      );
+      await service.probe();
+      methodOf(service, 'erasureCancelled')();
+      expect(service.scheduledErasure()).toBeNull();
+      api.getSession.mockReturnValue(
+        of({ ...FULL_SESSION, erasure: SCHEDULED }),
+      );
+
+      // Act
+      methodOf(service, 'refreshSchedule')();
+      await afterAnswers();
+
+      // Assert
+      expect(service.scheduledErasure()).toEqual({
+        takesEffectAtUtc: TAKES_EFFECT_AT_UTC,
+      });
+    });
+
+    it('drops an answer that arrives after the session ended', async () => {
+      // Arrange
+      await signedInWithNothingScheduled();
+      const answer = new Subject<SessionDto>();
+      api.getSession.mockReturnValue(answer);
+      methodOf(service, 'refreshSchedule')();
+      expect(api.getSession).toHaveBeenCalledTimes(1);
+      service.ended();
+
+      // Act
+      answer.next({ ...FULL_SESSION, erasure: SCHEDULED });
+      answer.complete();
+      await afterAnswers();
+
+      // Assert
+      // The answer is about the account whose session just ended; the next
+      // occupant of this tab is owed `'unread'`.
+      expect(service.scheduledErasure()).toBe('unread');
+      expect(service.status()).toBe('anonymous');
+    });
+
+    it.each([
+      {
+        held: 'a full session',
+        probed: FULL_SESSION,
+        answered: { ...LOCKED_SESSION, erasure: SCHEDULED },
+      },
+      {
+        held: 'a locked session',
+        probed: LOCKED_SESSION,
+        answered: { ...FULL_SESSION, erasure: SCHEDULED },
+      },
+    ])(
+      'drops an answer naming another kind of session than $held',
+      async ({ probed, answered }) => {
+        // Arrange
+        api.getSession.mockReturnValue(of(probed));
+        await service.probe();
+        const status = service.status();
+        api.getSession.mockClear();
+        api.getSession.mockReturnValue(of(answered));
+
+        // Act
+        methodOf(service, 'refreshSchedule')();
+        await afterAnswers();
+
+        // Assert
+        expect(api.getSession).toHaveBeenCalledTimes(1);
+        // A kind that disagrees with the status is not an answer about the
+        // session this tab holds; the read is not a probe and publishes no
+        // status either.
+        expect(service.scheduledErasure()).toBeNull();
+        expect(service.status()).toBe(status);
+      },
+    );
+
+    // **The read is not a probe.** It carries `EXPECTS_UNAUTHENTICATED`, so the
+    // interceptor never hears its 401, and reading that 401 as `anonymous`
+    // would sign a tab out because it came back into view.
+    it.each([
+      { why: 'refused', error: refusal(401) },
+      { why: 'never reached the server', error: NETWORK_FAILURE },
+      { why: 'answered with a server error', error: refusal(500) },
+    ])('publishes nothing when the read is $why', async ({ error }) => {
+      // Arrange
+      await signedInWithNothingScheduled();
+      api.getSession.mockReturnValue(throwError(() => error));
+
+      // Act
+      methodOf(service, 'refreshSchedule')();
+      await afterAnswers();
+
+      // Assert
+      expect(api.getSession).toHaveBeenCalledTimes(1);
+      expect(service.scheduledErasure()).toBeNull();
+      expect(service.status()).toBe('authenticated');
+      expect(service.budgetId()).toBe(BUDGET_ID);
+      expect(touchedMembersOf(custody)).toEqual([]);
+    });
+
+    it('keeps one read in flight however often the tab comes back', async () => {
+      // Arrange
+      await signedInWithNothingScheduled();
+      const answer = new Subject<SessionDto>();
+      api.getSession.mockReturnValue(answer);
+      const refresh = methodOf(service, 'refreshSchedule');
+
+      // Act
+      refresh();
+      refresh();
+      refresh();
+
+      // Assert
+      // A tab switched back and forth would otherwise stack reads against an
+      // API that scales to zero.
+      expect(api.getSession).toHaveBeenCalledTimes(1);
+
+      answer.next(FULL_SESSION);
+      answer.complete();
+    });
+
+    // The control: a guard that latched would pass the case above and never
+    // read again.
+    it('reads again once the read in flight has answered', async () => {
+      // Arrange
+      await signedInWithNothingScheduled();
+      api.getSession.mockReturnValue(of(FULL_SESSION));
+      const refresh = methodOf(service, 'refreshSchedule');
+      refresh();
+      await afterAnswers();
+
+      // Act
+      refresh();
+      await afterAnswers();
+
+      // Assert
+      expect(api.getSession).toHaveBeenCalledTimes(2);
+    });
+
+    it('reads again once the read in flight has failed', async () => {
+      // Arrange
+      await signedInWithNothingScheduled();
+      api.getSession.mockReturnValue(throwError(() => NETWORK_FAILURE));
+      const refresh = methodOf(service, 'refreshSchedule');
+      refresh();
+      await afterAnswers();
+
+      // Act
+      refresh();
+      await afterAnswers();
+
+      // Assert
+      expect(api.getSession).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('erasureCancelled', () => {
+    // `null` and never `'unread'`: the 204 is the server saying nothing is
+    // scheduled, and `'unread'` would claim nobody had said.
+    it('holds nothing scheduled after a schedule stood', async () => {
+      // Arrange
+      api.getSession.mockReturnValue(
+        of({ ...FULL_SESSION, erasure: SCHEDULED }),
+      );
+      await service.probe();
+
+      // Act
+      methodOf(service, 'erasureCancelled')();
+
+      // Assert
+      expect(service.scheduledErasure()).toBeNull();
+      expect(service.status()).toBe('authenticated');
+      expect(service.budgetId()).toBe(BUDGET_ID);
+    });
+
+    it('holds nothing scheduled when nothing had been read', async () => {
+      // Arrange
+      await signedOut();
+      service.established();
+      api.getSession.mockClear();
+
+      // Act
+      methodOf(service, 'erasureCancelled')();
+
+      // Assert
+      expect(service.scheduledErasure()).toBeNull();
+    });
+  });
+});
+
+// The two reads over the real `MeApiService`: the stub above can say which
+// method was called, and only the wire can say the request was marked. A 401
+// to either is this read's own answer — a cookie that had not landed, or a tab
+// coming back into view — and unmarked it would reach
+// `sessionExpiryInterceptor` and navigate to `/welcome`.
+describe('SessionService schedule reads on the wire', () => {
+  const SESSION_URL = 'https://api.test/api/me/session';
+  const ME_URL = 'https://api.test/api/me';
+
+  let http: HttpTestingController;
+  let service: SessionService;
+
+  beforeEach(() => {
+    TestBed.configureTestingModule({
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        {
+          provide: ConfigurationService,
+          useValue: { getConfig: () => ({ apiBaseUrl: 'https://api.test' }) },
+        },
+        { provide: AuthService, useValue: providerStub() },
+        { provide: AccountKeyCustodyService, useValue: new CustodyStub() },
+      ],
+    });
+    http = TestBed.inject(HttpTestingController);
+    service = TestBed.inject(SessionService);
+  });
+
+  afterEach(() => {
+    http.verify();
+    vi.restoreAllMocks();
+  });
+
+  it('marks the schedule read an established session makes', async () => {
+    // Act
+    service.established();
+    await afterAnswers();
+    // Drained before anything is asserted, so a failed assertion leaves no
+    // open request behind to fail the next case's setup.
+    const reads = http.match(SESSION_URL);
+    for (const owner of http.match(ME_URL)) {
+      owner.flush(ME);
+    }
+    for (const read of reads) {
+      read.flush(FULL_SESSION);
+    }
+
+    // Assert
+    expect(reads).toHaveLength(1);
+    expect(reads[0]?.request.method).toBe('GET');
+    expect(reads[0]?.request.context.get(EXPECTS_UNAUTHENTICATED)).toBe(true);
+  });
+
+  it('marks the schedule read a refresh makes', async () => {
+    // Arrange
+    const probed = service.probe();
+    await afterAnswers();
+    http.expectOne(SESSION_URL).flush(FULL_SESSION);
+    await afterAnswers();
+    http.expectOne(ME_URL).flush(ME);
+    await probed;
+
+    // Act
+    methodOf(service, 'refreshSchedule')();
+    await afterAnswers();
+
+    // Assert
+    const read = http.expectOne(SESSION_URL);
+
+    expect(read.request.context.get(EXPECTS_UNAUTHENTICATED)).toBe(true);
+    // The refresh reads the schedule and nothing else.
+    http.expectNone(ME_URL);
+
+    read.flush(FULL_SESSION);
   });
 });

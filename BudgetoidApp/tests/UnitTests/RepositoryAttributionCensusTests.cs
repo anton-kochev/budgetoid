@@ -221,7 +221,9 @@ public sealed class RepositoryAttributionCensusTests
     /// <para>
     /// Read <see cref="AttributionPin.PinsWhat" /> on each, not the bucket name. Five of the eleven are
     /// pinned in both directions on every narrowing they hold — <c>ErasureScheduleRepository</c>,
-    /// whose one primary-key filter is translated and controlled in one file; <c>TransactionRepository</c>;
+    /// whose two narrowings, a primary-key filter on <c>AddAsync</c> and an entry filter on
+    /// <c>RemoveAsync</c>'s concurrency catch, are each translated and controlled in one file;
+    /// <c>TransactionRepository</c>;
     /// <c>UserRepository</c>, which now holds only one narrowing because the insert that carried its
     /// other one was deleted with the provisioning path; <c>RegistrationRepository</c>, which holds
     /// both halves on all four of its narrowings, the second half being <b>one</b> test rather than
@@ -308,8 +310,8 @@ public sealed class RepositoryAttributionCensusTests
         new(
             nameof(ErasureScheduleRepository),
             "ErasureScheduleRepositoryTests",
-            "both halves on its one narrowing, both at the repository layer in the one file. AddAsync "
-            + "catches a DbUpdateException whose inner PostgresException carries the unique-violation "
+            "TWO CATCHES OF TWO SHAPES, both halves on each, all at the repository layer in the one "
+            + "file. FIRST, AddAsync's constraint-name narrowing. AddAsync catches a DbUpdateException whose inner PostgresException carries the unique-violation "
             + "SQLSTATE and whose ConstraintName is ErasureScheduleConfiguration.PrimaryKeyName, "
             + "PK_erasure_schedules, and TRANSLATES it to a re-read: the losing first request of two "
             + "answers the instant the winner stored rather than a 500 or the instant it computed. "
@@ -329,7 +331,23 @@ public sealed class RepositoryAttributionCensusTests
             + "an add that always threw or always re-read is told apart from a working insert. "
             + "FindAsync's owner predicate is held there too, by "
             + "FindAsync_ReturnsOnlyTheNamedAccountsSchedule, on the superuser connection where no "
-            + "policy can stand in for it"),
+            + "policy can stand in for it. "
+            + "SECOND, RemoveAsync's entry narrowing, KeyRotationRepository.PromoteAsync's shape rather "
+            + "than this file's first: a DbUpdateConcurrencyException carries no SQLSTATE and no "
+            + "constraint name, so the catch is narrowed on EF's ENTRIES — at least one, and every one a "
+            + "Deleted ErasureSchedule — and TRANSLATES a zero-row DELETE to ScheduleRemoval.AlreadyGone: "
+            + "two cancels from two tabs, and the loser's post-condition, no schedule stands, holds. "
+            + "RemoveAsync_WhenAnotherContextAlreadyDeletedIt_ReturnsAlreadyGone holds that, committing "
+            + "the winner's delete on a connection of its own inside SavingChanges so EF raises a real "
+            + "concurrency failure with no race, asserting AlreadyGone, nothing thrown and no row; it "
+            + "holds the DETACH the same way AddAsync's test does, by saving the context once more and "
+            + "asserting that save succeeds. "
+            + "THE MIS-ATTRIBUTION CONTROL IS RemoveAsync_WhenTheConflictNamesAnotherEntity_LetsItEscape: "
+            + "a credential tracked as Deleted whose row was removed out of band, flushed by the "
+            + "repository's own save, asserted to escape as a DbUpdateConcurrencyException with the "
+            + "schedule's row still standing — a catch widened to any concurrency failure would answer "
+            + "AlreadyGone over a save that rolled the schedule's own delete back. "
+            + "RemoveAsync_DeletesTheRow is the control beside both, with a stranger's row left in place"),
         new(
             nameof(KeyRotationRepository),
             "KeyRotationBeginEndpointTests and KeyRotationRepositoryTests",

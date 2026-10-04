@@ -174,8 +174,8 @@ public sealed class ErasureIrreversibilityTests
     private const string ErasureResourcePrefix = "/api/me/erasure";
 
     /// <summary>
-    /// The routes that may live under <see cref="ErasureResourcePrefix" />: the immediate erasure, and
-    /// the schedule a locked session files instead.
+    /// The routes that may live under <see cref="ErasureResourcePrefix" />: the immediate erasure, the
+    /// schedule a locked session files instead, and the cancellation of that schedule.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -185,14 +185,17 @@ public sealed class ErasureIrreversibilityTests
     /// gone yet, and a repeat answers the date first filed rather than a later one.
     /// </para>
     /// <para>
-    /// Exactly one more route may ever join this set, and only under the carve-out described on
-    /// <see cref="ReversalVocabulary" />: a route that cancels a <i>scheduled</i> erasure before it takes
-    /// effect. Anything else added here — a read of what is about to be erased, a download, a
-    /// second-chance page, a route restoring anything — is a route this requirement refuses, and the
-    /// argument for it belongs in <c>docs/business-logic/erasure.md</c> before it belongs in this string.
+    /// The third entry is the one route the carve-out on <see cref="ReversalVocabulary" /> allowed to
+    /// join: a full session withdrawing a <i>scheduled</i> erasure, with a passkey, before it takes
+    /// effect. It brings nothing back either — nothing has been erased — and it lives under the
+    /// schedule it withdraws. The set is now closed. Anything else added here — a read of what is about
+    /// to be erased, a download, a second-chance page, a route restoring anything — is a route this
+    /// requirement refuses, and the argument for it belongs in <c>docs/business-logic/erasure.md</c>
+    /// before it belongs in this string.
     /// </para>
     /// </remarks>
-    private const string ErasureResourceSurface = "POST /api/me/erasure, POST /api/me/erasure/schedule";
+    private const string ErasureResourceSurface =
+        "POST /api/me/erasure, POST /api/me/erasure/schedule, POST /api/me/erasure/schedule/cancellation";
 
     /// <summary>
     /// No route in the whole table names a reversal, in its pattern, its display name or its endpoint
@@ -430,8 +433,8 @@ public sealed class ErasureIrreversibilityTests
     }
 
     /// <summary>
-    /// The erasure resource carries exactly two routes: the destructive one, and the schedule that defers
-    /// it.
+    /// The erasure resource carries exactly three routes: the destructive one, the schedule that defers
+    /// it, and the cancellation that withdraws the schedule before it takes effect.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -445,11 +448,10 @@ public sealed class ErasureIrreversibilityTests
     /// <c>/api/me</c> group it hangs off.
     /// </para>
     /// <para>
-    /// And it is extension by design rather than a test somebody deletes. If a cancellation route is
-    /// ever added here, adding it means editing a one-line literal that sits directly under a doc
-    /// comment stating which single route may join this set and why — so the diff lands in the exact
-    /// place a reviewer should be confronting the requirement, at the moment they are least able to
-    /// skip it. A pin that can only be satisfied by deletion teaches an author to delete it.
+    /// And it is extension by design rather than a test somebody deletes. The cancellation route joined
+    /// by editing the literal that sits directly under a doc comment stating which single route may
+    /// join this set and why — so the diff landed in the exact place a reviewer should be confronting
+    /// the requirement. A pin that can only be satisfied by deletion teaches an author to delete it.
     /// </para>
     /// <para>
     /// <b>Its known limits, stated rather than engineered around:</b> the route table is the capability
@@ -533,6 +535,7 @@ public sealed class ErasureIrreversibilityTests
         [
             Route("POST", "/api/me/erasure"),
             Route("POST", "/api/me/erasure/schedule"),
+            Route("POST", "/api/me/erasure/schedule/cancellation"),
             Route("GET", "/api/members"),
             Route("GET", "/api/merchants"),
         ];

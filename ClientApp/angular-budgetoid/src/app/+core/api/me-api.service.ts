@@ -828,6 +828,40 @@ export class MeApiService extends BaseApiService {
     );
   }
 
+  // Withdraws the account's scheduled erasure, authorized by a fresh passkey
+  // assertion signed over a re-authentication challenge — the immediate
+  // erasure's proof, member for member. See docs/business-logic/erasure.md.
+  //
+  // The body is the five assertion members projected one by one, for
+  // `eraseAccount`'s reason: the ceremony's result carries the key-encryption
+  // key beside the payload, and a structural type lets a sixth member ride
+  // along unless the boundary names what it sends.
+  //
+  // **It carries `EXPECTS_UNAUTHENTICATED`**, for `eraseAccount`'s reason too: a
+  // 401 here is usually the gate declining the assertion — the screen's own
+  // sentence — and the flow reads a 401 without the assertion word against one
+  // unmarked `GET /api/me`, so a session that really ended still reaches the
+  // interceptor. No provider credential: the passkey is the whole proof.
+  //
+  // `Observable<void>`: the answer is `204`, whether a schedule was removed or
+  // none stood. Refusals are handed on untouched, status and body, because the
+  // caller reads `refusal` off the body to say `refused` without a probe.
+  public cancelScheduledErasure(
+    assertion: PasskeyAssertionPayload,
+  ): Observable<void> {
+    return this.post<void>(
+      'api/me/erasure/schedule/cancellation',
+      {
+        credentialId: assertion.credentialId,
+        clientDataJson: assertion.clientDataJson,
+        authenticatorData: assertion.authenticatorData,
+        signature: assertion.signature,
+        userHandle: assertion.userHandle ?? null,
+      } satisfies PasskeyAssertionPayload,
+      new HttpContext().set(EXPECTS_UNAUTHENTICATED, true),
+    );
+  }
+
   // Moves the account to the address the provider token names, authorized by
   // a fresh passkey assertion. The answer is how many *other* sessions the
   // change ended; this one survives it.

@@ -1,9 +1,26 @@
 import { provideLocationMocks } from '@angular/common/testing';
-import { ChangeDetectionStrategy, Component } from '@angular/core';
+import {
+  ChangeDetectionStrategy,
+  Component,
+  signal,
+  type WritableSignal,
+} from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { provideRouter, type Routes } from '@angular/router';
 import { RouterTestingHarness } from '@angular/router/testing';
-import { beforeEach, describe, expect, it } from 'vitest';
+import {
+  SessionService,
+  type ScheduledErasure,
+} from '@app-core/session/session.service';
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+  type Mock,
+} from 'vitest';
 import { routes } from '../app.routes';
 import { SHELL_DESTINATIONS, ShellComponent } from './shell.component';
 
@@ -63,8 +80,21 @@ async function shellAt(url: string): Promise<{
 
 describe('ShellComponent', () => {
   beforeEach(() => {
+    // The two members the shell reaches, with nothing scheduled: nothing in
+    // this block is about the notice, which the block below owns.
+    const session: Pick<
+      SessionService,
+      'scheduledErasure' | 'refreshSchedule'
+    > = {
+      scheduledErasure: signal<ScheduledErasure>(null),
+      refreshSchedule: vi.fn(),
+    };
     TestBed.configureTestingModule({
-      providers: [provideRouter(testRoutes), provideLocationMocks()],
+      providers: [
+        provideRouter(testRoutes),
+        provideLocationMocks(),
+        { provide: SessionService, useValue: session },
+      ],
     });
   });
 
@@ -206,5 +236,150 @@ describe('ShellComponent', () => {
     expect(shellChildren).not.toContain('register');
     expect(topLevel).toContain('welcome');
     expect(topLevel).toContain('register');
+  });
+});
+
+// The notice, and the one read that keeps it current. The shell owns the
+// wiring: it is the layout every signed-in screen renders through, so a
+// `visibilitychange` listener here covers every screen once and is removed
+// once, when the signed-in surface goes. `SessionService` is replaced by the
+// two members the shell reaches; what the read does with its answer is
+// `session.service.spec.ts`'s.
+//
+// `refreshSchedule` is a spy on a plain object, so a shell that does not call
+// it yet fails on an assertion rather than on a missing member.
+describe('ShellComponent and the scheduled erasure', () => {
+  let session: {
+    readonly scheduledErasure: WritableSignal<ScheduledErasure>;
+    readonly refreshSchedule: Mock<() => void>;
+  };
+
+  // jsdom answers `visibilityState` from the document's own state; an own
+  // property shadows it for one case and is deleted after.
+  function becomes(state: DocumentVisibilityState): void {
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => state,
+    });
+    document.dispatchEvent(new Event('visibilitychange'));
+  }
+
+  beforeEach(() => {
+    session = {
+      scheduledErasure: signal<ScheduledErasure>({
+        takesEffectAtUtc: '2026-10-09T10:30:00Z',
+      }),
+      refreshSchedule: vi.fn(),
+    };
+    TestBed.configureTestingModule({
+      providers: [
+        provideRouter(testRoutes),
+        provideLocationMocks(),
+        { provide: SessionService, useValue: session },
+      ],
+    });
+  });
+
+  afterEach(() => {
+    Reflect.deleteProperty(document, 'visibilityState');
+  });
+
+  it('carries the notice inside main, before the routed screen', async () => {
+    // Arrange
+    const { root } = await shellAt('/app/transactions');
+
+    // Act
+    const main = root.querySelector('main');
+    const notice = main?.querySelector('app-scheduled-erasure-notice') ?? null;
+    const outlet = main?.querySelector('router-outlet') ?? null;
+
+    // Assert
+    // Inside `main`, because it is about the account the screen below is
+    // showing; before the outlet, so it is read first and stays put while the
+    // screens change under it. Outside the nav, which is one list of four.
+    expect(notice).not.toBeNull();
+    expect(outlet).not.toBeNull();
+    expect(
+      notice !== null &&
+        outlet !== null &&
+        (notice.compareDocumentPosition(outlet) &
+          Node.DOCUMENT_POSITION_FOLLOWING) !==
+          0,
+    ).toBe(true);
+    expect(root.querySelector('nav app-scheduled-erasure-notice')).toBeNull();
+  });
+
+  it('asks for the schedule once when the tab comes back into view', async () => {
+    // Arrange
+    await shellAt('/app/transactions');
+    session.refreshSchedule.mockClear();
+
+    // Act
+    becomes('visible');
+
+    // Assert
+    expect(session.refreshSchedule).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks for nothing when the tab goes out of view', async () => {
+    // Arrange
+    await shellAt('/app/transactions');
+    session.refreshSchedule.mockClear();
+
+    // Act
+    becomes('hidden');
+
+    // Assert
+    expect(session.refreshSchedule).not.toHaveBeenCalled();
+
+    // Act
+    // The control: the same listener does answer the tab coming back.
+    becomes('visible');
+
+    // Assert
+    expect(session.refreshSchedule).toHaveBeenCalledTimes(1);
+  });
+
+  // **No polling.** The API scales to zero, and a timer in every open tab
+  // would keep it awake for nobody.
+  it('asks for nothing while the tab simply stays open', async () => {
+    // Arrange
+    vi.useFakeTimers();
+
+    try {
+      await shellAt('/app/transactions');
+      session.refreshSchedule.mockClear();
+
+      // Act
+      await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
+
+      // Assert
+      expect(session.refreshSchedule).not.toHaveBeenCalled();
+      // The control: the shell is listening, and an hour of silence was
+      // silence by design rather than a shell that reads nothing.
+      becomes('visible');
+      expect(session.refreshSchedule).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('asks for nothing once the signed-in surface has gone', async () => {
+    // Arrange
+    const { harness } = await shellAt('/app/transactions');
+    session.refreshSchedule.mockClear();
+    becomes('visible');
+    // The control: listening while the surface stands.
+    expect(session.refreshSchedule).toHaveBeenCalledTimes(1);
+    harness.fixture.destroy();
+    session.refreshSchedule.mockClear();
+
+    // Act
+    becomes('visible');
+
+    // Assert
+    // A listener left on `document` would read the schedule from `/welcome`
+    // for the rest of the tab's life, once per tab switch.
+    expect(session.refreshSchedule).not.toHaveBeenCalled();
   });
 });

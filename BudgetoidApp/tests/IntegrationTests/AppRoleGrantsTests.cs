@@ -1775,10 +1775,10 @@ public sealed class AppRoleGrantsTests
         int consumed = await ExecuteAsync(
             app, "delete from webauthn_challenges where id = @id", challengeId);
 
-        // Assert — this is the one table in this file the role may DELETE from, and the exception is
-        // deliberate rather than the rule being broken. These rows are nonces: consuming one IS
-        // deleting it, which is what makes a challenge single-use, so the grant that looks like a hole
-        // everywhere else is the mechanism here. Contrast sessions, where revocation writes a column
+        // Assert — the role may DELETE from this table, and the grant is deliberate rather than the
+        // rule being broken. These rows are nonces: consuming one IS deleting it, which is what makes
+        // a challenge single-use, so a grant that would be a hole on a table whose rows must stay
+        // accountable is the mechanism here. Contrast sessions, where revocation writes a column
         // precisely so the row stays accountable — opposite decisions, because the rows mean opposite
         // things. The affected count on the delete is what says the row was really there to consume: a
         // delete of nothing reports success just as happily.
@@ -1787,11 +1787,12 @@ public sealed class AppRoleGrantsTests
     }
 
     [Test]
-    public async Task Database_RefusesEveryUpdateAndAnyDeleteOnAnErasureSchedule_WhileStillAllowingInsert()
+    public async Task Database_RefusesEveryUpdateOnAnErasureSchedule_WhileAllowingInsertAndDelete()
     {
         // Arrange — one account and no schedule yet. erasure_schedules is policed on the user, so the
         // session names the owner: on a connection naming nobody the policy would answer 22P02 before
-        // any grant was consulted, and every refusal below would be the wrong one.
+        // any grant was consulted, every refusal below would be the wrong one, and the delete would
+        // fail for a reason that has nothing to do with the grant.
         await using RepositoryTestHost host = await StartHostAsync();
         Guid userId = await host.SeedUserAsync("google-1", "person@example.com");
 
@@ -1827,9 +1828,17 @@ public sealed class AppRoleGrantsTests
             userId,
             userId);
 
-        // And the delete. A cancel is a later story's, and it will take this privilege by deleting the
-        // row — never by stamping it — so until that story argues for it the absence holds.
-        PostgresException deleteRefusal = await ThrowsPostgresExceptionAsync(
+        // Read back before the delete takes the row away. A SQLSTATE says each update was rejected;
+        // only this says neither of them moved the date on its way to failing.
+        object? takesEffectAfterRefusals = await SelectScalarAsync(
+            admin, "select takes_effect_at_utc from erasure_schedules where user_id = @id", userId);
+
+        // And the delete, last, because the refusals above need the row to aim at. A cancel removes
+        // the schedule by deleting its row — never by stamping it — so this grant is what a confirmed
+        // cancel spends, and it changes nothing about the update refusals: the date still never moves.
+        // Whether the delete can reach another account's row is not this test's question;
+        // RlsIsolationTests.Database_LetsADeleteReachOnlyThisAccountsErasureSchedule owns that.
+        int deleted = await ExecuteAsync(
             app, "delete from erasure_schedules where user_id = @id", userId);
 
         // Assert
@@ -1837,16 +1846,15 @@ public sealed class AppRoleGrantsTests
         await Assert.That(takesEffectRefusal.SqlState)
             .IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
         await Assert.That(userRefusal.SqlState).IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
-        await Assert.That(deleteRefusal.SqlState).IsEqualTo(PostgresErrorCodes.InsufficientPrivilege);
+        await Assert.That(takesEffectAfterRefusals).IsEqualTo(ScheduledErasureInstant);
 
-        // And the row is untouched. A SQLSTATE says each statement was rejected; only this says none of
-        // them moved the date or removed the row on its way to failing.
-        await Assert.That(await SelectScalarAsync(
-                admin, "select takes_effect_at_utc from erasure_schedules where user_id = @id", userId))
-            .IsEqualTo(ScheduledErasureInstant);
+        // The affected count is what says the row was really there to remove — a delete of nothing
+        // reports success just as happily. The admin read says it is gone, not merely hidden from the
+        // connection that deleted it.
+        await Assert.That(deleted).IsEqualTo(1);
         await Assert.That(await SelectScalarAsync(
                 admin, "select count(*) from erasure_schedules where user_id = @id", userId))
-            .IsEqualTo(1L);
+            .IsEqualTo(0L);
     }
 
     /// <summary>

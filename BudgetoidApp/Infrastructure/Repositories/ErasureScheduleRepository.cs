@@ -50,4 +50,52 @@ public sealed class ErasureScheduleRepository(BudgetoidDbContext dbContext) : IE
                     "The account's erasure schedule collided on its primary key but could not be read back.");
         }
     }
+
+    /// <inheritdoc />
+    public Task<ErasureSchedule?> FindTrackedAsync(Guid userId, CancellationToken cancellationToken = default) =>
+        // Tracked — no AsNoTracking may be added — because RemoveAsync deletes this very instance, and the
+        // owner predicate is FindAsync's, for FindAsync's reason.
+        dbContext.ErasureSchedules
+            .Where(schedule => schedule.UserId == userId)
+            .SingleOrDefaultAsync(cancellationToken);
+
+    /// <inheritdoc />
+    public async Task<ScheduleRemoval> RemoveAsync(
+        ErasureSchedule schedule,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(schedule);
+
+        // Remove and save rather than ExecuteDelete, which BannedSymbols.txt makes a compile error. The
+        // statement EF emits is keyed on the primary key alone; user_isolation scopes it to the published
+        // account underneath, so a row the session does not own is a row this DELETE cannot match.
+        dbContext.ErasureSchedules.Remove(schedule);
+
+        try
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+            return ScheduleRemoval.Removed;
+        }
+        // Two cancels from two tabs: both read the row, the loser's DELETE matches nothing where EF
+        // expected one row. The post-condition — no schedule stands — holds, so it is an answer, not a
+        // 500. Narrowed BY THE ENTRIES, the shape TransactionRepository.DeleteAllForAmbientBudgetAsync
+        // uses: the save flushes everything this request-scoped context tracks, and a conflict over any
+        // other entity is a failure this method does not model.
+        catch (DbUpdateConcurrencyException exception) when (IsAlreadyRemoved(exception))
+        {
+            // Left Deleted, the entry would be flushed again by the next save on this context — whatever
+            // that save was for — and raise the same conflict there.
+            dbContext.Entry(schedule).State = EntityState.Detached;
+            return ScheduleRemoval.AlreadyGone;
+        }
+    }
+
+    /// <summary>
+    /// True when every conflicting entry is a deleted <see cref="ErasureSchedule"/>. The count test is not
+    /// redundant: an exception EF could not attribute to any entry would satisfy <c>All</c> vacuously.
+    /// </summary>
+    private static bool IsAlreadyRemoved(DbUpdateConcurrencyException exception) =>
+        exception.Entries.Count > 0
+        && exception.Entries.All(entry =>
+            entry.Entity is ErasureSchedule && entry.State == EntityState.Deleted);
 }

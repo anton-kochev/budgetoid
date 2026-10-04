@@ -53,6 +53,7 @@ import { FileDownloadService } from '@app-core/services/file-download.service';
 import { ProviderDepartureService } from '@app-core/services/provider-departure.service';
 import {
   SessionService,
+  type ScheduledErasure,
   type SessionStatus,
 } from '@app-core/session/session.service';
 import { readFileSync } from 'node:fs';
@@ -82,6 +83,11 @@ import {
   type EmailChangePhase,
   type EmailChangeWord,
 } from './email-change-flow.service';
+import {
+  ErasureCancellationFlowService,
+  type ErasureCancellationFailure,
+  type ErasureCancellationPhase,
+} from './erasure-cancellation-flow.service';
 import {
   ErasureFlowService,
   type ErasureFailure,
@@ -799,6 +805,34 @@ class ErasureFlowStub implements ErasureFlowSurface {
   public abandon = vi.fn();
 }
 
+// The erasure cancellation's attempt, for every block whose `set` replaces the
+// component's providers — for `ErasureFlowStub`'s reason: the screen and the
+// email-change flow both inject it, and without it every case dies at
+// construction with a `NullInjectorError` naming none of the tests. At rest,
+// so it holds nothing; the Scheduled erasure spec drives the real one.
+type ErasureCancellationFlowSurface = Pick<
+  ErasureCancellationFlowService,
+  keyof ErasureCancellationFlowService
+>;
+
+class ErasureCancellationFlowStub implements ErasureCancellationFlowSurface {
+  public readonly phase = signal<ErasureCancellationPhase>('idle');
+  public readonly failure = signal<ErasureCancellationFailure | null>(null);
+  public readonly working = signal(false);
+  public readonly asking = signal(false);
+  public readonly pressable = signal(true);
+  public cancel = vi.fn();
+}
+
+// The one reading the screen takes of the session, for the blocks above whose
+// module carries no HTTP stack: the screen injects `SessionService` for the
+// schedule the Scheduled erasure section is drawn for, and the real one reaches
+// `MeApiService`. Nothing scheduled, so the section is not drawn. A factory, so
+// two blocks cannot share a signal.
+function nothingScheduled(): Pick<SessionService, 'scheduledErasure'> {
+  return { scheduledErasure: signal<ScheduledErasure>(null) };
+}
+
 // The email change's attempt, for every block that stubs the flows. Real
 // signals, each set on its own and none composed from another — the
 // `AccountUnlockStub` rule — so the screen is driven through the flow's public
@@ -907,6 +941,11 @@ describe('SettingsComponent', () => {
         { provide: KeyRotationService, useValue: rotations },
         { provide: RotationFlowService, useValue: rotationFlow },
         { provide: ErasureFlowService, useValue: new ErasureFlowStub() },
+        { provide: SessionService, useValue: nothingScheduled() },
+        {
+          provide: ErasureCancellationFlowService,
+          useValue: new ErasureCancellationFlowStub(),
+        },
         {
           provide: EmailChangeFlowService,
           useValue: new EmailChangeFlowStub(),
@@ -6201,11 +6240,13 @@ const EMAIL_CHANGE_ACT_PARAGRAPH =
 const EMAIL_CHANGE_CONSEQUENCE_PARAGRAPH =
   'Coming back reloads this page. That locks your account’s keys in this tab, so you’ll unlock again afterwards, and it would stop a key rotation running in this tab where it is.';
 
-// The three reasons Change is off, one sentence each and none shared with each
+// The four reasons Change is off, one sentence each and none shared with each
 // other or with Export's.
 const EMAIL_CHANGE_HOLDS: Readonly<Record<EmailChangeHold, string>> = {
   rotating:
     'Changing your email address is off while this tab gives your account new keys, because the trip to Google would stop the rotation. It comes back when the rotation finishes.',
+  cancelling:
+    'Changing your email address is off while this tab cancels the erasure, because the trip to Google would cut it short. It comes back when that ends.',
   exporting:
     'Changing your email address is off while this tab writes your export, because the trip to Google would lose the file. It comes back when the export ends.',
   unlocking:
@@ -6310,6 +6351,11 @@ describe('SettingsComponent changing the email address', () => {
         { provide: KeyRotationService, useValue: new KeyRotationStub() },
         { provide: RotationFlowService, useValue: new RotationFlowStub() },
         { provide: ErasureFlowService, useValue: new ErasureFlowStub() },
+        { provide: SessionService, useValue: nothingScheduled() },
+        {
+          provide: ErasureCancellationFlowService,
+          useValue: new ErasureCancellationFlowStub(),
+        },
         // Module level, for the reason the main block gives: `set` below
         // replaces the component's providers, so the lookup walks up to here.
         { provide: EmailChangeFlowService, useValue: flow },
@@ -6882,6 +6928,10 @@ describe('SettingsComponent pressing Change email address while it is off', () =
         { provide: KeyRotationService, useValue: new KeyRotationStub() },
         { provide: RotationFlowService, useValue: new RotationFlowStub() },
         { provide: ErasureFlowService, useValue: new ErasureFlowStub() },
+        {
+          provide: ErasureCancellationFlowService,
+          useValue: new ErasureCancellationFlowStub(),
+        },
       ],
     });
     // The real flow on the component, beside the settings stub it reads.
@@ -7010,6 +7060,10 @@ describe('SettingsComponent while an email change lands', () => {
         { provide: KeyRotationService, useValue: new KeyRotationStub() },
         { provide: RotationFlowService, useValue: new RotationFlowStub() },
         { provide: ErasureFlowService, useValue: new ErasureFlowStub() },
+        {
+          provide: ErasureCancellationFlowService,
+          useValue: new ErasureCancellationFlowStub(),
+        },
       ],
     });
     TestBed.overrideComponent(SettingsComponent, {
@@ -7117,6 +7171,11 @@ describe('SettingsComponent held off by the email change', () => {
         { provide: KeyRotationService, useValue: new KeyRotationStub() },
         { provide: RotationFlowService, useValue: new RotationFlowStub() },
         { provide: ErasureFlowService, useValue: erasure },
+        { provide: SessionService, useValue: nothingScheduled() },
+        {
+          provide: ErasureCancellationFlowService,
+          useValue: new ErasureCancellationFlowStub(),
+        },
         // Module level, for the reason the main block gives: `set` below
         // replaces the component's providers, so the lookup walks up to here.
         { provide: EmailChangeFlowService, useValue: flow },

@@ -434,5 +434,11 @@ public sealed class EstablishLockedSessionHandlerTests
 
         public Task<ErasureSchedule> AddAsync(ErasureSchedule schedule, CancellationToken cancellationToken = default) =>
             throw new InvalidOperationException("A sign-in files no schedule.");
+
+        public Task<ErasureSchedule?> FindTrackedAsync(Guid userId, CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("A sign-in reads no tracked schedule.");
+
+        public Task<ScheduleRemoval> RemoveAsync(ErasureSchedule schedule, CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("A sign-in removes no schedule.");
     }
 }

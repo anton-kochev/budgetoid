@@ -20,8 +20,8 @@ row in any table references the erased user or any budget it owned. Because it i
 carry a WebAuthn assertion made moments earlier on an authenticator registered to the account, so a
 stolen session cannot destroy a budget. A **locked** session may instead **schedule** the account's
 erasure for seven days out, with no passkey, because the person it exists for has none left. A
-schedule erases nothing, and nothing in the product carries one out yet — the schedule rule below
-argues both halves. It cuts across almost every domain area, so the ordering rule and the
+schedule erases nothing; a full session withdraws one with a fresh passkey assertion, and nothing in
+the product carries one out yet — the schedule and cancellation rules below argue each half. It cuts across almost every domain area, so the ordering rule and the
 post-condition live here rather than being split across the files whose rows it removes.
 
 ## Key Entities
@@ -97,6 +97,10 @@ role holds no `DELETE` there of any shape.
   across `ErasureReauthenticationTests`. A **schedule** is not an erasure until it takes effect, and
   requesting one from a locked session needs only the session the federated credential opened. →
   the schedule rule below.
+- **Authorize withdrawing a schedule — `POST /api/me/erasure/schedule/cancellation` — the same way:
+  a full session and a fresh assertion on a `reauthentication` challenge.** The schedule's whole
+  defence is that the person holding the provider account cannot take it back and the person holding
+  a passkey can. → the cancellation rule below.
 
 ### MUST NOT
 
@@ -125,7 +129,8 @@ role holds no `DELETE` there of any shape.
 - **Offer any path that reverses an erasure that has taken effect** — no cancellation, no grace
   period, no restore. → the irreversibility rule below. The words are scoped to an erasure that
   **has taken effect**: the seven days before a schedule's instant are not a grace period on an
-  erasure, because nothing has been erased yet. → the schedule rule below.
+  erasure, because nothing has been erased yet, and withdrawing a schedule in them brings nothing
+  back. → the schedule and cancellation rules below.
 
 ## Business Rules & Invariants
 
@@ -508,8 +513,8 @@ role holds no `DELETE` there of any shape.
 - **Enforced in**: `ErasureIrreversibilityTests`, with two pins of different shapes. One scans every
   route's pattern, display name and endpoint name for a vocabulary of reversal words, each spelling
   proved by a case of its own so the list cannot grow an entry nothing exercises. The other pins the
-  **`/api/me/erasure` resource** exhaustively to two routes — `POST /api/me/erasure` and
-  `POST /api/me/erasure/schedule` — which closes the naming loophole a word list cannot see: a route
+  **`/api/me/erasure` resource** exhaustively to three routes — `POST /api/me/erasure`,
+  `POST /api/me/erasure/schedule` and `POST /api/me/erasure/schedule/cancellation` — which closes the naming loophole a word list cannot see: a route
   called `/api/me/erasure/second-chance` trips the second pin and not the first. Each has its own
   control built from a hand-made endpoint list.
   - **The schedule is inside the pinned resource on purpose.** It is the same erasure, deferred, and
@@ -523,9 +528,10 @@ role holds no `DELETE` there of any shape.
     ASP.NET routing itself matches — a raw ordinal prefix would have pulled in `/api/members` and
     let `/API/Me/erasure` escape.
   - **`cancel` is deliberately not a reversal word.** Cancelling something before it takes effect
-    brings nothing back; every word on the list names retrieving something already gone. A delayed
-    erasure now exists and nothing cancels one. A route that did would belong to the *schedule*, and
-    the erasure-resource pin — not the word list — is the line it would have to move.
+    brings nothing back; every word on the list names retrieving something already gone. The
+    cancellation route belongs to the *schedule* and sits under it, and moving the erasure-resource
+    pin — not the word list — is what admitting it took. A route that withdrew anything *after* the
+    erasure had run would need a remnant to work from, and the no-remnant rule leaves it none.
   - **`recover` is deliberately not a reversal word either, for the opposite reason.** In a passkey
     product *account recovery* means regaining access to a live account, and a word that cannot
     separate that from resurrecting an erased one narrows to nothing. The derived forms of every
@@ -555,10 +561,12 @@ role holds no `DELETE` there of any shape.
     the session — see [sessions.md](sessions.md). In the browser, `/release` runs that sign-in and
     then files the schedule. This route's own tests still seed their locked session through the
     database.
-  - **Nothing cancels or carries out a schedule yet.** No route withdraws one, and nothing erases
-    the account when its instant passes. `/release` shows the instant, from the session read or the
-    schedule's own answer, and no other screen does. Today a schedule's only exit is the account's
-    **immediate** erasure, which takes the row with it by the cascade from `users`.
+  - **A full session withdraws a schedule with a passkey; nothing carries one out yet.** The
+    cancellation rule below owns the withdrawal. Nothing erases the account when its instant passes,
+    so a schedule's exits today are that withdrawal and the account's **immediate** erasure, which
+    takes the row with it by the cascade from `users`. Every authenticated session shows the instant
+    — `/release` for a locked one, a notice above every `/app` screen for a full one — see the
+    notice rule below.
 - **Why**: it is the release valve for somebody who has lost every passkey and every recovery code.
   - **Their data is already gone, and this does not change that.** Every factor holds its own
     encapsulated copy of the account's keys and the server holds none, so with no factor left
@@ -571,9 +579,8 @@ role holds no `DELETE` there of any shape.
     erasure, and why this act waits instead of happening.
   - **The delay is what keeps a stolen provider account from being a weapon.** Somebody holding the
     owner's Google sign-in would reach a locked session and nothing else, and what that buys them
-    here is a date on the account, not its end. The delay is the window the account is given. **The
-    act that would make the window useful does not exist yet**: until a passkey can withdraw a
-    schedule, nothing acts within it.
+    here is a date on the account, not its end. The delay is the window the account is given, and a
+    surviving passkey is what acts within it — the cancellation rule below.
   - **Seven days because it is the backup retention window** (ASM-010), so "the account is gone" and
     "the last copy is gone" land one window apart rather than two. `ErasurePolicy.Delay` and
     `BackupRetentionDays` are two literals nothing holds together — the backup-window rule below
@@ -601,10 +608,11 @@ role holds no `DELETE` there of any shape.
     `AddAsync_WhenARowAlreadyExists_ReturnsTheStoredInstant` and
     `AddAsync_WhenTheConflictNamesAnotherConstraint_LetsItEscape`; `ScheduleErasureHandlerTests`:
     `HandleAsync_WhenTheAddMeetsARowFiledInBetween_AnswersTheStoredInstant`.
-  - **The grants** — `SELECT` and `INSERT` on `erasure_schedules`, nothing else. No `UPDATE` of any
-    shape, so no statement this role can issue moves a date. No `DELETE`, so a row leaves only by the
-    cascade from `users`, which runs as the referencing table's owner. `user_isolation`'s `WITH CHECK`
-    refuses an insert naming another account. The block in `app-role-grants.sql` argues each line.
+  - **The grants** — `SELECT`, `INSERT` and `DELETE` on `erasure_schedules`, nothing else. No
+    `UPDATE` of any shape, so no statement this role can issue moves a date. The `DELETE` is the
+    cancellation's, below; otherwise a row leaves by the cascade from `users`. `user_isolation`'s
+    `WITH CHECK` refuses an insert naming another account, and its `USING` scopes the delete to the
+    account the request runs as. The block in `app-role-grants.sql` argues each line.
   - **The wire** — `ErasureScheduleEndpointTests`:
     `ScheduleErasure_FromALockedSession_Answers200SevenDaysOut_AndErasesNothing` counts the account's
     tables either side and requires no `Set-Cookie`;
@@ -620,6 +628,105 @@ role holds no `DELETE` there of any shape.
   the same answer, needs an `UPDATE` grant the table does not hold, and turns a date somebody was
   told into one that moves each time they ask.
 - **Source**: `[SOURCE: discussion]`
+
+---
+
+- **Rule**: A **full** session withdraws a scheduled erasure with a fresh passkey assertion, and
+  nothing else withdraws one. `POST /api/me/erasure/schedule/cancellation` takes the immediate
+  erasure's body — an assertion on a `reauthentication` challenge — and answers `204` with no body
+  once the account is live and no schedule stands: whether this request removed the row, another tab
+  removed it first, or none was ever filed. A locked session is refused `403` before the handler
+  runs; no live session, or a refused assertion, is `401`, the refusal identical to the immediate
+  erasure's. It ends no session and writes no cookie.
+  - **The gate runs first, every time, and outside any transaction** — before the schedule is read
+    and even when nothing is scheduled, so the nonce is spent either way. A handler that looked
+    first and returned early on "nothing to withdraw" would leave the nonce live, and its survival
+    would tell the caller whether a schedule stands.
+  - **The row is deleted, never stamped.** A `cancelled_at` column would be a record that the
+    account once asked to be forgotten, which is the remnant the no-remnant rule forbids, and it
+    would need the `UPDATE` grant the table deliberately does not hold.
+  - **A federated sign-in withdraws nothing.** `POST /api/locked-session` reads the schedule's
+    instant to answer it and writes nothing to the row; a locked session filing again is answered the
+    stored instant, never a fresh one.
+- **Why**: this is what stops the release valve being a weapon. Whoever holds the owner's provider
+  account reaches a locked session, and a locked session can file a schedule; if it could also
+  withdraw one, or if a further Google sign-in did, the schedule would be a toggle in the attacker's
+  hands. The owner's surviving passkey is the one thing the attacker does not hold.
+  - **An assertion, not "a session that has opened its keys".** The server cannot see that a
+    client opened its keys; it can verify an assertion. Against the threat this exists for the two
+    are the same — somebody with the provider account and no passkey cannot withdraw, and somebody
+    with a passkey can.
+  - **A full session, not a locked one carrying an assertion.** Whoever can assert can sign in in
+    full, so admitting a locked session buys nobody anything; it would widen the locked session's
+    route set, which `LockedSessionTests` pins whole, and make the re-authentication challenge
+    reachable from one.
+  - **The same `reauthentication` pool as the immediate erasure.** A dedicated pool per act would
+    protect nothing: a client able to mint one challenge can mint any, and send the assertion where
+    it likes.
+  - **Idempotent, so the client may let a lost answer be pressed again.** The post-condition is the
+    answer. The immediate erasure withdraws its commit on a lost answer because a second request
+    after it succeeded meets an ended session; a second withdrawal meets nothing standing and is
+    told so.
+  - **Recovery codes alone do not withdraw.** A redeemed code opens a full session, so through the
+    server somebody holding only a code card can redeem one, enrol a passkey and then withdraw. The
+    browser has no surface that redeems a code today, so on the web that person cannot withdraw at
+    all.
+- **Enforced in**:
+  - **The gate** — the route carries no session-kind marker, so `FullSessionRequirement` on the
+    fallback policy refuses a locked session; `CancelScheduledErasureHandler` runs
+    `PasskeyReauthentication` before `FindTrackedAsync`. `CancelScheduledErasureHandlerTests`:
+    `HandleAsync_RunsTheGateBeforeAnyRead`, `HandleAsync_ConsumesTheNonceBeforeReadingTheSchedule`,
+    `HandleAsync_WhenNothingIsScheduled_RemovesNothing_AndStillRunsTheGate`.
+  - **The identity** — the handler reads `IUserContext.UserId`, and
+    `CancelScheduledErasureCommand` carries only the assertion.
+    `HandleAsync_ReadsTheScheduleOfIUserContextUserId_Only`.
+  - **The delete** — `ErasureScheduleRepository.RemoveAsync` removes the loaded entity; a
+    concurrency conflict naming only that schedule is a concurrent withdrawal and answers
+    `AlreadyGone`, anything else escapes. `ErasureScheduleRepositoryTests`:
+    `RemoveAsync_WhenAnotherContextAlreadyDeletedIt_ReturnsAlreadyGone`,
+    `RemoveAsync_WhenTheConflictNamesAnotherEntity_LetsItEscape`, and
+    `FindTrackedAsync_FiltersByOwner` for the owner predicate row-level security would otherwise be
+    the only wall behind.
+  - **The grant and the policy** — `DELETE` on `erasure_schedules`, scoped by `user_isolation`.
+    `RlsIsolationTests.Database_LetsADeleteReachOnlyThisAccountsErasureSchedule` seeds two accounts
+    and deletes with no owner predicate.
+  - **The wire** — `CancelScheduledErasureEndpointTests`, including
+    `Cancel_FromALockedSession_IsRefused403_AndTheScheduleStands` (a federated sign-in's session
+    cannot withdraw), `Cancel_WithAnotherAccountsPasskey_Is401_AndTheScheduleStands`,
+    `Cancel_WhenNothingIsScheduled_Answers204_AndSpendsTheNonce`, and
+    `Cancel_WithAFreshAssertion_Answers204_RemovesTheRow_AndTheSessionReadAnswersNoErasure`;
+    `LockedSignInEndpointTests.LockedSignIn_OnAnAccountHoldingASchedule_LeavesItStanding` holds the
+    sign-in half.
+- **Example**: on Monday somebody signs in with the owner's stolen Google account and files a
+  schedule for the following Monday. On Wednesday the owner signs in with a passkey, sees the notice
+  above every screen, and withdraws it from Settings with that passkey; `GET /api/me/session` answers
+  `erasure: null` and the table holds no row for the account. The attacker signs in with Google
+  again and is told nothing is scheduled.
+- **Counterexample**: letting any full session withdraw without an assertion. A stolen full session
+  would then withdraw the owner's own schedule — the person with no factors left — and keep the
+  address held against them.
+- **Source**: `[SOURCE: user-story]`
+
+---
+
+- **Rule**: While an erasure is scheduled, every authenticated session of the account shows the
+  instant it takes effect, in the application and **never by email**. A locked session reads it on
+  `/release`; a full session reads it in a notice above every `/app` screen, which learns of a
+  schedule at bootstrap, after a sign-in, and each time the tab becomes visible again.
+- **Why**: the delay is only useful if the owner finds out inside it. **Email is the wrong channel
+  on purpose**: in the case the delay exists for, the attacker holds the provider account, and with
+  it the inbox the address points at — a warning there reaches nobody but them. A notice inside an
+  authenticated session reaches the owner exactly when they hold a factor and can act on it. The
+  server already answers the instant to both session kinds through `GET /api/me/session`, so what
+  this rule adds lives on the client — see [sessions.md](sessions.md).
+- **Enforced in**: the server side by the session read, held by the session-read tests in both
+  tiers. **"Never by email" is an absence and is held by none**: the backend references no mail
+  package, and `ProjectReferenceGraphTests` pins every package edge, so adding a mail SDK reddens a
+  named row — but a raw HTTP call to a mail service would pass it. The rule lives here so the next
+  person reaching for a "your account is scheduled for deletion" email finds the reason first.
+- **Counterexample**: a courtesy email on scheduling, "in case you didn't do this". In the one
+  scenario it is for, the person who reads it is the one who did.
+- **Source**: `[SOURCE: user-story]`
 
 ---
 
@@ -729,6 +836,7 @@ stateDiagram-v2
     [*] --> Present
     Present --> Scheduled : a locked session files a schedule
     Scheduled --> Scheduled : a repeat — answers the stored instant, writes nothing
+    Scheduled --> Present : a full session withdraws it with a fresh passkey assertion
     Present --> [*] : immediate erasure, POST /api/me/erasure
     Scheduled --> [*] : immediate erasure — the schedule row leaves by the cascade
 ```
@@ -737,11 +845,13 @@ stateDiagram-v2
 |---|---|---|
 | Present → Scheduled | `ScheduleErasureHandler`, from `POST /api/me/erasure/schedule` | a live locked session; a full session is refused `403`. The locked session comes from `POST /api/locked-session`, which `/release` runs |
 | Scheduled → Scheduled | the same route again | none; the stored instant is the answer and nothing is written |
+| Scheduled → Present | `CancelScheduledErasureHandler`, from `POST /api/me/erasure/schedule/cancellation` | a full session and a fresh passkey assertion; a locked session is refused `403`. A further federated sign-in does not take this arrow |
 | Present or Scheduled → gone | `EraseAccountHandler`, from `POST /api/me/erasure` | a full session and a fresh passkey assertion — the sequence above |
 
-**Scheduled has no exit but the immediate erasure.** Nothing withdraws a schedule, and nothing
-erases the account when its instant passes; neither exists today. A schedule is its own row, so the
-account itself is never marked or flagged, and the row leaves with the account. No row survives to
+**Scheduled has two exits: a passkey's withdrawal and the immediate erasure.** Nothing erases the
+account when its instant passes; that does not exist today. A schedule is its own row, so the
+account itself is never marked or flagged, and a withdrawal deletes the row rather than stamping it
+— an account that was once scheduled and is not now looks exactly like one that never was. No row survives to
 record that an erasure happened — including the proof that authorized it, which leaves as the
 deleted nonce.
 
@@ -781,11 +891,27 @@ ELSE
        the winner's row — 200 with the stored instant
 ```
 
+How a request to `POST /api/me/erasure/schedule/cancellation` is answered:
+
+```
+IF the request carries no live session                       ← arms are mutually exclusive
+  THEN 401 from the fallback policy
+ELSE IF the session reads no budget content                  ← a locked session — whoever holds
+  THEN 403 from the fallback policy's                          the provider account; the route
+       FullSessionRequirement, before the handler runs         carries no opt-out marker
+ELSE IF the gate refuses the assertion                       ← consumed/expired/wrong-pool nonce,
+  THEN 401, the nonce spent, the schedule untouched            bad signature, another account's key
+ELSE IF the account holds no schedule
+  THEN 204; nothing is written, the nonce is spent
+ELSE
+  THEN delete the row — on a conflict naming only that row, another withdrawal won — 204
+```
+
 ## Integration Points
 
 - **The grant matrix** — `app-role-grants.sql` gives the role `DELETE` on `users` and
   `transactions`, which is everything erasure needs. The schedule needs `SELECT` and `INSERT` on
-  `erasure_schedules` and nothing more. `AppRoleGrantMatrixTests` pins the set in both directions, so
+  `erasure_schedules`, and its withdrawal `DELETE`; nothing there takes `UPDATE`. `AppRoleGrantMatrixTests` pins the set in both directions, so
   a grant added to make an erasure problem go away fails a test rather than shipping.
   - **Two of the role's other `DELETE` grants look like they belong to erasure and do not.**
     `credentials` holds one for removing a single credential — passkey revocation, replacing a
@@ -798,7 +924,11 @@ ELSE
   read. `user_isolation` on `erasure_schedules` hides another account's schedule and refuses an
   insert naming one. See [data isolation](../engineering/data-isolation.md).
 - **[Sessions](sessions.md)** — the locked-session gate. The schedule route is the one route only a
-  locked session may reach, and sessions.md argues the two markers it carries.
+  locked session may reach, and sessions.md argues the two markers it carries. The cancellation
+  route carries neither, so a locked session is refused there — and sessions.md owns how a full
+  session learns the instant to show.
+- **[Passkeys](passkeys.md)** — the `reauthentication` challenge pool, which every assertion-gated
+  act spends; the withdrawal of a schedule is one more of them.
 - **The referential cascade** — everything not listed above leaves because PostgreSQL performs the
   referential action through internal triggers running with the **referencing table owner's**
   privileges, not the caller's. That is why no grant on any child table is needed.

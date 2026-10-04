@@ -146,6 +146,13 @@ first bullet above describes. It states in plain words what the operator can rea
 rows survive in point-in-time backups for up to seven days — once, on the screen, and not again in
 the dialog.
 
+**While an erasure is scheduled, the screen opens with Scheduled erasure**, above the Account
+section: one standing paragraph saying what cancelling takes, one Outline **Cancel the erasure**
+that asks for a passkey the server checks, and the section's own region. The date is not in it.
+Every signed-in screen states that in one sentence above its content, and **that sentence is prose,
+not a banner** — no fill, no border, no colour, no label and no live region — so *No banners* above
+still holds. [components](components.md) owns both.
+
 It also lists **every way of signing in** — each entry its type in words and the day behind
 it, and nothing more. A recovery-code set is one of those entries, because redeeming a code
 opens a full session the way the other kinds do. Registering and revoking are present and
@@ -159,8 +166,8 @@ this tab cannot open what the file is written from — a key rotation in flight,
 — and says which in a sentence of its own, or says nothing while an unlock is running.
 
 **What no sentence may say any more is that this screen cannot ask for a passkey the server
-checks.** Key rotation asks for exactly that one, a few sections down, and Erase everything asks
-for it too. A sentence that names a checked passkey as the missing piece is therefore false in
+checks.** Key rotation asks for exactly that one, a few sections down, and Erase everything and
+Cancel the erasure ask for it too. A sentence that names a checked passkey as the missing piece is therefore false in
 front of anybody who has rotated their keys, and the Revoke and Generate sentences were rewritten
 for that reason. Each sentence sits above the list rather than beside each row, so a screen reader
 hears it once instead of once per entry. An entry nothing can ever revoke carries no button at all,
@@ -174,7 +181,8 @@ the new codes once. Generating a set **from here** and redeeming one are unbuilt
 once is built and lives elsewhere — the last step of registration, where the account's first set is
 issued.
 
-The Account section at the top of the screen carries **Change email address**, which is built: a trip to
+The Account section — the top of the screen whenever nothing is scheduled — carries **Change email
+address**, which is built: a trip to
 Google's account chooser and back, then **Confirm with your passkey** in its place, with the result
 stated in the section's one region. [components](components.md) owns its specification.
 

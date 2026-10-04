@@ -65,6 +65,7 @@ internal static class LogCensusTraffic
     private const string SignOutPath = "/api/me/session/revocation";
     private const string ErasurePath = "/api/me/erasure";
     private const string ErasureSchedulePath = "/api/me/erasure/schedule";
+    private const string ErasureCancellationPath = "/api/me/erasure/schedule/cancellation";
     private const string SessionReadPath = "/api/me/session";
     private const string RotationPath = "/api/me/key-rotation";
     private const string EmailChangePath = "/api/me/email-change";
@@ -96,6 +97,9 @@ internal static class LogCensusTraffic
 
     /// <summary>The name of the step that schedules the primary account's erasure from a locked session.</summary>
     public const string ErasureScheduleStep = "erasure schedule, locked session";
+
+    /// <summary>The name of the step that withdraws the primary account's schedule from a full session.</summary>
+    public const string ErasureCancellationStep = "erasure schedule, cancellation";
 
     public const string EmailChangeStep = "email change";
 
@@ -576,6 +580,23 @@ internal static class LogCensusTraffic
             // searched with all three in play. Here rather than on the passkey client because a locked
             // session holding a schedule is the fullest body this route writes.
             statuses.Add((int)(await locked.GetAsync(SessionReadPath)).StatusCode);
+        });
+
+        // The full session withdraws the schedule the step above filed, with a passkey. After the
+        // session read, so that read is searched with the instant in play, and before the erasure,
+        // which would otherwise take the schedule with the account and leave nothing to withdraw.
+        await Step(ErasureCancellationStep, async statuses =>
+        {
+            AssertionResult assertion = await ReauthenticateAsync(client, device, accountId, NextSignCount());
+            HttpResponseMessage response = await client.PostAsJsonAsync(ErasureCancellationPath, new
+            {
+                credentialId = assertion.CredentialIdBase64Url,
+                clientDataJson = assertion.ClientDataJsonBase64Url,
+                authenticatorData = assertion.AuthenticatorDataBase64Url,
+                signature = assertion.SignatureBase64Url,
+                userHandle = assertion.UserHandleBase64Url,
+            });
+            statuses.Add((int)response.StatusCode);
         });
 
         await Step(ErasureStep, async statuses =>

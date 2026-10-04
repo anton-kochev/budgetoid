@@ -424,9 +424,10 @@ public sealed class RlsIsolationTests
         // would make the array mean two things.
         //
         // The foreign delete first, then the identical statement aimed at this session's own row. The
-        // pair is the file's usual one and it is not decoration here: users is the ONLY user-owned
-        // table the role holds DELETE on, so without the positive half a zero could just as well mean
-        // the grant was never there — which would be a green run measuring nothing.
+        // pair is the file's usual one and it is not decoration here: most user-owned tables carry no
+        // DELETE grant at all (users and erasure_schedules are the policed ones that do), so without
+        // the positive half a zero could just as well mean the grant was never there — which would be
+        // a green run measuring nothing.
         int foreignDeleted = await DeleteAsync(app, "users", other.UserId);
         int ownDeleted = await DeleteAsync(app, "users", session.UserId);
 
@@ -1461,6 +1462,49 @@ public sealed class RlsIsolationTests
         await Assert.That(await CountKeyedRowsAsync(
                 admin, "erasure_schedules", "user_id", session.UserId))
             .IsEqualTo(1L);
+    }
+
+    [Test]
+    public async Task Database_LetsADeleteReachOnlyThisAccountsErasureSchedule()
+    {
+        // Arrange — two owners with one schedule each, seeded on the superuser connection. The delete
+        // below names no owner at all, so the policy is the only thing that can choose which row goes:
+        // with one owner seeded, "only this account's row went" and "every row went" are the same table.
+        await using RepositoryTestHost host = await StartHostAsync();
+        (RepositoryTestHost.SeededOwner session, RepositoryTestHost.SeededOwner other) =
+            await SeedTwoOwnersAsync(host);
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await using (NpgsqlCommand seedOwn = BuildErasureScheduleInsertProbe(admin, session.UserId))
+        {
+            await seedOwn.ExecuteNonQueryAsync();
+        }
+
+        await using (NpgsqlCommand seedOther = BuildErasureScheduleInsertProbe(admin, other.UserId))
+        {
+            await seedOther.ExecuteNonQueryAsync();
+        }
+
+        await using NpgsqlConnection app = await host.OpenAppConnectionForUserAsync(session.UserId);
+
+        // Act — the whole table, unfiltered. Cancelling a schedule removes the account's row, and the
+        // statement that does it is one owner predicate away from this; user_isolation being FOR ALL is
+        // what keeps a predicate lost in a refactor from cancelling every account's schedule at once.
+        await using NpgsqlCommand delete = new("delete from erasure_schedules", app);
+        int deleted = await delete.ExecuteNonQueryAsync();
+
+        // Assert — one row affected, the session's own. A 42501 here is the grant missing, not the
+        // policy speaking, and the cancellation needs both.
+        await Assert.That(deleted).IsEqualTo(1);
+
+        // On the superuser connection, which row-level security does not apply to: the other account's
+        // schedule stands and this one's is gone. An affected count of one cannot say WHICH row went.
+        await Assert.That(await CountKeyedRowsAsync(
+                admin, "erasure_schedules", "user_id", other.UserId))
+            .IsEqualTo(1L);
+        await Assert.That(await CountKeyedRowsAsync(
+                admin, "erasure_schedules", "user_id", session.UserId))
+            .IsEqualTo(0L);
     }
 
     [Test]

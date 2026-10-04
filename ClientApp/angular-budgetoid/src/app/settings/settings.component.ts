@@ -23,6 +23,7 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatDialog, type MatDialogRef } from '@angular/material/dialog';
 import { AccountKeyCustodyService } from '@app-core/security/account-key-custody.service';
 import { ProviderDepartureService } from '@app-core/services/provider-departure.service';
+import { SessionService } from '@app-core/session/session.service';
 import { AccountUnlockService } from './account-unlock.service';
 import { toCredentialRow, type CredentialRow } from './credential-row';
 import {
@@ -36,10 +37,24 @@ import {
   EmailChangeFlowService,
   type EmailChangeOuterHold,
 } from './email-change-flow.service';
+import { ErasureCancellationFlowService } from './erasure-cancellation-flow.service';
 import { ErasureFlowService } from './erasure-flow.service';
 import { KeyRotationSectionComponent } from './key-rotation-section.component';
 import { RotationFlowService } from './rotation-flow.service';
 import { SettingsService } from './settings.service';
+
+/**
+ * What holds Unlock and the erasure trigger off from outside their own
+ * sections: the email change's two states, or the erasure cancellation's
+ * passkey check. Departing first, because it ends the screen.
+ */
+type OuterHold = EmailChangeOuterHold | 'cancellation';
+
+/**
+ * Why Cancel the erasure is off, one sentence each: the page leaving for
+ * Google, or one of the three other passkey checks on this screen.
+ */
+type CancelHold = 'departing' | 'email' | 'unlock' | 'rotation';
 
 // The shell's own split between the bottom bar and the rail
 // (`shell.component.scss`), which is also where the erasure confirmation changes
@@ -81,12 +96,18 @@ const EXPANDED = '(min-width: 960px)';
   // **`EmailChangeFlowService` holds the Google answer a return brought back**,
   // and it is provided here so that answer dies with the screen: nothing at the
   // root holds one, and the screen's teardown aborts a press that has not posted.
+  //
+  // **`ErasureCancellationFlowService` is the Scheduled erasure section's
+  // attempt**, for the same reason again. What it writes on a `204` is the
+  // session's — `SessionService` owns the schedule this tab knows — so that
+  // fact outlives the screen while the attempt does not.
   providers: [
     SettingsService,
     AccountUnlockService,
     RotationFlowService,
     ErasureFlowService,
     EmailChangeFlowService,
+    ErasureCancellationFlowService,
   ],
   styleUrls: ['./settings.component.scss'],
   templateUrl: './settings.component.html',
@@ -142,31 +163,88 @@ export class SettingsComponent implements OnInit {
   protected readonly emailChange = inject(EmailChangeFlowService);
   private readonly departure = inject(ProviderDepartureService);
 
-  // **The email change holds controls on this screen as well as being held by
-  // them.** Which of its two terms holds Unlock and the erasure trigger off,
-  // departing first because it ends the screen and every sentence on it.
-  // Departing is read off its owner rather than as the flow's `leaving` phase:
-  // that phase is a projection of the same reading, and a projection is one
-  // more place for the two to part company.
-  protected readonly emailHold = computed<EmailChangeOuterHold | null>(() => {
+  // The Scheduled erasure section's attempt, and the schedule it is drawn for.
+  // Read by name, like `unlocking`: the schedule is the session's fact and the
+  // press is this screen's.
+  protected readonly cancellation = inject(ErasureCancellationFlowService);
+  private readonly session = inject(SessionService);
+  // Read for its passkey check alone, which holds Cancel off.
+  private readonly rotationFlow = inject(RotationFlowService);
+
+  // **The section is drawn while a schedule stands, and while a press on it is
+  // running or has cancelled.** The second half is for the result: the `204`
+  // publishes `null`, which on its own would take the section — and the
+  // sentence saying what happened — off the screen in the same pass. `'unread'`
+  // is not a schedule: offering to cancel something nobody has said exists
+  // would spend a nonce on nothing.
+  protected readonly cancellationDrawn = computed(() => {
+    const scheduled = this.session.scheduledErasure();
+
+    return (
+      (scheduled !== null && scheduled !== 'unread') ||
+      this.cancellation.phase() !== 'idle'
+    );
+  });
+
+  // **The email change and the erasure cancellation hold controls on this
+  // screen as well as being held by them.** Which term holds Unlock and the
+  // erasure trigger off: departing first because it ends the screen and every
+  // sentence on it, then the email change's passkey check, then the
+  // cancellation's — the browser runs one passkey check at a time. Departing
+  // is read off its owner rather than as the flow's `leaving` phase: that phase
+  // is a projection of the same reading, and a projection is one more place for
+  // the two to part company.
+  protected readonly outerHold = computed<OuterHold | null>(() => {
     if (this.departure.departing()) {
       return 'departing';
     }
 
-    return this.emailChange.asking() ? 'asking' : null;
+    if (this.emailChange.asking()) {
+      return 'asking';
+    }
+
+    return this.cancellation.asking() ? 'cancellation' : null;
   });
 
   // **Unlock's one predicate**, read by its `disabled` and by `unlock()`. The
-  // screen owns it because the email flow is provided here and
-  // `AccountUnlockService` sees nothing of it. `aria-busy` stays on `working`
-  // alone: the email change's terms are not work this control is doing.
+  // screen owns it because the other flows are provided here and
+  // `AccountUnlockService` sees nothing of them. `aria-busy` stays on `working`
+  // alone: the other flows' terms are not work this control is doing.
   protected readonly unlockHeld = computed(
-    () => this.unlocking.working() || this.emailHold() !== null,
+    () => this.unlocking.working() || this.outerHold() !== null,
   );
 
   // The erasure trigger's one predicate, read by its `disabled` and by
   // `openErasure()`.
-  protected readonly erasureHeld = computed(() => this.emailHold() !== null);
+  protected readonly erasureHeld = computed(() => this.outerHold() !== null);
+
+  // **Why Cancel the erasure is off: four terms and nothing else.** Departing,
+  // because the page leaving would cut the check short with nothing to say
+  // whether the erasure was cancelled; then the three other passkey checks on
+  // this screen, each its own flow's `asking` and never its `working` — an
+  // export, a walk, an account-key read and a changing request ask the device
+  // for nothing. Departing first, then in the order the screen draws them.
+  protected readonly cancelHold = computed<CancelHold | null>(() => {
+    if (this.departure.departing()) {
+      return 'departing';
+    }
+
+    if (this.emailChange.asking()) {
+      return 'email';
+    }
+
+    if (this.unlocking.asking()) {
+      return 'unlock';
+    }
+
+    return this.rotationFlow.asking() ? 'rotation' : null;
+  });
+
+  // Cancel's one predicate, read by its `disabled` and by `cancelErasure()`:
+  // the flow's own, under the screen's holds.
+  protected readonly cancelPressable = computed(
+    () => this.cancelHold() === null && this.cancellation.pressable(),
+  );
 
   // Which of the two email-change controls is drawn — exactly one, always.
   // Confirm from the moment a return holds an answer until a word drops it;
@@ -208,6 +286,11 @@ export class SettingsComponent implements OnInit {
     string,
     ElementRef<HTMLButtonElement>
   >('confirmControl', { read: ElementRef });
+
+  // The sentence a cancellation's `204` leaves in the Scheduled erasure
+  // section, present only once it has.
+  private readonly cancellationResult =
+    viewChild<ElementRef<HTMLElement>>('cancellationResult');
 
   // The erasure confirmation while it is open, whichever host it is in.
   private erasure:
@@ -275,6 +358,49 @@ export class SettingsComponent implements OnInit {
 
       confirmWasDrawn = drawn;
     });
+
+    // **A cancellation's `204` moves focus to the sentence saying so**,
+    // because Cancel, where the press left focus, has left the DOM, and focus
+    // would otherwise fall to `<body>`. Watched as the phase arriving at
+    // `cancelled`, so a refusal — which leaves the control where it is — moves
+    // nothing. A render effect for the reason the one above gives — but the
+    // hook can run on the application's tick before this view has drawn the
+    // sentence, so the move is *owed* from the transition until the query
+    // holds its target, rather than tried once and dropped.
+    let wasCancelled = false;
+    let focusOwed = false;
+
+    afterRenderEffect(() => {
+      const cancelled = this.cancellation.phase() === 'cancelled';
+      const result = this.cancellationResult();
+
+      if (cancelled && !wasCancelled) {
+        focusOwed = true;
+      }
+
+      wasCancelled = cancelled;
+
+      if (focusOwed && result !== undefined) {
+        focusOwed = false;
+        result.nativeElement.focus();
+      }
+    });
+  }
+
+  /**
+   * Runs a cancellation of the scheduled erasure, unless the control is held.
+   *
+   * The gate is here as well as in the attribute, for Unlock's reason:
+   * Material's click-halt is applied to anchors only, so on a `<button>` the
+   * press arrives whatever the attribute says. The flow refuses on its own
+   * half again at its entry.
+   */
+  protected cancelErasure(): void {
+    if (!this.cancelPressable()) {
+      return;
+    }
+
+    this.cancellation.cancel();
   }
 
   /**

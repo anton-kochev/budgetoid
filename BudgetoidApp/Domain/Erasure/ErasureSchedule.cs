@@ -9,8 +9,8 @@ namespace Domain.Erasure;
 /// is the one act a locked session may perform — a person who lost every passkey and every recovery
 /// code releasing the account and the address behind it — and it is filed with a delay rather than
 /// carried out at once. The delay is the window an owner would need if the request came from somebody
-/// holding a stolen provider account instead; nothing withdraws a schedule yet, so today a filed one
-/// stands until the account goes.
+/// holding a stolen provider account instead. Only the owner can withdraw one — from a full session,
+/// with a passkey — which is exactly what somebody holding only the provider account cannot do.
 /// </para>
 /// <para>
 /// <b><see cref="UserId"/> is the primary key, and that is the rule a repeat request rests on.</b> An
@@ -25,8 +25,9 @@ namespace Domain.Erasure;
 /// <b>Two columns, and the absences are decisions.</b> There is no requested-at instant, because the
 /// instant that binds is when the account goes, and a second timestamp is a second thing an export, a
 /// log or the erasure itself would have to answer for. There is no status and no cancelled-at stamp,
-/// because a stamped row is a remnant on an account that asked to be forgotten. Nothing withdraws a
-/// schedule today; a row leaves only by the cascade from <c>users</c>.
+/// because a stamped row is a remnant on an account that asked to be forgotten. A row leaves in one of
+/// two ways, and neither leaves anything behind: a withdrawal deletes it, and an erasure carries it away
+/// by the cascade from <c>users</c>.
 /// </para>
 /// <para>
 /// <b>The length of the delay is not this type's business.</b> The factory refuses a delay that is

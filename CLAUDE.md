@@ -92,7 +92,12 @@ because every one of these is something a reader will otherwise simplify away.
   `full_session`** — a weaker proof never overwrites a stronger sign-in; a locked or ended one is
   replaced. The schedule route also carries `RequiresLockedSessionAttribute`, read by
   `LockedSessionOnlyRequirement` on the same fallback, so a full session is refused there — **a schedule is not an erasure**, and the
-  passkey rule governs only the immediate one. `LockedSessionTests` reads both sets whole.
+  passkey rule governs only the immediate one. **Withdrawing a schedule is the mirror image**:
+  `POST /api/me/erasure/schedule/cancellation` carries **no** marker, so a locked session is refused,
+  and takes a fresh `reauthentication` assertion, gate first even when nothing is scheduled; it
+  deletes the row (the role's one `DELETE` there) and answers `204` either way. Never add the opt-out
+  to it — whoever holds the provider account reaches a locked session. `LockedSessionTests` reads
+  both sets whole.
   [sessions.md](docs/business-logic/sessions.md), [erasure.md](docs/business-logic/erasure.md)
 - **Registration is one act and one transaction, and the account id is derived rather than chosen.**
   Two routes authenticated by the provider scheme and nothing else. No `ITransactionalExecutor` may
@@ -311,8 +316,9 @@ Load-bearing rules. Each links the doc that argues it — **read that doc before
   to, because its own removal pushes a history entry), `discardUnreadAnswer()` clears an unclaimed
   one, and an outbound press never reads one. `ProviderDepartureService` is the one owner of "this
   page is leaving for Google"; a back-forward-cache restore settles it. **Holds run both ways**:
-  departing and Confirm's passkey check hold Export, Unlock, Rotate and the Erase trigger, and
-  Confirm is held only by the unlock's or a rotation's passkey check. The Google console must list
+  departing and Confirm's passkey check hold Export, Unlock, Rotate, the Erase trigger and Cancel
+  the erasure, and Confirm is held only by the unlock's, a rotation's or the withdrawal's passkey
+  check; Change is held by a withdrawal in flight. The Google console must list
   `/app/settings` and `/release`; no test can see it.
   [email-change.md](docs/business-logic/email-change.md),
   [components.md](docs/design/components.md)
@@ -364,6 +370,17 @@ Load-bearing rules. Each links the doc that argues it — **read that doc before
   press is abandoned when its screen or overlay goes; a POST already out still ends the session
   on a `204`. [erasure.md](docs/business-logic/erasure.md),
   [components.md](docs/design/components.md)
+- **A scheduled erasure is shown above every `/app` screen and withdrawn from Settings, and the
+  two are deliberately apart.** The notice is standing content — no live region, no link, no
+  banner — and `SessionService` keeps it current: `established()` reads the schedule (a sign-in's
+  answer does not carry it), the shell calls `refreshSchedule()` on `visibilitychange`, **never a
+  timer** (the API scales to zero), and a generation every write raises drops a late answer, so a
+  read out during a withdrawal cannot bring the notice back. **Cancel lives on Settings, not in the
+  notice**, because it joins the holds mesh and the shell's injector cannot see Settings' flows.
+  `ErasureCancellationFlowService` reads the 401 `refusal: "assertion"` member, never retries, and
+  — unlike the erasure dialog — **keeps the control live on `undetermined`**, because the server's
+  withdrawal is idempotent. [erasure.md](docs/business-logic/erasure.md),
+  [sessions.md](docs/business-logic/sessions.md), [components.md](docs/design/components.md)
 - **The browser runs both halves of the front door.** `webauthn-encoding.ts` is pure translation over
   a **strict** decoder — a lenient one must never appear beside it. `webauthn-ceremony.service.ts`
   runs **three** ceremonies and sends two; the third mints its own challenge and spends neither nonce

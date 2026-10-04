@@ -209,6 +209,184 @@ public sealed class ErasureScheduleRepositoryTests
         await Assert.That(found.TakesEffectAtUtc).IsEqualTo(LaterRequestInstant + Delay);
     }
 
+    /// <summary>
+    /// The tracked read answers the named account's schedule, not another's, and hands back an instance the
+    /// context is tracking.
+    /// </summary>
+    /// <remarks>
+    /// <b>What it holds: the owner predicate in <c>FindTrackedAsync</c></b>, on the superuser connection
+    /// where no policy can stand in for it, for the reason <see cref="FindAsync_ReturnsOnlyTheNamedAccountsSchedule" />
+    /// gives. The stranger's row is filed first, so "the first row" is the wrong one. Tracked, because the
+    /// remove that follows it in the handler deletes this instance; an untracked one would be attached
+    /// afresh, which works, but is a different method from the one the port names.
+    /// </remarks>
+    [Test]
+    public async Task FindTrackedAsync_FiltersByOwner()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid ownerId = await host.SeedUserAsync(GoogleSubject, OwnerEmail);
+        Guid strangerId = await host.SeedUserAsync(StrangerGoogleSubject, StrangerEmail);
+        await using (BudgetoidDbContext seed = CreateDb(host))
+        {
+            seed.ErasureSchedules.Add(ErasureSchedule.Request(strangerId, EarlierRequestInstant, Delay));
+            seed.ErasureSchedules.Add(ErasureSchedule.Request(ownerId, LaterRequestInstant, Delay));
+            await seed.SaveChangesAsync();
+        }
+
+        await using BudgetoidDbContext db = CreateDb(host);
+        ErasureScheduleRepository repository = new(db);
+
+        // Act
+        ErasureSchedule? found = await repository.FindTrackedAsync(ownerId);
+        ErasureSchedule? none = await repository.FindTrackedAsync(Guid.CreateVersion7());
+
+        // Assert
+        await Assert.That(found).IsNotNull();
+        await Assert.That(found!.UserId).IsEqualTo(ownerId);
+        await Assert.That(found.TakesEffectAtUtc).IsEqualTo(LaterRequestInstant + Delay);
+        await Assert.That(db.Entry(found).State).IsEqualTo(EntityState.Unchanged);
+        await Assert.That(none).IsNull();
+    }
+
+    /// <summary>
+    /// Removing a found schedule deletes that row, reports it removed, and leaves another account's row.
+    /// </summary>
+    /// <remarks>
+    /// Two accounts each hold a row, so a remove that emptied the table — on the superuser connection,
+    /// where no policy would stop it — is visible as the stranger's row missing.
+    /// </remarks>
+    [Test]
+    public async Task RemoveAsync_DeletesTheRow()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid ownerId = await host.SeedUserAsync(GoogleSubject, OwnerEmail);
+        Guid strangerId = await host.SeedUserAsync(StrangerGoogleSubject, StrangerEmail);
+        await using (BudgetoidDbContext seed = CreateDb(host))
+        {
+            seed.ErasureSchedules.Add(ErasureSchedule.Request(strangerId, EarlierRequestInstant, Delay));
+            seed.ErasureSchedules.Add(ErasureSchedule.Request(ownerId, LaterRequestInstant, Delay));
+            await seed.SaveChangesAsync();
+        }
+
+        await using BudgetoidDbContext db = CreateDb(host);
+        ErasureScheduleRepository repository = new(db);
+        ErasureSchedule owned = (await repository.FindTrackedAsync(ownerId))!;
+
+        // Act
+        ScheduleRemoval removal = await repository.RemoveAsync(owned);
+
+        // Assert
+        await Assert.That(removal).IsEqualTo(ScheduleRemoval.Removed);
+        await Assert.That(await StoredInstantsAsync(host, ownerId)).IsEmpty();
+        await Assert.That(await StoredInstantsAsync(host, strangerId))
+            .IsEquivalentTo(new[] { EarlierRequestInstant + Delay });
+    }
+
+    /// <summary>
+    /// When another context deletes the row between the read and the save, the remove reports it already
+    /// gone instead of throwing, and leaves nothing on the context for a later save to flush.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Staged by <see cref="ConcurrentDeleteInterceptor" /></b>, which commits the winner's delete on a
+    /// connection of its own inside <c>SavingChanges</c>: the loser's DELETE then affects zero rows against
+    /// EF's expected one and EF raises a real <c>DbUpdateConcurrencyException</c>. Two cancels from two
+    /// tabs reach exactly this state, and the second deserves a 204 — the post-condition holds.
+    /// </para>
+    /// <para>
+    /// <b>The later save is the detach half</b>, as it is for <c>AddAsync</c>: an entry left
+    /// <c>Deleted</c> would be flushed again by the next save on the request-scoped context and throw the
+    /// same exception for whatever that save was for.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task RemoveAsync_WhenAnotherContextAlreadyDeletedIt_ReturnsAlreadyGone()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid ownerId = await host.SeedUserAsync(GoogleSubject, OwnerEmail);
+        await using (BudgetoidDbContext seed = CreateDb(host))
+        {
+            seed.ErasureSchedules.Add(ErasureSchedule.Request(ownerId, LaterRequestInstant, Delay));
+            await seed.SaveChangesAsync();
+        }
+
+        ConcurrentDeleteInterceptor winner = new(
+            host.ConnectionString, "delete from erasure_schedules where user_id = @id", ownerId);
+        await using BudgetoidDbContext db = CreateDb(host, winner);
+        ErasureScheduleRepository repository = new(db);
+        ErasureSchedule owned = (await repository.FindTrackedAsync(ownerId))!;
+
+        // Act
+        Exception? escaped = null;
+        ScheduleRemoval? removal = null;
+        try
+        {
+            removal = await repository.RemoveAsync(owned);
+        }
+        catch (Exception exception)
+        {
+            escaped = exception;
+        }
+
+        // Assert — the arrangement really deleted the row, so the answer is about a lost race.
+        await Assert.That(winner.Deleted).IsEqualTo(1);
+        await Assert.That(escaped).IsNull();
+        await Assert.That(removal).IsEqualTo(ScheduleRemoval.AlreadyGone);
+        await Assert.That(await StoredInstantsAsync(host, ownerId)).IsEmpty();
+
+        Exception? later = await CaptureAsync(() => db.SaveChangesAsync());
+        await Assert.That(later).IsNull();
+    }
+
+    /// <summary>
+    /// A concurrency failure on another entity the same save flushed escapes, instead of being answered as
+    /// a schedule already gone.
+    /// </summary>
+    /// <remarks>
+    /// <b>What it holds: the narrowing to this entity alone.</b> The repository's own save flushes the whole
+    /// change tracker, and the context is request-scoped. A credential marked <c>Deleted</c> here whose row
+    /// was removed out of band affects zero rows; a catch widened to any <c>DbUpdateConcurrencyException</c>
+    /// would answer "already gone" for a conflict it does not model, after a save that rolled back the
+    /// schedule's own delete — so the asserted row still standing is what makes that visible.
+    /// </remarks>
+    [Test]
+    public async Task RemoveAsync_WhenTheConflictNamesAnotherEntity_LetsItEscape()
+    {
+        // Arrange
+        await using RepositoryTestHost host = await StartHostAsync();
+        Guid ownerId = await host.SeedUserAsync(GoogleSubject, OwnerEmail);
+        await using (BudgetoidDbContext seed = CreateDb(host))
+        {
+            seed.ErasureSchedules.Add(ErasureSchedule.Request(ownerId, LaterRequestInstant, Delay));
+            await seed.SaveChangesAsync();
+        }
+
+        await using BudgetoidDbContext db = CreateDb(host);
+        Credential credential = await db.Credentials.SingleAsync(row => row.UserId == ownerId);
+        await using (NpgsqlConnection connection = new(host.ConnectionString))
+        {
+            await connection.OpenAsync();
+            await using NpgsqlCommand delete = new("delete from credentials where id = @id", connection);
+            delete.Parameters.AddWithValue("id", credential.Id);
+            await delete.ExecuteNonQueryAsync();
+        }
+
+        db.Credentials.Remove(credential);
+        ErasureScheduleRepository repository = new(db);
+        ErasureSchedule owned = (await repository.FindTrackedAsync(ownerId))!;
+
+        // Act
+        Exception? escaped = await CaptureAsync(() => repository.RemoveAsync(owned));
+
+        // Assert
+        await Assert.That(escaped).IsTypeOf<DbUpdateConcurrencyException>();
+        await Assert.That(await StoredInstantsAsync(host, ownerId))
+            .IsEquivalentTo(new[] { LaterRequestInstant + Delay });
+    }
+
     private const string GoogleSubject = "google-erasure-schedule-owner";
 
     private const string StrangerGoogleSubject = "google-erasure-schedule-stranger";
@@ -299,6 +477,13 @@ public sealed class ErasureScheduleRepositoryTests
     private static BudgetoidDbContext CreateDb(RepositoryTestHost host) => new(
         new DbContextOptionsBuilder<BudgetoidDbContext>()
             .UseNpgsql(host.ConnectionString)
+            .Options);
+
+    /// <summary>The same context, with an interceptor that stages a concurrent writer inside its save.</summary>
+    private static BudgetoidDbContext CreateDb(RepositoryTestHost host, ConcurrentDeleteInterceptor interceptor) => new(
+        new DbContextOptionsBuilder<BudgetoidDbContext>()
+            .UseNpgsql(host.ConnectionString)
+            .AddInterceptors(interceptor)
             .Options);
 
     private static async Task<RepositoryTestHost> StartHostAsync()

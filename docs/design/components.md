@@ -122,6 +122,19 @@ Part of the page plane: page title (`title` role, Mohave 500 24) left, contextua
 actions right, padded by `--bud-gutter`. A hairline fades in under it (130ms) only
 when content is scrolled beneath. No Material toolbar styling.
 
+### The notice slot
+
+**The layout has one slot of its own above the routed screen, and it holds the
+[scheduled erasure notice](#scheduled-erasure-notice) and nothing else.** It is inside `<main>` and
+before the router outlet: inside, because the notice is about the account the screen below is
+showing; before, so it is read first and stays put while the screens change under it. Never inside
+the `<nav>`, which is one list of four destinations. So **which screens carry the notice is a fact
+about the route table**, by the navigation's own rule: every child of `app` draws it, and
+`/welcome`, `/register` and `/release` cannot.
+
+**The notice is its own component and not shell markup**, because this stylesheet's budget is spent
+on the two layouts above, and a slot is not a reason to raise a build warning a second time.
+
 ## Buttons
 
 M3 base: `MatButton`. Radius `--bud-radius-md`, min-height 48px, padding 12px 24px,
@@ -698,6 +711,396 @@ is about what is attached to the account rather than about the browser holding i
   request that got no answer, because here silence is not evidence about the visitor: the visitor has
   already said what they want.
 
+## Scheduled erasure notice
+
+The sentence every signed-in screen carries while the account's erasure is scheduled. A sign-in
+with the account's Google account can file that erasure from
+[Releasing an account](#releasing-an-account) holding no passkey at all, and this is how an owner
+who still holds one learns that somebody did. M3 base: **none** — one paragraph, for the reason the
+Settings sections have none: one fact about one thing is a sentence, and every component that would
+wrap it exists to group things there is more than one of.
+
+### Where the notice sits
+
+- **In the shell's [notice slot](#the-notice-slot)**: inside `<main>`, before the router outlet, on
+  every route under `/app`. The route table decides who sees it. A locked session never reaches
+  `/app`, and `/release` states the instant in its own result sentence, so the two screens that
+  state a schedule never share a page.
+- **It renders only while a schedule is known.** The session holds three values for it, and two of
+  them render nothing: *unread* — nobody has said — and *nothing scheduled* — the server said so.
+  Neither leaves an empty paragraph behind. An instant that does not parse renders nothing too,
+  rather than an `Invalid Date` string.
+- **It renders what this tab has learned and asks nothing itself.** The schedule has one owner,
+  `SessionService`, which the notice and the [Settings section](#scheduled-erasure-section) both
+  read, so the two say one fact.
+
+### The copy is the specification
+
+> This account will be erased on {date} at {time}. A sign-in with its Google account asked for this.
+> If that wasn’t you, or you’ve changed your mind, cancel it in Settings with a passkey.
+
+**Three sentences, in the order a person needs them**: what will happen and when, what asked for it,
+and who can take it back, with what, and where — [voice](voice.md)'s *A notice nobody asked for*.
+
+- **What asked, never who.** The client observed a schedule filed by a Google sign-in; it did not
+  observe a person. *A sign-in with its Google account* is the observation. *You asked for this* is
+  false for the owner the notice exists to warn, and *Someone asked for this* is an accusation
+  resting on the same missing fact.
+- **Both readings of the reader in one clause.** The owner who did not file it and the owner who did
+  and has changed their mind take the same act, so the sentence names the act once.
+- **The act names what it takes.** *With a passkey* is the whole cost of cancelling, and saying it
+  here spares somebody holding only a Google sign-in a trip to a control that refuses them. The
+  section says the other half: signing in with Google again cancels nothing.
+- **No address and no label.** The notice is on a screen anybody at the device can see, so it names
+  no email address. No *Warning*, no *Important*, no icon standing in for one — the sentence carries
+  its own weight, the recovery-code hand-off's rule.
+
+### The date
+
+- **Absolute, in the reader's own zone and locale**, wrapped in a `<time>` whose `datetime` carries
+  the instant as it arrived. Never a countdown: *in 6 days* goes false on tomorrow's load while the
+  stored instant does not move.
+- **One formatter for both screens that state an instant.** `+shared/scheduled-instant.ts` is the
+  release screen's formatter, so the notice and the release result cannot disagree about one
+  instant. `Intl.DateTimeFormat` and never `DatePipe` — the credential list's `LOCALE_ID` rule. The
+  day is the reader's calendar day, never the UTC day: under the test runner's pinned
+  `Pacific/Kiritimati`, `2026-10-09T10:30:00Z` reads as 10 October, 00:30.
+
+### Not a live region
+
+**It is a plain paragraph: no `role="status"`, no `role="alert"`, no `aria-live`.** Three reasons,
+and one cost.
+
+- **It is standing content.** The schedule is a fact about the account, true on every screen of the
+  visit. Announced, the same sentence would interrupt every navigation.
+- **A region in the shell is a second region on every screen.** Each content screen keeps exactly
+  one, per [A value read from the network](#a-value-read-from-the-network), and Settings one per
+  section; a region in the layout sits beside all of them, heard twice wherever two speak, and
+  invisible to a screen counting its own.
+- **A region would announce on every load.** Every reload and every return from Google would read
+  out the sentence the person heard last time — and a region holding its text at first paint is
+  announced unreliably besides, so the cold load where most people meet it is the case a region
+  handles worst.
+- **The cost, accepted: a schedule learned mid-visit appears unannounced.** After a sign-in, or when
+  the tab comes back into view, the paragraph arrives at the top of `main` and nothing says so. A
+  screen-reader user meets it in reading order, first in the content. Buying that one announcement
+  with a region would cost an interruption on every navigation of every visit.
+
+### No link
+
+**Settings is named in prose, and not linked**, for three reasons. Settings is in the navigation on
+every screen that carries the notice, one press away. On `/app/settings` itself a link would point
+at the page the person is already on. And a link adds a tab stop to every screen, ahead of that
+screen's own content. The [locked-account notice](#locked-account-notice--a-link-never-a-redirect)
+links to Settings and this one does not, and the difference is position: that one stands in place
+of a list on three screens, and this one stands above every screen, Settings included.
+
+### Not a banner
+
+**A prose block, inset like a screen's own content**: `body` `--bud-text`, capped at 65ch,
+`--bud-space-6` above and `--bud-gutter` either side, nothing below — the screen beneath owns its
+own inset. **No fill, no border, no icon, and no `--bud-over`**: colour is not the message, and the
+sentence reads the same without any. [patterns](patterns.md) says *no banners*, and this is not
+one.
+
+**The Account keys chapter refuses a shell banner, and that refusal does not reach this.** That
+banner would have repeated, on every cold load, a sentence the content screens already say in
+place of their lists. Nothing else on any screen says this one, it appears only while a schedule
+stands, and it leaves the moment one does not.
+
+### How it stays current
+
+`SessionService` owns the schedule, and five events write it:
+
+- **Bootstrap.** The probe's session read carries the schedule for a full session.
+- **A sign-in.** `established()` reads the schedule beside the budget, not awaited. Without it a tab
+  that probed anonymous on its cold load would show no notice until a reload, to an owner who has
+  just signed in with a passkey that survived. A failed read publishes nothing.
+- **The tab coming back into view.** The shell listens for `visibilitychange` and asks for the
+  schedule once on `visible`, with one read in flight at most. The listener goes with the signed-in
+  layout, so a tab that has left it asks for nothing when it comes back into view.
+- **A cancellation's `204`**, which publishes *nothing scheduled*, so the notice leaves every screen
+  at once.
+- **The session ending**, which returns it to *unread*.
+
+**A read never puts the notice back.** It publishes only if nothing wrote the status or the
+schedule after it was sent, and only if its answer's session kind is the kind this tab holds. So a
+read sent before a cancellation, and answered after it, publishes nothing.
+
+**No timer.** The API scales to zero, and a poll from every open tab would keep it awake for
+nobody. A schedule filed while a tab stays in view appears the next time that tab comes back into
+view, or reloads — a limit stated rather than a gap.
+
+### What a writer will get wrong
+
+- **Making it a live region** so a screen reader hears it. Every navigation hears it then.
+- **Adding a link to Settings.** A tab stop on every screen, and on one of them a link to itself.
+- **Styling it as a warning** — a fill, `--bud-over`, an icon, a *Warning* label.
+- **A countdown, or the instant in UTC.**
+- **Polling for it.**
+- **Writing *You asked for this*,** or naming the address.
+- **Rendering it while the schedule is unread**, or leaving an empty paragraph when nothing stands.
+- **Moving it outside `main`, after the outlet, or into the `<nav>`.**
+- **Offering *release* here.** The release screen is a door for somebody with no passkey; the notice
+  names the one act that needs one.
+
+### Accessibility
+
+A plain paragraph, first in `main`'s reading order and before the screen's `h1`; it is not a
+heading and does not compete with one. Not a target, no tab stop, no live region. The `<time>`
+carries the machine-readable instant. Nothing is communicated by colour.
+
+### What ships today
+
+**The notice, as specified.** `ScheduledErasureNoticeComponent` renders the sentence character for
+character from the session's schedule, with the instant formatted by the release screen's
+formatter, and renders nothing for *unread* or *nothing scheduled*.
+`scheduled-erasure-notice.component.spec.ts` pins the sentence whole, the reader's-zone rendering
+under the pinned zone, the one `<time>` and its `datetime`, and the absence of any live-region
+attribute, link, tab stop, *warning* or address. `shell.component.spec.ts` pins the slot — inside
+`main`, before the outlet, outside the `<nav>` — and the listener: one read on `visible`, none on
+`hidden`, none after an hour of an open tab, none once the layout has gone. What a read publishes,
+and when it publishes nothing, is `SessionService`'s and its spec's.
+
+**One edge, recorded:** an instant that does not parse renders no notice, while the Settings section
+reads the schedule rather than the instant and still draws.
+
+## Scheduled erasure section
+
+The account's way to take back an erasure somebody scheduled. M3 base: **none** — one standing
+paragraph, a sentence present only while the control is held off, one button and one
+`role="status"` region, for the reason the sections below it have none: one act about one thing is
+a sentence.
+
+It is **the first section on `/app/settings`**, above Account, whenever it renders. It is the one
+thing on the screen with a date on it the person did not choose. The placement rule — Export and
+Erase are a pair, everything else above them — permits anywhere above that pair, and first is the
+narrower claim. **The date itself is not here**: the [notice](#scheduled-erasure-notice) above every
+screen states it, and this section is the act.
+
+### When it renders
+
+- **While a schedule stands, and while a press on it runs or has cancelled.** The second half is for
+  the result: the `204` publishes *nothing scheduled*, which on its own would take the section — and
+  the sentence saying what happened — off the screen in the same pass. It also keeps the section
+  through a press when a read lands mid-press answering nothing scheduled, because the erasure was
+  cancelled in another tab: the control and its region do not vanish under a check the device is
+  still running.
+- **Not while the schedule is unread.** Offering to cancel something nobody has said exists would
+  spend a nonce on nothing.
+- **Never for a locked session**, which never reaches this screen. That person is on `/release`, and
+  the reason that screen names no cancellation is argued there.
+
+### The section's order
+
+A settings section per the spec above: `<section aria-labelledby>`, `eyebrow` heading **Scheduled
+erasure**, `--bud-space-4` between heading and content, `--bud-space-7` to the next section, prose
+capped at 65ch, one column at every width. Top to bottom: the standing paragraph, a held-off
+sentence when one renders, the control, and the region. After a `204`: the result sentence in the
+paragraph's place, and the region.
+
+### The copy is the specification
+
+> This account is scheduled to be erased. Cancelling needs a passkey registered to this account —
+> signing in with Google again doesn’t cancel it.
+
+**Standing prose**, true at rest, while held off, while the device is asked and after a refusal. It
+leaves with the control on the `204`, because *This account is scheduled to be erased* is no longer
+true then.
+
+**The second clause names the one thing that does not cancel**: the act that filed the schedule
+cannot withdraw it. A Google sign-in is what the notice says asked, so it is the act a reader
+reaches for first. The route that withdraws a schedule takes a passkey and nothing else.
+
+Three sentences a writer reaches for, refused:
+
+- *Your account will be erased in 7 days.* A countdown, and the date is the notice's to state.
+- *If you didn’t ask for this, somebody may have your Google account.* A diagnosis the client did
+  not observe, and alarm this section has not measured.
+- *Sign in with Google to cancel.* False, and the clause above exists to say so.
+
+### The Cancel control
+
+- **Outline** (`mat-stroked-button`), 48px target, visible label **Cancel the erasure**.
+- **Not Destructive.** Nothing is lost: the press takes an act back. The fill promises there is no
+  way back, and this act is the way back.
+- **Not Primary.** Export is the screen's one main action — Sign out's reason, unchanged.
+- **The label names its object.** A bare *Cancel* reads as a dismiss, and this screen already has
+  one: the [erasure dialog](#erasure-dialog)'s Ghost **Cancel** closes an overlay and posts nothing.
+- **No sentence beside it at rest.** It waits on nothing then.
+- **While held off or working it takes `disabledInteractive`**, so it keeps its tab stop and the
+  sentence it names stays reachable. `aria-busy="true"` only while its own press works — the
+  challenge, the ceremony and the cancelling request — and `null` otherwise.
+- **One predicate with one owner, read by the attribute and the handler.** The flow publishes
+  *pressable* — nothing running and nothing cancelled — and the screen joins it with the four holds
+  below into the control's one predicate. The handler refuses on that predicate and the flow refuses
+  on its own half again at its entry. Material's click-halt is applied to anchors only, so on a
+  `<button>` the press arrives whatever the attribute says.
+
+### The press
+
+**In this order**: the browser's ability is checked, a challenge is fetched from the
+**re-authentication pool** (`POST /api/passkeys/reauthentication/options`), the device is asked, and
+one cancelling request is sent, `POST /api/me/erasure/schedule/cancellation`. **Nothing is sent
+before the press, and nothing is posted until the passkey has answered** — the erasure dialog's
+order, and it is what makes *the erasure is still scheduled* a fact about this client rather than a
+guess about the server. The ability check comes before the challenge, for `SignInService`'s reason:
+a nonce the server persisted must not be spent by a browser that was never going to finish.
+
+- **No new ceremony is added.** The press runs the client's existing passkey assertion, and the
+  request carries the assertion's payload and nothing else — never the key-encryption key the
+  ceremony also yields.
+- **The cancelling request is marked as expecting a `401`**; the challenge and the probe below are
+  not, so a `401` on either is an ended session, which is the interceptor's.
+- **It is never retried** — not by the flow, and not by any interceptor the request passes through.
+- **Abandoning is leaving the screen.** The screen's teardown aborts a press that has not posted.
+  One already out is left to land, and its `204` still publishes *nothing scheduled*, so the notice
+  leaves every screen.
+
+### Cancel held off, and a reason for each
+
+**Four terms hold Cancel off, and nothing else does.** Departing, because the page leaving would cut
+the check short with nothing left to say whether the erasure was cancelled. Then the three other
+passkey checks on this screen, each that flow's *asking* and never its *working*: the browser runs
+one passkey check at a time.
+
+| Held off by | Copy | Where it renders |
+| --- | --- | --- |
+| Departing | "Cancelling is off while this tab goes to Google, because if the page left part-way through, nothing could tell you whether the erasure was cancelled." | Above the control, `body` `--bud-text` |
+| The email change's passkey check | "Cancelling is off while this tab asks your passkey to confirm your email change, because your browser runs one passkey check at a time. It comes back when that check ends." | Above the control, `body` `--bud-text` |
+| The unlock's passkey check | "Cancelling is off while this tab unlocks your account, because your browser runs one passkey check at a time. It comes back when that check ends." | Above the control, `body` `--bud-text` |
+| A rotation's passkey check | "Cancelling is off while this tab asks your passkey for the key rotation, because your browser runs one passkey check at a time. It comes back when that check ends." | Above the control, `body` `--bud-text` |
+
+The copy is the specification, not an example of it. **One sentence at a time, and the order is the
+table's**: departing's whenever it is true, because it ends the screen; then the email change's,
+the unlock's and the rotation's, the order the screen draws their controls in.
+
+- **Nothing that asks the device for nothing holds it.** Not an export, not the unlock's
+  account-key read after its sheet, not a rotation's walk, not the email change's changing request.
+  The erasure dialog takes no term either: it is modal, so Cancel cannot be pressed under it.
+- **Each sentence sits above the control as visible prose, outside the region**, and the control
+  names it with `aria-describedby` while it renders — Export's not-ready treatment.
+- **The holds run the other way too**, and the controls Cancel holds are listed in
+  [Holds in both directions](#holds-in-both-directions).
+
+### The outcomes
+
+**One region, the section's own**, in the DOM from the section's first paint and empty at rest,
+holding one line at a time: the in-flight line wins, and a press clears the previous word as it
+starts.
+
+| State | Copy | Where it renders |
+| --- | --- | --- |
+| At rest | *nothing* | The region carries no line |
+| Waiting for the device | "Waiting for your passkey…" | Inside the region, `body` `--bud-text` |
+| Cancelling | "Cancelling the erasure…" | Inside the region, `body` `--bud-text` |
+| `cancelled` | "The erasure is cancelled. Nothing is scheduled for this account." | In the section, outside the region, in the standing prose's place; the control leaves and focus moves to it |
+| `unsupported` | "This browser can’t check a passkey, so the erasure is still scheduled. Open Budgetoid in a different browser, or on a phone or laptop that can." | Inside the region, `--bud-over` |
+| `dismissed` | "The passkey check didn’t finish, so the erasure is still scheduled. Try again whenever you’re ready." | Inside the region, `--bud-over` |
+| `no-prf`, `ceremony-failed` | "Your device couldn’t finish the passkey check, so the erasure is still scheduled. Try again, or choose another passkey." | Inside the region, `--bud-over` |
+| `unstarted` | "Budgetoid couldn’t start the passkey check, so the erasure is still scheduled. Try again in a minute." | Inside the region, `--bud-over` |
+| `refused` | "Budgetoid didn’t accept that passkey, so the erasure is still scheduled. Try again with a passkey registered to this account." | Inside the region, `--bud-over` |
+| `unrecognised` | "Budgetoid couldn’t read this request, so the erasure is still scheduled. Reload the page and try again." | Inside the region, `--bud-over` |
+| `undetermined` | "Budgetoid didn’t hear back, so the erasure may already be cancelled. Reload the page to find out." | Inside the region, `--bud-over`; the control stays live |
+
+The copy is the specification, not an example of it.
+
+**Every refusal says the erasure is still scheduled, and one line cannot.** Every word above
+`undetermined` is raised before the cancelling request exists or is a judgement made before
+anything is written, so *still scheduled* is a fact. `undetermined` is the request that may have
+reached the server and committed, and its sentence says exactly that.
+
+**The ceremony's words are the erasure dialog's, with its closing clause replaced.** *Nothing was
+erased* becomes *so the erasure is still scheduled*, set after the fact it explains. The
+act-neutral half is unchanged, so the product says one thing about a passkey check wherever it asks
+for one.
+
+**`dismissed` and not `cancelled`.** Beside a control named *Cancel the erasure*, the ceremony's
+own word reads as the act having happened, so the word is renamed and its sentence says *didn’t
+finish* rather than *was cancelled*. `duplicate` folds into `ceremony-failed`, the dialog's reason.
+
+**`refused` is read off the answer's body, without a probe.** A `401` whose own `refusal` member is
+exactly `assertion` — the constant every declined passkey in the product answers — is the gate
+declining the passkey, and a session that had already ended is turned away before the gate, so that
+body cannot come from one. **Any other `401` is read after one unmarked `GET /api/me`**: a `401`
+there is an ended session, the interceptor takes the tab to Welcome, and the section says nothing;
+anything else is `undetermined`, never `refused`, because nothing judged the passkey. The erasure
+dialog probes every `401` and reads no member; this flow reads the member first, so only a `401`
+without it costs a probe. The sentence says *registered to this account* because a discoverable
+ceremony lets the authenticator offer a passkey made for a different one.
+
+**`unrecognised` is a `400` or a `403`**, on the challenge or on the cancelling request, raised
+before any handler judged anything. **`unstarted` is every other way the challenge fails** except a
+`401`, which is an ended session.
+
+**`undetermined` keeps the control live, and that is the erasure dialog's rule inverted on
+purpose.** The dialog withdraws its commit because erasure is not idempotent to the caller. A
+cancellation is: a second one after a lost `204` answers `204` again, whether it removed the
+schedule or found none standing. So a press cannot do harm, and the control stays. The sentence
+names a reload, which reads the schedule again and redraws both the notice and this section from
+the answer. Nothing is retried for the person either way.
+
+**Colour is never the message** — every line above reads the same with `--bud-over` removed.
+
+### The result
+
+- **Outside the region, and focus is what reads it.** Cancel has left the DOM, so focus would fall
+  to `<body>`; it moves to the sentence instead, which carries `tabindex="-1"` so it can take focus
+  without becoming a tab stop. Inside the region as well, it would be read twice.
+- **Focus moves once, on arrival.** A later redraw of the screen does not pull focus back to it.
+- **The standing paragraph and the control leave with it**, and the section stays drawn for the
+  rest of the screen's life, saying what happened. Leaving Settings and coming back finds nothing
+  scheduled and draws no section.
+- **It states the result as well as the act.** *Nothing is scheduled for this account* is true
+  whether this press removed the schedule or found it already gone — [voice](voice.md)'s
+  confirmation rule.
+- **The notice leaves every screen in the same pass**, because the `204` writes the session's
+  schedule, which both read.
+
+### Focus
+
+- **Arriving moves nothing.**
+- **A `204` moves focus to the result sentence**, because the control focus stood on has gone.
+- **A refusal moves nothing.** Focus stays on Cancel, where the next attempt starts.
+
+### What a writer will get wrong
+
+- **Making Cancel Destructive**, because the section is about an erasure. It takes an erasure back.
+- **Withdrawing the control on `undetermined`**, by copying the erasure dialog.
+- **Retrying the cancelling request on a timeout.**
+- **Reading every `401` as `refused`**, or probing the one that carries the assertion word.
+- **Calling the ceremony's word `cancelled`** beside a control named *Cancel the erasure*.
+- **Putting the result sentence in the region.**
+- **Drawing the section while the schedule is unread.**
+- **Holding Cancel on another flow's *working*.** Only a passkey check, or the page leaving, holds
+  it.
+- **Saying a Google sign-in cancels it**, or offering a cancellation on `/release`.
+- **Stating the date here.** It is the notice's.
+- **Adding a ceremony**, or sending the key-encryption key beside the assertion.
+
+### Accessibility
+
+Heading level `h2` under the screen's one `h1`, and the first `h2` on the screen; no level skipped.
+One `role="status"` region, polite, in the DOM from the section's first paint and empty at rest,
+never `assertive`. The control is a 48px target and keeps its tab stop while held off or busy
+(`disabledInteractive`); `aria-busy` is present only while its press works. The held-off sentence is
+visible prose before the control, named by it with `aria-describedby` while it renders. The result
+sentence takes focus once, programmatically, is not in the tab order, and sits outside every live
+region. Nothing is communicated by colour alone.
+
+### What ships today
+
+**The section, as specified.** `settings.component.html` draws it first, from `cancellationDrawn`:
+the standing paragraph, the four held-off sentences, **Cancel the erasure**, the region with both
+in-flight lines and every refusal, and the result sentence. `ErasureCancellationFlowService`,
+provided on the Settings component, owns the phase, the word and *pressable*;
+`erasure-cancellation-outcome.ts` reads the cancelling request's failures; and the `204` reaches
+`SessionService.erasureCancelled()` whether or not the screen is still there.
+`settings.component.scheduled-erasure.spec.ts` runs the real flow over the testing backend and pins
+the section's place, its prose, both in-flight lines, the result and its focus, five refusal lines
+whole and the other three by their opening and their *still scheduled* clause, the four holds, their
+order and the handler's gate, and every control Cancel holds.
+
 ## Changing the email address
 
 The account's way to take a new address: one trip to Google to choose it, one passkey to confirm it
@@ -770,14 +1173,15 @@ Four sentences a writer reaches for, refused:
 
 ### Held off, and a reason for each
 
-**The press is held off in four cases, and no two share a sentence** — with each other, or with
+**The press is held off in five cases, and no two share a sentence** — with each other, or with
 Export's. Each is a state of this tab that ends on this screen, so the control takes
 `disabledInteractive` and keeps its tab stop: the [Buttons](#buttons) chapter's fourth case for the
-first three, its busy case for the fourth.
+first four, its busy case for the fifth.
 
 | Held off by | Copy | Where it renders |
 | --- | --- | --- |
 | A key rotation this tab is walking | "Changing your email address is off while this tab gives your account new keys, because the trip to Google would stop the rotation. It comes back when the rotation finishes." | Above the control, `body` `--bud-text` |
+| An erasure cancellation running | "Changing your email address is off while this tab cancels the erasure, because the trip to Google would cut it short. It comes back when that ends." | Above the control, `body` `--bud-text` |
 | An export in flight | "Changing your email address is off while this tab writes your export, because the trip to Google would lose the file. It comes back when the export ends." | Above the control, `body` `--bud-text` |
 | An unlock running | "Changing your email address is off while this tab unlocks your account, because the trip to Google would cut the unlock short. It comes back when the unlock ends." | Above the control, `body` `--bud-text` |
 | The flow itself, on its way to Google | "Taking you to Google…" | Inside the region, `body` `--bud-text`; the control carries `aria-busy="true"` |
@@ -798,11 +1202,17 @@ custody cannot open. Here the question is what a reload stops, and a reload stop
 tab is **walking** — a staged run is server state and the rotation section offers to finish it after
 any load. So this gate reads the rotation flow's own *working* reading and nothing wider.
 
+**The cancellation term is the cancellation's whole *working*, and not only its passkey check.** The
+[Scheduled erasure section](#scheduled-erasure-section)'s challenge, ceremony and cancelling request
+all hold Change, because the trip reloads the page, and a reload under the cancelling request leaves
+nothing on this screen to say whether the account is still to be erased.
+
 **When more than one is true, one sentence renders, and the order of precedence is the rotation's,
-then the export's, then the unlock's**: breaking a run costs the whole run started again from the
-first record, breaking an export costs one press, and an unlock broken costs nothing the trip would
-not cost anyway, since the return locks the account. At most one sentence above the control at a
-time.
+then the cancellation's, then the export's, then the unlock's**: breaking a run costs the whole run
+started again from the first record, a cancellation cut short leaves nothing to say whether the
+erasure still stands, breaking an export costs one press, and an unlock broken costs nothing the
+trip would not cost anyway, since the return locks the account. At most one sentence above the
+control at a time.
 
 **Busy is held off differently: it gets the in-flight treatment rather than a sentence above the
 control** — Export's rule that not ready is not busy, applied from the other side. The flow is doing
@@ -811,17 +1221,18 @@ for. It lasts until the page leaves; until `unavailable` answers, including when
 Google cannot be built after the press; or until the browser restores this page from its
 back-forward cache, when Change comes back with no line.
 
-- **The three not-ready sentences sit immediately above the control as visible prose, outside the
+- **The four not-ready sentences sit immediately above the control as visible prose, outside the
   region**, and the control names the one that renders with `aria-describedby` — never *only*
   there, per the [Export section](#export-section).
-- **Change and Confirm have two predicates, not one.** Change's is: no walked run, no export in
-  flight, no unlock running, not on its way to Google, **and no Confirm press in flight** — the
-  last term holds although Change is not drawn in the waiting state, because the handler is what
-  refuses a press that reaches the flow by any path, including a render that has not caught up.
+- **Change and Confirm have two predicates, not one.** Change's is: no walked run, no cancellation
+  running, no export in flight, no unlock running, not on its way to Google, **and no Confirm press
+  in flight** — the last term holds although Change is not drawn in the waiting state, because the
+  handler is what refuses a press that reaches the flow by any path, including a render that has
+  not caught up.
   Confirm's is different, not narrower or wider: it is inert while its own press is in flight — the
   challenge, the ceremony and the changing request — and while another passkey check on this
   screen is running, per [Holds in both directions](#holds-in-both-directions) below. The Change
-  control's four cases describe the moment before a trip, and Confirm exists only after one, so
+  control's five cases describe the moment before a trip, and Confirm exists only after one, so
   none of them reaches it.
 - **Each gate is in its click handler as well as in its attribute, and each attribute and handler
   pair reads one predicate with one owner.** Material's click-halt is applied to anchors only, so on
@@ -847,48 +1258,67 @@ other controls' predicates:
 - **Asking** — Confirm's passkey check is running: the flow's `asserting` phase, which is the
   challenge and the ceremony. The changing request after it is not part of it.
 
+**The [erasure cancellation](#scheduled-erasure-section) is a third flow in the same arrangement**,
+and it adds one term of each kind:
+
+- **The cancellation's asking** — its passkey check is running: the challenge and the ceremony, and
+  not the cancelling request after them.
+- **The cancellation running** — its whole *working*, the cancelling request included. Only Change
+  reads it, because only Change leaves the page.
+
 | Control | Also held off by | Its sentences |
 | --- | --- | --- |
 | Export | departing | [Export](#ready-and-a-reason-of-its-own) |
-| Unlock | departing, asking | [Account keys](#held-off-by-the-email-change) |
-| Rotate keys, Finish rotating, Rename and finish | departing, asking | [Key rotation](#rotating-held-off-by-the-email-change) |
-| Erase everything, the section's trigger | departing, asking | [Erase everything](#the-trigger-held-off-by-the-email-change) |
-| Confirm with your passkey | the unlock's passkey check; a rotation's passkey check | Below |
+| Unlock | departing, asking, the cancellation's asking | [Account keys](#held-off-by-the-email-change) |
+| Rotate keys, Finish rotating, Rename and finish | departing, asking, the cancellation's asking | [Key rotation](#rotating-held-off-by-the-email-change) |
+| Erase everything, the section's trigger | departing, asking, the cancellation's asking | [Erase everything](#the-trigger-held-off-by-the-email-change) |
+| Confirm with your passkey | a rotation's passkey check; the unlock's passkey check; the cancellation's asking | Below |
+| Change email address | the cancellation running | [Held off, and a reason for each](#held-off-and-a-reason-for-each) |
+| Cancel the erasure | departing; asking; the unlock's passkey check; a rotation's passkey check | [Scheduled erasure](#cancel-held-off-and-a-reason-for-each) |
 
-**Departing holds what the page leaving would cut short, and asking holds every other passkey
-check.** Each control's sentence names its own cost of the first. The second has one reason
-wherever it holds, and so do Confirm's two terms: the browser runs one passkey check at a time, so
-a second press would fail or cut the first one off.
+**Departing holds what the page leaving would cut short, and every *asking* holds every other
+passkey check.** Each control's sentence names its own cost of the first. The second has one reason
+wherever it holds, and so do Confirm's three terms and Cancel's three checks: the browser runs one
+passkey check at a time, so a second press would fail or cut the first one off.
 
-- **Sign out takes neither term and is never held.** It is the way out, per [Sign out](#sign-out).
-- **The erasure dialog's commit takes neither.** Its trigger is held before a dialog can open, and
-  an open dialog is modal, so Confirm cannot be pressed under it.
+- **Sign out takes no term and is never held.** It is the way out, per [Sign out](#sign-out).
+- **The erasure dialog's commit takes none.** Its trigger is held before a dialog can open, and an
+  open dialog is modal, so neither Confirm nor Cancel can be pressed under it.
 - **One sentence at a time, and departing first.** When several terms hold one control, one
   sentence renders above it: departing's, because it ends the screen and every other sentence with
-  it; then asking's; then the control's existing terms, in the order its own section gives.
+  it; then the email change's asking; then the other terms, in the order the control's own section
+  gives.
 - **Each control's attribute and handler read one predicate**: its existing one, with the new terms
-  joined. `ProviderDepartureService` publishes departing and the flow publishes asking, and every
-  control reads them rather than restating them. Material's click-halt is applied to anchors only, so a term written into the
-  attribute alone holds nothing.
+  joined. `ProviderDepartureService` publishes departing and each flow publishes its own asking,
+  and every control reads them rather than restating them. Material's click-halt is applied to
+  anchors only, so a term written into the attribute alone holds nothing.
+- **The dependencies run one way.** The email change injects the cancellation for its two terms;
+  the cancellation injects none of the screen's other flows, and the screen composes the rest. An
+  edge back would be a cycle.
 - **Each sentence renders above its control as visible prose, outside any region**, and the
   control names it with `aria-describedby` while it renders — Export's not-ready treatment.
 
-**Confirm's two terms, and why each is the width it is.** Both are passkey checks and nothing
-wider. *The unlock's passkey check* is an *asking* reading the unlock publishes: true while its
-system sheet is open, and **not** the whole of `AccountUnlockService`'s *working*. The account-key
-read after the sheet holds nothing, because no passkey check runs then. *A rotation's passkey
-check* is the rotation flow's challenge and ceremony, on any of its three presses, and **not its
-whole walk**. A walk asks the device for nothing, and Confirm does not leave the page, so the reason
-Change reads a walked run does not reach Confirm. Change reads the unlock's whole *working* for the
-same kind of reason: a reload cuts the read short, and a passkey check does not.
+**Confirm's three terms, and why each is the width it is.** All three are passkey checks and nothing
+wider. *The cancellation's asking* is the cancellation's challenge and ceremony and not its
+cancelling request, which asks the device for nothing. *The unlock's passkey check* is an *asking*
+reading the unlock publishes: true while its system sheet is open, and **not** the whole of
+`AccountUnlockService`'s *working*. The account-key read after the sheet holds nothing, because no
+passkey check runs then. *A rotation's passkey check* is the rotation flow's challenge and
+ceremony, on any of its three presses, and **not its whole walk**. A walk asks the device for
+nothing, and Confirm does not leave the page, so the reason Change reads a walked run does not
+reach Confirm. Change reads the unlock's whole *working* for the same kind of reason: a reload cuts
+the read short, and a passkey check does not.
 
 | Held off by | Copy | Where it renders |
 | --- | --- | --- |
 | A rotation's passkey check | "Confirming is off while this tab asks your passkey for the key rotation, because your browser runs one passkey check at a time. It comes back when that check ends." | Above the control, `body` `--bud-text` |
 | The unlock's passkey check | "Confirming is off while this tab unlocks your account, because your browser runs one passkey check at a time. It comes back when that check ends." | Above the control, `body` `--bud-text` |
+| The cancellation's asking | "Confirming is off while this tab asks your passkey to cancel the erasure, because your browser runs one passkey check at a time. It comes back when that check ends." | Above the control, `body` `--bud-text` |
 
-The copy is the specification, not an example of it. **When both are true the rotation's renders**,
-the order Change's table uses, so the screen ranks the two the same way wherever both are read.
+The copy is the specification, not an example of it. **When more than one is true the rotation's
+renders, then the unlock's, then the cancellation's.** The rotation's comes before the unlock's, the
+order Change's table uses, so the screen ranks those two the same way wherever both are read. The
+cancellation's check and those two hold each other off, so it meets either only in a race.
 
 **Several sentences on this screen give the same reason, and that is the specification rather than
 a paste.** One passkey check at a time is the real reason for each, and each sentence differs by
@@ -1142,12 +1572,15 @@ order, named by the confirm control. Nothing is communicated by colour alone.
 `changed-unread` included.
 
 **The holds in both directions ship.** `ProviderDepartureService` publishes *departing* and
-`EmailChangeFlowService.asking` publishes *asking*; the Settings component joins both into
-`unlockHeld` and `erasureHeld`, `KeyRotationSectionComponent.held` joins them into the rotation
-control's predicate, and `SettingsService.exportBlock` answers `'departing'`. Confirm reads
-`confirmHold`, built from `AccountUnlockService.asking` and `RotationFlowService.asking`, the
-rotation's first. Every sentence in [Holds in both directions](#holds-in-both-directions) and in the
-sections it links renders above its control, named by `aria-describedby`.
+`EmailChangeFlowService.asking` publishes *asking*; the Settings component joins both, with
+`ErasureCancellationFlowService.asking`, into `unlockHeld` and `erasureHeld`,
+`KeyRotationSectionComponent.held` joins the same three into the rotation control's predicate, and
+`SettingsService.exportBlock` answers `'departing'`. Confirm reads `confirmHold`, built from
+`RotationFlowService.asking`, `AccountUnlockService.asking` and
+`ErasureCancellationFlowService.asking`, in that order; Change reads `changeHold`, whose second
+term is the cancellation's `working`. Every sentence in
+[Holds in both directions](#holds-in-both-directions) and in the sections it links renders above its
+control, named by `aria-describedby`.
 
 **The fragment removal ships.** `AuthService` removes the answer with `history.replaceState`,
 keeping the entry's state, on every way a return can end, and the boot's last step removes an
@@ -1160,7 +1593,7 @@ removes the exchange marker and resets the library's flow, so Change comes back 
 next press leaves. `auth-service.spec.ts` holds it under "a restore from the back-forward cache".
 
 **The rest of the chapter is built, and no other departure is known.**
-`settings.component.html` renders both standing paragraphs, the three held-off sentences and the
+`settings.component.html` renders both standing paragraphs, the four held-off sentences and the
 in-flight line, Change and Confirm as one or the other and never both, the lead line, and every
 other outcome in the table in the region the address row's failure already used.
 `EmailChangeFlowService`, provided by the Settings component, owns the phase,
@@ -1701,8 +2134,9 @@ measured against exactly what the two keys open — no wider and no narrower.
   one main action, and a screen with two is a screen with none; and to anybody not tracking lock
   state — which is everybody, since **on this screen only this section and the Export section** are
   drawn differently when it flips, plus the Account section while an unlock is running, where the
-  Change email address control's held-off sentence appears, and everything else that changes is on
-  three other screens — a
+  Change email address control's held-off sentence appears, and the Scheduled erasure section while
+  its sheet is open, where Cancel's does, and everything else that changes is on three other
+  screens — a
   Primary that comes and goes is just two Primary buttons on one screen. **The consequence is not
   a third reason, and it is not an argument for the Primary either** — a locked tab reads no
   name back, which makes a Primary here *honest* rather than right, and the two reasons above
@@ -1715,9 +2149,9 @@ measured against exactly what the two keys open — no wider and no narrower.
   row.
 - **No sentence beside it at rest**, because at rest it waits on nothing. The inert controls above
   it are off and explain themselves; this one is live, and the "not built yet" pattern is for a
-  control that refuses a press. Two states of the email change on this screen do refuse one, and
-  each gets a sentence of its own — [Held off by the email change](#held-off-by-the-email-change)
-  below.
+  control that refuses a press. Two states of the email change and the erasure cancellation's
+  passkey check do refuse one, and each gets a sentence of its own —
+  [Held off by the email change](#held-off-by-the-email-change) below.
 - **While either half is running it takes `disabledInteractive` and `aria-busy="true"`** — the
   Export control's treatment and the Export control's reason: a button that goes truly `disabled`
   under the finger drops focus to `<body>`, and somebody who pressed Unlock from the keyboard loses
@@ -1736,11 +2170,11 @@ measured against exactly what the two keys open — no wider and no narrower.
   that looked disabled.
 - **So the attribute and the guard read one predicate with one owner, and the owner is the
   screen.** `AccountUnlockService` publishes "either half of an attempt is running" as a computed,
-  `working`. The Settings screen joins it with the email change's *departing* and *asking* into
-  the control's one predicate, and the control's `disabled` and the handler's guard both read that.
-  The screen owns it because the email flow is provided there and the unlock service sees nothing
-  of it. `aria-busy` reads `working` alone: the email change's terms are not work this control is
-  doing. Two spellings of one fact drift, and the drift
+  `working`. The Settings screen joins it with the email change's *departing* and *asking* and the
+  erasure cancellation's *asking* into the control's one predicate, and the control's `disabled`
+  and the handler's guard both read that. The screen owns it because the other flows are provided
+  there and the unlock service sees nothing of them. `aria-busy` reads `working` alone: the other
+  flows' terms are not work this control is doing. Two spellings of one fact drift, and the drift
   is silent in both directions — a template that narrows draws a live control over an attempt
   already running, and a handler that narrows accepts the press behind it. It is the rule
   `apiCredentialsInterceptor` keeps about "is this our API?": one definition, and the second reader
@@ -1749,25 +2183,28 @@ measured against exactly what the two keys open — no wider and no narrower.
 
 ### Held off by the email change
 
-The two terms are defined in [Holds in both directions](#holds-in-both-directions). While either
-holds, the control takes `disabledInteractive` without `aria-busy` — the [Buttons](#buttons)
-chapter's fourth case — and one sentence renders above it.
+The email change's two terms and the erasure cancellation's *asking* are defined in
+[Holds in both directions](#holds-in-both-directions). While any holds, the control takes
+`disabledInteractive` without `aria-busy` — the [Buttons](#buttons) chapter's fourth case — and one
+sentence renders above it.
 
 | Held off by | Copy | Where it renders |
 | --- | --- | --- |
 | Departing | "Unlock is off while this tab goes to Google, because coming back reloads the page and would lock your account again." | Above the control, `body` `--bud-text` |
 | Asking | "Unlock is off while this tab asks your passkey to confirm your email change, because your browser runs one passkey check at a time. It comes back when that check ends." | Above the control, `body` `--bud-text` |
+| The cancellation's asking | "Unlock is off while this tab asks your passkey to cancel the erasure, because your browser runs one passkey check at a time. It comes back when that check ends." | Above the control, `body` `--bud-text` |
 
-The copy is the specification, not an example of it. **Departing's renders when both are true**,
-because it ends the screen. The control's own busy state gets no sentence here: the region already
+The copy is the specification, not an example of it. **One renders at a time, in the table's
+order**: departing's whenever it is true, because it ends the screen, then the email change's
+check, then the cancellation's. The control's own busy state gets no sentence here: the region already
 says what is happening. Each sentence sits outside the region, because it says why a control is
 off rather than reporting an outcome, and the control names it with `aria-describedby` while it
 renders — Export's not-ready treatment.
 
 **The hold runs the other way too.** `AccountUnlockService` publishes an *asking* reading, true only
-while its system sheet is open, and the email change's Confirm is held off while it is true. It is
-narrower than *working*: the account-key read after the sheet runs no passkey check and holds
-nothing.
+while its system sheet is open, and the email change's Confirm and the Scheduled erasure section's
+Cancel are held off while it is true. It is narrower than *working*: the account-key read after the
+sheet runs no passkey check and holds nothing.
 
 ### The control leaves when there is nothing to unlock
 
@@ -2053,8 +2490,9 @@ Two server routes were rejected, and both look tidier than minting a challenge:
   is **never spent** — one live challenge per press, sitting in a pool where nothing distinguishes
   it from the ones a real sign-in is about to redeem.
 - **`POST /api/passkeys/reauthentication/options`**, the authenticated leg. **That pool authorizes
-  every re-authenticated act and not one of them** — erasing the account, revoking a passkey,
-  replacing the set of recovery codes and beginning a key rotation, one handler each — and nothing
+  every re-authenticated act and not one of them** — erasing the account, cancelling a scheduled
+  erasure, revoking a passkey, replacing the set of recovery codes and beginning a key rotation, one
+  handler each — and nothing
   on a nonce records which of them it was asked for, so every press of Unlock would leave behind a
   live one spendable on any of them, the act that cannot be undone included, on behalf of an act
   that destroys nothing. **The breadth strengthens the refusal rather than weakening it**, and
@@ -2064,8 +2502,9 @@ Two server routes were rejected, and both look tidier than minting a challenge:
   distance for a convenience, on every one of those acts at once.
 
 **Where something on the server does have to check a factor here, that is a different ceremony.**
-Key rotation and the erasure dialog are the built cases, and each carries a server's challenge
-behind it; replacing a set of recovery codes will be the next. None of them inherits this one, and
+Key rotation, the erasure dialog and the [Scheduled erasure section](#scheduled-erasure-section)
+are the built cases, and each carries a server's challenge behind it; replacing a set of recovery
+codes will be the next. None of them inherits this one, and
 this one may not grow into any of them.
 
 ### Accessibility
@@ -2073,8 +2512,8 @@ this one may not grow into any of them.
 Heading level `h2` under the screen's one `h1`; no level skipped. One `role="status"` region,
 polite, in the DOM from first paint and empty at rest, never `assertive`. The Unlock control is a
 48px target, keeps its place in the tab order while busy (`disabledInteractive` with
-`aria-busy="true"`, the Buttons chapter's busy case) and while the email change holds it off
-(`disabledInteractive` alone), and its visible label is the whole of its
+`aria-busy="true"`, the Buttons chapter's busy case) and while the email change or the erasure
+cancellation holds it off (`disabledInteractive` alone), and its visible label is the whole of its
 accessible name. Nothing is communicated by colour alone — every refusal in the table reads the
 same with `--bud-over` removed. No line in this section is hung on the control by a `title` or a
 tooltip, and none *only* by an `aria-describedby`: the prose is prose, in reading order, above the
@@ -2084,9 +2523,10 @@ renders, beside the visible line.
 ### What ships today
 
 **[Held off by the email change](#held-off-by-the-email-change) ships.** The control's `disabled`
-and the screen's `unlock()` both read `SettingsComponent.unlockHeld` — `working`, or the email
-change departing or asking — and `aria-busy` reads `working` alone. The two sentences render above
-the control, departing's first. `AccountUnlockService.asking` is published, and Confirm reads it.
+and the screen's `unlock()` both read `SettingsComponent.unlockHeld` — `working`, the email change
+departing or asking, or the erasure cancellation asking — and `aria-busy` reads `working` alone.
+The three sentences render above the control, departing's first. `AccountUnlockService.asking` is
+published, and Confirm and Cancel read it.
 
 **The section is on `/app/settings`, above the Export/Erase pair as the placement rule requires and
 with Key rotation now between it and Export, and everything above renders as written** — the three
@@ -2234,12 +2674,13 @@ rotating *does*, rather than as what is about to happen, every sentence survives
 - **While a run is in flight it takes `disabledInteractive` and `aria-busy="true"`** — the Unlock
   control's treatment and the Unlock control's reason, which is not restated here.
 - **The attribute and the handler's guard read one predicate with one owner.** The flow service
-  publishes "a run is in flight", and the email change publishes *departing* and *asking*; the
-  control's `disabled` and the handler both read one predicate joining the three with the
-  acknowledgement, and `aria-busy` reads the run alone. The drift this prevents, and the defect it
-  already caused once on the Unlock control, are argued there and not argued again.
-- **The email change holds it off twice**, with a sentence for each —
-  [Rotating held off by the email change](#rotating-held-off-by-the-email-change) below.
+  publishes "a run is in flight", the email change publishes *departing* and *asking*, and the
+  erasure cancellation publishes its own *asking*; the control's `disabled` and the handler both
+  read one predicate joining the four with the acknowledgement, and `aria-busy` reads the run
+  alone. The drift this prevents, and the defect it already caused once on the Unlock control, are
+  argued there and not argued again.
+- **The email change holds it off twice and the erasure cancellation once**, with a sentence for
+  each — [Rotating held off by the email change](#rotating-held-off-by-the-email-change) below.
 - **It is replaced, not joined, when there is a run to finish.** The resume read answers either "no
   rotation" or one rotation, so the section draws exactly one control: **Rotate keys**, **Finish
   rotating** with the date the run started in the line above it, or **Rename and finish** when the
@@ -2249,18 +2690,21 @@ rotating *does*, rather than as what is about to happen, every sentence survives
 
 ### Rotating held off by the email change
 
-The two terms are defined in [Holds in both directions](#holds-in-both-directions), and they hold
-whichever of the three labels the control carries. While either holds, the control takes
-`disabledInteractive` without `aria-busy` and one sentence renders.
+The email change's two terms and the erasure cancellation's *asking* are defined in
+[Holds in both directions](#holds-in-both-directions), and they hold whichever of the three labels
+the control carries. While any holds, the control takes `disabledInteractive` without `aria-busy`
+and one sentence renders.
 
 | Held off by | Copy | Where it renders |
 | --- | --- | --- |
 | Departing | "Rotating keys is off while this tab goes to Google, because leaving the page would stop the rotation before it got going." | Above the checkbox, `body` `--bud-text` |
 | Asking | "Rotating keys is off while this tab asks your passkey to confirm your email change, because your browser runs one passkey check at a time. It comes back when that check ends." | Above the checkbox, `body` `--bud-text` |
+| The cancellation's asking | "Rotating keys is off while this tab asks your passkey to cancel the erasure, because your browser runs one passkey check at a time. It comes back when that check ends." | Above the checkbox, `body` `--bud-text` |
 
-The copy is the specification, not an example of it. **Departing's renders when both are true.** A
-run in flight and an unticked box get no sentence: the region and the checkbox already say what the
-control waits on.
+The copy is the specification, not an example of it. **One renders at a time, in the table's
+order**: departing's whenever it is true, then the email change's check, then the cancellation's.
+A run in flight and an unticked box get no sentence: the region and the checkbox already say what
+the control waits on.
 
 **The sentence goes above the checkbox, not between it and the control**, so the gate is still
 what sits immediately above the press. It is outside the region, and the control names it with
@@ -2268,7 +2712,8 @@ what sits immediately above the press. It is outside the region, and the control
 
 **The hold runs the other way too.** The flow publishes its passkey check — the challenge and the
 ceremony of any of the three presses, and not the walk after them — as a reading of its own, and
-the email change's Confirm is held off while it is true.
+the email change's Confirm and the Scheduled erasure section's Cancel are held off while it is
+true.
 
 ### The acknowledgement, and the one rule it departs from
 
@@ -2308,8 +2753,8 @@ the email change's Confirm is held off while it is true.
   for the reason the two sections above give: one control, no rows, nothing for a second column to
   carry.
 - **The order inside the section is the reading order the act needs**: standing prose, consequence
-  block, the rename block when there is one, the email change's held-off sentence when one renders,
-  checkbox, control, progress block. The consequence is
+  block, the rename block when there is one, a held-off sentence when one renders, checkbox,
+  control, progress block. The consequence is
   read before the gate and the gate before the press, and nothing between them competes for the eye.
   A name is typed before the gate is ticked, so the gate is still what sits immediately above the
   press.
@@ -2630,10 +3075,11 @@ anywhere else.
 
 **The gate is in the click handler as well as in the attribute**, and the handler is as wide as the
 attribute it backstops: both read `KeyRotationSectionComponent.held` — a run in flight, the email
-change departing or asking, an unticked box, or a standing pair with no name in the field.
-**[Rotating held off by the email change](#rotating-held-off-by-the-email-change) ships**: its two
+change departing or asking, the erasure cancellation asking, an unticked box, or a standing pair
+with no name in the field.
+**[Rotating held off by the email change](#rotating-held-off-by-the-email-change) ships**: its three
 sentences render above the checkbox, departing's first, and the control names the one that renders
-with `aria-describedby`. `RotationFlowService.asking` is published, and Confirm reads it.
+with `aria-describedby`. `RotationFlowService.asking` is published, and Confirm and Cancel read it.
 
 **"A run is in flight" has one owner.** `RotationFlowService.working` is `busy`, the driver's
 `walking` or its `running`. The control's `aria-busy` reads it, `held` reads it, and so does the
@@ -3189,8 +3635,8 @@ dialog is opened, while it is open, and on a screen reached again after a dialog
 
 - **Outline** (`mat-stroked-button`), 48px target, visible label **Erase everything**, live.
 - **No sentence beside it at rest.** It refuses no press then, so the "not built yet" pattern has
-  nothing to say. Two states of the email change do hold it off, and each says why, below. Sign out
-  is the one control here that is never held.
+  nothing to say. Two states of the email change and the erasure cancellation's passkey check do
+  hold it off, and each says why, below. Sign out is the one control here that is never held.
 - **Not Destructive.** The fill promises that a confirmation follows and that there is no way back,
   and this press keeps neither promise: it opens the confirmation and destroys nothing. The fill is
   spent once on this path, on the dialog's commit — the press that does destroy something. Two red
@@ -3204,21 +3650,25 @@ dialog is opened, while it is open, and on a screen reached again after a dialog
 
 ### The trigger held off by the email change
 
-The two terms are defined in [Holds in both directions](#holds-in-both-directions). While either
-holds, the trigger takes `disabledInteractive` without `aria-busy` — the [Buttons](#buttons)
-chapter's fourth case — and one sentence renders above it. The dialog's commit takes neither term:
-the trigger is held before a dialog can open.
+The email change's two terms and the erasure cancellation's *asking* are defined in
+[Holds in both directions](#holds-in-both-directions). While any holds, the trigger takes
+`disabledInteractive` without `aria-busy` — the [Buttons](#buttons) chapter's fourth case — and one
+sentence renders above it. The dialog's commit takes no term: the trigger is held before a dialog
+can open.
 
 | Held off by | Copy | Where it renders |
 | --- | --- | --- |
 | Departing | "Erasing is off while this tab goes to Google, because if the page left part-way through an erasure, nothing could tell you whether it happened." | Above the trigger, `body` `--bud-text` |
 | Asking | "Erasing is off while this tab asks your passkey to confirm your email change, because your browser runs one passkey check at a time. It comes back when that check ends." | Above the trigger, `body` `--bud-text` |
+| The cancellation's asking | "Erasing is off while this tab asks your passkey to cancel the erasure, because your browser runs one passkey check at a time. It comes back when that check ends." | Above the trigger, `body` `--bud-text` |
 
-The copy is the specification, not an example of it. **Departing's renders when both are true.**
+The copy is the specification, not an example of it. **One renders at a time, in the table's
+order**: departing's whenever it is true, then the email change's check, then the cancellation's.
 
 - **The gate is in the click handler as well as in the attribute, and both read one predicate** —
-  not departing, not asking. Material's click-halt is applied to anchors only, so an ungated press
-  opens the dialog under a page about to leave or a passkey check already running.
+  not departing, not asking, and not the cancellation asking. Material's click-halt is applied to
+  anchors only, so an ungated press opens the dialog under a page about to leave or a passkey check
+  already running.
 - **The sentence sits outside any region**, because it says why a control is off rather than
   reporting an outcome, and the trigger names it with `aria-describedby` while it renders —
   Export's not-ready treatment.
@@ -4000,8 +4450,13 @@ those two facts, and [voice](voice.md) states the rule they come from.
   as something Budgetoid keeps no copy of. Neither offers one. Redeeming a code has no surface in
   the product, so a sentence offering it would name a door the screen does not have — the rule the
   Account keys chapter applies to `unopened`.
-- **No way to take the schedule back, and no mention of one.** No screen offers to withdraw a
-  schedule, so this one names none.
+- **No way to take the schedule back, and no mention of one.** One exists, and it is not this
+  reader's: **Cancel the erasure**, in the [Scheduled erasure section](#scheduled-erasure-section)
+  on Settings, takes a passkey registered to the account. Whoever reads this screen holds none —
+  the acknowledgement says so — or is the person who has just filed the schedule, for whom taking
+  it back is not the question. A person this far down tries every door a sentence names, so naming
+  one they cannot open costs more than silence. The owner who does hold a passkey is told by the
+  [notice](#scheduled-erasure-notice) on every signed-in screen, which names that door.
 - **No email address.** The screen shows no address and names nobody: the Google answer is spent
   on one request, and what comes back describes a session, not a person.
 
@@ -4153,8 +4608,8 @@ named for the loss and a trip to Google, so whether the person meant this contro
 answered. A word typed into a dialog would add a step and ask nothing new.
 
 **The fill keeps both of its promises.** A confirmation follows — the acknowledgement is the
-confirmation, inline, as the hand-off's is. And there is no way back: nothing this person holds,
-and nothing any screen offers, takes the date back. **The label is not Erase everything.** That is
+confirmation, inline, as the hand-off's is. And there is no way back from where this person stands:
+the one act that takes the date back needs a passkey, and nothing they hold is one. **The label is not Erase everything.** That is
 the act on Settings, which erases at once and asks for a passkey; this one files a date and asks
 for neither. One label on two acts would tell a reader they are one act.
 
@@ -4239,7 +4694,8 @@ second the guard takes the tab to `/app`.
 ### What a writer will get wrong
 
 - **Offering a recovery code as a way in.** Nothing redeems one.
-- **Mentioning a way to take the schedule back.** No screen offers one.
+- **Mentioning a way to take the schedule back.** The one that exists needs a passkey, and nobody on
+  this screen holds one.
 - **Writing the loss as the button's doing** — *Erasing permanently deletes your data.* The loss
   happened before the person arrived, and that sentence sends them looking for a way to keep it.
 - **Borrowing the locked account's words.** *Unlock* here names a control that needs a passkey this
@@ -4296,7 +4752,10 @@ Every string on this screen, in one place. The copy is the specification, not an
 `ReleaseComponent` over `ReleaseFlowService`, which takes the Google answer once, sends the locked
 sign-in without a second press, schedules and signs out as the tables read. Welcome's standing link
 leads here, and the guards send a locked session here. The server half is live: `POST /api/locked-session`,
-`GET /api/me/session` and `POST /api/me/erasure/schedule` answer as this chapter reads them.
+`GET /api/me/session` and `POST /api/me/erasure/schedule` answer as this chapter reads them. The
+result sentence's instant comes from `+shared/scheduled-instant.ts`, which the
+[notice](#scheduled-erasure-notice) on the signed-in screens reads too, so the two cannot state one
+schedule two ways.
 
 **The result sentence promises an erasure on a date, and nothing carries a schedule out yet.** So
 this screen may not reach production before the erasure it promises does.

@@ -267,7 +267,10 @@ covers some of the following without saying the rows exist:
 - **A requested release.** An `erasure_schedules` row says the account asked to be erased and
   when it takes effect — in practice, that somebody holding the account's Google sign-in reached a
   locked session and asked: either the person lost every passkey and every code, or someone else
-  holds their Google account. The row stands until the account goes.
+  holds their Google account. The row stands until the account goes or a passkey withdraws it,
+  and a withdrawal deletes it: in the live database an account that was scheduled and withdrawn
+  reads exactly like one that never was, so the operator learns that a release is pending, never
+  that one was taken back. A backup taken while it stood still holds the row for its retention.
 - **Key history.** The rotation epoch, which counts every change to the factor set and every
   rotation; while a rotation is in flight, that one is and when it began; and the `rotation_id`
   stamp on every narrative row, which names the run that last re-sealed it.

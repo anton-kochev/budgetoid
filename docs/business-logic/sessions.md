@@ -597,6 +597,24 @@ required members. A third writer is a decision rather than a refactor.
     guess over a network that may itself be the problem. On the establishing side a re-probe also
     costs a round trip at the happiest moment of the flow and can come back `unreachable` — a
     **third** reading of a fact already stated.
+  - **The scheduled erasure is the one fact read again, and the read publishes nothing else.** A
+    sign-in's answer does not carry the schedule, so `established()` sends one marked
+    `GET /api/me/session` behind it, unawaited, exactly as it reads the budget: the status is
+    `authenticated` while it is out, a failure leaves the schedule `'unread'`, and nothing it answers
+    moves the status. Without it the owner the schedule exists to warn — Google stolen, signing in
+    with the passkey that survived — would see no notice until a reload. A tab that stays open
+    learns of a schedule filed *after* it started through `refreshSchedule()`, which the shell calls
+    each time the document becomes visible again; the shell owns the listener and removes it with
+    itself. **No timer**: the API scales to zero, and every open tab polling would keep it awake for
+    the one case only a poll reaches — a tab left visible for days without a reload. Three guards
+    keep a late answer from overwriting a fresher one, and each is pinned in
+    `session.service.spec.ts`: a **generation** that every status or schedule write raises, so an
+    answer to a read sent before the write is dropped — a read out while the person withdraws the
+    schedule cannot bring the notice back; the answer's `kind` must match the status, since a cookie
+    replaced underneath the tab may name another session; and one refresh in flight at a time.
+    `erasureCancelled()` publishes `null` — nothing scheduled, which the server just said — never
+    `'unread'`. A locked tab learns of a withdrawal only on reload; whoever reads it either cannot
+    withdraw or is the person who filed it. See [erasure.md](erasure.md).
   - **`ended()` is the single owner of "the account's keys go too", and `established()` owns no key
     material.** What `established()` does own is discarding the provider's tokens, which is a
     different fact and has its own rule below. A session ending is where `AccountKeyCustodyService.lock()` is called, in that

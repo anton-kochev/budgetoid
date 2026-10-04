@@ -34,6 +34,15 @@ public sealed class InMemoryErasureScheduleRepository : IErasureScheduleReposito
     /// <summary>How many times <see cref="AddAsync" /> was called, whatever it did with the call.</summary>
     public int AddCalls { get; private set; }
 
+    /// <summary>
+    /// How many times either read — <see cref="FindAsync" /> or <see cref="FindTrackedAsync" /> — was
+    /// called, so "the repository was never touched" is a claim about what a handler asked for.
+    /// </summary>
+    public int ReadCalls { get; private set; }
+
+    /// <summary>How many times <see cref="RemoveAsync" /> was called, whatever it found.</summary>
+    public int RemoveCalls { get; private set; }
+
     /// <summary>Every stored schedule, keyed on the account it belongs to.</summary>
     public IReadOnlyDictionary<Guid, ErasureSchedule> Stored => _schedules;
 
@@ -44,8 +53,36 @@ public sealed class InMemoryErasureScheduleRepository : IErasureScheduleReposito
         _schedules.Add(schedule.UserId, schedule);
     }
 
-    public Task<ErasureSchedule?> FindAsync(Guid userId, CancellationToken cancellationToken = default) =>
-        Task.FromResult(_schedules.GetValueOrDefault(userId));
+    public Task<ErasureSchedule?> FindAsync(Guid userId, CancellationToken cancellationToken = default)
+    {
+        ReadCalls++;
+        return Task.FromResult(_schedules.GetValueOrDefault(userId));
+    }
+
+    /// <remarks>
+    /// The same owner-keyed lookup as <see cref="FindAsync" />; "tracked" is the adapter's concern — the
+    /// instance handed back is the one <see cref="RemoveAsync" /> is later given.
+    /// </remarks>
+    public Task<ErasureSchedule?> FindTrackedAsync(Guid userId, CancellationToken cancellationToken = default)
+    {
+        ReadCalls++;
+        return Task.FromResult(_schedules.GetValueOrDefault(userId));
+    }
+
+    /// <remarks>
+    /// Removes the row keyed on the schedule's own account, and answers
+    /// <see cref="ScheduleRemoval.AlreadyGone" /> when nothing was there to remove — the state the adapter
+    /// reports when a concurrent cancel deleted the row between the read and the delete.
+    /// </remarks>
+    public Task<ScheduleRemoval> RemoveAsync(ErasureSchedule schedule, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(schedule);
+        RemoveCalls++;
+
+        return Task.FromResult(_schedules.Remove(schedule.UserId)
+            ? ScheduleRemoval.Removed
+            : ScheduleRemoval.AlreadyGone);
+    }
 
     public Task<ErasureSchedule> AddAsync(ErasureSchedule schedule, CancellationToken cancellationToken = default)
     {

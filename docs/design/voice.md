@@ -219,9 +219,11 @@ its sentences answer to.
 - **Put the operator in the same position, out loud.** "— by you or by us." It is *A secret shown
   once*'s *to you, and to us*, met from the other side: there it is a warning, here it is the fact
   the warning was about.
-- **Name only doors the screen has.** No recovery code offered as a way in, no way to take a
-  schedule back, no support address. A person this far down will try every door a sentence names,
-  so a door that is not there costs them more than silence would.
+- **Name only doors the screen has, and only ones this reader can open.** No recovery code offered
+  as a way in, no support address, and no word about taking the schedule back: the one way to do
+  that takes a passkey, and the person here holds none. A person this far down will try every door
+  a sentence names, so a door that is not there — or not theirs — costs them more than silence
+  would.
 - **The acknowledgement names the loss as something that happened.** "I’ve lost every passkey and
   every recovery code for this account." Past tense, about an act — the rule above, applied to a
   loss rather than a save.
@@ -229,6 +231,29 @@ its sentences answer to.
   date in the reader's zone, per the mechanics above; *in 7 days* is false on the next day's load.
 - **The locked account's words stay off this screen.** *Unlock*, *locked* and *this tab can’t read*
   each promise a press on this device opens something, and nothing this person holds does.
+
+## A notice nobody asked for
+
+The scheduled-erasure notice is the one sentence the product puts on every signed-in screen without
+being asked, about an act the reader may not have made. The chapter specifying it is
+[components](components.md), *Scheduled erasure notice*; these are the rules its sentence answers
+to, in the order it says them.
+
+- **The date first, absolute.** "This account will be erased on {date} at {time}." The reader's
+  zone, per the mechanics above, and never a countdown.
+- **What asked, as it was observed.** "A sign-in with its Google account asked for this." The
+  product saw a credential, not a person, so it names the credential. *You asked* is false for the
+  reader the notice is for, and *someone asked* accuses on the same missing fact.
+- **Who can act, both readings in one clause.** "If that wasn’t you, or you’ve changed your mind,"
+  — the owner who did not ask and the owner who did take the same act, so the sentence names it
+  once.
+- **Where, and with what.** "cancel it in Settings with a passkey." The place by the label the
+  navigation already shows, and the one thing the act takes, so nobody holding only a Google
+  sign-in walks to a control that refuses them.
+- **No label, no address, no alarm.** Not *Warning*; no email address on a screen anybody at the
+  device can see; and no guess at a cause the product did not observe. It is standing prose, read
+  in reading order, and not an announcement: a sentence that interrupts every screen is a sentence
+  a reader learns to skip.
 
 ## Marketing voice (Welcome and public surfaces)
 

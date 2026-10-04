@@ -65,6 +65,7 @@ import {
   EmailChangeFlowService,
   type EmailChangeWord,
 } from './email-change-flow.service';
+import { ErasureCancellationFlowService } from './erasure-cancellation-flow.service';
 import { RotationFlowService } from './rotation-flow.service';
 import { SettingsService } from './settings.service';
 
@@ -388,6 +389,15 @@ describe('EmailChangeFlowService', () => {
       working: screen.rotating,
       asking: screen.rotationAsking,
     };
+    // The erasure cancellation, at rest: it holds nothing in this file. Its two
+    // holds are `email-change-flow.service.cancellation.spec.ts`'s.
+    const cancellation: Pick<
+      ErasureCancellationFlowService,
+      'asking' | 'working'
+    > = {
+      asking: signal(false),
+      working: signal(false),
+    };
 
     TestBed.configureTestingModule({
       providers: [
@@ -403,6 +413,7 @@ describe('EmailChangeFlowService', () => {
         { provide: SettingsService, useValue: settings },
         { provide: AccountUnlockService, useValue: unlock },
         { provide: RotationFlowService, useValue: rotation },
+        { provide: ErasureCancellationFlowService, useValue: cancellation },
         EmailChangeFlowService,
       ],
     });

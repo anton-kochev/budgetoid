@@ -45,6 +45,7 @@ import { AuthService } from '@app-core/services/auth-service';
 import { ProviderDepartureService } from '@app-core/services/provider-departure.service';
 import { firstValueFrom } from 'rxjs';
 import { AccountUnlockService } from './account-unlock.service';
+import { ErasureCancellationFlowService } from './erasure-cancellation-flow.service';
 import { RotationFlowService } from './rotation-flow.service';
 import { SettingsService } from './settings.service';
 
@@ -97,10 +98,14 @@ export type EmailChangeWord =
   | 'undetermined';
 
 /** Why Change is off, one sentence each, in the order a reload would cost. */
-export type EmailChangeHold = 'rotating' | 'exporting' | 'unlocking';
+export type EmailChangeHold =
+  | 'rotating'
+  | 'cancelling'
+  | 'exporting'
+  | 'unlocking';
 
 /** Which other passkey check holds Confirm off, one sentence each. */
-export type EmailConfirmHold = 'rotation' | 'unlock';
+export type EmailConfirmHold = 'rotation' | 'unlock' | 'cancellation';
 
 /**
  * Which of this flow's two states holds another control on the screen off,
@@ -161,6 +166,8 @@ export class EmailChangeFlowService {
   private readonly settings = inject(SettingsService);
   private readonly unlock = inject(AccountUnlockService);
   private readonly rotation = inject(RotationFlowService);
+  // Read for its two holds and nothing else; it injects nothing of this flow.
+  private readonly cancellation = inject(ErasureCancellationFlowService);
   private readonly departure = inject(ProviderDepartureService);
 
   private readonly phaseSignal: WritableSignal<HeldPhase> =
@@ -198,12 +205,19 @@ export class EmailChangeFlowService {
 
   /**
    * The one sentence above an off Change, or `null`. The rotation's first, then
-   * the export's, then the unlock's: what breaking each costs, largest first.
-   * The flow's own busy state is not a reason — the region says that.
+   * the erasure cancellation's, the export's and the unlock's: what breaking
+   * each costs, largest first — a cancellation cut short leaves nothing to say
+   * whether the account is still to be erased. The cancellation holds for its
+   * whole `working`, the cancelling request included, because the trip reloads
+   * the page. The flow's own busy state is not a reason — the region says that.
    */
   public readonly changeHold: Signal<EmailChangeHold | null> = computed(() => {
     if (this.rotation.working()) {
       return 'rotating';
+    }
+
+    if (this.cancellation.working()) {
+      return 'cancelling';
     }
 
     if (this.settings.exporting()) {
@@ -244,9 +258,9 @@ export class EmailChangeFlowService {
 
   /**
    * The one sentence above an off Confirm, or `null`: another passkey check on
-   * this screen. The rotation's first, the order {@link changeHold} ranks the
-   * two in. Each is the flow's own `asking`, never its `working` — a walk and
-   * an account-key read ask the device for nothing.
+   * this screen. The rotation's first, the order {@link changeHold} ranks it
+   * in. Each is the other flow's own `asking`, never its `working` — a walk, an
+   * account-key read and a cancelling request ask the device for nothing.
    */
   public readonly confirmHold: Signal<EmailConfirmHold | null> = computed(
     () => {
@@ -254,7 +268,11 @@ export class EmailChangeFlowService {
         return 'rotation';
       }
 
-      return this.unlock.asking() ? 'unlock' : null;
+      if (this.unlock.asking()) {
+        return 'unlock';
+      }
+
+      return this.cancellation.asking() ? 'cancellation' : null;
     },
   );
 

@@ -151,6 +151,41 @@ public sealed class LockedSignInEndpointTests
     }
 
     /// <summary>
+    /// A locked sign-in on an account holding a schedule leaves the row exactly as it was — the instant to
+    /// the microsecond, and one row.
+    /// </summary>
+    /// <remarks>
+    /// <b>The sign-in reads the schedule and must never touch it.</b> A locked session is what somebody
+    /// holding the owner's provider account reaches, and only a full session with a passkey may withdraw a
+    /// schedule; a sign-in that removed or re-filed the row on its way past — "a fresh sign-in resets the
+    /// date" — would hand that person the cancellation the passkey gate exists to refuse, or slide the
+    /// owner's window. The instant carries six fractional digits so a rewrite at another precision reads
+    /// back as a different value, and the whole table is compared so a second row cannot hide.
+    /// </remarks>
+    [Test]
+    public async Task LockedSignIn_OnAnAccountHoldingASchedule_LeavesItStanding()
+    {
+        // Arrange
+        using RSA rsa = RSA.Create(2048);
+        RsaSecurityKey signingKey = new(rsa) { KeyId = "locked-sign-in" };
+        await using PostgresTestHost host = await StartHostAsync();
+        await using ApiFactory factory = CreateRealBearerFactory(host, signingKey);
+        ApiFactory.SignedInClient account = await factory.CreateSignedInClientAsync(Subject, Email);
+        DateTime filed = new DateTime(2026, 11, 3, 9, 10, 11, DateTimeKind.Utc).AddTicks(1_234_560);
+        await SeedScheduleAsync(host, account.UserId, filed);
+        string before = await RenderSchedulesAsync(host);
+
+        // Act
+        HttpResponseMessage response = await PostLockedSessionAsync(
+            factory.CreateClient(), ProviderToken(signingKey, Claims(Subject, Email)));
+
+        // Assert — the sign-in succeeded, so the comparison below is about a request that ran.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        await Assert.That(before).IsEqualTo($"{account.UserId}={filed.Ticks}");
+        await Assert.That(await RenderSchedulesAsync(host)).IsEqualTo(before);
+    }
+
+    /// <summary>
     /// A browser holding one account's locked cookie and presenting another account's provider token
     /// opens everything on the token's account and nothing on the cookie's.
     /// </summary>
@@ -830,6 +865,27 @@ public sealed class LockedSignInEndpointTests
         command.Parameters.AddWithValue("user", userId);
         command.Parameters.AddWithValue("at", takesEffectAtUtc);
         await command.ExecuteNonQueryAsync();
+    }
+
+    /// <summary>
+    /// Every schedule in the table as one line of <c>user=ticks</c>, read on the admin connection, so a
+    /// moved instant, a missing row or an extra one all fail naming what changed.
+    /// </summary>
+    private static async Task<string> RenderSchedulesAsync(PostgresTestHost host)
+    {
+        await using NpgsqlConnection admin = new(host.ConnectionString);
+        await admin.OpenAsync();
+        await using NpgsqlCommand command = new(
+            "select user_id, takes_effect_at_utc from erasure_schedules order by user_id", admin);
+
+        List<string> rows = [];
+        await using NpgsqlDataReader reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            rows.Add($"{reader.GetGuid(0)}={reader.GetFieldValue<DateTime>(1).Ticks}");
+        }
+
+        return string.Join(", ", rows);
     }
 
     private static async Task<StoredSession> StoredSessionOfAsync(PostgresTestHost host, string cookie)

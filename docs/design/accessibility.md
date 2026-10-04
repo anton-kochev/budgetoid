@@ -106,6 +106,17 @@ Figures are visually compressed; their accessible names are not.
   it.
 - The kinetic sentence on Welcome is `aria-live="off"` — decorative narrative, not an
   announcement stream; its static reduced-motion rendering is the accessible baseline.
+- **A standing fact is content, not an announcement.** The scheduled-erasure notice sits at the top
+  of `main` on every signed-in screen as a plain paragraph — no `role="status"`, no `aria-live`.
+  It is true on every screen of a visit, so announcing it would interrupt every navigation, and a
+  region in the shell would be a second region on every screen. The cost is stated in
+  [components](components.md): a schedule learned mid-visit appears unannounced, and is met in
+  reading order, first in the content.
+- **A result that replaces its control takes focus, and stays out of the region.** When a press
+  ends by removing the control it was made on — Cancel the erasure on its `204`, the release
+  screen's commit — focus moves to the sentence saying what happened, which carries `tabindex="-1"`
+  and is never a tab stop. That sentence sits outside every live region: focus reads it, and inside
+  a region as well it would be read twice.
 - **Secrets are content, not announcements.** The ten recovery codes are a semantic list
   in reading order and never inside a live region. A `role="status"` holding a list
   narrates every entry as an event and puts ten secrets into a speech buffer, which buys
