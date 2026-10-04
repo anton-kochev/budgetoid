@@ -683,6 +683,14 @@ role holds no `DELETE` there of any shape.
     answer. The immediate erasure withdraws its commit on a lost answer because a second request
     after it succeeded meets an ended session; a second withdrawal meets nothing standing and is
     told so.
+  - **The browser's withdrawal inherits a PRF requirement the server does not have.** It reuses the
+    client's one server-checked passkey ceremony, which refuses an assertion that comes back with no
+    PRF output, although this route checks only the signature. Measured on one account whose passkey
+    lives in iCloud Keychain, on macOS with an iPhone: PRF came back and the withdrawal answered
+    `204` from Chrome with Touch ID, from Chrome through the iPhone over a QR code, and from Firefox
+    with Touch ID. An authenticator that signs without PRF on `get()` — Android, Windows Hello or a
+    hardware key were not tried [Guessing] — would be told to try another passkey, so a fourth,
+    PRF-less ceremony for signature-only acts is the answer if one is found.
   - **Recovery codes alone do not withdraw.** A redeemed code opens a full session, so through the
     server somebody holding only a code card can redeem one, enrol a passkey and then withdraw. The
     browser has no surface that redeems a code today, so on the web that person cannot withdraw at
