@@ -45,6 +45,15 @@ export type ScheduledErasure =
   | null
   | 'unread';
 
+declare const sessionTokenBrand: unique symbol;
+
+/**
+ * Which visit of this tab a request was sent in: opaque, compared only for
+ * identity, and minted by {@link SessionService} alone. See
+ * {@link SessionService.sessionToken}.
+ */
+export type SessionToken = number & { readonly [sessionTokenBrand]: true };
+
 @Injectable({ providedIn: 'root' })
 export class SessionService {
   private readonly api = inject(MeApiService);
@@ -130,6 +139,15 @@ export class SessionService {
   // put the notice back over a schedule that is gone.
   #generation = 0;
 
+  // **Moves when a visit begins or ends, and on nothing a visit does.** The
+  // generation answers "did anything write since this read went out"; this
+  // answers "is this still the same visit", which is the question a `204`
+  // sent before a sign-out and a sign-in must be judged by. Kept apart because
+  // the two disagree on exactly the writes that matter: a schedule request's
+  // `200` moves the generation inside one visit, and a `204` sent in that
+  // visit must still publish.
+  #visit = 0;
+
   // How many schedule reads are out. {@link refreshSchedule} sends none while
   // any is: a tab switched back and forth would otherwise stack reads against
   // an API that scales to zero.
@@ -181,6 +199,7 @@ export class SessionService {
     const kind: unknown = session.kind;
 
     if (kind === 'locked') {
+      this.beginVisit();
       this.budgetSignal.set(null);
       this.publishSchedule(SessionService.scheduleOf(session));
       this.publishStatus('locked-session');
@@ -204,6 +223,7 @@ export class SessionService {
     // reading it as `unreachable` would sign a confirmed session out over a
     // second request blinking. `null` is the honest budget meanwhile: signed in,
     // tenancy unknown, every write refused with a word whose remedy is a reload.
+    this.beginVisit();
     this.budgetSignal.set(null);
     this.publishSchedule(SessionService.scheduleOf(session));
     this.publishStatus('authenticated');
@@ -230,6 +250,7 @@ export class SessionService {
   // asking it again over a network that may itself be the problem would replace
   // an answer with a guess.
   public ended(): void {
+    this.beginVisit();
     this.publishStatus('anonymous');
 
     // **Dropped beside the keys, and for the same reason they are.** The
@@ -306,6 +327,7 @@ export class SessionService {
   // publishing the schedule and nothing else, and a failure publishes nothing:
   // a 401 here is a cookie that had not landed, never a session ending.
   public established(): void {
+    this.beginVisit();
     this.publishStatus('authenticated');
     this.forgetProviderToken();
 
@@ -333,6 +355,7 @@ export class SessionService {
   // The provider's tokens go last and through the guarded discard, so a throw
   // there cannot unpublish the session set first.
   public establishedLocked(answer: SessionDto): void {
+    this.beginVisit();
     this.publishStatus('locked-session');
     this.budgetSignal.set(null);
     this.publishSchedule(SessionService.scheduleOf(answer));
@@ -345,11 +368,36 @@ export class SessionService {
     this.publishSchedule({ takesEffectAtUtc });
   }
 
+  /**
+   * The visit this tab is in, for a request whose answer will be published
+   * here later. Read it just before the request goes out and hand it back
+   * with the answer; {@link erasureCancelled} publishes only if it is still
+   * the current one.
+   *
+   * A method and not a signal: nothing renders it, and a reader reacting to
+   * it would be reacting to sign-in and sign-out under another name.
+   */
+  public sessionToken(): SessionToken {
+    return this.#visit as SessionToken;
+  }
+
   // A cancellation's `204`: the server saying nothing is scheduled. `null` and
   // never `'unread'`, which would claim nobody had said. It moves the
   // generation, so a schedule read sent before the `204` cannot resurrect the
   // notice when its older answer lands.
-  public erasureCancelled(): void {
+  //
+  // **Published only into the visit it was sent in.** The session can end, and
+  // another begin, while the cancelling request is out; its answer describes
+  // the account as it was then, and published over the new visit it would
+  // take down a notice about an erasure nobody withdrew — or tell the next
+  // occupant of the tab, owed `'unread'`, that nothing is scheduled. Judged
+  // against the visit and never the generation, which a schedule request's
+  // `200` moves inside the same visit.
+  public erasureCancelled(sentUnder: SessionToken): void {
+    if (sentUnder !== this.sessionToken()) {
+      return;
+    }
+
     this.publishSchedule(null);
   }
 
@@ -408,6 +456,14 @@ export class SessionService {
     } catch (error: unknown) {
       logFailure('Provider token discard failed', error);
     }
+  }
+
+  // A visit begins or ends: on {@link ended}, {@link established},
+  // {@link establishedLocked} and the probe's full and locked arms — never on
+  // the probe's anonymous or unreachable arms, which learned of no visit, and
+  // never on a schedule write, which is a visit's own.
+  private beginVisit(): void {
+    this.#visit += 1;
   }
 
   // The two writers every published status and every schedule not read by

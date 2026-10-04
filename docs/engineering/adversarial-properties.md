@@ -268,9 +268,10 @@ covers some of the following without saying the rows exist:
   when it takes effect — in practice, that somebody holding the account's Google sign-in reached a
   locked session and asked: either the person lost every passkey and every code, or someone else
   holds their Google account. The row stands until the account goes or a passkey withdraws it,
-  and a withdrawal deletes it: in the live database an account that was scheduled and withdrawn
-  reads exactly like one that never was, so the operator learns that a release is pending, never
-  that one was taken back. A backup taken while it stood still holds the row for its retention.
+  and a withdrawal deletes it, so no row records that one was ever filed or taken back. Two things
+  still can: the table's delete counter in PostgreSQL's statistics, an aggregate that on a small
+  user base says a withdrawal happened, and a backup taken while the row stood, which holds it for
+  its retention.
 - **Key history.** The rotation epoch, which counts every change to the factor set and every
   rotation; while a rotation is in flight, that one is and when it began; and the `rotation_id`
   stamp on every narrative row, which names the run that last re-sealed it.

@@ -2,6 +2,7 @@ import { BreakpointObserver } from '@angular/cdk/layout';
 import {
   ChangeDetectionStrategy,
   Component,
+  DOCUMENT,
   DestroyRef,
   ElementRef,
   OnInit,
@@ -171,18 +172,33 @@ export class SettingsComponent implements OnInit {
   // Read for its passkey check alone, which holds Cancel off.
   private readonly rotationFlow = inject(RotationFlowService);
 
-  // **The section is drawn while a schedule stands, and while a press on it is
-  // running or has cancelled.** The second half is for the result: the `204`
-  // publishes `null`, which on its own would take the section — and the
-  // sentence saying what happened — off the screen in the same pass. `'unread'`
-  // is not a schedule: offering to cancel something nobody has said exists
-  // would spend a nonce on nothing.
+  // **The result sentence is true only while nothing is scheduled.** The last
+  // press was answered `204` *and* the session says nothing stands: a schedule
+  // filed again since — a Google sign-in after the cancel — makes *Nothing is
+  // scheduled for this account* false, and a `204` from a visit that has ended
+  // leaves the schedule standing and publishes nothing. `'unread'` is not
+  // `null` either: the session ended, and its next occupant is owed no claim.
+  protected readonly cancellationResultShown = computed(
+    () =>
+      this.cancellation.phase() === 'cancelled' &&
+      this.session.scheduledErasure() === null,
+  );
+
+  // **The section is drawn while a schedule stands, while a press on it is
+  // running, and while its result is true.** The second term keeps the section
+  // under a press whose schedule a read withdrew meanwhile, so the press ends
+  // where it began; the third is for the result, because the `204` publishes
+  // `null`, which on its own would take the section — and the sentence saying
+  // what happened — off the screen in the same pass. `'unread'` is not a
+  // schedule: offering to cancel something nobody has said exists would spend a
+  // nonce on nothing.
   protected readonly cancellationDrawn = computed(() => {
     const scheduled = this.session.scheduledErasure();
 
     return (
       (scheduled !== null && scheduled !== 'unread') ||
-      this.cancellation.phase() !== 'idle'
+      this.cancellation.working() ||
+      this.cancellationResultShown()
     );
   });
 
@@ -288,9 +304,34 @@ export class SettingsComponent implements OnInit {
   >('confirmControl', { read: ElementRef });
 
   // The sentence a cancellation's `204` leaves in the Scheduled erasure
-  // section, present only once it has.
+  // section, present only while {@link cancellationResultShown} holds.
   private readonly cancellationResult =
     viewChild<ElementRef<HTMLElement>>('cancellationResult');
+
+  // The Scheduled erasure section and its Cancel, each present only while
+  // drawn. Read by the focus rescue for their changes: a query moves after the
+  // pass that removed its element, which is the pass the rescue must see.
+  // `read: ElementRef` on Cancel for the reason the erasure trigger gives.
+  private readonly erasureSection =
+    viewChild<ElementRef<HTMLElement>>('erasureSection');
+  private readonly cancelControl = viewChild<
+    string,
+    ElementRef<HTMLButtonElement>
+  >('cancelControl', { read: ElementRef });
+
+  // The screen's heading, where focus lands when the section leaves from under
+  // it with no result to take it. `tabindex="-1"` in the template, so it takes
+  // focus without becoming a tab stop.
+  private readonly screenHeading =
+    viewChild.required<ElementRef<HTMLHeadingElement>>('screenHeading');
+
+  // The element inside the Scheduled erasure section that last took focus,
+  // until the rescue has judged its leaving. Set by `focusin` rather than read
+  // off `blur` or `focusout`, which a browser need not fire for an element
+  // removed while focused — jsdom fires neither.
+  #focusedInSection: Element | null = null;
+
+  private readonly document = inject(DOCUMENT);
 
   // The erasure confirmation while it is open, whichever host it is in.
   private erasure:
@@ -359,19 +400,27 @@ export class SettingsComponent implements OnInit {
       confirmWasDrawn = drawn;
     });
 
-    // **A cancellation's `204` moves focus to the sentence saying so**,
+    // **A press answered `204` moves focus to the sentence saying so**,
     // because Cancel, where the press left focus, has left the DOM, and focus
     // would otherwise fall to `<body>`. Watched as the phase arriving at
     // `cancelled`, so a refusal — which leaves the control where it is — moves
-    // nothing. A render effect for the reason the one above gives — but the
-    // hook can run on the application's tick before this view has drawn the
-    // sentence, so the move is *owed* from the transition until the query
-    // holds its target, rather than tried once and dropped.
+    // nothing, and a second press after a schedule filed again arms it again.
+    // A render effect for the reason the one above gives — but the hook can
+    // run on the application's tick before this view has drawn the sentence,
+    // so the move is *owed* from the transition until the query holds its
+    // target, rather than tried once and dropped.
+    //
+    // **And dropped on any pass where the result is not true.** A `204` that
+    // published nothing — sent in a visit that has since ended — leaves the
+    // schedule standing and draws no result; a read withdrawing that schedule
+    // later draws the result under nobody's hand, and a move still owed would
+    // pull focus to it from wherever the person put it.
     let wasCancelled = false;
     let focusOwed = false;
 
     afterRenderEffect(() => {
       const cancelled = this.cancellation.phase() === 'cancelled';
+      const shown = this.cancellationResultShown();
       const result = this.cancellationResult();
 
       if (cancelled && !wasCancelled) {
@@ -380,11 +429,66 @@ export class SettingsComponent implements OnInit {
 
       wasCancelled = cancelled;
 
+      if (!shown) {
+        focusOwed = false;
+      }
+
       if (focusOwed && result !== undefined) {
         focusOwed = false;
         result.nativeElement.focus();
       }
     });
+
+    // **Focus never falls to `<body>` because the Scheduled erasure section
+    // changed under it.** A read can take Cancel away while it holds focus —
+    // the schedule withdrawn from another tab, or a refused press handed back
+    // with nothing scheduled — and focus goes to the result sentence if one is
+    // drawn, else to the screen's heading. Only when focus has actually fallen:
+    // focus the person put anywhere else is theirs and is not touched.
+    //
+    // **It reads the view's queries, not the state that drives them.** The
+    // hook can run on the tick before this view removes the element — still
+    // connected then, nothing to rescue — and an effect reading only state
+    // would never run again for the pass that did remove it. The queries move
+    // in that pass, which is what brings this back: the section leaving, or
+    // Cancel leaving with the result arriving. Cancel's own query is read too,
+    // though today it never moves without one of the other two.
+    afterRenderEffect(() => {
+      const section = this.erasureSection()?.nativeElement;
+      const cancel = this.cancelControl()?.nativeElement;
+      const result = this.cancellationResult()?.nativeElement;
+      const heading = this.screenHeading().nativeElement;
+      const focused = this.#focusedInSection;
+
+      if (
+        focused === null ||
+        focused === cancel ||
+        focused === result ||
+        (section?.contains(focused) ?? false)
+      ) {
+        return;
+      }
+
+      this.#focusedInSection = null;
+
+      const active = this.document.activeElement;
+
+      if (active !== null && active !== this.document.body) {
+        return;
+      }
+
+      (result ?? heading).focus();
+    });
+  }
+
+  /**
+   * Remembers the element inside the Scheduled erasure section that took
+   * focus, for the rescue that runs when it leaves.
+   */
+  protected noteSectionFocus(event: FocusEvent): void {
+    if (event.target instanceof Element) {
+      this.#focusedInSection = event.target;
+    }
   }
 
   /**

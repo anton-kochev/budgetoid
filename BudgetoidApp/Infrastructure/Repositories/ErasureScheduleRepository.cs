@@ -76,11 +76,13 @@ public sealed class ErasureScheduleRepository(BudgetoidDbContext dbContext) : IE
             await dbContext.SaveChangesAsync(cancellationToken);
             return ScheduleRemoval.Removed;
         }
-        // Two cancels from two tabs: both read the row, the loser's DELETE matches nothing where EF
-        // expected one row. The post-condition — no schedule stands — holds, so it is an answer, not a
-        // 500. Narrowed BY THE ENTRIES, the shape TransactionRepository.DeleteAllForAmbientBudgetAsync
-        // uses: the save flushes everything this request-scoped context tracks, and a conflict over any
-        // other entity is a failure this method does not model.
+        // The row was read and was gone by the time the DELETE ran — another withdrawal, the account's
+        // erasure cascading, or the retrying execution strategy replaying a delete that had committed —
+        // so it matches nothing where EF expected one row. The post-condition — no schedule stands —
+        // holds, so it is an answer, not a 500. Narrowed BY THE ENTRIES, the shape
+        // TransactionRepository.DeleteAllForAmbientBudgetAsync uses: the save flushes everything this
+        // request-scoped context tracks, and a conflict EF names on another entity propagates. EF names
+        // only the first failing command's entries, so that is all this filter can see.
         catch (DbUpdateConcurrencyException exception) when (IsAlreadyRemoved(exception))
         {
             // Left Deleted, the entry would be flushed again by the next save on this context — whatever

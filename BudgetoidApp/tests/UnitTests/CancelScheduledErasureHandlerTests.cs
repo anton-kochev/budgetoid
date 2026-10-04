@@ -25,9 +25,11 @@ namespace UnitTests;
 /// <para>
 /// <b>The gate runs before the schedule is read, and runs when there is nothing to read.</b> Both are
 /// outcome pins over a single-use challenge store: a refused assertion leaves the repository untouched,
-/// and an account with no schedule still spends its nonce. A handler that looked first and returned
-/// early on "nothing scheduled" would let the nonce survive and tell a caller, by its survival, whether a
-/// schedule stands.
+/// and an account with no schedule still spends its nonce. Gate first, because a 204 then only ever goes
+/// to a caller who proved a passkey, so the answer to a bad proof never depends on what the database
+/// holds. And spent either way, because a handler that looked first and returned early on "nothing
+/// scheduled" would leave the requested nonce live in the shared re-authentication pool, spendable at
+/// <c>POST /api/me/erasure</c> for its five minutes — hygiene, not a threat boundary.
 /// </para>
 /// <para>
 /// <b>The identity comes from <c>IUserContext</c> and from nowhere else.</b> The command carries the
@@ -113,7 +115,7 @@ public sealed class CancelScheduledErasureHandlerTests
     /// With nothing scheduled the handler completes, removes nothing, and still spends the nonce.
     /// </summary>
     /// <remarks>
-    /// The post-condition — the account is live and no schedule stands — already holds, so completing is
+    /// The post-condition — no schedule stands — already holds, so completing is
     /// the answer. The consume count is what pins the gate: a handler that returned early on "nothing to
     /// cancel" completes here too, with the count at zero.
     /// </remarks>

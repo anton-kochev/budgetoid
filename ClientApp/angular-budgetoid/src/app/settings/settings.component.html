@@ -1,16 +1,26 @@
-<h1 class="s-title">Settings</h1>
+<!-- `tabindex="-1"`: where focus lands when the Scheduled erasure section
+     leaves from under it with no result to take it — focusable, never a tab
+     stop. -->
+<h1 #screenHeading class="s-title" tabindex="-1">Settings</h1>
 
 <!-- **Scheduled erasure**, first on the screen while one stands: it is the one
      thing here with a date on it that the person did not choose. Drawn while
-     a schedule stands and while a press on it runs or has cancelled, so the
-     result sentence outlives the `null` the `204` publishes. The date itself
-     is the shell's notice, above every screen; this section is the act. -->
+     a schedule stands, while a press on it runs, and while its result is true
+     — so the result sentence outlives the `null` the `204` publishes, and
+     gives way to the prose and a live Cancel if a schedule is filed again.
+     The date itself is the shell's notice, above every screen; this section
+     is the act. `focusin` feeds the focus rescue. -->
 @if (cancellationDrawn()) {
   @let cancelPhase = cancellation.phase();
-  <section class="s-section" aria-labelledby="scheduled-erasure-heading">
+  <section
+    #erasureSection
+    class="s-section"
+    aria-labelledby="scheduled-erasure-heading"
+    (focusin)="noteSectionFocus($event)"
+  >
     <h2 class="s-eyebrow" id="scheduled-erasure-heading">Scheduled erasure</h2>
 
-    @if (cancelPhase === 'cancelled') {
+    @if (cancellationResultShown()) {
       <!-- The result, outside the region: Cancel has left the DOM, so focus
            moves here — `tabindex="-1"` lets it take focus without adding a
            tab stop — and focus is what reads it. In the region as well it
@@ -65,6 +75,7 @@
            the gate is `cancelPressable`, read here and by `cancelErasure()`.
            `undetermined` leaves it live: the route is idempotent. -->
       <button
+        #cancelControl
         class="s-button"
         mat-stroked-button
         type="button"
@@ -87,7 +98,7 @@
          never the message — each reads the same with `--bud-over` removed. -->
     <div class="s-outcome" role="status">
       @if (cancelPhase === 'asserting') {
-        <p class="s-prose">Waiting for your passkey&hellip;</p>
+        <p class="s-prose">Waiting for your passkey.</p>
       } @else if (cancelPhase === 'cancelling') {
         <p class="s-prose">Cancelling the erasure&hellip;</p>
       } @else if (cancelPhase === 'idle') {
@@ -137,11 +148,14 @@
             </p>
           }
           <!-- The one line that cannot say what happened, and says exactly
-               that: the request may have reached the server and committed. -->
+               that: the request may have reached the server and committed.
+               Cancel stays live, because the route is idempotent, so the way
+               to find out is the press it names. -->
           @case ('undetermined') {
             <p class="s-error">
               Budgetoid didn&rsquo;t hear back, so the erasure may already be
-              cancelled. Reload the page to find out.
+              cancelled. Press again to check &mdash; cancelling twice changes
+              nothing.
             </p>
           }
         }

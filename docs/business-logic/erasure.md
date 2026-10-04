@@ -21,8 +21,9 @@ carry a WebAuthn assertion made moments earlier on an authenticator registered t
 stolen session cannot destroy a budget. A **locked** session may instead **schedule** the account's
 erasure for seven days out, with no passkey, because the person it exists for has none left. A
 schedule erases nothing; a full session withdraws one with a fresh passkey assertion, and nothing in
-the product carries one out yet — the schedule and cancellation rules below argue each half. It cuts across almost every domain area, so the ordering rule and the
-post-condition live here rather than being split across the files whose rows it removes.
+the product carries one out yet — the schedule and cancellation rules below argue each half. It
+cuts across almost every domain area, so the ordering rule and the post-condition live here
+rather than being split across the files whose rows it removes.
 
 ## Key Entities
 
@@ -514,9 +515,9 @@ role holds no `DELETE` there of any shape.
   route's pattern, display name and endpoint name for a vocabulary of reversal words, each spelling
   proved by a case of its own so the list cannot grow an entry nothing exercises. The other pins the
   **`/api/me/erasure` resource** exhaustively to three routes — `POST /api/me/erasure`,
-  `POST /api/me/erasure/schedule` and `POST /api/me/erasure/schedule/cancellation` — which closes the naming loophole a word list cannot see: a route
-  called `/api/me/erasure/second-chance` trips the second pin and not the first. Each has its own
-  control built from a hand-made endpoint list.
+  `POST /api/me/erasure/schedule` and `POST /api/me/erasure/schedule/cancellation` — which closes
+  the naming loophole a word list cannot see: a route called `/api/me/erasure/second-chance` trips
+  the second pin and not the first. Each has its own control built from a hand-made endpoint list.
   - **The schedule is inside the pinned resource on purpose.** It is the same erasure, deferred, and
     it moves in the forward direction only: it brings nothing back, because nothing has gone yet.
     Filing it under the resource keeps it where the exhaustive pin reads it, rather than in the
@@ -634,14 +635,21 @@ role holds no `DELETE` there of any shape.
 - **Rule**: A **full** session withdraws a scheduled erasure with a fresh passkey assertion, and
   nothing else withdraws one. `POST /api/me/erasure/schedule/cancellation` takes the immediate
   erasure's body — an assertion on a `reauthentication` challenge — and answers `204` with no body
-  once the account is live and no schedule stands: whether this request removed the row, another tab
-  removed it first, or none was ever filed. A locked session is refused `403` before the handler
+  once no schedule stands: whether this request removed the row, or it was already gone — another
+  tab's withdrawal, the account's erasure cascading, or the save's own retry after a lost reply — or
+  none was ever filed. The `204` says nothing about the account itself: an immediate erasure in
+  another tab that commits between the gate and the delete is answered `204` too, a window two
+  passkey touches wide that is accepted until something carries schedules out. A locked session is refused `403` before the handler
   runs; no live session, or a refused assertion, is `401`, the refusal identical to the immediate
   erasure's. It ends no session and writes no cookie.
   - **The gate runs first, every time, and outside any transaction** — before the schedule is read
-    and even when nothing is scheduled, so the nonce is spent either way. A handler that looked
-    first and returned early on "nothing to withdraw" would leave the nonce live, and its survival
-    would tell the caller whether a schedule stands.
+    and even when nothing is scheduled, so the nonce is spent either way. Not to hide whether a
+    schedule stands — any full session reads that from `GET /api/me/session`. Two smaller reasons:
+    a `204` only ever goes to a caller who proved a passkey, so what a bad proof is answered never
+    depends on the table; and a nonce the client asked for is never left live in the shared
+    `reauthentication` pool, where for its five minutes it would also authorize the immediate
+    erasure. That second one is hygiene, not a boundary — whoever made the assertion can make
+    another.
   - **The row is deleted, never stamped.** A `cancelled_at` column would be a record that the
     account once asked to be forgotten, which is the remnant the no-remnant rule forbids, and it
     would need the `UPDATE` grant the table deliberately does not hold.
@@ -652,6 +660,14 @@ role holds no `DELETE` there of any shape.
   account reaches a locked session, and a locked session can file a schedule; if it could also
   withdraw one, or if a further Google sign-in did, the schedule would be a toggle in the attacker's
   hands. The owner's surviving passkey is the one thing the attacker does not hold.
+  - **What the gate stops is somebody holding only the provider account — not a stolen full
+    session.** A live full session can enrol a further passkey and then assert with it, so a stolen
+    full-session cookie can withdraw too. The immediate erasure's assertion gate has the same edge.
+  - **Withdrawing does not stop a second filing.** The row is gone, and whoever holds the provider
+    account can sign in again and file a new schedule at once; the owner withdraws again. What ends
+    the loop is retiring the federated credential the attacker signs in with — an email change to a
+    different Google account, see [email-change.md](email-change.md) — and nothing on the withdrawal
+    screen says so today.
   - **An assertion, not "a session that has opened its keys".** The server cannot see that a
     client opened its keys; it can verify an assertion. Against the threat this exists for the two
     are the same — somebody with the provider account and no passkey cannot withdraw, and somebody
@@ -702,17 +718,21 @@ role holds no `DELETE` there of any shape.
   above every screen, and withdraws it from Settings with that passkey; `GET /api/me/session` answers
   `erasure: null` and the table holds no row for the account. The attacker signs in with Google
   again and is told nothing is scheduled.
-- **Counterexample**: letting any full session withdraw without an assertion. A stolen full session
-  would then withdraw the owner's own schedule — the person with no factors left — and keep the
-  address held against them.
+- **Counterexample**: letting a locked session withdraw — or any full session without an
+  assertion, on the theory that only the owner has one. The first hands the attacker the toggle; the
+  second makes the passkey gate decorative for somebody who reached a full session any other way.
 - **Source**: `[SOURCE: user-story]`
 
 ---
 
-- **Rule**: While an erasure is scheduled, every authenticated session of the account shows the
-  instant it takes effect, in the application and **never by email**. A locked session reads it on
+- **Rule**: While an erasure is scheduled, every authenticated session of the account that the
+  client has recognised shows the instant it takes effect, in the application and **never by
+  email**. A locked session reads it on
   `/release`; a full session reads it in a notice above every `/app` screen, which learns of a
-  schedule at bootstrap, after a sign-in, and each time the tab becomes visible again.
+  schedule at bootstrap, after a sign-in, and each time the tab becomes visible again. A tab that
+  started while the API was unreachable is not a recognised session: it learns nothing until a
+  reload, and a tab left visible the whole time learns of a later filing only when it is hidden and
+  shown again — the cost of having no timer.
 - **Why**: the delay is only useful if the owner finds out inside it. **Email is the wrong channel
   on purpose**: in the case the delay exists for, the attacker holds the provider account, and with
   it the inbox the address points at — a warning there reaches nobody but them. A notice inside an
@@ -721,8 +741,9 @@ role holds no `DELETE` there of any shape.
   this rule adds lives on the client — see [sessions.md](sessions.md).
 - **Enforced in**: the server side by the session read, held by the session-read tests in both
   tiers. **"Never by email" is an absence and is held by none**: the backend references no mail
-  package, and `ProjectReferenceGraphTests` pins every package edge, so adding a mail SDK reddens a
-  named row — but a raw HTTP call to a mail service would pass it. The rule lives here so the next
+  package, and `ProjectReferenceGraphTests` pins every declared package edge, so adding a mail SDK
+  reddens it with the new edge named — but a transitive package or a raw HTTP call to a mail service
+  would pass it. The rule lives here so the next
   person reaching for a "your account is scheduled for deletion" email finds the reason first.
 - **Counterexample**: a courtesy email on scheduling, "in case you didn't do this". In the one
   scenario it is for, the person who reads it is the one who did.
@@ -850,10 +871,9 @@ stateDiagram-v2
 
 **Scheduled has two exits: a passkey's withdrawal and the immediate erasure.** Nothing erases the
 account when its instant passes; that does not exist today. A schedule is its own row, so the
-account itself is never marked or flagged, and a withdrawal deletes the row rather than stamping it
-— an account that was once scheduled and is not now looks exactly like one that never was. No row survives to
-record that an erasure happened — including the proof that authorized it, which leaves as the
-deleted nonce.
+account itself is never marked or flagged, and a withdrawal deletes the row rather than stamping it,
+so no row records that a schedule was ever filed. No row survives to record that an erasure
+happened — including the proof that authorized it, which leaves as the deleted nonce.
 
 ## Decision Trees
 
@@ -900,19 +920,21 @@ ELSE IF the session reads no budget content                  ← a locked sessio
   THEN 403 from the fallback policy's                          the provider account; the route
        FullSessionRequirement, before the handler runs         carries no opt-out marker
 ELSE IF the gate refuses the assertion                       ← consumed/expired/wrong-pool nonce,
-  THEN 401, the nonce spent, the schedule untouched            bad signature, another account's key
+  THEN 401, the schedule untouched — the nonce spent           bad signature, another account's key
+       from the challenge lookup on                            (a body refused at decode spends none)
 ELSE IF the account holds no schedule
   THEN 204; nothing is written, the nonce is spent
 ELSE
-  THEN delete the row — on a conflict naming only that row, another withdrawal won — 204
+  THEN delete the row — a conflict naming only that row means it was already gone — 204
 ```
 
 ## Integration Points
 
 - **The grant matrix** — `app-role-grants.sql` gives the role `DELETE` on `users` and
   `transactions`, which is everything erasure needs. The schedule needs `SELECT` and `INSERT` on
-  `erasure_schedules`, and its withdrawal `DELETE`; nothing there takes `UPDATE`. `AppRoleGrantMatrixTests` pins the set in both directions, so
-  a grant added to make an erasure problem go away fails a test rather than shipping.
+  `erasure_schedules`, and its withdrawal `DELETE`; nothing there takes `UPDATE`.
+  `AppRoleGrantMatrixTests` pins the set in both directions, so a grant added to make an erasure
+  problem go away fails a test rather than shipping.
   - **Two of the role's other `DELETE` grants look like they belong to erasure and do not.**
     `credentials` holds one for removing a single credential — passkey revocation, replacing a
     recovery-code set, and retiring the federated credential on an email change — and

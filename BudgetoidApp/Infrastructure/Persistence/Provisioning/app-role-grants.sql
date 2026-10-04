@@ -178,8 +178,8 @@ GRANT SELECT ON currencies TO budgetoid_app;
 -- update is a promotion rewriting that one row in place — and still no DELETE at all, because a
 -- manifest leaves only by the cascade from users. It belongs here for the same reason the first one
 -- does: this is a list of absent DELETEs, not a list of read-only tables and not a list of
--- write-free ones. erasure_schedules left this list rather than being forgotten on it: it now
--- holds DELETE, because withdrawing a schedule removes the row, and its own block argues the grant.
+-- write-free ones. erasure_schedules is absent from this list because it holds DELETE —
+-- withdrawing a schedule removes the row — and its own block argues the grant.
 -- key_rotation_seals STAYED ON THIS LIST WHILE GAINING TWO WRITES, and it carries the one correction
 -- worth repeating up here: its seals were said to leave by the ON DELETE CASCADE from key_rotations
 -- when a second begin replaced the staging row, and a second begin UPDATES that row in place rather
@@ -1388,11 +1388,10 @@ CREATE POLICY user_isolation ON factor_manifests FOR ALL TO budgetoid_app
 -- about to go. WITH CHECK refuses an INSERT naming another account, and that row is the one this table
 -- exists to keep out: one person putting a date on another account's end.
 --
--- The policy is FOR ALL, and it was FOR ALL before the grant held DELETE, for the reason the
--- factor_manifests block gives: a policy is not a privilege, so when withdrawing a schedule took
--- DELETE, the rows it may reach were already decided — the session's own — rather than decided in a
--- hurry. It reads only the ownership column, like every policy above it; the instant is not an
--- isolation axis.
+-- The policy is FOR ALL, for the reason the factor_manifests block gives: a policy is not a
+-- privilege, so the rows the withdrawal's DELETE may reach — the session's own — are the policy's
+-- decision, not the grant's. It reads only the ownership column, like every policy above it; the
+-- instant is not an isolation axis.
 ALTER TABLE erasure_schedules ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS user_isolation ON erasure_schedules;
 CREATE POLICY user_isolation ON erasure_schedules FOR ALL TO budgetoid_app

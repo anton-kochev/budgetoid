@@ -819,8 +819,9 @@ stands, and it leaves the moment one does not.
 - **The tab coming back into view.** The shell listens for `visibilitychange` and asks for the
   schedule once on `visible`, with one read in flight at most. The listener goes with the signed-in
   layout, so a tab that has left it asks for nothing when it comes back into view.
-- **A cancellation's `204`**, which publishes *nothing scheduled*, so the notice leaves every screen
-  at once.
+- **A cancellation's `204`**, which publishes *nothing scheduled* into the visit it was sent in, so
+  the notice leaves every screen at once. One landing after a sign-out and a new sign-in in this tab
+  publishes nothing: it describes the account as it was, and the new visit is owed its own read.
 - **The session ending**, which returns it to *unread*.
 
 **A read never puts the notice back.** It publishes only if nothing wrote the status or the
@@ -880,12 +881,17 @@ screen states it, and this section is the act.
 
 ### When it renders
 
-- **While a schedule stands, and while a press on it runs or has cancelled.** The second half is for
-  the result: the `204` publishes *nothing scheduled*, which on its own would take the section — and
-  the sentence saying what happened — off the screen in the same pass. It also keeps the section
-  through a press when a read lands mid-press answering nothing scheduled, because the erasure was
-  cancelled in another tab: the control and its region do not vanish under a check the device is
-  still running.
+- **While a schedule stands, while a press on it runs, and while its result is true.** The result is
+  true while the last press ended in a `204` **and** nothing is scheduled: the `204` publishes
+  *nothing scheduled*, which on its own would take the section — and the sentence saying what
+  happened — off the screen in the same pass. The press term keeps the section through a press when
+  a read lands mid-press answering nothing scheduled, because the erasure was cancelled in another
+  tab: the control and its region do not vanish under a check the device is still running.
+- **A cancel is not the end of the section.** A Google sign-in can file a new erasure after this one
+  was withdrawn, and the shell's read on the tab coming back into view brings it to this screen.
+  *Nothing is scheduled for this account* is false then, so the result goes and the standing
+  paragraph and a pressable Cancel come back. A press from there runs a whole new act — a fresh
+  challenge, a fresh ceremony and its own cancelling request.
 - **Not while the schedule is unread.** Offering to cancel something nobody has said exists would
   spend a nonce on nothing.
 - **Never for a locked session**, which never reaches this screen. That person is on `/release`, and
@@ -896,8 +902,8 @@ screen states it, and this section is the act.
 A settings section per the spec above: `<section aria-labelledby>`, `eyebrow` heading **Scheduled
 erasure**, `--bud-space-4` between heading and content, `--bud-space-7` to the next section, prose
 capped at 65ch, one column at every width. Top to bottom: the standing paragraph, a held-off
-sentence when one renders, the control, and the region. After a `204`: the result sentence in the
-paragraph's place, and the region.
+sentence when one renders, the control, and the region. While the result is true: the result
+sentence in place of the paragraph and the control, and the region.
 
 ### The copy is the specification
 
@@ -905,8 +911,8 @@ paragraph's place, and the region.
 > signing in with Google again doesn’t cancel it.
 
 **Standing prose**, true at rest, while held off, while the device is asked and after a refusal. It
-leaves with the control on the `204`, because *This account is scheduled to be erased* is no longer
-true then.
+leaves with the control while the result is true, because *This account is scheduled to be erased*
+is not true then, and comes back with it when a schedule stands again.
 
 **The second clause names the one thing that does not cancel**: the act that filed the schedule
 cannot withdraw it. A Google sign-in is what the notice says asked, so it is the act a reader
@@ -931,11 +937,16 @@ Three sentences a writer reaches for, refused:
 - **While held off or working it takes `disabledInteractive`**, so it keeps its tab stop and the
   sentence it names stays reachable. `aria-busy="true"` only while its own press works — the
   challenge, the ceremony and the cancelling request — and `null` otherwise.
+- **Pressable at rest, and again after a cancel once a schedule stands; never while a press runs.**
+  After a `204` it opens only on an instant, never on *nothing scheduled* or *unread*: a press with
+  nothing said to be scheduled spends a nonce on nothing. A refusal, `undetermined` included, leaves
+  it pressable.
 - **One predicate with one owner, read by the attribute and the handler.** The flow publishes
-  *pressable* — nothing running and nothing cancelled — and the screen joins it with the four holds
-  below into the control's one predicate. The handler refuses on that predicate and the flow refuses
-  on its own half again at its entry. Material's click-halt is applied to anchors only, so on a
-  `<button>` the press arrives whatever the attribute says.
+  *pressable* — nothing running, and either the last press did not cancel or a schedule stands
+  again since it did — and the screen joins it with the four holds below into the control's one
+  predicate. The handler refuses on that predicate and the flow refuses on its own half again at
+  its entry. Material's click-halt is applied to anchors only, so on a `<button>` the press arrives
+  whatever the attribute says.
 
 ### The press
 
@@ -954,8 +965,15 @@ a nonce the server persisted must not be spent by a browser that was never going
   not, so a `401` on either is an ended session, which is the interceptor's.
 - **It is never retried** — not by the flow, and not by any interceptor the request passes through.
 - **Abandoning is leaving the screen.** The screen's teardown aborts a press that has not posted.
-  One already out is left to land, and its `204` still publishes *nothing scheduled*, so the notice
-  leaves every screen.
+  One already out is left to land, and its `204` still reaches `SessionService`, so the notice
+  leaves every screen — if the visit it was sent in is still this tab's.
+- **A `204` speaks only for the visit it was sent in.** The flow reads the session's token after the
+  ceremony and just before the cancelling request — after, because the ceremony can outlast a
+  sign-out and a sign-in — and hands it back with the answer. `SessionService` publishes *nothing
+  scheduled* only if that visit is still the current one. An answer landing after a sign-out and a
+  new sign-in in this tab changes nothing: published over the new visit it would take down a notice
+  about an erasure nobody withdrew, or tell the next occupant, owed *unread*, that nothing is
+  scheduled. Nothing is published, so the section draws no result for that press.
 
 ### Cancel held off, and a reason for each
 
@@ -992,18 +1010,24 @@ starts.
 | State | Copy | Where it renders |
 | --- | --- | --- |
 | At rest | *nothing* | The region carries no line |
-| Waiting for the device | "Waiting for your passkey…" | Inside the region, `body` `--bud-text` |
+| Waiting for the device | "Waiting for your passkey." | Inside the region, `body` `--bud-text` |
 | Cancelling | "Cancelling the erasure…" | Inside the region, `body` `--bud-text` |
-| `cancelled` | "The erasure is cancelled. Nothing is scheduled for this account." | In the section, outside the region, in the standing prose's place; the control leaves and focus moves to it |
+| `cancelled`, while nothing is scheduled | "The erasure is cancelled. Nothing is scheduled for this account." | In the section, outside the region, in the standing prose's place; the control leaves and focus moves to it once |
 | `unsupported` | "This browser can’t check a passkey, so the erasure is still scheduled. Open Budgetoid in a different browser, or on a phone or laptop that can." | Inside the region, `--bud-over` |
 | `dismissed` | "The passkey check didn’t finish, so the erasure is still scheduled. Try again whenever you’re ready." | Inside the region, `--bud-over` |
 | `no-prf`, `ceremony-failed` | "Your device couldn’t finish the passkey check, so the erasure is still scheduled. Try again, or choose another passkey." | Inside the region, `--bud-over` |
 | `unstarted` | "Budgetoid couldn’t start the passkey check, so the erasure is still scheduled. Try again in a minute." | Inside the region, `--bud-over` |
 | `refused` | "Budgetoid didn’t accept that passkey, so the erasure is still scheduled. Try again with a passkey registered to this account." | Inside the region, `--bud-over` |
 | `unrecognised` | "Budgetoid couldn’t read this request, so the erasure is still scheduled. Reload the page and try again." | Inside the region, `--bud-over` |
-| `undetermined` | "Budgetoid didn’t hear back, so the erasure may already be cancelled. Reload the page to find out." | Inside the region, `--bud-over`; the control stays live |
+| `undetermined` | "Budgetoid didn’t hear back, so the erasure may already be cancelled. Press again to check — cancelling twice changes nothing." | Inside the region, `--bud-over`; the control stays live |
 
 The copy is the specification, not an example of it.
+
+**The waiting line ends in a full stop and the cancelling line in an ellipsis**, the
+[Account keys section](#the-three-blocks-and-the-thirteen-lines-inside-them)'s distinction between
+two moments: *Waiting for your passkey.* is the system sheet, where the thing to do is touch a sensor
+or pick a key up; *Cancelling the erasure…* is a request, where the thing to do is wait. It is the
+line the Account keys section, the email change and the erasure dialog say for the same moment.
 
 **Every refusal says the erasure is still scheduled, and one line cannot.** Every word above
 `undetermined` is raised before the cancelling request exists or is a judgement made before
@@ -1036,9 +1060,14 @@ before any handler judged anything. **`unstarted` is every other way the challen
 **`undetermined` keeps the control live, and that is the erasure dialog's rule inverted on
 purpose.** The dialog withdraws its commit because erasure is not idempotent to the caller. A
 cancellation is: a second one after a lost `204` answers `204` again, whether it removed the
-schedule or found none standing. So a press cannot do harm, and the control stays. The sentence
-names a reload, which reads the schedule again and redraws both the notice and this section from
-the answer. Nothing is retried for the person either way.
+schedule or found none standing. So a press cannot do harm, and the control stays.
+
+**The sentence names the press, because pressing again is the way to find out.** The withdrawal is
+idempotent, so a second press that reaches the server ends on the result whether or not the first
+one landed — a fresh challenge and ceremony, since the first nonce was spent either way — and
+*cancelling twice changes nothing* is what makes that safe to offer. **It does not name a reload.**
+A reload would read the schedule again too, but it locks the account's keys in this tab, so it costs
+an unlock to learn what one press tells. Nothing is retried for the person either way.
 
 **Colour is never the message** — every line above reads the same with `--bud-over` removed.
 
@@ -1047,27 +1076,47 @@ the answer. Nothing is retried for the person either way.
 - **Outside the region, and focus is what reads it.** Cancel has left the DOM, so focus would fall
   to `<body>`; it moves to the sentence instead, which carries `tabindex="-1"` so it can take focus
   without becoming a tab stop. Inside the region as well, it would be read twice.
-- **Focus moves once, on arrival.** A later redraw of the screen does not pull focus back to it.
-- **The standing paragraph and the control leave with it**, and the section stays drawn for the
-  rest of the screen's life, saying what happened. Leaving Settings and coming back finds nothing
-  scheduled and draws no section.
+- **Focus moves to it once per press that ends in a `204` and draws it.** A later redraw of the
+  screen does not pull focus back to it, and a result that reappears without a press — a schedule
+  filed again and then withdrawn from another tab — takes no focus.
+- **It shows only while it is true**: the last press ended in a `204` and nothing is scheduled. The
+  standing paragraph and the control leave while it shows, and come back in its place when a
+  schedule stands again. Leaving Settings and coming back finds nothing scheduled and draws no
+  section.
 - **It states the result as well as the act.** *Nothing is scheduled for this account* is true
   whether this press removed the schedule or found it already gone — [voice](voice.md)'s
   confirmation rule.
 - **The notice leaves every screen in the same pass**, because the `204` writes the session's
-  schedule, which both read.
+  schedule, which both read. A `204` from a visit that has ended writes nothing, so neither moves.
 
 ### Focus
 
 - **Arriving moves nothing.**
-- **A `204` moves focus to the result sentence**, because the control focus stood on has gone.
+- **A press that ends in a `204` moves focus to the result sentence**, once, because the control
+  focus stood on has gone. The move is owed from the `204` until the sentence is drawn, and dropped
+  on any pass where the result is not true — so a `204` that published nothing never pulls focus to
+  a result a later read draws.
+- **A result that appears without a press takes no focus.** Focus stays wherever the person put it.
 - **A refusal moves nothing.** Focus stays on Cancel, where the next attempt starts.
+- **Focus never falls to nothing because the section changed under it.** A read can take Cancel, or
+  the whole section, away while focus is inside — the schedule withdrawn from another tab, or a
+  refused press handed back after a read answered nothing scheduled mid-press. If focus is then on
+  nothing, it moves to the result sentence if one is drawn, else to the screen's `h1`, which carries
+  `tabindex="-1"`: a programmatic target, never a tab stop. Focus the person put anywhere else is
+  never moved.
 
 ### What a writer will get wrong
 
 - **Making Cancel Destructive**, because the section is about an erasure. It takes an erasure back.
 - **Withdrawing the control on `undetermined`**, by copying the erasure dialog.
+- **Naming a reload on `undetermined`.** It locks the account's keys; pressing again finds out.
 - **Retrying the cancelling request on a timeout.**
+- **Keeping the result drawn once a schedule stands again**, or holding Cancel off after a cancel.
+  A Google sign-in can file a new erasure, and the section takes it back the way it took the first.
+- **Publishing a `204` into whatever visit is current when it lands**, or reading the token at the
+  press rather than just before the cancelling request.
+- **Moving focus to a result nobody pressed for**, letting focus fall to `<body>` when the section
+  leaves, or moving focus the person put elsewhere.
 - **Reading every `401` as `refused`**, or probing the one that carries the assertion word.
 - **Calling the ceremony's word `cancelled`** beside a control named *Cancel the erasure*.
 - **Putting the result sentence in the region.**
@@ -1085,21 +1134,28 @@ One `role="status"` region, polite, in the DOM from the section's first paint an
 never `assertive`. The control is a 48px target and keeps its tab stop while held off or busy
 (`disabledInteractive`); `aria-busy` is present only while its press works. The held-off sentence is
 visible prose before the control, named by it with `aria-describedby` while it renders. The result
-sentence takes focus once, programmatically, is not in the tab order, and sits outside every live
-region. Nothing is communicated by colour alone.
+sentence takes focus once per press that ends in a `204`, programmatically, is not in the tab order,
+and sits outside every live region. A section that leaves while holding focus hands it to the
+result sentence if drawn, else to the screen's `h1`, which takes `tabindex="-1"` and is not a tab
+stop. Nothing is communicated by colour alone.
 
 ### What ships today
 
 **The section, as specified.** `settings.component.html` draws it first, from `cancellationDrawn`:
 the standing paragraph, the four held-off sentences, **Cancel the erasure**, the region with both
-in-flight lines and every refusal, and the result sentence. `ErasureCancellationFlowService`,
+in-flight lines and every refusal, and the result sentence, from `cancellationResultShown`. The
+screen's `h1` carries `tabindex="-1"` for the focus rescue. `ErasureCancellationFlowService`,
 provided on the Settings component, owns the phase, the word and *pressable*;
 `erasure-cancellation-outcome.ts` reads the cancelling request's failures; and the `204` reaches
-`SessionService.erasureCancelled()` whether or not the screen is still there.
-`settings.component.scheduled-erasure.spec.ts` runs the real flow over the testing backend and pins
-the section's place, its prose, both in-flight lines, the result and its focus, five refusal lines
-whole and the other three by their opening and their *still scheduled* clause, the four holds, their
-order and the handler's gate, and every control Cancel holds.
+`SessionService.erasureCancelled()` whether or not the screen is still there, carrying the token
+`sessionToken()` gave just before the cancelling request went out.
+`erasure-cancellation-flow.service.spec.ts` pins that token and the press a schedule filed again
+reopens. `settings.component.scheduled-erasure.spec.ts` runs the real flow over the testing backend
+and pins the section's place, its prose, both in-flight lines, the result and its focus, five
+refusal lines whole and the other three by their opening and their *still scheduled* clause, the
+result giving way to a schedule filed again and a second whole act, no focus for a result nobody
+pressed for, the rescue to the result or the heading, the four holds, their order and the handler's
+gate, and every control Cancel holds.
 
 ## Changing the email address
 
@@ -4609,8 +4665,9 @@ answered. A word typed into a dialog would add a step and ask nothing new.
 
 **The fill keeps both of its promises.** A confirmation follows — the acknowledgement is the
 confirmation, inline, as the hand-off's is. And there is no way back from where this person stands:
-the one act that takes the date back needs a passkey, and nothing they hold is one. **The label is not Erase everything.** That is
-the act on Settings, which erases at once and asks for a passkey; this one files a date and asks
+the one act that takes the date back needs a passkey, and nothing they hold is one. **The label is
+not Erase everything.** That is the act on Settings, which erases at once and asks for a passkey;
+this one files a date and asks
 for neither. One label on two acts would tell a reader they are one act.
 
 **The commit's gate**, in the attribute and in the handler, reading one predicate with one owner:

@@ -49,7 +49,8 @@ public sealed class ErasureIrreversibilityTests
     /// nothing back, because nothing left. Whoever later builds a delayed, cancellable erasure should
     /// read this and understand that they are standing inside the carve-out rather than outside the
     /// rule — and that adding a cancellation route under the erasure resource would still have to
-    /// answer to <see cref="ErasureResource_MapsExactlyTheDestructiveRouteAndItsSchedule" />,
+    /// answer to
+    /// <see cref="ErasureResource_MapsExactlyTheDestructiveRouteItsScheduleAndItsCancellation" />,
     /// which is where that argument belongs.
     /// </para>
     /// <para>
@@ -64,8 +65,8 @@ public sealed class ErasureIrreversibilityTests
     /// which is the carve-out above restated: the pin would stand in front of work somebody was told to
     /// do, and would be deleted rather than argued with. The reversal the word would otherwise catch —
     /// a route directly under the erasure resource — is caught exhaustively by
-    /// <see cref="ErasureResource_MapsExactlyTheDestructiveRouteAndItsSchedule" /> instead, so the
-    /// carve-out costs nothing where the promise is actually made.
+    /// <see cref="ErasureResource_MapsExactlyTheDestructiveRouteItsScheduleAndItsCancellation" />
+    /// instead, so the carve-out costs nothing where the promise is actually made.
     /// </para>
     /// <para>
     /// <b>Every word is listed in each form it could be routed under, because the matcher does not
@@ -229,8 +230,8 @@ public sealed class ErasureIrreversibilityTests
     /// <para>
     /// Its limit is the vocabulary: this catches the route somebody names honestly, and a reversal
     /// route named <c>/api/me/erasure/second-chance</c> walks past it. That is the gap
-    /// <see cref="ErasureResource_MapsExactlyTheDestructiveRouteAndItsSchedule" /> closes within its
-    /// own scope, and the two are worth having together for exactly that reason.
+    /// <see cref="ErasureResource_MapsExactlyTheDestructiveRouteItsScheduleAndItsCancellation" />
+    /// closes within its own scope, and the two are worth having together for exactly that reason.
     /// </para>
     /// </remarks>
     [Test]
@@ -468,7 +469,7 @@ public sealed class ErasureIrreversibilityTests
     /// </para>
     /// </remarks>
     [Test]
-    public async Task ErasureResource_MapsExactlyTheDestructiveRouteAndItsSchedule()
+    public async Task ErasureResource_MapsExactlyTheDestructiveRouteItsScheduleAndItsCancellation()
     {
         // Arrange
         await using ApiFactory factory = new(
@@ -490,8 +491,9 @@ public sealed class ErasureIrreversibilityTests
     }
 
     /// <summary>
-    /// The control for <see cref="ErasureResource_MapsExactlyTheDestructiveRouteAndItsSchedule" />: the
-    /// same filter, over a table where a route nobody argued for has joined the resource.
+    /// The control for
+    /// <see cref="ErasureResource_MapsExactlyTheDestructiveRouteItsScheduleAndItsCancellation" />: the same
+    /// filter, over a table where a route nobody argued for has joined the resource.
     /// </summary>
     /// <remarks>
     /// The probe is named <c>/api/me/erasure/second-chance</c> on purpose — it carries none of

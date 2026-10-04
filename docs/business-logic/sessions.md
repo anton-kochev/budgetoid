@@ -600,21 +600,34 @@ required members. A third writer is a decision rather than a refactor.
   - **The scheduled erasure is the one fact read again, and the read publishes nothing else.** A
     sign-in's answer does not carry the schedule, so `established()` sends one marked
     `GET /api/me/session` behind it, unawaited, exactly as it reads the budget: the status is
-    `authenticated` while it is out, a failure leaves the schedule `'unread'`, and nothing it answers
-    moves the status. Without it the owner the schedule exists to warn — Google stolen, signing in
-    with the passkey that survived — would see no notice until a reload. A tab that stays open
-    learns of a schedule filed *after* it started through `refreshSchedule()`, which the shell calls
-    each time the document becomes visible again; the shell owns the listener and removes it with
-    itself. **No timer**: the API scales to zero, and every open tab polling would keep it awake for
-    the one case only a poll reaches — a tab left visible for days without a reload. Three guards
-    keep a late answer from overwriting a fresher one, and each is pinned in
-    `session.service.spec.ts`: a **generation** that every status or schedule write raises, so an
-    answer to a read sent before the write is dropped — a read out while the person withdraws the
-    schedule cannot bring the notice back; the answer's `kind` must match the status, since a cookie
-    replaced underneath the tab may name another session; and one refresh in flight at a time.
-    `erasureCancelled()` publishes `null` — nothing scheduled, which the server just said — never
-    `'unread'`. A locked tab learns of a withdrawal only on reload; whoever reads it either cannot
-    withdraw or is the person who filed it. See [erasure.md](erasure.md).
+    `authenticated` while it is out, a failure publishes nothing — the schedule stays as the sign-in
+    found it, which is `'unread'` because both establishing flows start anonymous — and nothing it
+    answers moves the status. Without it the owner the schedule exists to warn — Google stolen,
+    signing in with the passkey that survived — would see no notice until a reload. A tab that stays
+    open learns of a schedule filed *after* it started through `refreshSchedule()`, which the shell
+    calls each time the document becomes visible again, and only for a status the server answered
+    as a session; the shell owns the listener and removes it with itself. **No timer**: the API
+    scales to zero, and every open tab polling would keep it awake for the one case only a poll
+    reaches — a tab left visible for days without a reload.
+    - **Two guards keep a late answer from overwriting a fresher one**, both pinned in
+      `session.service.spec.ts`. A **generation**, raised by every status write and by the
+      schedule's own writers (`erasureScheduled()`, `erasureCancelled()`) — not by a read's
+      publication — drops an answer to a read sent before such a write, so a read out while the
+      person withdraws cannot bring the notice back. And the answer's `kind` must match the status,
+      which catches a cookie replaced underneath the tab by a session of the *other* kind; another
+      account of the same kind passes it, and only an identity in the answer could catch that.
+      Separately, at most one refresh is out at a time — a load rule, not a freshness one, and
+      `established()`'s own read does not wait on it.
+    - **A withdrawal's `204` publishes only into the session that sent it.** `erasureCancelled()`
+      takes the `sessionToken()` the flow read just before posting and does nothing when it is no
+      longer current, so an answer that lands after this tab signed out and somebody else signed in
+      cannot hide the new account's notice. The token moves only when one session ends or another
+      begins — `ended()`, `established()`, `establishedLocked()` and a probe that answered a
+      session — and is deliberately not the generation, which also moves inside one session and
+      would drop the right answer. Otherwise it publishes `null` — nothing scheduled, which the
+      server just said — never `'unread'`.
+    - A locked tab learns of a withdrawal only on reload; whoever reads it either cannot withdraw or
+      is the person who filed it. See [erasure.md](erasure.md).
   - **`ended()` is the single owner of "the account's keys go too", and `established()` owns no key
     material.** What `established()` does own is discarding the provider's tokens, which is a
     different fact and has its own rule below. A session ending is where `AccountKeyCustodyService.lock()` is called, in that

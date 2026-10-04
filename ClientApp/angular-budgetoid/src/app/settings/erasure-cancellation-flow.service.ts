@@ -67,7 +67,10 @@ import {
  *   Nothing has been posted.
  * * `cancelling` — the cancelling request is out. It stays here while a `401`
  *   on it is being told apart from an ended session.
- * * `cancelled` — it answered `204`. Terminal: there is nothing left to cancel.
+ * * `cancelled` — the last press was answered `204`. Left only by a press,
+ *   which {@link ErasureCancellationFlowService.pressable} allows once a
+ *   schedule stands again — a Google sign-in can file a new one after this one
+ *   was withdrawn.
  */
 export type ErasureCancellationPhase =
   | 'idle'
@@ -143,17 +146,31 @@ export class ErasureCancellationFlowService {
   );
 
   /**
-   * Whether a press would start anything: nothing is running and nothing has
-   * been cancelled. **One predicate with one owner** — the screen composes its
-   * holds on top of it, and {@link cancel} refuses on it again, because
-   * Material's click-halt is applied to anchors only.
+   * Whether a press would start anything: nothing is running, and either the
+   * last press did not cancel or a schedule stands again since it did. **One
+   * predicate with one owner** — the screen composes its holds on top of it,
+   * and {@link cancel} refuses on it again, because Material's click-halt is
+   * applied to anchors only.
+   *
+   * After a `204` it opens only on an instant, never on `null` or `'unread'`:
+   * a press with nothing said to be scheduled spends a nonce on nothing.
    *
    * `undetermined` leaves it open, unlike the erasure: the route is
    * idempotent, so pressing again is how somebody finds out.
    */
-  public readonly pressable: Signal<boolean> = computed(
-    () => this.phaseSignal() === 'idle',
-  );
+  public readonly pressable: Signal<boolean> = computed(() => {
+    const phase = this.phaseSignal();
+
+    if (phase === 'idle') {
+      return true;
+    }
+
+    const scheduled = this.session.scheduledErasure();
+
+    return (
+      phase === 'cancelled' && scheduled !== null && scheduled !== 'unread'
+    );
+  });
 
   constructor() {
     // The screen that provides this is going. A press that has not posted is
@@ -179,9 +196,12 @@ export class ErasureCancellationFlowService {
     this.failureSignal.set(null);
 
     // **Before the challenge**, the only position that costs nothing: a
-    // re-authentication challenge is a nonce the server persisted.
+    // re-authentication challenge is a nonce the server persisted. Through
+    // `end`, so a press from `cancelled` lands at rest like one from `idle` —
+    // the section draws a word only at rest, and left on `cancelled` this one
+    // would say nothing.
     if (!this.ceremony.available()) {
-      this.failureSignal.set('unsupported');
+      this.end('unsupported');
 
       return;
     }
@@ -230,6 +250,12 @@ export class ErasureCancellationFlowService {
 
     this.phaseSignal.set('cancelling');
 
+    // **The visit this request is sent in, read now** — after the ceremony,
+    // which can outlast a sign-out and a sign-in, and before the request,
+    // whose answer describes the account as it was when it went out.
+    // `SessionService` publishes the `204` only into this visit.
+    const sentUnder = this.session.sessionToken();
+
     try {
       // Only the payload; `cancelScheduledErasure` projects the five members
       // it names. `defaultValue`, because a `204` answered with no emission
@@ -254,11 +280,13 @@ export class ErasureCancellationFlowService {
       return;
     }
 
-    // The phase first, so the section that renders on it never has a pass in
-    // which neither it nor the schedule holds it up. Then the one owner of the
-    // schedule this tab knows — whether or not the screen is still here.
+    // The phase on any `204`, then the one owner of the schedule this tab
+    // knows — whether or not the screen is still here, and whether or not that
+    // owner still publishes it: a `204` from a visit that has ended changes
+    // nothing there, and the screen draws its result only once nothing is
+    // scheduled.
     this.phaseSignal.set('cancelled');
-    this.session.erasureCancelled();
+    this.session.erasureCancelled(sentUnder);
   }
 
   // The server's own options, or the word the press ends on. Unmarked, so a

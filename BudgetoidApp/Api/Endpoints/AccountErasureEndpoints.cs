@@ -49,7 +49,7 @@ public static class AccountErasureEndpoints
         // the one act it may perform. Under the erasure resource on purpose — it is the same erasure,
         // deferred — and ErasureIrreversibilityTests pins the resource's three routes, this one, the
         // erasure above and the cancellation below, as an exact list
-        // (ErasureResource_MapsExactlyTheDestructiveRouteAndItsSchedule).
+        // (ErasureResource_MapsExactlyTheDestructiveRouteItsScheduleAndItsCancellation).
         //
         // No body and no id, for the immediate erasure's reason: the account scheduled is whichever one
         // the request is authenticated as. No passkey either, and that is not a gap: the caller is
@@ -99,8 +99,9 @@ public static class AccountErasureEndpoints
                     request.UserHandle)),
                 cancellationToken);
 
-            // 204 whether this request removed the row, another tab did, or none stood: the post-condition
-            // is the answer, and a body distinguishing them would say whether a schedule existed.
+            // 204 whether this request removed the row, something else did, or none stood: the request is
+            // idempotent and the post-condition is the answer. That is what lets the client keep Cancel
+            // pressable after an undetermined answer — a repeat can only ever say the same thing.
             return TypedResults.NoContent();
         });
 

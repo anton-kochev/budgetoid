@@ -55,9 +55,13 @@ public interface IErasureScheduleRepository
     /// never granted.
     /// </para>
     /// <para>
-    /// <see cref="ScheduleRemoval.AlreadyGone"/> answers only a delete that matched nothing because a
-    /// concurrent cancel removed the row first. A conflict over any other row the same unit of work was
-    /// tracking propagates: it is a failure this method does not model.
+    /// <see cref="ScheduleRemoval.AlreadyGone"/> answers a delete that matched nothing because the row
+    /// was already gone when it ran — see that member for the three ways it gets there. The narrowing
+    /// reads the entries the concurrency failure names: it answers <see cref="ScheduleRemoval.AlreadyGone"/>
+    /// only when there is at least one and every one is a deleted <see cref="ErasureSchedule"/>, and lets
+    /// anything else propagate. Those entries are only the first failing command's, so this tells a
+    /// schedule's empty delete apart from a conflict reported on another entity; it does not prove that
+    /// no other row in the same save conflicted.
     /// </para>
     /// </remarks>
     Task<ScheduleRemoval> RemoveAsync(ErasureSchedule schedule, CancellationToken cancellationToken = default);

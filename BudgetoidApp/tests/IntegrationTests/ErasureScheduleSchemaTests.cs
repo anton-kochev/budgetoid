@@ -19,9 +19,10 @@ namespace IntegrationTests;
 /// <para>
 /// <b>The cascade is what keeps the schedule from becoming a deletion record.</b> Once the account
 /// is gone, a row still naming it says that this user existed and asked to be erased, which
-/// <c>docs/business-logic/erasure.md</c> forbids. The role holds no <c>DELETE</c> on this table, so
-/// the cascade is the only way out for a row — and the probe below deletes the user on the
-/// <b>application</b> connection to prove the referential action reaches it without one.
+/// <c>docs/business-logic/erasure.md</c> forbids. Once the account is gone the cascade is the only
+/// way out for a row — the role's <c>DELETE</c> on this table is the withdrawal's, scoped to a live
+/// account's own session — and the probe below deletes the user on the <b>application</b> connection
+/// to prove the referential action reaches the row without any statement of its own.
 /// </para>
 /// <para>
 /// The duplicate probe runs on the container <b>superuser</b> connection, for the reason

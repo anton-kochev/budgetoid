@@ -9,8 +9,8 @@ namespace Domain.Erasure;
 /// is the one act a locked session may perform — a person who lost every passkey and every recovery
 /// code releasing the account and the address behind it — and it is filed with a delay rather than
 /// carried out at once. The delay is the window an owner would need if the request came from somebody
-/// holding a stolen provider account instead. Only the owner can withdraw one — from a full session,
-/// with a passkey — which is exactly what somebody holding only the provider account cannot do.
+/// holding a stolen provider account instead. Withdrawing one takes a full session and a fresh passkey
+/// assertion, and somebody holding only the provider account can produce neither.
 /// </para>
 /// <para>
 /// <b><see cref="UserId"/> is the primary key, and that is the rule a repeat request rests on.</b> An

@@ -285,9 +285,11 @@ public sealed class CancelScheduledErasureEndpointTests
     /// </summary>
     /// <remarks>
     /// <b>The gate runs whether or not a schedule stands.</b> A handler that read the schedule first and
-    /// returned early on none would answer the same 204 and leave the nonce live — so a caller could probe
-    /// whether an account holds a schedule by whether the nonce survived, and a stolen session could hold
-    /// a valid assertion in reserve for the moment one is filed.
+    /// returned early on none would answer the same 204 and leave the nonce live. Gate first, because a
+    /// 204 then only ever goes to a caller who proved a passkey, so the answer to a bad proof never depends
+    /// on what the database holds; and spent either way, because a nonce left live sits in the shared
+    /// re-authentication pool, spendable at <c>POST /api/me/erasure</c> for its five minutes — hygiene,
+    /// not a threat boundary.
     /// </remarks>
     [Test]
     public async Task Cancel_WhenNothingIsScheduled_Answers204_AndSpendsTheNonce()
@@ -357,9 +359,18 @@ public sealed class CancelScheduledErasureEndpointTests
     /// and the same assertion from a live full session then succeeds.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The route accepts no ended session — <c>AcceptsEndedSession</c> is the sign-out route's alone — so
     /// this is the fallback policy's 401, before the handler. The live arm is the control: the nonce is
     /// single use, so an ended request that had reached the gate would leave it a 401.
+    /// </para>
+    /// <para>
+    /// <b>The 401 carries no <c>refusal</c> member.</b> The client reads <c>refusal: "assertion"</c> as a
+    /// refused passkey and asks nothing more, and reads a 401 without it against one unmarked
+    /// <c>GET /api/me</c> — the probe that lets the session interceptor end the session. A fallback 401
+    /// wearing the word would tell somebody whose session ended that their passkey was refused, and leave
+    /// them on a screen they can no longer use.
+    /// </para>
     /// </remarks>
     [Test]
     public async Task Cancel_FromAnEndedSession_Is401()
@@ -392,6 +403,7 @@ public sealed class CancelScheduledErasureEndpointTests
         // Assert
         await Assert.That(liveResponse.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
         await Assert.That(endedResponse.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
+        await Assert.That(await RefusalOfAsync(endedResponse)).IsNull();
         await Assert.That(afterTheEndedSession).IsEquivalentTo(new[] { (owner.UserId, OwnerTakesEffectAt) });
     }
 
@@ -400,9 +412,15 @@ public sealed class CancelScheduledErasureEndpointTests
     /// the same assertion from the live full session then succeeds.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The assertion names the account's own passkey and carries its user handle, so a route that let the
     /// assertion stand in for a session — resolving the account from the credential — would answer 204
     /// here. The live arm proves the assertion was good and the nonce left unspent.
+    /// </para>
+    /// <para>
+    /// <b>No <c>refusal</c> member</b>, for <see cref="Cancel_FromAnEndedSession_Is401" />'s reason: the
+    /// client must read this 401 against its probe, never as a refused passkey.
+    /// </para>
     /// </remarks>
     [Test]
     public async Task Cancel_WithNoSession_Is401()
@@ -426,6 +444,7 @@ public sealed class CancelScheduledErasureEndpointTests
         // Assert
         await Assert.That(signedIn.StatusCode).IsEqualTo(HttpStatusCode.NoContent);
         await Assert.That(anonymous.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
+        await Assert.That(await RefusalOfAsync(anonymous)).IsNull();
         await Assert.That(afterTheAnonymousRequest).IsEquivalentTo(new[] { (owner.UserId, OwnerTakesEffectAt) });
     }
 
@@ -571,6 +590,7 @@ public sealed class CancelScheduledErasureEndpointTests
     private const string SurvivorSubject = "google-erasure-cancel-survivor";
     private const string SurvivorEmail = "erasure-cancel-survivor@budgetoid.test";
     private const string TraceIdMember = "traceId";
+    private const string RefusalMember = "refusal";
 
     /// <summary>The instant every request here is served at, in whole seconds.</summary>
     private static readonly DateTime RequestInstant = new(2026, 10, 2, 9, 30, 0, DateTimeKind.Utc);
@@ -746,6 +766,31 @@ public sealed class CancelScheduledErasureEndpointTests
     /// <summary>Counts rendered as one line, so a failure names the table that moved.</summary>
     private static string Render(IReadOnlyDictionary<string, long> counts) =>
         string.Join(", ", counts.OrderBy(pair => pair.Key, StringComparer.Ordinal).Select(pair => $"{pair.Key}={pair.Value}"));
+
+    /// <summary>
+    /// The body's <c>refusal</c> member as raw JSON, or <see langword="null" /> when the body carries none —
+    /// including an empty body, or one that is not a JSON object, neither of which the client can read a
+    /// member off. Returned rather than tested, so a failure names the value that leaked.
+    /// </summary>
+    private static async Task<string?> RefusalOfAsync(HttpResponseMessage response)
+    {
+        string raw = await response.Content.ReadAsStringAsync();
+        if (raw.Length == 0)
+        {
+            return null;
+        }
+
+        try
+        {
+            return JsonNode.Parse(raw) is JsonObject body && body.ContainsKey(RefusalMember)
+                ? body[RefusalMember]?.ToJsonString() ?? "null"
+                : null;
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return null;
+        }
+    }
 
     private static async Task<JsonObject> ReadJsonObjectAsync(HttpResponseMessage response) =>
         JsonNode.Parse(await response.Content.ReadAsStringAsync()) as JsonObject

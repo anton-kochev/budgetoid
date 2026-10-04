@@ -23,7 +23,7 @@ import {
   vi,
   type Mock,
 } from 'vitest';
-import { SessionService } from './session.service';
+import { SessionService, type SessionToken } from './session.service';
 
 // The session cookie is `HttpOnly`, so script cannot read it and a cold load
 // has no local evidence at all about who the visitor is. Asking the server is
@@ -1333,7 +1333,7 @@ describe('SessionService learning of a schedule after bootstrap', () => {
       api.getSession.mockReturnValue(answer);
       service.established();
       expect(api.getSession).toHaveBeenCalledTimes(1);
-      service.erasureCancelled();
+      service.erasureCancelled(service.sessionToken());
 
       // Act
       answer.next({ ...FULL_SESSION, erasure: SCHEDULED });
@@ -1417,7 +1417,7 @@ describe('SessionService learning of a schedule after bootstrap', () => {
       const answer = new Subject<SessionDto>();
       api.getSession.mockReturnValue(answer);
       methodOf(service, 'refreshSchedule')();
-      methodOf(service, 'erasureCancelled')();
+      service.erasureCancelled(service.sessionToken());
 
       // Act
       answer.next({ ...FULL_SESSION, erasure: SCHEDULED });
@@ -1466,7 +1466,7 @@ describe('SessionService learning of a schedule after bootstrap', () => {
         of({ ...FULL_SESSION, erasure: SCHEDULED }),
       );
       await service.probe();
-      methodOf(service, 'erasureCancelled')();
+      service.erasureCancelled(service.sessionToken());
       expect(service.scheduledErasure()).toBeNull();
       api.getSession.mockReturnValue(
         of({ ...FULL_SESSION, erasure: SCHEDULED }),
@@ -1629,7 +1629,7 @@ describe('SessionService learning of a schedule after bootstrap', () => {
       await service.probe();
 
       // Act
-      methodOf(service, 'erasureCancelled')();
+      service.erasureCancelled(service.sessionToken());
 
       // Assert
       expect(service.scheduledErasure()).toBeNull();
@@ -1644,10 +1644,177 @@ describe('SessionService learning of a schedule after bootstrap', () => {
       api.getSession.mockClear();
 
       // Act
-      methodOf(service, 'erasureCancelled')();
+      service.erasureCancelled(service.sessionToken());
 
       // Assert
       expect(service.scheduledErasure()).toBeNull();
+    });
+  });
+
+  // **A `204` speaks for the visit it was sent in, and for no other.** The
+  // cancelling request can be out while the session ends and another begins
+  // in the same tab; its answer describes the account as it was, and
+  // published over the new visit's schedule it would take down a notice about
+  // an erasure nobody withdrew. The flow reads the token just before it posts
+  // and hands it back with the `204`.
+  //
+  // **Not the generation.** That moves on every write, a schedule request's
+  // `200` among them, and a `204` judged against it would be dropped for a
+  // write that happened inside the same visit.
+  describe('the session token', () => {
+    // One row of the two tables below: a write, synchronous or awaited.
+    interface TokenWrite {
+      readonly write: string;
+      readonly act: () => void | Promise<void>;
+    }
+
+    // An account whose erasure is on file, read by a cold load.
+    async function signedInWithASchedule(): Promise<void> {
+      api.getSession.mockReturnValue(
+        of({ ...FULL_SESSION, erasure: SCHEDULED }),
+      );
+      await service.probe();
+      expect(service.scheduledErasure()).toEqual({
+        takesEffectAtUtc: TAKES_EFFECT_AT_UTC,
+      });
+      api.getSession.mockClear();
+    }
+
+    it('a 204 landing after the session ended and another began leaves the newer schedule standing', async () => {
+      // Arrange
+      await signedInWithASchedule();
+      const sentUnder: SessionToken = service.sessionToken();
+      service.ended();
+      api.getSession.mockReturnValue(
+        of({ ...FULL_SESSION, erasure: SCHEDULED }),
+      );
+      service.established();
+      await afterAnswers();
+      expect(service.scheduledErasure()).toEqual({
+        takesEffectAtUtc: TAKES_EFFECT_AT_UTC,
+      });
+
+      // Act
+      service.erasureCancelled(sentUnder);
+
+      // Assert
+      // The new visit's read said the schedule stands, and nothing sent in
+      // this visit has said otherwise.
+      expect(service.scheduledErasure()).toEqual({
+        takesEffectAtUtc: TAKES_EFFECT_AT_UTC,
+      });
+      expect(service.status()).toBe('authenticated');
+    });
+
+    it('a 204 sent before the session ended does nothing once it has', async () => {
+      // Arrange
+      await signedInWithASchedule();
+      const sentUnder: SessionToken = service.sessionToken();
+      service.ended();
+
+      // Act
+      service.erasureCancelled(sentUnder);
+
+      // Assert
+      // `'unread'` is what the next occupant of this tab is owed; `null` would
+      // tell them the server said nothing is scheduled for an account that is
+      // not theirs to know about.
+      expect(service.scheduledErasure()).toBe('unread');
+      expect(service.status()).toBe('anonymous');
+    });
+
+    // The control for the two cases above: a class that judged the `204`
+    // against the generation would drop it here, over a write made inside
+    // the visit it was sent in.
+    it('a 204 sent in this session publishes nothing scheduled though the schedule was written since', async () => {
+      // Arrange
+      await signedInWithNothingScheduled();
+      const sentUnder: SessionToken = service.sessionToken();
+      service.erasureScheduled(TAKES_EFFECT_AT_UTC);
+
+      // Act
+      service.erasureCancelled(sentUnder);
+
+      // Assert
+      expect(service.scheduledErasure()).toBeNull();
+    });
+
+    // Which writes begin or end a visit, and which are a visit's own. A token
+    // that moved on a write of the second kind would drop a `204` sent in the
+    // same visit; one that stood still on the first kind would publish a `204`
+    // into a visit it was never sent in.
+    it.each<TokenWrite>([
+      {
+        write: 'the session ending',
+        act: (): void => service.ended(),
+      },
+      {
+        write: 'a session being established',
+        act: (): void => service.established(),
+      },
+      {
+        write: 'a locked session being established',
+        act: (): void =>
+          service.establishedLocked({ ...LOCKED_SESSION, erasure: SCHEDULED }),
+      },
+      {
+        write: 'a probe finding a full session',
+        act: async (): Promise<void> => {
+          api.getSession.mockReturnValue(of(FULL_SESSION));
+          await service.probe();
+        },
+      },
+      {
+        write: 'a probe finding a locked session',
+        act: async (): Promise<void> => {
+          api.getSession.mockReturnValue(of(LOCKED_SESSION));
+          await service.probe();
+        },
+      },
+    ])('moves on $write', async ({ act }) => {
+      // Arrange
+      await signedInWithASchedule();
+      api.getSession.mockReturnValue(of(FULL_SESSION));
+      const before: SessionToken = service.sessionToken();
+
+      // Act
+      await act();
+      await afterAnswers();
+
+      // Assert
+      expect(service.sessionToken()).not.toBe(before);
+    });
+
+    it.each<TokenWrite>([
+      {
+        write: 'a refresh publishing the schedule it read',
+        act: async (): Promise<void> => {
+          api.getSession.mockReturnValue(of(FULL_SESSION));
+          service.refreshSchedule();
+          await afterAnswers();
+          // The publication happened, so the case is about a write and not
+          // about a read that dropped its answer.
+          expect(service.scheduledErasure()).toBeNull();
+        },
+      },
+      {
+        write: 'a schedule request answering',
+        act: (): void => service.erasureScheduled('2026-10-11T08:00:00Z'),
+      },
+      {
+        write: 'a cancellation answering',
+        act: (): void => service.erasureCancelled(service.sessionToken()),
+      },
+    ])('holds through $write', async ({ act }) => {
+      // Arrange
+      await signedInWithASchedule();
+      const before: SessionToken = service.sessionToken();
+
+      // Act
+      await act();
+
+      // Assert
+      expect(service.sessionToken()).toBe(before);
     });
   });
 });

@@ -13,8 +13,8 @@
 // fetched" is read off the wire, which a stubbed flow could not say.
 //
 // The seams replaced are the ones that are not this section's:
-// - `SessionService`, reduced to the schedule signal and the one write the
-//   cancellation's 204 makes;
+// - `SessionService`, reduced to the schedule signal, the token the flow reads
+//   before it posts, and the one write the cancellation's 204 makes;
 // - `WebauthnCeremonyService`, which reaches `navigator.credentials`;
 // - the screen's other flows and services, each a stub of real signals set one
 //   at a time, `settings.component.spec.ts`'s discipline.
@@ -69,6 +69,7 @@ import { ProviderDepartureService } from '@app-core/services/provider-departure.
 import {
   SessionService,
   type ScheduledErasure,
+  type SessionToken,
 } from '@app-core/session/session.service';
 import {
   afterEach,
@@ -119,7 +120,7 @@ const OUTLINE_CLASS = 'mat-mdc-outlined-button';
 const SECTION_PROSE =
   'This account is scheduled to be erased. Cancelling needs a passkey ' +
   'registered to this account — signing in with Google again doesn’t cancel it.';
-const ASKING_LINE = 'Waiting for your passkey…';
+const ASKING_LINE = 'Waiting for your passkey.';
 const CANCELLING_LINE = 'Cancelling the erasure…';
 const RESULT =
   'The erasure is cancelled. Nothing is scheduled for this account.';
@@ -138,7 +139,7 @@ const LINES = {
     'scheduled. Reload the page and try again.',
   undetermined:
     'Budgetoid didn’t hear back, so the erasure may already be cancelled. ' +
-    'Reload the page to find out.',
+    'Press again to check — cancelling twice changes nothing.',
 } as const;
 
 const STILL_SCHEDULED = 'so the erasure is still scheduled';
@@ -358,7 +359,8 @@ interface SessionStub {
   readonly status: WritableSignal<'authenticated'>;
   readonly budgetId: WritableSignal<string | null>;
   readonly scheduledErasure: WritableSignal<ScheduledErasure>;
-  readonly erasureCancelled: Mock<() => void>;
+  readonly sessionToken: Mock<() => SessionToken>;
+  readonly erasureCancelled: Mock<(sentUnder: SessionToken) => void>;
   readonly ended: Mock<() => void>;
   readonly refreshSchedule: Mock<() => void>;
 }
@@ -435,9 +437,14 @@ describe('SettingsComponent and the scheduled erasure', () => {
       status: signal('authenticated'),
       budgetId: signal<string | null>('3f5b0a91-7c24-4a1e-9d3b-6e8f0c2a5471'),
       scheduledErasure,
+      // One visit for the whole case: what the token guards is the class's
+      // own, pinned in `session.service.spec.ts`.
+      sessionToken: vi.fn<() => SessionToken>(() => 1 as SessionToken),
       // The real member's contract: the 204 is the server saying nothing is
       // scheduled.
-      erasureCancelled: vi.fn(() => scheduledErasure.set(null)),
+      erasureCancelled: vi.fn<(sentUnder: SessionToken) => void>(() =>
+        scheduledErasure.set(null),
+      ),
       ended: vi.fn(),
       refreshSchedule: vi.fn(),
     };
@@ -971,6 +978,221 @@ describe('SettingsComponent and the scheduled erasure', () => {
       expect(said.startsWith('This browser can’t check a passkey')).toBe(true);
       expect(said).toContain(STILL_SCHEDULED);
       expect(http.match(OPTIONS_URL)).toEqual([]);
+    });
+  });
+
+  // **A cancel is not the end of the section.** A Google sign-in can file a
+  // new erasure after this one was withdrawn, and a read brings it to this
+  // screen. The result sentence is true only while nothing is scheduled, so it
+  // gives way to the prose and a live Cancel, and comes back if the new
+  // schedule is withdrawn too.
+  describe('a schedule filed again after a cancel', () => {
+    // Presses Cancel through to its 204 and waits for the result sentence.
+    async function cancelled(): Promise<Element> {
+      const cancelling = await reachTheCancellingRequest();
+
+      cancelling.flush(null, { status: 204, statusText: 'No Content' });
+      const result = await eventually(
+        () => elementSaying(section(), RESULT),
+        'the result sentence',
+        redraw,
+      );
+      await settle();
+
+      return result;
+    }
+
+    // A read finding a schedule filed since the cancel.
+    async function refiled(): Promise<void> {
+      session.scheduledErasure.set({ takesEffectAtUtc: INSTANT });
+      await settle();
+    }
+
+    it('drops the result and draws the prose and a pressable Cancel', async () => {
+      // Arrange
+      render();
+      await cancelled();
+
+      // Act
+      await refiled();
+
+      // Assert
+      // *Nothing is scheduled for this account* is false the moment a
+      // schedule stands, and the standing prose is true again.
+      const prose = Array.from(section()?.querySelectorAll('p') ?? []).map(
+        normalize,
+      );
+
+      expect(elementSaying(section(), RESULT)).toBeNull();
+      expect(prose).toContain(SECTION_PROSE);
+      expect(cancelControl(), 'the section draws no Cancel').not.toBeNull();
+      expect(cancelControl()?.getAttribute('aria-disabled')).not.toBe('true');
+    });
+
+    // **The second press owes the arrival move as the first did.** Pressed
+    // without taking focus — what a click does in a browser that does not
+    // focus buttons, and what `click()` does here — so nothing but that move
+    // can put focus on the result: no focused element leaves with Cancel.
+    it('cancels again on a second press and moves focus to the result', async () => {
+      // Arrange
+      render();
+      await cancelled();
+      await refiled();
+      expect(cancelControl(), 'the section draws no Cancel').not.toBeNull();
+      expect(document.activeElement).not.toBe(cancelControl());
+
+      // Act
+      const result = await cancelled();
+
+      // Assert
+      // A whole second act: a fresh challenge and ceremony.
+      expect(ceremony.assertPasskey).toHaveBeenCalledTimes(2);
+      expect(session.erasureCancelled).toHaveBeenCalledTimes(2);
+      expect(document.activeElement).toBe(result);
+    });
+
+    // **The arrival move belongs to a press, and to the render it lands in.**
+    // A result that comes back because another tab withdrew the new schedule
+    // arrives under nobody's hand, and focus stays where the person put it.
+    it('moves no focus when the result comes back without a press', async () => {
+      // Arrange
+      render();
+      await cancelled();
+      await refiled();
+      expect(elementSaying(section(), RESULT)).toBeNull();
+      const elsewhere = buttonNamed(host, UNLOCK);
+      elsewhere?.focus();
+      expect(document.activeElement).toBe(elsewhere);
+
+      // Act
+      session.scheduledErasure.set(null);
+      await settle();
+
+      // Assert
+      expect(elementSaying(section(), RESULT)).not.toBeNull();
+      expect(document.activeElement).toBe(elsewhere);
+    });
+
+    // **The move owed by a 204 is dropped when no result is drawn for it.** A
+    // 204 that spoke for an older visit publishes nothing, so the schedule
+    // stands and no result is drawn; a read withdrawing it later draws the
+    // result under nobody's hand, and a move still owed from the 204 would
+    // pull focus to it.
+    it('moves no focus to a result first drawn after a 204 that published nothing', async () => {
+      // Arrange
+      // The real member's no-op for a token from another visit.
+      session.erasureCancelled.mockImplementation(() => undefined);
+      render();
+      const cancelling = await reachTheCancellingRequest();
+      cancelling.flush(null, { status: 204, statusText: 'No Content' });
+      await settle();
+      expect(session.erasureCancelled).toHaveBeenCalledTimes(1);
+      expect(elementSaying(section(), RESULT)).toBeNull();
+      const elsewhere = buttonNamed(host, UNLOCK);
+      elsewhere?.focus();
+      expect(document.activeElement).toBe(elsewhere);
+
+      // Act
+      session.scheduledErasure.set(null);
+      await settle();
+
+      // Assert
+      expect(elementSaying(section(), RESULT)).not.toBeNull();
+      expect(document.activeElement).toBe(elsewhere);
+    });
+
+    // **Focus leaving with Cancel is rescued to the sentence that replaced
+    // it.** The new schedule withdrawn elsewhere takes Cancel out from under
+    // focus and draws the result in its place.
+    it('moves focus to the result when Cancel leaves under a schedule cancelled elsewhere', async () => {
+      // Arrange
+      render();
+      await cancelled();
+      await refiled();
+      cancelControl()?.focus();
+      expect(document.activeElement).toBe(cancelControl());
+
+      // Act
+      session.scheduledErasure.set(null);
+      await settle();
+
+      // Assert
+      const result = elementSaying(section(), RESULT);
+
+      expect(result, 'the section draws no result').not.toBeNull();
+      expect(cancelControl()).toBeNull();
+      expect(document.activeElement).toBe(result);
+    });
+  });
+
+  // **Focus never falls to `<body>` because the section left.** A read can
+  // take the section away under the control that holds focus — the schedule
+  // withdrawn from another tab — and with no result to land on, focus goes to
+  // the screen's heading, which takes it without becoming a tab stop. Focus
+  // the person put anywhere else is theirs and is not touched.
+  describe('focus when the section leaves', () => {
+    function heading(): HTMLHeadingElement | null {
+      return host.querySelector('h1');
+    }
+
+    it('moves focus to the heading when the section leaves while Cancel holds focus', async () => {
+      // Arrange
+      render();
+      cancelControl()?.focus();
+      expect(document.activeElement).toBe(cancelControl());
+
+      // Act
+      session.scheduledErasure.set(null);
+      await settle();
+
+      // Assert
+      expect(section()).toBeNull();
+      expect(heading()?.getAttribute('tabindex')).toBe('-1');
+      expect(document.activeElement).toBe(heading());
+    });
+
+    // The section is kept through the press, so it leaves only when the
+    // refusal hands the press back with nothing scheduled.
+    it('moves focus to the heading when a refused press ends after a read answered nothing scheduled', async () => {
+      // Arrange
+      render();
+      cancelControl()?.focus();
+      await cancellationAsks();
+      session.scheduledErasure.set(null);
+      redraw();
+      expect(document.activeElement).toBe(cancelControl());
+      ceremony.settle();
+      const cancelling = await requestTo(CANCELLATION_URL);
+
+      // Act
+      cancelling.flush(ASSERTION_REFUSAL, {
+        status: 401,
+        statusText: 'Unauthorized',
+      });
+      await settle();
+
+      // Assert
+      expect(section()).toBeNull();
+      expect(document.activeElement).toBe(heading());
+    });
+
+    it('leaves focus where it is when the section leaves while focus is elsewhere', async () => {
+      // Arrange
+      render();
+      // Cancel held focus once, so a rescue that remembered it and ignored
+      // where focus is now would fire here.
+      cancelControl()?.focus();
+      const elsewhere = buttonNamed(host, UNLOCK);
+      elsewhere?.focus();
+      expect(document.activeElement).toBe(elsewhere);
+
+      // Act
+      session.scheduledErasure.set(null);
+      await settle();
+
+      // Assert
+      expect(section()).toBeNull();
+      expect(document.activeElement).toBe(elsewhere);
     });
   });
 

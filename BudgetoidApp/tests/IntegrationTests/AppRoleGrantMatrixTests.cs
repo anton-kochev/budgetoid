@@ -299,7 +299,7 @@ public sealed class AppRoleGrantMatrixTests
         // role's — the same mechanism three lines up — so an account erasure carries this row away
         // although the role could not have deleted it itself.
         ("factor_manifests", ["SELECT", "INSERT"]),
-        // SELECT AND INSERT, AND NOTHING ELSE OF ANY SHAPE — no column appears for this table in
+        // SELECT, INSERT AND DELETE, AND NO UPDATE OF ANY SHAPE — no column appears for this table in
         // ExpectedUpdateColumnGrants either. Requesting an erasure from a locked session writes the
         // row once; a repeat request reads it back and answers the stored instant, so the date never
         // moves and there is no statement for an UPDATE to serve. A table-wide or column-listed UPDATE

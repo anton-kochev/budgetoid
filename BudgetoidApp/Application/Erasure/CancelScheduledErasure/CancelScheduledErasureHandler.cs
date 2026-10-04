@@ -5,22 +5,25 @@ using Domain.Erasure;
 namespace Application.Erasure.CancelScheduledErasure;
 
 /// <summary>
-/// Withdraws the signed-in account's scheduled erasure on a verified passkey assertion, leaving the
-/// account live and no schedule standing.
+/// Withdraws the signed-in account's scheduled erasure on a verified passkey assertion, leaving no
+/// schedule standing.
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>The gate runs first, every time, and outside any transaction.</b> Before the schedule is read, so
-/// a refused assertion learns nothing about it; and even when nothing is scheduled, so the nonce is spent
-/// either way. A handler that looked first and returned early on "nothing to cancel" would leave the
-/// nonce live — a caller could tell by its survival whether a schedule stands, and a stolen full session
-/// could keep a valid assertion in reserve for the moment one is filed. Outside a transaction for the
-/// reason <see cref="Users.EraseAccount.EraseAccountHandler"/> gives: the consume must commit on its own.
+/// <b>The gate runs first, every time, and outside any transaction.</b> Not to hide whether a schedule
+/// stands — any full session reads that from <c>GET /api/me/session</c> — but for two narrower reasons.
+/// A 204 only ever goes to a caller who proved a passkey, so a bad proof's answer never depends on what
+/// the table holds. And the nonce is spent even when nothing is scheduled: a handler that returned early
+/// on "nothing to cancel" would leave it live in the shared re-authentication pool, where it would also
+/// authorize <c>POST /api/me/erasure</c> and every other assertion-gated act for the rest of its five
+/// minutes. That second reason is hygiene, not a boundary — the nonce was minted for this session and
+/// would have been spendable there anyway. Outside a transaction for the reason
+/// <see cref="Users.EraseAccount.EraseAccountHandler"/> gives: the consume must commit on its own.
 /// </para>
 /// <para>
-/// <b>The row is deleted, never stamped</b>, and an absent row is not an error. The post-condition — the
-/// account is live and no schedule stands — is what the caller is told, whether this request removed the
-/// row, a concurrent cancel from another tab removed it first, or none was ever filed.
+/// <b>The row is deleted, never stamped</b>, and an absent row is not an error. The post-condition — no
+/// schedule stands — is what the caller is told, whether this request removed the row, something else
+/// removed it first, or none was ever filed.
 /// </para>
 /// <para>
 /// <b>It takes no <c>ILogger</c>, and must never take one.</b> A line naming an account whose schedule

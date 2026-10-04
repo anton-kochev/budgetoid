@@ -167,8 +167,9 @@ this tab cannot open what the file is written from — a key rotation in flight,
 
 **What no sentence may say any more is that this screen cannot ask for a passkey the server
 checks.** Key rotation asks for exactly that one, a few sections down, and Erase everything and
-Cancel the erasure ask for it too. A sentence that names a checked passkey as the missing piece is therefore false in
-front of anybody who has rotated their keys, and the Revoke and Generate sentences were rewritten
+Cancel the erasure ask for it too. A sentence that names a checked passkey as the missing piece is
+therefore false in front of anybody who has rotated their keys, and the Revoke and Generate
+sentences were rewritten
 for that reason. Each sentence sits above the list rather than beside each row, so a screen reader
 hears it once instead of once per entry. An entry nothing can ever revoke carries no button at all,
 not even a disabled one.

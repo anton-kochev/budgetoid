@@ -13,9 +13,14 @@
 //
 // Two seams are replaced. `WebauthnCeremonyService` reaches
 // `navigator.credentials`, which this runner does not implement.
-// `SessionService` is reduced to the two members a census needs:
-// `erasureCancelled`, which the 204 must call, and `ended`, which nothing here
-// may call — ending a session is `sessionExpiryInterceptor`'s.
+// `SessionService` is reduced to what the flow reads and the census needs:
+// `sessionToken`, read just before the cancelling request goes out;
+// `scheduledErasure`, which reopens a cancelled press once a schedule stands
+// again; `erasureCancelled`, which the 204 must call with that token; and
+// `ended`, which nothing here may call — ending a session is
+// `sessionExpiryInterceptor`'s. The schedule is a signal the case sets by
+// hand: this stub's `erasureCancelled` writes nothing, so a case that wants
+// the real member's `null` says so.
 //
 // **Vitest spies persist across cases** (`restoreMocks` is unset), so every spy
 // is built fresh inside `beforeEach`.
@@ -25,7 +30,12 @@ import {
   provideHttpClientTesting,
   type TestRequest,
 } from '@angular/common/http/testing';
-import { EnvironmentInjector, createEnvironmentInjector } from '@angular/core';
+import {
+  EnvironmentInjector,
+  createEnvironmentInjector,
+  signal,
+  type WritableSignal,
+} from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import type { MeDto } from '@app-core/api/me-api.service';
 import { EXPECTS_UNAUTHENTICATED } from '@app-core/interceptors/expects-unauthenticated.token';
@@ -40,7 +50,11 @@ import type {
   PasskeyRequestOptionsJson,
 } from '@app-core/security/webauthn-encoding';
 import { ConfigurationService } from '@app-core/services/configuration.service';
-import { SessionService } from '@app-core/session/session.service';
+import {
+  SessionService,
+  type ScheduledErasure,
+  type SessionToken,
+} from '@app-core/session/session.service';
 import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { ErasureCancellationFlowService } from './erasure-cancellation-flow.service';
 
@@ -124,8 +138,20 @@ class CeremonyStub {
   }
 }
 
+// The tokens a case hands out, one per visit. Opaque on the real class; a
+// number here because the stub is the one minting them.
+const FIRST_VISIT = 1 as SessionToken;
+const SECOND_VISIT = 2 as SessionToken;
+const THIRD_VISIT = 3 as SessionToken;
+
+const SCHEDULED: ScheduledErasure = {
+  takesEffectAtUtc: '2026-10-09T10:30:00Z',
+};
+
 interface SessionCensus {
-  readonly erasureCancelled: Mock<() => void>;
+  readonly sessionToken: Mock<() => SessionToken>;
+  readonly scheduledErasure: WritableSignal<ScheduledErasure>;
+  readonly erasureCancelled: Mock<(sentUnder: SessionToken) => void>;
   readonly ended: Mock<() => void>;
 }
 
@@ -145,7 +171,12 @@ describe('ErasureCancellationFlowService', () => {
     );
 
     ceremony = new CeremonyStub({ payload: PAYLOAD, keyEncryptionKey });
-    session = { erasureCancelled: vi.fn(), ended: vi.fn() };
+    session = {
+      sessionToken: vi.fn(() => FIRST_VISIT),
+      scheduledErasure: signal<ScheduledErasure>(SCHEDULED),
+      erasureCancelled: vi.fn(),
+      ended: vi.fn(),
+    };
 
     TestBed.configureTestingModule({
       providers: [
@@ -230,7 +261,41 @@ describe('ErasureCancellationFlowService', () => {
       nothingMoreSent();
     });
 
-    it('accepts no press once cancelled', async () => {
+    // **The token read when the request went out**, never one read at the
+    // press or when the answer lands. The session can end and another begin
+    // during the ceremony or while the request is out; the `204` describes the
+    // visit it was sent in, and `SessionService` drops it unless that visit is
+    // still the one standing.
+    it('hands erasureCancelled the token read when the cancelling request went out', async () => {
+      // Arrange
+      let current = FIRST_VISIT;
+      session.sessionToken.mockImplementation(() => current);
+      ceremony.held = true;
+      flow.cancel();
+      (await requestTo(OPTIONS_URL)).flush(OPTIONS);
+      await theCeremonyStarts();
+      current = SECOND_VISIT;
+      ceremony.settle();
+      const cancelling = await requestTo(CANCELLATION_URL);
+      current = THIRD_VISIT;
+
+      // Act
+      cancelling.flush(null, { status: 204, statusText: 'No Content' });
+      await eventually(
+        () => (session.erasureCancelled.mock.calls.length > 0 ? true : null),
+        'the 204 to be published',
+      );
+
+      // Assert
+      expect(session.erasureCancelled).toHaveBeenCalledTimes(1);
+      expect(session.erasureCancelled).toHaveBeenCalledWith(SECOND_VISIT);
+    });
+
+    // **A cancelled press reopens once a schedule stands again.** A Google
+    // sign-in can file a new erasure after this one was withdrawn, and the
+    // screen learns of it from a read; a press then runs the whole act again,
+    // because the first nonce was spent and the schedule is a new one.
+    it('accepts a whole new press from cancelled once a schedule stands again', async () => {
       // Arrange
       flow.cancel();
       (await reachTheCancellingRequest()).flush(null, {
@@ -241,16 +306,85 @@ describe('ErasureCancellationFlowService', () => {
         () => (flow.phase() === 'cancelled' ? true : null),
         'the cancelled phase',
       );
+      // What the real `erasureCancelled` publishes, then a read finding a
+      // schedule filed since.
+      session.scheduledErasure.set(null);
+      session.scheduledErasure.set(SCHEDULED);
+      expect(flow.pressable()).toBe(true);
+
+      // Act
+      flow.cancel();
+
+      // Assert
+      expect(flow.phase()).toBe('asserting');
+      expect(flow.failure()).toBeNull();
+      const cancelling = await reachTheCancellingRequest();
+      expect(ceremony.assertPasskey).toHaveBeenCalledTimes(2);
+
+      // Act
+      cancelling.flush(null, { status: 204, statusText: 'No Content' });
+      await eventually(
+        () => (session.erasureCancelled.mock.calls.length > 1 ? true : null),
+        'the second 204 to be published',
+      );
+
+      // Assert
+      expect(flow.phase()).toBe('cancelled');
+      nothingMoreSent();
+    });
+
+    // The control for the case above: a press with nothing scheduled would
+    // spend a nonce on a schedule that is gone.
+    it('accepts no press from cancelled while nothing is scheduled', async () => {
+      // Arrange
+      flow.cancel();
+      (await reachTheCancellingRequest()).flush(null, {
+        status: 204,
+        statusText: 'No Content',
+      });
+      await eventually(
+        () => (flow.phase() === 'cancelled' ? true : null),
+        'the cancelled phase',
+      );
+      session.scheduledErasure.set(null);
 
       // Act
       flow.cancel();
       await settle();
 
       // Assert
-      // The control has left the screen; a press reaching the handler by any
-      // other path would spend a nonce on a schedule that is gone.
       expect(flow.pressable()).toBe(false);
+      expect(flow.phase()).toBe('cancelled');
       expect(ceremony.assertPasskey).toHaveBeenCalledTimes(1);
+      nothingMoreSent();
+    });
+
+    // **The refusal lands on `idle`**, as it does from rest: the section draws
+    // a word only at rest, so a refusal left on `cancelled` would say nothing.
+    it('ends a press from cancelled idle and unsupported on a browser that cannot check a passkey', async () => {
+      // Arrange
+      flow.cancel();
+      (await reachTheCancellingRequest()).flush(null, {
+        status: 204,
+        statusText: 'No Content',
+      });
+      await eventually(
+        () => (flow.phase() === 'cancelled' ? true : null),
+        'the cancelled phase',
+      );
+      session.scheduledErasure.set(null);
+      session.scheduledErasure.set(SCHEDULED);
+      ceremony.supported = false;
+
+      // Act
+      flow.cancel();
+
+      // Assert
+      expect(flow.phase()).toBe('idle');
+      expect(flow.failure()).toBe('unsupported');
+      expect(flow.working()).toBe(false);
+      expect(ceremony.assertPasskey).toHaveBeenCalledTimes(1);
+      await settle();
       nothingMoreSent();
     });
   });
@@ -831,8 +965,8 @@ describe('ErasureCancellationFlowService', () => {
       flow.cancel();
       (await requestTo(OPTIONS_URL)).flush(OPTIONS);
       await theCeremonyStarts();
-      const signal = ceremony.assertPasskey.mock.calls[0]?.[1];
-      expect(signal, 'the ceremony was handed no abort signal').toBeInstanceOf(
+      const abort = ceremony.assertPasskey.mock.calls[0]?.[1];
+      expect(abort, 'the ceremony was handed no abort signal').toBeInstanceOf(
         AbortSignal,
       );
 
@@ -842,7 +976,7 @@ describe('ErasureCancellationFlowService', () => {
       // Assert
       // The system sheet comes down with the screen rather than asking for a
       // passkey on behalf of nothing.
-      expect(signal?.aborted).toBe(true);
+      expect(abort?.aborted).toBe(true);
 
       // Act
       ceremony.settle();

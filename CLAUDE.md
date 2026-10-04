@@ -374,8 +374,10 @@ Load-bearing rules. Each links the doc that argues it — **read that doc before
   two are deliberately apart.** The notice is standing content — no live region, no link, no
   banner — and `SessionService` keeps it current: `established()` reads the schedule (a sign-in's
   answer does not carry it), the shell calls `refreshSchedule()` on `visibilitychange`, **never a
-  timer** (the API scales to zero), and a generation every write raises drops a late answer, so a
-  read out during a withdrawal cannot bring the notice back. **Cancel lives on Settings, not in the
+  timer** (the API scales to zero), and a generation the status and schedule writers raise drops a
+  late answer, so a read out during a withdrawal cannot bring the notice back. A withdrawal's `204`
+  publishes only under the `sessionToken()` it was sent with, which moves only when a session ends
+  or begins — never reuse the generation for it. **Cancel lives on Settings, not in the
   notice**, because it joins the holds mesh and the shell's injector cannot see Settings' flows.
   `ErasureCancellationFlowService` reads the 401 `refusal: "assertion"` member, never retries, and
   — unlike the erasure dialog — **keeps the control live on `undetermined`**, because the server's

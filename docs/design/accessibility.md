@@ -117,6 +117,9 @@ Figures are visually compressed; their accessible names are not.
   screen's commit — focus moves to the sentence saying what happened, which carries `tabindex="-1"`
   and is never a tab stop. That sentence sits outside every live region: focus reads it, and inside
   a region as well it would be read twice.
+- **A section that leaves while holding focus hands it on, never to nothing.** Focus goes to the
+  result sentence if one is drawn, else to the page heading, which carries `tabindex="-1"` — a
+  programmatic focus target, not a tab stop. Focus that was somewhere else is never moved.
 - **Secrets are content, not announcements.** The ten recovery codes are a semantic list
   in reading order and never inside a live region. A `role="status"` holding a list
   narrates every entry as an event and puts ten secrets into a speech buffer, which buys

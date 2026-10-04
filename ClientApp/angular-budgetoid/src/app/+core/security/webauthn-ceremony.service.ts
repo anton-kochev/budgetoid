@@ -36,10 +36,11 @@
 // **Three ceremonies, and two of the three are sent.** `register.service.ts`
 // runs the creation ceremony on the passkey step of the registration flow, and
 // the assertion is run from the welcome screen by `sign-in.service.ts` and, on
-// the settings screen, by `rotation-flow.service.ts` and
-// `erasure-flow.service.ts` — each of those two over a challenge from the
-// re-authentication pool, taking a fresh assertion to the server to authorise
-// an act the server verifies before it runs. The third,
+// the settings screen, by `rotation-flow.service.ts`,
+// `erasure-flow.service.ts`, `email-change-flow.service.ts` and
+// `erasure-cancellation-flow.service.ts` — each of those four over a challenge
+// from the re-authentication pool, taking a fresh assertion to the server to
+// authorise an act the server verifies before it runs. The third,
 // `deriveKeyFromLocalAssertion`, is sent nowhere at all: it exists to make an
 // authenticator derive, so somebody whose page reloaded can unlock the account
 // without signing in again, and the account's own envelopes are what judge the

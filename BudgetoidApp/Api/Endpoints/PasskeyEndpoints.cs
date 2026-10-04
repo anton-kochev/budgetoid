@@ -65,10 +65,13 @@ public static class PasskeyEndpoints
             return TypedResults.Created();
         });
 
-        // The re-authentication options leg, and it belongs in THIS group. It mints the one nonce that
-        // authorizes destroying an account, so an anonymous caller able to obtain one would make the
-        // erasure endpoint's refusal of the other two pools worth nothing. There is no finish leg here:
-        // the ceremony is completed by POST /api/me/erasure, which is the action it authorizes.
+        // The re-authentication options leg, and it belongs in THIS group. It mints the nonce every
+        // assertion-gated act spends, destroying the account among them, so an anonymous caller able to
+        // obtain one would make PasskeyReauthentication's refusal of the other pools worth nothing. There
+        // is no finish leg here: the ceremony is completed by whichever gated act the caller performs —
+        // every handler that calls PasskeyReauthentication.VerifyAsync: the immediate erasure, the
+        // schedule's withdrawal, a passkey revocation, a new recovery-code card, the email change and a
+        // key rotation's begin.
         authenticated.MapPost("/reauthentication/options", async (
             BeginReauthenticationHandler handler,
             CancellationToken cancellationToken) =>
