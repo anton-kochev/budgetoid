@@ -80,13 +80,21 @@ const PHASES = {
   finishing: 'Finishing.',
 } as const satisfies Partial<Record<KeyRotationPhase, string>>;
 
-// The run's seven, each saying what became of the *run* — which is what separates
+// The run's eight, each saying what became of the *run* — which is what separates
 // them from the Account keys section's lines, which have no run to say anything
 // about.
+//
+// Typed against the union **and** `'refused'`, so the row compiles before the
+// union grows it and the case fails on the rendered text rather than taking
+// this file down. Once the union has it, `| 'refused'` is redundant.
 const RUN_REFUSALS = {
   unreachable:
     'Budgetoid couldn’t reach the server. The rotation stopped where it is — ' +
     'try again in a minute and it picks up from there.',
+  // A begin the re-authentication gate declined. The session is live, so the
+  // line offers the press again rather than a sign-out.
+  refused:
+    'Budgetoid didn’t accept that passkey. Nothing has changed — try again.',
   unauthenticated:
     'Budgetoid stopped accepting this rotation from this browser. Sign out ' +
     'and sign in again, then finish it from here.',
@@ -109,7 +117,7 @@ const RUN_REFUSALS = {
     'Two records in one list have the same name, so the rotation stopped ' +
     'where it is. Give one of them a new name to finish it — the records ' +
     'already re-encrypted stay that way.',
-} as const satisfies Record<KeyRotationFailure, string>;
+} as const satisfies Record<KeyRotationFailure | 'refused', string>;
 
 // The ceremony's five, from the Account keys chapter's table — four verbatim,
 // and `unknown` with its act renamed, because it is the only one of the five

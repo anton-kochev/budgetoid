@@ -16,12 +16,21 @@
 // than restates.
 //
 // **No request below carries `EXPECTS_UNAUTHENTICATED`, and the absence is the
-// decision.** That token marks a request whose 401 is the *route's own verdict*,
-// made by a browser holding no session to lose. All four of these are made by a
-// browser that believes it holds one — a rotation is reachable only from a full
-// session — so a 401 is that session having ended, which is exactly the fact
-// `sessionExpiryInterceptor` owns. Suppressing it would leave somebody on a
-// rotation screen whose every call is refused with nothing saying why.
+// decision.** That token marks a request whose 401 the interceptor must leave
+// alone. All four of these are made by a browser that believes it holds a
+// session — a rotation is reachable only from a full one — and a 401 on any of
+// them may be that session having ended. Unmarked, every such 401 reaches
+// `sessionExpiryInterceptor` first, and the session judge,
+// `SessionService.judgeRefusal`, settles the ended case before the driver hears
+// it: one marked re-read of `GET /api/me`, the session ended and the tab sent to
+// Welcome unless the answer names this tab's budget. So a 401 that reaches the
+// driver arrives with its session standing. On the begin it may be the
+// re-authentication gate declining the passkey, which the body's own
+// `refusal: "assertion"` member tells apart — the driver reads it, not this
+// file; the other three routes have no gate, and the driver reads their 401 as
+// `unauthenticated`. Marked, the ended case would reach the driver unjudged and somebody
+// would sit on a rotation screen whose every call is refused with nothing
+// saying why.
 import { Injectable } from '@angular/core';
 import type { FactorKeypairEnvelopes } from '@app-core/security/factor-keypair';
 import type { PasskeyAssertionPayload } from '@app-core/security/webauthn-encoding';

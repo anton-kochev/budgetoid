@@ -562,6 +562,12 @@ required members. A third writer is a decision rather than a refactor.
     new session stands with no browser holding it. The old cookie's next request is answered `401` —
     another way a cookie comes to name no row, beside an erasure, the sweep and its credential's
     deletion; see the ended-session rule. Without displacement that browser would have kept its old session.
+  - **Another tab's request in flight.** [Guessing] Reasoned, not run in a browser: tabs share one
+    cookie jar, so a request another tab sent under the old cookie, reaching the server after the
+    delete, is answered `401` while the jar holds, or is about to hold, the new cookie. That `401`
+    speaks for the cookie the request carried, not for the browser. Before displacement the old
+    session stayed live and that request succeeded. The client therefore judges a `401` before it
+    ends a tab's session — see the interceptor rule.
   - **Six shapes were refused**, and
     [ADR 0030](../decisions/0030-displace-the-session-an-overwritten-cookie-names.md) records them.
     - **Displacing before the handler** — the measured refusal above.
@@ -788,15 +794,16 @@ required members. A third writer is a decision rather than a refactor.
     is in flight" survives a reload — see [key-rotation.md](key-rotation.md) for what the three
     content screens do with it. It is sequential and **not** parallel, and it is made only when the
     probe answered `authenticated`: that route is authenticated, an anonymous visitor asking it is
-    answered `401`, and `sessionExpiryInterceptor` is the single owner of "the session ended" and
-    acts on `401` alone — so an unconditional read announces a session ending to somebody who never
-    had one, on every anonymous cold load. Nothing in it is awaited for the guards' sake; what the
+    answered `401`, and `sessionExpiryInterceptor` acts on `401` alone and ends a tab holding no
+    full session without a re-read — so an unconditional read announces a session ending to somebody
+    who never had one, on every anonymous cold load. Nothing in it is awaited for the guards' sake; what the
     await buys is a screen that does not draw a list the answer would have replaced.
   - **The reading also moves twice mid-visit, and both moves are a *set* rather than a re-probe.**
-    `ended()` is called by `sessionExpiryInterceptor` on a `401`, by the Settings screen's sign out,
-    by the release screen's Sign out, and by `ErasureFlowService` on the erasing request's `204`.
-    The last three call it **before** they navigate to `/welcome`, because `guestGuard` reads the
-    status the moment the router asks, and a navigation made first is judged against a stale
+    `ended()` is called by `SessionService.judgeRefusal` on a `401` the interceptor hands it and the
+    judgement confirms, by the Settings screen's sign out, by the release screen's Sign out, and by
+    `ErasureFlowService` on the erasing request's `204`. Each runs **before** the navigation to
+    `/welcome` — the interceptor navigates only once the verdict is in — because `guestGuard` reads
+    the status the moment the router asks, and a navigation made first is judged against a stale
     session and sent back. `established()` is called by the registration flow on the `201` and by
     the sign-in flow on the assertion's answer, and `establishedLocked()` by the release flow on the
     locked sign-in's `200`. Each time the server has just said what it thinks, in the same breath as
@@ -804,6 +811,11 @@ required members. A third writer is a decision rather than a refactor.
     guess over a network that may itself be the problem. On the establishing side a re-probe also
     costs a round trip at the happiest moment of the flow and can come back `unreachable` — a
     **third** reading of a fact already stated.
+    - **A `401` is the one move that asks first, and it asks once rather than re-probing.** Since a
+      sign-in displaces the session the old cookie named, a `401` speaks for the cookie its request
+      carried and not for the jar, so the refusal alone is not the server saying this tab's session
+      is over. The judgement asks `GET /api/me` — not the probe's session read, which names nobody —
+      and sets the status from that answer. The interceptor rule below argues the rest.
   - **The scheduled erasure is the one fact read again, and the read publishes nothing else.** A
     sign-in's answer does not carry the schedule, so `established()` sends one marked
     `GET /api/me/session` behind it, unawaited, exactly as it reads the budget: the status is
@@ -822,7 +834,10 @@ required members. A third writer is a decision rather than a refactor.
       publication — drops an answer to a read sent before such a write, so a read out while the
       person withdraws cannot bring the notice back. And the answer's `kind` must match the status,
       which catches a cookie replaced underneath the tab by a session of the *other* kind; another
-      account of the same kind passes it, and only an identity in the answer could catch that.
+      account of the same kind passes it, and only an identity in the answer could catch that. That
+      is why the judgement of a `401` re-reads `GET /api/me` and compares its `budgetId` rather than
+      re-reading this route: the session read carries no identity, so it cannot tell this tab's
+      account from another of the same kind.
       Separately, at most one refresh is out at a time — a load rule, not a freshness one, and
       `established()`'s own read does not wait on it.
     - **A withdrawal's `204` publishes only into the session that sent it.** `erasureCancelled()`
@@ -833,6 +848,14 @@ required members. A third writer is a decision rather than a refactor.
       session — and is deliberately not the generation, which also moves inside one session and
       would drop the right answer. Otherwise it publishes `null` — nothing scheduled, which the
       server just said — never `'unread'`.
+    - **The token has a second reader: the judgement of a `401`.** `sessionExpiryInterceptor` reads
+      `sessionToken()` as a request leaves and hands it to `judgeRefusal`, which answers `'stale'`
+      and writes nothing when the visit has moved — a `401` to a request sent before a sign-out and
+      a sign-in says nothing about the session after them. The re-read in flight is keyed on the
+      same token, and so is its answer, which publishes nothing once the visit has moved. Keyed on
+      the generation, a schedule request's `200` inside the visit would wave a real ending through
+      as stale; `still ends the session when a schedule was written while the re-read was out`
+      pins that half, and measured, a mutation of the visit keying reddens its own test.
     - A locked tab learns of a withdrawal only on reload; whoever reads it either cannot withdraw or
       is the person who filed it. See [erasure.md](erasure.md).
   - **`ended()` is the single owner of "the account's keys go too", and `established()` owns no key
@@ -959,12 +982,46 @@ required members. A third writer is a decision rather than a refactor.
 
 ---
 
-- **Rule**: A `401` answered to a request this app made to its own API ends the session client-side
-  and sends the browser to `/welcome`. A `403`, another origin's `401`, and any request carrying the
-  `EXPECTS_UNAUTHENTICATED` context token are all left alone. The error is **always re-thrown**.
+- **Rule**: A `401` answered to a request this app made to its own API is **judged** before it ends
+  anything. `SessionService.judgeRefusal` sends one marked `GET /api/me`, and the session ends
+  client-side — and the browser goes to `/welcome` — only when that read names another budget,
+  names none, or fails. An answer naming the tab's own budget keeps the session. A tab holding no
+  full session, or no budget to compare against, ends without asking. A `403`, another origin's
+  `401`, and any request carrying the `EXPECTS_UNAUTHENTICATED` context token are all left alone.
+  The error is **always re-thrown** — a judged one once the verdict is in — and never retried.
 - **Why**: a session ending is an application-wide fact — every screen's reads start failing at once
   — so it is noticed in one place rather than in each caller, which is why no screen carries a
-  lapsed-session sentence of its own. Three exclusions, each silent when wrong. **`403`** is the
+  lapsed-session sentence of its own.
+  - **Judged, because a `401` speaks for the cookie its request carried, not for the jar.** Since a
+    sign-in displaces the session the browser's old cookie named, a request another tab had in
+    flight under that cookie comes back `401` while the jar already holds the new one — the cost the
+    displacement rule names, [Guessing] reasoned and not run in a browser. Read as the end of the
+    session, that signs a tab out of an account it is still inside and locks its keys.
+  - **The re-read is `GET /api/me` and never the session read.** `GET /api/me/session` names nobody
+    by design, so a session of another account of the same kind passes it, and a tab kept on that
+    would fold its budget and keys into writes made under that account's cookie. Measured: the
+    candidate that re-read the session route and kept the session on any `200` reddened 18 specs.
+    `GET /api/me` names the budget, and the budget is what the tab's writes are keyed by.
+  - **Fail closed, and to `anonymous`.** Anything but a `200` naming this tab's budget ends the
+    session — a `401`, a `403`, a `5xx`, no answer, a body naming no budget. Not `unreachable`: the
+    server has already refused the request being judged, and a tab left signed in stays on screens
+    whose every read is refused. A locked session cannot be judged — `GET /api/me` refuses one — so
+    it ends without asking, as a tab with no budget does — and so a locked tab still ends over the
+    race above, [Guessing] reasoned and not run.
+  - **What the judgement does not reach**, stated as behaviour. [Guessing] Reasoned from the code,
+    not run. It runs only on a `401`: a tab with nothing in flight when another tab's sign-in
+    replaces the cookie hears none, and carries on under whatever session the jar now holds —
+    another account's included — with nothing in the client noticing. And a re-read that leaves
+    before the new cookie has landed carries the old one, is refused, and ends the tab anyway.
+  - **Still an observer.** The interceptor calls `judgeRefusal` and navigates on an ending verdict;
+    it never calls `ended()` itself — that would be a second owner of the transition — and never
+    retries. The navigation hangs off the verdict rather than off the observable it returns, so a
+    caller that stops listening while the verdict is out still leaves an ended session for
+    `/welcome`. The error waits for the verdict, so the navigation is asked before the caller's own
+    `catchError` runs — where the erasure, its withdrawal and the email change each read their
+    probe's `401`.
+
+  Three exclusions, each silent when wrong. **`403`** is the
   first-party refusal and the locked-session refusal, both answered to a browser whose session is
   intact, so acting on one ends a live session over a bug in the request builder. **Another origin's
   `401`** is a statement about a token this product does not issue — the app reaches the identity
@@ -988,6 +1045,21 @@ required members. A third writer is a decision rather than a refactor.
   list is a second definition of the anonymous surface, and the first route to move leaves it ending
   the session of somebody who mistyped a recovery code. `app.config.spec.ts` carries a registration
   pin for this interceptor too, independent of the credentials one.
+  - **The judgement is `SessionService.judgeRefusal`'s, and the interceptor hands it one value.** It
+    reads `sessionToken()` as the request leaves and passes it on a qualifying `401`. The verdict is
+    `'ended'`, with `ended()` already run, `'kept'` or `'stale'`, and the promise never rejects:
+    awaited inside the interceptor's `catchError`, a rejection would replace the caller's `401`. The
+    re-read is one flight per visit — a screen's reads fail together, so their `401`s join one
+    `GET /api/me` — and is dropped when it settles, so a later refusal asks again. The
+    `SessionService judging a refusal` block in `session.service.spec.ts` pins the decision table
+    over a stubbed `MeApiService`. `session-expiry.interceptor.spec.ts` pins the interceptor's half
+    over a stubbed `SessionService` — the token read at send time, the navigation asked before the
+    error is handed on, a caller that stopped listening still sent to `/welcome`, nothing retried —
+    and, in its `sessionExpiryInterceptor judging a 401 against the session` block, the whole chain
+    over the real `SessionService`, `MeApiService` and `HttpClient`: one marked re-read, the session
+    kept on the same budget, and ended on another budget or on a refused re-read with nothing sent
+    after it. Measured: hanging the navigation inside the returned observable, and leaving the
+    judgement's `ended()` unguarded, each reddened its own test.
   - **Which members set it is a rule and deliberately not a tally.** A number written in prose is a
     second copy of the list standing beside it, kept in step by nobody and reddening nothing when
     the two disagree — and it is the number that rots, because a member added to a service is added
@@ -1014,17 +1086,24 @@ required members. A third writer is a decision rather than a refactor.
     never got to show. **A session that really had ended is not lost by the mark**, because
     `ErasureFlowService` resolves every `401` there with one **unmarked** `GET /api/me` —
     `getMe()`, the counterexample above, used for exactly the reason it is one. A `401` on that
-    probe is the interceptor's to act on, and it ends the session and leaves for `/welcome` while
-    the dialog says nothing; a `200`, or a probe that cannot answer, lets the dialog say `refused`.
+    probe is the interceptor's to judge: on an ending verdict the tab leaves for `/welcome` while
+    the dialog says nothing. On a kept one the dialog says nothing either and its commit is live
+    again — [Guessing] the case where the probe, too, carried a cookie another tab's sign-in had
+    just displaced, so the erasing request was refused before the gate and erased nothing. A
+    `200`, or a probe that cannot answer, lets the dialog say `refused`.
     The re-authentication challenge before the erasing request, from `ReauthenticationApiService`,
     is unmarked as well — so the mark is per request rather than per act, and the legs of one
     erasure answer the question opposite ways. See [erasure.md](erasure.md).
     - **The rotation begin is the difference worth reading beside it.**
       `KeyRotationApiService.beginRotation` also carries a re-authentication assertion to a gate
       that answers `401` when it declines, and it is unmarked, like the other three members of that
-      service. So a `401` from the rotation gate reaches the interceptor and ends the session, where
-      the same verdict from the erasure gate stays with the dialog. That service's header argues its
-      absence on the reading that a `401` from any of its routes is a session that ended.
+      service. So a `401` from the rotation gate reaches the interceptor, where the same verdict
+      from the erasure gate stays with the dialog. There the judgement re-reads `GET /api/me` over a
+      session that is still live and keeps it, so a declined rotation passkey does not take the tab
+      to `/welcome`, and what stays on screen is the rotation flow's own reading of that `401` —
+      [Guessing] read from the code, not run. That service's header argues the absence from the
+      judgement: it settles an ended session on all four routes, and on the begin the body's own
+      `refusal` member is what tells a declined passkey from any other `401`.
 
     `RegistrationApiService` builds a **fresh** `HttpContext` per call, because that object is
     mutable and a shared one would be read and written by every registration request in the visit. What the token buys there is concrete: without it, a `401` on the second leg
@@ -1091,7 +1170,8 @@ required members. A third writer is a decision rather than a refactor.
   [Guessing] The client needs nothing new for it — read from the code, not run: a `401` reaches
   `sessionExpiryInterceptor` like any other, and `endSession()` carries no
   `EXPECTS_UNAUTHENTICATED`, so even a sign-out press ends the tab's session and lands on
-  `/welcome`. **Do not "fix" it by relaxing the lookup** — that is this rule's own counterexample.
+  `/welcome`. The outcome goes through the judgement's re-read, which carries the same dead cookie
+  and is refused in turn, so it does not change. **Do not "fix" it by relaxing the lookup** — that is this rule's own counterexample.
   See [erasure.md](erasure.md).
 - **Source**: `[SOURCE: discussion]`
 
@@ -1457,8 +1537,8 @@ ELSE                                                    ← an unenumerated futu
     unlock is invisible to everything this file describes, and a sign-in is not the only way to
     reach an opened account. What a *factor* can open is the account keys' subject; **the session's
     own lifetime is not custody's** — the keys end at a sign-out, at an erasure's `204`, at a `401`
-    and at a page load, and every one of those but the page load goes through
-    `SessionService.ended()`, which is the part this file records.
+    the session judgement confirms and at a page load, and every one of those but the page load
+    goes through `SessionService.ended()`, which is the part this file records.
 - **`user_isolation`** — the policy on `sessions` is the policy every user-owned table carries, keyed
   on the same session setting: `users`, `budgets`, `sessions` itself,
   `passkey_signature_counters`, `wrapped_account_keys`, `key_rotations`, `key_rotation_seals`,

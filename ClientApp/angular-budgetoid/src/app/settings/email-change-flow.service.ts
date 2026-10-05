@@ -460,8 +460,9 @@ export class EmailChangeFlowService {
   }
 
   // The server's own options, or the word the press ends on. The request is
-  // unmarked, so a `401` is a session that really ended — the interceptor's
-  // fact — and the flow says nothing over it.
+  // unmarked, so a `401` is the interceptor's to judge, and the flow says
+  // nothing over it whatever the verdict — see {@link end} for what a kept one
+  // costs.
   private async challenge(): Promise<ChallengeOutcome> {
     try {
       return {
@@ -541,9 +542,9 @@ export class EmailChangeFlowService {
 
   // Whether a `401` on the changing request was a session that had already
   // ended. The changing request is marked, so the interceptor heard nothing;
-  // this probe is **unmarked**, so its own `401` is the interceptor's to act on
-  // and the flow says nothing. A `200`, or a probe that cannot answer, lets the
-  // member decide.
+  // this probe is **unmarked**, so its own `401` is the interceptor's to judge
+  // and the flow says nothing, whatever the verdict. A `200`, or a probe that
+  // cannot answer, lets the member decide.
   private async sessionHasEnded(): Promise<boolean> {
     try {
       await firstValueFrom(this.me.getMe());
@@ -556,8 +557,11 @@ export class EmailChangeFlowService {
 
   // Ends a press, or a trip that could not start, with its word. A word that
   // keeps the answer puts the flow back to waiting; every other word drops the
-  // answer and brings Change back. `null` — a session that ended — drops it
-  // too, because the interceptor is taking the tab to Welcome.
+  // answer and brings Change back. `null` — a `401` the interceptor judged —
+  // drops it too. On a verdict that ended the session the interceptor is taking
+  // the tab to Welcome. On one the judge kept, the tab stays on this screen and
+  // the press ends silently: no line, the answer dropped, Change offered again.
+  // That silent end is known and logged as a backlog item, not fixed here.
   private end(word: EmailChangeWord | null): void {
     if (word !== null && KEEPS_WAITING.has(word) && this.#idToken !== null) {
       this.phaseSignal.set('waiting');

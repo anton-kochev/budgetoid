@@ -331,11 +331,16 @@ describe('KeyRotationApiService', () => {
 
     // Assert
     expect(request.request.method).toBe('POST');
-    // The begin is made by a browser that believes it holds a session, so a 401
-    // is that session having ended — the fact `sessionExpiryInterceptor` owns.
-    // Marked `EXPECTS_UNAUTHENTICATED`, every one of these four routes would
-    // swallow it, and somebody would sit on a rotation screen whose every call
-    // is refused with nothing saying why.
+    // A 401 to the begin is one of two answers. It is either a session that had
+    // ended, turned away before the re-authentication gate ran, or the gate
+    // declining the passkey on a session still live. The body's own `refusal`
+    // member tells them apart: `"assertion"` on the second, absent on the
+    // first. Unmarked, the 401 reaches `sessionExpiryInterceptor` first, whose
+    // session judge settles the ended case — it ends the session and leaves for
+    // Welcome — so a declined passkey reaches the driver with its session
+    // standing. Marked `EXPECTS_UNAUTHENTICATED`, the ended case would reach
+    // the driver unjudged, and somebody would sit on a rotation screen whose
+    // every call is refused with nothing saying why.
     expect(request.request.context.get(EXPECTS_UNAUTHENTICATED)).toBe(false);
 
     request.flush(BEGUN);

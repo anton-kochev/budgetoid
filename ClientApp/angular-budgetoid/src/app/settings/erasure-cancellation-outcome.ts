@@ -1,6 +1,7 @@
 // How a cancellation request that did not answer 204 is read. See
 // docs/business-logic/erasure.md and docs/design/components.md.
 import { HttpErrorResponse } from '@angular/common/http';
+import { ownRefusalOf } from '@app-core/api/refusal-member';
 
 /**
  * What a refused or unanswered cancellation ends on.
@@ -12,8 +13,8 @@ import { HttpErrorResponse } from '@angular/common/http';
  *   owed.
  * * `probe` — any other `401`. Not a sentence but an instruction: nothing
  *   judged the passkey, so the flow asks one **unmarked** `GET /api/me` before
- *   it says anything. A `401` there is `sessionExpiryInterceptor`'s; anything
- *   else is `undetermined`.
+ *   it says anything. A `401` there is `sessionExpiryInterceptor`'s to judge;
+ *   anything else is `undetermined`.
  * * `unrecognised` — a `400` or `403`, raised before the handler is entered —
  *   a `403` is also a locked session at the fallback policy. Nothing was
  *   judged, so the erasure is still scheduled.
@@ -37,9 +38,10 @@ export type CancellationRequestFailure =
  *
  * **An `HttpErrorResponse` or nothing.** A plain object shaped like the gate's
  * answer is not the gate's answer. And the refusal word is compared exactly,
- * read only as the body's own member: a case-folded or trimmed comparison, or a
- * lookup that reaches the prototype, would call something the gate never said
- * a declined passkey.
+ * read only as the body's own member — `ownRefusalOf`, the one reader the
+ * rotation begin shares: a case-folded or trimmed comparison, or a lookup that
+ * reaches the prototype, would call something the gate never said a declined
+ * passkey.
  */
 export function cancellationFailureOf(
   error: unknown,
@@ -57,15 +59,4 @@ export function cancellationFailureOf(
     default:
       return 'undetermined';
   }
-}
-
-// The body's own `refusal` member, or `undefined` for a body without one. The
-// `in` test narrows the type; `Object.hasOwn` is the one that decides.
-function ownRefusalOf(body: unknown): unknown {
-  return typeof body === 'object' &&
-    body !== null &&
-    'refusal' in body &&
-    Object.hasOwn(body, 'refusal')
-    ? body.refusal
-    : undefined;
 }

@@ -91,6 +91,7 @@ import {
 } from '@app-core/api/key-rotation-api.service';
 import { MeApiService } from '@app-core/api/me-api.service';
 import { PayeesApiService } from '@app-core/api/payees-api.service';
+import { ownRefusalOf } from '@app-core/api/refusal-member';
 import { TransactionsApiService } from '@app-core/api/transactions-api.service';
 import { SessionService } from '@app-core/session/session.service';
 import { writeOutcomeOf } from '@app-core/api/write-outcome';
@@ -144,8 +145,8 @@ export type KeyRotationPhase =
   | 'finished';
 
 /**
- * Why a run did not finish, in the seven words `docs/design/components.md`
- * specifies with their copy.
+ * Why a run did not finish, in the words `docs/design/components.md` specifies
+ * with their copy.
  *
  * They are **not** `UnlockFailure`'s five, though four of them share a spelling:
  * each of these says what became of the *run*, which custody's lines have no run
@@ -153,9 +154,15 @@ export type KeyRotationPhase =
  * an assertion the server verified against this account, so a factor of this
  * account that then opens nothing is the account's material failing to agree
  * with itself rather than a device somebody could swap.
+ *
+ * `refused` is that gate declining the assertion, and it is raised only on the
+ * begin's own 401: a session still live, nothing staged, and another press a
+ * genuinely different attempt. Every other 401 a run collects is
+ * `unauthenticated`.
  */
 export type KeyRotationFailure =
   | 'unreachable'
+  | 'refused'
   | 'unauthenticated'
   | 'unrecognised'
   | 'inconsistent'
@@ -259,6 +266,10 @@ const FACTOR_SET_MOVED = 'factor_set_moved';
 const ROTATION_INCOMPLETE = 'rotation_incomplete';
 const ROTATION_ALREADY_COMPLETED = 'rotation_already_completed';
 const ROTATION_NAME_COLLISION = 'rotation_name_collision';
+
+// The `refusal` every declined passkey in the product answers, spelled here and
+// nowhere else in this file.
+const ASSERTION_REFUSAL = 'assertion';
 
 // The member a rename route keys its refusal of a name on, as ASP.NET spells
 // the command's property on the wire.
@@ -491,6 +502,21 @@ function conflictKindOf(error: unknown): string | null {
   const kind: unknown = body.conflictKind;
 
   return typeof kind === 'string' ? kind : null;
+}
+
+// Whether a refused begin is the re-authentication gate declining the passkey:
+// a 401 whose body's **own** `refusal` member is exactly `assertion`.
+//
+// **Gated on 401**, because that is the only status the gate answers with; the
+// member on a 403 or a 500 is a body this client has no reading for. **Read
+// through `ownRefusalOf`**, the one strict reader the erasure cancellation
+// shares, so a folded, trimmed or inherited word is not the gate's verdict.
+function declinedByTheGate(error: unknown): boolean {
+  return (
+    error instanceof HttpErrorResponse &&
+    error.status === 401 &&
+    ownRefusalOf(error.error) === ASSERTION_REFUSAL
+  );
 }
 
 // One cell of one collection, as a map key.
@@ -743,7 +769,7 @@ export class KeyRotationService {
    * cryptography in it.
    *
    * **A read that did not happen publishes "nothing to finish", and no word.**
-   * The seven refusal words each say what became of a *run*, and there is no run
+   * The refusal words each say what became of a *run*, and there is no run
    * here to have become anything — a sentence about a rotation that stopped,
    * rendered at rest before anybody pressed anything, would be false. What the
    * failed read costs is one wrongly-drawn control, and that costs little:
@@ -752,9 +778,10 @@ export class KeyRotationService {
    * that is really there picks that run up — under its own identifier, and
    * without touching the staged seals' generation — whether or not the
    * account's factor set held still, because a begin re-stages to the set it
-   * finds. A 401 is not swallowed by this —
-   * `sessionExpiryInterceptor` owns that answer for every request in the
-   * product and acts on it whatever this method does with the rejection.
+   * finds. A 401 is not swallowed by this — the read is unmarked, so
+   * `sessionExpiryInterceptor` hands it to the session judge whatever this
+   * method does with the rejection, and a session the judge ends leaves for
+   * Welcome. One the judge keeps lands here as any failed read does.
    */
   public async readStagedRotation(): Promise<void> {
     // The budget the read was asked under, not the one standing when it lands:
@@ -1008,6 +1035,22 @@ export class KeyRotationService {
     } catch (error: unknown) {
       leaveOnFile(await this.#onFileAfterARefusedBegin(error, onFile));
 
+      // **`refused` is read here, on the begin's own answer, and nowhere
+      // else.** The begin is the one rotation route with a gate, and the
+      // word's *Nothing has changed* is true only because that gate refuses
+      // before anything is staged. A chunk or a completion has already written
+      // rows by the time it can answer, so the same body there gets the word
+      // every other 401 gets. The interceptor has judged this 401 before it
+      // lands here, and a session that had ended is turned away before the
+      // gate, so its 401 carries no member and never reads as `refused`.
+      if (declinedByTheGate(error)) {
+        throw new KeyRotationRefusal(
+          'refused',
+          'The re-authentication gate declined the passkey.',
+          error,
+        );
+      }
+
       throw error;
     }
 
@@ -1087,10 +1130,10 @@ export class KeyRotationService {
       // **Nothing to finish, and no word.** The run this press was offering to
       // pick up is not on file: either another tab completed it, or this
       // section was drawn from a read that has since gone stale. Every one of
-      // the seven words says a *run* failed, and none of them is true of a run
-      // that is not there — so the phase goes back to rest, the signal above
-      // has just republished that there is nothing staged, and the control the
-      // section draws becomes **Rotate keys**.
+      // the driver's words says what became of a *run*, and none of them is
+      // true of a run that is not there — so the phase goes back to rest, the
+      // signal above has just republished that there is nothing staged, and
+      // the control the section draws becomes **Rotate keys**.
       return 'idle';
     }
 
@@ -1848,8 +1891,12 @@ export class KeyRotationService {
   // for both of its reasons, including `unopened`: a begin is authorized by an
   // assertion the server verified against this account, so a factor of this
   // account that opens nothing here is the account's material failing to agree
-  // with itself, and the seven words on this screen deliberately carry no *try
-  // another passkey* sentence.
+  // with itself, and no word on this screen tells it to *try another passkey*.
+  // `refused` offers another press for a different reason — the server's gate
+  // turned the passkey away before anything was staged — and it reaches this method
+  // already made, as a `KeyRotationRefusal` raised on the begin's own answer:
+  // a 401 arriving here unmade is any other route's, or a begin's without the
+  // member, and stays `unauthenticated`.
   #wordFor(error: unknown): KeyRotationFailure {
     if (error instanceof KeyRotationRefusal) {
       return error.word;

@@ -2507,6 +2507,166 @@ describe('the run a begin leaves on file', () => {
   });
 });
 
+// **A 401 to the begin is one of two answers, and the body's own `refusal`
+// member tells them apart.** A session that had ended is turned away before
+// the re-authentication gate runs, with no member; the gate declining the
+// passkey on a live session answers `refusal: "assertion"`, the constant every
+// declined passkey in the product carries. The begin is unmarked, so the
+// session judge has already settled the ended case before the driver hears
+// either: a 401 that reaches the driver arrives with its session standing.
+// See `docs/business-logic/key-rotation.md`, "Beginning a run", and the Key
+// rotation section of `docs/design/components.md`.
+//
+// `'refused'` is spelled as a string rather than through `word()` until the
+// union grows it: through `word()` it is a compile error today, which takes
+// this whole file down rather than failing these cases by name.
+describe('a begin the re-authentication gate declined', () => {
+  // The server's body for a declined assertion, as it reaches a subscriber.
+  const ASSERTION_REFUSAL = {
+    type: 'https://tools.ietf.org/html/rfc9110#section-15.5.2',
+    title: 'The passkey could not be verified.',
+    status: 401,
+    refusal: 'assertion',
+  };
+
+  // What authentication answers a cookie naming no live session with: a
+  // problem document carrying no `refusal` member at all.
+  const SESSION_REFUSAL = {
+    type: 'https://tools.ietf.org/html/rfc9110#section-15.5.2',
+    title: 'Unauthorized',
+    status: 401,
+  };
+
+  function unauthorized(body: unknown): HttpErrorResponse {
+    return new HttpErrorResponse({
+      status: 401,
+      statusText: 'Unauthorized',
+      error: body,
+    });
+  }
+
+  // **The false sentence this word replaces.** `unauthenticated` tells
+  // somebody to sign out and in again; a declined passkey leaves the session
+  // live, and signing out changes nothing about which passkey answers. The
+  // gate refuses before anything is staged, so the run on file stands as it
+  // was and the section goes on offering to finish it.
+  it('publishes refused for a begin whose passkey was declined, and leaves the run on file as it was', async () => {
+    // Arrange — a run already on file, read by the press before its POST.
+    await interruptedRun(1, MAX_CHUNK_BYTES);
+
+    const service = freshDriver();
+    const stagedOnServer = server.staged;
+    const begins = server.beginBodies.length;
+    const chunks = server.chunkBodies.length;
+
+    server.refuseBegin = unauthorized(ASSERTION_REFUSAL);
+
+    // Act
+    await service.begin(ceremonyUnder(firstFactor()));
+
+    // Assert
+    expect(service.failure()).toBe('refused');
+    expect(service.phase()).toBe('idle');
+    expect(server.beginBodies).toHaveLength(begins + 1);
+    expect(server.chunkBodies).toHaveLength(chunks);
+    expect(server.staged).toBe(stagedOnServer);
+    expect(service.staged()).toEqual({ startedAtUtc: STATE_STARTED_AT_UTC });
+  });
+
+  // The control for the case above on a fresh account: nothing was on file,
+  // and a declined passkey stages nothing, so nothing is offered to finish.
+  it('publishes refused and nothing to finish for a declined begin on a fresh account', async () => {
+    // Arrange
+    const service = driver();
+
+    server.refuseBegin = unauthorized(ASSERTION_REFUSAL);
+
+    // Act
+    await service.begin(ceremonyUnder(firstFactor()));
+
+    // Assert
+    expect(service.failure()).toBe('refused');
+    expect(server.staged).toBeNull();
+    expect(service.staged()).toBeNull();
+  });
+
+  // A 401 with no member is not the gate's verdict: nothing judged the
+  // passkey, so *didn't accept that passkey* would be false. The word that
+  // has always covered it stays.
+  it.each([
+    { body: 'no body at all', error: unauthorized(null) },
+    {
+      body: 'a problem document without the member',
+      error: unauthorized(SESSION_REFUSAL),
+    },
+  ])(
+    'still publishes unauthenticated for a begin refused 401 with $body',
+    async ({ error }) => {
+      // Arrange
+      const service = driver();
+
+      server.refuseBegin = error;
+
+      // Act
+      await service.begin(ceremonyUnder(firstFactor()));
+
+      // Assert
+      expect(service.failure()).toBe(word('unauthenticated'));
+    },
+  );
+
+  // **The read is strict, and these are its near misses.** `Assertion` and
+  // the padded word are a reader that folded or trimmed; another route's word
+  // is a reader that took any member as the gate's; the array only
+  // stringifies to the word; `toString` is a reader that looked the value up
+  // on a plain object, where every object answers it. The inherited member is
+  // a body whose `refusal` sits on its prototype rather than on itself — an
+  // `in` test or a plain property read sees it, and only an own-member read
+  // refuses it.
+  it.each([
+    { label: 'a capitalised word', refusal: 'Assertion' },
+    { label: 'the word padded', refusal: ' assertion' },
+    { label: 'another route’s word', refusal: 'provider_token' },
+    { label: 'a prototype key', refusal: 'toString' },
+    { label: 'the word in an array', refusal: ['assertion'] },
+    { label: 'no value', refusal: null },
+  ])(
+    'publishes unauthenticated for a begin refused 401 whose refusal is $label',
+    async ({ refusal }) => {
+      // Arrange
+      const service = driver();
+
+      server.refuseBegin = unauthorized({ ...SESSION_REFUSAL, refusal });
+
+      // Act
+      await service.begin(ceremonyUnder(firstFactor()));
+
+      // Assert
+      expect(service.failure()).toBe(word('unauthenticated'));
+    },
+  );
+
+  it('publishes unauthenticated for a begin refused 401 whose refusal is inherited rather than its own', async () => {
+    // Arrange
+    const service = driver();
+    const body: object = Object.assign(
+      Object.create({ refusal: 'assertion' }) as object,
+      SESSION_REFUSAL,
+    );
+    // The fixture is what it claims: readable, and not its own.
+    expect(Reflect.get(body, 'refusal')).toBe('assertion');
+    expect(Object.hasOwn(body, 'refusal')).toBe(false);
+
+    server.refuseBegin = unauthorized(body);
+
+    // Act
+    await service.begin(ceremonyUnder(firstFactor()));
+
+    // Assert
+    expect(service.failure()).toBe(word('unauthenticated'));
+  });
+});
+
 // The leg that picks up a run a browser lost.
 //
 // **Every case here throws the driver away.** A resume's whole claim is that it

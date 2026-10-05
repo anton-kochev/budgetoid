@@ -11,15 +11,34 @@ import {
 import {
   HttpTestingController,
   provideHttpClientTesting,
+  type TestRequest,
 } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
-import { MeApiService } from '@app-core/api/me-api.service';
+import {
+  MeApiService,
+  type MeDto,
+  type SessionDto,
+} from '@app-core/api/me-api.service';
+import { AccountKeyCustodyService } from '@app-core/security/account-key-custody.service';
 import { AuthService } from '@app-core/services/auth-service';
 import { ConfigurationService } from '@app-core/services/configuration.service';
-import { SessionService } from '@app-core/session/session.service';
+import {
+  SessionService,
+  type RefusalVerdict,
+  type SessionToken,
+} from '@app-core/session/session.service';
 import { Router } from '@angular/router';
-import { of, throwError } from 'rxjs';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { Subject, of, throwError, type Subscription } from 'rxjs';
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+  type Mock,
+  type MockInstance,
+} from 'vitest';
 import { EXPECTS_UNAUTHENTICATED } from './expects-unauthenticated.token';
 import { sessionExpiryInterceptor } from './session-expiry.interceptor';
 
@@ -40,26 +59,60 @@ const OTHER_ORIGIN_URL =
 
 const WELCOME = 'welcome';
 
-interface RunOptions {
-  // What the rest of the chain answers with. An `HttpErrorResponse` is thrown
-  // to the interceptor; anything else is delivered as a response.
-  readonly answer?: HttpErrorResponse | HttpResponse<unknown>;
-  readonly apiBaseUrl?: string;
-}
-
-interface Outcome {
-  // Whether the session was declared over, and where the browser was sent.
-  // Both, on every test, because the two halves fail apart: an interceptor that
-  // navigates without calling `ended()` leaves the guard on `/welcome` reading
-  // `'authenticated'` and bouncing the visitor straight back.
-  readonly ended: boolean;
-  readonly destination: string | null;
-  readonly errors: readonly unknown[];
-  readonly events: readonly HttpEvent<unknown>[];
-}
+// Two visits of one tab. Opaque numbers to the interceptor, which only ever
+// hands one back.
+const SENT_UNDER = 7 as SessionToken;
+const LATER_VISIT = 8 as SessionToken;
 
 function refusal(status: number, url: string): HttpErrorResponse {
   return new HttpErrorResponse({ status, url });
+}
+
+// A macrotask, so every promise the interceptor chains off a verdict has run.
+function settled(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+// The three members of `SessionService` this interceptor may reach. `ended`
+// is here so a call to it lands somewhere countable: since the 401 is judged,
+// ending the session belongs to `judgeRefusal`, and the interceptor calling it
+// as well would be a second owner of that transition.
+interface SessionStub {
+  readonly sessionToken: Mock<() => SessionToken>;
+  readonly judgeRefusal: Mock<
+    (sentUnder: SessionToken) => Promise<RefusalVerdict>
+  >;
+  readonly ended: Mock<() => void>;
+}
+
+interface ArrangeOptions {
+  // What `judgeRefusal` answers. A promise the test holds, for a case about
+  // what happens while the verdict is still out.
+  readonly verdict?: RefusalVerdict | Promise<RefusalVerdict>;
+  readonly apiBaseUrl?: string;
+}
+
+interface Harness {
+  readonly session: SessionStub;
+  // What reached the outside, in the order it did: `navigate:<path>` for a
+  // navigation through either `Router` method, `error` for an error handed to
+  // the caller, `event` for a response.
+  readonly log: readonly string[];
+  readonly errors: readonly unknown[];
+  readonly events: readonly HttpEvent<unknown>[];
+  readonly destinations: () => readonly string[];
+  // Hands back the subscription, for a case about a caller that stops
+  // listening.
+  send(request: HttpRequest<unknown>, next: HttpHandlerFn): Subscription;
+}
+
+// What the rest of the chain answers with. An `HttpErrorResponse` is thrown
+// to the interceptor; anything else is delivered as a response.
+function answering(
+  answer: HttpErrorResponse | HttpResponse<unknown>,
+): HttpHandlerFn {
+  return () =>
+    answer instanceof HttpErrorResponse ? throwError(() => answer) : of(answer);
 }
 
 // Reads the destination out of whichever `Router` method the implementation
@@ -79,25 +132,43 @@ function pathOf(argument: unknown): string {
 // right one here for the extra reason that `HttpTestingController` runs the
 // whole client, and the subject of these tests is what the interceptor does
 // with an error on its way *back* through the chain.
-function outcomeOf(
-  request: HttpRequest<unknown>,
-  options: RunOptions = {},
-): Outcome {
-  const { answer = refusal(401, request.url), apiBaseUrl = API_BASE_URL } =
-    options;
+//
+// Every spy is built fresh per call: no `restoreMocks` is configured, so a spy
+// shared across cases would answer `toHaveBeenCalled` from an earlier case.
+function arrange(options: ArrangeOptions = {}): Harness {
+  const { verdict = 'ended', apiBaseUrl = API_BASE_URL } = options;
 
-  // Reset first, so a test may run the interceptor more than once: the first
-  // `runInInjectionContext` instantiates the injector, after which a second
-  // `configureTestingModule` throws.
+  // Reset first: the first `runInInjectionContext` instantiates the injector,
+  // after which a second `configureTestingModule` throws.
   TestBed.resetTestingModule();
 
-  const ended = vi.fn((): void => undefined);
-  const navigateByUrl = vi.fn(
-    (url: string): Promise<boolean> => Promise.resolve(true),
-  );
-  const navigate = vi.fn(
-    (commands: readonly string[]): Promise<boolean> => Promise.resolve(true),
-  );
+  const log: string[] = [];
+  const errors: unknown[] = [];
+  const events: HttpEvent<unknown>[] = [];
+  const destinations: string[] = [];
+
+  function navigated(argument: unknown): Promise<boolean> {
+    const path = pathOf(argument);
+
+    destinations.push(path);
+    log.push(`navigate:${path}`);
+
+    return Promise.resolve(true);
+  }
+
+  const session: SessionStub = {
+    sessionToken: vi.fn<() => SessionToken>(() => SENT_UNDER),
+    judgeRefusal: vi.fn<(sentUnder: SessionToken) => Promise<RefusalVerdict>>(
+      () => Promise.resolve(verdict),
+    ),
+    ended: vi.fn<() => void>(),
+  };
+  const router = {
+    navigateByUrl: vi.fn((url: string): Promise<boolean> => navigated(url)),
+    navigate: vi.fn(
+      (commands: readonly string[]): Promise<boolean> => navigated(commands),
+    ),
+  };
   const configuration: Pick<ConfigurationService, 'getConfig'> = {
     getConfig: () => ({ apiBaseUrl, auth: {} }),
   };
@@ -105,38 +176,31 @@ function outcomeOf(
   TestBed.configureTestingModule({
     providers: [
       { provide: ConfigurationService, useValue: configuration },
-      { provide: SessionService, useValue: { ended } },
-      { provide: Router, useValue: { navigateByUrl, navigate } },
+      { provide: SessionService, useValue: session },
+      { provide: Router, useValue: router },
     ],
   });
 
-  const next: HttpHandlerFn = () =>
-    answer instanceof HttpErrorResponse ? throwError(() => answer) : of(answer);
-
-  const events: HttpEvent<unknown>[] = [];
-  const errors: unknown[] = [];
-
-  TestBed.runInInjectionContext(() =>
-    sessionExpiryInterceptor(request, next),
-  ).subscribe({
-    next: (event) => events.push(event),
-    error: (error: unknown) => errors.push(error),
-  });
-
-  const [byUrl] = navigateByUrl.mock.calls;
-  const [byCommands] = navigate.mock.calls;
-  const destination =
-    byUrl !== undefined
-      ? pathOf(byUrl[0])
-      : byCommands !== undefined
-        ? pathOf(byCommands[0])
-        : null;
-
   return {
-    ended: ended.mock.calls.length > 0,
-    destination,
+    session,
+    log,
     errors,
     events,
+    destinations: () => [...destinations],
+    send(request: HttpRequest<unknown>, next: HttpHandlerFn): Subscription {
+      return TestBed.runInInjectionContext(() =>
+        sessionExpiryInterceptor(request, next),
+      ).subscribe({
+        next: (event) => {
+          events.push(event);
+          log.push('event');
+        },
+        error: (error: unknown) => {
+          errors.push(error);
+          log.push('error');
+        },
+      });
+    },
   };
 }
 
@@ -149,35 +213,173 @@ describe('sessionExpiryInterceptor', () => {
     TestBed.resetTestingModule();
   });
 
+  afterEach(() => {
+    TestBed.resetTestingModule();
+  });
+
   // The one thing this interceptor exists for. Without it a session that lapsed
   // mid-visit leaves the browser on a screen whose every read now fails, with
   // `SessionService` still saying `'authenticated'` and nothing on the page
   // saying why the numbers stopped arriving.
-  it('ends the session and leaves for the welcome screen when the API answers 401', () => {
+  //
+  // **Judged, and the ending is the judge's.** A 401 can be the request losing
+  // a sign-in race in another tab: the cookie it carried was displaced, and the
+  // jar already holds the new one. `judgeRefusal` tells the two apart and calls
+  // `ended()` itself on the verdict that ends; the interceptor calling it as
+  // well would be a second owner of that transition.
+  it('leaves for the welcome screen when the refusal is judged to end the session', async () => {
     // Arrange
-    const request = apiGet();
+    const harness = arrange({ verdict: 'ended' });
 
     // Act
-    const outcome = outcomeOf(request);
+    harness.send(apiGet(), answering(refusal(401, API_URL)));
+    await settled();
 
     // Assert
-    expect(outcome.ended).toBe(true);
-    expect(outcome.destination).toBe(WELCOME);
+    expect(harness.destinations()).toEqual([WELCOME]);
+    expect(harness.session.judgeRefusal).toHaveBeenCalledTimes(1);
+    expect(harness.session.ended).not.toHaveBeenCalled();
+  });
+
+  // The defect. Tab A signs in and the server displaces the session tab B's
+  // in-flight request carried; that 401 is about a cookie the jar no longer
+  // holds. Read as the end of the session, it signs tab B out of an account it
+  // is still inside and locks the keys it holds.
+  it.each<{ readonly verdict: RefusalVerdict }>([
+    { verdict: 'kept' },
+    { verdict: 'stale' },
+  ])(
+    'navigates nowhere on a $verdict verdict and hands the caller the same error',
+    async ({ verdict }) => {
+      // Arrange
+      const answer = refusal(401, API_URL);
+      const harness = arrange({ verdict });
+
+      // Act
+      harness.send(apiGet(), answering(answer));
+      await settled();
+
+      // Assert
+      expect(harness.destinations()).toEqual([]);
+      expect(harness.session.ended).not.toHaveBeenCalled();
+      // The same object, not an equal one: the caller's own `catchError` reads
+      // the status off it, and the three flows probe `sessionHasEnded()` after.
+      expect(harness.errors).toHaveLength(1);
+      expect(harness.errors[0]).toBe(answer);
+      expect(harness.session.judgeRefusal).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  // **The order is what three flows depend on.** The erasure, its withdrawal
+  // and the email change each probe `sessionHasEnded()` in their own
+  // `catchError`, so the verdict has to be in — and the navigation asked —
+  // before the error reaches them. Handed over early, the caller reads a
+  // session that has not been judged yet.
+  it('hands the caller nothing until the verdict settles, and asks for the navigation first', async () => {
+    // Arrange
+    let settle: (verdict: RefusalVerdict) => void = () => undefined;
+    const verdict = new Promise<RefusalVerdict>((resolve) => {
+      settle = resolve;
+    });
+    const harness = arrange({ verdict });
+    harness.send(apiGet(), answering(refusal(401, API_URL)));
+    await settled();
+    expect(harness.log).toEqual([]);
+
+    // Act
+    settle('ended');
+    await settled();
+
+    // Assert
+    expect(harness.log).toEqual([`navigate:${WELCOME}`, 'error']);
+  });
+
+  // **The navigation does not belong to the caller's subscription.** A screen
+  // torn down while the verdict is out — a route change, an overlay closed —
+  // unsubscribes, and the session it judged has still ended. With the
+  // navigation inside the returned observable, that tab would sit
+  // `'anonymous'` on a screen nothing guards any more.
+  it('still leaves for the welcome screen when the caller stops listening before the verdict', async () => {
+    // Arrange
+    let settle: (verdict: RefusalVerdict) => void = () => undefined;
+    const verdict = new Promise<RefusalVerdict>((resolve) => {
+      settle = resolve;
+    });
+    const harness = arrange({ verdict });
+    const subscription = harness.send(
+      apiGet(),
+      answering(refusal(401, API_URL)),
+    );
+    await settled();
+    expect(harness.session.judgeRefusal).toHaveBeenCalledTimes(1);
+
+    // Act
+    subscription.unsubscribe();
+    settle('ended');
+    await settled();
+
+    // Assert
+    expect(harness.destinations()).toEqual([WELCOME]);
+    // Nobody is listening, so nothing is handed over.
+    expect(harness.errors).toEqual([]);
+  });
+
+  // **Read when the request leaves, not when its 401 lands.** A sign-in in
+  // this tab while the request is out moves the visit; judged against the
+  // newer token, the old request's 401 would be read as a refusal of the
+  // session that just began.
+  it('judges the refusal against the visit the request was sent in', async () => {
+    // Arrange
+    const harness = arrange({ verdict: 'stale' });
+    const response = new Subject<HttpEvent<unknown>>();
+    harness.send(apiGet(), () => response);
+    harness.session.sessionToken.mockReturnValue(LATER_VISIT);
+
+    // Act
+    response.error(refusal(401, API_URL));
+    await settled();
+
+    // Assert
+    expect(harness.session.judgeRefusal.mock.calls).toEqual([[SENT_UNDER]]);
   });
 
   // An observer, not a handler. Swallowed here, a 401 reaches no caller's
   // `catchError`, so the screen that made the request renders neither its
   // outcome nor its failure — it sits on its loading line forever, under a
   // navigation that may itself be cancelled by a guard.
-  it('re-throws the error rather than swallowing it', () => {
+  it('re-throws the error rather than swallowing it', async () => {
     // Arrange
     const answer = refusal(401, API_URL);
+    const harness = arrange({ verdict: 'ended' });
 
     // Act
-    const outcome = outcomeOf(apiGet(), { answer });
+    harness.send(apiGet(), answering(answer));
+    await settled();
 
     // Assert
-    expect(outcome.errors).toEqual([answer]);
+    expect(harness.errors).toEqual([answer]);
+  });
+
+  // **Never a retry, whatever the verdict.** A `'kept'` verdict says the
+  // session stands, which reads like an invitation to send the request again
+  // — and the erasure, its withdrawal and the email change each say no
+  // interceptor may retry them, because a second send spends a nonce or
+  // repeats an act the first may already have done.
+  it.each<{ readonly verdict: RefusalVerdict }>([
+    { verdict: 'kept' },
+    { verdict: 'stale' },
+    { verdict: 'ended' },
+  ])('sends the request once on a $verdict verdict', async ({ verdict }) => {
+    // Arrange
+    const harness = arrange({ verdict });
+    const next = vi.fn<HttpHandlerFn>(answering(refusal(401, API_URL)));
+
+    // Act
+    harness.send(apiGet(), next);
+    await settled();
+
+    // Assert
+    expect(next).toHaveBeenCalledTimes(1);
   });
 
   // The anonymous ceremony routes answer 401 as their own verdict — a passkey
@@ -190,20 +392,22 @@ describe('sessionExpiryInterceptor', () => {
   // The services that set this token arrive in later commits, so the request is
   // built with it directly. That is the mechanism shipping one commit ahead of
   // its caller, which is deliberate.
-  it('leaves a request that expects a refusal alone', () => {
+  it('leaves a request that expects a refusal alone', async () => {
     // Arrange
     const context = new HttpContext().set(EXPECTS_UNAUTHENTICATED, true);
-    const request = apiGet(context);
+    const harness = arrange();
 
     // Act
-    const outcome = outcomeOf(request);
+    harness.send(apiGet(context), answering(refusal(401, API_URL)));
+    await settled();
 
     // Assert
-    expect(outcome.ended).toBe(false);
-    expect(outcome.destination).toBeNull();
+    expect(harness.session.judgeRefusal).not.toHaveBeenCalled();
+    expect(harness.session.ended).not.toHaveBeenCalled();
+    expect(harness.destinations()).toEqual([]);
     // Still re-thrown: the ceremony's own handler is what renders "that code
     // didn't match", and it only ever sees the error if this passes it on.
-    expect(outcome.errors).toHaveLength(1);
+    expect(harness.errors).toHaveLength(1);
   });
 
   // The negative control for the shared predicate. This app talks to the
@@ -211,50 +415,58 @@ describe('sessionExpiryInterceptor', () => {
   // discovery endpoint is a statement about a token this product does not
   // issue. Signing somebody out of Budgetoid over it is a sign-out caused by a
   // third party.
-  it('signs nobody out when another origin answers 401', () => {
+  it('signs nobody out when another origin answers 401', async () => {
     // Arrange
     const request = new HttpRequest<unknown>('GET', OTHER_ORIGIN_URL);
-    const answer = refusal(401, OTHER_ORIGIN_URL);
+    const harness = arrange();
 
     // Act
-    const outcome = outcomeOf(request, { answer });
+    harness.send(request, answering(refusal(401, OTHER_ORIGIN_URL)));
+    await settled();
 
     // Assert
-    expect(outcome.ended).toBe(false);
-    expect(outcome.destination).toBeNull();
-    expect(outcome.errors).toHaveLength(1);
+    expect(harness.session.judgeRefusal).not.toHaveBeenCalled();
+    expect(harness.session.ended).not.toHaveBeenCalled();
+    expect(harness.destinations()).toEqual([]);
+    expect(harness.errors).toHaveLength(1);
   });
 
   // 403 is the CSRF refusal — a request that arrived without the client header
   // — and the locked-session refusal. Both are answered to a browser whose
   // session is intact, so acting on one ends a live session over a bug in the
   // request builder.
-  it('leaves a 403 alone', () => {
+  it('leaves a 403 alone', async () => {
     // Arrange
-    const answer = refusal(403, API_URL);
+    const harness = arrange();
 
     // Act
-    const outcome = outcomeOf(apiGet(), { answer });
+    harness.send(apiGet(), answering(refusal(403, API_URL)));
+    await settled();
 
     // Assert
-    expect(outcome.ended).toBe(false);
-    expect(outcome.destination).toBeNull();
+    expect(harness.session.judgeRefusal).not.toHaveBeenCalled();
+    expect(harness.session.ended).not.toHaveBeenCalled();
+    expect(harness.destinations()).toEqual([]);
+    expect(harness.errors).toHaveLength(1);
   });
 
-  // The control for every test above: an interceptor that called `ended()` on
-  // its way past each response would satisfy the 401 case perfectly and sign
-  // out every visitor on their first successful read.
-  it('leaves a successful response alone', () => {
+  // The control for every test above: an interceptor that judged every
+  // response on its way past would satisfy the 401 cases perfectly and send a
+  // `GET /api/me` behind every successful read.
+  it('leaves a successful response alone', async () => {
     // Arrange
     const answer = new HttpResponse<unknown>({ status: 200, url: API_URL });
+    const harness = arrange();
 
     // Act
-    const outcome = outcomeOf(apiGet(), { answer });
+    harness.send(apiGet(), answering(answer));
+    await settled();
 
     // Assert
-    expect(outcome.ended).toBe(false);
-    expect(outcome.destination).toBeNull();
-    expect(outcome.events).toEqual([answer]);
+    expect(harness.session.judgeRefusal).not.toHaveBeenCalled();
+    expect(harness.session.ended).not.toHaveBeenCalled();
+    expect(harness.destinations()).toEqual([]);
+    expect(harness.events).toEqual([answer]);
   });
 });
 
@@ -400,7 +612,12 @@ describe('sessionExpiryInterceptor and the two readers of GET /api/me', () => {
   // `getMe()` itself — the obvious simplification — would take this behaviour
   // away and leave that person on a screen whose every read now fails, with
   // nothing on the page saying why.
-  it('ends the session and leaves for the welcome screen when the settings read of the same route is refused', () => {
+  //
+  // The tab here has never probed, so its status is `'unknown'`: there is no
+  // budget to compare a re-read against, and the refusal ends the session
+  // without asking. Awaited, because the navigation and the re-throw now wait
+  // for a verdict.
+  it('ends the session and leaves for the welcome screen when the settings read of the same route is refused', async () => {
     // Arrange
     const refusals: unknown[] = [];
 
@@ -409,6 +626,7 @@ describe('sessionExpiryInterceptor and the two readers of GET /api/me', () => {
       error: (error: unknown) => refusals.push(error),
     });
     refuse();
+    await settled();
 
     // Assert
     expect(wiring.ended()).toBe(true);
@@ -439,7 +657,7 @@ describe('sessionExpiryInterceptor and the two readers of GET /api/me', () => {
   // `SessionService`, because a key that will not open is not a session that
   // ended. Unmarked, the request makes that call anyway, through an edge no
   // import graph shows.
-  it('navigates nowhere and ends no session when the account-key read is refused', () => {
+  it('navigates nowhere and ends no session when the account-key read is refused', async () => {
     // Arrange
     const refusals: unknown[] = [];
 
@@ -448,6 +666,7 @@ describe('sessionExpiryInterceptor and the two readers of GET /api/me', () => {
       error: (error: unknown) => refusals.push(error),
     });
     refuseAt(ACCOUNT_KEYS_URL);
+    await settled();
 
     // Assert
     expect(wiring.ended()).toBe(false);
@@ -461,6 +680,238 @@ describe('sessionExpiryInterceptor and the two readers of GET /api/me', () => {
     // failed — `AccountKeyCustodyService` reads exactly this to publish a
     // failure word of its own.
     expect(refusals).toHaveLength(1);
+  });
+});
+
+// **A 401 judged against the session this tab holds**, through the real
+// `SessionService`, `MeApiService` and `HttpClient`. The race it is for: tab A
+// signs in, the server displaces the session tab B's in-flight request
+// carried, and tab B's cookie jar already holds A's new cookie. Only the wire
+// can say how many re-reads went out and whether each was marked — an unmarked
+// one would route its own 401 back into this interceptor.
+describe('sessionExpiryInterceptor judging a 401 against the session', () => {
+  const FIRST_BUDGET = '3f5b0a91-7c24-4a1e-9d3b-6e8f0c2a5471';
+  const SECOND_BUDGET = '9c1d2e3f-4a5b-4c6d-8e7f-0a1b2c3d4e5f';
+  const FULL_SESSION: SessionDto = {
+    kind: 'full',
+    expiresAtUtc: '2026-10-17T08:00:00Z',
+    erasure: null,
+  };
+
+  let http: HttpTestingController;
+  let session: SessionService;
+  let meApi: MeApiService;
+  let ended: MockInstance<() => void>;
+  let lock: MockInstance<() => void>;
+  let destinations: () => readonly string[];
+
+  function ownerOf(budgetId: string): MeDto {
+    return { budgetId, email: 'owner@budgetoid.test' };
+  }
+
+  beforeEach(() => {
+    TestBed.resetTestingModule();
+    const navigateByUrl = vi.fn(
+      (url: string): Promise<boolean> => Promise.resolve(true),
+    );
+    const navigate = vi.fn(
+      (commands: readonly string[]): Promise<boolean> => Promise.resolve(true),
+    );
+    const configuration: Pick<ConfigurationService, 'getConfig'> = {
+      getConfig: () => ({ apiBaseUrl: API_BASE_URL, auth: {} }),
+    };
+
+    TestBed.configureTestingModule({
+      providers: [
+        provideHttpClient(withInterceptors([sessionExpiryInterceptor])),
+        provideHttpClientTesting(),
+        { provide: ConfigurationService, useValue: configuration },
+        { provide: Router, useValue: { navigateByUrl, navigate } },
+        {
+          provide: AuthService,
+          useValue: {
+            forgetProviderToken: vi.fn(),
+          } satisfies Pick<AuthService, 'forgetProviderToken'>,
+        },
+      ],
+    });
+
+    http = TestBed.inject(HttpTestingController);
+    session = TestBed.inject(SessionService);
+    meApi = TestBed.inject(MeApiService);
+    // `spyOn` and not a replacement, on fresh instances per case: the real
+    // methods still run, and `vi.restoreAllMocks()` below takes the spies off
+    // before the next case can read their history.
+    ended = vi.spyOn(session, 'ended');
+    lock = vi.spyOn(TestBed.inject(AccountKeyCustodyService), 'lock');
+    destinations = () => [
+      ...navigateByUrl.mock.calls.map(([url]) => pathOf(url)),
+      ...navigate.mock.calls.map(([commands]) => pathOf(commands)),
+    ];
+  });
+
+  afterEach(() => {
+    try {
+      http.verify();
+    } finally {
+      vi.restoreAllMocks();
+      TestBed.resetTestingModule();
+    }
+  });
+
+  // A cold load that found a full session inside `budgetId`.
+  async function signedInTo(budgetId: string): Promise<void> {
+    const probed = session.probe();
+    await settled();
+    http.expectOne(SESSION_URL).flush(FULL_SESSION);
+    await settled();
+    http.expectOne(API_URL).flush(ownerOf(budgetId));
+    await probed;
+    expect(session.status()).toBe('authenticated');
+    expect(session.budgetId()).toBe(budgetId);
+  }
+
+  // The Settings screen's read of `GET /api/me` — unmarked, so its 401 is the
+  // interceptor's — refused. Returns what its caller was handed.
+  function refuseTheSettingsRead(): unknown[] {
+    const refusals: unknown[] = [];
+
+    meApi.getMe().subscribe({
+      error: (error: unknown) => refusals.push(error),
+    });
+    http
+      .expectOne(
+        (request) =>
+          request.url === API_URL &&
+          !request.context.get(EXPECTS_UNAUTHENTICATED),
+      )
+      .flush(null, { status: 401, statusText: 'Unauthorized' });
+
+    return refusals;
+  }
+
+  // The one re-read the judgement sends: `GET /api/me`, marked, so a 401 to it
+  // is the judgement's own answer and never comes back through here.
+  function theReRead(): TestRequest {
+    const read = http.expectOne(API_URL);
+
+    expect(read.request.context.get(EXPECTS_UNAUTHENTICATED)).toBe(true);
+
+    return read;
+  }
+
+  // The defect. The re-read names the budget this tab is already in, so the
+  // 401 was about a cookie the jar no longer holds — the session stands.
+  it('keeps the session when the re-read names the budget this tab is in', async () => {
+    // Arrange
+    await signedInTo(FIRST_BUDGET);
+
+    // Act
+    const refusals = refuseTheSettingsRead();
+    await settled();
+    theReRead().flush(ownerOf(FIRST_BUDGET));
+    await settled();
+
+    // Assert
+    expect(destinations()).toEqual([]);
+    expect(ended).not.toHaveBeenCalled();
+    expect(lock).not.toHaveBeenCalled();
+    expect(session.status()).toBe('authenticated');
+    expect(session.budgetId()).toBe(FIRST_BUDGET);
+    // The caller still hears its own 401: the read it made did fail.
+    expect(refusals).toHaveLength(1);
+    expect(refusals[0]).toBeInstanceOf(HttpErrorResponse);
+    expect(refusals[0]).toMatchObject({ status: 401 });
+  });
+
+  // **Another account's session is not this tab's session.** The cookie
+  // another tab set may belong to a different account; kept, this tab would
+  // fold its old `budgetId` and keys into writes made under the new cookie.
+  it('ends the session when the re-read names another budget', async () => {
+    // Arrange
+    await signedInTo(FIRST_BUDGET);
+
+    // Act
+    const refusals = refuseTheSettingsRead();
+    await settled();
+    theReRead().flush(ownerOf(SECOND_BUDGET));
+    await settled();
+
+    // Assert
+    expect(destinations()).toEqual([WELCOME]);
+    expect(session.status()).toBe('anonymous');
+    expect(session.budgetId()).toBeNull();
+    expect(lock).toHaveBeenCalledTimes(1);
+    expect(refusals).toHaveLength(1);
+  });
+
+  // The re-read is marked, so its own 401 ends the session once, through the
+  // judgement, and never reaches this interceptor to be judged again.
+  it('ends the session once when the re-read is refused, and sends nothing more', async () => {
+    // Arrange
+    await signedInTo(FIRST_BUDGET);
+
+    // Act
+    const refusals = refuseTheSettingsRead();
+    await settled();
+    theReRead().flush(null, { status: 401, statusText: 'Unauthorized' });
+    await settled();
+
+    // Assert
+    expect(ended).toHaveBeenCalledTimes(1);
+    expect(destinations()).toEqual([WELCOME]);
+    expect(session.status()).toBe('anonymous');
+    expect(refusals).toHaveLength(1);
+    http.expectNone(API_URL);
+  });
+
+  // **The judgement never rejects, even when ending the session throws.** The
+  // interceptor waits on it inside a `catchError`, so a rejection would hand
+  // the caller custody's error in place of its own 401 — and the three flows
+  // that read the status off that 401 would read nothing. Custody's `lock` is
+  // the last thing `ended()` does, after the status is already published, so
+  // the session has still ended and the navigation is still owed.
+  it('hands the caller its own 401 when ending the session after a re-read throws', async () => {
+    // Arrange
+    await signedInTo(FIRST_BUDGET);
+    lock.mockImplementation(() => {
+      throw new Error('Custody could not lock.');
+    });
+
+    // Act
+    const refusals = refuseTheSettingsRead();
+    await settled();
+    theReRead().flush(ownerOf(SECOND_BUDGET));
+    await settled();
+
+    // Assert
+    expect(refusals).toHaveLength(1);
+    expect(refusals[0]).toBeInstanceOf(HttpErrorResponse);
+    expect(refusals[0]).toMatchObject({ status: 401 });
+    expect(destinations()).toEqual([WELCOME]);
+    expect(session.status()).toBe('anonymous');
+  });
+
+  // The same on the path that sends no re-read: a tab holding no full session
+  // ends at once, and that `ended()` throwing is the same rejection.
+  it('hands the caller its own 401 when ending the session without a re-read throws', async () => {
+    // Arrange
+    expect(session.status()).toBe('unknown');
+    lock.mockImplementation(() => {
+      throw new Error('Custody could not lock.');
+    });
+
+    // Act
+    const refusals = refuseTheSettingsRead();
+    await settled();
+
+    // Assert
+    expect(refusals).toHaveLength(1);
+    expect(refusals[0]).toBeInstanceOf(HttpErrorResponse);
+    expect(refusals[0]).toMatchObject({ status: 401 });
+    expect(destinations()).toEqual([WELCOME]);
+    expect(session.status()).toBe('anonymous');
+    http.expectNone(API_URL);
   });
 });
 
@@ -531,7 +982,7 @@ describe('sessionExpiryInterceptor and the locked sign-in', () => {
     }
   });
 
-  it('navigates nowhere and ends no session when the locked sign-in is refused', () => {
+  it('navigates nowhere and ends no session when the locked sign-in is refused', async () => {
     // Arrange
     const refusals: unknown[] = [];
 
@@ -542,6 +993,7 @@ describe('sessionExpiryInterceptor and the locked sign-in', () => {
     http
       .expectOne(LOCKED_SESSION_URL)
       .flush(null, { status: 401, statusText: 'Unauthorized' });
+    await settled();
 
     // Assert
     expect(ended()).toBe(false);
@@ -550,7 +1002,9 @@ describe('sessionExpiryInterceptor and the locked sign-in', () => {
     expect(refusals).toHaveLength(1);
   });
 
-  it('ends the session and leaves for the welcome screen when the schedule is refused 401', () => {
+  // Never probed, so `'unknown'`, and the refusal ends the session without a
+  // re-read. Awaited, because the navigation now waits for the verdict.
+  it('ends the session and leaves for the welcome screen when the schedule is refused 401', async () => {
     // Arrange
     const refusals: unknown[] = [];
 
@@ -561,6 +1015,7 @@ describe('sessionExpiryInterceptor and the locked sign-in', () => {
     http
       .expectOne(SCHEDULE_URL)
       .flush(null, { status: 401, statusText: 'Unauthorized' });
+    await settled();
 
     // Assert
     expect(ended()).toBe(true);
@@ -568,7 +1023,7 @@ describe('sessionExpiryInterceptor and the locked sign-in', () => {
     expect(refusals).toHaveLength(1);
   });
 
-  it('navigates nowhere and ends no session when the schedule is refused 403', () => {
+  it('navigates nowhere and ends no session when the schedule is refused 403', async () => {
     // Arrange
     const refusals: unknown[] = [];
 
@@ -579,6 +1034,7 @@ describe('sessionExpiryInterceptor and the locked sign-in', () => {
     http
       .expectOne(SCHEDULE_URL)
       .flush(null, { status: 403, statusText: 'Forbidden' });
+    await settled();
 
     // Assert
     expect(ended()).toBe(false);

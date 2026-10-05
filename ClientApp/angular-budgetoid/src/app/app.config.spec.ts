@@ -53,9 +53,15 @@ describe('appConfig', () => {
   // and a spy would need restoring — nothing in this project configures
   // `restoreMocks`.
   let rotationStateReads: number;
+  // The budget the `GET /api/me` stub names. The probe reads it once, and the
+  // session expiry interceptor's judgement of a 401 reads it again; a case
+  // that moves it between the two is the cookie jar now holding another
+  // budget's session.
+  let ownerBudgetId: string;
 
   beforeEach(() => {
     rotationStateReads = 0;
+    ownerBudgetId = '3f5b0a91-7c24-4a1e-9d3b-6e8f0c2a5471';
     // The real providers, with only the backend swapped: everything
     // `provideHttpClient` set up — the interceptor chain included — is still the
     // one the application ships. `api-credentials.interceptor.spec.ts` calls the
@@ -121,7 +127,7 @@ describe('appConfig', () => {
         }),
       getSessionOwner: () =>
         of({
-          budgetId: '3f5b0a91-7c24-4a1e-9d3b-6e8f0c2a5471',
+          budgetId: ownerBudgetId,
           email: 'visitor@budgetoid.app',
         }),
     };
@@ -268,10 +274,20 @@ describe('appConfig', () => {
   // choice fail this file. And the state is written by production code: a spied
   // `ended()` or a hand-rolled fake would have this file supply the value it
   // then asserts.
-  it('registers the session expiry interceptor with HttpClient', () => {
+  //
+  // **A 401 is judged before it ends anything.** The interceptor has the
+  // session re-read whose session the cookie jar holds, and a jar still naming
+  // this tab's budget means the 401 lost a sign-in race: the session rightly
+  // stands. So the jar here names another budget, which makes ending the
+  // session the right verdict, and the assertion waits for that verdict.
+  // Without the interceptor the status stays `'authenticated'`.
+  it('registers the session expiry interceptor with HttpClient', async () => {
     // Arrange
     const client = TestBed.inject(HttpClient);
     const session = TestBed.inject(SessionService);
+    await TestBed.inject(ApplicationInitStatus).donePromise;
+    expect(session.status()).toBe('authenticated');
+    ownerBudgetId = '9c1d2e3f-4a5b-4c6d-8e7f-0a1b2c3d4e5f';
 
     // Act
     // The interceptor re-throws, so the 401 arrives at this subscriber. Without
@@ -281,6 +297,7 @@ describe('appConfig', () => {
     httpMock
       .expectOne(API_URL)
       .flush(null, { status: 401, statusText: 'Unauthorized' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
     // Assert
     expect(session.status()).toBe('anonymous');

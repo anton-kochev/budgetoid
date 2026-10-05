@@ -291,9 +291,10 @@ Load-bearing rules. Each links the doc that argues it — **read that doc before
   full one. `status` is **five-valued**: a network failure, a 500, a timeout or a kind this bundle
   does not know is `unreachable`, and **every guard admits `unreachable` and `unknown`** — only a
   status the server answered moves anybody: `anonymous` to `/welcome`, `locked-session` to
-  `/release`, `authenticated` off the guest screens. `sessionExpiryInterceptor` is the single owner
-  of "the session ended", acts on **401 only**, and skips requests carrying
-  `EXPECTS_UNAUTHENTICATED`.
+  `/release`, `authenticated` off the guest screens. `sessionExpiryInterceptor` acts on **401
+  only**, skips requests carrying `EXPECTS_UNAUTHENTICATED`, and ends the tab only after
+  `SessionService.judgeRefusal`'s single marked `GET /api/me` names another budget or fails — a
+  same-budget answer keeps the session, and a tab with no budget to compare ends without asking.
   **A session beginning discards the provider's tokens**, owned by `SessionService` on every arm
   that publishes a session — `established()`, `establishedLocked()` and a full or locked probe —
   and **never** on an anonymous or unreachable probe, which would take the provider-return leg's

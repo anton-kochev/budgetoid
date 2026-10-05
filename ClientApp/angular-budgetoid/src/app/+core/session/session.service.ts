@@ -54,6 +54,14 @@ declare const sessionTokenBrand: unique symbol;
  */
 export type SessionToken = number & { readonly [sessionTokenBrand]: true };
 
+/**
+ * What {@link SessionService.judgeRefusal} made of a 401: `'ended'` — the
+ * session is over and {@link SessionService.ended} has already run; `'kept'` —
+ * the jar holds a session of the budget this tab is in, so nothing moved;
+ * `'stale'` — the request was sent in a visit that is no longer this tab's.
+ */
+export type RefusalVerdict = 'ended' | 'kept' | 'stale';
+
 @Injectable({ providedIn: 'root' })
 export class SessionService {
   private readonly api = inject(MeApiService);
@@ -153,6 +161,14 @@ export class SessionService {
   // an API that scales to zero.
   #scheduleReads = 0;
 
+  // The re-read {@link judgeRefusal} has out, and the visit it judges. A
+  // screen's reads fail together, so their 401s arrive together and join this
+  // one flight; it is dropped when it settles, so a later refusal asks again.
+  #refusalFlight: {
+    readonly visit: SessionToken;
+    readonly verdict: Promise<RefusalVerdict>;
+  } | null = null;
+
   // Resolves however the reads end, and never rejects. The `APP_INITIALIZER`
   // awaits this promise, so a rejection is not a failed probe — it is an
   // application that never finishes bootstrapping and a browser left on a blank
@@ -244,11 +260,11 @@ export class SessionService {
     await this.readBudget();
   }
 
-  // The mid-visit transition, called by `sessionExpiryInterceptor` when the API
-  // answers 401 to a request the visitor did not expect to be refused. It is a
-  // set rather than a re-probe: the server has just said what it thinks, and
-  // asking it again over a network that may itself be the problem would replace
-  // an answer with a guess.
+  // The mid-visit transition. A set rather than a re-probe: its callers have
+  // already heard the server say the session is over. For a 401 that is
+  // {@link judgeRefusal}'s re-read, not the 401 itself — since a sign-in
+  // displaces the session the old cookie named, a 401 speaks for the cookie
+  // that request carried, not for the jar.
   public ended(): void {
     this.beginVisit();
     this.publishStatus('anonymous');
@@ -269,7 +285,7 @@ export class SessionService {
 
     // **Custody ends where the session does, and it ends here rather than at
     // each caller.** Four paths end a session today —
-    // `sessionExpiryInterceptor` on a 401, `SettingsService.leave()`,
+    // {@link judgeRefusal} on a 401 it confirms, `SettingsService.leave()`,
     // `ErasureFlowService` on the erasing request's 204, and
     // `ReleaseFlowService.leave()` — and the last two are the case this
     // placement was for: each was added by somebody thinking about erasure or
@@ -298,6 +314,69 @@ export class SessionService {
     // custody empty, for the reasons written over it, so ending custody stays
     // this method's alone.
     this.custody.lock();
+  }
+
+  // Judges a 401 `sessionExpiryInterceptor` heard on a request sent under
+  // `sentUnder`, and ends the session only when the jar demonstrably no longer
+  // holds the one this tab is in. Never rejects: the interceptor awaits it
+  // inside a `catchError`, and a rejection would replace the caller's 401.
+  //
+  // **Keyed on the visit, never the generation**, for {@link erasureCancelled}'s
+  // reason: a schedule write inside the visit says nothing about the session.
+  //
+  // **The two arms that cannot ask end the session without a re-read.** A
+  // locked session cannot be identified — `GET /api/me` refuses it — and a tab
+  // with no budget has nothing to compare an answer against, so both fail
+  // closed. They happen to end it before anything is awaited, and nothing
+  // depends on that: the interceptor waits for the verdict before it navigates
+  // or hands the error on, whichever arm answers.
+  //
+  // **The one re-read is `GET /api/me`, marked**, and never the session read,
+  // which names nobody: another account's session of the same kind passes it,
+  // and kept on that this tab would fold its budget and keys into writes made
+  // under that account's cookie. Marked, its own 401 is this judgement's and
+  // never comes back through the interceptor.
+  public judgeRefusal(sentUnder: SessionToken): Promise<RefusalVerdict> {
+    try {
+      if (sentUnder !== this.sessionToken()) {
+        return Promise.resolve('stale');
+      }
+
+      const budgetId = this.budgetSignal();
+
+      if (this.statusSignal() !== 'authenticated' || budgetId === null) {
+        this.ended();
+
+        return Promise.resolve('ended');
+      }
+
+      const joined = this.#refusalFlight;
+
+      if (joined !== null && joined.visit === sentUnder) {
+        return joined.verdict;
+      }
+
+      const flight = {
+        visit: sentUnder,
+        verdict: this.reReadOwner(sentUnder, budgetId),
+      };
+
+      this.#refusalFlight = flight;
+      void flight.verdict.then(() => {
+        if (this.#refusalFlight === flight) {
+          this.#refusalFlight = null;
+        }
+      });
+
+      return flight.verdict;
+    } catch (error: unknown) {
+      // Only `ended()` can land here, and it has published `anonymous` before
+      // anything in it could throw — so the verdict that agrees with the
+      // status is the one handed back.
+      logFailure('Refusal judgement failed', error);
+
+      return Promise.resolve('ended');
+    }
   }
 
   // The mirror of `ended()`, called when a leg that establishes a session has
@@ -520,10 +599,11 @@ export class SessionService {
   // writes out over `getAccountKeys`: this request is made by a browser that
   // has just been handed a session, or told on a cold load that it holds one,
   // and a 401 to it is a cookie that had not landed rather than a session
-  // ending. Unmarked, it routes
-  // its own refusal into `sessionExpiryInterceptor` — the single owner of "the
-  // session ended" — which navigates to `/welcome` from underneath a screen that
-  // has just succeeded, through an edge no import graph shows.
+  // ending. Unmarked, its refusal reaches `sessionExpiryInterceptor`, whose
+  // judge, {@link judgeRefusal}, has no budget to compare against yet — this
+  // read is what supplies one — so it ends the session without asking, and the
+  // interceptor navigates to `/welcome` from underneath a screen that has just
+  // succeeded, through an edge no import graph shows.
   //
   // A failure publishes nothing: `null` is already what the signal holds when
   // nothing has said — the probe sets it before calling — and setting it here
@@ -536,6 +616,43 @@ export class SessionService {
     } catch {
       // Nothing. See above.
     }
+  }
+
+  // The re-read behind {@link judgeRefusal}: `'kept'` only for a `200` naming
+  // `budgetId`, `'stale'` when the visit moved while it was out, and otherwise
+  // the session ends. A failure of any kind is no proof the session stands,
+  // and it is not `unreachable` either: the server has already refused the
+  // request being judged, and a tab left signed in stays on screens whose
+  // every read is refused.
+  private async reReadOwner(
+    sentUnder: SessionToken,
+    budgetId: string,
+  ): Promise<RefusalVerdict> {
+    let answered: string | null;
+
+    try {
+      answered = SessionService.budgetOf(
+        await firstValueFrom(this.api.getSessionOwner()),
+      );
+    } catch {
+      answered = null;
+    }
+
+    if (sentUnder !== this.sessionToken()) {
+      return 'stale';
+    }
+
+    if (answered === budgetId) {
+      return 'kept';
+    }
+
+    try {
+      this.ended();
+    } catch (error: unknown) {
+      logFailure('Refusal judgement failed', error);
+    }
+
+    return 'ended';
   }
 
   // The identifier the answer carried, or `null` for a body that carried none.

@@ -6,7 +6,7 @@ import { inject } from '@angular/core';
 import { Router } from '@angular/router';
 import { ConfigurationService } from '@app-core/services/configuration.service';
 import { SessionService } from '@app-core/session/session.service';
-import { catchError, throwError } from 'rxjs';
+import { catchError, concatMap, from, throwError } from 'rxjs';
 import { isApiRequest } from './api-credentials.interceptor';
 import { EXPECTS_UNAUTHENTICATED } from './expects-unauthenticated.token';
 
@@ -17,6 +17,9 @@ export const sessionExpiryInterceptor: HttpInterceptorFn = (request, next) => {
   const { apiBaseUrl } = inject(ConfigurationService).getConfig();
   const session = inject(SessionService);
   const router = inject(Router);
+  // Read as the request leaves, not when its 401 lands: a visit that began
+  // while the request was out is not the one its 401 can speak about.
+  const sentUnder = session.sessionToken();
 
   return next(request).pipe(
     catchError((error: unknown) => {
@@ -37,19 +40,33 @@ export const sessionExpiryInterceptor: HttpInterceptorFn = (request, next) => {
         // disagree about which requests are ours.
         isApiRequest(request.url, apiBaseUrl);
 
-      if (lapsed) {
-        // Both halves, always. Navigating without declaring the session over
-        // leaves the guard on `/welcome` reading `'authenticated'` and bouncing
-        // the visitor straight back into screens that no longer load.
-        session.ended();
-        void router.navigateByUrl('/welcome');
+      // Always re-thrown, and never retried. Swallowed, the error reaches no
+      // caller's `catchError`, so the screen that made the request renders
+      // neither its outcome nor its failure and sits on its loading line
+      // forever — under a navigation a guard may itself cancel.
+      if (!lapsed) {
+        return throwError(() => error);
       }
 
-      // Always re-thrown. Swallowed, the error reaches no caller's `catchError`,
-      // so the screen that made the request renders neither its outcome nor its
-      // failure and sits on its loading line forever — under a navigation a
-      // guard may itself cancel.
-      return throwError(() => error);
+      // **Judged, and the ending is the judge's.** Since a sign-in displaces
+      // the session the old cookie named, a 401 can be this request losing a
+      // race to another tab while the jar already holds a good cookie.
+      // `judgeRefusal` re-reads whose session that is and calls `ended()`
+      // itself when it is not this tab's; calling it here as well would be a
+      // second owner of the transition.
+      //
+      // The navigation hangs off the verdict rather than off this pipe, so a
+      // caller that unsubscribes while the verdict is out cannot leave an
+      // ended session on a screen that no longer loads. The error waits for
+      // it: the flows that probe `sessionHasEnded()` in their own
+      // `catchError` must read a judged session.
+      const judged = session.judgeRefusal(sentUnder).then((verdict) => {
+        if (verdict === 'ended') {
+          void router.navigateByUrl('/welcome');
+        }
+      });
+
+      return from(judged).pipe(concatMap(() => throwError(() => error)));
     }),
   );
 };

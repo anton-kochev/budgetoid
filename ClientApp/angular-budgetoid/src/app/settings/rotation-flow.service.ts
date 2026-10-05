@@ -66,9 +66,10 @@ import { firstValueFrom } from 'rxjs';
  *
  * `unknown` is this flow's own and covers a rejection out of a method whose
  * contract is to answer with a result — including the options leg answering
- * nothing at all. There is deliberately no sixth word for that leg: the seven
- * words beside these five each say what became of a *run*, and a press that
- * never reached the authenticator has no run to have become anything.
+ * nothing at all. There is deliberately no sixth word for that leg: the
+ * driver's words beside these five each say what became of a *run*, and a
+ * press that never reached the authenticator has no run to have become
+ * anything.
  */
 export type RotationCeremonyFailure =
   | 'unsupported'

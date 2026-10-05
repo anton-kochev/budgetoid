@@ -14,9 +14,9 @@ import { HttpErrorResponse } from '@angular/common/http';
  *   expired, revoked, or erased from another tab — answers `401` before the
  *   gate runs. Both mean this request erased nothing, and the flow tells them
  *   apart before it publishes anything, with one **unmarked** `GET /api/me`: a
- *   `401` there means the session had already ended, `sessionExpiryInterceptor`
- *   takes over, and the flow says nothing; a `200` — or a probe that cannot
- *   answer — means the gate declined the assertion, and the word is `refused`.
+ *   `401` there is `sessionExpiryInterceptor`'s to judge, and the flow says
+ *   nothing whatever the verdict; a `200` — or a probe that cannot answer —
+ *   means the gate declined the assertion, and the word is `refused`.
  * * `unrecognised` — a `400` or `403`, raised before the handler is entered.
  *   Nothing about the account was judged, so nothing was erased.
  * * `undetermined` — everything else. The request may have reached the server
@@ -61,8 +61,11 @@ export function erasureFailureOf(error: unknown): ErasureRequestFailure {
  * The two words a failed re-authentication challenge request can end on, or
  * `null` when the flow has nothing to say.
  *
- * * `null` — a `401`. The challenge is unmarked, so a `401` on it is a session
- *   that really has ended, and that fact is `sessionExpiryInterceptor`'s.
+ * * `null` — a `401`. The challenge is unmarked, so a `401` on it is
+ *   `sessionExpiryInterceptor`'s to judge, and the flow says nothing whatever
+ *   the verdict. One that ends the session takes the tab to Welcome. On one
+ *   the judge kept the tab stays and the press ends silently — known and
+ *   logged as a backlog item, not fixed here.
  * * `unrecognised` — a `400` or `403`, refused before any handler ran. A `403`
  *   is chiefly the missing `X-Budgetoid-Client` header, for which *reload* is
  *   the right next step.

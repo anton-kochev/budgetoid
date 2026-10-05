@@ -325,11 +325,13 @@ export class ErasureFlowService {
       };
     } catch (error: unknown) {
       // **A 401 here is chosen, not inherited: the flow says nothing.** This
-      // request is unmarked, so a 401 on it is a session that really has ended
-      // — `sessionExpiryInterceptor`'s fact. It ends the session, takes the
-      // tab to Welcome, and the screen's teardown takes the dialog with it.
-      // Ending the session here would be a second owner of that fact, and two
-      // owners drift. `challengeFailureOf` owns the reading.
+      // request is unmarked, so a 401 on it is `sessionExpiryInterceptor`'s to
+      // judge. On a verdict that ends the session it takes the tab to Welcome,
+      // and the screen's teardown takes the dialog with it. On one the judge
+      // kept, the tab stays and the press ends silently, with the commit live
+      // again — known and logged as a backlog item, not fixed here. Ending the
+      // session here would be a second owner of that fact, and two owners
+      // drift. `challengeFailureOf` owns the reading.
       return { ok: false, failure: challengeFailureOf(error) };
     }
   }
@@ -352,8 +354,11 @@ export class ErasureFlowService {
   // ended, rather than the gate declining the assertion. The erasing request
   // is marked, so the interceptor heard neither reading; this probe is
   // **unmarked**, so on the first reading its own `401` is the interceptor's to
-  // act on — it ends the session and takes the tab to Welcome — and the flow
-  // says nothing. A `200`, or a probe that cannot answer, leaves `refused`:
+  // judge, and the flow says nothing whatever the verdict. One that ends the
+  // session takes the tab to Welcome. One the judge kept leaves the tab here
+  // and the press ended silently, the commit live again — known and logged as
+  // a backlog item, not fixed here. A `200`, or a probe that cannot answer,
+  // leaves `refused`:
   // the erasing request's `401` already proved it erased nothing, and the next
   // press's unmarked challenge catches a session that really has gone.
   private async sessionHasEnded(): Promise<boolean> {

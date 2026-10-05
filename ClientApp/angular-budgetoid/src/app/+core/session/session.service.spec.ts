@@ -23,7 +23,11 @@ import {
   vi,
   type Mock,
 } from 'vitest';
-import { SessionService, type SessionToken } from './session.service';
+import {
+  SessionService,
+  type RefusalVerdict,
+  type SessionToken,
+} from './session.service';
 
 // The session cookie is `HttpOnly`, so script cannot read it and a cold load
 // has no local evidence at all about who the visitor is. Asking the server is
@@ -1894,5 +1898,394 @@ describe('SessionService schedule reads on the wire', () => {
     http.expectNone(ME_URL);
 
     read.flush(FULL_SESSION);
+  });
+});
+
+// `judgeRefusal`, called through an `async` wrapper, so a method that threw
+// synchronously reads as a rejection — which is what the "never rejects"
+// cases below must be able to see.
+function judgeOf(
+  service: SessionService,
+): (sentUnder: SessionToken) => Promise<RefusalVerdict> {
+  return async (sentUnder: SessionToken): Promise<RefusalVerdict> =>
+    service.judgeRefusal(sentUnder);
+}
+
+// **A 401 the interceptor heard, judged before anybody is signed out.** Since
+// a sign-in displaces the session the browser's old cookie named, a request
+// another tab had in flight under that cookie comes back 401 while the shared
+// jar already holds the new, valid one. The judgement re-reads whose session
+// the jar now holds — `GET /api/me`, the one read that names a budget — and
+// ends this tab's session only when that is not demonstrably the one it is in.
+//
+// Keyed on the **visit**, never the generation: a refusal sent under an older
+// visit says nothing about this one, and a schedule write inside the visit
+// says nothing about the session.
+describe('SessionService judging a refusal', () => {
+  const OTHER_BUDGET_ID = '9c1d2e3f-4a5b-4c6d-8e7f-0a1b2c3d4e5f';
+  const OTHER_ME: MeDto = { ...ME, budgetId: OTHER_BUDGET_ID };
+
+  let service: SessionService;
+  let api: MeApiStub;
+  let custody: CustodyStub;
+
+  beforeEach(() => {
+    // Every stub fresh per case: no `restoreMocks` is configured, so a spy
+    // shared across cases would answer a call count from an earlier case.
+    api = new MeApiStub();
+    custody = new CustodyStub();
+    TestBed.configureTestingModule({
+      providers: [
+        { provide: MeApiService, useValue: api },
+        { provide: AuthService, useValue: providerStub() },
+        { provide: AccountKeyCustodyService, useValue: custody },
+      ],
+    });
+    service = TestBed.inject(SessionService);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // A tab that probed a full session inside `BUDGET_ID`, with the probe's own
+  // two reads wiped from the record.
+  async function signedIn(): Promise<void> {
+    await service.probe();
+    expect(service.status()).toBe('authenticated');
+    expect(service.budgetId()).toBe(BUDGET_ID);
+    api.getSession.mockClear();
+    api.getSessionOwner.mockClear();
+  }
+
+  // Only a `200` naming this tab's budget keeps the session. A body naming no
+  // budget is no proof the jar holds this tab's session: the probe reads it as
+  // "signed in, tenancy unknown", but here it has a refusal to answer for. The
+  // absent row is cast for the probe's reason above — the decoder's type says
+  // the member is always there, and the server is what could disagree.
+  it.each([
+    { named: 'another budget', answer: OTHER_ME },
+    { named: 'an empty budget', answer: { ...ME, budgetId: '' } },
+    { named: 'no budget at all', answer: { email: ME.email } as MeDto },
+  ])(
+    'ends the session and drops the keys when the re-read names $named',
+    async ({ answer }) => {
+      // Arrange
+      await signedIn();
+      const judge = judgeOf(service);
+      api.getSessionOwner.mockReturnValue(of(answer));
+
+      // Act
+      const verdict = await judge(service.sessionToken());
+
+      // Assert
+      expect(verdict).toBe('ended');
+      expect(api.getSessionOwner).toHaveBeenCalledTimes(1);
+      expect(service.status()).toBe('anonymous');
+      expect(service.budgetId()).toBeNull();
+      expect(custody.lock).toHaveBeenCalledTimes(1);
+      expect(touchedMembersOf(custody)).toEqual(['lock']);
+    },
+  );
+
+  // **The defect.** The jar holds a session of the budget this tab is in, so
+  // the 401 was about a cookie that is gone and the session stands. A kept
+  // verdict writes nothing: no visit, no status, and — read through a schedule
+  // read left out across it — no generation either, since a re-published
+  // status would drop that read's answer.
+  it('keeps the session, and writes nothing, when the re-read names the budget this tab is in', async () => {
+    // Arrange
+    await signedIn();
+    const judge = judgeOf(service);
+    const before = service.sessionToken();
+    const schedule = new Subject<SessionDto>();
+    api.getSession.mockReturnValue(schedule);
+    service.refreshSchedule();
+    api.getSessionOwner.mockReturnValue(of(ME));
+
+    // Act
+    const verdict = await judge(before);
+    schedule.next({ ...FULL_SESSION, erasure: SCHEDULED });
+    schedule.complete();
+    await afterAnswers();
+
+    // Assert
+    expect(verdict).toBe('kept');
+    expect(api.getSessionOwner).toHaveBeenCalledTimes(1);
+    expect(service.status()).toBe('authenticated');
+    expect(service.budgetId()).toBe(BUDGET_ID);
+    expect(service.sessionToken()).toBe(before);
+    expect(touchedMembersOf(custody)).toEqual([]);
+    expect(service.scheduledErasure()).toEqual({
+      takesEffectAtUtc: TAKES_EFFECT_AT_UTC,
+    });
+  });
+
+  // No budget to compare an answer against, so there is nothing a re-read
+  // could prove: the refusal ends the session as it always did.
+  it('ends the session without asking when this tab holds no budget', async () => {
+    // Arrange
+    api.getSessionOwner.mockReturnValue(throwError(() => NETWORK_FAILURE));
+    await service.probe();
+    expect(service.status()).toBe('authenticated');
+    expect(service.budgetId()).toBeNull();
+    api.getSessionOwner.mockClear();
+    const judge = judgeOf(service);
+
+    // Act
+    const verdict = await judge(service.sessionToken());
+
+    // Assert
+    expect(verdict).toBe('ended');
+    expect(api.getSessionOwner).not.toHaveBeenCalled();
+    expect(service.status()).toBe('anonymous');
+    expect(custody.lock).toHaveBeenCalledTimes(1);
+  });
+
+  // **Fails closed, and to `anonymous`.** Anything but a `200` naming this
+  // tab's budget is no proof the session stands. `unreachable` would be the
+  // probe's reading of a network failure, but this is not a probe: the server
+  // already refused the request this judges, and a tab left `unreachable`
+  // stays on screens whose every read is refused.
+  it.each([
+    { answer: 'a 401', error: refusal(401) },
+    { answer: 'a 403', error: refusal(403) },
+    { answer: 'a network failure', error: NETWORK_FAILURE },
+    { answer: 'a 500', error: refusal(500) },
+  ])(
+    'ends the session as anonymous when the re-read answers $answer',
+    async ({ error }) => {
+      // Arrange
+      await signedIn();
+      const judge = judgeOf(service);
+      api.getSessionOwner.mockReturnValue(throwError(() => error));
+
+      // Act
+      const verdict = await judge(service.sessionToken());
+
+      // Assert
+      expect(verdict).toBe('ended');
+      expect(api.getSessionOwner).toHaveBeenCalledTimes(1);
+      expect(service.status()).toBe('anonymous');
+      expect(service.budgetId()).toBeNull();
+      expect(custody.lock).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  // `GET /api/me` refuses a locked session, so no re-read can identify one;
+  // asking would only fetch a refusal.
+  it('ends a locked session without sending any request', async () => {
+    // Arrange
+    api.getSession.mockReturnValue(of(LOCKED_SESSION));
+    await service.probe();
+    expect(service.status()).toBe('locked-session');
+    api.getSession.mockClear();
+    api.getSessionOwner.mockClear();
+    const judge = judgeOf(service);
+
+    // Act
+    const verdict = await judge(service.sessionToken());
+
+    // Assert
+    expect(verdict).toBe('ended');
+    expect(api.getSession).not.toHaveBeenCalled();
+    expect(api.getSessionOwner).not.toHaveBeenCalled();
+    expect(service.status()).toBe('anonymous');
+    expect(custody.lock).toHaveBeenCalledTimes(1);
+  });
+
+  // A screen's reads fail together, so their 401s arrive together. One re-read
+  // answers all of them, against an API that scales to zero.
+  it('answers concurrent refusals with one re-read and ends the session once', async () => {
+    // Arrange
+    await signedIn();
+    const judge = judgeOf(service);
+    const reRead = new Subject<MeDto>();
+    api.getSessionOwner.mockReturnValue(reRead);
+    const sentUnder = service.sessionToken();
+    const verdicts = Promise.all([
+      judge(sentUnder),
+      judge(sentUnder),
+      judge(sentUnder),
+    ]);
+    await afterAnswers();
+
+    // Act
+    reRead.next(OTHER_ME);
+    reRead.complete();
+
+    // Assert
+    expect(await verdicts).toEqual(['ended', 'ended', 'ended']);
+    expect(api.getSessionOwner).toHaveBeenCalledTimes(1);
+    expect(custody.lock).toHaveBeenCalledTimes(1);
+  });
+
+  // The control for the case above: one flight, not one answer for the life
+  // of the visit. A `'kept'` cached past its flight would keep a session the
+  // server has since really ended.
+  it('sends a new re-read for a refusal after a kept flight has settled', async () => {
+    // Arrange
+    await signedIn();
+    const judge = judgeOf(service);
+    const sentUnder = service.sessionToken();
+    api.getSessionOwner.mockReturnValue(of(ME));
+    expect(await judge(sentUnder)).toBe('kept');
+    api.getSessionOwner.mockReturnValue(of(OTHER_ME));
+
+    // Act
+    const verdict = await judge(sentUnder);
+
+    // Assert
+    expect(api.getSessionOwner).toHaveBeenCalledTimes(2);
+    expect(verdict).toBe('ended');
+  });
+
+  // A 401 to a request sent in a visit that has already ended says nothing
+  // about the visit this tab is in now.
+  it('judges a refusal sent under an older visit stale, without asking', async () => {
+    // Arrange
+    await signedIn();
+    const sentUnder = service.sessionToken();
+    await service.probe();
+    expect(service.sessionToken()).not.toBe(sentUnder);
+    api.getSessionOwner.mockClear();
+    const judge = judgeOf(service);
+
+    // Act
+    const verdict = await judge(sentUnder);
+
+    // Assert
+    expect(verdict).toBe('stale');
+    expect(api.getSessionOwner).not.toHaveBeenCalled();
+    expect(service.status()).toBe('authenticated');
+    expect(service.budgetId()).toBe(BUDGET_ID);
+    expect(touchedMembersOf(custody)).toEqual([]);
+  });
+
+  // The tab signs out and back in while the re-read is out. Its answer is
+  // about the session that was, and ending on it would sign the new one out.
+  it('publishes nothing from a re-read that lands after the visit moved', async () => {
+    // Arrange
+    await signedIn();
+    const judge = judgeOf(service);
+    const reRead = new Subject<MeDto>();
+    api.getSessionOwner.mockReturnValueOnce(reRead);
+    const verdict = judge(service.sessionToken());
+    await afterAnswers();
+    expect(api.getSessionOwner).toHaveBeenCalledTimes(1);
+    service.ended();
+    service.established();
+    await afterAnswers();
+    expect(service.status()).toBe('authenticated');
+    expect(service.budgetId()).toBe(BUDGET_ID);
+    expect(custody.lock).toHaveBeenCalledTimes(1);
+
+    // Act
+    reRead.next(OTHER_ME);
+    reRead.complete();
+
+    // Assert
+    expect(await verdict).toBe('stale');
+    expect(service.status()).toBe('authenticated');
+    expect(service.budgetId()).toBe(BUDGET_ID);
+    expect(custody.lock).toHaveBeenCalledTimes(1);
+  });
+
+  // The control for the case above, and the reason it keys on the visit: a
+  // schedule request's `200` moves the generation inside the same visit, and
+  // a judgement keyed on the generation would wave a real ending through as
+  // stale.
+  it('still ends the session when a schedule was written while the re-read was out', async () => {
+    // Arrange
+    await signedIn();
+    const judge = judgeOf(service);
+    const reRead = new Subject<MeDto>();
+    api.getSessionOwner.mockReturnValue(reRead);
+    const verdict = judge(service.sessionToken());
+    await afterAnswers();
+    service.erasureScheduled(TAKES_EFFECT_AT_UTC);
+
+    // Act
+    reRead.next(OTHER_ME);
+    reRead.complete();
+
+    // Assert
+    expect(await verdict).toBe('ended');
+    expect(service.status()).toBe('anonymous');
+    expect(custody.lock).toHaveBeenCalledTimes(1);
+  });
+
+  // The interceptor awaits this inside a `catchError`; a rejection there
+  // replaces the caller's 401 with an error nobody's handler reads.
+  it.each([
+    {
+      how: 'throws a plain Error',
+      fail: (stub: MeApiStub): void => {
+        stub.getSessionOwner.mockImplementation(() => {
+          throw new Error('The re-read failed.');
+        });
+      },
+    },
+    {
+      how: 'errors with a plain Error',
+      fail: (stub: MeApiStub): void => {
+        stub.getSessionOwner.mockReturnValue(
+          throwError(() => new Error('The re-read failed.')),
+        );
+      },
+    },
+  ])(
+    'resolves rather than rejecting when the re-read $how',
+    async ({ fail }) => {
+      // Arrange
+      await signedIn();
+      const judge = judgeOf(service);
+      fail(api);
+
+      // Act
+      const judged = judge(service.sessionToken());
+
+      // Assert
+      await expect(judged).resolves.toBe('ended');
+      expect(service.status()).toBe('anonymous');
+    },
+  );
+
+  // **A flight belongs to the visit it was sent in.** A refusal in a new
+  // visit, heard while the old visit's re-read is still out, gets a re-read of
+  // its own. Joined to the old flight it would inherit that flight's
+  // `'stale'` — the old visit is gone — and a refusal that may really end the
+  // new session would end nothing.
+  it('gives a refusal in a new visit its own re-read while the old visit’s is still out', async () => {
+    // Arrange
+    await signedIn();
+    const judge = judgeOf(service);
+    const oldReRead = new Subject<MeDto>();
+    api.getSessionOwner.mockReturnValueOnce(oldReRead);
+    const oldVerdict = judge(service.sessionToken());
+    await afterAnswers();
+    expect(api.getSessionOwner).toHaveBeenCalledTimes(1);
+    service.ended();
+    service.established();
+    await afterAnswers();
+    expect(service.status()).toBe('authenticated');
+    expect(service.budgetId()).toBe(BUDGET_ID);
+    api.getSessionOwner.mockClear();
+    const newReRead = new Subject<MeDto>();
+    api.getSessionOwner.mockReturnValueOnce(newReRead);
+
+    // Act
+    const newVerdict = judge(service.sessionToken());
+    await afterAnswers();
+    oldReRead.next(ME);
+    oldReRead.complete();
+    newReRead.next(OTHER_ME);
+    newReRead.complete();
+
+    // Assert
+    expect(api.getSessionOwner).toHaveBeenCalledTimes(1);
+    expect(await oldVerdict).toBe('stale');
+    expect(await newVerdict).toBe('ended');
+    expect(service.status()).toBe('anonymous');
   });
 });

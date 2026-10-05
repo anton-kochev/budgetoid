@@ -290,8 +290,10 @@ export class ErasureCancellationFlowService {
   }
 
   // The server's own options, or the word the press ends on. Unmarked, so a
-  // `401` is a session that really ended — the interceptor's fact, and the
-  // flow says nothing over it.
+  // `401` is the interceptor's to judge, and the flow says nothing over it
+  // whatever the verdict. One that ends the session takes the tab to Welcome;
+  // on one the judge kept the tab stays, the press ends silently and Cancel is
+  // live again — known and logged as a backlog item, not fixed here.
   private async challenge(): Promise<ChallengeOutcome> {
     try {
       return {
@@ -320,8 +322,10 @@ export class ErasureCancellationFlowService {
 
   // Whether a `401` without the assertion word was a session that had already
   // ended. The cancelling request is marked, so the interceptor heard nothing;
-  // this probe is **unmarked**, so its own `401` is the interceptor's to act
-  // on, and the flow says nothing. Anything else leaves the `401` unexplained:
+  // this probe is **unmarked**, so its own `401` is the interceptor's to judge,
+  // and the flow says nothing whatever the verdict — on a kept one that is the
+  // silent end {@link challenge} names. Anything else leaves the `401`
+  // unexplained:
   // nothing judged the passkey, so `refused` would be false.
   private async sessionHasEnded(): Promise<boolean> {
     try {

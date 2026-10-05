@@ -962,7 +962,8 @@ a nonce the server persisted must not be spent by a browser that was never going
   request carries the assertion's payload and nothing else — never the key-encryption key the
   ceremony also yields.
 - **The cancelling request is marked as expecting a `401`**; the challenge and the probe below are
-  not, so a `401` on either is an ended session, which is the interceptor's.
+  not, so a `401` on either is the interceptor's, which ends the session only on a `401` the
+  session judge confirms.
 - **It is never retried** — not by the flow, and not by any interceptor the request passes through.
 - **Abandoning is leaving the screen.** The screen's teardown aborts a press that has not posted.
   One already out is left to land, and its `204` still reaches `SessionService`, so the notice
@@ -1047,15 +1048,18 @@ finish* rather than *was cancelled*. `duplicate` folds into `ceremony-failed`, t
 exactly `assertion` — the constant every declined passkey in the product answers — is the gate
 declining the passkey, and a session that had already ended is turned away before the gate, so that
 body cannot come from one. **Any other `401` is read after one unmarked `GET /api/me`**: a `401`
-there is an ended session, the interceptor takes the tab to Welcome, and the section says nothing;
-anything else is `undetermined`, never `refused`, because nothing judged the passkey. The erasure
+there is the interceptor's — on one the session judge confirms, the tab goes to Welcome and the
+section says nothing — and anything else is `undetermined`, never `refused`, because nothing judged
+the passkey. **On a `401` the judge keeps, the section says nothing either and Cancel stays live.**
+[Guessing] That is a cancelling request and a probe that both carried a cookie another tab's
+sign-in had just displaced: nothing was withdrawn, and the next press is a whole new act. The erasure
 dialog probes every `401` and reads no member; this flow reads the member first, so only a `401`
 without it costs a probe. The sentence says *registered to this account* because a discoverable
 ceremony lets the authenticator offer a passkey made for a different one.
 
 **`unrecognised` is a `400` or a `403`**, on the challenge or on the cancelling request, raised
 before any handler judged anything. **`unstarted` is every other way the challenge fails** except a
-`401`, which is an ended session.
+`401`, which is the interceptor's to judge, and the section says nothing over it.
 
 **`undetermined` keeps the control live, and that is the erasure dialog's rule inverted on
 purpose.** The dialog withdraws its commit because erasure is not idempotent to the caller. A
@@ -1500,8 +1504,8 @@ so the product says one thing about a passkey check wherever it asks for one.
 stays: nothing that could change anything has been sent, so *nothing changed* is a fact and the
 Google answer is still good. The erasure dialog reads a `400` or `403` as `unrecognised` and offers a
 reload; this chapter does not borrow that word, because here a reload costs the Google answer and
-sends the person back through the trip to get it again. A `401` on the challenge is an ended
-session, the interceptor's, and this flow says nothing over it.
+sends the person back through the trip to get it again. A `401` on the challenge is the
+interceptor's to judge, and this flow says nothing over it whatever the verdict.
 
 **`unsupported` is not borrowed, and it follows registration rather than Unlock.** A browser that
 cannot run the ceremony cannot run it on the next press either, so offering Confirm again is a
@@ -1565,8 +1569,16 @@ request passes through.
 expecting a `401`, and every `401` it collects is read only after one unmarked `GET /api/me` — the
 erasure dialog's shape, for its reason: unmarked, `sessionExpiryInterceptor` would read the gate's
 verdict as a session ending; unchecked, an ended session would be told its passkey was refused. A
-`401` on the probe is an ended session, which is the interceptor's, and it takes the tab to Welcome
+`401` on the probe is the interceptor's: one the session judge confirms takes the tab to Welcome
 with nothing said here; anything else lets the member decide the word.
+
+**The Google answer is lost in a double race, and nothing here says so.** [Guessing] Reasoned from
+the code, not run: when the changing request and the probe both carried a cookie another tab's
+sign-in had just displaced, both are refused while the jar already holds a live session of this
+account. The judge keeps the session, the flow reads the probe's `401` as an ended session, says
+nothing and drops the answer, so the section is back at **Change email address** with no line in
+the region. Nothing changed, and the way forward is the trip again. A challenge refused the same
+way ends the same way: no line, the answer dropped, Change offered.
 
 **Lines landing on a return load land after the first render.** The region is in the DOM from first
 paint; a line present at that paint is announced unreliably, so `unconfirmed` on a return waits one
@@ -2860,7 +2872,7 @@ keep.
 
 ### The refusals
 
-**Twelve words, from three sources, and no sentence is shared with a section that means something
+**Thirteen words, from three sources, and no sentence is shared with a section that means something
 else by it.**
 
 **The ceremony's five come from the Account keys chapter's table, four of them verbatim** —
@@ -2889,12 +2901,13 @@ act-neutrally on **Finish rotating** and **Rename and finish** as on **Rotate ke
 presses are rotating this account's keys, and none has written anything by the time this line can
 appear.
 
-**Seven are this section's own**, and they differ from custody's five where they share a word: each
+**Eight are this section's own**, and they differ from custody's five where they share a word: each
 says what became of the run, which the Account keys lines have no run to say anything about.
 
 | Word | Copy |
 | --- | --- |
 | `unreachable` | "Budgetoid couldn’t reach the server. The rotation stopped where it is — try again in a minute and it picks up from there." |
+| `refused` | "Budgetoid didn’t accept that passkey. Nothing has changed — try again." |
 | `unauthenticated` | "Budgetoid stopped accepting this rotation from this browser. Sign out and sign in again, then finish it from here." |
 | `unrecognised` | "Budgetoid couldn’t work with what the server sent back. Reload the page — that’s the one thing here that can change the answer." |
 | `inconsistent` | "Something about this account’s keys doesn’t line up — no passkey or recovery code will change it." |
@@ -2904,7 +2917,7 @@ says what became of the run, which the Account keys lines have no run to say any
 
 The copy is the specification, not an example of it.
 
-**One of the seven is custody's sentence unchanged, and one is custody's sentence widened by a
+**One of the eight is custody's sentence unchanged, and one is custody's sentence widened by a
 word.** `inconsistent` survives verbatim because it is the one line in either table that says out
 loud that nothing the person does changes the answer, and a run standing in front of it changes
 nothing about that.
@@ -2924,7 +2937,35 @@ that fetches different JavaScript from the static host, which is the only thing 
 refusal about what this bundle can drive; and where the cause is instead a list read that went
 stale, a reload re-reads it. The staged run is still on the server either way, so nothing is spent
 by trying. That is the same property the Account keys chapter names — **the copy names the act and
-not the cause** — which is why widening the source cost one word rather than a seventh line.
+not the cause** — which is why widening the source cost one word rather than a line of its own.
+
+**`refused` is a begin the re-authentication gate declined, and it is read off the answer's body.**
+A `401` to `POST /api/me/key-rotation` whose own `refusal` member is exactly `assertion` — the
+constant every declined passkey in the product answers — is the gate turning the passkey away. A
+session that had already ended is turned away before the gate, so that body cannot come from one.
+The gate runs before the begin judges or stages anything, so *nothing has changed* is a fact: a run
+staged before the press stands as it was. The begin is the one rotation route with a gate — the
+resume read, the chunks and the completion carry none — so a press that posts no begin never shows
+this line.
+
+**`unauthenticated` keeps every other `401` a run's request collects, and its sentence is false for
+this one.** *Stopped accepting this rotation from this browser* and *sign out and sign in again*
+describe a browser the server no longer trusts. A declined passkey leaves the session live, and
+signing out changes nothing about which passkey answers. Another press is a genuinely different
+attempt, because the authenticator chooses which passkey answers, so the line offers the press.
+
+**There is no probe here, unlike the erasure cancellation, because the interceptor has already
+asked.** The begin is not marked as expecting a `401`, so `sessionExpiryInterceptor` hands its `401`
+to the session judge before the run reads it. One the judge confirms takes the tab to Welcome with
+nothing said here; one it keeps reaches the run with the session standing, and the member decides
+between the two words. [key-rotation.md](../business-logic/key-rotation.md) argues why the begin
+stays unmarked.
+
+**Its opening is borrowed, and its closing is this section's.** *Budgetoid didn’t accept
+that passkey* is the opening the Scheduled erasure section's `refused` and the email change's
+`assertion-refused` use. The closing is the one `unknown` carries above, *Nothing has changed — try
+again.*, and the same ordering rule makes it true: nothing is posted until the ceremony answers, and
+the gate refuses before anything is staged.
 
 **`factors-moved` is the one whose remedy has a rule behind it, and the rule is not visible in the
 sentence.** Starting again after this refusal must re-stage **the generation the interrupted run
@@ -3124,7 +3165,7 @@ being counted, and sits outside the region. Nothing here is communicated by colo
 draws it on `/app/settings` directly below Account keys: both blocks of prose character for
 character, the acknowledgement under its specified label, one Destructive control that is **Rotate
 keys**, **Finish rotating** or **Rename and finish** and never two of them, the `role="status"` region carrying the three phase sentences
-and all twelve refusals, and the determinate bar outside that region with its own `aria-valuenow`,
+and all thirteen refusals, and the determinate bar outside that region with its own `aria-valuenow`,
 `aria-valuemax` and label. The checkbox is a signal initialised to `false` on the component, so it
 arrives unticked on every construction including over a staged run, and no path sets it from
 anywhere else.
@@ -3890,8 +3931,11 @@ opens — [erasure.md](../business-logic/erasure.md)'s decision tree. But the ro
 fallback authorization policy, so a session that had already ended — expired, revoked, or erased
 from another tab — is answered `401` before the gate runs. Both mean this request erased nothing,
 and the flow tells them apart before it publishes anything, with **one unmarked `GET /api/me`**: a
-`401` there is a session that had ended, `sessionExpiryInterceptor` ends it and takes the tab to
-Welcome, and the dialog says nothing; a `200`, or a probe that cannot answer, leaves `refused`.
+`401` there is `sessionExpiryInterceptor`'s, and on one the session judge confirms the session ends,
+the tab goes to Welcome, and the dialog says nothing; a `200`, or a probe that cannot answer, leaves
+`refused`. On a `401` the judge keeps, the dialog says nothing either and its commit is live again —
+[Guessing] an erasing request and a probe that both carried a cookie another tab's sign-in had just
+displaced, refused before the gate, so nothing was erased.
 The gate's refusals are byte-identical by design: an expired challenge, a bad signature and another
 account's passkey are one answer, so the sentence names the likeliest act and no cause. A
 discoverable ceremony lets the authenticator offer any passkey it holds for Budgetoid, including one
@@ -3900,8 +3944,8 @@ made for a different account, which is why *for this account* is in the sentence
 **That request expects a `401` and is marked so.** Unmarked, `sessionExpiryInterceptor` reads the
 gate's verdict as a session ending and takes the tab to `/welcome` over a sentence this dialog
 never got to say. The probe after it is **not** marked, and neither is the challenge request before
-it: a `401` on either is a session that really has ended, which is exactly what the interceptor
-owns — and the screen leaving takes the overlay with it, below. So the dialog says nothing on a
+it: a `401` on either is the interceptor's to judge, which is exactly what it owns — and on an
+ending verdict the screen leaving takes the overlay with it, below. So the dialog says nothing on a
 `401` from the challenge either.
 
 **`unstarted` is every other way the challenge request fails, and its sentence names no cause.** A
@@ -3966,7 +4010,7 @@ ended session. [erasure.md](../business-logic/erasure.md) records the risk.
 **It lives no longer than the screen that opened it.** A router navigation alone does not close a
 Material dialog — measured, with `navigateByUrl` — so the Settings screen closes it in its own
 teardown, which every navigation off the screen passes through: the tab going to Welcome after a
-`204`, and the interceptor sending an ended session there. **The browser's Back is the exception
+`204`, and the interceptor sending there a session its judge has ended. **The browser's Back is the exception
 that closes it first**: the CDK disposes the overlay on `popstate` before the screen goes, whatever
 `disableClose` says, which is why the screen abandons a press when its overlay closes from outside,
 per *The dismiss* above, and not only when it is torn down.
@@ -3978,7 +4022,8 @@ from this tab, then the navigation, because the guard on the way out reads the s
 the router is asked. Nothing is kept for the moment in between: there is no account left to read.
 
 **Other devices find out at their next request.** The erasure deleted every session on the account,
-so each of them answers `401`, and `sessionExpiryInterceptor` takes that tab to Welcome, which says
+so each of them answers `401`, the session judge ends that tab's session — its re-read, where it
+sends one, is refused too — and `sessionExpiryInterceptor` takes the tab to Welcome, which says
 nothing there either. Nothing is pushed to them.
 
 ### What a writer will get wrong
@@ -4692,15 +4737,16 @@ touches nothing the account holds. Outline and not Destructive, because nothing 
 | Answer | Word | Copy | What stays |
 | --- | --- | --- | --- |
 | `200` with an instant that reads | `scheduled` | The result sentence, below | *Scheduled*; focus moves to the result sentence |
-| `401` | — | *nothing* | `sessionExpiryInterceptor` ends the session and takes the tab to Welcome |
+| `401` | — | *nothing* | The session judge ends a locked session without a re-read, and `sessionExpiryInterceptor` takes the tab to Welcome |
 | `403` | `unrecognised` | "Budgetoid couldn’t read this request, so nothing was scheduled. Reload the page and try again." | *Nothing scheduled* |
 | Anything else — no answer, a `5xx`, a `200` whose instant does not read | `undetermined` | "Budgetoid didn’t hear back, so this may already be scheduled. Press again to check — asking twice never changes the date." | *Nothing scheduled*; **the commit stays live** |
 
 The copy is the specification, not an example of it. Every line but the result is inside the
 region, `--bud-over`.
 
-**The schedule request is not marked as expecting a `401`.** A `401` there is an ended session, which
-is the interceptor's, and this screen says nothing over it.
+**The schedule request is not marked as expecting a `401`.** A `401` there is the interceptor's, and
+this screen says nothing over it. The session judge cannot confirm it against the account, because
+the route that names one refuses a locked session, so it ends the session without asking.
 
 **An instant reads only with its offset.** A value with `Z` or a numeric offset is an instant; one
 without is a wall-clock time in no zone, and rendering it would put a date on screen that is

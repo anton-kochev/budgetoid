@@ -124,8 +124,10 @@ is staged, drives its `seals` off `key_rotation_seals` rather than off the accou
 tells a finished run from a live one by **the epoch** rather than by the staging row's existence,
 and writes `Cache-Control: no-store` on both answers. It declares the same three absences as the
 routes beside it; and the client's transport for all four — `KeyRotationApiService`, four members
-over `BaseApiService`, carrying `EXPECTS_UNAUTHENTICATED` on none of them because a 401 on any of
-these is a session that ended — beside
+over `BaseApiService`, carrying `EXPECTS_UNAUTHENTICATED` on none of them because the session judge,
+`SessionService.judgeRefusal`, settles an ended session for each, while on the begin a 401 may
+instead be a declined passkey that the body's own `refusal` member names
+([argued below](#beginning-a-run-what-it-holds-and-none-of-it-visible-in-the-result)) — beside
 [`vectors/key-rotation-wire-v1.json`](vectors/key-rotation-wire-v1.json), which freezes the whole
 member set of each of the fourteen messages those four routes carry. That file has two readers and
 the second one is the point: `key-rotation-api.service.spec.ts` compares the browser's own types
@@ -203,8 +205,8 @@ the run carries on.
 **A run is picked up from the other end by the same driver, and the leg that does it posts no begin.**
 `KeyRotationService.resume()` reads `GET /api/me/key-rotation` first — an account with nothing staged
 has no key material worth reading — and answers `rotation: null` by going back to rest with no word at
-all, because each of the seven says what became of a *run* and none of them is true of one that is not
-there. Where there is a run it reads the account keys, hands both answers to
+all, because each of the driver's refusal words says what became of a *run* and none of them is true
+of one that is not there. Where there is a run it reads the account keys, hands both answers to
 `key-rotation-material.ts`, which recovers the staged generation rather than minting one, and then
 drives the identical collection, chunking and completion a begin drives — **quoting the `rotationId`
 the server handed back**, minting no epoch and drawing no identifier, because the rows the interrupted
@@ -625,6 +627,22 @@ recovery-code paths write out in full: the consume commits on a save of its own,
 attempt would restore the spent nonce and make the assertion replayable; and the delegate is replayed
 under a retrying execution strategy, so a gate inside it would consume twice and refuse a **valid**
 begin with the same 401 an attacker gets.
+
+**So a 401 on the begin is one of two answers, and the body's own `refusal` member tells them
+apart.** A cookie that no longer names a live session is turned away by authentication, before the
+gate runs, and that 401 carries no `refusal`. The gate declining the assertion on a session that is
+still live answers `refusal: "assertion"`, the constant every declined passkey in the product
+carries. The other three rotation routes have no gate, so on them a 401 can only be the first.
+**The begin is still not marked `EXPECTS_UNAUTHENTICATED`, and the reason is not that every 401 on
+it is an ended session — it is that the ended session is already settled for it.**
+`sessionExpiryInterceptor` hands an unmarked 401 from this API to `SessionService.judgeRefusal`,
+whose one marked re-read of `GET /api/me` keeps the session only when the answer names this tab's
+budget, and otherwise ends it and takes the tab to `/welcome`. The error reaches the driver only
+once that verdict is in, so a declined passkey arrives with its session standing, and the member
+alone is what tells it from any other 401. Marked, the begin would need what the erasure
+cancellation carries — an unmarked probe before it names any 401 without the member — because the
+interceptor would no longer see the ended session first. [sessions.md](sessions.md) holds the
+judgement's rule.
 
 **A second begin replaces the first and is not a conflict.** When a completion refuses because the live
 factor set moved — a passkey registered or revoked while a run was in flight — the only way forward is
